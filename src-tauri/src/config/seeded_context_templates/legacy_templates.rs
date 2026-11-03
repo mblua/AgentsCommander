@@ -336,7 +336,7 @@ pub(crate) const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME: &str =
 
 /// #979: the standalone global context template that older builds seeded into the
 /// APP CONFIG directory (307 bytes; it predates `## Core Concepts`). Retirement may
-/// delete only bytes AgentsCommander provably generated itself, so this snapshot is
+/// delete only bytes `AgentsCommander` provably generated itself, so this snapshot is
 /// frozen and pinned by a length + SHA-256 test.
 ///
 /// Do NOT replace this literal with `include_str!`: a raw string literal normalizes
@@ -380,7 +380,7 @@ You are running inside an AgentsCommander session - a terminal session manager t
 /// installation that reached v5 before upgrading would have had its global
 /// template permanently reclassified as user-authored. AC7.1b's `!=` limb is
 /// what makes that state unshippable.
-/// Provenance: the df494bfa blob, session_context.rs lines 2513-2537;
+/// Provenance: the df494bfa blob, `session_context.rs` lines 2513-2537;
 /// declaration 574 bytes sha256 D9E93582...A844 (plan 3.12 Table A), value
 /// 564 bytes sha256 D094106B...4F77 (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.
@@ -456,7 +456,7 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 /// #1614 D8a: the `coordinator` seeded context template exactly as it
 /// shipped through base commit d7008b34, frozen for the same reason as the
 /// global one above. Never edit.
-/// Provenance: the d7008b34 blob, session_context.rs lines 2509-2529;
+/// Provenance: the d7008b34 blob, `session_context.rs` lines 2509-2529;
 /// declaration 2703 bytes sha256 CC127468...3ABF (plan 3.12 Table A), value
 /// 2516 bytes sha256 0B89EB38...198E (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.
