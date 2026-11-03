@@ -146,10 +146,11 @@ where
             .await
             .map_err(|_| {
                 format!(
-                "archive gate: timed out taking the settings write lock while un-archiving '{root}'. \
+                    "archive gate: timed out taking the settings write lock while \
+                 un-archiving '{root}'. \
                  A caller of create_session_inner is holding a SettingsState guard. That is a \
                  bug, not a slow disk."
-            )
+                )
             })?;
         let path = crate::config::config_dir()
             .ok_or("Could not determine settings directory")?

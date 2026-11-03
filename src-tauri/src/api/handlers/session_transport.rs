@@ -406,13 +406,13 @@ impl HelloRejection {
                 "container transport handshake failed: first frame was not hello".to_string()
             }
             Self::ProtocolMismatch { expected, reported } => format!(
-                "container transport protocol mismatch: host expects protocol {expected} but container \
-                image reported protocol {reported}. Rebuild or re-pull the AgentsCommander container image \
-                so it contains the current session-bridge."
+                "container transport protocol mismatch: host expects protocol {expected} but \
+                container image reported protocol {reported}. Rebuild or re-pull the \
+                AgentsCommander container image so it contains the current session-bridge."
             ),
             Self::SessionIdMismatch { expected, reported } => format!(
-                "container transport handshake failed: hello session id {reported} did not match expected \
-                {expected}"
+                "container transport handshake failed: hello session id {reported} did not \
+                match expected {expected}"
             ),
             Self::RootMismatch => {
                 "container transport handshake failed: bridge root did not match bound root"
@@ -478,7 +478,8 @@ async fn handle_bridge_message(
         Message::Binary(data) => {
             if data.len() > MAX_TRANSPORT_FRAME_BYTES {
                 log::warn!(
-                    "[container-transport] closing session {session_id} after oversized binary frame"
+                    "[container-transport] closing session {session_id} after oversized \
+                     binary frame"
                 );
                 return false;
             }
