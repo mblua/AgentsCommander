@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub fn loop_dir(ac_root: &Path, id: &str) -> PathBuf {
-    ac_root.join(format!("{}{}", LOOP_DIR_PREFIX, id))
+    ac_root.join(format!("{LOOP_DIR_PREFIX}{id}"))
 }
 
 pub fn read_loop_config(loop_dir: &Path) -> Result<LoopConfigToml, String> {
@@ -89,9 +89,9 @@ pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<Path
     validate_loop_id(&config.loop_def.id)?;
     let dir = loop_dir(ac_root, &config.loop_def.id);
     loop_files::create_loop_directory(&dir)
-        .map_err(|e| format!("Failed to create Loop directory: {}", e))?;
+        .map_err(|e| format!("Failed to create Loop directory: {e}"))?;
     let content = toml::to_string_pretty(config)
-        .map_err(|e| format!("Failed to serialize Loop config: {}", e))?;
+        .map_err(|e| format!("Failed to serialize Loop config: {e}"))?;
     // Write a sibling tmp file and replace, so no reader in any process
     // (including the CLI) ever sees a torn config.toml.
     let config_path = dir.join(LOOP_CONFIG_FILE);
@@ -190,12 +190,12 @@ pub(super) fn write_loop_state_atomic_at(
         .unwrap_or(LOOP_STATE_FILE);
     let tmp_path = loop_dir.join(format!("{}.{}.tmp", state_name, Uuid::new_v4()));
     let content = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("Failed to serialize Loop state: {}", e))?;
+        .map_err(|e| format!("Failed to serialize Loop state: {e}"))?;
     loop_files::write_loop_state_stage(&tmp_path, &content)
-        .map_err(|e| format!("Failed to write temporary Loop state: {}", e))?;
+        .map_err(|e| format!("Failed to write temporary Loop state: {e}"))?;
     replace_file_with_retry(&tmp_path, state_path).map_err(|e| {
         let _ = loop_files::remove_loop_stage(&tmp_path);
-        format!("Failed to finalize Loop state: {}", e)
+        format!("Failed to finalize Loop state: {e}")
     })
 }
 
@@ -226,7 +226,7 @@ pub fn append_loop_audit_once(loop_dir: &Path, entry: &LoopAuditEntry) -> Result
     }
 
     let line = serde_json::to_string(entry)
-        .map_err(|e| format!("Failed to serialize Loop audit entry: {}", e))?;
+        .map_err(|e| format!("Failed to serialize Loop audit entry: {e}"))?;
     loop_files::append_loop_audit_line(&audit_path, &line)
 }
 
