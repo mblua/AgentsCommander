@@ -6,7 +6,7 @@ use crate::config::settings::{
 };
 use crate::pty::backend::SessionBackendKind;
 
-/// Default custom-agent color when none is supplied (matches OnboardingModal).
+/// Default custom-agent color when none is supplied (matches `OnboardingModal`).
 pub const DEFAULT_CUSTOM_COLOR: &str = "#6366f1";
 
 /// A settings.agents mutation. Serialized (camelCase, internally tagged on

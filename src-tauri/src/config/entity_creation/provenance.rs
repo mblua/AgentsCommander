@@ -3,6 +3,7 @@ use super::names::validate_existing_name;
 use crate::filesystem::projects::entities::copies::{
     self as disk, MatrixCopyHooks, MatrixCopyStage, OwnedCopyArtifacts,
 };
+use serde_json::Value;
 use std::path::Path;
 
 // Strict Matrix copy and team publication share ephemeral output ownership.
@@ -17,7 +18,7 @@ pub(crate) fn validate_copy_provenance(
         }
         None => serde_json::json!({"schemaVersion": 1, "copies": []}),
     };
-    if value.get("schemaVersion").and_then(|v| v.as_u64()) != Some(1) {
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
         return Err("Unsupported copy provenance schemaVersion".into());
     }
     let copies = value

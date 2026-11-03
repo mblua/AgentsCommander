@@ -165,7 +165,7 @@ fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Opt
             "memory archive parent is not a real directory",
         ));
     }
-    let dst = parent.join(format!("{}_{}", MEMORY_DIR_NAME, timestamp));
+    let dst = parent.join(format!("{MEMORY_DIR_NAME}_{timestamp}"));
     // Refuse to clobber (`mailbox.rs:1606-1613`). `symlink_metadata` rather
     // than `exists()`, so a dangling link at the destination also blocks. This
     // is a best-effort fast path, NOT an atomic guarantee; see section 7 for

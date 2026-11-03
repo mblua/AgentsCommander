@@ -45,7 +45,7 @@ pub(crate) struct RenderedRule {
 }
 
 /// Ensure the running instance's root `.gitignore` contains the complete
-/// AgentsCommander runtime-file policy.
+/// `AgentsCommander` runtime-file policy.
 pub(crate) fn ensure_instance_gitignore() -> Result<(), String> {
     let config_dir = super::config_dir().ok_or_else(|| {
         "cannot seed the instance .gitignore because the config directory is unavailable"
