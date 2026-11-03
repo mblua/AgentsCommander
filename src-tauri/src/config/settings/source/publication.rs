@@ -21,14 +21,12 @@ use super::SourceCoordinationError;
 use super::SourceRevision;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct SourcePublicationObservation {
     pub(crate) revision: SourceRevision,
 }
 
 /// The caller retains its original authority; exact after is recognized outside
 /// the publisher and is never interpreted as a rejected, effect-free attempt.
-#[allow(dead_code)]
 pub(crate) fn publish_source_intent_with_validation(
     lease: &SourceWriteContext,
     context: &SourceReadContext,
@@ -226,7 +224,6 @@ pub(crate) fn publish_source_intent_with_validation(
 
 /// Pure record changes are redecoded before guarded CAS publication; callbacks
 /// borrow original proofs and never advance coordinator progress themselves.
-#[allow(dead_code)]
 pub(crate) fn update_own_source_journal_with_validation<F>(
     identity: &IdentityWriteLease,
     lease: &SourceWriteContext,
@@ -467,6 +464,8 @@ where
 
 /// Lookup is restricted to the own C path derived from backend context. Status
 /// can expose the original ID and CAS before a shared fence exists.
+// Test-only today; `#[cfg(test)]` would need edits to the re-exports in
+// `settings/source.rs` and `settings.rs`.
 #[allow(dead_code)]
 pub(crate) fn read_own_source_intent(
     context: &SourceReadContext,
@@ -476,7 +475,6 @@ pub(crate) fn read_own_source_intent(
     Ok((revision, journal.intents.get(operation_id).cloned()))
 }
 
-#[allow(dead_code)]
 pub(crate) fn source_complete_proof(
     lease: &SourceWriteContext,
     context: &SourceReadContext,
