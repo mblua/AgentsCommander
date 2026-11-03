@@ -1,6 +1,6 @@
 use super::*;
 use crate::commands::session::preflight::{
-    resolution_failure_message, PreflightState, CONTAINER_REFUSAL,
+    resolution_failure_message, seed_gate, PreflightState, CONTAINER_REFUSAL,
 };
 
 // --- #1271 configured default-shell propagation --------------------------
@@ -521,6 +521,16 @@ async fn gate_create(
     manage: bool,
     before: impl FnOnce(&Arc<PreflightState>, &str),
 ) -> GateRun {
+    gate_create_with(preflight, container, manage, before, |_, _| {}).await
+}
+
+async fn gate_create_with(
+    preflight: Option<String>,
+    container: bool,
+    manage: bool,
+    before: impl FnOnce(&Arc<PreflightState>, &str),
+    edit_spawn: impl FnOnce(&mut crate::config::agent_command::AgentSpawnCommand, &std::path::Path),
+) -> GateRun {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().to_string();
     let mut settings = test_settings();
@@ -546,13 +556,17 @@ async fn gate_create(
         Arc::clone(&session_mgr),
         Arc::clone(&pty_mgr),
     );
+    let seed_lock: crate::app_state::ConfigSeedLockState = Default::default();
+    app.manage(seed_lock);
     if let Some(state) = &state {
         app.manage(Arc::clone(state));
         before(state, &cwd);
     }
-    let spawn = super::super::build_configured_agent_spawn_for_cwd(&settings, "claude", &cwd, None)
-        .expect("resolve claude")
-        .expect("claude is configured");
+    let mut spawn =
+        super::super::build_configured_agent_spawn_for_cwd(&settings, "claude", &cwd, None)
+            .expect("resolve claude")
+            .expect("claude is configured");
+    edit_spawn(&mut spawn, temp.path());
     let result = super::super::create_session_inner(
         app.handle(),
         &session_mgr,
@@ -690,6 +704,56 @@ async fn invalid_preflight_fails_only_the_launch() {
         .strip_suffix(&format!(". {GATE_TEXT}"))
         .expect("gate suffix");
     assert_eq!(error, resolution_failure_message(cause));
+    assert!(run.backend.specs.lock().unwrap().is_empty());
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+/// A real seed resolved for a temp replica, then pointed at a missing replica
+/// root, so the seed reports `StaleReplica`.
+fn stale_seed(spawn: &mut crate::config::agent_command::AgentSpawnCommand, temp: &std::path::Path) {
+    let replica = temp
+        .join(".ac")
+        .join("wg-7-dev-team")
+        .join("__agent_dev-rust");
+    std::fs::create_dir_all(&replica).unwrap();
+    let mut settings = test_settings();
+    settings.agents[0].config_seed = Some(crate::config::settings::ConfigSeedConfig {
+        enabled: true,
+        dest: ".claude".to_string(),
+    });
+    let replica = replica.to_string_lossy().to_string();
+    let mut seed =
+        super::super::build_configured_agent_spawn_for_cwd(&settings, "claude", &replica, None)
+            .expect("resolve claude")
+            .expect("claude is configured")
+            .seed
+            .expect("a replica resolves a seed");
+    let missing = temp.join("missing-replica");
+    seed.dest = missing.join(".claude");
+    seed.context.replica_root = missing;
+    spawn.seed = Some(seed);
+}
+
+#[tokio::test]
+async fn stale_seed_without_chain_still_launches() {
+    let run = gate_create_with(None, false, true, |_, _| {}, stale_seed).await;
+    run.result
+        .expect("an empty chain keeps the seed best-effort");
+    assert_eq!(run.backend.specs.lock().unwrap().len(), 1);
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stale_seed_with_chain_blocks_launch() {
+    let run = gate_create_with(Some(preflight_text(0)), false, true, |_, _| {}, stale_seed).await;
+    let stale = crate::config::config_seed::ConfigSeedReport::Skipped(
+        crate::config::config_seed::ConfigSeedSkipReason::StaleReplica {
+            replica_root: Default::default(),
+            reason: String::new(),
+        },
+    );
+    let expected = seed_gate(Some(&stale)).expect_err("a stale seed fails the gate");
+    assert_eq!(run.result.expect_err("strict seed"), expected);
     assert!(run.backend.specs.lock().unwrap().is_empty());
     assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
 }
