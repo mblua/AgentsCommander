@@ -143,6 +143,8 @@ import type {
   CoManagedConfig,
   CoManagedState,
   AgentHelpFile,
+  PreflightTargetDescription,
+  PreflightTestSnapshot,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
 
@@ -565,6 +567,20 @@ export function assertCodingAgentMoveOrder(
     throw new Error("The backend returned an unexpected agent order.");
   }
 }
+
+/** #3516 - the saved preflight chain test; the same transport serves Tauri and WS. */
+export const PreflightTestAPI = {
+  describe: (agentId: string, profileLetter: string | null, replicaPath: string) =>
+    transport.invoke<PreflightTargetDescription>("describe_preflight_target",
+      { agentId, profileLetter, replicaPath }),
+  start: (agentId: string, profileLetter: string | null, replicaPath: string,
+          settingsRevision: string) =>
+    transport.invoke<string>("start_preflight_test",
+      { agentId, profileLetter, replicaPath, settingsRevision }),
+  get: (runId: string) => transport.invoke<PreflightTestSnapshot>("get_preflight_test", { runId }),
+  cancel: (runId: string) =>
+    transport.invoke<PreflightTestSnapshot>("cancel_preflight_test", { runId }),
+};
 
 export const SettingsAPI = {
   // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +

@@ -447,6 +447,10 @@ export interface AgentConfig {
    *  Read-only mirror of P1's serialized Rust field; the UI renders the vector
    *  order it receives and never writes ordinals itself. */
   order?: number;
+  /** #3516 - optional finite command run before every launch; omitted when unset. */
+  preflight?: string;
+  /** #3516 - positive whole seconds; omitted means the backend default (60). */
+  preflightTimeoutSeconds?: number;
 }
 
 /** #2306 P3 - the one narrow move request both UI surfaces send. */
@@ -575,6 +579,65 @@ export interface ProfileCellConfig {
   command: string;
   env: Record<string, string>;
   notes: string;
+  /** #3516 - optional profile preflight, run after the Coding Agent one. */
+  preflight?: string;
+  /** #3516 - this profile's own timeout; never inherits the agent timeout. */
+  preflightTimeoutSeconds?: number;
+}
+
+/** #3516 - wire mirror of the P04 preflight test API (camelCase serde). */
+export type PreflightStageSource = "codingAgent" | "profile";
+
+export type PreflightStageStatus =
+  | "pending" | "running" | "passed" | "failed" | "timedOut"
+  | "spawnFailed" | "signaled" | "cancelled" | "notRun";
+
+export interface PreflightStageReport {
+  source: PreflightStageSource;
+  label: string;
+  effectiveProfile: string;
+  commandText: string;
+  timeoutSeconds: number;
+  status: PreflightStageStatus;
+  exitCode: number | null;
+  durationMs: number | null;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  detail: string | null;
+  cleanupDefect: string | null;
+}
+
+export interface PreflightTargetDescription {
+  agentId: string;
+  replicaPath: string;
+  cwd: string;
+  requestedProfile: string;
+  effectiveProfile: string;
+  fallbackApplied: boolean;
+  stopped: boolean;
+  stages: {
+    source: PreflightStageSource;
+    label: string;
+    commandText: string;
+    timeoutSeconds: number;
+  }[];
+  settingsRevision: string;
+  activeRunId: string | null;
+  unavailableReason: string | null;
+}
+
+export interface PreflightTestSnapshot {
+  runId: string;
+  agentId: string;
+  replicaPath: string;
+  effectiveProfile: string;
+  settingsRevision: string;
+  phase: "preparing" | "running" | "finished";
+  outcome: "passed" | "failed" | "cancelled" | null;
+  message: string | null;
+  stages: PreflightStageReport[];
 }
 
 export interface CodingAgentProfileResolution {
