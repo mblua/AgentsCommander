@@ -66,7 +66,7 @@ impl ContainerApiTokenManager {
         let expires_at = issued_at + ChronoDuration::hours(CONTAINER_TOKEN_TTL_HOURS);
         let credential_generation = Uuid::new_v4().to_string();
         let bound_session_id = session_id.to_string();
-        let client_id = format!("container-{}-{}", session_id, credential_generation);
+        let client_id = format!("container-{session_id}-{credential_generation}");
         let secret = format!("ac-container-{}-{}", Uuid::new_v4(), Uuid::new_v4());
         let token_hash = auth::hash_token(&secret);
         let bound_fqn = crate::config::teams::agent_fqn_from_path(bound_root);
@@ -84,7 +84,7 @@ impl ContainerApiTokenManager {
             MintRequest {
                 client_id: client_id.clone(),
                 secret,
-                label: format!("{}{}", CONTAINER_LABEL_PREFIX, session_id),
+                label: format!("{CONTAINER_LABEL_PREFIX}{session_id}"),
                 bound_root: bound_root.to_string(),
                 bound_fqn,
                 scopes,
@@ -108,20 +108,13 @@ impl ContainerApiTokenManager {
     pub fn revoke(&self, client_id: &str) {
         match auth::revoke(&self.registry_path, client_id) {
             Ok(true) => {
-                log::info!("[container-token] revoked API client {}", client_id);
+                log::info!("[container-token] revoked API client {client_id}");
             }
             Ok(false) => {
-                log::warn!(
-                    "[container-token] API client {} was not found during revoke",
-                    client_id
-                );
+                log::warn!("[container-token] API client {client_id} was not found during revoke");
             }
             Err(err) => {
-                log::warn!(
-                    "[container-token] failed to revoke API client {}: {}",
-                    client_id,
-                    err
-                );
+                log::warn!("[container-token] failed to revoke API client {client_id}: {err}");
             }
         }
     }
@@ -162,12 +155,12 @@ impl ContainerApiTokenManager {
     /// SCOPED CLAIM. This answers "did this config dir ever create a labeled
     /// container", NOT "does this machine hold one". The registry is per config dir
     /// (config.rs) while the label `com.agentscommander.session` is machine-wide
-    /// (container_runtime.rs). Read plan 992 section 0 before you rely on this for
+    /// (`container_runtime.rs`). Read plan 992 section 0 before you rely on this for
     /// anything.
     ///
     /// Within that scope it is exact, not a heuristic:
     ///   - a container session cannot spawn without a token manager
-    ///     (container_backend.rs `spawn_runtime_backed` hard-errors),
+    ///     (`container_backend.rs` `spawn_runtime_backed` hard-errors),
     ///   - the client is minted BEFORE `docker run`, and `auth::mint` publishes
     ///     atomically to disk before it returns, so even a kill between the two
     ///     leaves the entry,
@@ -176,7 +169,7 @@ impl ContainerApiTokenManager {
     ///     process can lose an update, because `update_config_json_object` guards
     ///     with a process-local mutex only.)
     ///
-    /// Revoked AND expired clients COUNT, deliberately. `expires_at` is issued_at +
+    /// Revoked AND expired clients COUNT, deliberately. `expires_at` is `issued_at` +
     /// `CONTAINER_TOKEN_TTL_HOURS`, so an expired entry is the NORMAL state of an
     /// ex-container user, and a revoked entry still proves a container was created.
     /// `auth::list` filters neither - unlike `authenticate`, which rejects expired

@@ -302,14 +302,34 @@ impl ContainerTransportBackend {
         Ok(token)
     }
 
+    fn required_runtime(&self) -> Result<Arc<dyn ContainerRuntime>, AppError> {
+        self.runtime
+            .clone()
+            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))
+    }
+
+    fn spawn_cancellation_guard(
+        &self,
+        id: Uuid,
+        shutdown_producer: ContainerShutdownProducer,
+    ) -> ContainerSpawnCancellationGuard<'_> {
+        let canceled = Arc::new(AtomicBool::new(false));
+        let late_handle = Arc::new(Mutex::new(None));
+        ContainerSpawnCancellationGuard {
+            backend: self,
+            session_id: id,
+            canceled: Arc::clone(&canceled),
+            late_handle: Arc::clone(&late_handle),
+            shutdown_producer: Some(shutdown_producer),
+            armed: true,
+        }
+    }
+
     pub(super) async fn spawn_runtime_backed(
         &self,
         spec: BackendSpawnSpec,
     ) -> Result<(), AppError> {
-        let runtime = self
-            .runtime
-            .clone()
-            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))?;
+        let runtime = self.required_runtime()?;
         let token_manager = self.token_manager.clone().ok_or_else(|| {
             AppError::Other("container API token manager is not configured".to_string())
         })?;
@@ -354,16 +374,7 @@ impl ContainerTransportBackend {
             Some(attach_notify.clone()),
             container_credential.as_ref().map(|p| p.dest.clone()),
         )?;
-        let canceled = Arc::new(AtomicBool::new(false));
-        let late_handle = Arc::new(Mutex::new(None));
-        let mut cancellation_guard = ContainerSpawnCancellationGuard {
-            backend: self,
-            session_id: id,
-            canceled: Arc::clone(&canceled),
-            late_handle: Arc::clone(&late_handle),
-            shutdown_producer: Some(shutdown_producer),
-            armed: true,
-        };
+        let mut cancellation_guard = self.spawn_cancellation_guard(id, shutdown_producer);
 
         self.copy_spawn_credentials(id, container_credential.as_ref());
 
@@ -421,19 +432,14 @@ impl ContainerTransportBackend {
         .await
     }
 
-    async fn start_runtime_and_attach(
+    fn spawn_runtime_start(
         &self,
-        context: RuntimeStartContext<'_>,
-        cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
-    ) -> Result<(), AppError> {
-        let RuntimeStartContext {
-            id,
-            runtime,
-            request,
-            token,
-            launch_witness,
-            attach_notify,
-        } = context;
+        id: Uuid,
+        runtime: Arc<dyn ContainerRuntime>,
+        request: crate::pty::container_runtime::ContainerStartRequest,
+        launch_witness: &crate::pty::backend::LaunchWitness,
+        cancellation_guard: &ContainerSpawnCancellationGuard<'_>,
+    ) -> Result<oneshot::Receiver<Result<(), AppError>>, AppError> {
         let canceled = &cancellation_guard.canceled;
         let late_handle = &cancellation_guard.late_handle;
         let Some(start_producer) = cancellation_guard.shutdown_producer.as_ref() else {
@@ -487,6 +493,25 @@ impl ContainerTransportBackend {
                 );
             }
         });
+        Ok(start_result_receiver)
+    }
+
+    async fn start_runtime_and_attach(
+        &self,
+        context: RuntimeStartContext<'_>,
+        cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
+    ) -> Result<(), AppError> {
+        let RuntimeStartContext {
+            id,
+            runtime,
+            request,
+            token,
+            launch_witness,
+            attach_notify,
+        } = context;
+        let start_result_receiver =
+            self.spawn_runtime_start(id, runtime, request, launch_witness, cancellation_guard)?;
+        let late_handle = &cancellation_guard.late_handle;
         let start_result = start_result_receiver.await;
         let handle = match start_result {
             Ok(Ok(())) => late_handle

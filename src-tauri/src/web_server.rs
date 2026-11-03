@@ -118,16 +118,16 @@ pub(super) struct WebSocketAdmissionGuard {
 /// (los dashboards/greps existentes no cambian).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StartServerError {
-    /// El valor de settings no parsea como SocketAddr.
+    /// El valor de settings no parsea como `SocketAddr`.
     #[error("Invalid web server bind address {bind}:{port}: {detail}")]
     InvalidAddr {
         bind: String,
         port: u16,
         detail: String,
     },
-    /// TcpListener::bind fallo sobre una direccion parseada.
+    /// `TcpListener::bind` fallo sobre una direccion parseada.
     /// `bind` es el string CRUDO de settings y existe solo para la guardia de
-    /// obsolescencia y el payload (contrato de D2); `addr` es el SocketAddr
+    /// obsolescencia y el payload (contrato de D2); `addr` es el `SocketAddr`
     /// parseado y existe solo para que Display sea byte-exacto.
     #[error("Failed to bind web server on {addr}: {detail}")]
     BindFailed {
@@ -228,7 +228,7 @@ impl WebServerStopWaiter {
 pub struct WebServerHandle {
     inner: Arc<Mutex<WebServerControl>>,
     /// §1453: ultimo arranque fallido (autostart o comando). Lo consume
-    /// get_web_server_owned_status; lo limpian el start exitoso y el stop.
+    /// `get_web_server_owned_status`; lo limpian el start exitoso y el stop.
     bind_failure: Arc<std::sync::Mutex<Option<StartServerError>>>,
     #[cfg(test)]
     start_output_gate: Arc<Mutex<Option<WebServerStartOutputGate>>>,
@@ -635,7 +635,7 @@ impl WebServerHandle {
                 let _ = start_sender.send(Some(Err(WEB_SERVER_START_CANCELLED.to_string())));
             }
             if let Err(error) = join.await {
-                log::error!("[web-server] server task join failed: {}", error);
+                log::error!("[web-server] server task join failed: {error}");
             }
         }
 
@@ -743,7 +743,7 @@ impl ApiServerHandle {
         let mut join = task.join;
         match tokio::time::timeout(timeout, &mut join).await {
             Ok(Ok(())) => Ok(true),
-            Ok(Err(err)) => Err(format!("API server task failed during shutdown: {}", err)),
+            Ok(Err(err)) => Err(format!("API server task failed during shutdown: {err}")),
             Err(_) => {
                 join.abort();
                 let _ = join.await;

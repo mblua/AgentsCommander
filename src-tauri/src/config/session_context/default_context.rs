@@ -102,7 +102,7 @@ When delegated work completes or blocks, explicitly reply to its assigner with a
 /// Item-3 grant: the FULL registered project folder (one level above `.ac`),
 /// its git repo, and its `.ac` tree. Ends with "\n\n" to mirror
 /// `matrix_section`'s trailing blank line before the messaging exception /
-/// summary. A root agent has no origin matrix (matrix_root == None), so this
+/// summary. A root agent has no origin matrix (`matrix_root` == None), so this
 /// never collides with the matrix "3.". (#1005 S3: the old Allowed-bullet
 /// companion const is gone; the numbered entries are the single grant source.)
 pub(crate) const ROOT_PROJECT_SCOPE_ENTRY: &str =
@@ -212,7 +212,7 @@ pub(crate) const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance 
 /// (already on disk in an existing workgroup) still carries the old block.
 /// Strips from a line beginning `## Self-Maintenance` up to (not including) the
 /// next line beginning `## ` or a `---` separator, or EOF. Runs UNCONDITIONALLY
-/// (even when auto_self_clear is false) so that turning the setting OFF for a
+/// (even when `auto_self_clear` is false) so that turning the setting OFF for a
 /// coordinator actually removes the old always-on block.
 pub(crate) fn strip_legacy_self_maintenance(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
@@ -602,23 +602,22 @@ pub(crate) fn render_host_platform_rules_block(
         Ok(Some(content)) if !content.trim().is_empty() => content,
         Ok(Some(_)) => {
             log::warn!(
-                "[session_context] platform rules file {} is empty; using the embedded default",
-                filename
+                "[session_context] platform rules file {filename} is empty; \
+                    using the embedded default"
             );
             fallback.to_string()
         }
         Ok(None) => {
             log::warn!(
-                "[session_context] platform rules file {} is missing; using the embedded default",
-                filename
+                "[session_context] platform rules file {filename} is missing; \
+                    using the embedded default"
             );
             fallback.to_string()
         }
         Err(error) => {
             log::warn!(
-                "[session_context] platform rules file {} is not readable ({error}); using the \
-                    embedded default",
-                filename
+                "[session_context] platform rules file {filename} is not readable \
+                    ({error}); using the embedded default"
             );
             fallback.to_string()
         }

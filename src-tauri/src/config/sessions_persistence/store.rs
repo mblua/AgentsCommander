@@ -43,7 +43,7 @@ pub(super) fn load_sessions_raw_from_path(path: &Path) -> Vec<PersistedSession> 
     }
 }
 
-/// Load persisted sessions from the app config directory (see config_dir()).
+/// Load persisted sessions from the app config directory (see `config_dir()`).
 /// Returns empty vec on any error (missing file, corrupt JSON, etc.)
 pub fn load_sessions() -> Vec<PersistedSession> {
     let path = match sessions_path() {
@@ -110,8 +110,7 @@ pub(super) fn load_sessions_from_path_with_settings(
                     .collect();
                 if temp_count > 0 {
                     log::info!(
-                        "[sessions] Removed {} temp sessions from persistence file",
-                        temp_count
+                        "[sessions] Removed {temp_count} temp sessions from persistence file"
                     );
                 }
                 let mut deduped = deduplicate(filtered);
@@ -130,12 +129,12 @@ pub(super) fn load_sessions_from_path_with_settings(
                 deduped
             }
             Err(e) => {
-                log::error!("Failed to parse sessions file: {}", e);
+                log::error!("Failed to parse sessions file: {e}");
                 vec![]
             }
         },
         Err(e) => {
-            log::error!("Failed to read sessions file: {}", e);
+            log::error!("Failed to read sessions file: {e}");
             vec![]
         }
     }
@@ -304,7 +303,7 @@ pub(super) const RENAME_ATTEMPTS: u32 = 4;
 /// attempt has no backoff (we already failed `RENAME_ATTEMPTS - 1` times).
 pub(super) const RENAME_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 
-/// Borrowed process-lifetime state; only write::snapshot_store constructs this owner.
+/// Borrowed process-lifetime state; only `write::snapshot_store` constructs this owner.
 pub(super) struct SnapshotStore<'a> {
     lock: &'a Mutex<()>,
     save_op_id: &'a AtomicU64,
@@ -331,7 +330,10 @@ impl<'a> SnapshotStore<'a> {
     #[cfg(test)]
     pub(super) fn lock_snapshot(&self) -> SnapshotLeafGuard<'a> {
         SnapshotLeafGuard {
-            _inner: self.lock.lock().unwrap_or_else(|error| error.into_inner()),
+            _inner: self
+                .lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         }
     }
 
@@ -360,15 +362,15 @@ impl<'a> SnapshotStore<'a> {
         sessions: &[PersistedSession],
     ) -> Result<PreparedSessionsWrite, String> {
         crate::filesystem::ensure_session_container_directory(dir)
-            .map_err(|error| format!("Failed to create config directory: {}", error))?;
+            .map_err(|error| format!("Failed to create config directory: {error}"))?;
         let json = serde_json::to_string_pretty(sessions)
-            .map_err(|error| format!("Failed to serialize sessions: {}", error))?;
+            .map_err(|error| format!("Failed to serialize sessions: {error}"))?;
         let op_id = self.save_op_id.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let tmp_path = dir.join(format!("{SNAPSHOT_BASENAME}.{}.{}.tmp", pid, op_id));
+        let tmp_path = dir.join(format!("{SNAPSHOT_BASENAME}.{pid}.{op_id}.tmp"));
         if let Err(error) = crate::filesystem::write_session_container_stage(&tmp_path, json) {
             let _ = crate::filesystem::remove_session_container_stage(&tmp_path);
-            return Err(format!("Failed to write temp sessions file: {}", error));
+            return Err(format!("Failed to write temp sessions file: {error}"));
         }
         let path = snapshot_path(dir);
         Ok(PreparedSessionsWrite {

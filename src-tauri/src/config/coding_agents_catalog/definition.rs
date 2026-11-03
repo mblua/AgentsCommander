@@ -413,25 +413,7 @@ pub fn parse_catalog_schema2(
     };
     let mut catalog: CodingAgentCatalogSchema2 = serde_json::from_value(projected)
         .map_err(|error| IdentityCatalogError::InvalidFormat(error.to_string()))?;
-    for agent in &catalog.agents {
-        for cell in catalog
-            .coding_agent_profiles
-            .get_mut(&agent.key)
-            .into_iter()
-            .flat_map(|cells| cells.values_mut())
-        {
-            cell.id_hash = Some(crate::config::settings::pair_identity(
-                &agent.command,
-                &agent.envs,
-                cell,
-            ));
-            cell.id_hash_debug = Some(crate::config::settings::pair_identity_debug(
-                &agent.command,
-                &agent.envs,
-                cell,
-            ));
-        }
-    }
+    populate_catalog_profile_hashes(&mut catalog);
     let mut keys = HashSet::new();
     for agent in &catalog.agents {
         if agent.command.trim().is_empty() {
@@ -474,6 +456,28 @@ pub fn parse_catalog_schema2(
         }
     }
     Ok(catalog)
+}
+
+fn populate_catalog_profile_hashes(catalog: &mut CodingAgentCatalogSchema2) {
+    for agent in &catalog.agents {
+        for cell in catalog
+            .coding_agent_profiles
+            .get_mut(&agent.key)
+            .into_iter()
+            .flat_map(|cells| cells.values_mut())
+        {
+            cell.id_hash = Some(crate::config::settings::pair_identity(
+                &agent.command,
+                &agent.envs,
+                cell,
+            ));
+            cell.id_hash_debug = Some(crate::config::settings::pair_identity_debug(
+                &agent.command,
+                &agent.envs,
+                cell,
+            ));
+        }
+    }
 }
 
 /// #2893: source-local decoding. Schema1 is a complete base only; project and

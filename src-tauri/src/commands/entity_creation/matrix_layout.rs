@@ -29,7 +29,7 @@ pub(super) fn agent_matches(team_agent_entry: &str, agent_name: &str) -> bool {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(team_agent_entry);
-    entry_dir == format!("_agent_{}", agent_name) || entry_dir == agent_name
+    entry_dir == format!("_agent_{agent_name}") || entry_dir == agent_name
 }
 
 /// Parse YAML frontmatter from a Role.md file.
@@ -99,7 +99,7 @@ pub(super) fn agent_matrix_display_name(project_path: &Path, safe_name: &str) ->
         .and_then(|n| n.to_str())
         .map(str::to_string)
         .unwrap_or_else(|| project_path.to_string_lossy().to_string());
-    format!("{}/{}", project_folder, safe_name)
+    format!("{project_folder}/{safe_name}")
 }
 
 pub(crate) fn create_agent_matrix_on_disk(
@@ -109,9 +109,9 @@ pub(crate) fn create_agent_matrix_on_disk(
     let project = Path::new(args.project_path);
     let base = selected_ac_root(project)?;
 
-    let agent_dir = base.join(format!("_agent_{}", safe_name));
+    let agent_dir = base.join(format!("_agent_{safe_name}"));
     if matrix_directory_present(&agent_dir) {
-        return Err(format!("Agent '{}' already exists", safe_name));
+        return Err(format!("Agent '{safe_name}' already exists"));
     }
 
     // Resolve the picked template before any target disk mutation so unknown or
@@ -137,10 +137,10 @@ pub(crate) fn create_agent_matrix_on_disk(
 
     create_new_agent_matrix_layout(&agent_dir).map_err(|(sub, e)| match (sub, e.kind()) {
         ("agent_dir", std::io::ErrorKind::AlreadyExists) => {
-            format!("Agent '{}' already exists", safe_name)
+            format!("Agent '{safe_name}' already exists")
         }
-        ("agent_dir", _) => format!("Failed to create agent directory: {}", e),
-        _ => format!("Failed to create {} directory: {}", sub, e),
+        ("agent_dir", _) => format!("Failed to create agent directory: {e}"),
+        _ => format!("Failed to create {sub} directory: {e}"),
     })?;
 
     let role_content = build_role_content(&safe_name, args.description, resolved_template.as_ref());
@@ -201,8 +201,8 @@ pub(crate) fn create_agent_matrix_from_role(
         ("agent_dir", std::io::ErrorKind::AlreadyExists) => {
             format!("Agent '{}' already exists", args.safe_name)
         }
-        ("agent_dir", _) => format!("Failed to create agent directory: {}", e),
-        _ => format!("Failed to create {} directory: {}", sub, e),
+        ("agent_dir", _) => format!("Failed to create agent directory: {e}"),
+        _ => format!("Failed to create {sub} directory: {e}"),
     })?;
 
     let role_path = roles::write_created_role(&agent_dir, args.role_bytes)?;

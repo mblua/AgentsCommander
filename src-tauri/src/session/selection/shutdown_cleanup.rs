@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
 
 use crate::pty::manager::PtyManager;
@@ -19,7 +19,7 @@ pub(super) async fn execute_rollback_create_parts(
         .await
         .map(|session| session.backend_kind);
     if let Some(pty) = pty {
-        let pty = pty.lock().unwrap_or_else(|error| error.into_inner());
+        let pty = pty.lock().unwrap_or_else(PoisonError::into_inner);
         let kill_result = match backend_kind {
             Some(kind) => Some(pty.kill_for_kind(session_id, kind)),
             None if pty.has_session(session_id) => Some(pty.kill(session_id)),
@@ -27,9 +27,7 @@ pub(super) async fn execute_rollback_create_parts(
         };
         if let Some(Err(error)) = kill_result {
             log::debug!(
-                "[selection] pending create PTY cleanup session={} result={}",
-                session_id,
-                error
+                "[selection] pending create PTY cleanup session={session_id} result={error}"
             );
         }
     }
@@ -38,9 +36,7 @@ pub(super) async fn execute_rollback_create_parts(
     }
     if let Err(error) = manager.rollback_pending_create(binding).await {
         log::warn!(
-            "[selection] pending create manager rollback failed session={}: {}",
-            session_id,
-            error
+            "[selection] pending create manager rollback failed session={session_id}: {error}"
         );
     }
 }
@@ -51,8 +47,7 @@ pub(super) fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: 
         Err(error) => {
             log::error!(
                 "[selection] container backend ownership lock unavailable during shutdown signal: \
-                    {}",
-                error
+                    {error}"
             );
             return false;
         }
@@ -114,10 +109,7 @@ fn pending_create_cleanup_pty(
     let pty = match inner.cleanup_pty.try_lock() {
         Ok(pty) => pty.as_ref().and_then(Weak::upgrade),
         Err(error) => {
-            log::error!(
-                "[selection] pending-create PTY ownership lock unavailable: {}",
-                error
-            );
+            log::error!("[selection] pending-create PTY ownership lock unavailable: {error}");
             return Err(vec!["reason=pending-pty-owner state=retained".to_string()]);
         }
     };
@@ -199,7 +191,7 @@ pub(super) async fn cleanup_pending_creates_after_join(
             let kill = tokio::task::spawn_blocking(move || {
                 kill_pty
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
+                    .unwrap_or_else(PoisonError::into_inner)
                     .kill_for_kind(session_id, backend_kind)
             })
             .await;
@@ -207,10 +199,8 @@ pub(super) async fn cleanup_pending_creates_after_join(
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     log::error!(
-                        "[selection] pending-create PTY cleanup failed session={} \
-                            reason=pending-pty-kill state=retained error={}",
-                        session_id,
-                        error
+                        "[selection] pending-create PTY cleanup failed session={session_id} \
+                            reason=pending-pty-kill state=retained error={error}"
                     );
                     retained.push(format!(
                         "session={session_id} reason=pending-pty-kill state=retained"
@@ -219,10 +209,8 @@ pub(super) async fn cleanup_pending_creates_after_join(
                 }
                 Err(error) => {
                     log::error!(
-                        "[selection] pending-create PTY cleanup task failed session={} \
-                            reason=pending-pty-kill state=retained error={}",
-                        session_id,
-                        error
+                        "[selection] pending-create PTY cleanup task failed session={session_id} \
+                            reason=pending-pty-kill state=retained error={error}"
                     );
                     retained.push(format!(
                         "session={session_id} reason=pending-pty-kill state=retained"
@@ -232,10 +220,8 @@ pub(super) async fn cleanup_pending_creates_after_join(
             }
             if let Err(error) = manager.rollback_pending_create(binding).await {
                 log::warn!(
-                    "[selection] pending create manager rollback failed session={} \
-                        reason=pending-manager-rollback state=retained error={}",
-                    session_id,
-                    error
+                    "[selection] pending create manager rollback failed session={session_id} \
+                        reason=pending-manager-rollback state=retained error={error}"
                 );
                 retained.push(format!(
                     "session={session_id} reason=pending-manager-rollback state=retained"
@@ -258,8 +244,7 @@ async fn await_pending_create_cleanup(
         Ok(Err(error)) => {
             log::error!(
                 "[selection] pending-create cleanup owner failed reason=pending-cleanup-task \
-                    state=retained error={}",
-                error
+                    state=retained error={error}"
             );
             vec!["reason=pending-cleanup-task state=retained".to_string()]
         }
@@ -271,7 +256,7 @@ async fn await_pending_create_cleanup(
             inner
                 .retained_rollback_tasks
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .push(cleanup);
             vec!["reason=pending-cleanup-await state=retained".to_string()]
         }
@@ -305,8 +290,7 @@ pub(super) async fn seal_and_drain_container_shutdown_work_after_join(
         Ok(Ok(report)) => retained.extend(report.retained),
         Ok(Err(error)) => {
             log::error!(
-                "[selection] container shutdown-work drain failed after coordinator join: {}",
-                error
+                "[selection] container shutdown-work drain failed after coordinator join: {error}"
             );
             retained.push("reason=container-drain-task state=retained".to_string());
         }
@@ -319,7 +303,7 @@ pub(super) async fn seal_and_drain_container_shutdown_work_after_join(
             inner
                 .retained_cleanup_tasks
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .push(task);
         }
     }

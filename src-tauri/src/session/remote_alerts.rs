@@ -56,7 +56,7 @@ const BLIND_GAP_THRESHOLD_SECS: i64 = 600;
 /// report; an epoch is unreadable. This serves both readers.
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%:z";
 
-/// The two notify axes, already ANDed with their feature dials by the port.
+/// The two notify axes, already `ANDed` with their feature dials by the port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteNotifyDials {
     pub ci: bool,
@@ -214,11 +214,7 @@ impl RemoteAlertState {
                     }
                 }
                 Err(reason) => {
-                    log::warn!(
-                        "[remote-alerts] delivery failed for {}: {}",
-                        room_dir,
-                        reason
-                    );
+                    log::warn!("[remote-alerts] delivery failed for {room_dir}: {reason}");
                     return true;
                 }
             }
@@ -312,14 +308,14 @@ fn blind_gap(transition: &RemoteTransition) -> Option<(String, String)> {
 fn human_gap(seconds: i64) -> String {
     let minutes = seconds / 60;
     if minutes < 60 {
-        return format!("{} minutes", minutes);
+        return format!("{minutes} minutes");
     }
     let hours = minutes / 60;
     let rest = minutes % 60;
     if rest == 0 {
-        format!("{} hours", hours)
+        format!("{hours} hours")
     } else {
-        format!("{} hours {} minutes", hours, rest)
+        format!("{hours} hours {rest} minutes")
     }
 }
 
@@ -396,7 +392,7 @@ fn warn_room_once(warned: &Mutex<HashSet<String>>, room: &Path, message: String)
         Err(_) => true,
     };
     if first {
-        log::warn!("{}", message);
+        log::warn!("{message}");
     }
 }
 

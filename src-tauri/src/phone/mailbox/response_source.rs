@@ -1,3 +1,5 @@
+mod route;
+
 use super::handoff::wake_claim_origin;
 use super::notice::sender_name_for_session_cwd_with_root_flag;
 use super::poller::{MailboxPoller, PreparedResponseRequest};
@@ -205,23 +207,9 @@ impl MailboxPoller {
                     &candidate.member,
                     &candidate.coordinator,
                     |member, coordinator| {
-                        let Ok(_candidate_guard) = attempt.candidate.lock() else {
-                            work.state.fail_closed();
-                            response_diag_local!(
-                                "complete_request",
-                                "candidate_lock_poisoned",
-                                work.diagnostic_message_id
-                            );
+                        let Some(_candidate_guard) = lock_response_candidate(work, &attempt) else {
                             return;
                         };
-                        if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
-                            response_diag_local!(
-                                "complete_request",
-                                "attempt_disarmed",
-                                work.diagnostic_message_id
-                            );
-                            return;
-                        }
                         let now = std::time::Instant::now();
                         work.state.apply_settings(
                             settings.response_close_enabled,
@@ -523,6 +511,30 @@ impl MailboxPoller {
             crate::config::injected_messages::MessageWarnings::new(),
         ))
     }
+}
+
+fn lock_response_candidate<'a>(
+    work: &ResponseWakeWork,
+    attempt: &'a ResponseCandidateAttempt,
+) -> Option<std::sync::MutexGuard<'a, Option<ResponseRequestCandidate>>> {
+    let Ok(candidate_guard) = attempt.candidate.lock() else {
+        work.state.fail_closed();
+        response_diag_local!(
+            "complete_request",
+            "candidate_lock_poisoned",
+            work.diagnostic_message_id
+        );
+        return None;
+    };
+    if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
+        response_diag_local!(
+            "complete_request",
+            "attempt_disarmed",
+            work.diagnostic_message_id
+        );
+        return None;
+    }
+    Some(candidate_guard)
 }
 
 fn prepare_current_response(
@@ -842,53 +854,9 @@ fn observe_response_return<S: ResponseAdmissionState + ?Sized>(
     snapshot: &crate::session::manager::CarrierSnapshot,
     token: Option<Uuid>,
 ) -> Option<ObservedResponseReturn> {
-    let route = |target: &str| {
-        let mut matches = snapshot.rows.iter().filter(|row| {
-            !snapshot.pending_ids.contains(&row.id)
-                && sender_name_for_session_cwd_with_root_flag(
-                    &row.working_directory,
-                    row.is_root_agent,
-                ) == target
-                && !matches!(row.status, SessionStatus::Exited(_))
-        });
-        let row = response_diag_option_local!(
-            matches.next(),
-            "admit_source",
-            "route_missing",
-            Uuid::parse_str(&msg.id).ok()
-        )?;
-        if matches.next().is_some() {
-            response_diag_local!(
-                "admit_source",
-                "route_ambiguous",
-                Uuid::parse_str(&msg.id).ok()
-            );
-            return None;
-        }
-        Some((
-            ResponseRouteIdentity {
-                target: target.to_string(),
-                session_id: row.id,
-                token: row.token,
-                generation: response_diag_option_local!(
-                    state.generation(row.id),
-                    "admit_source",
-                    "generation_unavailable",
-                    Uuid::parse_str(&msg.id).ok()
-                )?,
-                carrier_version: *response_diag_option_local!(
-                    snapshot.versions.get(&row.id),
-                    "admit_source",
-                    "version_unavailable",
-                    Uuid::parse_str(&msg.id).ok()
-                )?,
-                backend: row.backend_kind,
-            },
-            row,
-        ))
-    };
-    let (member, member_row) = route(&msg.from)?;
-    let (coordinator, coordinator_row) = route(&msg.to)?;
+    let (member, member_row) = route::response_return_route(snapshot, state, msg, &msg.from)?;
+    let (coordinator, coordinator_row) =
+        route::response_return_route(snapshot, state, msg, &msg.to)?;
     if member.backend != SessionBackendKind::LocalProcess
         || member_row.is_coordinator
         || member_row.is_root_agent
