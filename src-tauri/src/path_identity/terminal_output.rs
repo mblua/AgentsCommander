@@ -214,57 +214,63 @@ pub(super) fn validate_windows_snapshot_output_path(path: &Path) -> Result<(), S
         let Component::Normal(value) = component else {
             continue;
         };
-        let Some(value) = value.to_str() else {
-            return Err("unsafe_path".to_string());
-        };
-        if value.ends_with([' ', '.']) {
-            return Err("unsafe_path".to_string());
-        }
-        let stem = value
-            .split('.')
-            .next()
-            .unwrap_or(value)
-            .trim_end_matches([' ', '.']);
-        let reserved = matches!(
-            stem.to_ascii_uppercase().as_str(),
-            "CON"
-                | "PRN"
-                | "AUX"
-                | "NUL"
-                | "CONIN$"
-                | "CONOUT$"
-                | "COM1"
-                | "COM2"
-                | "COM3"
-                | "COM4"
-                | "COM5"
-                | "COM6"
-                | "COM7"
-                | "COM8"
-                | "COM9"
-                | "COM¹"
-                | "COM²"
-                | "COM³"
-                | "LPT1"
-                | "LPT2"
-                | "LPT3"
-                | "LPT4"
-                | "LPT5"
-                | "LPT6"
-                | "LPT7"
-                | "LPT8"
-                | "LPT9"
-                | "LPT¹"
-                | "LPT²"
-                | "LPT³"
-        );
-        if reserved
-            || value.chars().any(|character| {
-                character <= '\u{1f}' || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
-            })
-        {
-            return Err("unsafe_path".to_string());
-        }
+        validate_windows_snapshot_component(value)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_snapshot_component(value: &std::ffi::OsStr) -> Result<(), String> {
+    let Some(value) = value.to_str() else {
+        return Err("unsafe_path".to_string());
+    };
+    if value.ends_with([' ', '.']) {
+        return Err("unsafe_path".to_string());
+    }
+    let stem = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .trim_end_matches([' ', '.']);
+    let reserved = matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+    );
+    if reserved
+        || value.chars().any(|character| {
+            character <= '\u{1f}' || matches!(character, '<' | '>' | '"' | '|' | '?' | '*')
+        })
+    {
+        return Err("unsafe_path".to_string());
     }
     Ok(())
 }

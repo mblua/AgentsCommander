@@ -511,8 +511,6 @@ impl TerminalSnapshotState {
         let TerminalSnapshotPreAdmission {
             state,
             context,
-            requester,
-            permit,
             audit,
             deadline,
             source_plane,
@@ -546,35 +544,9 @@ impl TerminalSnapshotState {
             return Err(TerminalSnapshotReasonCode::TerminalSnapshotsDisabled);
         }
 
-        let sender_cwd = requester.fact.working_directory.clone();
-        let target = request.target.clone();
-        let mut project_paths = security.project_paths;
-        let sender_is_root = requester.fact.is_root_agent;
-        if !sender_is_root {
-            augment_coordinator_project(&mut project_paths, &requester.identity)?;
-        }
-        let route = run_blocking_with_deadline(
-            self,
-            TerminalSnapshotBlockingStage::RouteVerification,
-            deadline,
-            permit,
-            audit,
-            move || {
-                crate::config::teams::verify_terminal_snapshot_route(
-                    std::path::Path::new(&sender_cwd),
-                    sender_is_root,
-                    &target,
-                    &project_paths,
-                )
-            },
-        )
-        .await?
-        .map_err(|_| TerminalSnapshotReasonCode::NotAuthorized)?;
-        if !same_authority(&requester.identity, &route.sender) {
-            return Err(TerminalSnapshotReasonCode::NotAuthorized);
-        }
-        audit.accept_route(&route);
-        permit.promote_target(authority_key(&route.target))?;
+        let route = self
+            .verify_admitted_route(&admission, &request, security.project_paths)
+            .await?;
 
         let (selected, model) = self.capture_admitted_target(&admission, &route).await?;
         let payload = self
@@ -618,6 +590,51 @@ impl TerminalSnapshotState {
                 },
             },
         })
+    }
+
+    async fn verify_admitted_route(
+        self: &Arc<Self>,
+        admission: &TerminalSnapshotPreAdmission,
+        request: &TerminalSnapshotServiceRequest,
+        mut project_paths: Vec<String>,
+    ) -> Result<VerifiedTerminalSnapshotRoute, TerminalSnapshotReasonCode> {
+        let TerminalSnapshotPreAdmission {
+            requester,
+            permit,
+            audit,
+            deadline,
+            ..
+        } = admission;
+        let deadline = *deadline;
+        let sender_cwd = requester.fact.working_directory.clone();
+        let target = request.target.clone();
+        let sender_is_root = requester.fact.is_root_agent;
+        if !sender_is_root {
+            augment_coordinator_project(&mut project_paths, &requester.identity)?;
+        }
+        let route = run_blocking_with_deadline(
+            self,
+            TerminalSnapshotBlockingStage::RouteVerification,
+            deadline,
+            permit,
+            audit,
+            move || {
+                crate::config::teams::verify_terminal_snapshot_route(
+                    std::path::Path::new(&sender_cwd),
+                    sender_is_root,
+                    &target,
+                    &project_paths,
+                )
+            },
+        )
+        .await?
+        .map_err(|_| TerminalSnapshotReasonCode::NotAuthorized)?;
+        if !same_authority(&requester.identity, &route.sender) {
+            return Err(TerminalSnapshotReasonCode::NotAuthorized);
+        }
+        audit.accept_route(&route);
+        permit.promote_target(authority_key(&route.target))?;
+        Ok(route)
     }
 
     async fn capture_admitted_target(

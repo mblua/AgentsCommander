@@ -30,7 +30,6 @@ pub(crate) fn source_guard_publication_calls() -> usize {
 
 /// P03 forwards borrowed coordination authority through every existing P22 cut.
 /// The callback only validates; it must not acquire locks or advance a journal.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn publish_coordination_bytes_with_validation(
     path: &Path,
     before: &PhysicalState,
@@ -315,7 +314,6 @@ pub(crate) struct SourceCoordinationPublication {
 }
 
 /// Only the new source/ledger/journal path borrows this native capability.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn publish_source_coordination_bytes_with_validation(
     path: &Path,
     before: &PhysicalState,
@@ -391,7 +389,6 @@ pub(super) fn validate_source_publication_children(
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn publish_coordination_bytes_guarded(
     path: &Path,
     before: &PhysicalState,

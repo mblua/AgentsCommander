@@ -642,7 +642,7 @@ pub(crate) fn resolve_wg_path_from_session_dirs(
 /// enforced ONLY by this comment + the helper's D.5a unit tests. Do NOT
 /// change the inlined loop's semantics without updating this helper to
 /// match, and vice versa.
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub(crate) enum RestoreWaitOutcome {
     /// Deadline elapsed with the restore flag still set; caller should report
@@ -662,7 +662,7 @@ pub(crate) enum RestoreWaitOutcome {
 ///   * `Err(StillInProgress)` — deadline elapsed, flag still set.
 ///   * `Err(NoMatch)` — flag cleared with empty result throughout (final
 ///     probe also empty).
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn wait_for_restore_or_session<F, Fut>(
     flag: &std::sync::atomic::AtomicBool,
     mut probe: F,

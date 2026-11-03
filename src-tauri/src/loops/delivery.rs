@@ -286,6 +286,18 @@ async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
     }
 }
 
+fn skipped_busy_report(target_fqn: String, session_id: Uuid) -> LoopDeliveryReport {
+    LoopDeliveryReport {
+        kind: LoopAuditKind::SkippedBusy,
+        message: "Orchestrator is busy; delivery skipped".to_string(),
+        target: Some(target_fqn),
+        session_id: Some(session_id),
+        error: None,
+        prompt_snapshot: None,
+        completed_at: Some(Utc::now()),
+    }
+}
+
 async fn restart_delivery_session<H: LoopDeliveryHost + ?Sized>(
     app: &H,
     loop_storage_dir: &Path,
@@ -324,15 +336,7 @@ async fn restart_delivery_session<H: LoopDeliveryHost + ?Sized>(
             }));
         }
         PreRestartDecision::Skip => {
-            return Err(Box::new(LoopDeliveryReport {
-                kind: LoopAuditKind::SkippedBusy,
-                message: "Orchestrator is busy; delivery skipped".to_string(),
-                target: Some(target_fqn),
-                session_id: Some(session_id),
-                error: None,
-                prompt_snapshot: None,
-                completed_at: Some(Utc::now()),
-            }));
+            return Err(Box::new(skipped_busy_report(target_fqn, session_id)));
         }
     }
 
@@ -379,15 +383,7 @@ async fn restart_delivery_session<H: LoopDeliveryHost + ?Sized>(
     match post_restart_decision(post_restart_idle, policy) {
         PostRestartDecision::Inject => {}
         PostRestartDecision::Skip => {
-            return Err(Box::new(LoopDeliveryReport {
-                kind: LoopAuditKind::SkippedBusy,
-                message: "Orchestrator is busy; delivery skipped".to_string(),
-                target: Some(target_fqn),
-                session_id: Some(post_restart_id),
-                error: None,
-                prompt_snapshot: None,
-                completed_at: Some(Utc::now()),
-            }));
+            return Err(Box::new(skipped_busy_report(target_fqn, post_restart_id)));
         }
         PostRestartDecision::Failed => {
             return Err(Box::new(failed_report(

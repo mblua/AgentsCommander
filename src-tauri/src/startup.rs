@@ -227,6 +227,27 @@ pub(crate) const BLOCKING_MENUS_RENAMES: [crate::config::naming_migration::Renam
     },
 ];
 
+/// A directory that does not exist yet holds nothing to rename, and it is
+/// not created here: returns the skip summary. Anything else that is not a
+/// readable directory is fatal.
+fn check_migration_directory(dir: &Path, scope: &str) -> Result<Option<String>, StartupError> {
+    match naming_journal::migration_directory_metadata(dir) {
+        Ok(metadata) if metadata.is_dir() => Ok(None),
+        Ok(_) => Err(naming_migration_error(
+            "the configuration directory path is not a directory",
+            dir.to_path_buf(),
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Some(format!(
+            "[naming-migration] {scope}: skipped, configuration directory {} does not exist",
+            dir.display()
+        ))),
+        Err(e) => Err(naming_migration_error(
+            format!("failed to inspect the configuration directory: {e}"),
+            dir.to_path_buf(),
+        )),
+    }
+}
+
 /// The ordered rename list of B1b section 3.5, under both settings locks: the
 /// settings file, its personal overlay, the two derived families, then the four
 /// blocking-menus files. Returns the post-logger summary, `None` when the scope
@@ -243,28 +264,8 @@ pub(crate) fn migrate_instance_families(dir: &Path) -> Result<Option<String>, St
         })
     };
 
-    // A directory that does not exist yet holds nothing to rename, and it is
-    // not created here. Anything else that is not a readable directory is fatal.
-    match naming_journal::migration_directory_metadata(dir) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(naming_migration_error(
-                "the configuration directory path is not a directory",
-                dir.to_path_buf(),
-            ))
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(Some(format!(
-                "[naming-migration] {scope}: skipped, configuration directory {} does not exist",
-                dir.display()
-            )))
-        }
-        Err(e) => {
-            return Err(naming_migration_error(
-                format!("failed to inspect the configuration directory: {e}"),
-                dir.to_path_buf(),
-            ))
-        }
+    if let Some(skipped) = check_migration_directory(dir, scope)? {
+        return Ok(Some(skipped));
     }
     // `scope_is_settled`, never `is_complete`: a `Complete` the disk
     // contradicts is re-run.

@@ -111,25 +111,15 @@ pub(super) async fn run_context_alert_actor(
                 }
             }
             _ = &mut sleep => {
-                if clock.now() >= maintenance_deadline {
-                    run_maintenance(
-                        &runtime,
-                        &mut state,
-                        in_flight.as_ref(),
-                        &shutdown,
-                    ).await;
-                    maintenance_deadline = clock.now() + CONTEXT_ALERT_MAINTENANCE_INTERVAL;
-                }
-                if in_flight.is_none() {
-                    dispatch_due_batch(
-                        &runtime,
-                        &clock,
-                        &mut state,
-                        &mut in_flight,
-                        &completion_tx,
-                        &shutdown,
-                    ).await;
-                }
+                handle_actor_deadline(
+                    &runtime,
+                    &clock,
+                    &mut state,
+                    &mut in_flight,
+                    &completion_tx,
+                    &shutdown,
+                    &mut maintenance_deadline,
+                ).await;
             }
             sample = samples.recv(), if samples_open => {
                 match sample {
@@ -172,6 +162,24 @@ pub(super) async fn run_context_alert_actor(
                 }
             }
         }
+    }
+}
+
+async fn handle_actor_deadline(
+    runtime: &Arc<dyn ContextAlertRuntime>,
+    clock: &Arc<dyn AlertClock>,
+    state: &mut ActorState,
+    in_flight: &mut Option<InFlightSlot>,
+    completion_tx: &mpsc::Sender<DeliveryCompletion>,
+    shutdown: &CancellationToken,
+    maintenance_deadline: &mut Instant,
+) {
+    if clock.now() >= *maintenance_deadline {
+        run_maintenance(runtime, state, in_flight.as_ref(), shutdown).await;
+        *maintenance_deadline = clock.now() + CONTEXT_ALERT_MAINTENANCE_INTERVAL;
+    }
+    if in_flight.is_none() {
+        dispatch_due_batch(runtime, clock, state, in_flight, completion_tx, shutdown).await;
     }
 }
 

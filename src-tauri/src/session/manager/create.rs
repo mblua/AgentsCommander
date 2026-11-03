@@ -249,8 +249,6 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) async fn create_pending_session_with_binding_and_carrier_permit(
         &self,
         binding: PendingCreateBinding,
@@ -329,21 +327,6 @@ impl SessionManager {
             session.name = name
         })
         .await
-    }
-
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
-    pub(super) async fn update_pending<F>(
-        &self,
-        binding: PendingCreateBinding,
-        update: F,
-    ) -> Result<(), AppError>
-    where
-        F: FnOnce(&mut Session),
-    {
-        let carrier_permit = acquire_carrier_mutation_permit().await;
-        self.update_pending_with_carrier_permit(&carrier_permit, binding, update)
-            .await
     }
 
     #[allow(clippy::too_many_arguments)]

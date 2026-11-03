@@ -246,6 +246,20 @@ fn replacement_destination(
     (destination_key, protection)
 }
 
+fn live_replacement_version(
+    captured: &crate::session::manager::CarrierSnapshot,
+    replacement: Uuid,
+) -> Option<(Uuid, u64)> {
+    let b = captured.rows.iter().find(|row| {
+        row.id == replacement
+            && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
+            && !matches!(row.status, SessionStatus::Exited(_))
+            && !captured.pending_ids.contains(&replacement)
+    })?;
+    let version = captured.versions.get(&replacement).copied()?;
+    Some((b.token, version))
+}
+
 /// Capture under U, then release it for filtering, physical probes, serialization
 /// and temporary-file preparation. Only A is omitted before normal deduplication.
 pub(crate) async fn prepare_owned_replacement_publication<V, VF>(
@@ -271,15 +285,7 @@ where
     else {
         return Ok(None);
     };
-    let Some(b) = captured.rows.iter().find(|row| {
-        row.id == replacement
-            && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
-            && !matches!(row.status, SessionStatus::Exited(_))
-            && !captured.pending_ids.contains(&replacement)
-    }) else {
-        return Ok(None);
-    };
-    let Some(version) = captured.versions.get(&replacement).copied() else {
+    let Some((token, version)) = live_replacement_version(&captured, replacement) else {
         return Ok(None);
     };
     let omitted = HashSet::from([previous]);
@@ -309,7 +315,7 @@ where
         return Ok(None);
     }
     let (destination_key, protection) =
-        replacement_destination(source, replacement, b.token, version, &old, epoch, b_row);
+        replacement_destination(source, replacement, token, version, &old, epoch, b_row);
     next.protections.push(protection);
     let nonce = Uuid::new_v4();
     next.checkpoint = Some(PublicationCheckpoint {

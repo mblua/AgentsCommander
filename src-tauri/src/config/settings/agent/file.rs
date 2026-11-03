@@ -9,6 +9,7 @@ use super::super::{
     SourceKind, SourceReadContext, SourceRef, SourceRevision, SourceScope, SourceSelectionTicket,
     SETTINGS_CAPTURE_LIMIT,
 };
+use super::profile::PhysicalProfileSets;
 use super::{
     collect_registered_profile_gate, decode_physical_catalog, duplicate_profile_document,
     is_valid_profile_letter, physical_profile_sets, profile_container, validate_agent_commands,
@@ -280,123 +281,153 @@ pub(crate) fn snapshot_from_captured_source(
         snapshot.diagnostics.push(source_diagnostic("sourceAbsent"));
         return Ok(snapshot);
     }
-    let decoded = (|| -> Result<(), String> {
-        let bytes = observation.bytes().ok_or("sourceReadFailed")?;
-        snapshot.revision = source_bytes_revision(bytes);
-        if let Some(reason) = duplicate_profile_document(bytes, &path) {
-            return Err(reason);
-        }
-        let value = crate::config::coding_agents_catalog::parse_strict_json(bytes)?;
-        let sets = physical_profile_sets(&value, registered)?;
-        let (agents, profiles) = agent_file_decode(&value, registered)?;
-        let projection = AppSettings {
-            agents,
-            coding_agent_profiles: profiles,
-            ..AppSettings::default()
-        };
-        validate_agent_commands(&projection)?;
-        if registered {
-            if let Some(reason) =
-                registered_validation.and_then(RegisteredProfileCapture::ordinary_error)
-            {
-                return Err(reason);
-            }
-        }
-        let owner = profile_container(&value, registered)
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        snapshot.profile_slots = owner
-            .get("profileSlots")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| "invalidProfileSlots")?
-            .unwrap_or_default();
-        if snapshot
-            .profile_slots
-            .keys()
-            .any(|letter| !is_valid_profile_letter(letter))
-        {
-            return Err("invalidProfileLetter".into());
-        }
-        if !registered && value.get("schemaVersion").and_then(Value::as_u64) == Some(2) {
-            snapshot.format = AgentFileSourceFormat::CatalogSchema2;
-        }
-        let editable = (registered
-            || (source.scope == SourceScope::Project
-                && source.kind == SourceKind::CatalogPersonal))
-            && value.get("managed").is_none();
-        snapshot.capabilities = SourceCapabilities {
-            available_read: true,
-            editable_save: editable,
-            ..SourceCapabilities::default()
-        };
-        for raw in value
-            .get("agents")
-            .and_then(Value::as_array)
-            .ok_or("invalidAgentsArray")?
-        {
-            let hint = raw
-                .get(if registered { "id" } else { "key" })
-                .and_then(Value::as_str)
-                .ok_or("invalidAgentKey")?
-                .to_owned();
-            let hash = sets.rows.get(&hint).cloned();
-            let remove = raw.get("remove") == Some(&Value::Bool(true));
-            let kind = if registered {
-                AgentFileRowKind::Registered
-            } else if remove {
-                AgentFileRowKind::Remove
-            } else if matches!(snapshot.format, AgentFileSourceFormat::CatalogSchema2) {
-                AgentFileRowKind::CatalogComplete
-            } else {
-                AgentFileRowKind::CatalogPatch
-            };
-            if hash.is_none() {
-                let mut diagnostic = source_diagnostic(if remove {
-                    "removedRow"
-                } else {
-                    "incompleteRow"
-                });
-                diagnostic.entry_hint = Some(hint.clone());
-                snapshot.diagnostics.push(diagnostic);
-            }
-            snapshot.rows.push(AgentFileRow {
-                entry_hint: hint,
-                kind,
-                raw: raw.clone(),
-                launchable: hash.is_some(),
-                base_hash: hash,
-                editable,
-            });
-        }
-        snapshot.profiles_by_base_hash = sets.cells.into_iter().collect();
-        snapshot.profile_labels_by_base_hash = sets.labels.into_iter().collect();
-        snapshot.availability = SourceAvailability::Available;
-        Ok(())
-    })();
+    let decoded = decode_agent_file_snapshot(
+        &mut snapshot,
+        source,
+        observation,
+        registered_validation,
+        &path,
+        registered,
+    );
     if let Err(reason) = decoded {
-        snapshot.availability = SourceAvailability::Invalid;
-        snapshot.capabilities = SourceCapabilities::default();
-        snapshot.rows.clear();
-        snapshot.profiles_by_base_hash.clear();
-        snapshot.profile_labels_by_base_hash.clear();
-        snapshot.profile_slots.clear();
-        let code = [
-            "sourceProfileConflict",
-            "invalidLegacyProfileOrphans",
-            "duplicateJsonMember",
-        ]
-        .into_iter()
-        .find(|code| reason.contains(code))
-        .unwrap_or("invalidSource");
-        let mut diagnostic = source_diagnostic(code);
-        if code == "sourceProfileConflict" {
-            diagnostic.entry_hint = Some(reason);
-        }
-        snapshot.diagnostics.push(diagnostic);
+        invalidate_agent_file_snapshot(&mut snapshot, reason);
     }
     Ok(snapshot)
+}
+
+fn decode_agent_file_snapshot(
+    snapshot: &mut SelectedAgentFileSnapshot,
+    source: &SourceRef,
+    observation: &BoundedSourceObservation,
+    registered_validation: Option<&RegisteredProfileCapture>,
+    path: &Path,
+    registered: bool,
+) -> Result<(), String> {
+    let bytes = observation.bytes().ok_or("sourceReadFailed")?;
+    snapshot.revision = source_bytes_revision(bytes);
+    if let Some(reason) = duplicate_profile_document(bytes, path) {
+        return Err(reason);
+    }
+    let value = crate::config::coding_agents_catalog::parse_strict_json(bytes)?;
+    let sets = physical_profile_sets(&value, registered)?;
+    let (agents, profiles) = agent_file_decode(&value, registered)?;
+    let projection = AppSettings {
+        agents,
+        coding_agent_profiles: profiles,
+        ..AppSettings::default()
+    };
+    validate_agent_commands(&projection)?;
+    if registered {
+        if let Some(reason) =
+            registered_validation.and_then(RegisteredProfileCapture::ordinary_error)
+        {
+            return Err(reason);
+        }
+    }
+    let owner = profile_container(&value, registered)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    snapshot.profile_slots = owner
+        .get("profileSlots")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| "invalidProfileSlots")?
+        .unwrap_or_default();
+    if snapshot
+        .profile_slots
+        .keys()
+        .any(|letter| !is_valid_profile_letter(letter))
+    {
+        return Err("invalidProfileLetter".into());
+    }
+    if !registered && value.get("schemaVersion").and_then(Value::as_u64) == Some(2) {
+        snapshot.format = AgentFileSourceFormat::CatalogSchema2;
+    }
+    let editable = (registered
+        || (source.scope == SourceScope::Project && source.kind == SourceKind::CatalogPersonal))
+        && value.get("managed").is_none();
+    snapshot.capabilities = SourceCapabilities {
+        available_read: true,
+        editable_save: editable,
+        ..SourceCapabilities::default()
+    };
+    push_agent_file_rows(snapshot, &value, &sets, registered, editable)?;
+    snapshot.profiles_by_base_hash = sets.cells.into_iter().collect();
+    snapshot.profile_labels_by_base_hash = sets.labels.into_iter().collect();
+    snapshot.availability = SourceAvailability::Available;
+    Ok(())
+}
+
+fn push_agent_file_rows(
+    snapshot: &mut SelectedAgentFileSnapshot,
+    value: &Value,
+    sets: &PhysicalProfileSets,
+    registered: bool,
+    editable: bool,
+) -> Result<(), String> {
+    for raw in value
+        .get("agents")
+        .and_then(Value::as_array)
+        .ok_or("invalidAgentsArray")?
+    {
+        let hint = raw
+            .get(if registered { "id" } else { "key" })
+            .and_then(Value::as_str)
+            .ok_or("invalidAgentKey")?
+            .to_owned();
+        let hash = sets.rows.get(&hint).cloned();
+        let remove = raw.get("remove") == Some(&Value::Bool(true));
+        let kind = if registered {
+            AgentFileRowKind::Registered
+        } else if remove {
+            AgentFileRowKind::Remove
+        } else if matches!(snapshot.format, AgentFileSourceFormat::CatalogSchema2) {
+            AgentFileRowKind::CatalogComplete
+        } else {
+            AgentFileRowKind::CatalogPatch
+        };
+        if hash.is_none() {
+            let mut diagnostic = source_diagnostic(if remove {
+                "removedRow"
+            } else {
+                "incompleteRow"
+            });
+            diagnostic.entry_hint = Some(hint.clone());
+            snapshot.diagnostics.push(diagnostic);
+        }
+        snapshot.rows.push(AgentFileRow {
+            entry_hint: hint,
+            kind,
+            raw: raw.clone(),
+            launchable: hash.is_some(),
+            base_hash: hash,
+            editable,
+        });
+    }
+    Ok(())
+}
+
+fn invalidate_agent_file_snapshot(snapshot: &mut SelectedAgentFileSnapshot, reason: String) {
+    snapshot.availability = SourceAvailability::Invalid;
+    snapshot.capabilities = SourceCapabilities::default();
+    snapshot.rows.clear();
+    snapshot.profiles_by_base_hash.clear();
+    snapshot.profile_labels_by_base_hash.clear();
+    snapshot.profile_slots.clear();
+    let code = [
+        "sourceProfileConflict",
+        "invalidLegacyProfileOrphans",
+        "duplicateJsonMember",
+    ]
+    .into_iter()
+    .find(|code| reason.contains(code))
+    .unwrap_or("invalidSource");
+    let mut diagnostic = source_diagnostic(code);
+    if code == "sourceProfileConflict" {
+        diagnostic.entry_hint = Some(reason);
+    }
+    snapshot.diagnostics.push(diagnostic);
 }
 
 #[cfg(test)]

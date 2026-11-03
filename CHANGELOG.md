@@ -6,6 +6,53 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- A **WWW** button next to Home opens an embedded web browser in the central pane, with back, forward, refresh and a URL bar. Agents can drive it with `web-browser navigate|reload|status`. (#3367, #3427)
+- Every agent can clear its own live session immediately with `self-clear`, without the idle wait. Pi receives `/new`; a timeout leaves the outcome unknown and is never replayed. Automatic self-clear is unchanged. (#3275, #3279)
+- Projects and the Root Agent now receive a default `self-handoff` skill, including existing projects that lack it. User-edited copies are left unchanged. (#3374, #3376)
+- `telegram-send-message --text` sends a text message through a configured Telegram bot, without an attachment or an active bridge. (#518, #3104)
+- Each Project in the sidebar shows a quiet count of files that differ from its cached `origin/main`, including untracked files. Zero hides the count; unavailable data shows a dash. (#3060, #3066, #3061, #3116)
+- Settings > General > Agents > Room activity sets how long a room must stay quiet before it counts as idle: 1 to 3600 seconds, default 15. (#3123, #3127, #3124, #3128, #3125, #3129, #3126, #3130)
+- New Team can add agents from other projects. Foreign agents keep their source project, shown as a dimmed `@sourceProject` suffix, and only generic assets are copied into a fresh local Matrix: `Role.md`, the skills tree and `default.*` folders. (#3072, #3082, #3073, #3102, #3142, #3154)
+- Message files sent with `--send` are archived under the project's `.ac/message-archive/YYYYMMDD/`, so they survive room deletion. Archive failures warn without stopping the send. (#3081, #3090, #3120, #3121)
+- Room creation logs each stage with its elapsed time, so slow room creation can be traced to a stage. (#3262, #3268)
+
+### Changed
+
+- Settings > General > Terminal > Response close (**Close terminal after response**) now takes effect: eligible local members close their terminal after a response and the configured idle time, keep the conversation, and resume when new work arrives. (#2854, #3138, #2855, #3165)
+- A room stays active through brief gaps between agents. Room indicators, Non-stop and completion sounds now wait for the idle confirmation delay instead of reporting idle early. (#3086, #3114, #3087, #3115)
+- Settings hides container options unless the instance setting `containerOptionsEnabled` is true. Saved container settings are preserved. (#3063, #3077)
+- Config seed now prefers Agent Matrix templates over project templates: Matrix profile, then Matrix base, project profile, project base and the catalog default. (#2808, #3143)
+- Settings > Coding Agents > Environment no longer shows user/system badges. Variables set by AgentsCommander are marked with a red ring instead. (#3134, #3136)
+- SELF-HANDOFF asks only for what is needed to resume: first action, open work, blockers, pending decisions, live state and resume pointers. (#1555, #3369)
+
+### Fixed
+
+- Session snapshots and coordinator clocks are flushed to disk before they replace the previous file, so a host crash no longer leaves them empty. (#3278, #3280)
+- The last prompt survives restart, wake and resume, and a late session list no longer overwrites a newer LAST PROMPT. (#3155, #3158, #3156, #3161)
+- The first click on a Favorites or group rail button is no longer lost when the rail updates. (#3157, #3160)
+- Codex's new `Trust this folder?` prompt is recognized as a blocking menu. (#3095, #3096)
+- `send` checks Root Agent message filenames with the receiver's rule before printing `Queued`. `send --help` documents the filename format and that `Queued` does not mean delivered. (#3171, #3285)
+- Failed self-handoff operations are reported in the UI and to the agent instead of failing silently. (#3189, #3300)
+- `send --command clear` to Codex reports a failed fresh-session start as an error and never replays the clear. (#3371, #3457)
+- Restoring a Root session marked as fresh no longer resumes the previous conversation. (#3431, #3452)
+- An internal notice is checked again after waiting for the terminal, so a session that exited in the meantime receives nothing. (#3286, #3292)
+- Closing a session, purging a room or waiting for Host PTY work no longer stalls unrelated mailbox delivery. (#3271, #3302)
+- Mailbox archive files always stay inside `outbox/rejected/` and `outbox/delivered/`. Message ids that are not valid file names on Windows, or are too long, use fallback names instead of causing retry loops or duplicate delivery. (#3351, #3419, #3417, #3423, #3426, #3429)
+- A folder or link at a receipt path no longer counts as a settled receipt. (#3475, #3497)
+
+### Security
+
+- Outbox request ids must be canonical UUIDs, Root identity is checked by the physical directory instead of its name, and config repair cannot write before read-only authority is established. (#3318, #3323)
+
+### Notes
+
+- New diagnostics: rail click logging, focus-input PTY debug logs and close-block logs for sessions stuck in Closing. Recovery of stuck sessions is still tracked in #3317. (#3092, #3094, #3093, #3103, #3131, #3133, #3248, #3326)
+- Internal preparation for choosing profiles per agents file: profile storage keyed by BASE hash, agent-file source APIs and source references in persisted selections. The UI is still pending. (#2902, #3117, #2905, #3141, #2900, #3144)
+- Agent and profile records carry optional `id_hash_debug` metadata that shows the inputs of each identity hash. Existing hashes are unchanged. (#3052, #3089, #3098, #3105, #3099, #3106, #3100, #3108, #3101, #3112)
+- About 150 behavior-preserving refactor PRs break module cycles, give disk access and global state a single owner, apply Clippy pedantic fixes and remove dead code. CI adds sanitizing, function-length and Clippy lint-budget gates, and PR regression jobs run faster. (#3170, #3173, #3183, #3185, #3296, #3514, #3519, #3524, #3531)
+
 ## 0.45.1
 
 ### Added

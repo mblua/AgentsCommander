@@ -23,7 +23,7 @@ impl SessionIoFanout {
     /// `.ok()?` branch and silently do nothing, for every session, for the life of the process.
     /// One `cols: 0` would take #955's screen snapshot down app-wide, without a single log line.
     ///
-    /// The callers guard too (`local_backend` only moves the screen for a size the ConPTY
+    /// The callers guard too (`local_backend` only moves the screen for a size the `ConPTY`
     /// actually took), but they cannot be the only guard: `container_backend:1099` calls this
     /// with whatever `pty_resize` was given, and there is no gate on that path at all.
     ///
@@ -94,7 +94,7 @@ impl SessionIoFanout {
             let mut parsers = self
                 .screen_parsers
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(state) = parsers.get_mut(&id) else {
                 return;
             };
@@ -110,7 +110,7 @@ impl SessionIoFanout {
         let mut parsers = self
             .screen_parsers
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if parsers.get(&id).is_some_and(|state| {
             Arc::ptr_eq(
                 &state.registration.identity,
@@ -141,7 +141,7 @@ impl SessionIoFanout {
         let ids = self
             .screen_parsers
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .copied()
             .collect::<Vec<_>>();
