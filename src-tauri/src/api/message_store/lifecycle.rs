@@ -7,7 +7,7 @@ use super::{
 use crate::filesystem::message_store::{self, MessagePathError};
 use crate::pty::manager::{ResponseCloseError, ResponseCloseState, WorkAdmission};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 impl MessageStore {
@@ -43,8 +43,8 @@ impl MessageStore {
                 ),
             ] {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT target_fqn,sender_fqn,op_id,{} FROM {} WHERE status IN ({})",
-                    digest, table, statuses
+                    "SELECT target_fqn,sender_fqn,op_id,{digest} FROM {table} \
+                     WHERE status IN ({statuses})"
                 ))?;
                 let rows = stmt.query_map([], |row| {
                     Ok((
@@ -92,7 +92,7 @@ impl MessageStore {
                 Err(ResponseCloseError::ClosingDeferred) => {
                     return Err(RESPONSE_CLOSING_DEFERRED.to_string())
                 }
-                Err(error) => return Err(format!("response close admission: {:?}", error)),
+                Err(error) => return Err(format!("response close admission: {error:?}")),
             },
         };
         Ok(MessageDeliveryReservation { _inner: inner })
@@ -199,7 +199,7 @@ impl MessageStore {
     pub(super) fn inject_actuation_commit_ambiguous(&self) {
         self.test_faults
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .actuation_commit_ambiguous = true;
     }
 

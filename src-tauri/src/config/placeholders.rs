@@ -14,7 +14,7 @@ pub const USER_HOME_PLACEHOLDER: &str = "%USER_HOME%";
 
 /// Single source of truth for the AC path-placeholder token set. Every site that
 /// gates on, validates, or scans these tokens MUST iterate this list, so adding a
-/// token wires the gate AND the CODEX_HOME validators at once (the #576 hard rule).
+/// token wires the gate AND the `CODEX_HOME` validators at once (the #576 hard rule).
 /// Expansion in `expand_placeholders` stays as explicit per-token `if` blocks: each
 /// token has its own root field + error and fails closed if forgotten, so a loop
 /// there would obscure more than it saves.
@@ -100,7 +100,7 @@ fn derive_matrix_root(canonical: &Path, ac_root: Option<&Path>) -> Option<PathBu
         .filter(|name| {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         })?;
-    ac_root.map(|ac_root| ac_root.join(format!("_agent_{}", agent_name)))
+    ac_root.map(|ac_root| ac_root.join(format!("_agent_{agent_name}")))
 }
 
 pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<String, String> {
@@ -156,8 +156,7 @@ fn user_home() -> Option<&'static Path> {
             if home.is_none() {
                 log::warn!(
                     "[placeholders] home directory is undeterminable; \
-                     {} stays literal in seeded content",
-                    USER_HOME_PLACEHOLDER
+                     {USER_HOME_PLACEHOLDER} stays literal in seeded content"
                 );
             }
             home
