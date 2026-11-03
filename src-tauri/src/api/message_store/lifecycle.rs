@@ -7,7 +7,7 @@ use super::{
 use crate::filesystem::message_store::{self, MessagePathError};
 use crate::pty::manager::{ResponseCloseError, ResponseCloseState, WorkAdmission};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 impl MessageStore {
@@ -199,7 +199,7 @@ impl MessageStore {
     pub(super) fn inject_actuation_commit_ambiguous(&self) {
         self.test_faults
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .actuation_commit_ambiguous = true;
     }
 
