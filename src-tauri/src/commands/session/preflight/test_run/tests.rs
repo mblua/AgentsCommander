@@ -655,7 +655,8 @@ async fn test_never_seeds() {
     );
 
     let mut control = seed.clone();
-    control.dest = PathBuf::from(&fx.cwd).join(".fake-config-control");
+    // Same spelling as the resolver's replica root (fx.cwd can be the 8.3 short TEMP name).
+    control.dest = seed.context.replica_root.join(".fake-config-control");
     let report = crate::config::config_seed::perform_config_seed(&control, "p04");
     assert!(control.dest.join("seeded.txt").exists(), "{report:?}");
 }
