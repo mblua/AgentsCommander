@@ -300,22 +300,7 @@ impl ResourceMonitorState {
             group.kill_started_at = Some(kill_started);
             (
                 group.root_identity,
-                if fresh_targets_only {
-                    // #632 B2a - at shutdown, ignore the accumulated set entirely; target only the
-                    // fresh live tree captured below. It is normally empty because the Job Object
-                    // kill has already terminated each jobbed session's tree (lib.rs fires
-                    // kill_all_jobs() before this path runs; jobs are created per child at spawn,
-                    // pty/job.rs), so this fresh walk exists to catch job-less survivors and is
-                    // the only source of targets on this path. Targets commonly resolve
-                    // AlreadyGone here; killed=0 is the expected, correct record (#1438).
-                    Vec::new()
-                } else {
-                    group
-                        .observed_processes
-                        .values()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                },
+                cleanup_retained_targets(group, fresh_targets_only),
                 pass,
             )
         };
@@ -418,25 +403,9 @@ impl ResourceMonitorState {
         );
 
         if let Some(operation) = operation.as_ref() {
-            let summary = schema::Summary {
-                partial: veto.is_some() || !errors.is_empty(),
-                evidence_gap: veto.is_some(),
-                killed_processes: killed.len(),
-                accounting: "proposed".into(),
-                errors: errors
-                    .iter()
-                    .cloned()
-                    .chain(veto.iter().map(ToString::to_string))
-                    .collect(),
-            };
-            // Exactly one attempt, including when an earlier stage already vetoed.
-            if let Err(mut error) = operation.finish(summary) {
-                error.effects_started |= calls > 0;
-                if veto.is_none() {
-                    veto = Some(error);
-                }
-            }
-            if let Some(error) = veto {
+            if let Err(error) =
+                finish_cleanup_evidence(operation, veto, calls, &errors, killed.len())
+            {
                 return Err(self.evidence_veto(&pass, operation.id(), error, killed));
             }
         }
@@ -916,4 +885,58 @@ fn other_roots(
         .filter(|group| group.session_id != session_id)
         .map(|group| selection::identity(group.root_identity))
         .collect()
+}
+
+fn cleanup_retained_targets(
+    group: &super::ResourceAgentGroup,
+    fresh_targets_only: bool,
+) -> Vec<ObservedProcess> {
+    if fresh_targets_only {
+        // #632 B2a - at shutdown, ignore the accumulated set entirely; target only the
+        // fresh live tree captured below. It is normally empty because the Job Object
+        // kill has already terminated each jobbed session's tree (lib.rs fires
+        // kill_all_jobs() before this path runs; jobs are created per child at spawn,
+        // pty/job.rs), so this fresh walk exists to catch job-less survivors and is
+        // the only source of targets on this path. Targets commonly resolve
+        // AlreadyGone here; killed=0 is the expected, correct record (#1438).
+        Vec::new()
+    } else {
+        group
+            .observed_processes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+    }
+}
+
+fn finish_cleanup_evidence(
+    operation: &Operation,
+    mut veto: Option<schema::EvidenceError>,
+    calls: usize,
+    errors: &[String],
+    killed_count: usize,
+) -> Result<(), schema::EvidenceError> {
+    let summary = schema::Summary {
+        partial: veto.is_some() || !errors.is_empty(),
+        evidence_gap: veto.is_some(),
+        killed_processes: killed_count,
+        accounting: "proposed".into(),
+        errors: errors
+            .iter()
+            .cloned()
+            .chain(veto.iter().map(ToString::to_string))
+            .collect(),
+    };
+    // Exactly one attempt, including when an earlier stage already vetoed.
+    if let Err(mut error) = operation.finish(summary) {
+        error.effects_started |= calls > 0;
+        if veto.is_none() {
+            veto = Some(error);
+        }
+    }
+
+    match veto {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
