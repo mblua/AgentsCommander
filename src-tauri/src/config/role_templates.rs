@@ -92,8 +92,6 @@ pub(crate) struct AgencyTemplate {
     category: String,
     color: Option<String>,
     body: String,
-    #[allow(dead_code)]
-    role_path: PathBuf,
 }
 
 pub fn agency_templates_dir(config_dir: &Path) -> PathBuf {
@@ -656,7 +654,6 @@ pub(crate) fn collect_agency_templates_from_dir(
                 category: title_case_slug(&division_slug),
                 color: fm.color,
                 body,
-                role_path,
             });
         }
     }
