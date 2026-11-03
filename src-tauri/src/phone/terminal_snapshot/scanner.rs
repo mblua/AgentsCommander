@@ -287,6 +287,17 @@ impl SnapshotMailboxScanner {
         Some(selected)
     }
 
+    fn observe_request_directory(
+        &mut self,
+        request_object: crate::path_identity::FileObjectId,
+    ) -> bool {
+        if self.cursors.len() >= CURSOR_CAP && !self.cursors.contains_key(&request_object) {
+            return false;
+        }
+        self.observed.insert(request_object);
+        true
+    }
+
     pub(crate) fn scan_root<R: tauri::Runtime>(
         &mut self,
         app: &tauri::AppHandle<R>,
@@ -302,14 +313,9 @@ impl SnapshotMailboxScanner {
         else {
             return;
         };
-        if self.cursors.len() >= CURSOR_CAP
-            && !self
-                .cursors
-                .contains_key(&request_directory_identity.object_id)
-        {
+        if !self.observe_request_directory(request_directory_identity.object_id) {
             return;
         }
-        self.observed.insert(request_directory_identity.object_id);
         sweep_directory(&request_directory, &request_directory_identity, false);
         sweep_directory(&response_directory, &response_directory_identity, true);
         let Some(selected) =
@@ -343,22 +349,13 @@ impl SnapshotMailboxScanner {
                 Err(ClaimFailure::Stop) => break,
             };
             let snapshot_state = snapshot_state.inner().clone();
-            let cleanup_state = Arc::clone(&snapshot_state);
-            let cleanup_processing = processing.clone();
-            let cleanup_claimed = claimed.clone();
-            let cleanup_request_directory = request_directory.clone();
-            let cleanup_request_identity = request_directory_identity.clone();
-            let cleanup_response_directory = response_directory.clone();
-            let cleanup_response_identity = response_directory_identity.clone();
-            let cleanup: ScannerTaskCleanup = std::sync::Arc::new(move || {
-                cleanup_tracked_artifact(&cleanup_state, &cleanup_processing, &cleanup_claimed);
-                sweep_directory(&cleanup_request_directory, &cleanup_request_identity, false);
-                sweep_directory(
-                    &cleanup_response_directory,
-                    &cleanup_response_identity,
-                    true,
-                );
-            });
+            let cleanup = request_task_cleanup(
+                &snapshot_state,
+                &processing,
+                &claimed,
+                (&request_directory, &request_directory_identity),
+                (&response_directory, &response_directory_identity),
+            );
             let app = app.clone();
             let response_directory = response_directory.clone();
             let expected_root = root_identity.clone();
@@ -405,6 +402,31 @@ impl SnapshotMailboxScanner {
             }
         }
     }
+}
+
+fn request_task_cleanup(
+    snapshot_state: &Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
+    processing: &Path,
+    claimed: &crate::path_identity::VerifiedPathIdentity,
+    request_directory: (&Path, &crate::path_identity::VerifiedPathIdentity),
+    response_directory: (&Path, &crate::path_identity::VerifiedPathIdentity),
+) -> ScannerTaskCleanup {
+    let cleanup_state = Arc::clone(snapshot_state);
+    let cleanup_processing = processing.to_path_buf();
+    let cleanup_claimed = claimed.clone();
+    let cleanup_request_directory = request_directory.0.to_path_buf();
+    let cleanup_request_identity = request_directory.1.clone();
+    let cleanup_response_directory = response_directory.0.to_path_buf();
+    let cleanup_response_identity = response_directory.1.clone();
+    std::sync::Arc::new(move || {
+        cleanup_tracked_artifact(&cleanup_state, &cleanup_processing, &cleanup_claimed);
+        sweep_directory(&cleanup_request_directory, &cleanup_request_identity, false);
+        sweep_directory(
+            &cleanup_response_directory,
+            &cleanup_response_identity,
+            true,
+        );
+    })
 }
 
 struct ClaimedRequest {
