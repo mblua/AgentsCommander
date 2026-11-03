@@ -70,7 +70,10 @@ struct Entry {
 
 impl PendingSelfClear {
     pub(crate) fn reserve_legacy(&self, sid: Uuid) -> Result<Lease, MaintenanceError> {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entry) = entries.get(&sid) {
             return Err(match entry.class {
                 Class::Legacy => MaintenanceError::AlreadyLegacy,
@@ -89,7 +92,10 @@ impl PendingSelfClear {
     }
 
     pub(crate) fn reserve_plain(&self, identity: PlainIdentity) -> PlainReservation {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entry) = entries.get(&identity.session_id) {
             return match &entry.class {
                 Class::Plain(owner, phase) if owner == &identity => match phase {
@@ -111,7 +117,10 @@ impl PendingSelfClear {
     }
 
     pub(crate) fn arm_plain(&self, lease: &Lease) -> Result<(), MaintenanceError> {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = entries
             .values_mut()
             .find(|entry| &entry.lease == lease)
@@ -128,14 +137,17 @@ impl PendingSelfClear {
     pub(crate) fn legacy_lease(&self, sid: Uuid) -> Option<Lease> {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&sid)
             .filter(|entry| matches!(entry.class, Class::Legacy))
             .map(|entry| entry.lease.clone())
     }
 
     pub(crate) fn alias(&self, lease: &Lease, sid: Uuid) -> Result<(), MaintenanceError> {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = entries
             .values()
             .find(|entry| &entry.lease == lease)
@@ -149,7 +161,10 @@ impl PendingSelfClear {
     }
 
     pub(crate) fn release(&self, lease: &Lease) -> bool {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = entries.len();
         entries.retain(|_, entry| &entry.lease != lease);
         before != entries.len()
@@ -157,7 +172,7 @@ impl PendingSelfClear {
     pub(crate) fn contains(&self, sid: Uuid) -> bool {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&sid)
     }
 }
@@ -169,13 +184,16 @@ impl PendingSelfClear {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
     }
 
