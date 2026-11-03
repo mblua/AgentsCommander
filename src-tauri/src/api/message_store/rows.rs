@@ -366,19 +366,7 @@ pub(super) fn terminalize_in_transaction(
             if !tombstone_matches(&tx, injection_id)? {
                 return Err(MessageStoreError::StoreCorrupt);
             }
-            if let Err(error) = tx.commit() {
-                if let Some(state) = response_close {
-                    state.fail_closed();
-                }
-                return Err(error.into());
-            }
-            if let Some(state) = response_close {
-                state.settle_terminal(
-                    &response_row.0,
-                    &response_work_key("pty", &response_row.1, &response_row.2),
-                    std::time::Instant::now(),
-                );
-            }
+            commit_and_settle_terminal(tx, response_close, &response_row)?;
             response_persistence.completed = true;
             return Ok(());
         }
@@ -418,6 +406,17 @@ pub(super) fn terminalize_in_transaction(
     if !tombstone_matches(&tx, injection_id)? {
         return Err(MessageStoreError::StoreCorrupt);
     }
+    commit_and_settle_terminal(tx, response_close, &response_row)?;
+    response_persistence.completed = true;
+    Ok(())
+}
+
+/// Commits the terminal transition; fails the response close closed on commit error.
+fn commit_and_settle_terminal(
+    tx: rusqlite::Transaction<'_>,
+    response_close: Option<&ResponseCloseState>,
+    response_row: &(String, String, String),
+) -> Result<(), MessageStoreError> {
     if let Err(error) = tx.commit() {
         if let Some(state) = response_close {
             state.fail_closed();
@@ -431,7 +430,6 @@ pub(super) fn terminalize_in_transaction(
             std::time::Instant::now(),
         );
     }
-    response_persistence.completed = true;
     Ok(())
 }
 
