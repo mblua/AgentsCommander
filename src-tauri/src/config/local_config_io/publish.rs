@@ -5,32 +5,32 @@ use crate::filesystem::local_config;
 
 /// #537 - OS error codes that mean the destination config.json was only
 /// briefly held by another handle (a concurrent in-process reader, a second
-/// AgentsCommander instance, or antivirus / the Windows Search Indexer) at the
+/// `AgentsCommander` instance, or antivirus / the Windows Search Indexer) at the
 /// instant we tried to publish, rather than a permanent failure. A short
 /// backoff and retry clears them; permanent failures (a bad path, a lasting
 /// permission denial) are NOT in this set, so they surface immediately and we
 /// never spin on an error that cannot clear.
 ///
 /// These are Windows codes:
-///   1175 ERROR_UNABLE_TO_REMOVE_REPLACED (ReplaceFileW could not delete dst)
-///     32 ERROR_SHARING_VIOLATION
-///     33 ERROR_LOCK_VIOLATION
-///      5 ERROR_ACCESS_DENIED (commonly a transient AV lock on Windows)
+///   1175 `ERROR_UNABLE_TO_REMOVE_REPLACED` (`ReplaceFileW` could not delete dst)
+///     32 `ERROR_SHARING_VIOLATION`
+///     33 `ERROR_LOCK_VIOLATION`
+///      5 `ERROR_ACCESS_DENIED` (commonly a transient AV lock on Windows)
 pub(super) const TRANSIENT_PUBLISH_OS_ERRORS: [i32; 4] = [1175, 32, 33, 5];
 
 /// #537 - publish attempt budget and backoff schedule, duplicated from the
-/// reviewed pattern in sessions_persistence::rename_with_retry (#280) per the
+/// reviewed pattern in `sessions_persistence::rename_with_retry` (#280) per the
 /// house "a little duplication over a premature abstraction" rule. Four
 /// attempts so all three backoff entries are used; the terminal attempt has no
 /// backoff. Worst-case added latency on a contended publish is the sum, 260 ms.
-/// Like #280 this uses std::thread::sleep, which briefly blocks the calling
-/// tokio worker; update_config_json_object is already fully synchronous, so
+/// Like #280 this uses `std::thread::sleep`, which briefly blocks the calling
+/// tokio worker; `update_config_json_object` is already fully synchronous, so
 /// this only enlarges an existing blocking window rather than adding a new one.
 pub(super) const PUBLISH_ATTEMPTS: u32 = 4;
 pub(super) const PUBLISH_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 
 /// #537 - true when a publish error looks like a transient lock collision we
-/// should retry rather than a permanent failure. See TRANSIENT_PUBLISH_OS_ERRORS.
+/// should retry rather than a permanent failure. See `TRANSIENT_PUBLISH_OS_ERRORS`.
 pub(super) fn is_transient_publish_error(err: &std::io::Error) -> bool {
     if err
         .raw_os_error()
