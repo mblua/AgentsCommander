@@ -198,23 +198,17 @@ fn an_abandoned_line_ages_out_under_a_stream_of_non_submit_chunks() {
 
     let forever = Duration::from_secs(3600);
     for &(label, chunk) in NON_CONTRIBUTING_CHUNKS {
-        assert!(
-            !t.feed(id, chunk),
-            "{}: must not report a submission",
-            label
-        );
+        assert!(!t.feed(id, chunk), "{label}: must not report a submission");
         assert!(
             !t.pending_within(id, USER_WRITE_STAMP_WINDOW),
-            "{}: must not refresh a line abandoned before it arrived",
-            label
+            "{label}: must not refresh a line abandoned before it arrived"
         );
         // #871's flag itself is untouched: it is the AGE that expired, not
         // `pending_nonspace`, which only CR/LF-with-content, Ctrl-C/Ctrl-U
         // and `reset` may clear.
         assert!(
             t.pending_within(id, forever),
-            "{}: must leave `pending_nonspace` set",
-            label
+            "{label}: must leave `pending_nonspace` set"
         );
     }
 

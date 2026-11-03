@@ -16,7 +16,7 @@ fn copy_file_substitutes_utf8_tokens_forward_slashed() {
     let expected = replica.to_string_lossy().replace('\\', "/");
     assert_eq!(
         std::fs::read_to_string(&dst).unwrap(),
-        format!("path={}/x", expected)
+        format!("path={expected}/x")
     );
 }
 
@@ -85,7 +85,7 @@ fn copy_file_substitutes_user_home() {
 
     let out = std::fs::read_to_string(&dst).unwrap();
     match home_fwd() {
-        Some(home) => assert_eq!(out, format!("excl={}/.claude/CLAUDE.md", home)),
+        Some(home) => assert_eq!(out, format!("excl={home}/.claude/CLAUDE.md")),
         None => assert_eq!(out, "excl=%USER_HOME%/.claude/CLAUDE.md"),
     }
 }
@@ -164,7 +164,7 @@ fn seed_settings_local_expands_user_home_but_not_hook_markers() {
     match home_fwd() {
         Some(home) => {
             assert!(
-                out.contains(&format!("\"{}/.claude/CLAUDE.md\"", home)),
+                out.contains(&format!("\"{home}/.claude/CLAUDE.md\"")),
                 "{out}"
             );
             assert!(!out.contains("%USER_HOME%"), "{out}");

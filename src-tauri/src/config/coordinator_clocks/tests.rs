@@ -313,9 +313,9 @@ fn idle_anchor_is_max_of_present_components() {
     );
 }
 
-/// B1/H1 trap: exercise the REAL save_map_to + load_from pair (NOT a
+/// B1/H1 trap: exercise the REAL `save_map_to` + `load_from` pair (NOT a
 /// hand-rolled map round-trip) so an asymmetry between serialize and
-/// deserialize is caught. Asserts BOTH ClockEntry fields survive.
+/// deserialize is caught. Asserts BOTH `ClockEntry` fields survive.
 #[test]
 fn save_load_real_round_trip_is_symmetric() {
     let dir = tempfile::tempdir().expect("temp dir");

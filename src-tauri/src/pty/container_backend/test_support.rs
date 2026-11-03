@@ -4,6 +4,7 @@ use super::{
 };
 use crate::pty::container_runtime::ContainerRuntimeHandle;
 use crate::pty::output::PtyOutputTarget;
+use std::sync::PoisonError;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -24,7 +25,7 @@ impl ContainerTransportBackend {
         let (sender, receiver) = mpsc::channel(8);
         self.sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 session_id,
                 ContainerSessionState::Active(ActiveSession {
@@ -52,7 +53,7 @@ impl ContainerTransportBackend {
         let (sender, receiver) = mpsc::channel(8);
         self.sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 session_id,
                 ContainerSessionState::Active(ActiveSession {
@@ -84,7 +85,7 @@ impl ContainerTransportBackend {
     pub(crate) fn contains_transport_state_for_test(&self, session_id: Uuid) -> bool {
         self.sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .contains_key(&session_id)
     }
 

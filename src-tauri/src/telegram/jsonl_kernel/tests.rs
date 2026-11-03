@@ -12,7 +12,7 @@ fn truncation_does_not_replay_old_lines() {
     // Write 5 lines, advance offset to file_len.
     let mut f = fs::File::create(&path).unwrap();
     for i in 0..5 {
-        writeln!(f, r#"{{"id":"{}","content":"line{}"}}"#, i, i).unwrap();
+        writeln!(f, r#"{{"id":"{i}","content":"line{i}"}}"#).unwrap();
     }
     f.sync_all().unwrap();
     drop(f);
@@ -52,7 +52,7 @@ fn truncation_followed_by_new_lines_emits_only_new() {
     // Initial state: 5 lines + offset at EOF.
     let mut f = fs::File::create(&path).unwrap();
     for i in 0..5 {
-        writeln!(f, r#"{{"id":"{}","content":"line{}"}}"#, i, i).unwrap();
+        writeln!(f, r#"{{"id":"{i}","content":"line{i}"}}"#).unwrap();
     }
     drop(f);
     let mut offset = fs::metadata(&path).unwrap().len();
@@ -195,7 +195,7 @@ fn preamble_scan_caps_at_64_kib() {
     // `timestamp` field) so we don't need to be precise about content.
     let padding_line = "x".repeat(200);
     for _ in 0..700 {
-        writeln!(f, "{}", padding_line).unwrap();
+        writeln!(f, "{padding_line}").unwrap();
     }
     // One fresh line at the end.
     writeln!(
@@ -226,7 +226,7 @@ fn preamble_scan_handles_partial_first_line_in_window() {
     // Write a HUGE first line that gets cut by the 64 KiB window.
     let mut f = fs::File::create(&path).unwrap();
     let huge = "z".repeat((PREAMBLE_MAX_BYTES as usize) + 500);
-    writeln!(f, "{}", huge).unwrap();
+    writeln!(f, "{huge}").unwrap();
     // Then a real line.
     writeln!(
         f,
