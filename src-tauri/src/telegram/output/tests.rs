@@ -85,7 +85,8 @@ fn bridgelogger_log_redacts_telegram_token_in_text() {
     let mut logger = BridgeLogger { file: Some(f) };
 
     let leak_shaped = format!(
-        "error sending request for url (https://api.telegram.org/bot{FAKE_TG_TOKEN}/getUpdates?offset=0)"
+        "error sending request for url (https://api.telegram.org/bot{FAKE_TG_TOKEN}/\
+         getUpdates?offset=0)"
     );
     logger.log("ERR", "sid-test", &leak_shaped);
     drop(logger); // close handle before read
