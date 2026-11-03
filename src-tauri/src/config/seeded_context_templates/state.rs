@@ -327,7 +327,11 @@ pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, St
             e
         )
     })?;
-    let state = match serde_json::from_slice::<SeededContextTemplateState>(&bytes) {
+    decode_template_state(&path, &bytes, strict)
+}
+
+fn decode_template_state(path: &Path, bytes: &[u8], strict: bool) -> Result<LoadedState, String> {
+    let state = match serde_json::from_slice::<SeededContextTemplateState>(bytes) {
         Ok(state) => state,
         Err(e) => {
             log::warn!(

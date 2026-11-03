@@ -1,4 +1,4 @@
-//! #1157 - operator-editable templates for the messages AgentsCommander injects
+//! #1157 - operator-editable templates for the messages `AgentsCommander` injects
 //! into a coordinator PTY.
 //!
 //! The registry lives next to the executable, in `config_dir()`, as
@@ -334,7 +334,7 @@ fn load_registry_from_dir(dir: &Path, warnings: &MessageWarnings) -> BTreeMap<St
         Ok(None) => return BTreeMap::new(),
         Err(reason) => {
             warn_once(
-                format!("file:{}", reason),
+                format!("file:{reason}"),
                 &format!(
                     "[injected-messages] {} is unusable ({}); rendering built-in defaults",
                     display_path(&path),
@@ -412,7 +412,7 @@ fn integer_key(root: &toml::Value, key: &str) -> Result<Option<i64>, String> {
     match root.get(key) {
         None => Ok(None),
         Some(toml::Value::Integer(value)) => Ok(Some(*value)),
-        Some(_) => Err(format!("`{}` must be an integer", key)),
+        Some(_) => Err(format!("`{key}` must be an integer")),
     }
 }
 
@@ -427,7 +427,7 @@ fn analyze_source(source: &str) -> ReadModel {
     let root: toml::Value = match toml::from_str(source) {
         Ok(root) => root,
         Err(e) => {
-            model.strict_invalid = Some(format!("TOML parse error: {}", e));
+            model.strict_invalid = Some(format!("TOML parse error: {e}"));
             return model;
         }
     };
@@ -535,7 +535,7 @@ fn quote_literal(template: &str, crlf: bool) -> String {
     if crlf {
         format!("'''\r\n{}\r\n'''", template.replace('\n', "\r\n"))
     } else {
-        format!("'''\n{}\n'''", template)
+        format!("'''\n{template}\n'''")
     }
 }
 
@@ -582,7 +582,7 @@ impl MessageWarnings {
         match warned.lock() {
             Ok(mut guard) => {
                 if guard.insert(key) {
-                    log::warn!("{}", message);
+                    log::warn!("{message}");
                     true
                 } else {
                     false
@@ -590,7 +590,7 @@ impl MessageWarnings {
             }
             // A poisoned warn-once set must never cost the caller its message.
             Err(_) => {
-                log::warn!("{}", message);
+                log::warn!("{message}");
                 true
             }
         }
@@ -619,8 +619,8 @@ fn message_block(spec: &MessageSpec) -> String {
 /// from being swallowed by a source that ends inside a comment.
 fn canonical_seed_bytes(specs: &[MessageSpec]) -> String {
     let mut out = format!(
-        "{}\nschema_version = {}\ncoverage_version = {}\n",
-        FILE_HEADER_COMMENT, SCHEMA_VERSION, COVERAGE_VERSION
+        "{FILE_HEADER_COMMENT}\nschema_version = {SCHEMA_VERSION}\n\
+            coverage_version = {COVERAGE_VERSION}\n"
     );
     for spec in specs {
         out.push_str(&message_block(spec));
@@ -632,8 +632,8 @@ fn canonical_seed_bytes(specs: &[MessageSpec]) -> String {
 /// placeholders per id so the file is a complete reference on its own.
 fn canonical_reference_bytes(specs: &[MessageSpec]) -> String {
     let mut out = format!(
-        "{}\nschema_version = {}\ncoverage_version = {}\n",
-        REFERENCE_HEADER_COMMENT, SCHEMA_VERSION, COVERAGE_VERSION
+        "{REFERENCE_HEADER_COMMENT}\nschema_version = {SCHEMA_VERSION}\n\
+            coverage_version = {COVERAGE_VERSION}\n"
     );
     for spec in specs {
         out.push_str(&format!(

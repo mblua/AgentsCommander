@@ -553,6 +553,12 @@ impl SourcePrivateJournal {
                 return Err(SourceCoordinationError::Invalid);
             }
         }
+        self.validate_inventories()?;
+        self.validate_progress()?;
+        Ok(())
+    }
+
+    fn validate_inventories(&self) -> Result<(), SourceCoordinationError> {
         for (id, inventory) in &self.inventories {
             inventory.validate_original_evidence()?;
             if !coordination_id(id)
@@ -602,6 +608,10 @@ impl SourcePrivateJournal {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate_progress(&self) -> Result<(), SourceCoordinationError> {
         for (id, progress) in &self.progress {
             if let Some(proof) = &progress.source_publication {
                 let intent = self

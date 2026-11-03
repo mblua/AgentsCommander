@@ -269,6 +269,92 @@ pub(crate) fn read_source_snapshot(
     source_snapshot_from_original(context, source, raw)
 }
 
+fn decode_registered_snapshot(
+    value: &Value,
+    snapshot: &mut SourceSnapshot<Value>,
+) -> Result<(), SourcePreparationError> {
+    let (agents, profiles) = decode_registered_raw(value)?;
+    snapshot.profiles = profiles.profiles_by_agent;
+    let mut view = value.clone();
+    refresh_physical_source_rows(&mut view, true)
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    snapshot.agents = view
+        .get("agents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let entries: Vec<_> = agents
+        .iter()
+        .map(|agent| IdentitySnapshotEntry {
+            key: &agent.id,
+            name: &agent.label,
+            command: &agent.command,
+            envs: &agent.envs,
+            profiles: snapshot.profiles.get(&agent.id),
+        })
+        .collect();
+    if let Err(error) = validate_identity_snapshot(&entries) {
+        snapshot.diagnostics.push(SourceDiagnostic {
+            code: format!("{:?}", error.code),
+            entry_hint: Some(error.entry_hint),
+            existing_name: Some(error.existing_name),
+            requested_profile: error.requested_profile,
+        });
+    }
+    Ok(())
+}
+
+fn decode_catalog_snapshot(
+    value: &Value,
+    snapshot: &mut SourceSnapshot<Value>,
+) -> Result<(), String> {
+    let (agents, profiles) = decode_physical_catalog(value)?;
+    snapshot.profiles = profiles.profiles_by_agent;
+    let mut view = value.clone();
+    refresh_physical_source_rows(&mut view, false)?;
+    snapshot.agents = view
+        .get("agents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("remove") != Some(&Value::Bool(true)))
+        .cloned()
+        .collect();
+    let active: HashSet<_> = agents.iter().map(|agent| agent.id.as_str()).collect();
+    for row in value
+        .get("agents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(key) = row
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|key| !active.contains(key))
+        {
+            let mut diagnostic = source_diagnostic("incompletePhysicalRow");
+            diagnostic.entry_hint = Some(key.to_owned());
+            snapshot.diagnostics.push(diagnostic);
+        }
+    }
+    Ok(())
+}
+
+fn record_invalid_source(snapshot: &mut SourceSnapshot<Value>, reason: String) {
+    snapshot.availability = SourceAvailability::Invalid;
+    let code = [
+        "duplicateJsonMember",
+        "invalidLegacyProfileOrphans",
+        "sourceProfileConflict",
+    ]
+    .into_iter()
+    .find(|code| reason.contains(code))
+    .unwrap_or("invalidSource");
+    let mut diagnostic = source_diagnostic(code);
+    diagnostic.entry_hint = Some(reason);
+    snapshot.diagnostics.push(diagnostic);
+}
+
 pub(crate) fn source_snapshot_from_original(
     context: &SourceReadContext,
     source: &SourceRef,
@@ -307,18 +393,7 @@ pub(crate) fn source_snapshot_from_original(
             };
             let invalid = ambiguity.or(registered_gate).or(catalog_gate);
             if let Some(reason) = invalid {
-                snapshot.availability = SourceAvailability::Invalid;
-                let code = [
-                    "duplicateJsonMember",
-                    "invalidLegacyProfileOrphans",
-                    "sourceProfileConflict",
-                ]
-                .into_iter()
-                .find(|code| reason.contains(code))
-                .unwrap_or("invalidSource");
-                let mut diagnostic = source_diagnostic(code);
-                diagnostic.entry_hint = Some(reason);
-                snapshot.diagnostics.push(diagnostic);
+                record_invalid_source(&mut snapshot, reason);
                 return Ok(RawSourceSnapshot {
                     snapshot,
                     candidate_template: None,
@@ -329,72 +404,10 @@ pub(crate) fn source_snapshot_from_original(
             let decoded = if source.kind == SourceKind::RegisteredInstance {
                 raw.value()
                     .ok_or(SourcePreparationError::InvalidCandidate)
-                    .and_then(|value| {
-                        let (agents, profiles) = decode_registered_raw(&value)?;
-                        snapshot.profiles = profiles.profiles_by_agent;
-                        let mut view = value.clone();
-                        refresh_physical_source_rows(&mut view, true)
-                            .map_err(|_| SourcePreparationError::InvalidCandidate)?;
-                        snapshot.agents = view
-                            .get("agents")
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default();
-                        let entries: Vec<_> = agents
-                            .iter()
-                            .map(|agent| IdentitySnapshotEntry {
-                                key: &agent.id,
-                                name: &agent.label,
-                                command: &agent.command,
-                                envs: &agent.envs,
-                                profiles: snapshot.profiles.get(&agent.id),
-                            })
-                            .collect();
-                        if let Err(error) = validate_identity_snapshot(&entries) {
-                            snapshot.diagnostics.push(SourceDiagnostic {
-                                code: format!("{:?}", error.code),
-                                entry_hint: Some(error.entry_hint),
-                                existing_name: Some(error.existing_name),
-                                requested_profile: error.requested_profile,
-                            });
-                        }
-                        Ok(())
-                    })
+                    .and_then(|value| decode_registered_snapshot(&value, &mut snapshot))
             } else {
                 crate::config::coding_agents_catalog::parse_strict_json(bytes)
-                    .and_then(|value| {
-                        let (agents, profiles) = decode_physical_catalog(&value)?;
-                        snapshot.profiles = profiles.profiles_by_agent;
-                        let mut view = value.clone();
-                        refresh_physical_source_rows(&mut view, false)?;
-                        snapshot.agents = view
-                            .get("agents")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter(|row| row.get("remove") != Some(&Value::Bool(true)))
-                            .cloned()
-                            .collect();
-                        let active: HashSet<_> =
-                            agents.iter().map(|agent| agent.id.as_str()).collect();
-                        for row in value
-                            .get("agents")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                        {
-                            if let Some(key) = row
-                                .get("key")
-                                .and_then(Value::as_str)
-                                .filter(|key| !active.contains(key))
-                            {
-                                let mut diagnostic = source_diagnostic("incompletePhysicalRow");
-                                diagnostic.entry_hint = Some(key.to_owned());
-                                snapshot.diagnostics.push(diagnostic);
-                            }
-                        }
-                        Ok(())
-                    })
+                    .and_then(|value| decode_catalog_snapshot(&value, &mut snapshot))
                     .map_err(|_| SourcePreparationError::InvalidCandidate)
             };
             match decoded {

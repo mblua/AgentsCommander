@@ -147,15 +147,10 @@ async fn post_inner(
         )
         .await?
     };
-    if let Some(project_path) = authority.sender.ac_root_identity.canonical_path.parent() {
-        let project = project_path
-            .to_str()
-            .map(crate::path_utils::normalize_windows_verbatim_path)
-            .ok_or_else(|| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsafePath))?;
-        if !project_paths.contains(&project) {
-            project_paths.push(project);
-        }
-    }
+    include_sender_project(
+        &mut project_paths,
+        &authority.sender.ac_root_identity.canonical_path,
+    )?;
     let route = crate::config::teams::verify_pty_input_route(
         &authority.sender.replica_root,
         false,
@@ -212,20 +207,36 @@ async fn post_inner(
         })
         .await
         .map_err(map_store_error)?;
-    let status = if result.duplicate && result.result.terminal {
+    Ok(enqueue_outcome(result.duplicate, result.result))
+}
+
+fn include_sender_project(
+    project_paths: &mut Vec<String>,
+    sender_root: &std::path::Path,
+) -> Result<(), ApiError> {
+    if let Some(project_path) = sender_root.parent() {
+        let project = project_path
+            .to_str()
+            .map(crate::path_utils::normalize_windows_verbatim_path)
+            .ok_or_else(|| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsafePath))?;
+        if !project_paths.contains(&project) {
+            project_paths.push(project);
+        }
+    }
+    Ok(())
+}
+
+fn enqueue_outcome(
+    duplicate: bool,
+    result: crate::phone::types::PtyInputResult,
+) -> (StatusCode, crate::phone::types::PtyInputResult) {
+    let status = if duplicate && result.terminal {
         StatusCode::OK
     } else {
         StatusCode::ACCEPTED
     };
-    record_result_audit(
-        if result.duplicate {
-            "duplicate"
-        } else {
-            "enqueue"
-        },
-        &result.result,
-    );
-    Ok((status, result.result))
+    record_result_audit(if duplicate { "duplicate" } else { "enqueue" }, &result);
+    (status, result)
 }
 
 fn validate_pty_input_request(request: &PtyInputRequest) -> Result<Option<String>, ApiError> {

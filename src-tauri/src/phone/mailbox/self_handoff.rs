@@ -679,26 +679,11 @@ impl MailboxPoller {
             ERR_SELF_HANDOFF_NOTICE_PENDING,
         )
         .await;
-        let (suffix, reason) = match status {
-            NoticeDelivery::Delivered => {
-                crate::commands::pty::note_post_boundary_content_to_session(app, target).await;
-                app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-                    .touch_silence(target);
-                return;
-            }
-            NoticeDelivery::Cancelled => (
-                "cancelled",
-                "notification cancelled: another self operation is pending".to_string(),
-            ),
-            NoticeDelivery::Unavailable(reason) => ("unavailable", reason),
-            NoticeDelivery::Failed(reason) => (
-                "failed",
-                format!("{reason}; submission may be partial; agent receipt is not confirmed"),
-            ),
-            NoticeDelivery::Exhausted => (
-                "exhausted",
-                "no further attempt will start after the 30-second retry window".to_string(),
-            ),
+        let Some((suffix, reason)) = self_handoff_notice_failure(status) else {
+            crate::commands::pty::note_post_boundary_content_to_session(app, target).await;
+            app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .touch_silence(target);
+            return;
         };
         warn(
             &format!("delivery:{suffix}"),
@@ -716,6 +701,26 @@ impl MailboxPoller {
             None => (false, false),
         }
     }
+}
+
+fn self_handoff_notice_failure(status: failure::NoticeDelivery) -> Option<(&'static str, String)> {
+    use failure::NoticeDelivery;
+    Some(match status {
+        NoticeDelivery::Delivered => return None,
+        NoticeDelivery::Cancelled => (
+            "cancelled",
+            "notification cancelled: another self operation is pending".to_string(),
+        ),
+        NoticeDelivery::Unavailable(reason) => ("unavailable", reason),
+        NoticeDelivery::Failed(reason) => (
+            "failed",
+            format!("{reason}; submission may be partial; agent receipt is not confirmed"),
+        ),
+        NoticeDelivery::Exhausted => (
+            "exhausted",
+            "no further attempt will start after the 30-second retry window".to_string(),
+        ),
+    })
 }
 
 async fn restart_communication(

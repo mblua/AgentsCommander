@@ -294,7 +294,7 @@ pub(crate) fn selection_default_fingerprint(
 
 /// Prepared source approvals bind the normalized ticket and marker as well as
 /// the legacy target fingerprint. This companion has no IPC caller in P03.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn source_selection_fingerprint(
     target_fingerprint: &str,
     ticket: &crate::config::settings::SourceSelectionTicket,
@@ -305,7 +305,7 @@ pub(crate) fn source_selection_fingerprint(
 
 /// Prepare a manual setter from a freshly authorized physical source. Publication
 /// remains a separate guarded step so no source IO enters the config layer.
-#[allow(dead_code)]
+#[allow(dead_code)] // no caller; deleting it unuses an import outside #3595
 pub(crate) async fn prepare_source_profile_override(
     settings: &SettingsState,
     replica_path: &Path,

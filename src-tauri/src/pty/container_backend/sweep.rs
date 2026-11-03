@@ -79,10 +79,7 @@ impl ContainerTransportBackend {
                 }
                 Err(err) => {
                     if load_bearing {
-                        log::warn!(
-                            "[container-transport] startup orphan cleanup failed: {}",
-                            err
-                        );
+                        log::warn!("[container-transport] startup orphan cleanup failed: {err}");
                     } else {
                         // #992 - this install never created a container, so this
                         // failure means only that a courtesy pass over someone
@@ -90,8 +87,7 @@ impl ContainerTransportBackend {
                         // problem and must not warn on every start: it is exactly
                         // the log noise #992 was reported from.
                         log::debug!(
-                            "[container-transport] opportunistic startup orphan sweep failed: {}",
-                            err
+                            "[container-transport] opportunistic startup orphan sweep failed: {err}"
                         );
                     }
                 }
@@ -101,16 +97,14 @@ impl ContainerTransportBackend {
                 match manager.revoke_all_container_clients() {
                     Ok(count) if count > 0 => {
                         log::warn!(
-                            "[container-transport] revoked {} container API client(s) on startup \
-                                cleanup",
-                            count
+                            "[container-transport] revoked {count} container API client(s) \
+                                on startup cleanup"
                         );
                     }
                     Ok(_) => {}
                     Err(err) => {
                         log::warn!(
-                            "[container-transport] startup container token cleanup failed: {}",
-                            err
+                            "[container-transport] startup container token cleanup failed: {err}"
                         );
                     }
                 }
@@ -151,8 +145,7 @@ impl ContainerTransportBackend {
             if Instant::now() >= deadline {
                 log::warn!(
                     "[container-transport] global shutdown cleanup budget exhausted before \
-                        ownership transfer session={} state=installed",
-                    session_id
+                        ownership transfer session={session_id} state=installed"
                 );
                 break;
             }

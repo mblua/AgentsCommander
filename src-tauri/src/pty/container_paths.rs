@@ -23,7 +23,7 @@ pub const HOST_PATH_TRANSLATE_ENV_KEYS: [&str; 3] = [
     OPENCODE_CONFIG_DIR_KEY,
 ];
 
-/// Contract: path-valued env rows are host-side values; AgentsCommander
+/// Contract: path-valued env rows are host-side values; `AgentsCommander`
 /// translates them for container sessions when they live under the replica mount.
 pub const WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD: &str = "container-path-in-host-field";
 pub const WARNING_KIND_OUTSIDE_MOUNT: &str = "outside-mount";
@@ -49,14 +49,12 @@ impl ContainerPathMap {
         let host_root_normalized = normalize_path_text(canonical_host_root);
         if is_unc_path(&host_root_normalized) {
             return Err(format!(
-                "container transport cannot bind-mount UNC host root '{}'",
-                canonical_host_root
+                "container transport cannot bind-mount UNC host root '{canonical_host_root}'"
             ));
         }
         if !looks_absolute_host_path(canonical_host_root) {
             return Err(format!(
-                "container transport host root '{}' is not absolute",
-                canonical_host_root
+                "container transport host root '{canonical_host_root}' is not absolute"
             ));
         }
 
@@ -343,11 +341,11 @@ fn normalize_path_text(path: &str) -> String {
 
 fn strip_windows_verbatim_prefix_any(path: &str) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = path.strip_prefix(r"\\?\") {
         rest.to_string()
     } else if let Some(rest) = path.strip_prefix(r"\??\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = path.strip_prefix(r"\??\") {
         rest.to_string()
     } else {

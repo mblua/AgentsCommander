@@ -279,17 +279,17 @@ pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
 
 // The next three are consumed only by the `#[cfg(not(test))]` spawn in
 // `handle_self_clear`; test builds drive `run_self_clear_after_sustained_idle`
-// with explicit durations, so they are dead under `cfg(test)`.
-#[cfg_attr(test, allow(dead_code))]
+// with explicit durations, so they are compiled out under `cfg(test)`.
+#[cfg(not(test))]
 pub(crate) const SELF_CLEAR_SETTLE: std::time::Duration =
     std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
 
-#[cfg_attr(test, allow(dead_code))]
+#[cfg(not(test))]
 pub(crate) const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Safety cap so a never-idle session cannot leave a task polling forever.
 /// Generous: any normal agent hits a 30s-idle window well within it.
-#[cfg_attr(test, allow(dead_code))]
+#[cfg(not(test))]
 pub(crate) const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// #626 - the `OutboxMessage` `action` value for self-handoff-and-clear. Single-sourced so the CLI

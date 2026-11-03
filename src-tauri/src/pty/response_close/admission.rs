@@ -116,7 +116,6 @@ impl ResponseCloseState {
         self.reserve_writer_inner(id, generation, true)
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn reserve_work(
         &self,
         target: &str,
@@ -171,7 +170,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn settle_terminal(&self, target: &str, key: &str, now: std::time::Instant) {
         let _ = self.with_inner(|inner| {
             let work = inner.work.entry(target.to_owned()).or_default();
@@ -265,7 +263,6 @@ impl ResponseCloseState {
         })
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn reserve_create_owner(
         &self,
         target: &str,
@@ -334,7 +331,6 @@ impl ResponseCloseState {
 
 impl WorkAdmission {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn accept_durable(&mut self, digest: &str) -> Result<bool, ResponseCloseError> {
         self.state.with_inner(|inner| {
             let work = inner

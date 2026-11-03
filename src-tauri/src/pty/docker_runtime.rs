@@ -200,7 +200,28 @@ impl DockerRuntime {
         args.push(DEFAULT_BRIDGE_ENTRYPOINT.to_string());
 
         args.retain(|arg| !arg.is_empty());
-        let secret_env = BTreeMap::from([
+        let secret_env = Self::run_secret_env(request, args_json, child_env_json);
+        let mut redacted_values = vec![request.host_root.clone()];
+        redacted_values.extend(
+            request
+                .repo_mounts
+                .iter()
+                .map(|mount| mount.host_path.to_string_lossy().to_string()),
+        );
+        Ok(DockerCommandSpec {
+            program: self.program.clone(),
+            args,
+            secret_env,
+            redacted_values,
+        })
+    }
+
+    fn run_secret_env(
+        request: &ContainerStartRequest,
+        args_json: String,
+        child_env_json: String,
+    ) -> BTreeMap<String, String> {
+        BTreeMap::from([
             (
                 "AGENTSCOMMANDER_API_TOKEN".to_string(),
                 request.api_token.clone(),
@@ -222,20 +243,7 @@ impl DockerRuntime {
                 "AGENTSCOMMANDER_BRIDGE_ENV_JSON".to_string(),
                 child_env_json,
             ),
-        ]);
-        let mut redacted_values = vec![request.host_root.clone()];
-        redacted_values.extend(
-            request
-                .repo_mounts
-                .iter()
-                .map(|mount| mount.host_path.to_string_lossy().to_string()),
-        );
-        Ok(DockerCommandSpec {
-            program: self.program.clone(),
-            args,
-            secret_env,
-            redacted_values,
-        })
+        ])
     }
 
     fn container_name(session_id: Uuid) -> String {
@@ -387,7 +395,7 @@ impl DockerRuntime {
             .retained_start_cleanups
             .entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(existing) = entries.get(&handle.session_id) {
             return Arc::clone(existing);
         }
@@ -408,7 +416,7 @@ impl DockerRuntime {
             let mut state = entry
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.in_flight {
                 return;
             }
@@ -423,7 +431,7 @@ impl DockerRuntime {
                     .retained_start_cleanups
                     .entries
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if entries
                     .get(&entry.handle.session_id)
                     .is_some_and(|owned| Arc::ptr_eq(owned, &entry))
@@ -433,7 +441,7 @@ impl DockerRuntime {
                 let mut state = entry
                     .state
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.in_flight = false;
                 state.last_error = None;
                 log::debug!(
@@ -447,7 +455,7 @@ impl DockerRuntime {
                 let mut state = entry
                     .state
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.in_flight = false;
                 state.last_error = Some(message.clone());
                 log::warn!(
@@ -461,7 +469,7 @@ impl DockerRuntime {
                 let mut state = entry
                     .state
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.in_flight = false;
                 state.last_error = Some("cleanup panicked".to_string());
                 log::error!(
@@ -488,14 +496,14 @@ impl DockerRuntime {
             .retained_start_cleanups
             .entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session_id)
             .cloned();
         let cleanup_error = retained_entry.as_ref().and_then(|entry| {
             entry
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .last_error
                 .as_deref()
                 .map(crate::pty::container_runtime::redact_container_diagnostic_text)
@@ -563,10 +571,8 @@ impl ContainerRuntime for DockerRuntime {
             }
             Ok(Err(error)) if control.shutdown_requested() => {
                 log::debug!(
-                    "[container-runtime] Docker start canceled session={}; returning owned cleanup \
-                    handle: {}",
-                    session_id,
-                    error
+                    "[container-runtime] Docker start canceled session={session_id}; \
+                    returning owned cleanup handle: {error}"
                 );
                 Ok(cleanup_handle)
             }
@@ -686,7 +692,7 @@ impl ContainerRuntime for DockerRuntime {
                 // returned in the aggregate Err below, which the backend logs at the
                 // severity its sweep posture calls for. Warning here as well would fire
                 // on every opportunistic pass, which is the noise #992 is about.
-                Err(err) => errors.push(format!("{}: {}", session_id, err)),
+                Err(err) => errors.push(format!("{session_id}: {err}")),
             }
         }
         if !errors.is_empty() {
@@ -707,7 +713,7 @@ impl ContainerRuntime for DockerRuntime {
             .retained_start_cleanups
             .entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect::<Vec<_>>();
@@ -727,13 +733,13 @@ impl ContainerRuntime for DockerRuntime {
             .retained_start_cleanups
             .entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .map(|entry| {
                 let state = entry
                     .state
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 RetainedContainerOwnerContext {
                     owner: "ambiguousStartCleanup",
                     session_id: Some(entry.handle.session_id),

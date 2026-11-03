@@ -112,7 +112,7 @@ impl ContainerTransportBackend {
         }
         self.sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
                 session_id,
                 ContainerSessionState::Active(ActiveSession {
@@ -129,10 +129,7 @@ impl ContainerTransportBackend {
         if let Some(notify) = attach_notify {
             notify.notify_waiters();
         }
-        log::info!(
-            "[container-transport] attached bridge for session {}",
-            session_id
-        );
+        log::info!("[container-transport] attached bridge for session {session_id}");
         Ok(())
     }
 
@@ -238,15 +235,13 @@ impl ContainerTransportBackend {
             if let Some(sender) = self.lifecycle_sender.as_ref() {
                 if let Err(error) = sender.route_lost(session_id, code).await {
                     log::warn!(
-                        "[container-transport] route-loss reconciliation failed session={}: {}",
-                        session_id,
-                        error
+                        "[container-transport] route-loss reconciliation failed \
+                            session={session_id}: {error}"
                     );
                 }
             } else {
                 log::debug!(
-                    "[container-transport] no lifecycle sender installed session={}",
-                    session_id
+                    "[container-transport] no lifecycle sender installed session={session_id}"
                 );
             }
         }
@@ -256,7 +251,7 @@ impl ContainerTransportBackend {
         let removed = self
             .sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         if removed.is_some() {
             self.fanout.remove_session(session_id);
@@ -312,9 +307,8 @@ impl ContainerTransportBackend {
             Ok(remover) => remover,
             Err(error) => {
                 log::warn!(
-                    "[container-transport] route removal unavailable session={} error={}",
-                    session_id,
-                    error
+                    "[container-transport] route removal unavailable \
+                        session={session_id} error={error}"
                 );
                 return;
             }
@@ -323,14 +317,13 @@ impl ContainerTransportBackend {
             match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => log::warn!(
-                    "[container-transport] route removal failed session={} error={}",
-                    session_id,
-                    error
+                    "[container-transport] route removal failed session={session_id} error={error}"
                 ),
-                Err(_) => log::error!(
-                    "[container-transport] route removal panicked session={}",
-                    session_id
-                ),
+                Err(_) => {
+                    log::error!(
+                        "[container-transport] route removal panicked session={session_id}"
+                    );
+                }
             }
         }
     }
