@@ -31,13 +31,9 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
     }
 
     let mut entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(requests_dir) {
-        Ok(rd) => rd.filter_map(|entry| entry.ok()).collect(),
+        Ok(rd) => rd.filter_map(Result::ok).collect(),
         Err(e) => {
-            log::warn!(
-                "[project-refresh-requests] Failed to read {:?}: {}",
-                requests_dir,
-                e
-            );
+            log::warn!("[project-refresh-requests] Failed to read {requests_dir:?}: {e}");
             return ProjectRefreshPollBatch::default();
         }
     };
@@ -55,11 +51,7 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
         let content = match read_text_bom_tolerant(&path) {
             Ok(c) => c,
             Err(e) => {
-                log::warn!(
-                    "[project-refresh-requests] Failed to read {:?}: {}",
-                    path,
-                    e
-                );
+                log::warn!("[project-refresh-requests] Failed to read {path:?}: {e}");
                 continue;
             }
         };
@@ -68,11 +60,7 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
             match serde_json::from_str(&content) {
                 Ok(r) => r,
                 Err(e) => {
-                    log::warn!(
-                        "[project-refresh-requests] Failed to parse {:?}: {}",
-                        path,
-                        e
-                    );
+                    log::warn!("[project-refresh-requests] Failed to parse {path:?}: {e}");
                     let _ = mailbox_disk::remove_mailbox_artifact(&path);
                     continue;
                 }
@@ -634,7 +622,7 @@ pub(crate) struct PurgePeerResult {
 /// four-leg test:
 ///   1. `activity_age >= effective_quiet` (printable silence)
 ///   2. `watcher_idle` (watcher agreement)
-///   3. `mirror_idle` (SessionManager agreement)
+///   3. `mirror_idle` (`SessionManager` agreement)
 ///   4. `resize_settled` (F-1: activity readings are trustworthy)
 pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration) -> PurgeDecision {
     let mut passed = true;
@@ -758,13 +746,12 @@ impl Default for MailboxPoller {
 /// odd encoding into outbox / session-requests (typically PowerShell on Windows).
 pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
     let bytes = mailbox_disk::read_mailbox_message(path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+        .map_err(|e| format!("Failed to read file: {e}"))?;
 
     if bytes.starts_with(&[0xFF, 0xFE]) {
         log::warn!(
-            "[bom] UTF-16 LE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 \
-            without BOM)",
-            path
+            "[bom] UTF-16 LE BOM detected in {path:?} — decoding to UTF-8 (writer should use UTF-8 \
+            without BOM)"
         );
         let u16_data: Vec<u16> = bytes[2..]
             .as_chunks::<2>()
@@ -775,9 +762,8 @@ pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xFE, 0xFF]) {
         log::warn!(
-            "[bom] UTF-16 BE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 \
-            without BOM)",
-            path
+            "[bom] UTF-16 BE BOM detected in {path:?} — decoding to UTF-8 (writer should use UTF-8 \
+            without BOM)"
         );
         let u16_data: Vec<u16> = bytes[2..]
             .as_chunks::<2>()
@@ -788,13 +774,11 @@ pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         log::warn!(
-            "[bom] UTF-8 BOM detected in {:?} — stripping (writer should use UTF-8 without BOM)",
-            path
+            "[bom] UTF-8 BOM detected in {path:?} — stripping (writer should use UTF-8 without BOM)"
         );
-        String::from_utf8(bytes[3..].to_vec())
-            .map_err(|e| format!("Invalid UTF-8 after BOM: {}", e))
+        String::from_utf8(bytes[3..].to_vec()).map_err(|e| format!("Invalid UTF-8 after BOM: {e}"))
     } else {
-        String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {}", e))
+        String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))
     }
 }
 
