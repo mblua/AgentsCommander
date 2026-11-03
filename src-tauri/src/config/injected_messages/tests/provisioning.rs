@@ -114,8 +114,7 @@ fn surgical_write_preserves_comments_and_unknown_keys() {
     let source = format!(
         "# lead comment\nunknown_top = 7\nschema_version = 1\n\n[messages.zzz-other]\ntemplate = \
          '''\nzzz\n'''\n\n[messages.context-alert]\n# doc comment\nunknown_inside = \
-         true\ntemplate = '''\n{}\n'''\n# trailing comment\n",
-        DEFAULT_CONTEXT_ALERT_TEMPLATE
+         true\ntemplate = '''\n{DEFAULT_CONTEXT_ALERT_TEMPLATE}\n'''\n# trailing comment\n"
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
 
@@ -157,8 +156,7 @@ fn append_is_idempotent_and_preserves_existing_bytes() {
     let dir = tempdir();
     let source = format!(
         "# operator comment\nschema_version = 1\n\n[messages.context-alert]\ntemplate = \
-         '''\n{}\n'''\n# a trailing comment with no newline after it",
-        DEFAULT_CONTEXT_ALERT_TEMPLATE
+         '''\n{DEFAULT_CONTEXT_ALERT_TEMPLATE}\n'''\n# a trailing comment with no newline after it"
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
 
@@ -178,7 +176,7 @@ fn append_is_idempotent_and_preserves_existing_bytes() {
     // The original bytes are a prefix: nothing before the append moved, and
     // the trailing comment did not swallow the appended block.
     assert!(after.starts_with(&source));
-    assert!(after.contains(&format!("[messages.{}]", EXTRA_MESSAGE_ID)));
+    assert!(after.contains(&format!("[messages.{EXTRA_MESSAGE_ID}]")));
     assert!(after.contains(EXTRA_TEMPLATE));
 
     let report = provision(dir.path(), &specs, None, &warnings).expect("second run");
@@ -227,9 +225,9 @@ fn newer_coverage_version_keeps_rendering_from_file() {
     let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source = format!(
-        "schema_version = 1\ncoverage_version = {}\n\n[messages.context-alert]\ntemplate = \
-         '''\nOPERATOR TEXT %MEMBER%\n'''\n",
-        NEWER_COVERAGE_VERSION
+        "schema_version = 1\ncoverage_version = {NEWER_COVERAGE_VERSION}\n\n\
+         [messages.context-alert]\ntemplate = \
+         '''\nOPERATOR TEXT %MEMBER%\n'''\n"
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
 
@@ -404,12 +402,7 @@ fn reseed_id_and_all_reset_with_backup() {
                 .is_some_and(|name| name.contains(".bak-"))
         })
         .collect();
-    assert_eq!(
-        backups.len(),
-        1,
-        "expected exactly one backup: {:?}",
-        backups
-    );
+    assert_eq!(backups.len(), 1, "expected exactly one backup: {backups:?}");
     assert_eq!(read(&backups[0]), edited);
 
     let state: InjectedMessagesState =
@@ -465,7 +458,7 @@ fn seeded_file_round_trips_to_pinned_default_without_extra_newline() {
     // TOML trims the newline after the opening ''' but not the one before
     // the closing ''', so the raw value carries exactly one.
     assert!(raw.ends_with('\n'));
-    assert_eq!(raw, format!("{}\n", DEFAULT_CONTEXT_ALERT_TEMPLATE));
+    assert_eq!(raw, format!("{DEFAULT_CONTEXT_ALERT_TEMPLATE}\n"));
     assert_eq!(
         normalize_parsed_template(raw),
         DEFAULT_CONTEXT_ALERT_TEMPLATE
@@ -475,7 +468,7 @@ fn seeded_file_round_trips_to_pinned_default_without_extra_newline() {
     let rendered =
         render_with_template(&normalize_parsed_template(raw), &alert_values(), &warnings);
     assert_eq!(
-        format!("\n{}\n\r", rendered),
+        format!("\n{rendered}\n\r"),
         "\n[AC context alert] `dev-rust` in `wg-2-dev-team` reached threshold(s): 50%, 75%, 90%. \
          No action taken; you decide any follow-up.\n\r"
     );

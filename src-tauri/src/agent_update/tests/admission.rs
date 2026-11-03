@@ -245,7 +245,7 @@ async fn step_admission_cancel_barrier_is_first_winner() {
     let (release_commit_tx, release_commit_rx) = tokio::sync::oneshot::channel();
     gate.state
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .controls
         .get_mut(&cancelled_target.command)
         .expect("cancel-first control")
@@ -318,7 +318,7 @@ async fn step_admission_cancel_barrier_is_first_winner() {
     let (release_spawn_tx, release_spawn_rx) = tokio::sync::oneshot::channel();
     gate.state
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .controls
         .get_mut(&admitted_target.command)
         .expect("admission-first control")
@@ -425,7 +425,10 @@ async fn probe_owner_install_waits_for_real_spawn_success() {
         .await
         .expect("real probe spawned suspended before containment handoff");
     {
-        let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let control = state.controls.get(&target.command).expect("target control");
         assert!(matches!(
             control.phase,
@@ -451,7 +454,10 @@ async fn probe_owner_install_waits_for_real_spawn_success() {
     );
     assert!(!cancel.is_finished());
     {
-        let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(!state
             .controls
             .get(&target.command)
@@ -527,7 +533,10 @@ async fn rejected_spawn_cleanup_dominates_adapters_and_final_result() {
         });
         spawned_rx.await.expect("updater spawned suspended");
         {
-            let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+            let state = gate
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert!(matches!(
                 state
                     .controls
@@ -598,7 +607,10 @@ async fn rejected_spawn_cleanup_dominates_adapters_and_final_result() {
             panic!("target completed before rejected post-probe barrier: {early:?}");
         }
         {
-            let state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+            let state = gate
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let control = state.controls.get(&target.command).expect("target control");
             assert!(matches!(
                 control.phase,

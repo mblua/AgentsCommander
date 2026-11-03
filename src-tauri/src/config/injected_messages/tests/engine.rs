@@ -60,11 +60,7 @@ fn unknown_placeholder_is_left_literal() {
     // The unknown-token grammar must not fire on ordinary prose full of
     // bare percent signs, which is what rendered thresholds look like.
     let (_, unknown) = expand_tokens("50%, 75%, 90% and 100% del contexto", &alert_values());
-    assert!(
-        unknown.is_empty(),
-        "unexpected unknown tokens: {:?}",
-        unknown
-    );
+    assert!(unknown.is_empty(), "unexpected unknown tokens: {unknown:?}");
     // Case-insensitive recognition, for the warning only: `%member%` is not
     // substituted, but it is reported rather than silently ignored.
     let (out, unknown) = expand_tokens("%member%", &alert_values());
@@ -133,10 +129,10 @@ fn sanitize_neutralizes_response_marker_prefix() {
     for run in 2..=4 {
         let hostile = format!("{}AC_RESPONSE::abc::START%%", "%".repeat(run));
         let out = sanitize(&hostile);
-        assert_eq!(out, "%AC_RESPONSE::abc::START%%", "run of {}", run);
-        assert!(!out.contains("%%AC_RESPONSE::"), "run of {}", run);
-        assert!(!out.contains(&start_marker), "run of {}", run);
-        assert_eq!(sanitize(&out), out, "not idempotent for run of {}", run);
+        assert_eq!(out, "%AC_RESPONSE::abc::START%%", "run of {run}");
+        assert!(!out.contains("%%AC_RESPONSE::"), "run of {run}");
+        assert!(!out.contains(&start_marker), "run of {run}");
+        assert_eq!(sanitize(&out), out, "not idempotent for run of {run}");
     }
 
     // Expansion runs before sanitization, so `%OBSERVED%` hands a third `%`
@@ -177,8 +173,8 @@ fn sanitize_neutralizes_response_marker_prefix() {
         "",
     ] {
         let once = sanitize(probe);
-        assert_eq!(sanitize(&once), once, "not idempotent: {:?}", probe);
-        assert!(!once.contains("%%AC_RESPONSE::"), "survived: {:?}", probe);
+        assert_eq!(sanitize(&once), once, "not idempotent: {probe:?}");
+        assert!(!once.contains("%%AC_RESPONSE::"), "survived: {probe:?}");
     }
 }
 

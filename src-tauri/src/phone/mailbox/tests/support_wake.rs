@@ -567,7 +567,7 @@ pub(super) fn write_wake_outbox_message_with_route(
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
     std::fs::create_dir_all(&outbox_dir).unwrap();
-    let message_path = outbox_dir.join(format!("{}.json", msg_id));
+    let message_path = outbox_dir.join(format!("{msg_id}.json"));
     let msg = OutboxMessage {
         id: msg_id.into(),
         token: Some(MAILBOX_MASTER_TOKEN.into()),
@@ -608,8 +608,7 @@ pub(super) fn assert_no_spawn_or_destroy_events(hooks: &MailboxTestHooks) {
             event,
             MailboxTestEvent::Spawn(_) | MailboxTestEvent::Destroy(_)
         )),
-        "unexpected spawn or destroy event: {:?}",
-        events
+        "unexpected spawn or destroy event: {events:?}"
     );
 }
 
@@ -660,7 +659,7 @@ pub(super) async fn run_mailbox_message<R: tauri::Runtime>(
         .parent()
         .unwrap()
         .join("delivered")
-        .join(format!("{}.json", msg_id));
+        .join(format!("{msg_id}.json"));
     let poller = MailboxPoller::new_with_test_hooks(hooks);
     Box::pin(poller.process_message(app, message_path, OutboxOrigin::Replica))
         .await
@@ -714,18 +713,19 @@ pub(super) async fn seed_self_clear_session(
 
 /// #626 - seed the agent's `SELF-HANDOFF.md` so the existence gate passes. The gate (§4.2) rejects
 /// any self-handoff-and-clear whose root has no `SELF-HANDOFF.md`, so every test that expects a
-/// "queued"/"already_queued" outcome must seed it first.
+/// `"queued"`/`"already_queued"` outcome must seed it first.
 pub(super) fn seed_self_handoff(cwd: &Path) {
     std::fs::write(cwd.join("SELF-HANDOFF.md"), "resume notes for the test").unwrap();
 }
 
 /// #626/#636 - count archived SELF-FORGET files in `cwd/self-clear/` (suffix match; the wall-clock
 /// timestamp prefix in the real archive name is unpredictable, so the harness asserts by suffix,
-/// not exact name). Returns 0 if `self-clear/` does not exist (read_dir errors -> unwrap_or(0)).
+/// not exact name). Returns 0 if `self-clear/` does not exist
+/// (`read_dir` errors -> `unwrap_or(0)`).
 pub(super) fn count_forget_archives(cwd: &Path) -> usize {
     std::fs::read_dir(cwd.join("self-clear"))
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
+            rd.filter_map(std::result::Result::ok)
                 .filter(|e| e.file_name().to_string_lossy().ends_with("_SELF-FORGET.md"))
                 .count()
         })
@@ -771,7 +771,7 @@ pub(super) fn read_response_json(cwd: &Path, request_id: &str) -> Option<serde_j
     let resp = cwd
         .join(crate::config::agent_local_dir_name())
         .join("responses")
-        .join(format!("{}.json", request_id));
+        .join(format!("{request_id}.json"));
     let content = std::fs::read_to_string(&resp).ok()?;
     serde_json::from_str(&content).ok()
 }
