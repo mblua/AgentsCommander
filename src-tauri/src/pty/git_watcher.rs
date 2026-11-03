@@ -58,7 +58,9 @@ fn note_timeout(path: &str, owner: &GitState) -> u64 {
     let map = owner
         .timeout_counts
         .get_or_init(|| Mutex::new(HashMap::new()));
-    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = map
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let count = g.entry(path.to_string()).or_insert(0);
     *count += 1;
     *count
@@ -107,7 +109,7 @@ pub(crate) struct GitStatus {
 /// up to 15s old, so if the repo changed in between the two watchers hold DIFFERENT
 /// values, both write divergent `dirty` into `git_repos`, and both emit (each compares
 /// against its own cache). That is a red/violet badge flicker. The CAS is not a backstop:
-/// it only suppresses discovery when GitWatcher's write lands inside discovery's
+/// it only suppresses discovery when `GitWatcher`'s write lands inside discovery's
 /// detection window. Sharing makes the two watchers agree by construction.
 ///
 /// `.unwrap_or_else(|e| e.into_inner())` is required, not stylistic: `.unwrap()` would
@@ -122,7 +124,7 @@ pub(crate) struct GitStatus {
 pub(crate) fn remember_dirty(path: &str, detected: Option<bool>, owner: &GitState) -> Option<bool> {
     let mut g = last_dirty_map(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match detected {
         Some(d) => {
             g.insert(path.to_string(), d);
@@ -162,7 +164,7 @@ fn git_status_snapshot(owner: &GitState) -> &Mutex<HashMap<String, Option<GitSta
 pub(crate) fn publish_git_status(path: &str, status: Option<GitStatus>, owner: &GitState) {
     let mut g = git_status_snapshot(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     g.insert(path.to_string(), status);
 }
 
@@ -171,7 +173,7 @@ pub(crate) fn publish_git_status(path: &str, status: Option<GitStatus>, owner: &
 pub(crate) fn read_git_status(path: &str, owner: &GitState) -> Option<GitStatus> {
     let g = git_status_snapshot(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     g.get(path).cloned().flatten()
 }
 
@@ -187,13 +189,13 @@ fn discovery_repo_paths_cell(owner: &GitState) -> &Mutex<Vec<String>> {
 pub(crate) fn set_discovery_repo_paths(paths: Vec<String>, owner: &GitState) {
     *discovery_repo_paths_cell(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = paths;
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = paths;
 }
 
 pub(crate) fn discovery_repo_paths(owner: &GitState) -> Vec<String> {
     discovery_repo_paths_cell(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
@@ -209,17 +211,17 @@ fn discovery_repo_rooms_cell(owner: &GitState) -> &Mutex<Vec<(String, String)>> 
 pub(crate) fn set_discovery_repo_rooms(pairs: Vec<(String, String)>, owner: &GitState) {
     *discovery_repo_rooms_cell(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = pairs;
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = pairs;
 }
 
 /// `pub(crate)` rather than `pub(super)` (both this getter and
-/// `discovery_repo_paths` above): the ac_discovery tests assert that this map
+/// `discovery_repo_paths` above): the `ac_discovery` tests assert that this map
 /// mirrors the pushed path vector, and a `pub(super)` accessor would be
 /// invisible from `commands::`. Production readers of both still live in `pty`.
 pub(crate) fn discovery_repo_rooms(owner: &GitState) -> Vec<(String, String)> {
     discovery_repo_rooms_cell(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
@@ -234,12 +236,12 @@ fn retain_swept_paths(live: &HashSet<String>, owner: &GitState) {
     {
         let mut snapshot = git_status_snapshot(owner)
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         snapshot.retain(|path, _| live.contains(path));
     }
     let mut dirty = last_dirty_map(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     dirty.retain(|path, _| live.contains(path));
 }
 
@@ -570,9 +572,8 @@ impl GitWatcher {
                     self.cache.lock().unwrap().insert(id, refreshed);
                 } else {
                     log::debug!(
-                        "[GitWatcher] gen mismatch on session {} — refresh landed during poll; \
-                        skipping stale emit",
-                        id
+                        "[GitWatcher] gen mismatch on session {id} — refresh landed during poll; \
+                        skipping stale emit"
                     );
                     // Invalidate our cache so the next tick re-evaluates against the
                     // refreshed list.
@@ -888,7 +889,7 @@ impl GitSweeper {
 /// modules (`pty::remote_watcher` rounds and `commands::ac_discovery`'s push
 /// test), so those tests must serialize against each other, not merely within
 /// one module. Lives beside the maps it guards. Async-aware because the round
-/// tests hold it across their awaits; the sync ac_discovery test uses
+/// tests hold it across their awaits; the sync `ac_discovery` test uses
 /// `blocking_lock`.
 #[cfg(test)]
 pub(crate) static DISCOVERY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

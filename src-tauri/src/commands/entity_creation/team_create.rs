@@ -36,17 +36,17 @@ pub(super) fn allocate_gui_room(
     let wg_name = room_dir_name(wg_number, safe_team, room_number_pad_width());
     let wg_dir = base.join(&wg_name);
     if directories::room_directory_present(&wg_dir) {
-        return Err(format!("Room directory already exists: {}", wg_name));
+        return Err(format!("Room directory already exists: {wg_name}"));
     }
     directories::create_room_directory(&wg_dir)
-        .map_err(|e| format!("Failed to create room directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room directory: {e}"))?;
     directories::create_room_messaging_directory(
         &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
     )
-    .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+    .map_err(|e| format!("Failed to create messaging directory: {e}"))?;
 
     // Write the prepared Clean or user-owned task before replicas and clones.
-    write_task(&wg_dir, task_content).map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+    write_task(&wg_dir, task_content).map_err(|e| format!("Failed to write TASK.md: {e}"))?;
 
     Ok::<_, String>((wg_dir, wg_number))
 }
@@ -130,7 +130,7 @@ pub(super) fn create_team_from_sources(
     )
 }
 
-/// Create a team directory inside {project_path}/.ac/_team_{name}/
+/// Create a team directory inside `{project_path}/.ac/_team_{name}/`
 // Tauri command parameters plus injected state exceed Clippy's argument threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -170,7 +170,7 @@ pub async fn create_team(
     .map_err(|e| format!("Team creation worker failed: {e}"))??;
 
     let result_path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&team_dir);
-    log::info!("[entity_creation] Created team: {}", result_path);
+    log::info!("[entity_creation] Created team: {result_path}");
     emit_coordinator_refresh(&app, session_mgr.inner()).await;
     Ok(CreatedEntityResult { path: result_path })
 }
@@ -200,10 +200,7 @@ pub async fn create_workgroup(
 
             // Ensure gitignore protects workgroup clones from parent repo operations
             if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
-                log::warn!(
-                    "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
-                    e
-                );
+                log::warn!("[create_workgroup] Failed to ensure Project AC Root .gitignore: {e}",);
             }
 
             let team_config = read_team_config(&base, &safe_team)?;
@@ -306,7 +303,7 @@ fn record_workgroup_clone_result(
             None
         }
         Err(error) => {
-            log::error!("[entity_creation] Failed to clone {}: {}", url, error);
+            log::error!("[entity_creation] Failed to clone {url}: {error}");
             Some(CloneError {
                 url: url.to_string(),
                 error,

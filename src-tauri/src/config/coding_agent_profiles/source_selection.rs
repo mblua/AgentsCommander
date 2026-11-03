@@ -106,25 +106,12 @@ fn discover_source_candidates(
     Ok(candidates)
 }
 
-pub(crate) fn discover_source_inventory_with_cut(
-    settings: &AppSettings,
-    mut cut: impl FnMut(&'static str) -> std::io::Result<()>,
-) -> Result<
-    (
-        crate::config::settings::SourceDiscoveryWitness,
-        Vec<SourceSelectionTarget>,
-    ),
-    crate::config::settings::IdentityReferenceError,
-> {
-    use crate::config::settings::{IdentityReferenceError, SourceDiscoveryWitness};
+fn discover_authoritative_source_roots(
+    candidates: Vec<PathBuf>,
+    witness: &mut crate::config::settings::SourceDiscoveryWitness,
+) -> Result<Vec<PathBuf>, crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::IdentityReferenceError;
     let fail = |error: std::io::Error| IdentityReferenceError::Preparation(error.to_string());
-    let mut witness = SourceDiscoveryWitness {
-        registry: settings.project_paths.clone(),
-        parents: Vec::new(),
-        slots: Vec::new(),
-        membership: Vec::new(),
-    };
-    let candidates = discover_source_candidates(settings, &mut witness, &mut cut)?;
     let mut ac_roots: Vec<PathBuf> = Vec::new();
     for candidate in candidates {
         match profile_path_symlink_metadata(&candidate) {
@@ -151,6 +138,29 @@ pub(crate) fn discover_source_inventory_with_cut(
         }
     }
     ac_roots.sort();
+    Ok(ac_roots)
+}
+
+pub(crate) fn discover_source_inventory_with_cut(
+    settings: &AppSettings,
+    mut cut: impl FnMut(&'static str) -> std::io::Result<()>,
+) -> Result<
+    (
+        crate::config::settings::SourceDiscoveryWitness,
+        Vec<SourceSelectionTarget>,
+    ),
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::{IdentityReferenceError, SourceDiscoveryWitness};
+    let fail = |error: std::io::Error| IdentityReferenceError::Preparation(error.to_string());
+    let mut witness = SourceDiscoveryWitness {
+        registry: settings.project_paths.clone(),
+        parents: Vec::new(),
+        slots: Vec::new(),
+        membership: Vec::new(),
+    };
+    let candidates = discover_source_candidates(settings, &mut witness, &mut cut)?;
+    let ac_roots = discover_authoritative_source_roots(candidates, &mut witness)?;
     let mut targets = Vec::new();
     for root in ac_roots {
         witness.parents.push(root.clone());

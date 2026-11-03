@@ -8,6 +8,25 @@ use std::sync::Arc;
 use tauri::Manager;
 use uuid::Uuid;
 
+fn valid_host_pty_envelope_shape(
+    path: &Path,
+    envelope: &crate::phone::types::PtyInputHostEnvelope,
+) -> bool {
+    use crate::phone::types::{PtyInputEnterMode, PTY_INPUT_VERSION};
+    let payload = &envelope.pty_input;
+    envelope.action == "pty-input"
+        && envelope.body.is_empty()
+        && envelope.mode == "wake"
+        && !envelope.get_output
+        && envelope.preferred_agent.is_empty()
+        && envelope.priority == "normal"
+        && payload.version == PTY_INPUT_VERSION
+        && payload.enter == PtyInputEnterMode::AgentSubmit
+        && envelope.id == payload.injection_id
+        && payload.op_id == payload.injection_id
+        && path.file_stem().and_then(|value| value.to_str()) == Some(payload.injection_id.as_str())
+}
+
 impl MailboxPoller {
     pub(crate) fn reject_malformed_pty_candidate(&self, path: &Path) {
         use crate::phone::types::{
@@ -66,24 +85,12 @@ impl MailboxPoller {
     ) -> Option<CorrelatedHostPtyMetadata> {
         use crate::phone::types::{
             parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
-            pty_input_host_request_fingerprint, sha256_hex, PtyInputEnterMode,
-            PtyInputHostFingerprint, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+            pty_input_host_request_fingerprint, sha256_hex, PtyInputHostFingerprint,
+            PTY_INPUT_TTL_SECS,
         };
 
         let payload = &envelope.pty_input;
-        let immutable_shape_valid = envelope.action == "pty-input"
-            && envelope.body.is_empty()
-            && envelope.mode == "wake"
-            && !envelope.get_output
-            && envelope.preferred_agent.is_empty()
-            && envelope.priority == "normal"
-            && payload.version == PTY_INPUT_VERSION
-            && payload.enter == PtyInputEnterMode::AgentSubmit
-            && envelope.id == payload.injection_id
-            && payload.op_id == payload.injection_id
-            && path.file_stem().and_then(|value| value.to_str())
-                == Some(payload.injection_id.as_str());
-        if !immutable_shape_valid {
+        if !valid_host_pty_envelope_shape(path, envelope) {
             return None;
         }
         let injection_id = parse_canonical_uuid_v4(&payload.injection_id).ok()?;
@@ -708,6 +715,21 @@ impl MailboxPoller {
         }
     }
 
+    async fn reject_host_pty_without_store<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        path: &Path,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+    ) {
+        if !self
+            .reject_unavailable_store_pty_candidate(app, path, source_identity, envelope)
+            .await
+        {
+            self.reject_malformed_pty_candidate(path);
+        }
+    }
+
     pub(crate) async fn process_pty_input_file<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -771,23 +793,15 @@ impl MailboxPoller {
                 }
             };
         let Some(state) = state else {
-            if !self
-                .reject_unavailable_store_pty_candidate(app, path, source_identity, &envelope)
-                .await
-            {
-                self.reject_malformed_pty_candidate(path);
-            }
+            self.reject_host_pty_without_store(app, path, source_identity, &envelope)
+                .await;
             return;
         };
         let store = match &state.store {
             Ok(store) => Arc::clone(store),
             Err(_) => {
-                if !self
-                    .reject_unavailable_store_pty_candidate(app, path, source_identity, &envelope)
-                    .await
-                {
-                    self.reject_malformed_pty_candidate(path);
-                }
+                self.reject_host_pty_without_store(app, path, source_identity, &envelope)
+                    .await;
                 return;
             }
         };

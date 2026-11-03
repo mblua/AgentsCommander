@@ -45,7 +45,6 @@ pub(crate) fn default_context_dynamic_values(
                 solely to discover archive directories. Read them freely; never write, modify or \
                 delete archives or their container.\n   Allowed for reading and writing there:\n   \
                 - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
-            matrix_root = matrix_root,
         ),
         None => String::new(),
     };
@@ -146,15 +145,13 @@ fn forbidden_write_scope(
     } else if matrix_root.is_some() {
         format!(
             "the entries listed above — including other agents' replica directories, any other \
-                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
-                arbitrary paths on disk",
-            ws = ac_root_phrase,
+                files inside the Agent Matrix, {ac_root_phrase}, parent project dirs, user home \
+                files, or arbitrary paths on disk",
         )
     } else {
         format!(
-            "the entries listed above — including other agents' replica directories, {ws}, parent \
-                project dirs, user home files, or arbitrary paths on disk",
-            ws = ac_root_phrase,
+            "the entries listed above — including other agents' replica directories, \
+                {ac_root_phrase}, parent project dirs, user home files, or arbitrary paths on disk",
         )
     }
 }
@@ -198,7 +195,6 @@ fn messaging_access_grants(messaging_mode: &MessagingContextMode) -> (String, St
              rejects any other shape). Do NOT modify or delete any message file once written. Do \
              NOT write any other kind of file here. You may also READ message files inside this \
              directory.\n\n",
-            path = path,
         ),
         MessagingContextMode::None => String::new(),
     };
@@ -232,29 +228,27 @@ fn forbidden_read_scope(is_root_agent: bool, messaging_read_phrase: &str) -> Str
     // or the grant becomes self-referentially unreadable.
     if is_root_agent {
         format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
-                operations covered by the exception below. Your Root Agent scope already grants \
-                reads across every project folder registered in `projectPaths` in \
-                `project-paths.json`, including its `.ac` tree. You may ALWAYS read the app config \
-                `project-paths.json` to enumerate that set, the app config `settings.json` for \
-                unrelated settings, and the Agency template cache directory that `agency-templates \
-                status` and `agency-templates list` report on; these reads are grants, while \
-                direct writes to them stay CLI-managed. Reads stay off-limits beyond the \
-                registered set: files of projects not listed in `projectPaths` in \
+            "the entries listed above{messaging_read_phrase}, except for explicitly requested \
+                AgentsCommander CLI operations covered by the exception below. Your Root Agent \
+                scope already grants reads across every project folder registered in \
+                `projectPaths` in `project-paths.json`, including its `.ac` tree. You may ALWAYS \
+                read the app config `project-paths.json` to enumerate that set, the app config \
+                `settings.json` for unrelated settings, and the Agency template cache directory \
+                that `agency-templates status` and `agency-templates list` report on; these reads \
+                are grants, while direct writes to them stay CLI-managed. Reads stay off-limits \
+                beyond the registered set: files of projects not listed in `projectPaths` in \
                 `project-paths.json`, user home files unrelated to AgentsCommander, and arbitrary \
                 paths on disk.",
-            ms = messaging_read_phrase,
         )
     } else {
         format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI \
-                operations covered by the exception below. This includes other agents' replica \
-                directories, and any other agent's `memory*` directories (the live `memory/`, \
-                `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or \
-                `Role.md`: another agent's memory is private whether it is live or rotated; do not \
-                read, list, search, or summarize it, even if asked. If you need information \
-                another agent holds, message that agent and ask.",
-            ms = messaging_read_phrase,
+            "the entries listed above{messaging_read_phrase}, except for explicitly requested \
+                AgentsCommander CLI operations covered by the exception below. This includes other \
+                agents' replica directories, and any other agent's `memory*` directories (the live \
+                `memory/`, `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`), `plans/`, \
+                `skills/`, or `Role.md`: another agent's memory is private whether it is live or \
+                rotated; do not read, list, search, or summarize it, even if asked. If you need \
+                information another agent holds, message that agent and ask.",
         )
     }
 }
@@ -324,7 +318,6 @@ fn send_message_instructions(messaging_mode: &MessagingContextMode) -> String {
              wake\n\
              ```\n\n\
              `--send` takes the filename ONLY, never a path.\n",
-            path = path,
         ),
         MessagingContextMode::Workgroup(_) => "Messages are **file-based** to avoid PTY \
             truncation:\n\n\

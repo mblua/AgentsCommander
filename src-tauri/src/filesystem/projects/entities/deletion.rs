@@ -75,7 +75,7 @@ pub(crate) fn delete_root_has_windows_reparse_point(_metadata: &std::fs::Metadat
 /// source's descendant lacks `FILE_SHARE_DELETE` — the most common real-world
 /// blocker shape (default-share opens by IDEs and terminals). This is the
 /// rename-path counterpart to `is_file_in_use_error`, which was tuned for
-/// `remove_dir_all` semantics where ACCESS_DENIED typically means a real
+/// `remove_dir_all` semantics where `ACCESS_DENIED` typically means a real
 /// permission failure (read-only file) rather than a share-mode mismatch.
 ///
 /// `pub(crate)` so unit tests can exercise it without going through `try_atomic_delete_wg`.
@@ -102,7 +102,7 @@ pub(crate) fn is_rename_blocked_by_handle(e: &std::io::Error) -> bool {
 /// - `ERROR_SHARING_VIOLATION` (32) — standard open with a deny-share mode.
 /// - `ERROR_LOCK_VIOLATION` (33) — byte-range lock collision.
 /// - `ERROR_USER_MAPPED_FILE` (1224) — file is mapped into another process's address
-///   space. This is the VSCode / IDE memory-mapped-I/O case and was the motivating
+///   space. This is the `VSCode` / IDE memory-mapped-I/O case and was the motivating
 ///   real-world scenario for the blocker diagnostic. See plan §6.1.
 ///
 /// On non-Windows always returns false: Linux / macOS produce different error codes
@@ -162,7 +162,7 @@ pub(crate) enum WgDeleteOutcome {
     /// Rename failed with a Windows file-in-use error. Tree is intact; caller
     /// should run the blocker diagnostic and return `BLOCKERS:` to the frontend.
     Blocked(std::io::Error),
-    /// Rename failed with any other error (NotFound, permission, invalid path,
+    /// Rename failed with any other error (`NotFound`, permission, invalid path,
     /// …). Caller passes the raw error through unchanged.
     Other(std::io::Error),
 }
@@ -190,7 +190,7 @@ impl WgDeleteOutcome {
 /// original tree and surface a `BLOCKERS:` report.
 ///
 /// Suffix scheme: `.deleting-<wg_name>-<uuid>` — leading `.` keeps any orphan
-/// (rare race: rename succeeds but remove_dir_all fails) invisible to the
+/// (rare race: rename succeeds but `remove_dir_all` fails) invisible to the
 /// `entity_prefix::has_entity_prefix` filters in `ac_discovery` and
 /// `cli::list_peers`, so an orphan won't surface as a ghost room. UUID is
 /// used (already in `Cargo.toml`) to guarantee uniqueness across rapid retries.
@@ -271,12 +271,12 @@ where
             Ok(()) => ReplicaRemovalOutcome::Removed,
             Err(e) if e.kind() == io::ErrorKind::NotFound => ReplicaRemovalOutcome::AlreadyAbsent,
             Err(e) => {
-                ReplicaRemovalOutcome::Failed(format!("Failed to delete replica directory: {}", e))
+                ReplicaRemovalOutcome::Failed(format!("Failed to delete replica directory: {e}"))
             }
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => ReplicaRemovalOutcome::AlreadyAbsent,
         Err(e) => {
-            ReplicaRemovalOutcome::Failed(format!("Failed to inspect replica directory: {}", e))
+            ReplicaRemovalOutcome::Failed(format!("Failed to inspect replica directory: {e}"))
         }
     }
 }
@@ -290,7 +290,7 @@ pub(crate) fn inspect_team_for_delete(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn remove_team_directory(path: &Path) -> Result<(), String> {
-    std::fs::remove_dir_all(path).map_err(|e| format!("Failed to delete team directory: {}", e))
+    std::fs::remove_dir_all(path).map_err(|e| format!("Failed to delete team directory: {e}"))
 }
 
 pub(crate) fn stage_agent_target(from: &Path, to: &Path) -> io::Result<()> {

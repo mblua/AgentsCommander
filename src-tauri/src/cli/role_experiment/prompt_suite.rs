@@ -22,7 +22,7 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
     let bytes = documents::read_prompt_suite(path).map_err(|e| {
         vec![err_at_path(
             "prompt_suite_missing",
-            format!("Failed to read prompt suite: {}", e),
+            format!("Failed to read prompt suite: {e}"),
             path,
         )]
     })?;
@@ -30,7 +30,7 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
     let content = String::from_utf8(bytes).map_err(|e| {
         vec![err_at_path(
             "prompt_suite_unparseable",
-            format!("Prompt suite is not valid UTF-8: {}", e),
+            format!("Prompt suite is not valid UTF-8: {e}"),
             path,
         )]
     })?;
@@ -48,7 +48,7 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         let Some(object) = parsed.as_object() else {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!("Prompt suite line {} must be a JSON object", physical_line),
+                format!("Prompt suite line {physical_line} must be a JSON object"),
                 physical_line,
                 None,
             ));
@@ -61,9 +61,8 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
                 format!(
-                    "Prompt suite line {} has invalid id '{}'; \
-                     use lowercase ASCII letters, digits, hyphen, or underscore",
-                    physical_line, id
+                    "Prompt suite line {physical_line} has invalid id '{id}'; \
+                     use lowercase ASCII letters, digits, hyphen, or underscore"
                 ),
                 physical_line,
                 Some("id"),
@@ -90,8 +89,8 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
             errors.push(err_at_line(
                 "prompt_suite_duplicate_id",
                 format!(
-                    "Prompt suite duplicate id '{}' at line {}; first seen at line {}",
-                    id, physical_line, first_line
+                    "Prompt suite duplicate id '{id}' at line {physical_line}; \
+                     first seen at line {first_line}"
                 ),
                 physical_line,
                 Some("id"),
@@ -134,7 +133,7 @@ fn parse_prompt_json(
         Err(e) => {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!("Prompt suite line {} is invalid JSON: {}", physical_line, e),
+                format!("Prompt suite line {physical_line} is invalid JSON: {e}"),
                 physical_line,
                 None,
             ));
@@ -155,10 +154,7 @@ fn required_prompt_string(
         _ => {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!(
-                    "Prompt suite line {} is missing required string field {}",
-                    line, field
-                ),
+                format!("Prompt suite line {line} is missing required string field {field}"),
                 line,
                 Some(field),
             ));
@@ -179,10 +175,7 @@ fn optional_string_array(
     let Some(items) = value.as_array() else {
         errors.push(err_at_line(
             "prompt_suite_unparseable",
-            format!(
-                "Prompt suite line {} field {} must be an array of strings",
-                line, field
-            ),
+            format!("Prompt suite line {line} field {field} must be an array of strings"),
             line,
             Some(field),
         ));
@@ -193,10 +186,7 @@ fn optional_string_array(
         let Some(item) = item.as_str() else {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!(
-                    "Prompt suite line {} field {} must contain only strings",
-                    line, field
-                ),
+                format!("Prompt suite line {line} field {field} must contain only strings"),
                 line,
                 Some(field),
             ));
