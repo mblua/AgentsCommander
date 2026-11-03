@@ -36,7 +36,8 @@ pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec
         let base = Path::new(repo_path);
         if !crate::filesystem::projects::project_path_is_dir(base) {
             log::trace!(
-                "[teams] discover_teams: project_path skipped (not a directory) — path='{repo_path}'"
+                "[teams] discover_teams: project_path skipped (not a directory) — \
+                 path='{repo_path}'"
             );
             continue;
         }
