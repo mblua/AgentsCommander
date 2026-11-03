@@ -11,9 +11,9 @@ use super::{
 /// (`open-project`, `new-project`) so error paths and pre-validation reads
 /// do NOT silently rewrite `settings.json` (Round-1 G5 in #191's plan).
 ///
-/// The CLI verbs do not consume the root_token; if a future verb needs it,
+/// The CLI verbs do not consume the `root_token`; if a future verb needs it,
 /// `settings.root_token == None` on a brand-new install is fine — the CLI
-/// is read-only with respect to it. The GUI still owns root_token
+/// is read-only with respect to it. The GUI still owns `root_token`
 /// generation via the next `load_settings()` call when it boots.
 ///
 /// **Migration duplication is intentional for this PR.** Extracting an

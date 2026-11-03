@@ -59,7 +59,7 @@ pub(crate) struct SourceReadContext {
 
 impl SourceReadContext {
     /// Backend-only context: P comes from the current registry, never the
-    /// assignment target Q or a deserialized SourceRef.
+    /// assignment target Q or a deserialized `SourceRef`.
     pub(crate) fn from_settings(
         settings: &AppSettings,
         settings_path: &Path,
@@ -563,7 +563,7 @@ impl OriginInputs {
             self.binding.overlay.as_ref(),
         ]
         .iter()
-        .any(|revision| revision.is_none())
+        .any(Option::is_none)
         {
             return Err(SourcePreparationError::OriginUnavailable);
         }
