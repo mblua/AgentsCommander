@@ -219,7 +219,7 @@ impl SessionManager {
         self.get_session(id).await.map(|s| s.shell)
     }
 
-    /// Return the working_directory iff the session exists AND is a coordinator.
+    /// Return the `working_directory` iff the session exists AND is a coordinator.
     /// Cheap (no full Session clone) for the user-message hot path. (#552)
     pub async fn coordinator_cwd(&self, id: Uuid) -> Option<String> {
         let state = self.state.read().await;
@@ -233,7 +233,7 @@ impl SessionManager {
 
     /// (#552) AGENT-OWNED sessions only, paired with their auto-close team key
     /// `<project>:<wg>` (the agent FQN minus the trailing `/agent`). Ad-hoc user
-    /// shells (no agent_id, not a coordinator) are excluded so they are never
+    /// shells (no `agent_id`, not a coordinator) are excluded so they are never
     /// auto-closed. Sessions whose cwd does not yield a `/`-bearing FQN are skipped.
     pub async fn agent_team_members(&self) -> Vec<(Uuid, String)> {
         let state = self.state.read().await;
@@ -258,7 +258,7 @@ impl SessionManager {
     }
 
     /// (#552 auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
-    /// coordinator working_directory) for every coordinator session record. The
+    /// coordinator `working_directory`) for every coordinator session record. The
     /// auto-close task snapshots this BEFORE destroying so it can set the
     /// "auto-closed" marker on the correct coordinator row: the FQN keys the
     /// store, the cwd is the event `replicaPath`. One coordinator per team; on
@@ -310,7 +310,7 @@ impl SessionManager {
         out
     }
 
-    /// Per-session view for the `GitWatcher` fan-out. Returns (session_id, repos, gen).
+    /// Per-session view for the `GitWatcher` fan-out. Returns (`session_id`, repos, gen).
     /// The generation snapshot lets the watcher call `set_git_repos_if_gen` for its
     /// write, skipping the write+emit if a refresh landed during detection.
     pub async fn get_sessions_repos(&self) -> Vec<(Uuid, Vec<SessionRepo>, u64)> {
@@ -323,7 +323,7 @@ impl SessionManager {
             .collect()
     }
 
-    /// (session_id, working_directory) view for callers that only need the CWD
+    /// (`session_id`, `working_directory`) view for callers that only need the CWD
     /// (e.g. mailbox outbox scanning, agent-name resolution).
     pub async fn get_sessions_working_dirs(&self) -> Vec<(Uuid, String)> {
         let state = self.state.read().await;
