@@ -128,7 +128,7 @@ pub(in super::super) fn deduplicate_preserving_affected(
                 result.push(sanitize_failed_recoverable(&recipe));
             }
             Err(error) => {
-                log::error!("[sessions] invalid affected binding recipe {binding}: {error}")
+                log::error!("[sessions] invalid affected binding recipe {binding}: {error}");
             }
         }
     }
