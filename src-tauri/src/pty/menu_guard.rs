@@ -133,7 +133,7 @@ impl MenuGuard {
                 Some(re)
             }
             Err(e) => {
-                log::error!("[menu_guard] Invalid regex pattern '{}': {}", pattern, e);
+                log::error!("[menu_guard] Invalid regex pattern '{pattern}': {e}");
                 compiled.insert(pattern.to_string(), Err(e.to_string()));
                 None
             }

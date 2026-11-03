@@ -200,7 +200,7 @@ pub(super) fn record_selection_timing(
     line: String,
     #[cfg(test)] sample: timing_probe::SelectionTimingSample,
 ) {
-    log::info!("{}", line);
+    log::info!("{line}");
     #[cfg(test)]
     timing_probe::deliver(command, &sample, &line);
     #[cfg(not(test))]

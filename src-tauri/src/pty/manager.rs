@@ -59,7 +59,7 @@ pub struct PtyManager {
     container_backend: Arc<ContainerTransportBackend>,
 }
 
-/// An owned shallow route selected while PtyManager is locked. All forwarding happens after the
+/// An owned shallow route selected while `PtyManager` is locked. All forwarding happens after the
 /// caller has dropped that manager lock, so the output path never inherits it.
 pub(crate) struct PtyTerminalOutputRoute {
     session_id: Uuid,
