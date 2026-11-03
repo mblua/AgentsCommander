@@ -134,7 +134,7 @@ pub fn execute(args: WorkgroupArgs) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -187,7 +187,7 @@ fn write_refresh_traced(
         stage.refresh_request(uuid::Uuid::parse_str(&request.id).expect("generated UUID"));
     }
     if let Err(e) = write_project_refresh_request(&request) {
-        eprintln!("Warning: failed to request project refresh: {}", e);
+        eprintln!("Warning: failed to request project refresh: {e}");
         if let Some(stage) = &mut stage {
             stage.finish(Outcome::Error, Some(Reason::Failed));
         }
@@ -213,7 +213,7 @@ pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &s
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
     if let Err(e) = write_project_refresh_request(&request) {
-        eprintln!("Warning: failed to request project refresh: {}", e);
+        eprintln!("Warning: failed to request project refresh: {e}");
     }
 }
 
@@ -260,7 +260,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     || !args.repos.is_empty()
                     || !args.repo_agents.is_empty()
                     || !args.repo_exclude_agents.is_empty();
-                let team_dir = ac_root.join(format!("_team_{}", safe_team));
+                let team_dir = ac_root.join(format!("_team_{safe_team}"));
                 let config_path = team_dir.join("config.json");
                 let team_config_exists =
                     crate::filesystem::directories::cli_discovery_exists(&team_dir)
@@ -269,10 +269,9 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     read_team_config(&ac_root, &safe_team)?;
                     if has_legacy_team_flags {
                         return Err(format!(
-                            "Team '{}' already exists. \
+                            "Team '{safe_team}' already exists. \
                  `room add` no longer updates team configuration. \
-                 Use `team create` before `room add`, or `team add-member` for membership changes.",
-                            safe_team
+                 Use `team create` before `room add`, or `team add-member` for membership changes."
                         ));
                     }
                     None
@@ -295,12 +294,11 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     )?)
                 } else {
                     return Err(format!(
-                        "Team '{}' config not found. Create it first with `team create`.",
-                        safe_team
+                        "Team '{safe_team}' config not found. Create it first with `team create`."
                     ));
                 };
                 let runtime = tokio::runtime::Runtime::new()
-                    .map_err(|e| format!("Failed to create async runtime: {}", e))?;
+                    .map_err(|e| format!("Failed to create async runtime: {e}"))?;
                 let (coordinator, agents, repos) = if let Some(config) = provisioning_config {
                     (
                         Some(config.coordinator.clone()),
@@ -380,13 +378,12 @@ fn remove_hooked(
         if !dirty.is_empty() {
             let list = dirty
                 .iter()
-                .map(|(repo, reason)| format!("  - {} ({})", repo, reason))
+                .map(|(repo, reason)| format!("  - {repo} ({reason})"))
                 .collect::<Vec<_>>()
                 .join("\n");
             return Err(format!(
-                "Cannot delete room: the following repos have pending work:\n{}\n\n\
-                 Commit or push changes before deleting, or pass --force-dirty.",
-                list
+                "Cannot delete room: the following repos have pending work:\n{list}\n\n\
+                 Commit or push changes before deleting, or pass --force-dirty."
             ));
         }
     }
@@ -420,7 +417,7 @@ fn remove_hooked(
                 )
             }
             Ok(_) => {}
-            Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {}", e),
+            Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {e}"),
         }
     }
     write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
@@ -447,7 +444,7 @@ pub(crate) fn cli_remove_refresh_decision(
     match outcome {
         WgDeleteOutcome::Deleted => {}
         WgDeleteOutcome::Blocked(e) => {
-            return Err(format!("Failed to delete room, file in use: {}", e));
+            return Err(format!("Failed to delete room, file in use: {e}"));
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
@@ -458,7 +455,7 @@ pub(crate) fn cli_remove_refresh_decision(
             ));
         }
         WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete room directory: {}", e));
+            return Err(format!("Failed to delete room directory: {e}"));
         }
     }
     Ok(RemoveRefreshDecision::EmitWorkgroupRemoved)
@@ -511,8 +508,7 @@ fn build_repo_assignments(
     for url in include.keys() {
         if exclude.contains_key(url) {
             return Err(format!(
-                "Repo '{}' cannot use both --repo-agents and --repo-exclude-agents",
-                url
+                "Repo '{url}' cannot use both --repo-agents and --repo-exclude-agents"
             ));
         }
         if !order.contains(url) {
@@ -551,14 +547,14 @@ fn parse_assignment_specs(
     let mut out = HashMap::new();
     for spec in specs {
         let Some((url, agents)) = spec.split_once('=') else {
-            return Err(format!("{} expects URL=agent-a,agent-b", flag));
+            return Err(format!("{flag} expects URL=agent-a,agent-b"));
         };
         let url = url.trim();
         if url.is_empty() {
-            return Err(format!("{} URL cannot be empty", flag));
+            return Err(format!("{flag} URL cannot be empty"));
         }
         if out.contains_key(url) {
-            return Err(format!("{} repeated for repo '{}'", flag, url));
+            return Err(format!("{flag} repeated for repo '{url}'"));
         }
         let agents = agents
             .split(',')
@@ -567,7 +563,7 @@ fn parse_assignment_specs(
             .map(str::to_string)
             .collect::<Vec<_>>();
         if agents.is_empty() {
-            return Err(format!("{} must list at least one agent", flag));
+            return Err(format!("{flag} must list at least one agent"));
         }
         out.insert(url.to_string(), agents);
     }
@@ -584,8 +580,7 @@ fn resolve_assignment_agents(
         let resolved = resolve_agent_ref(ac_root, agent)?;
         if !roster.contains(&resolved) {
             return Err(format!(
-                "Repo assignment references agent '{}' which is not in the final team roster",
-                agent
+                "Repo assignment references agent '{agent}' which is not in the final team roster"
             ));
         }
         push_unique(&mut out, resolved);
@@ -615,7 +610,7 @@ pub(crate) async fn clone_missing_for_config(
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize JSON output: {}", e))?;
+        .map_err(|e| format!("Failed to serialize JSON output: {e}"))?;
     crate::cli_println!("{}", json);
     Ok(())
 }
