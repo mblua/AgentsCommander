@@ -270,7 +270,10 @@ fn error_body(reason: TerminalSnapshotReasonCode) -> Vec<u8> {
 fn strict_response(status: u16, body: &[u8], extra_headers: &str) -> Vec<u8> {
     let reason = if status == 200 { "OK" } else { "Response" };
     let mut response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json; \
+        charset=utf-8\r\nCache-Control: no-store\r\nPragma: \
+        no-cache\r\nContent-Length: {}\r\n{extra_headers}Connection: \
+        close\r\n\r\n",
         body.len()
     )
     .into_bytes();
@@ -528,7 +531,9 @@ fn terminal_snapshot_helper_process_http_failures_are_fixed_single_post_and_secr
         Box::new(|_| {
             let body = format!("{{\"error\":\"{MALFORMED_CANARY}\"}}");
             let mut response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json; \
+                charset=utf-8\r\nCache-Control: no-store\r\nPragma: \
+                no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len() + 9
             )
             .into_bytes();
@@ -586,7 +591,9 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
     let timeout_server = TestServer::start(|request, _| {
         let body = success_body(request);
         let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; \
+            charset=utf-8\r\nCache-Control: no-store\r\nPragma: \
+            no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
         .into_bytes();

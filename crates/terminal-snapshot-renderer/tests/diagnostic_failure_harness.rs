@@ -369,7 +369,8 @@ fn deliberately_failing_cargo_harness_diagnostics_are_payload_free() {
         .expect("remove isolated diagnostic harness artifacts");
     assert!(!scratch_path.exists());
     eprintln!(
-        "snapshot_diagnostic_harness_evidence cases={} artifact_files={} artifact_bytes={} stdout_bytes={} stderr_bytes={}",
+        "snapshot_diagnostic_harness_evidence cases={} artifact_files={} \
+        artifact_bytes={} stdout_bytes={} stderr_bytes={}",
         CHILD_CASES.len(),
         scan.files,
         scan.bytes,
