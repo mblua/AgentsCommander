@@ -149,16 +149,6 @@ pub async fn set_terminal_snapshots_enabled(
 /// Shared #1173 owner used by native Tauri and browser WebSocket transports.
 /// Whole-settings writers preserve this field and cannot call this owner
 /// without an explicit expected value.
-// Compatibility entry point for tests and dormant callers without an app tracker.
-#[allow(dead_code)]
-pub(crate) async fn set_terminal_snapshots_enabled_inner(
-    settings: &SettingsState,
-    expected: bool,
-    enabled: bool,
-) -> Result<(), String> {
-    set_terminal_snapshots_enabled_with_publication(settings, expected, enabled, |_| {}).await
-}
-
 pub(crate) async fn set_terminal_snapshots_enabled_with_publication(
     settings: &SettingsState,
     expected: bool,
@@ -174,8 +164,8 @@ pub(crate) async fn set_terminal_snapshots_enabled_with_publication(
     Ok(())
 }
 
-// Compatibility entry point for tests and dormant callers without an app tracker.
-#[allow(dead_code)]
+// Test entry point without an app tracker.
+#[cfg(test)]
 pub(crate) async fn persist_protected_settings_update(
     settings: &SettingsState,
     new_settings: AppSettings,
@@ -197,6 +187,7 @@ pub(crate) async fn persist_protected_settings_update_with_publication(
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn persist_protected_settings_update_with_saver(
     settings: &SettingsState,
     new_settings: AppSettings,
@@ -312,8 +303,8 @@ pub(crate) fn build_protected_settings_candidate(
     Ok(candidate)
 }
 
-// Compatibility entry point for tests and dormant callers without an app tracker.
-#[allow(dead_code)]
+// Test entry point without an app tracker.
+#[cfg(test)]
 pub(crate) async fn persist_settings_draft_update(
     settings: &SettingsState,
     draft: AppSettings,
@@ -335,6 +326,7 @@ pub(crate) async fn persist_settings_draft_update_with_publication(
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn persist_settings_draft_update_with_saver(
     settings: &SettingsState,
     draft: AppSettings,
