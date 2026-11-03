@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ impl QuitGate {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, QuitGateInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Builds the abort effects for a terminal outcome of `round`.
