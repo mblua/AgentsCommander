@@ -26,4 +26,17 @@ impl ResourceMonitorState {
     pub fn with_spawn_registry(spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>) -> Self {
         Self::with_backend_and_spawn_registry(Arc::new(PlatformProcessTreeBackend::new()), spawn)
     }
+
+    // P03 wires this additive constructor; old composition remains disabled in P02.
+    #[allow(dead_code)]
+    pub(crate) fn with_spawn_registry_and_diagnostics(
+        spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+        diagnostics: Arc<crate::cleanup_diagnostics::store::Diagnostics>,
+    ) -> Self {
+        Self::with_backend_spawn_and_diagnostics(
+            Arc::new(PlatformProcessTreeBackend::new()),
+            spawn,
+            diagnostics,
+        )
+    }
 }

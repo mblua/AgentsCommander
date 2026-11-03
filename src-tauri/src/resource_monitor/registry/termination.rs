@@ -1,3 +1,5 @@
+use super::selection::{self, Selection};
+use crate::cleanup_diagnostics::{operation::Operation, schema, store::ArmClaim};
 use crate::resource_monitor::registry::has_access_denied_signature;
 use crate::resource_monitor::registry::identity_unavailable_pid;
 use crate::resource_monitor::registry::is_missing_root_cleanup_error;
@@ -13,10 +15,65 @@ use crate::resource_monitor::types::ResourceGroupState;
 use crate::resource_monitor::types::ResourceKillReason;
 use crate::resource_monitor::types::ResourceKillResult;
 use crate::resource_monitor::types::TerminateOutcome;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::time::Instant;
 use uuid::Uuid;
+
+#[derive(Debug)]
+pub(crate) enum DiagnosticTerminationError {
+    Ordinary(super::ResourceError),
+    Evidence(schema::EvidenceError),
+}
+
+impl From<schema::EvidenceError> for DiagnosticTerminationError {
+    fn from(error: schema::EvidenceError) -> Self {
+        Self::Evidence(error)
+    }
+}
+
+#[derive(Debug)]
+// P04 consumes the metadata; P02's compatible adapter only needs the result.
+#[allow(dead_code)]
+pub(crate) enum CleanupFailure {
+    Ordinary(String),
+    EvidenceVeto {
+        result: ResourceKillResult,
+        operation_id: Uuid,
+        stage: String,
+        effects_started: bool,
+        accounting_state: String,
+        accounting_error: Option<String>,
+    },
+}
+
+impl From<&str> for CleanupFailure {
+    fn from(error: &str) -> Self {
+        Self::Ordinary(error.into())
+    }
+}
+
+impl From<String> for CleanupFailure {
+    fn from(error: String) -> Self {
+        Self::Ordinary(error)
+    }
+}
+
+impl CleanupFailure {
+    fn compatible(self) -> Result<ResourceKillResult, String> {
+        match self {
+            Self::Ordinary(error) => Err(error),
+            Self::EvidenceVeto { result, .. } => Ok(result),
+        }
+    }
+}
+
+struct CleanupPass {
+    binding: schema::Binding,
+    previous_state: ResourceGroupState,
+    previous_started: Option<Instant>,
+    started: Instant,
+    claim: Option<ArmClaim>,
+}
 
 impl ResourceMonitorState {
     pub fn kill_group(
@@ -24,7 +81,38 @@ impl ResourceMonitorState {
         session_id: Uuid,
         reason: ResourceKillReason,
     ) -> Result<ResourceKillResult, String> {
-        self.kill_group_inner(session_id, reason, false, None)
+        match self.kill_group_diagnostic(session_id, reason) {
+            Ok(result) => Ok(result),
+            Err(error) => error.compatible(),
+        }
+    }
+
+    // Preserve the specified typed veto envelope, including accounting failure facts.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn kill_group_diagnostic(
+        &self,
+        session_id: Uuid,
+        reason: ResourceKillReason,
+    ) -> Result<ResourceKillResult, CleanupFailure> {
+        self.kill_group_diagnostic_inner(session_id, reason, false, None)
+    }
+
+    fn kill_group_inner(
+        &self,
+        session_id: Uuid,
+        reason: ResourceKillReason,
+        fresh_targets_only: bool,
+        expected_root: Option<ProcessIdentity>,
+    ) -> Result<ResourceKillResult, String> {
+        match self.kill_group_diagnostic_inner(
+            session_id,
+            reason,
+            fresh_targets_only,
+            expected_root,
+        ) {
+            Ok(result) => Ok(result),
+            Err(error) => error.compatible(),
+        }
     }
 
     /// #1151 - registry-only cleanup retry for an ORPHANED quarantined group: one whose
@@ -114,15 +202,16 @@ impl ResourceMonitorState {
     /// may act on. It is checked inside the SAME critical section that flips the group to
     /// `Terminating`, so a stale watchdog sample cannot act on a replacement row. Like
     /// `fresh_targets_only` it never weakens verification; it can only refuse to start.
-    pub(super) fn kill_group_inner(
+    #[allow(clippy::result_large_err)]
+    fn kill_group_diagnostic_inner(
         &self,
         session_id: Uuid,
         reason: ResourceKillReason,
         fresh_targets_only: bool,
         expected_quarantined_root: Option<ProcessIdentity>,
-    ) -> Result<ResourceKillResult, String> {
+    ) -> Result<ResourceKillResult, CleanupFailure> {
         let kill_started = Instant::now();
-        let (root_identity, previous_targets) = {
+        let (root_identity, previous_targets, pass) = {
             let mut inner = self
                 .inner
                 .lock()
@@ -185,8 +274,30 @@ impl ResourceMonitorState {
                 }
                 ResourceGroupState::Running | ResourceGroupState::Quarantined => {}
             }
+            let binding = schema::Binding {
+                run_id: self.diagnostics.run_id(),
+                session_id,
+                root: Some(selection::identity(group.root_identity)),
+                registration_generation: group.generation,
+            };
+            let claim = if !fresh_targets_only
+                && !matches!(
+                    reason,
+                    ResourceKillReason::SpawnRollback | ResourceKillReason::AppShutdown
+                ) {
+                self.diagnostics.take_arm_metadata(&binding)
+            } else {
+                None
+            };
+            let pass = CleanupPass {
+                binding,
+                previous_state: group.state,
+                previous_started: group.kill_started_at,
+                started: kill_started,
+                claim,
+            };
             group.state = ResourceGroupState::Terminating;
-            group.kill_started_at = Some(Instant::now());
+            group.kill_started_at = Some(kill_started);
             (
                 group.root_identity,
                 if fresh_targets_only {
@@ -205,6 +316,7 @@ impl ResourceMonitorState {
                         .cloned()
                         .collect::<Vec<_>>()
                 },
+                pass,
             )
         };
 
@@ -214,9 +326,11 @@ impl ResourceMonitorState {
             root_identity,
             previous_targets,
             kill_started,
+            pass,
         )
     }
 
+    #[allow(clippy::result_large_err)]
     fn execute_group_cleanup(
         &self,
         session_id: Uuid,
@@ -224,7 +338,21 @@ impl ResourceMonitorState {
         root_identity: ProcessIdentity,
         previous_targets: Vec<ObservedProcess>,
         kill_started: Instant,
-    ) -> Result<ResourceKillResult, String> {
+        mut pass: CleanupPass,
+    ) -> Result<ResourceKillResult, CleanupFailure> {
+        let operation = match pass.claim.take() {
+            Some(claim) => {
+                let id = claim.operation_id();
+                match self
+                    .diagnostics
+                    .open_operation(claim.with_reason(reason.as_log_reason()))
+                {
+                    Ok(operation) => Some(operation),
+                    Err(error) => return Err(self.evidence_veto(&pass, id, error, Vec::new())),
+                }
+            }
+            None => None,
+        };
         // #942 - we are committed to killing and have touched no process yet: tag the
         // stop as AC-initiated so the PTY child-exit event can never read it as a child
         // that died on its own. Deliberately AFTER the early returns above (a group that
@@ -238,7 +366,7 @@ impl ResourceMonitorState {
             self.spawn.as_ref(),
         );
 
-        let mut targets = previous_targets;
+        let mut targets = previous_targets.clone();
         let mut current_cleanup_identities = BTreeSet::new();
         let mut pending_identity_errors = Vec::new();
         let mut errors = Vec::new();
@@ -251,25 +379,36 @@ impl ResourceMonitorState {
             &mut errors,
         );
 
-        let mut unique = BTreeMap::new();
-        for process in targets {
-            unique.insert(process.identity, process);
+        let fresh = targets.split_off(previous_targets.len());
+        let mut selection = selection::select_targets(&previous_targets, &fresh);
+        let mut veto = None;
+        if let Some(operation) = operation.as_ref() {
+            let roots = self
+                .inner
+                .lock()
+                .map(|inner| other_roots(&inner, session_id))
+                .unwrap_or_default();
+            self.complete_selection_facts(&mut selection, &roots);
+            veto = operation.selection(&selection.rows).err();
         }
-        let mut targets = unique.into_values().collect::<Vec<_>>();
-        targets.sort_by(|a, b| {
-            b.depth
-                .cmp(&a.depth)
-                .then_with(|| b.identity.cmp(&a.identity))
-        });
+        let targets = &selection.targets;
         let target_count = targets.len();
-
-        let killed = self.terminate_cleanup_targets(
-            session_id,
-            reason,
-            &targets,
-            &current_cleanup_identities,
-            &mut pending_identity_errors,
-        );
+        let (killed, calls, call_error) = if veto.is_none() {
+            self.terminate_cleanup_targets(
+                session_id,
+                reason,
+                &selection,
+                &current_cleanup_identities,
+                &mut pending_identity_errors,
+                operation.as_ref(),
+            )
+        } else {
+            (Vec::new(), 0, None)
+        };
+        veto = veto.or(call_error);
+        if let Some(error) = veto.as_mut() {
+            error.effects_started |= calls > 0;
+        }
 
         self.verify_cleanup_identity_errors(
             session_id,
@@ -278,9 +417,32 @@ impl ResourceMonitorState {
             &mut errors,
         );
 
+        if let Some(operation) = operation.as_ref() {
+            let summary = schema::Summary {
+                partial: veto.is_some() || !errors.is_empty(),
+                evidence_gap: veto.is_some(),
+                killed_processes: killed.len(),
+                accounting: "proposed".into(),
+                errors: errors
+                    .iter()
+                    .cloned()
+                    .chain(veto.iter().map(ToString::to_string))
+                    .collect(),
+            };
+            // Exactly one attempt, including when an earlier stage already vetoed.
+            if let Err(mut error) = operation.finish(summary) {
+                error.effects_started |= calls > 0;
+                if veto.is_none() {
+                    veto = Some(error);
+                }
+            }
+            if let Some(error) = veto {
+                return Err(self.evidence_veto(&pass, operation.id(), error, killed));
+            }
+        }
         let quarantined = !errors.is_empty();
         let (state, message, blocked_by_security) =
-            self.record_cleanup_result(session_id, root_identity, reason, &targets, &errors)?;
+            self.record_cleanup_result(session_id, root_identity, reason, targets, &errors, &pass)?;
 
         log::info!(
             "[resource-monitor] kill_group session={} reason={} \
@@ -315,6 +477,7 @@ impl ResourceMonitorState {
         reason: ResourceKillReason,
         targets: &[ObservedProcess],
         errors: &[String],
+        pass: &CleanupPass,
     ) -> Result<(ResourceGroupState, String, bool), String> {
         let quarantined = !errors.is_empty();
         // #647 D: flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
@@ -363,6 +526,9 @@ impl ResourceMonitorState {
                 .lock()
                 .map_err(|_| "resource monitor lock poisoned")?;
             if let Some(group) = inner.groups.get_mut(&session_id) {
+                if !pass.owns(group) {
+                    return Err("resource cleanup registration/transition changed".into());
+                }
                 group.state = state;
                 group.last_error = if quarantined {
                     Some(message.clone())
@@ -442,12 +608,14 @@ impl ResourceMonitorState {
         &self,
         session_id: Uuid,
         reason: ResourceKillReason,
-        targets: &[ObservedProcess],
+        selection: &Selection,
         current_cleanup_identities: &BTreeSet<ProcessIdentity>,
         pending_identity_errors: &mut Vec<(ProcessIdentity, String)>,
-    ) -> Vec<ProcessIdentity> {
+        operation: Option<&Operation>,
+    ) -> (Vec<ProcessIdentity>, usize, Option<schema::EvidenceError>) {
         let mut killed = Vec::new();
-        for process in targets.iter() {
+        let mut calls = 0;
+        for (process, row) in selection.targets.iter().zip(&selection.rows) {
             if !process.kill_allowed {
                 if current_cleanup_identities.contains(&process.identity) {
                     push_pending_identity_error(
@@ -475,7 +643,40 @@ impl ResourceMonitorState {
                 }
                 continue;
             }
-            match self.backend.terminate_verified(process) {
+            let outcome = if let Some(operation) = operation {
+                match self
+                    .backend
+                    .terminate_verified_diagnostic(process, row, operation)
+                {
+                    Err(DiagnosticTerminationError::Evidence(mut error)) => {
+                        error.effects_started |= calls > 0;
+                        if matches!(
+                            error.known_exit,
+                            Some(schema::ExitObservation::Exited { .. })
+                        ) {
+                            match self.backend.observe_identity(process.identity.pid) {
+                                Ok(None) => killed.push(process.identity),
+                                Ok(Some(current)) if current != process.identity => {
+                                    killed.push(process.identity);
+                                }
+                                _ => {}
+                            }
+                        }
+                        return (killed, calls, Some(error));
+                    }
+                    Err(DiagnosticTerminationError::Ordinary(error)) => {
+                        calls += 1;
+                        Err(error)
+                    }
+                    Ok(outcome) => {
+                        calls += 1;
+                        Ok(outcome)
+                    }
+                }
+            } else {
+                self.backend.terminate_verified(process)
+            };
+            match outcome {
                 Ok(TerminateOutcome::Terminated) => {
                     killed.push(process.identity);
                     log::info!(
@@ -494,7 +695,7 @@ impl ResourceMonitorState {
             }
         }
 
-        killed
+        (killed, calls, None)
     }
 
     fn verify_cleanup_identity_errors(
@@ -537,6 +738,147 @@ impl ResourceMonitorState {
         }
     }
 
+    fn complete_selection_facts(
+        &self,
+        selection: &mut Selection,
+        roots: &[schema::ProcessIdentity],
+    ) {
+        let sample_id = Uuid::new_v4();
+        for row in &mut selection.rows {
+            if let Some(fresh) = row.fresh.as_mut() {
+                fresh.sample_id = Some(sample_id);
+            }
+            let mut current = self.backend.observe_diagnostic_identity(row.expected.pid);
+            if let Some(identity) = current.identity {
+                current.status = if identity == row.expected {
+                    schema::IdentityStatus::Same
+                } else {
+                    schema::IdentityStatus::Reused
+                };
+            }
+            row.current = current;
+            row.matches_app = self
+                .app_identity
+                .map(|id| selection::identity(id) == row.expected);
+            row.matches_other_roots = roots
+                .iter()
+                .copied()
+                .filter(|root| *root == row.expected)
+                .collect();
+        }
+    }
+
+    fn evidence_veto(
+        &self,
+        pass: &CleanupPass,
+        operation_id: Uuid,
+        error: schema::EvidenceError,
+        killed_processes: Vec<ProcessIdentity>,
+    ) -> CleanupFailure {
+        let accounting = self
+            .inner
+            .lock()
+            .map_err(|_| "resource monitor lock poisoned".to_string())
+            .and_then(|mut inner| {
+                let group = inner
+                    .groups
+                    .get_mut(&pass.binding.session_id)
+                    .ok_or_else(|| "resource cleanup registration missing".to_string())?;
+                if !pass.owns(group) {
+                    return Err("resource cleanup registration/transition changed".into());
+                }
+                let state = if error.effects_started {
+                    group.state = ResourceGroupState::Quarantined;
+                    "partial_quarantine".to_string()
+                } else {
+                    group.state = pass.previous_state;
+                    group.kill_started_at = pass.previous_started;
+                    format!("restored:{:?}", pass.previous_state)
+                };
+                group.last_error = Some(format!("evidence_gap: {error}; {state}"));
+                Ok(state)
+            });
+        let (accounting_state, accounting_error) = match accounting {
+            Ok(state) => (state, None),
+            Err(error) => ("unknown".into(), Some(error)),
+        };
+        CleanupFailure::EvidenceVeto {
+            result: ResourceKillResult {
+                session_id: pass.binding.session_id.to_string(),
+                state: ResourceGroupState::Quarantined,
+                killed_processes,
+                quarantined: true,
+                message: format!(
+                    "evidence_gap operation={operation_id}: {error}; {accounting_state}"
+                ),
+                blocked_by_security: false,
+                finalized: false,
+            },
+            operation_id,
+            stage: error.stage,
+            effects_started: error.effects_started,
+            accounting_state,
+            accounting_error,
+        }
+    }
+
+    // P05 supplies public/local session authorization before this registry-only read.
+    #[allow(dead_code)]
+    pub(crate) fn inspect_group(
+        &self,
+        session_id: Uuid,
+    ) -> Result<schema::Receipt, schema::EvidenceError> {
+        let (binding, root, retained, roots) = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|error| schema::EvidenceError::new("inspect", error))?;
+            let group = inner
+                .groups
+                .get(&session_id)
+                .ok_or_else(|| schema::EvidenceError::new("inspect", "not_registered"))?;
+            (
+                schema::Binding {
+                    run_id: self.diagnostics.run_id(),
+                    session_id,
+                    root: Some(selection::identity(group.root_identity)),
+                    registration_generation: group.generation,
+                },
+                group.root_identity,
+                group
+                    .observed_processes
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                other_roots(&inner, session_id),
+            )
+        };
+        let operation = self.diagnostics.inspect_operation(binding)?;
+        let (fresh, errors) = match self.backend.observe_tree(root) {
+            Ok(tree) => (tree.processes, tree.errors),
+            Err(error) => (Vec::new(), vec![error.to_string()]),
+        };
+        let mut selection = selection::select_targets(&retained, &fresh);
+        self.complete_selection_facts(&mut selection, &roots);
+        let selected = operation.selection(&selection.rows);
+        let finished = operation.finish(schema::Summary {
+            partial: selected.is_err() || !errors.is_empty(),
+            evidence_gap: selected.is_err(),
+            killed_processes: 0,
+            accounting: "proposed".into(),
+            errors: errors.clone(),
+        });
+        selected?;
+        finished?;
+        Ok(schema::Receipt {
+            status: "complete".into(),
+            operation_id: Some(operation.id()),
+            path: self.diagnostics.operation_path(operation.id()),
+            evidence_gap: false,
+            errors,
+        })
+    }
+
     /// #632 - app-shutdown bulk cleanup. Uses fresh-tree-only targets
     /// (`kill_group_inner` with `fresh_targets_only = true`). Its only caller is the
     /// app-exit handler. Fresh-only avoids re-introducing the #632 hang: after the
@@ -553,4 +895,25 @@ impl ResourceMonitorState {
             .filter_map(|id| self.kill_group_inner(id, reason, true, None).ok())
             .collect()
     }
+}
+
+impl CleanupPass {
+    fn owns(&self, group: &super::ResourceAgentGroup) -> bool {
+        group.generation == self.binding.registration_generation
+            && Some(selection::identity(group.root_identity)) == self.binding.root
+            && group.state == ResourceGroupState::Terminating
+            && group.kill_started_at == Some(self.started)
+    }
+}
+
+fn other_roots(
+    inner: &super::ResourceMonitorInner,
+    session_id: Uuid,
+) -> Vec<schema::ProcessIdentity> {
+    inner
+        .groups
+        .values()
+        .filter(|group| group.session_id != session_id)
+        .map(|group| selection::identity(group.root_identity))
+        .collect()
 }

@@ -393,3 +393,336 @@ fn terminate_verified_reports_terminated_then_already_gone_for_real_process() {
 
     child.wait().expect("reap the child");
 }
+
+use crate::cleanup_diagnostics::operation::EvidenceWriter;
+use crate::cleanup_diagnostics::schema::{EvidenceError, EvidenceEvent, EvidenceRecord};
+use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+struct DiagnosticRecording {
+    events: Vec<EvidenceEvent>,
+    synced: usize,
+    fail: Option<&'static str>,
+}
+struct DiagnosticWriter(Arc<Mutex<DiagnosticRecording>>);
+impl EvidenceWriter for DiagnosticWriter {
+    fn write(&mut self, record: &EvidenceRecord) -> Result<(), EvidenceError> {
+        let mut state = self.0.lock().unwrap();
+        let stage = match record.event {
+            EvidenceEvent::PreCall { .. } => "pre_call",
+            EvidenceEvent::ApiReturn { .. } => "api_return",
+            _ => "other",
+        };
+        if state.fail == Some(stage) {
+            return Err(EvidenceError::new("fake", "injected failure"));
+        }
+        state.events.push(record.event.clone());
+        Ok(())
+    }
+    fn flush_sync(&mut self) -> Result<(), EvidenceError> {
+        let mut state = self.0.lock().unwrap();
+        state.synced = state.events.len();
+        Ok(())
+    }
+    fn complete(&mut self) -> Result<(), EvidenceError> {
+        Ok(())
+    }
+}
+
+struct FakeTerminationCalls {
+    alive: Cell<bool>,
+    current: schema::CurrentIdentity,
+    calls: RefCell<Vec<&'static str>>,
+    recording: Arc<Mutex<DiagnosticRecording>>,
+    ok: bool,
+}
+impl TerminationCalls for FakeTerminationCalls {
+    type Handle = u32;
+    fn observe(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+        self.calls.borrow_mut().push("observe");
+        Ok(self.alive.get().then(|| identity(pid, 100)))
+    }
+    fn open(&self, pid: u32) -> Result<u32, ResourceError> {
+        self.calls.borrow_mut().push("open");
+        Ok(pid + 1000)
+    }
+    fn current(&self, handle: &u32, pid: u32) -> schema::CurrentIdentity {
+        assert_eq!(*handle, pid + 1000);
+        self.calls.borrow_mut().push("final_handle");
+        self.current.clone()
+    }
+    fn terminate(&self, handle: &u32) -> schema::RawApiResult {
+        assert!(*handle >= 1000);
+        let state = self.recording.lock().unwrap();
+        assert!(matches!(
+            state.events[state.synced - 1],
+            EvidenceEvent::PreCall { .. }
+        ));
+        self.calls.borrow_mut().push("terminate");
+        self.alive.set(false);
+        schema::RawApiResult {
+            returned: Some(self.ok),
+            os_error: (!self.ok).then_some(5),
+            detail: "fake BOOL".into(),
+        }
+    }
+    fn wait(&self, handle: &u32, _pid: u32) -> (schema::ExitObservation, Option<String>) {
+        assert!(*handle >= 1000);
+        self.calls.borrow_mut().push("wait");
+        (schema::ExitObservation::Exited { code: Some(1) }, None)
+    }
+}
+
+fn diagnostic_process(pid: u32) -> ObservedProcess {
+    ObservedProcess {
+        identity: identity(pid, 100),
+        parent_pid: None,
+        parent_identity: None,
+        exe_name: "retained".into(),
+        depth: 0,
+        private_bytes: None,
+        working_set_bytes: None,
+        cpu_percent: None,
+        kill_allowed: true,
+    }
+}
+
+fn diagnostic_row(index: usize, pid: u32) -> schema::SelectionRow {
+    schema::SelectionRow {
+        index,
+        expected: schema::ProcessIdentity {
+            pid,
+            start_time: 100,
+        },
+        retained: None,
+        fresh: None,
+        provenance: schema::Provenance::Fresh,
+        rule: "fake selection".into(),
+        current: schema::CurrentIdentity::unknown(),
+        matches_app: None,
+        matches_other_roots: Vec::new(),
+    }
+}
+
+fn diagnostic_fixture() -> (Operation, FakeTerminationCalls) {
+    let recording = Arc::new(Mutex::new(DiagnosticRecording::default()));
+    let operation = Operation::new(
+        uuid::Uuid::new_v4(),
+        Box::new(DiagnosticWriter(Arc::clone(&recording))),
+    )
+    .unwrap();
+    let calls = FakeTerminationCalls {
+        alive: Cell::new(true),
+        current: schema::CurrentIdentity::unknown(),
+        calls: RefCell::new(Vec::new()),
+        recording,
+        ok: true,
+    };
+    (operation, calls)
+}
+
+#[test]
+fn issue_3530_final_handle_differs() {
+    let (operation, mut calls) = diagnostic_fixture();
+    let row = diagnostic_row(0, 42);
+    operation.selection(std::slice::from_ref(&row)).unwrap();
+    calls.current.identity = Some(schema::ProcessIdentity {
+        pid: 42,
+        start_time: 200,
+    });
+    calls.current.executable = Some("current-final-handle".into());
+    assert_eq!(
+        terminate_with_calls(&diagnostic_process(42), Some((&row, &operation)), &calls).unwrap(),
+        TerminateOutcome::Terminated
+    );
+    let state = calls.recording.lock().unwrap();
+    let final_handle = state
+        .events
+        .iter()
+        .find_map(|event| match event {
+            EvidenceEvent::PreCall { final_handle, .. } => Some(final_handle),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(final_handle.status, schema::IdentityStatus::Reused);
+    assert_eq!(
+        final_handle.executable.as_deref(),
+        Some("current-final-handle")
+    );
+    assert_eq!(
+        *calls.calls.borrow(),
+        [
+            "observe",
+            "open",
+            "final_handle",
+            "terminate",
+            "wait",
+            "observe"
+        ]
+    );
+}
+
+#[test]
+fn issue_3530_precall_without_api() {
+    let (operation, calls) = diagnostic_fixture();
+    let row = diagnostic_row(0, 42);
+    operation.selection(std::slice::from_ref(&row)).unwrap();
+    let _ticket = operation
+        .prepare(
+            &row,
+            schema::CurrentIdentity::unknown(),
+            schema::CurrentIdentity::unknown(),
+        )
+        .unwrap();
+    // Simulated interruption after durable preparation and before entering the native port.
+    drop(operation);
+    let state = calls.recording.lock().unwrap();
+    assert!(state
+        .events
+        .iter()
+        .any(|event| matches!(event, EvidenceEvent::PreCall { .. })));
+    assert!(!state
+        .events
+        .iter()
+        .any(|event| matches!(event, EvidenceEvent::ApiReturn { .. })));
+    assert!(calls.calls.borrow().is_empty());
+}
+
+#[test]
+fn issue_3530_windows_diagnostic_two_rows() {
+    let (operation, calls) = diagnostic_fixture();
+    let rows = [diagnostic_row(0, 42), diagnostic_row(1, 43)];
+    operation.selection(&rows).unwrap();
+    for row in &rows {
+        calls.alive.set(true);
+        terminate_with_calls(
+            &diagnostic_process(row.expected.pid),
+            Some((row, &operation)),
+            &calls,
+        )
+        .unwrap();
+    }
+    let state = calls.recording.lock().unwrap();
+    let indexes: Vec<_> = state
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            EvidenceEvent::PreCall { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indexes, [0, 1]);
+}
+
+#[test]
+fn issue_3530_windows_diagnostic_altered_row() {
+    let (operation, calls) = diagnostic_fixture();
+    let mut row = diagnostic_row(0, 42);
+    operation.selection(std::slice::from_ref(&row)).unwrap();
+    row.rule = "altered".into();
+    assert!(matches!(
+        terminate_with_calls(&diagnostic_process(42), Some((&row, &operation)), &calls),
+        Err(DiagnosticTerminationError::Evidence(_))
+    ));
+    assert!(!calls.calls.borrow().contains(&"terminate"));
+}
+
+#[test]
+fn issue_3530_windows_diagnostic_other_process() {
+    let (operation, calls) = diagnostic_fixture();
+    let row = diagnostic_row(0, 42);
+    operation.selection(std::slice::from_ref(&row)).unwrap();
+    assert!(
+        matches!(terminate_with_calls(&diagnostic_process(43), Some((&row, &operation)), &calls),
+        Err(DiagnosticTerminationError::Evidence(error)) if error.stage == "pre_call")
+    );
+    assert!(calls.calls.borrow().is_empty());
+}
+
+#[test]
+fn issue_3530_windows_diagnostic_skipped_indices() {
+    let (operation, calls) = diagnostic_fixture();
+    let rows = [diagnostic_row(0, 42), diagnostic_row(1, 43)];
+    operation.selection(&rows).unwrap();
+    terminate_with_calls(
+        &diagnostic_process(43),
+        Some((&rows[1], &operation)),
+        &calls,
+    )
+    .unwrap();
+    let state = calls.recording.lock().unwrap();
+    assert!(state
+        .events
+        .iter()
+        .any(|event| matches!(event, EvidenceEvent::PreCall { index: 1, .. })));
+    assert!(!state
+        .events
+        .iter()
+        .any(|event| matches!(event, EvidenceEvent::PreCall { index: 0, .. })));
+}
+
+#[test]
+fn issue_3530_windows_diagnostic_row_failure_after_n() {
+    let (operation, calls) = diagnostic_fixture();
+    let rows = [diagnostic_row(0, 42), diagnostic_row(1, 43)];
+    operation.selection(&rows).unwrap();
+    terminate_with_calls(
+        &diagnostic_process(42),
+        Some((&rows[0], &operation)),
+        &calls,
+    )
+    .unwrap();
+    calls.alive.set(true);
+    let mut row = rows[1].clone();
+    row.rule = "altered".into();
+    match terminate_with_calls(&diagnostic_process(43), Some((&row, &operation)), &calls)
+        .unwrap_err()
+    {
+        DiagnosticTerminationError::Evidence(error) => assert!(error.effects_started),
+        other => panic!("expected evidence failure: {other:?}"),
+    }
+    assert_eq!(
+        calls
+            .calls
+            .borrow()
+            .iter()
+            .filter(|call| **call == "terminate")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn issue_3530_windows_fail_before_api() {
+    let (operation, calls) = diagnostic_fixture();
+    let row = diagnostic_row(0, 42);
+    operation.selection(std::slice::from_ref(&row)).unwrap();
+    calls.recording.lock().unwrap().fail = Some("pre_call");
+    assert!(
+        matches!(terminate_with_calls(&diagnostic_process(42), Some((&row, &operation)), &calls),
+        Err(DiagnosticTerminationError::Evidence(error)) if !error.effects_started)
+    );
+    assert!(!calls.calls.borrow().contains(&"terminate"));
+}
+
+#[test]
+fn issue_3530_windows_api_return_preserves_bool_error() {
+    let (operation, mut calls) = diagnostic_fixture();
+    calls.ok = false;
+    let row = diagnostic_row(0, 42);
+    operation.selection(std::slice::from_ref(&row)).unwrap();
+    calls.recording.lock().unwrap().fail = Some("api_return");
+    match terminate_with_calls(&diagnostic_process(42), Some((&row, &operation)), &calls)
+        .unwrap_err()
+    {
+        DiagnosticTerminationError::Evidence(error) => {
+            assert!(error.effects_started);
+            let raw = error.known_api_return.unwrap();
+            assert_eq!(raw.returned, Some(false));
+            assert_eq!(raw.os_error, Some(5));
+        }
+        other => panic!("expected evidence failure: {other:?}"),
+    }
+    assert!(!calls.calls.borrow().contains(&"wait"));
+}
