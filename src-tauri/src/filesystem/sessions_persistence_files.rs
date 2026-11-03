@@ -6,7 +6,7 @@ pub(crate) fn append_orphan_archive_line(path: &Path, line: &str) -> io::Result<
         .create(true)
         .append(true)
         .open(path)
-        .and_then(|mut file| writeln!(file, "{}", line))
+        .and_then(|mut file| writeln!(file, "{line}"))
 }
 
 pub(crate) fn orphan_archive_length(path: &Path) -> io::Result<u64> {

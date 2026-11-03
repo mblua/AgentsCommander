@@ -24,7 +24,7 @@ pub(crate) fn snapshot_entries(
 pub(crate) fn snapshot_regular_file_age(path: &Path) -> Option<Duration> {
     std::fs::symlink_metadata(path)
         .ok()
-        .filter(|metadata| metadata.is_file())
+        .filter(std::fs::Metadata::is_file)
         .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.elapsed().ok())
 }

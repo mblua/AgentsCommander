@@ -311,7 +311,7 @@ async fn send_telegram(app: &impl WatchdogHost, r: &NonStopReport) {
     );
     app.spawn_background(Box::pin(async move {
         if let Err(e) = crate::telegram::api::send_message(&network, &token, chat_id, &text).await {
-            log::warn!("[non-stop] telegram send via '{}' failed: {}", label, e);
+            log::warn!("[non-stop] telegram send via '{label}' failed: {e}");
         }
     }));
 }

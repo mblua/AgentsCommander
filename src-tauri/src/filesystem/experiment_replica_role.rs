@@ -18,7 +18,7 @@ pub(crate) fn write(
 }
 
 pub(crate) fn existing_in_room(room: &Path, variant_agent_name: &str) -> Option<PathBuf> {
-    let replica = room.join(format!("__agent_{}", variant_agent_name));
+    let replica = room.join(format!("__agent_{variant_agent_name}"));
     let role = role_path(&replica);
     if directories::experiment_path_exists(&role) {
         Some(role)
