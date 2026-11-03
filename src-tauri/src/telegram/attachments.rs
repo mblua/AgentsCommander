@@ -29,35 +29,33 @@ where
     R: FnOnce(usize, u64) -> F + Send,
     F: Future<Output = Result<Vec<u8>, ReadError>> + Send,
 {
-    let lmeta = metadata.await.map_err(|e| format!("stat failed: {}", e))?;
+    let lmeta = metadata.await.map_err(|e| format!("stat failed: {e}"))?;
     if is_link_or_reparse(&lmeta) {
         return Err(format!(
-            "Symlinks and reparse points are not supported in v1: {}",
-            path
+            "Symlinks and reparse points are not supported in v1: {path}"
         ));
     }
     if !lmeta.is_file() {
-        return Err(format!("Not a regular file: {}", path));
+        return Err(format!("Not a regular file: {path}"));
     }
     let size = lmeta.len();
     if size == 0 {
-        return Err(format!("File is empty: {}", path));
+        return Err(format!("File is empty: {path}"));
     }
     if size > max {
         return Err(format!(
-            "File exceeds Telegram 50 MB limit ({} bytes): {}",
-            size, path
+            "File exceeds Telegram 50 MB limit ({size} bytes): {path}"
         ));
     }
 
     let bytes = read(size as usize, max + 1)
         .await
         .map_err(|error| match error {
-            ReadError::Open(e) => format!("open failed: {}", e),
-            ReadError::Read(e) => format!("read failed: {}", e),
+            ReadError::Open(e) => format!("open failed: {e}"),
+            ReadError::Read(e) => format!("read failed: {e}"),
         })?;
     if bytes.len() as u64 > max {
-        return Err(format!("File grew past 50 MB during read: {}", path));
+        return Err(format!("File grew past 50 MB during read: {path}"));
     }
     Ok((bytes, size))
 }
