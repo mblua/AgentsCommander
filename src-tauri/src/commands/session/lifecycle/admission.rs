@@ -49,3 +49,21 @@ pub(super) fn source_gate_key(
         .transpose()
         .map(Option::flatten)
 }
+
+pub(super) fn same_discard(
+    expected: Option<&crate::config::sessions_persistence::PublishedCarrier>,
+    actual: Option<&crate::config::sessions_persistence::PublishedCarrier>,
+) -> bool {
+    match (expected, actual) {
+        (None, None) => true,
+        (Some(expected), Some(actual)) => {
+            expected.session_id == actual.session_id
+                && expected.token == actual.token
+                && expected.version == actual.version
+                && expected.nonce == actual.nonce
+                && expected.target == actual.target
+                && expected.directory == actual.directory
+        }
+        _ => false,
+    }
+}

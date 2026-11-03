@@ -586,23 +586,12 @@ pub(crate) async fn validate_lifecycle_entry_authority<R: tauri::Runtime>(
         })
         .await;
     drop(permit);
-    let same_discard = match (
-        &authority.discard,
+    let same_discard = admission::same_discard(
+        authority.discard.as_ref(),
         reservation
             .as_ref()
             .and_then(|claim| claim.discard.as_ref()),
-    ) {
-        (None, None) => true,
-        (Some(expected), Some(actual)) => {
-            expected.session_id == actual.session_id
-                && expected.token == actual.token
-                && expected.version == actual.version
-                && expected.nonce == actual.nonce
-                && expected.target == actual.target
-                && expected.directory == actual.directory
-        }
-        _ => false,
-    };
+    );
     if !same_discard {
         return false;
     }
