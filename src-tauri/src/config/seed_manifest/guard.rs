@@ -358,9 +358,9 @@ impl ProjectSeedManifestGuard {
     /// edit between the re-read and the write fails the raw-conflict check.
     ///
     /// Only a `ReadOnly { reason: InvalidCanonical, canonical: Some(..) }`
-    /// snapshot is migratable; every other degraded reason (ResourceBound,
-    /// FutureSchema, ExternalEdit, ReadOnlyCanonical, UnsafePath,
-    /// PersistenceFailure) is preserved as-is. Detection keys ONLY on the wire
+    /// snapshot is migratable; every other degraded reason (`ResourceBound`,
+    /// `FutureSchema`, `ExternalEdit`, `ReadOnlyCanonical`, `UnsafePath`,
+    /// `PersistenceFailure`) is preserved as-is. Detection keys ONLY on the wire
     /// pre-parse, never on the sanitized message string.
     pub(crate) fn try_upgrade_v1_to_v2(&mut self) {
         let snapshot = std::mem::replace(

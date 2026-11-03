@@ -206,7 +206,6 @@ pub(crate) enum TransitionKind {
 /// `dead_code` is allowed on the fields past the drop log: they are the Phase B
 /// contract, and nothing in Phase A reads them (the in-file tests do).
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct RemoteTransition {
     pub repo_path: String,
     pub room_dir: String,

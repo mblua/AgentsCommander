@@ -121,35 +121,8 @@ impl MessageStore {
         req: HostPtyInputRejectionRequest,
         now: DateTime<Utc>,
     ) -> Result<crate::phone::types::PtyInputResult, MessageStoreError> {
-        use crate::phone::types::{
-            parse_canonical_pty_timestamp, parse_canonical_uuid_v4,
-            pty_input_reason_allowed_for_status, PtyInputPublicStatus,
-        };
-        parse_canonical_uuid_v4(&req.injection_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        parse_canonical_uuid_v4(&req.op_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let issued = parse_canonical_pty_timestamp(&req.issued_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let expires = parse_canonical_pty_timestamp(&req.expires_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        if req.injection_id != req.op_id
-            || expires - issued != chrono::Duration::minutes(10)
-            || req.sender_fqn.is_empty()
-            || req.sender_fqn.chars().any(char::is_control)
-            || req.target_fqn.is_empty()
-            || req.target_fqn.chars().any(char::is_control)
-            || !is_lower_hex_64(&req.nonce_sha256)
-            || !is_lower_hex_64(&req.request_fingerprint)
-            || !is_lower_hex_64(&req.confirmation_tag)
-            || !is_lower_hex_64(&req.sender_incarnation_fingerprint)
-            || !is_lower_hex_64(&req.payload_sha256)
-            || !(1..=crate::pty::backend::PTY_INPUT_MAX_BYTES as u64).contains(&req.payload_bytes)
-            || !pty_input_reason_allowed_for_status(
-                PtyInputPublicStatus::Rejected,
-                Some(req.reason),
-            )
-        {
-            return Err(MessageStoreError::StoreCorrupt);
-        }
+        use crate::phone::types::PtyInputPublicStatus;
+        let issued = validate_host_rejection_request(&req)?;
         let Some(_operation_lock) = self.try_operation_lock(&req.injection_id)? else {
             return Err(MessageStoreError::InvalidTransition);
         };
@@ -425,6 +398,39 @@ impl MessageStore {
         )?;
         Ok(changed == 1)
     }
+}
+
+/// Validates a host rejection request and returns its parsed `issued_at`.
+fn validate_host_rejection_request(
+    req: &HostPtyInputRejectionRequest,
+) -> Result<DateTime<Utc>, MessageStoreError> {
+    use crate::phone::types::{
+        parse_canonical_pty_timestamp, parse_canonical_uuid_v4,
+        pty_input_reason_allowed_for_status, PtyInputPublicStatus,
+    };
+    parse_canonical_uuid_v4(&req.injection_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    parse_canonical_uuid_v4(&req.op_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let issued = parse_canonical_pty_timestamp(&req.issued_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let expires = parse_canonical_pty_timestamp(&req.expires_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    if req.injection_id != req.op_id
+        || expires - issued != chrono::Duration::minutes(10)
+        || req.sender_fqn.is_empty()
+        || req.sender_fqn.chars().any(char::is_control)
+        || req.target_fqn.is_empty()
+        || req.target_fqn.chars().any(char::is_control)
+        || !is_lower_hex_64(&req.nonce_sha256)
+        || !is_lower_hex_64(&req.request_fingerprint)
+        || !is_lower_hex_64(&req.confirmation_tag)
+        || !is_lower_hex_64(&req.sender_incarnation_fingerprint)
+        || !is_lower_hex_64(&req.payload_sha256)
+        || !(1..=crate::pty::backend::PTY_INPUT_MAX_BYTES as u64).contains(&req.payload_bytes)
+        || !pty_input_reason_allowed_for_status(PtyInputPublicStatus::Rejected, Some(req.reason))
+    {
+        return Err(MessageStoreError::StoreCorrupt);
+    }
+    Ok(issued)
 }
 
 fn check_pty_enqueue_admission(

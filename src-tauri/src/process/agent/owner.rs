@@ -672,30 +672,16 @@ impl ProbeProcessOwner {
         }
     }
 
-    async fn settle(&mut self, wait: &ProbeWait) -> ProbeSettlement {
-        #[cfg(test)]
-        let settlement_window = self
-            .settlement_hook
-            .as_ref()
-            .and_then(|hook| hook.settlement_window)
-            .unwrap_or(ACTIVE_SETTLEMENT_WINDOW);
-        #[cfg(not(test))]
-        let settlement_window = ACTIVE_SETTLEMENT_WINDOW;
-        let mut attempt = crate::process::host::job::SettlementAttempt::new(settlement_window);
+    fn start_forced_cleanup(&mut self) {
         let defects = &mut self.defects;
-        let cleanup_required = !matches!(wait, ProbeWait::Exited(Ok(_)));
-
         #[cfg(windows)]
-        if cleanup_required {
-            if let Some(job) = self.job.as_ref() {
-                if let Err(error) = job.terminate_checked() {
-                    defects.push(format!("job termination failed: {error}"));
-                }
+        if let Some(job) = self.job.as_ref() {
+            if let Err(error) = job.terminate_checked() {
+                defects.push(format!("job termination failed: {error}"));
             }
         }
-
         #[cfg(unix)]
-        if cleanup_required && self.pgid > 0 {
+        if self.pgid > 0 {
             // SAFETY: this is the positive process-group id created by
             // `Command::process_group(0)` for this probe owner.
             let killed = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
@@ -706,13 +692,26 @@ impl ProbeProcessOwner {
                 ));
             }
         }
-
-        if cleanup_required {
-            if let Some(child) = self.child.as_mut() {
-                if let Err(error) = child.start_kill() {
-                    defects.push(format!("direct child termination failed: {error}"));
-                }
+        if let Some(child) = self.child.as_mut() {
+            if let Err(error) = child.start_kill() {
+                defects.push(format!("direct child termination failed: {error}"));
             }
+        }
+    }
+
+    async fn settle(&mut self, wait: &ProbeWait) -> ProbeSettlement {
+        #[cfg(test)]
+        let settlement_window = self
+            .settlement_hook
+            .as_ref()
+            .and_then(|hook| hook.settlement_window)
+            .unwrap_or(ACTIVE_SETTLEMENT_WINDOW);
+        #[cfg(not(test))]
+        let settlement_window = ACTIVE_SETTLEMENT_WINDOW;
+        let mut attempt = crate::process::host::job::SettlementAttempt::new(settlement_window);
+        let cleanup_required = !matches!(wait, ProbeWait::Exited(Ok(_)));
+        if cleanup_required {
+            self.start_forced_cleanup();
         }
 
         self.settle_child(cleanup_required, &mut attempt).await;

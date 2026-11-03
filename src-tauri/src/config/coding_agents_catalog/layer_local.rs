@@ -423,33 +423,7 @@ pub(crate) fn parse_local_layer(
             ))
         }
     };
-    let order = match root.get("order") {
-        None => None,
-        Some(serde_json::Value::Array(items)) => {
-            let mut seen = HashSet::new();
-            let mut keys = Vec::with_capacity(items.len());
-            for (index, item) in items.iter().enumerate() {
-                let serde_json::Value::String(key) = item else {
-                    return Err(format!("{layer} order item {index} must be a string"));
-                };
-                if validate_catalog_key(key).is_err() {
-                    return Err(format!(
-                        "{layer} order item {index} is not a valid catalog key"
-                    ));
-                }
-                if !seen.insert(key.clone()) {
-                    return Err(format!("duplicate {layer} order key '{key}'"));
-                }
-                keys.push(key.clone());
-            }
-            Some(keys)
-        }
-        Some(_) => {
-            return Err(format!(
-                "the {layer} catalog 'order' value must be a JSON array"
-            ))
-        }
-    };
+    let order = parse_local_order(root.get("order"), layer)?;
 
     let mut seen_keys = HashSet::new();
     let mut rows = Vec::with_capacity(agents.len());
@@ -491,6 +465,39 @@ pub(crate) fn parse_local_layer(
         rows,
         order,
         complete_definitions: false,
+    })
+}
+
+fn parse_local_order(
+    value: Option<&serde_json::Value>,
+    layer: &str,
+) -> Result<Option<Vec<String>>, String> {
+    Ok(match value {
+        None => None,
+        Some(serde_json::Value::Array(items)) => {
+            let mut seen = HashSet::new();
+            let mut keys = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let serde_json::Value::String(key) = item else {
+                    return Err(format!("{layer} order item {index} must be a string"));
+                };
+                if validate_catalog_key(key).is_err() {
+                    return Err(format!(
+                        "{layer} order item {index} is not a valid catalog key"
+                    ));
+                }
+                if !seen.insert(key.clone()) {
+                    return Err(format!("duplicate {layer} order key '{key}'"));
+                }
+                keys.push(key.clone());
+            }
+            Some(keys)
+        }
+        Some(_) => {
+            return Err(format!(
+                "the {layer} catalog 'order' value must be a JSON array"
+            ))
+        }
     })
 }
 

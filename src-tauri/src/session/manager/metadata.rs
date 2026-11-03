@@ -309,7 +309,7 @@ impl SessionManager {
         FinalizedOwnedCarryOutcome::Applied
     }
 
-    /// Persisted Telegram ON/OFF state for the session. Some(bot_id) means the
+    /// Persisted Telegram ON/OFF state for the session. `Some(bot_id)` means the
     /// bridge should be reattached when the session is restored or woken.
     pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
@@ -532,7 +532,7 @@ impl SessionManager {
     }
 
     /// Recompute `is_coordinator` for every session using the current team snapshot.
-    /// Returns the list of (session_id, new_value) pairs whose flag actually changed,
+    /// Returns the list of (`session_id`, `new_value`) pairs whose flag actually changed,
     /// so callers can emit a single event batch.
     pub async fn refresh_coordinator_flags(
         &self,
@@ -569,7 +569,7 @@ impl SessionManager {
     /// Replace `git_repos` for sessions whose name matches. Bumps `git_repos_gen` on every
     /// write so an in-flight `GitWatcher::poll` that captured the pre-refresh snapshot
     /// cannot overwrite us (see §2.1.d / Grinch #14).
-    /// Returns the list of (session_id, new_repos) pairs where a write actually happened.
+    /// Returns the list of (`session_id`, `new_repos`) pairs where a write actually happened.
     pub async fn refresh_git_repos_for_sessions(
         &self,
         updates: &[(String, Vec<SessionRepo>)],

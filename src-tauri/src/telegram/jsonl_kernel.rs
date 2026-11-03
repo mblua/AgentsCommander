@@ -104,7 +104,7 @@ pub(crate) fn read_new_lines_with_starts(
 /// `read_new_lines_with_starts` so they can attach `record_start` to each
 /// capture record (#2232 phase 1), and the kernel and extractor tests pin this
 /// signature.
-#[allow(dead_code)] // called only from test code
+#[cfg(test)]
 pub(crate) fn read_new_lines(
     path: &Path,
     offset: &mut u64,
