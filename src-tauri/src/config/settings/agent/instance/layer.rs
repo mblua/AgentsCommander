@@ -67,7 +67,7 @@ fn agents_unreadable_dirs() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
 pub(crate) fn hold_agents_layer_state_for_test() -> impl Sized {
     agents_unreadable_dirs()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 // Dormant until the P05 carrier publication consumer is wired.
@@ -106,7 +106,7 @@ pub(crate) fn try_with_agents_layer_publication_state_in<R>(
 pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
     agents_unreadable_dirs()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains(dir)
 }
 
@@ -120,7 +120,7 @@ pub(crate) fn set_agents_layer_state(
     if let Some(dir) = settings_path.parent() {
         let mut dirs = agents_unreadable_dirs()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match state {
             AgentsLayerState::Readable => dirs.remove(dir),
             AgentsLayerState::Unreadable { .. } => dirs.insert(dir.to_path_buf()),

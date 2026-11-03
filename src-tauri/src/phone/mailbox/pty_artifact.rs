@@ -54,9 +54,7 @@ impl MailboxPoller {
         };
         if let Err(code) = self.write_pty_input_artifact(path, &artifact) {
             log::warn!(
-                "[pty-input] malformed candidate artifact failed id={} code={}",
-                injection_id,
-                code
+                "[pty-input] malformed candidate artifact failed id={injection_id} code={code}"
             );
             return;
         }
@@ -70,8 +68,8 @@ impl MailboxPoller {
         if let Err(error) = phone_mailbox::remove_mailbox_artifact(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
-                    "[pty-input] malformed candidate cleanup failed id={} code=artifact_unclaimed",
-                    injection_id
+                    "[pty-input] malformed candidate cleanup failed id={injection_id} \
+                        code=artifact_unclaimed"
                 );
             }
         }
@@ -830,11 +828,7 @@ impl MailboxPoller {
             .materialize_host_terminal_artifact(path, &store, &injection_id)
             .await
         {
-            log::debug!(
-                "[pty-input] terminal artifact pending id={} code={}",
-                injection_id,
-                code
-            );
+            log::debug!("[pty-input] terminal artifact pending id={injection_id} code={code}");
         }
     }
 }

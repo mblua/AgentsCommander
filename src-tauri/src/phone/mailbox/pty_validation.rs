@@ -7,7 +7,7 @@ use crate::pty::backend::SessionBackendKind;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use uuid::Uuid;
 
 fn verify_host_pty_outbox(
@@ -66,7 +66,7 @@ impl MailboxPoller {
         let pty = app.pty_routes();
         if pty
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .backend_kind(session_id)
             != Some(SessionBackendKind::LocalProcess)
         {
@@ -194,7 +194,7 @@ impl MailboxPoller {
         let current_cwd =
             crate::path_identity::verify_directory(Path::new(&authority.working_directory)).ok()?;
         let pty = app.pty_routes();
-        let manager = pty.lock().unwrap_or_else(|error| error.into_inner());
+        let manager = pty.lock().unwrap_or_else(PoisonError::into_inner);
         if !manager.has_session(authority_id)
             || manager.backend_kind(authority_id) != Some(SessionBackendKind::LocalProcess)
         {
@@ -278,7 +278,7 @@ impl MailboxPoller {
             crate::path_identity::verify_directory(Path::new(&session.working_directory)).ok()?;
         let route_valid = {
             let manager = app.pty_routes();
-            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            let manager = manager.lock().unwrap_or_else(PoisonError::into_inner);
             manager.has_session(session_id)
                 && manager.backend_kind(session_id) == Some(expected_backend)
                 && manager

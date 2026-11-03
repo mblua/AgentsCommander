@@ -37,11 +37,7 @@ fn status_command(working_dir: &str) -> tokio::process::Command {
             Err(e) => {
                 // Only reachable if the path contains the path separator itself.
                 // Gate 1 still stands; log rather than abort the detection.
-                log::debug!(
-                    "[git] Could not build GIT_CEILING_DIRECTORIES for {}: {}",
-                    working_dir,
-                    e
-                );
+                log::debug!("[git] Could not build GIT_CEILING_DIRECTORIES for {working_dir}: {e}");
             }
         }
     }
@@ -64,7 +60,7 @@ pub(crate) fn resolve_real_git_path() -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| line.to_string())
+        .map(str::to_string)
 }
 
 #[cfg(windows)]

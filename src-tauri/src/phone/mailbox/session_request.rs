@@ -258,7 +258,7 @@ impl MailboxPoller {
 
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
     /// poll loop is never blocked. Idempotent: a second request while one is
-    /// pending is a no-op ("already_queued").
+    /// pending is a no-op ("`already_queued`").
     pub(crate) async fn handle_self_clear<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -426,9 +426,7 @@ impl MailboxPoller {
                 Ok(None) => {} // no SELF-FORGET.md; nothing to archive
                 Err(e) => log::warn!(
                     "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
-                        {} (non-fatal): {}",
-                    session_id,
-                    e
+                        {session_id} (non-fatal): {e}"
                 ),
             }
 
@@ -574,7 +572,7 @@ impl MailboxPoller {
                     .reject_message(
                         path,
                         msg,
-                        &format!("raise-hand: failed to persist state: {}", e),
+                        &format!("raise-hand: failed to persist state: {e}"),
                     )
                     .await;
             }
@@ -604,7 +602,7 @@ impl Drop for PlainReceiptStage {
         match mailbox_disk::read_mailbox_message(&self.path) {
             Ok(bytes) if bytes == self.written => {
                 if let Err(error) = mailbox_disk::remove_mailbox_artifact(&self.path) {
-                    log::warn!("[mailbox] self-clear stage cleanup failed: {}", error);
+                    log::warn!("[mailbox] self-clear stage cleanup failed: {error}");
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -809,8 +807,7 @@ fn purge_readiness_map(
 fn purge_wg_assertion_error(msg: &OutboxMessage, wg_name: &str) -> Option<String> {
     match msg.target {
         Some(ref t) if t.as_str() != wg_name => Some(format!(
-            "purge-room: --wg assertion '{}' does not match resolved room '{}'",
-            t, wg_name
+            "purge-room: --wg assertion '{t}' does not match resolved room '{wg_name}'"
         )),
         _ => None,
     }
