@@ -1,5 +1,5 @@
 use super::gate::{AgentUpdateGate, GateState};
-use super::target::{ResponseReleaseGuard, TargetClaim, TargetPhase};
+use super::target::{AsyncFence, ResponseReleaseGuard, TargetClaim, TargetPhase};
 use super::ManagedBroadcastEvents;
 use super::{
     emit_all, AgentUpdateCancelAllResponse, AgentUpdateCancelDisposition,
@@ -119,9 +119,7 @@ pub async fn cancel_all_updates(
     let mut requested = Vec::new();
     let mut already_requested = Vec::new();
     let mut already_terminal = Vec::new();
-    let mut requested_waits = Vec::new();
-    let mut already_waits = Vec::new();
-    let mut terminal_waits = Vec::new();
+    let mut waits = CancelAllWaits::default();
     let mut closed_prompt = None;
     let changed = {
         let mut state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -136,52 +134,13 @@ pub async fn cancel_all_updates(
         }
         let was_latched = state.cancel_all_requested;
         state.cancel_all_requested = true;
-        let commands: Vec<String> = state
-            .nodes
-            .iter()
-            .map(|node| node.command.clone())
-            .collect();
-        let mut prompt_to_close = None;
-        for command in commands {
-            let Some((phase, claim, command_ref)) = state
-                .controls
-                .get(&command)
-                .map(|control| (control.phase, control.claim, control.command_ref.clone()))
-            else {
-                continue;
-            };
-            if phase == TargetPhase::Terminal {
-                already_terminal.push(command_ref);
-                if let Some(control) = state.controls.get(&command) {
-                    terminal_waits.push(Arc::clone(&control.terminal_publication));
-                }
-            } else if claim == TargetClaim::CancellationReserved {
-                already_requested.push(command_ref);
-                if let Some(control) = state.controls.get(&command) {
-                    already_waits.push((
-                        Arc::clone(&control.acceptance),
-                        Arc::clone(&control.response_release),
-                    ));
-                }
-            } else if let Some(control) = state.controls.get_mut(&command) {
-                control.claim = TargetClaim::CancellationReserved;
-                let _ = control.cancel.send(true);
-                if matches!(
-                    phase,
-                    TargetPhase::Pending | TargetPhase::Prompting | TargetPhase::Starting(_, _)
-                ) {
-                    control.acceptance.open();
-                }
-                requested_waits.push((
-                    Arc::clone(&control.acceptance),
-                    Arc::clone(&control.response_release),
-                ));
-                requested.push(command_ref);
-                if phase == TargetPhase::Prompting {
-                    prompt_to_close = Some(command.clone());
-                }
-            }
-        }
+        let prompt_to_close = reserve_cancel_all_targets(
+            &mut state,
+            &mut requested,
+            &mut already_requested,
+            &mut already_terminal,
+            &mut waits,
+        );
         if let Some(command) = prompt_to_close {
             if let Some(pending) = AgentUpdateGate::take_pending(&mut state, &command) {
                 closed_prompt = Some(AgentUpdateCommandRef {
@@ -199,9 +158,10 @@ pub async fn cancel_all_updates(
     };
 
     let release_guard = ResponseReleaseGuard::new(
-        requested_waits
+        waits
+            .requested
             .iter()
-            .chain(already_waits.iter())
+            .chain(waits.already.iter())
             .map(|(_, release)| Arc::clone(release))
             .collect(),
     );
@@ -214,13 +174,13 @@ pub async fn cancel_all_updates(
     }
     drop(serial);
 
-    for (acceptance, _) in &requested_waits {
+    for (acceptance, _) in &waits.requested {
         acceptance.wait().await;
     }
-    for (acceptance, _) in &already_waits {
+    for (acceptance, _) in &waits.already {
         acceptance.wait().await;
     }
-    for terminal in terminal_waits {
+    for terminal in waits.terminal {
         terminal.wait().await;
     }
     release_guard.release();
@@ -229,4 +189,70 @@ pub async fn cancel_all_updates(
         already_requested,
         already_terminal,
     }
+}
+
+#[derive(Default)]
+struct CancelAllWaits {
+    requested: Vec<(Arc<AsyncFence>, Arc<AsyncFence>)>,
+    already: Vec<(Arc<AsyncFence>, Arc<AsyncFence>)>,
+    terminal: Vec<Arc<AsyncFence>>,
+}
+
+/// Reserves cancellation for every gate node and returns the prompting command to close.
+fn reserve_cancel_all_targets(
+    state: &mut GateState,
+    requested: &mut Vec<AgentUpdateCommandRef>,
+    already_requested: &mut Vec<AgentUpdateCommandRef>,
+    already_terminal: &mut Vec<AgentUpdateCommandRef>,
+    waits: &mut CancelAllWaits,
+) -> Option<String> {
+    let commands: Vec<String> = state
+        .nodes
+        .iter()
+        .map(|node| node.command.clone())
+        .collect();
+    let mut prompt_to_close = None;
+    for command in commands {
+        let Some((phase, claim, command_ref)) = state
+            .controls
+            .get(&command)
+            .map(|control| (control.phase, control.claim, control.command_ref.clone()))
+        else {
+            continue;
+        };
+        if phase == TargetPhase::Terminal {
+            already_terminal.push(command_ref);
+            if let Some(control) = state.controls.get(&command) {
+                waits
+                    .terminal
+                    .push(Arc::clone(&control.terminal_publication));
+            }
+        } else if claim == TargetClaim::CancellationReserved {
+            already_requested.push(command_ref);
+            if let Some(control) = state.controls.get(&command) {
+                waits.already.push((
+                    Arc::clone(&control.acceptance),
+                    Arc::clone(&control.response_release),
+                ));
+            }
+        } else if let Some(control) = state.controls.get_mut(&command) {
+            control.claim = TargetClaim::CancellationReserved;
+            let _ = control.cancel.send(true);
+            if matches!(
+                phase,
+                TargetPhase::Pending | TargetPhase::Prompting | TargetPhase::Starting(_, _)
+            ) {
+                control.acceptance.open();
+            }
+            waits.requested.push((
+                Arc::clone(&control.acceptance),
+                Arc::clone(&control.response_release),
+            ));
+            requested.push(command_ref);
+            if phase == TargetPhase::Prompting {
+                prompt_to_close = Some(command.clone());
+            }
+        }
+    }
+    prompt_to_close
 }
