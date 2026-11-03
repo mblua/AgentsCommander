@@ -42,7 +42,7 @@ fn living_pid_file_yields_running_against_tempdir() {
     std::fs::write(&path, std::process::id().to_string()).unwrap();
     match detect_daemon_state_at(&path) {
         DaemonState::Running { pid } => assert_eq!(pid, std::process::id()),
-        other => panic!("expected Running, got {:?}", other),
+        other => panic!("expected Running, got {other:?}"),
     }
 }
 
@@ -54,7 +54,7 @@ fn dead_pid_file_yields_stale_against_tempdir() {
     std::fs::write(&path, u32::MAX.to_string()).unwrap();
     match detect_daemon_state_at(&path) {
         DaemonState::StalePidFile { pid } => assert_eq!(pid, u32::MAX),
-        other => panic!("expected StalePidFile, got {:?}", other),
+        other => panic!("expected StalePidFile, got {other:?}"),
     }
 }
 
@@ -75,7 +75,7 @@ fn reaped_child_pid_file_yields_stale_against_tempdir() {
     std::fs::write(&path, pid.to_string()).unwrap();
     match detect_daemon_state_at(&path) {
         DaemonState::StalePidFile { pid: p } => assert_eq!(p, pid),
-        other => panic!("expected StalePidFile, got {:?}", other),
+        other => panic!("expected StalePidFile, got {other:?}"),
     }
 }
 

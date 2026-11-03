@@ -24,7 +24,7 @@ async fn post_probe_settled_cancel_wins_before_terminal() {
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     gate.state
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .controls
         .get_mut(&target.command)
         .expect("target control")
@@ -205,7 +205,7 @@ async fn post_probe_settled_completion_wins_before_cancel() {
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     gate.state
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .controls
         .get_mut(&target.command)
         .expect("target control")
