@@ -3,8 +3,8 @@ use super::handoff::{
     SettleAction, FRESH_IDLE_GUARD,
 };
 use super::notice::{
-    container_body_override_for_delivery, format_wake_content, is_container_backend_session,
-    ResolvedWakeAgentCommand, WakeContent, WakeDeliveryOrigin,
+    container_body_override_for_delivery, is_container_backend_session, ResolvedWakeAgentCommand,
+    WakeDeliveryOrigin,
 };
 use super::poller::{reserve_response_request_at_write, MailboxPoller};
 use super::pty_claim::{response_diag_debug_only, ResponseWakeWork};
@@ -30,86 +30,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
-async fn logical_session_snapshot(
-    session_mgr: &tokio::sync::RwLock<SessionManager>,
-    session_id: Uuid,
-    command: &str,
-) -> Result<(String, bool), String> {
-    let mgr = session_mgr.read().await;
-    let sessions = mgr.list_sessions().await;
-    match sessions
-        .iter()
-        .find(|session| session.id == session_id.to_string())
-    {
-        Some(session) => Ok((session.shell.clone(), session.waiting_for_input)),
-        None => Err(format!(
-            "Session not found: {} - cannot execute logical remote command '{}'",
-            session_id, command
-        )),
-    }
-}
-
-fn standard_payload(
-    msg: &OutboxMessage,
-    body: &str,
-    use_markers: bool,
-    origin: WakeDeliveryOrigin,
-    comanaged: bool,
-) -> String {
-    match (use_markers, msg.request_id.as_ref()) {
-        (true, Some(rid)) if comanaged => {
-            let display_from =
-                crate::phone::messaging::compose_sender_for_comanaged_origin(&msg.from);
-            crate::phone::messaging::format_pty_wrap_with_markers(&display_from, body, rid)
-        }
-        (true, Some(rid)) => {
-            crate::phone::messaging::format_pty_wrap_with_markers(&msg.from, body, rid)
-        }
-        _ => format_wake_content(WakeContent::Peer {
-            from: &msg.from,
-            body,
-            origin,
-            comanaged,
-        }),
-    }
-}
-
-fn standard_prewrite_admission(
-    msg: &OutboxMessage,
-    session: &crate::session::session::Session,
-    current: &crate::session::manager::CarrierSnapshot,
-    pty_mgr: &Arc<Mutex<PtyManager>>,
-    owned_replacement: Option<&crate::session::selection::OwnedReplacementContinuation>,
-) -> Result<(), String> {
-    response_diag_local!(
-        "prewrite",
-        "callback_reached",
-        Uuid::parse_str(&msg.id).ok()
-    );
-    if owned_replacement.is_none()
-        && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
-            &msg.to, session.id,
-        )
-    {
-        response_diag_local!(
-            "prewrite",
-            "owned_replacement_wait",
-            Uuid::parse_str(&msg.id).ok()
-        );
-        return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
-    }
-    if owned_replacement
-        .is_some_and(|continuation| !continuation.pre_write_work_matches(current, pty_mgr))
-    {
-        response_diag_local!(
-            "prewrite",
-            "owned_replacement_mismatch",
-            Uuid::parse_str(&msg.id).ok()
-        );
-        return Err("replacement work binding requires recapture".into());
-    }
-    Ok(())
-}
+mod admission;
+use admission::{logical_session_snapshot, standard_payload, standard_prewrite_admission};
 
 #[cfg(test)]
 fn record_spawn_call(hooks: &super::pty_claim::MailboxTestHooks, call: MailboxSpawnCall) {
@@ -617,183 +539,58 @@ impl MailboxPoller {
         let (response, owned_replacement) = context;
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
-        // Remote logical actions use the same canonical text-block injector as
-        // messages. Resolve against the actual session shell before the busy
-        // check, and never synthesize provider text from the wire value.
-        if let Some(ref command) = msg.command {
-            let (shell, waiting_for_input) = {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                logical_session_snapshot(session_mgr.inner().as_ref(), session_id, command).await?
-            };
-            let resolved = resolve_remote_pty_command(&shell, command)?;
-            if !waiting_for_input {
-                return Err(format!(
-                    "Cannot execute remote command '{}': agent is busy (not idle)",
-                    command
-                ));
-            }
-
-            // Submit the resolved static text through the canonical injector.
-            // The accepted idle-to-final-Enter race is the same one as normal
-            // message delivery; delayed double Enter remains the shared defense.
-            // #2336 - this is a peer wake (logical remote command), so it passes
-            // through the typing hold like a standard wake.
-            let source = self.codex_clear_source.as_deref().filter(|_| {
-                command == "clear"
-                    && Path::new(shell.trim())
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .is_some_and(|stem| stem.to_lowercase().starts_with("codex"))
-            });
-            let observation = source.map(|_| {
-                let mut observer = self.delivery_poller();
-                observer.clear_reservation = self.clear_reservation.clone();
-                Box::new(move || observer.begin_clear_observation()) as Box<dyn FnOnce() + Send>
-            });
-            crate::pty::inject::inject_peer_wake_with_current_facts(
-                app,
-                session_id,
-                resolved.text,
-                &msg.id,
-                settle,
-                observation,
-                |session, current| {
-                    if owned_replacement.is_none()
-                        && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
-                            &msg.to, session.id,
-                        )
-                    {
-                        return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
-                    }
-                    if owned_replacement.is_some_and(|continuation| {
-                        !continuation.pre_write_work_matches(current, pty_mgr.inner())
-                    }) {
-                        return Err("replacement work binding requires recapture".into());
-                    }
-                    if let Some(source) = source {
-                        if msg.command.as_deref() != Some("clear")
-                            || resolve_remote_pty_command(&session.shell, "clear")? != resolved
-                        {
-                            return Err("codex_clear_execution_error: provider changed".into());
-                        }
-                        super::clear_attempt::persist_attempt(source, msg, session.id)
-                            .map_err(|error| format!("codex_clear_execution_error: {error}"))?;
-                    }
-                    Ok(())
-                },
-            )
-            .await
-            .map_err(|e| {
-                if e == crate::pty::inject::OWNED_WORK_SCOPE_WAIT {
-                    return e;
-                }
-                if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
-                    && (is_permanent_delivery_error(&e) || self.is_terminal_clear_error(msg, &e))
-                {
-                    // Terminal rejection of a previously held wake: drop its
-                    // count. A transient failure keeps it, because the message
-                    // stays queued and may be deferred again.
-                    crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
-                }
-                let (level, outcome) = classify_injection_error(&e);
-                log::log!(
-                    level,
-                    "[mailbox] PTY injection {} msg={} session={} logical={} resolved={}: {}",
-                    outcome,
-                    msg.id,
+        // Logical actions precede standard message handling.
+        if let Some(command) = msg.command.as_ref() {
+            return PtyInjection { app }
+                .inject_logical_command(
+                    self,
                     session_id,
+                    msg,
                     command,
-                    resolved.text,
-                    e
-                );
-                e
-            })?;
-
-            log::info!(
-                "[mailbox] logical PTY action executed msg={} session={} logical={} resolved={}",
-                msg.id,
-                session_id,
-                command,
-                resolved.text
-            );
-
-            // Logical clear is a fresh-conversation boundary regardless of
-            // whether the provider text was /clear or Pi /new. Compact keeps
-            // the conversation and does not stamp.
-            if resolved.logical.creates_fresh_boundary() {
-                crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
-            }
-
-            let _ = tauri::Emitter::emit(
-                app,
-                "message_delivered",
-                serde_json::json!({
-                    "id": msg.id,
-                    "from": msg.from,
-                    "to": msg.to,
-                    "mode": msg.mode,
-                    "command": command,
-                    "injected": true
-                }),
-            );
-
-            // Logical actions keep the live child environment. If the message
-            // has a follow-up body, inject it only after the agent becomes idle.
-            // Credentials remain environment-only. Detached work never blocks
-            // the delivery pipeline.
-            let app_clone = app.clone();
-            let msg_clone = msg.clone();
-            let command_owned = command.clone();
-            let resolved_text = resolved.text;
-            tauri::async_runtime::spawn(async move {
-                if !msg_clone.body.is_empty() {
-                    if let Err(e) =
-                        Self::inject_followup_after_idle_static(&app_clone, session_id, &msg_clone)
-                            .await
-                    {
-                        log::warn!(
-                            "[mailbox] Failed to inject follow-up after logical {} resolved as {} \
-                            for session {}: {}",
-                            command_owned,
-                            resolved_text,
-                            session_id,
-                            e
-                        );
-                    }
-                }
-            });
-
-            return Ok(());
+                    (owned_replacement, settle),
+                    pty_mgr.inner(),
+                )
+                .await;
         }
 
+        PtyInjection { app }
+            .inject_standard_message(
+                self,
+                session_id,
+                msg,
+                (interactive, origin, comanaged, settle),
+                context,
+                pty_mgr.inner(),
+            )
+            .await
+    }
+}
+
+struct PtyInjection<'a, A> {
+    app: &'a A,
+}
+
+impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
+    async fn inject_standard_message(
+        &self,
+        poller: &MailboxPoller,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        delivery: (bool, WakeDeliveryOrigin, bool, SettleReadiness),
+        context: (
+            Option<&ResponseWakeWork>,
+            Option<&crate::session::selection::OwnedReplacementContinuation>,
+        ),
+        pty_mgr: &Arc<Mutex<PtyManager>>,
+    ) -> Result<(), String> {
+        let app = self.app;
+        let (interactive, origin, comanaged, settle) = delivery;
         // ── Standard message path ──
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
-        let body_override = if is_container_backend_session(app, session_id)? {
-            let sender_root = if origin == WakeDeliveryOrigin::FilesystemPoller
-                && crate::phone::messaging::parse_file_notification(&msg.body).is_some()
-            {
-                Some(
-                    self.resolve_repo_path(&msg.from, app)
-                        .await
-                        .ok_or_else(|| {
-                            format!(
-                        "Cannot resolve sender path for '{}' during container file delivery",
-                        msg.from
-                    )
-                        })?,
-                )
-            } else {
-                None
-            };
-            container_body_override_for_delivery(
-                origin,
-                &msg.body,
-                sender_root.as_deref().map(Path::new),
-            )?
-        } else {
-            None
-        };
+        let body_override = self
+            .standard_body_override(poller, session_id, msg, origin)
+            .await?;
         let body = body_override.as_deref().unwrap_or(&msg.body);
 
         // Interactive and marker-less paths share the minimal PTY wrap via
@@ -802,61 +599,70 @@ impl MailboxPoller {
         // payload with response markers.
         let payload = standard_payload(msg, body, use_markers, origin, comanaged);
 
-        // Register response watcher only for non-interactive sessions
-        if use_markers {
-            if let Some(ref rid) = msg.request_id {
-                // Response file goes to the SENDER's .agentscommander/responses/
-                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                    let response_dir = std::path::PathBuf::from(sender_path)
-                        .join(crate::config::agent_local_dir_name())
-                        .join("responses");
-                    let mgr = pty_mgr
-                        .lock()
-                        .map_err(|e| format!("PTY lock failed: {}", e))?;
-                    mgr.register_response_watcher(session_id, rid.clone(), response_dir);
-                    drop(mgr);
-                }
-            }
-        }
+        self.register_standard_watcher(poller, session_id, msg, use_markers, pty_mgr)
+            .await?;
 
-        // SECURITY: this `first_100` log MUST NOT see credential values.
-        // Credentials are env-only and must never be routed through PTY payloads.
-        // Keep this log limited to standard message payloads.
-        log::debug!(
-            "[mailbox] Injecting into PTY session={} msg={} payload_len={} first_100={:?}",
+        admission::log_standard_payload(session_id, msg, &payload);
+        self.inject_standard_payload(
+            poller,
             session_id,
-            msg.id,
-            payload.len(),
-            payload.chars().take(100).collect::<String>()
+            msg,
+            (comanaged, settle),
+            context,
+            (pty_mgr, &payload),
+        )
+        .await?;
+
+        log::info!(
+            "[mailbox] PTY injection SUCCESS session={} msg={}",
+            session_id,
+            msg.id
         );
+        // (#756) AC-injected message CONTENT creates a post-boundary transcript:
+        // drop any pending fresh intent (record + mirror). Bare logical action
+        // text (/clear, Pi /new, or /compact) never reaches this line.
+        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+        let _ = tauri::Emitter::emit(
+            app,
+            "message_delivered",
+            serde_json::json!({
+                "id": msg.id,
+                "from": msg.from,
+                "to": msg.to,
+                "mode": msg.mode,
+                "injected": true
+            }),
+        );
+        Ok(())
+    }
+
+    async fn inject_standard_payload(
+        &self,
+        poller: &MailboxPoller,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        delivery: (bool, SettleReadiness),
+        context: (
+            Option<&ResponseWakeWork>,
+            Option<&crate::session::selection::OwnedReplacementContinuation>,
+        ),
+        payload: (&Arc<Mutex<PtyManager>>, &str),
+    ) -> Result<(), String> {
+        let app = self.app;
+        let (comanaged, settle) = delivery;
+        let (response, owned_replacement) = context;
+        let (pty_mgr, payload) = payload;
         // #2336 - a standard peer wake is the other gated delivery path; the
         // detached logical-command follow-up above stays on the plain injector.
-        let prepared = self
+        let prepared = poller
             .prepare_response_request(app, msg, session_id, comanaged, response)
             .await;
-        let attempt = response.and_then(|work| match work.attempt.lock() {
-            Ok(attempt) => attempt.clone(),
-            Err(_) => {
-                response_diag_local!("inject", "attempt_lock_failure", work.diagnostic_message_id);
-                None
-            }
-        });
-        response_diag_debug_only(|| {
-            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
-                site={} outcome=observed stage=inject_presence id=unknown member={} prepared={} \
-                attempt={} work={}",
-                line!(),
-                session_id,
-                prepared.is_some(),
-                attempt.is_some(),
-                response.is_some()
-            );
-        });
+        let attempt = admission::response_attempt(response, session_id, prepared.is_some());
         let mut diagnostic_prewrite_reached = false;
         crate::pty::inject::inject_peer_wake_with_current_facts(
             app,
             session_id,
-            &payload,
+            payload,
             &msg.id,
             settle,
             None,
@@ -864,13 +670,7 @@ impl MailboxPoller {
                 response_diag_debug_only(|| {
                     diagnostic_prewrite_reached = true;
                 });
-                standard_prewrite_admission(
-                    msg,
-                    session,
-                    current,
-                    pty_mgr.inner(),
-                    owned_replacement,
-                )?;
+                standard_prewrite_admission(msg, session, current, pty_mgr, owned_replacement)?;
                 if let (Some(prepared), Some(attempt), Some(work)) =
                     (prepared.as_ref(), attempt.as_ref(), response)
                 {
@@ -921,15 +721,126 @@ impl MailboxPoller {
             },
             Uuid::parse_str(&msg.id).ok()
         );
-        log::info!(
-            "[mailbox] PTY injection SUCCESS session={} msg={}",
+        Ok(())
+    }
+
+    async fn inject_logical_command(
+        &self,
+        poller: &MailboxPoller,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        command: &str,
+        context: (
+            Option<&crate::session::selection::OwnedReplacementContinuation>,
+            SettleReadiness,
+        ),
+        pty_mgr: &Arc<Mutex<PtyManager>>,
+    ) -> Result<(), String> {
+        let app = self.app;
+        let (owned_replacement, settle) = context;
+        let (shell, waiting_for_input) = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            logical_session_snapshot(session_mgr.inner().as_ref(), session_id, command).await?
+        };
+        let resolved = resolve_remote_pty_command(&shell, command)?;
+        if !waiting_for_input {
+            return Err(format!(
+                "Cannot execute remote command '{}': agent is busy (not idle)",
+                command
+            ));
+        }
+
+        // Submit the resolved static text through the canonical injector.
+        // The accepted idle-to-final-Enter race is the same one as normal
+        // message delivery; delayed double Enter remains the shared defense.
+        // #2336 - this is a peer wake (logical remote command), so it passes
+        // through the typing hold like a standard wake.
+        let source = poller.codex_clear_source.as_deref().filter(|_| {
+            command == "clear"
+                && Path::new(shell.trim())
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| stem.to_lowercase().starts_with("codex"))
+        });
+        let observation = source.map(|_| {
+            let mut observer = poller.delivery_poller();
+            observer.clear_reservation = poller.clear_reservation.clone();
+            Box::new(move || observer.begin_clear_observation()) as Box<dyn FnOnce() + Send>
+        });
+        crate::pty::inject::inject_peer_wake_with_current_facts(
+            app,
             session_id,
-            msg.id
+            resolved.text,
+            &msg.id,
+            settle,
+            observation,
+            |session, current| {
+                admission::logical_prewrite_admission(
+                    msg,
+                    session,
+                    current,
+                    pty_mgr,
+                    owned_replacement,
+                    source,
+                    resolved,
+                )
+            },
+        )
+        .await
+        .map_err(|e| {
+            if e == crate::pty::inject::OWNED_WORK_SCOPE_WAIT {
+                return e;
+            }
+            if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
+                && (is_permanent_delivery_error(&e) || poller.is_terminal_clear_error(msg, &e))
+            {
+                // Terminal rejection of a previously held wake: drop its
+                // count. A transient failure keeps it, because the message
+                // stays queued and may be deferred again.
+                crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
+            }
+            let (level, outcome) = classify_injection_error(&e);
+            log::log!(
+                level,
+                "[mailbox] PTY injection {} msg={} session={} logical={} resolved={}: {}",
+                outcome,
+                msg.id,
+                session_id,
+                command,
+                resolved.text,
+                e
+            );
+            e
+        })?;
+
+        self.complete_logical_injection(session_id, msg, command, resolved)
+            .await;
+        Ok(())
+    }
+
+    async fn complete_logical_injection(
+        &self,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        command: &str,
+        resolved: super::notice::ResolvedRemotePtyCommand,
+    ) {
+        let app = self.app;
+        log::info!(
+            "[mailbox] logical PTY action executed msg={} session={} logical={} resolved={}",
+            msg.id,
+            session_id,
+            command,
+            resolved.text
         );
-        // (#756) AC-injected message CONTENT creates a post-boundary transcript:
-        // drop any pending fresh intent (record + mirror). Bare logical action
-        // text (/clear, Pi /new, or /compact) never reaches this line.
-        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+
+        // Logical clear is a fresh-conversation boundary regardless of
+        // whether the provider text was /clear or Pi /new. Compact keeps
+        // the conversation and does not stamp.
+        if resolved.logical.creates_fresh_boundary() {
+            crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
+        }
+
         let _ = tauri::Emitter::emit(
             app,
             "message_delivered",
@@ -938,19 +849,112 @@ impl MailboxPoller {
                 "from": msg.from,
                 "to": msg.to,
                 "mode": msg.mode,
+                "command": command,
                 "injected": true
             }),
         );
+
+        // Logical actions keep the live child environment. If the message
+        // has a follow-up body, inject it only after the agent becomes idle.
+        // Credentials remain environment-only. Detached work never blocks
+        // the delivery pipeline.
+        let app_clone = app.clone();
+        let msg_clone = msg.clone();
+        let command_owned = command.to_owned();
+        let resolved_text = resolved.text;
+        tauri::async_runtime::spawn(async move {
+            if !msg_clone.body.is_empty() {
+                if let Err(e) = (PtyInjection { app: &app_clone })
+                    .inject_followup_after_idle_static(session_id, &msg_clone)
+                    .await
+                {
+                    log::warn!(
+                        "[mailbox] Failed to inject follow-up after logical {} resolved as {} \
+                        for session {}: {}",
+                        command_owned,
+                        resolved_text,
+                        session_id,
+                        e
+                    );
+                }
+            }
+        });
+    }
+
+    async fn standard_body_override(
+        &self,
+        poller: &MailboxPoller,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        origin: WakeDeliveryOrigin,
+    ) -> Result<Option<String>, String> {
+        let app = self.app;
+        let body_override = if is_container_backend_session(app, session_id)? {
+            let sender_root = if origin == WakeDeliveryOrigin::FilesystemPoller
+                && crate::phone::messaging::parse_file_notification(&msg.body).is_some()
+            {
+                Some(
+                    poller
+                        .resolve_repo_path(&msg.from, app)
+                        .await
+                        .ok_or_else(|| {
+                            format!(
+                        "Cannot resolve sender path for '{}' during container file delivery",
+                        msg.from
+                    )
+                        })?,
+                )
+            } else {
+                None
+            };
+            container_body_override_for_delivery(
+                origin,
+                &msg.body,
+                sender_root.as_deref().map(Path::new),
+            )?
+        } else {
+            None
+        };
+        Ok(body_override)
+    }
+
+    async fn register_standard_watcher(
+        &self,
+        poller: &MailboxPoller,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+        use_markers: bool,
+        pty_mgr: &Arc<Mutex<PtyManager>>,
+    ) -> Result<(), String> {
+        let app = self.app;
+        // Register response watcher only for non-interactive sessions
+        if use_markers {
+            if let Some(ref rid) = msg.request_id {
+                // Response file goes to the SENDER's .agentscommander/responses/
+                if let Some(sender_path) = poller.resolve_repo_path(&msg.from, app).await {
+                    let response_dir = std::path::PathBuf::from(sender_path)
+                        .join(crate::config::agent_local_dir_name())
+                        .join("responses");
+                    let mgr = pty_mgr
+                        .lock()
+                        .map_err(|e| format!("PTY lock failed: {}", e))?;
+                    mgr.register_response_watcher(session_id, rid.clone(), response_dir);
+                    drop(mgr);
+                }
+            }
+        }
+
         Ok(())
     }
 
     /// Wait for agent to become idle after a remote command, then inject body as follow-up.
-    /// Static method — can be spawned as a detached task without borrowing self.
-    async fn inject_followup_after_idle_static<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
+    /// Borrows only the app handle and can run in the detached follow-up task.
+    async fn inject_followup_after_idle_static(
+        &self,
         session_id: Uuid,
         msg: &OutboxMessage,
     ) -> Result<(), String> {
+        let app = self.app;
         let max_wait = std::time::Duration::from_secs(30);
         let poll = std::time::Duration::from_millis(500);
         let start = std::time::Instant::now();
