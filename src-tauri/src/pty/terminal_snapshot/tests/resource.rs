@@ -164,6 +164,10 @@ impl AllocationEpoch {
             large_peak_bytes: LARGE_PEAK_BYTES.load(Ordering::SeqCst),
             largest_allocation: LARGEST_ALLOCATION.load(Ordering::SeqCst),
         };
+        #[expect(
+            clippy::mem_forget,
+            reason = "Finish disables tracking and suppresses the epoch Drop path"
+        )]
         std::mem::forget(self);
         stats
     }

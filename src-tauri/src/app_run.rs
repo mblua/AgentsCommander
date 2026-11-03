@@ -21,6 +21,7 @@ use crate::{
     WebAccessToken, WebServerHandle, WsBroadcaster,
 };
 
+#[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
 pub(crate) fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,

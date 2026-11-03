@@ -838,16 +838,16 @@ async fn closed_badges_ignore_existing_marker_sibling_and_missing_reference() {
     )]);
     let closed = HashSet::from([team.clone()]);
     mark_closed_badges(&services.clocks, &closed, &refs, |cwd, at| {
-        services.auto_closed_badge(cwd, at)
+        services.auto_closed_badge(cwd, at);
     });
     let marker = services.clocks.lock().unwrap().snapshot()["myproj:wg-1-team/lead"]
         .auto_closed_at
         .unwrap();
     mark_closed_badges(&services.clocks, &closed, &refs, |cwd, at| {
-        services.auto_closed_badge(cwd, at)
+        services.auto_closed_badge(cwd, at);
     });
     mark_closed_badges(&services.clocks, &closed, &HashMap::new(), |cwd, at| {
-        services.auto_closed_badge(cwd, at)
+        services.auto_closed_badge(cwd, at);
     });
     let sibling_closed =
         destroyed_is_team_coordinator(fixture.member_id, Some(fixture.coordinator_id));
@@ -858,7 +858,7 @@ async fn closed_badges_ignore_existing_marker_sibling_and_missing_reference() {
         HashSet::new()
     };
     mark_closed_badges(&services.clocks, &sibling_teams, &refs, |cwd, at| {
-        services.auto_closed_badge(cwd, at)
+        services.auto_closed_badge(cwd, at);
     });
     assert_eq!(
         *services.notices.lock().unwrap(),
