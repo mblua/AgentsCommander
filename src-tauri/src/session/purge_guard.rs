@@ -8,7 +8,7 @@ use uuid::Uuid;
 ///     and that peer's destroy.
 /// J2: no in-flight wake resurrects a peer the purge already destroyed.
 ///     `deliver_wake` falls through to spawn-persistent when a peer has no
-///     SessionManager record, so a wake landing mid-loop would cold-spawn an
+///     `SessionManager` record, so a wake landing mid-loop would cold-spawn an
 ///     agent we are purging and the verb would report a success it did not
 ///     achieve. J2 alone justifies this type.
 ///
@@ -46,7 +46,7 @@ impl PurgeGuard {
             && self
                 .target_sids
                 .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains(&sid)
     }
 
@@ -57,15 +57,21 @@ impl PurgeGuard {
             && self
                 .target_fqns
                 .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains(fqn)
     }
 
     /// Acquire exclusive purge rights. Blocks behind any in-flight purge.
     pub async fn acquire(&self, sids: HashSet<Uuid>, fqns: HashSet<String>) -> PurgeLease<'_> {
         let mutex = self.lock.lock().await;
-        *self.target_sids.write().unwrap_or_else(|e| e.into_inner()) = sids;
-        *self.target_fqns.write().unwrap_or_else(|e| e.into_inner()) = fqns;
+        *self
+            .target_sids
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sids;
+        *self
+            .target_fqns
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fqns;
         self.active.store(true, Ordering::SeqCst);
         PurgeLease {
             guard: self,
@@ -80,12 +86,12 @@ impl Drop for PurgeLease<'_> {
         self.guard
             .target_sids
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.guard
             .target_fqns
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 }
