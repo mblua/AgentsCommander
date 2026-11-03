@@ -104,8 +104,7 @@ impl ProductionContextAlertRuntime {
             Ok(resolution) => resolution,
             Err(error) => {
                 return MemberPolicyResolution::RetryableFailure(format!(
-                    "Member policy blocking task failed for session {}: {}",
-                    session_id, error
+                    "Member policy blocking task failed for session {session_id}: {error}"
                 ));
             }
         };
@@ -204,8 +203,7 @@ impl ProductionContextAlertRuntime {
             Ok(Err(error)) => return AttemptPreparation::RetryableFailure(error),
             Err(error) => {
                 return AttemptPreparation::RetryableFailure(format!(
-                    "Orchestrator route blocking task failed: {}",
-                    error
+                    "Orchestrator route blocking task failed: {error}"
                 ))
             }
         };
@@ -338,8 +336,7 @@ fn canonical_sampled_replica(
         Ok(path) => path,
         Err(error) => {
             return Err(format!(
-                "sampled CWD '{}' cannot be canonicalized: {}",
-                working_directory, error
+                "sampled CWD '{working_directory}' cannot be canonicalized: {error}"
             ))
         }
     };
@@ -504,13 +501,13 @@ pub(super) fn prepare_internal_route_blocking(
         crate::config::replica_identity::agent_bare_name_from_ref(&config.coordinator)?;
     let expected = fingerprint
         .workgroup_dir
-        .join(format!("__agent_{}", coordinator));
+        .join(format!("__agent_{coordinator}"));
     let canonical_expected = canonical_real_directory(&expected, "Orchestrator replica")?;
     if canonical_expected.parent() != Some(fingerprint.workgroup_dir.as_path())
         || canonical_expected
             .file_name()
             .and_then(|name| name.to_str())
-            != Some(format!("__agent_{}", coordinator).as_str())
+            != Some(format!("__agent_{coordinator}").as_str())
     {
         return Err("Orchestrator replica escapes the sampled room".to_string());
     }

@@ -155,7 +155,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         }
     }
 
-    /// Only the actual ReuseLive return can certify this path. Restart/create
+    /// Only the actual `ReuseLive` return can certify this path. Restart/create
     /// paths never call this and still require their own reached-effect proof.
     pub(crate) fn observe_reuse_live_result(&self, result: &Result<SessionInfo, String>) {
         let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
@@ -529,13 +529,13 @@ impl<R: Runtime> SelectionTransaction<R> {
             .app
             .state::<DetachedSessionsState>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&session_id);
         let has_pty = self
             .app
             .state::<Arc<Mutex<PtyManager>>>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_session(session_id);
         RuntimeSelectionSnapshot {
             session_id,
@@ -621,10 +621,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         let manager = self.manager().await;
         if let Err(error) = persist_current_state_result(&manager).await {
             log::warn!(
-                "[selection] persistence failed source={} session={:?}: {}",
-                source,
-                session_id,
-                error
+                "[selection] persistence failed source={source} session={session_id:?}: {error}"
             );
         }
     }
