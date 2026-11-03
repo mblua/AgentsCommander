@@ -192,7 +192,7 @@ impl MailboxPoller {
     ) -> Result<super::teardown::PurgeSnapshot, String>
     where
         C: Fn(Self, Uuid, bool, u32) -> F + Send + 'static,
-        F: std::future::Future<Output = super::teardown::TeardownOutcome> + Send,
+        F: std::future::Future<Output = super::teardown::TeardownOutcome> + Send + 'static,
     {
         let mut target_sids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut target_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
