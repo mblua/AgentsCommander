@@ -23,13 +23,20 @@ use crate::{
 mod geometry;
 
 /// The single owner of the live Tauri `App` that the setup helpers borrow.
-#[derive(Clone, Copy)]
-pub(super) struct SetupApp<'a>(&'a tauri::App);
+pub(super) struct SetupApp<'a, A = tauri::App>(&'a A);
 
-impl std::ops::Deref for SetupApp<'_> {
-    type Target = tauri::App;
+impl<A> Clone for SetupApp<'_, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
-    fn deref(&self) -> &Self::Target {
+impl<A> Copy for SetupApp<'_, A> {}
+
+impl<A> std::ops::Deref for SetupApp<'_, A> {
+    type Target = A;
+
+    fn deref(&self) -> &A {
         self.0
     }
 }
@@ -84,8 +91,10 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
 
     start_startup_housekeeping(app);
     let git = ctx.owners.git;
+    let settings = app.state::<SettingsState>().inner().clone();
     let (git_watcher, discovery_branch_watcher) = start_git_watchers(
         app,
+        settings.clone(),
         ctx.session_mgr_for_git.clone(),
         ctx.session_mgr_for_discovery,
         ctx.session_mgr_for_git_sweeper,
@@ -94,6 +103,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     );
     start_remote_activity(
         app,
+        settings,
         ctx.session_mgr_for_git,
         git,
         ctx.owners.remote,
@@ -373,6 +383,7 @@ fn spawn_screenshot_hotkey_registration(app: SetupApp<'_>) {
 
 fn start_git_watchers(
     app: SetupApp<'_>,
+    settings: SettingsState,
     git_rows: Arc<tokio::sync::RwLock<SessionManager>>,
     rows: Arc<tokio::sync::RwLock<SessionManager>>,
     sweep_rows: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -381,7 +392,6 @@ fn start_git_watchers(
 ) -> (Arc<GitWatcher>, Arc<DiscoveryBranchWatcher>) {
     use crate::pty::git_watcher::GitSweeper;
     // Git branch watcher: polls git branch for each session every 5s
-    let settings = app.state::<SettingsState>().inner().clone();
     let ui = app.handle().clone();
     let git_watcher = GitWatcher::with_state(git_rows, ui.clone(), git.clone());
     // Register for Tauri commands that take `State<'_, Arc<GitWatcher>>` (e.g. `update_team`). Must
@@ -407,6 +417,7 @@ fn start_git_watchers(
 
 fn start_remote_activity(
     app: SetupApp<'_>,
+    settings: SettingsState,
     git_rows: Arc<tokio::sync::RwLock<SessionManager>>,
     git: Arc<crate::pty::git_watcher::GitState>,
     remote: Arc<crate::pty::remote_watcher::RemoteActivityState>,
@@ -414,7 +425,6 @@ fn start_remote_activity(
     messages: &Arc<crate::config::injected_messages::MessageWarnings>,
 ) {
     use crate::pty::remote_watcher::RemoteSweeper;
-    let settings = app.state::<SettingsState>().inner().clone();
     // #2064 - the remote activity producer: asks GitHub, through `gh`, whether CI runs on each room
     // repo's exact HEAD and whether the default branch is ahead. Beside `GitSweeper` for the same
     // reason it sits there: it mutates no session metadata, it only publishes into process-local
