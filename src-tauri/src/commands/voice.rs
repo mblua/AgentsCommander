@@ -123,7 +123,7 @@ pub async fn transcribe_audio(
         .candidates
         .and_then(|c| c.into_iter().next())
         .and_then(|c| c.content)
-        .and_then(|content| content.parts.into_iter().filter_map(|p| p.text).next())
+        .and_then(|content| content.parts.into_iter().find_map(|p| p.text))
         .unwrap_or_default()
         .trim()
         .to_string();

@@ -489,7 +489,6 @@ impl MailboxPoller {
                             status
                         );
                     }
-                    continue;
                 }
             }
         }

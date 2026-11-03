@@ -677,7 +677,7 @@ pub(crate) fn build_direct_matrix_context(
                 };
 
                 if raw == CONTEXT_TOKEN_GLOBAL {
-                    continue;
+                    // GLOBAL is resolved separately.
                 } else if raw == CONTEXT_TOKEN_REPOS {
                     log::debug!(
                         "Skipping deprecated {} context token for {}",
