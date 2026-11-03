@@ -3,7 +3,7 @@
 //! Native, Greenshot-style screenshot flow: a global hotkey freezes the desktop,
 //! the user drags a rectangle on a per-monitor overlay, and the crop is saved as
 //! a PNG into the owning WG replica root of the session currently selected in
-//! AgentsCommander, with the absolute path copied to the clipboard.
+//! `AgentsCommander`, with the absolute path copied to the clipboard.
 //!
 //! Module layout (see plan `_plans/714-active-agent-screenshot-capture.md`):
 //! - This file owns the serializable IPC types shared with the frontend, the
@@ -269,7 +269,7 @@ pub fn parse_screenshot_hotkey(value: &str) -> Result<ParsedHotkey, String> {
     if trimmed.is_empty() {
         return Err("hotkey must not be empty".to_string());
     }
-    let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
+    let parts: Vec<&str> = trimmed.split('+').map(str::trim).collect();
     if parts.len() != 2 {
         return Err(format!(
             "hotkey '{value}' must be one modifier plus one key, e.g. Ctrl+Q"

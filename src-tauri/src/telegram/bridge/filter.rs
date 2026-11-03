@@ -422,9 +422,9 @@ fn is_thinking_line(s: &str) -> bool {
             && word_part
                 .chars()
                 .next()
-                .map(|c| c.is_uppercase())
+                .map(char::is_uppercase)
                 .unwrap_or(false)
-            && word_part.chars().all(|c| c.is_alphabetic())
+            && word_part.chars().all(char::is_alphabetic)
         {
             return true;
         }

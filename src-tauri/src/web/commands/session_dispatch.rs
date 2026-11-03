@@ -110,10 +110,10 @@ pub(super) async fn dispatch_session_command(
             let size = state.pty_mgr.lock().unwrap().get_pty_size(uuid);
             match size {
                 Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
-                None => Err(format!("Session not found: {}", session_id)),
+                None => Err(format!("Session not found: {session_id}")),
             }
         }
-        _ => Err(format!("Unknown command: {}", cmd)),
+        _ => Err(format!("Unknown command: {cmd}")),
     }
 }
 

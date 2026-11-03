@@ -375,8 +375,7 @@ impl TelegramBridgeManager {
                 return Ok(existing.info.clone());
             }
             return Err(AppError::Telegram(format!(
-                "Session {} already has a bridge attached",
-                session_id
+                "Session {session_id} already has a bridge attached"
             )));
         }
 
@@ -425,7 +424,7 @@ impl TelegramBridgeManager {
 
     pub fn detach(&mut self, session_id: Uuid) -> Result<BridgeShutdown, AppError> {
         let handle = self.bridges.remove(&session_id).ok_or_else(|| {
-            AppError::Telegram(format!("No bridge attached to session {}", session_id))
+            AppError::Telegram(format!("No bridge attached to session {session_id}"))
         })?;
 
         handle.cancel.cancel();

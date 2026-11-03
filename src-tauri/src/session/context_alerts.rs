@@ -239,14 +239,14 @@ impl ContextAlertMonitor {
         let handle = self
             .join
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         let Some(handle) = handle else {
             return Ok(());
         };
         handle
             .await
-            .map_err(|error| format!("Context alert actor join failed: {}", error))
+            .map_err(|error| format!("Context alert actor join failed: {error}"))
     }
 }
 

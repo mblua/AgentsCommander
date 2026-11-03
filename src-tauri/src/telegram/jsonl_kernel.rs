@@ -18,7 +18,7 @@ pub(crate) const ROTATION_STALE_SECS: u64 = 3;
 pub(crate) const PREAMBLE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Grace window for the §J timestamp filter. Lines with embedded timestamp
-/// ≥ attach_time - RACE_GRACE_SECS are emitted (strict lower bound — future
+/// ≥ `attach_time` - `RACE_GRACE_SECS` are emitted (strict lower bound — future
 /// timestamps from the live agent are always emitted).
 pub(crate) const RACE_GRACE_SECS: i64 = 5;
 
