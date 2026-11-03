@@ -106,14 +106,14 @@ pub fn agency_manifest_path(config_dir: &Path) -> PathBuf {
 
 pub(crate) fn read_staged_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
     let raw = read_agency_text(&root.join(AGENCY_MANIFEST_FILE))
-        .map_err(|e| format!("Failed to read staged manifest: {}", e))?;
-    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse staged manifest: {}", e))
+        .map_err(|e| format!("Failed to read staged manifest: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse staged manifest: {e}"))
 }
 
 pub(crate) fn read_cached_agency_manifest(root: &Path) -> Result<AgencyTemplatesManifest, String> {
     let raw = read_agency_text(&root.join(AGENCY_MANIFEST_FILE))
-        .map_err(|e| format!("Failed to read cached manifest: {}", e))?;
-    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse cached manifest: {}", e))
+        .map_err(|e| format!("Failed to read cached manifest: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("Failed to parse cached manifest: {e}"))
 }
 
 pub(crate) fn write_staged_agency_manifest(
@@ -123,9 +123,9 @@ pub(crate) fn write_staged_agency_manifest(
     write_agency_text(
         &root.join(AGENCY_MANIFEST_FILE),
         &serde_json::to_string_pretty(manifest)
-            .map_err(|e| format!("Failed to encode manifest: {}", e))?,
+            .map_err(|e| format!("Failed to encode manifest: {e}"))?,
     )
-    .map_err(|e| format!("Failed to write staged manifest: {}", e))
+    .map_err(|e| format!("Failed to write staged manifest: {e}"))
 }
 
 pub(crate) fn write_normalized_agency_manifest(
@@ -135,9 +135,9 @@ pub(crate) fn write_normalized_agency_manifest(
     write_agency_text(
         &root.join(AGENCY_MANIFEST_FILE),
         &serde_json::to_string_pretty(manifest)
-            .map_err(|e| format!("Failed to encode Agency manifest: {}", e))?,
+            .map_err(|e| format!("Failed to encode Agency manifest: {e}"))?,
     )
-    .map_err(|e| format!("Failed to write Agency manifest: {}", e))
+    .map_err(|e| format!("Failed to write Agency manifest: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ pub enum LocalTemplatesDir {
     /// A valid explicit override.
     Custom(PathBuf),
     /// An explicit override that is missing / not a directory. The caller
-    /// surfaces this via `log::error!` (→ ErrorModal); built-ins still work.
+    /// surfaces this via `log::error!` (→ `ErrorModal`); built-ins still work.
     InvalidCustom {
         configured: String,
         resolved: PathBuf,
@@ -262,11 +262,11 @@ the template is selected.
 pub fn ensure_default_templates_dir(config_dir: &Path) -> Result<(), String> {
     let dir = config_dir.join(AGENT_TEMPLATES_DIR_NAME);
     ensure_agency_directory(&dir)
-        .map_err(|e| format!("Failed to create agent-templates dir: {}", e))?;
+        .map_err(|e| format!("Failed to create agent-templates dir: {e}"))?;
     let readme = dir.join("README.md");
     if !agency_path_exists(&readme) {
         write_agency_text(&readme, AGENT_TEMPLATES_README)
-            .map_err(|e| format!("Failed to write agent-templates README.md: {}", e))?;
+            .map_err(|e| format!("Failed to write agent-templates README.md: {e}"))?;
     }
     Ok(())
 }
@@ -277,10 +277,7 @@ pub fn ensure_default_templates_dir_at_config() {
     match crate::config::config_dir() {
         Some(d) => {
             if let Err(e) = ensure_default_templates_dir(&d) {
-                log::warn!(
-                    "[role-templates] could not seed default agent-templates dir: {}",
-                    e
-                );
+                log::warn!("[role-templates] could not seed default agent-templates dir: {e}");
             }
         }
         None => log::warn!("[role-templates] cannot resolve config dir; skipped seeding"),
@@ -393,7 +390,7 @@ pub(crate) fn slug_segment(raw: &str) -> Result<String, String> {
     }
     let slug = out.trim_matches('-').to_string();
     if slug.is_empty() {
-        return Err(format!("Cannot derive a non-empty slug from \"{}\"", raw));
+        return Err(format!("Cannot derive a non-empty slug from \"{raw}\""));
     }
     let reserved = matches!(
         slug.as_str(),
@@ -422,8 +419,7 @@ pub(crate) fn slug_segment(raw: &str) -> Result<String, String> {
     );
     if reserved || slug.ends_with('.') || slug.ends_with(' ') {
         return Err(format!(
-            "Slug \"{}\" is not safe as a Windows path segment",
-            slug
+            "Slug \"{slug}\" is not safe as a Windows path segment"
         ));
     }
     Ok(slug)
@@ -432,20 +428,18 @@ pub(crate) fn slug_segment(raw: &str) -> Result<String, String> {
 pub fn validate_role_template_body(source_id: &str, body: &str) -> Result<(), String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return Err(format!("Template {} Role.md is empty", source_id));
+        return Err(format!("Template {source_id} Role.md is empty"));
     }
     for ch in trimmed.chars() {
         if ch == '\0' || (ch.is_control() && ch != '\t' && ch != '\n' && ch != '\r') {
             return Err(format!(
-                "Template {} Role.md contains unsupported control characters",
-                source_id
+                "Template {source_id} Role.md contains unsupported control characters"
             ));
         }
     }
     if trimmed.contains("<!-- ac:role-profile") || trimmed.contains("<!-- /ac:role-profile -->") {
         return Err(format!(
-            "Template {} Role.md contains reserved AgentsCommander role delimiters",
-            source_id
+            "Template {source_id} Role.md contains reserved AgentsCommander role delimiters"
         ));
     }
     let start = trimmed.trim_start();
@@ -453,8 +447,7 @@ pub fn validate_role_template_body(source_id: &str, body: &str) -> Result<(), St
         || start.starts_with("# AgentsCommander Context")
     {
         return Err(format!(
-            "Template {} Role.md contains managed AgentsCommander context",
-            source_id
+            "Template {source_id} Role.md contains managed AgentsCommander context"
         ));
     }
     Ok(())
@@ -647,12 +640,12 @@ pub(crate) fn collect_agency_templates_from_dir(
             let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
                 .trim()
                 .to_string();
-            let id = format!("agency:{}-{}", division_slug, stem_slug);
+            let id = format!("agency:{division_slug}-{stem_slug}");
             validate_role_template_body(&id, &body).map_err(|_| "cacheInvalid".to_string())?;
             if !ids.insert(id.clone()) {
                 return Err("cacheInvalid".into());
             }
-            let key = format!("{}\\{}", division_slug, stem_slug).to_ascii_lowercase();
+            let key = format!("{division_slug}\\{stem_slug}").to_ascii_lowercase();
             if !paths_ci.insert(key) {
                 return Err("cacheInvalid".into());
             }
@@ -694,10 +687,7 @@ pub fn agency_template_metas_from_cache(config_dir: &Path) -> Vec<RoleTemplateMe
             .collect(),
         Err(reason) if reason == "missing" => Vec::new(),
         Err(reason) => {
-            log::error!(
-                "[role-templates] Agency template cache is unavailable: {}",
-                reason
-            );
+            log::error!("[role-templates] Agency template cache is unavailable: {reason}");
             Vec::new()
         }
     }
@@ -734,7 +724,7 @@ fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
             _ => return ControlFlow::Continue(()),
         }
         let folder = file_name.to_string_lossy().to_string();
-        let id = format!("local:{}", folder);
+        let id = format!("local:{folder}");
         let raw = documents::read_local_role_template(&role_md).unwrap_or_default();
         let (name, description) = parse_template_frontmatter(&raw);
         let name = name
@@ -812,7 +802,7 @@ pub fn resolve_role_template(
         let t = load_cached_agency_templates(config_dir)?
             .into_iter()
             .find(|t| t.id == id)
-            .ok_or_else(|| format!("Unknown Agency role template: {}", id))?;
+            .ok_or_else(|| format!("Unknown Agency role template: {id}"))?;
         return Ok(ResolvedRoleTemplate {
             id: id.to_string(),
             body: t.body.trim().to_string(),
@@ -852,7 +842,7 @@ pub fn resolve_role_template(
                 return ControlFlow::Continue(());
             }
             let folder = file_name.to_string_lossy().to_string();
-            if format!("local:{}", folder) != id {
+            if format!("local:{folder}") != id {
                 return ControlFlow::Continue(());
             }
             // Role.md must be a REAL file. A symlinked Role.md could exfiltrate
@@ -860,25 +850,20 @@ pub fn resolve_role_template(
             let selected = (|| {
                 let role_md = path.join("Role.md");
                 let role_meta = local_template_no_links(&role_md).map_err(|()| {
-                    format!(
-                        "Template \"{}\" Role.md is missing, unreadable, or a symlink",
-                        folder
-                    )
+                    format!("Template \"{folder}\" Role.md is missing, unreadable, or a symlink")
                 })?;
                 if !role_meta.is_file() {
                     return Err(format!(
-                        "Template \"{}\" Role.md is not a regular file",
-                        folder
+                        "Template \"{folder}\" Role.md is not a regular file"
                     ));
                 }
-                let raw = documents::read_local_role_template(&role_md).map_err(|e| {
-                    format!("Template \"{}\" has no readable Role.md: {}", folder, e)
-                })?;
+                let raw = documents::read_local_role_template(&role_md)
+                    .map_err(|e| format!("Template \"{folder}\" has no readable Role.md: {e}"))?;
                 let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
                     .trim()
                     .to_string();
                 if body.is_empty() {
-                    return Err(format!("Template \"{}\" Role.md is empty", folder));
+                    return Err(format!("Template \"{folder}\" Role.md is empty"));
                 }
                 // skills/ is used only if it is a REAL directory. A symlinked or
                 // junctioned skills/ is ignored: skills_src stays None rather than
@@ -896,14 +881,14 @@ pub fn resolve_role_template(
             })();
             ControlFlow::Break(selected)
         })
-        .map_err(|e| format!("Cannot read templates directory: {}", e))?;
+        .map_err(|e| format!("Cannot read templates directory: {e}"))?;
         return match result {
             ControlFlow::Break(selected) => selected,
-            ControlFlow::Continue(()) => Err(format!("Unknown local role template: {}", id)),
+            ControlFlow::Continue(()) => Err(format!("Unknown local role template: {id}")),
         };
     }
 
-    Err(format!("Unrecognized role template id: {}", id))
+    Err(format!("Unrecognized role template id: {id}"))
 }
 
 // ---------------------------------------------------------------------------

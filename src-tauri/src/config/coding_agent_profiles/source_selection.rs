@@ -1,12 +1,10 @@
 use super::paths::{
     canonical_existing_dir, same_canonical_path, validate_profile_selection_agent_path,
 };
-use super::selection_state::ReplicaSelectionPair;
-use super::source_original_slots;
 use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,
 };
-use crate::config::settings::{normalize_profile_letter, AppSettings};
+use crate::config::settings::AppSettings;
 use crate::filesystem::coding_agent_profiles::{
     canonical_profile_path, open_profile_directory, profile_path_symlink_metadata,
 };
@@ -50,7 +48,6 @@ pub(crate) fn read_source_selection_target(
 }
 
 /// Strict finite source discovery. The ordinary best-effort helper is unchanged.
-#[allow(dead_code)]
 pub(crate) fn discover_source_inventory(
     settings: &AppSettings,
 ) -> Result<
@@ -224,70 +221,6 @@ pub(crate) fn discover_source_inventory_with_cut(
     Ok((witness, targets))
 }
 
-/// Source-aware original linkage is retained independently of the requested diff.
-/// Unknown fields remain untouched; inspect the same semantic domains as patch.
-#[allow(dead_code)]
-pub(crate) fn original_source_selections(
-    target: &SourceSelectionTarget,
-) -> Result<
-    Vec<crate::config::settings::ConfigurationRef>,
-    crate::config::settings::IdentityReferenceError,
-> {
-    Ok(source_original_slots(target)?
-        .into_iter()
-        .map(|(_, reference)| reference)
-        .collect())
-}
-
-// #2897 P03: read-only source companions, without enrollment or repair.
-#[allow(dead_code)]
-pub(crate) fn read_source_selection_state(
-    settings: &AppSettings,
-    agent_path: &Path,
-) -> Result<
-    crate::config::settings::SourceSelectionState<
-        Option<ReplicaSelectionPair>,
-        [crate::config::settings::IdentityReferencePhysicalState; 2],
-    >,
-    crate::config::settings::IdentityReferenceError,
-> {
-    use crate::config::settings::{IdentityReferenceError, SourceSelectionState};
-    let target = read_source_selection_target(settings, agent_path)?;
-    let physical_revision = target.physical_revision;
-    let raw = identity_reference_value(&physical_revision[0])?;
-    let tooling = raw.get("tooling");
-    if tooling.is_some_and(|value| !value.is_object()) {
-        return Err(IdentityReferenceError::Conflict);
-    }
-    let configuration_ref = tooling
-        .and_then(|value| value.get("configurationRef"))
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()
-        .map_err(|_| IdentityReferenceError::Conflict)?;
-    let legacy_pair = match tooling.and_then(|value| value.get("currentCodingAgent")) {
-        None => None,
-        Some(Value::String(id)) if !id.trim().is_empty() => {
-            let profile = match tooling.and_then(|value| value.get("profile")) {
-                None => "A".into(),
-                Some(Value::String(profile)) => {
-                    normalize_profile_letter(profile).ok_or(IdentityReferenceError::Conflict)?
-                }
-                _ => return Err(IdentityReferenceError::Conflict),
-            };
-            Some(ReplicaSelectionPair {
-                coding_agent_id: id.clone(),
-                requested_profile: profile,
-            })
-        }
-        _ => return Err(IdentityReferenceError::Conflict),
-    };
-    Ok(SourceSelectionState {
-        legacy_pair,
-        configuration_ref,
-        physical_revision,
-    })
-}
-
 pub(super) fn identity_reference_value(
     physical: &crate::config::settings::IdentityReferencePhysicalState,
 ) -> Result<Value, crate::config::settings::IdentityReferenceError> {
@@ -387,7 +320,6 @@ pub(super) fn patch_identity_companion(
 }
 
 /// Prepares exact raw companions in memory, without enrollment or disk writes.
-#[allow(dead_code)]
 pub(crate) fn plan_identity_reference_patch(
     before: [crate::config::settings::IdentityReferencePhysicalState; 2],
     source: &crate::config::settings::SourceRef,
@@ -443,7 +375,6 @@ pub(crate) fn plan_identity_reference_patch(
 
 /// The caller has durably recorded the authorized inventory before this call.
 /// PAIR owns cleanup, timestamp protection and the original recovery images.
-#[allow(dead_code)]
 pub(crate) fn prepare_identity_reference_patch(
     decisions: &Path,
     request: &crate::config::settings::IdentityReferenceRequest,
@@ -492,7 +423,7 @@ pub(crate) fn prepare_identity_reference_patch(
 
 /// Resume executes the original packet; it never prepares new caller images.
 /// The pure validation callback borrows existing C/source/target authority.
-#[allow(dead_code, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_identity_reference_patch(
     decisions: &Path,
     state: &Path,

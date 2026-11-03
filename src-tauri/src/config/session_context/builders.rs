@@ -47,9 +47,8 @@ pub(crate) fn build_replica_context_with_activation(
     // token-aware generic path.
     if root_context_candidate(cwd) {
         return Err(format!(
-            "Root identity requires directory {} to be built with build_root_agent_context, not \
-                the replica builder",
-            cwd
+            "Root identity requires directory {cwd} to be built with build_root_agent_context, not \
+                the replica builder"
         ));
     }
     let cwd_path = std::path::Path::new(cwd);
@@ -128,11 +127,7 @@ pub(crate) fn build_replica_context_from_config(
                 std::path::PathBuf::from(&global_path),
             ));
         } else if raw == CONTEXT_TOKEN_REPOS {
-            log::debug!(
-                "Skipping deprecated {} context token for {}",
-                CONTEXT_TOKEN_REPOS,
-                cwd
-            );
+            log::debug!("Skipping deprecated {CONTEXT_TOKEN_REPOS} context token for {cwd}");
         } else {
             let abs = cwd_path.join(raw);
             if documents::configured_context_exists(&abs) {
@@ -155,7 +150,7 @@ pub(crate) fn build_replica_context_from_config(
             config
                 .get("identity")
                 .and_then(|v| v.as_str())
-                .map(|identity| cwd_path.join(format!("{}/{}", identity, ROLE_MD_FILENAME)))
+                .map(|identity| cwd_path.join(format!("{identity}/{ROLE_MD_FILENAME}")))
         });
     if let Some(role_abs) = auto_role_abs {
         let already_included = resolved_paths_include_path(&resolved_paths, &role_abs);
@@ -175,7 +170,7 @@ pub(crate) fn build_replica_context_from_config(
             replica_name,
             missing
                 .iter()
-                .map(|m| format!("  - {}", m))
+                .map(|m| format!("  - {m}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
@@ -226,13 +221,13 @@ pub(crate) fn verify_root_context_identity(root: &str) -> Result<(), String> {
         return if super::super::root_agent::is_root_agent_path_at(root, &dir) {
             Ok(())
         } else {
-            Err(format!("Root identity validation failed for {}", root))
+            Err(format!("Root identity validation failed for {root}"))
         };
     }
     if super::super::root_agent::is_root_agent_path(root) {
         Ok(())
     } else {
-        Err(format!("Root identity validation failed for {}", root))
+        Err(format!("Root identity validation failed for {root}"))
     }
 }
 
@@ -358,15 +353,15 @@ pub(crate) fn render_root_skills_list(index: &SkillIndex) -> String {
                 _ => skill_trigger_text(skill),
             });
         let entry = format!(
-            "- `{}` - {}\n  Scope: Root Agent durable skills\n  Entrypoint: `{}`\n",
-            name, trigger, entrypoint
+            "- `{name}` - {trigger}\n  Scope: Root Agent durable skills\n  \
+             Entrypoint: `{entrypoint}`\n"
         );
         if !push_with_budget(&mut output, &entry) {
             let minimal = format!(
-                "- `{}` - Metadata omitted because the skill index exceeded the \
-                {} byte startup-context budget.\n  Scope: Root Agent durable skills\n  Entrypoint: \
-                `{}`\n",
-                name, SKILL_INDEX_TOTAL_MAX_BYTES, entrypoint
+                "- `{name}` - Metadata omitted because the skill index exceeded the \
+                {SKILL_INDEX_TOTAL_MAX_BYTES} byte startup-context budget.\n  Scope: Root Agent \
+                durable skills\n  Entrypoint: \
+                `{entrypoint}`\n"
             );
             if !push_with_budget(&mut output, &minimal) {
                 omitted_skills += 1;
@@ -383,7 +378,7 @@ pub(crate) fn render_root_skills_list(index: &SkillIndex) -> String {
         ) {
             omitted_warnings += 1;
         }
-        log::warn!("[skills] {}", warning);
+        log::warn!("[skills] {warning}");
     }
     for skill in &index.skills {
         for warning in &skill.metadata_warnings {
@@ -535,10 +530,10 @@ pub(crate) fn write_root_context_cache(
 ) -> Result<String, String> {
     let dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
     crate::filesystem::session_context::ensure_context_directory(&dir)
-        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
+        .map_err(|e| format!("Failed to create context-cache dir: {e}"))?;
     let path = dir.join(format!("{}-{}.md", prefix, simple_hash(root)));
     crate::filesystem::session_context::write_context_cache(&path, content)
-        .map_err(|e| format!("Failed to write combined context file: {}", e))?;
+        .map_err(|e| format!("Failed to write combined context file: {e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -591,7 +586,7 @@ pub(crate) fn build_root_agent_context_at(
             "Root Agent has missing context files:\n{}",
             missing
                 .iter()
-                .map(|raw| format!("  - {}", raw))
+                .map(|raw| format!("  - {raw}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
@@ -600,7 +595,7 @@ pub(crate) fn build_root_agent_context_at(
     let mut first = true;
     for raw in entries.into_iter().flatten().filter_map(|e| e.as_str()) {
         if raw == CONTEXT_TOKEN_GLOBAL || raw == CONTEXT_TOKEN_REPOS {
-            log::debug!("Ignoring deprecated Root context token {}", raw);
+            log::debug!("Ignoring deprecated Root context token {raw}");
             continue;
         }
         let path = cwd_path.join(raw);
@@ -633,7 +628,7 @@ pub(crate) fn build_root_agent_context_at(
             }
         };
         if !first {
-            combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
+            combined.push_str(&format!("\n\n---\n\n# Context: {label}\n\n"));
         }
         first = false;
         combined.push_str(&content);
@@ -680,9 +675,7 @@ pub(crate) fn build_direct_matrix_context(
                     // GLOBAL is resolved separately.
                 } else if raw == CONTEXT_TOKEN_REPOS {
                     log::debug!(
-                        "Skipping deprecated {} context token for {}",
-                        CONTEXT_TOKEN_REPOS,
-                        cwd
+                        "Skipping deprecated {CONTEXT_TOKEN_REPOS} context token for {cwd}"
                     );
                 } else {
                     let abs = cwd_path.join(raw);
@@ -713,7 +706,7 @@ pub(crate) fn build_direct_matrix_context(
             matrix_name,
             missing
                 .iter()
-                .map(|m| format!("  - {}", m))
+                .map(|m| format!("  - {m}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ));

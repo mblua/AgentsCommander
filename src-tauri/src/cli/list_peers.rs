@@ -92,7 +92,7 @@ NOTES:\n  \
 All agents that belong to your team(s) are listed. Agents you cannot directly\n\
 message are included with reachable=false. If you have no teams, the result is an empty array.")]
 pub struct ListPeersArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated only; this verb
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated only; this verb
     /// reads disk state and does not authorize per-token. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
@@ -184,7 +184,7 @@ NOTES:\n  \
     set; filter client-side if needed.\n\
 See issue #252 for the full rationale.")]
 pub struct ListPeersLeanArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated only; this verb
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated only; this verb
     /// reads disk state and does not authorize per-token. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
@@ -225,7 +225,7 @@ const ROLE_SUMMARY_MAX: usize = 80;
 ///
 /// - Takes the first non-empty trimmed line.
 /// - Returns `""` for empty/whitespace-only input, the documented
-///   "no-role" sentinels, or the standard AgentsCommander CLAUDE.md
+///   "no-role" sentinels, or the standard `AgentsCommander` CLAUDE.md
 ///   preamble openings (which are uniform across replicas and carry no
 ///   role-hint signal).
 /// - If the surviving line is ≤ `ROLE_SUMMARY_MAX` chars, returns it
@@ -268,7 +268,7 @@ fn lean_role_summary(role: &str) -> String {
     }
     // Truncate to MAX-1 chars + ellipsis → exactly MAX chars total.
     let truncated: String = line.chars().take(ROLE_SUMMARY_MAX - 1).collect();
-    format!("{}…", truncated)
+    format!("{truncated}…")
 }
 
 impl From<&PeerInfo> for LeanPeerInfo {
@@ -310,20 +310,20 @@ struct PeerInfo {
     /// `running-peer` badge predicate (ProjectPanel.tsx:780-786).
     working: bool,
     /// Fine-grained status. One of:
-    ///   "active"   — SessionStatus::Active (focused session)
-    ///   "running"  — SessionStatus::Running
-    ///   "idle"     — SessionStatus::Idle
-    ///   "waiting"  — any matching session has waiting_for_input==true
-    ///                (overrides underlying SessionStatus, mirrors
-    ///                replicaDotClass() at ProjectPanel.tsx:60)
-    ///   "exited"   — SessionStatus::Exited(_)
+    ///   "active"   — `SessionStatus::Active` (focused session)
+    ///   "running"  — `SessionStatus::Running`
+    ///   "idle"     — `SessionStatus::Idle`
+    ///   "waiting"  — any matching session has `waiting_for_input==true`
+    ///                (overrides underlying `SessionStatus`, mirrors
+    ///                `replicaDotClass()` at ProjectPanel.tsx:60)
+    ///   "exited"   — `SessionStatus::Exited(_)`
     ///   "none"     — no session matches this peer (WG peers match by
     ///                name+cwd, non-WG peers match by cwd only)
     session_status: String,
     /// UUID of the matched session, when one was found.
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
-    /// True if the matched session has waiting_for_input.
+    /// True if the matched session has `waiting_for_input`.
     waiting_for_input: bool,
     /// #1669 - true when the matched session is parked on a blocking terminal
     /// menu (a folder-trust prompt detected by the #1646/#1647 menu guard).
@@ -338,7 +338,7 @@ struct PeerInfo {
     /// the session is not blocked or the row carries no message.
     #[serde(skip_serializing_if = "Option::is_none")]
     blocked_menu_message: Option<String>,
-    /// Exit code, present iff session_status == "exited".
+    /// Exit code, present iff `session_status` == "exited".
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
     /// #1088 - the peer's live context-usage percent (0-100), the same figure
@@ -435,7 +435,7 @@ fn serialize_full_peers(peers: &[PeerInfo]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: failed to serialize peers: {}", e);
+            eprintln!("Error: failed to serialize peers: {e}");
             1
         }
     }
@@ -449,7 +449,7 @@ fn serialize_lean_peers(peers: &[PeerInfo]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: failed to serialize peers: {}", e);
+            eprintln!("Error: failed to serialize peers: {e}");
             1
         }
     }
@@ -458,7 +458,7 @@ fn serialize_lean_peers(peers: &[PeerInfo]) -> i32 {
 pub fn execute(args: ListPeersArgs) -> i32 {
     // Validate token before any discovery
     if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
-        eprintln!("{}", msg);
+        eprintln!("{msg}");
         return 1;
     }
 
@@ -473,7 +473,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     let peers = match discover_peers(&root) {
         Ok(peers) => peers,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };
@@ -507,7 +507,7 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
         crate::cli::validate_cli_token(&args.token).map(|_| ())
     };
     if let Err(message) = token_validation {
-        eprintln!("{}", message);
+        eprintln!("{message}");
         return 1;
     }
 
@@ -523,7 +523,7 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
         let (peers, skips) = match discover_snapshot_targets(&root) {
             Ok(discovered) => discovered,
             Err(error) => {
-                eprintln!("Error: {}", error);
+                eprintln!("Error: {error}");
                 return 1;
             }
         };
@@ -540,7 +540,7 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
     let peers = match discover_peers(&root) {
         Ok(peers) => peers,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };

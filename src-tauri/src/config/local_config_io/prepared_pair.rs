@@ -22,14 +22,12 @@ use std::path::PathBuf;
 /// Bytes are recovery authority; the digest is checked when a plan is executed.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) enum PhysicalState {
     Absent,
     Bytes { sha256: String, bytes: Vec<u8> },
 }
 
 impl PhysicalState {
-    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
         use sha2::{Digest, Sha256};
         Self::Bytes {
@@ -38,7 +36,6 @@ impl PhysicalState {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     pub(super) fn map(&self) -> Result<Map<String, Value>, PreparedPairError> {
         match self {
             Self::Absent => Ok(Map::new()),
@@ -57,7 +54,6 @@ impl PhysicalState {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, PreparedPairError> {
     match inspect_local_config_target(path) {
         Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
@@ -79,18 +75,15 @@ pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, Pr
 /// supplies the target and persists this private plan in its own protocol.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) struct PreparedConfigPairPlan {
     pub(super) stages: [[PhysicalState; 2]; 5],
 }
 
 impl PreparedConfigPairPlan {
-    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     pub(crate) fn stages(&self) -> &[[PhysicalState; 2]; 5] {
         &self.stages
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     pub(super) fn validate(&self) -> Result<(), PreparedPairError> {
         for tuple in &self.stages {
             for image in tuple {
@@ -112,7 +105,6 @@ impl PreparedConfigPairPlan {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) enum PreparedPairError {
     InvalidPlan(&'static str),
     Preparation(String),
@@ -139,7 +131,6 @@ impl std::fmt::Display for PreparedPairError {
 
 impl std::error::Error for PreparedPairError {}
 
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(super) fn prepared_pair_image(
     previous: &PhysicalState,
     before: &Map<String, Value>,
@@ -157,7 +148,6 @@ pub(super) fn prepared_pair_image(
 /// Pure preparation. Both closures finish before any publish. Reuses the
 /// writer's map equality and pretty+newline serializer; untouched bytes survive.
 /// Closures must only edit the supplied maps, never enter another writer.
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn prepare_config_pair_plan<F>(
     before: [PhysicalState; 2],
     cleanup: Option<ConfigPairCleanup<'_>>,
@@ -227,7 +217,6 @@ pub(super) fn execute_prepared_config_pair_with_stage(
 
 /// Retained full-physical P10 execution refuses a durable reservation under
 /// the same PAIR locks; it cannot bypass the original packet/protected-activity protocol.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn execute_unreserved_config_pair(
     decisions: &Path,
     state: &Path,
@@ -322,7 +311,6 @@ pub(super) fn execute_unreserved_config_pair_inner(
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(super) fn publish_prepared_pair_image(
     path: &Path,
     before: &PhysicalState,
@@ -331,7 +319,6 @@ pub(super) fn publish_prepared_pair_image(
     publish_prepared_pair_image_guarded(path, before, after, &PairTargetGuard::new(&|| Ok(())))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn publish_prepared_pair_image_guarded(
     path: &Path,
     before: &PhysicalState,
