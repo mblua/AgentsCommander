@@ -44,6 +44,7 @@ struct PtySpawnInput<'a> {
     )>,
 }
 
+/// Same shape as the selection replacement source validation.type PtySourceValidation = Arc<    dyn Fn() -> std::pin::Pin<            Box<                dyn std::future::Future<                        Output = Result<(), crate::session::selection::OwnedSourceStop>,                    > + Send,            >,        > + Send        + Sync,>;
 enum PtyReplacementAdmission {
     Reacquire(Option<crate::session::selection::PreparedOwnedReplacement>),
     Accepted(crate::session::selection::OwnedReplacementContinuation),
@@ -614,16 +615,7 @@ impl MailboxPoller {
         ),
         target: &crate::config::teams::VerifiedPtyInputIdentity,
         request: &crate::commands::session::OwnedReplacementCreateRequest,
-    ) -> Arc<
-        dyn Fn() -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Result<(), crate::session::selection::OwnedSourceStop>,
-                        > + Send,
-                >,
-            > + Send
-            + Sync,
-    > {
+    ) -> PtySourceValidation {
         let (claimed, initial, sender, api_client_store) = source;
         let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();
