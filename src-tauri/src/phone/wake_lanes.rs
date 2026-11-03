@@ -49,7 +49,7 @@ impl WakeLanes {
         let mut active = self
             .active
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.contains_key(target)
             || active
                 .values()
@@ -69,7 +69,7 @@ impl WakeLanes {
     pub(crate) fn observing_count(&self) -> usize {
         self.active
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .filter(|state| **state == WakeLaneState::Observing)
             .count()
@@ -79,7 +79,7 @@ impl WakeLanes {
     pub(crate) fn len(&self) -> usize {
         self.active
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 }
@@ -90,7 +90,7 @@ impl WakeLaneReservation {
             .owner
             .active
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(state) = active.get_mut(&self.target) {
             *state = WakeLaneState::Observing;
         }
@@ -102,7 +102,7 @@ impl Drop for WakeLaneReservation {
         self.owner
             .active
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.target);
     }
 }
