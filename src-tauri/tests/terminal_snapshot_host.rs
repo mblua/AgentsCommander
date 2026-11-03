@@ -258,7 +258,7 @@ impl HostLayout {
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("settings.30.instance.no-git.json"),
-            r#"{"defaultShell":"powershell.exe","defaultShellArgs":[],"terminalSnapshotsEnabled":false,"agents":[]}"#,
+            include_str!("fixtures/terminal_snapshot_host_settings.json"),
         )
         .unwrap();
         std::fs::write(config.join("project-paths.json"), r#"{"projectPaths":[]}"#).unwrap();

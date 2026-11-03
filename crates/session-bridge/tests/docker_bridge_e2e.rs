@@ -330,7 +330,8 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &[u8]) -> io::Resu
     let reason = if status == 202 { "Accepted" } else { "OK" };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/\
+        json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)

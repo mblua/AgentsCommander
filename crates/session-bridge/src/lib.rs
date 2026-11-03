@@ -382,7 +382,8 @@ mod tests {
 
         assert_eq!(
             config.transport_url(),
-            "ws://host.docker.internal:8765/api/v1/session-transport?sessionId=11111111-1111-4111-8111-111111111111&ticket=ticket"
+            "ws://host.docker.internal:8765/api/v1/session-transport?\
+            sessionId=11111111-1111-4111-8111-111111111111&ticket=ticket"
         );
     }
 
@@ -405,7 +406,8 @@ mod tests {
 
         assert_eq!(
             config.transport_url(),
-            "wss://api.example.test:8765/api/v1/session-transport?sessionId=11111111-1111-4111-8111-111111111111&ticket=ticket"
+            "wss://api.example.test:8765/api/v1/session-transport?\
+            sessionId=11111111-1111-4111-8111-111111111111&ticket=ticket"
         );
     }
 
