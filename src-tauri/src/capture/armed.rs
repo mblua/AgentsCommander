@@ -35,7 +35,10 @@ impl ArmedFlags {
                 return Arc::clone(flag);
             }
         }
-        let mut flags = self.flags.write().unwrap_or_else(|e| e.into_inner());
+        let mut flags = self
+            .flags
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(
             flags
                 .entry(session_id.to_owned())
@@ -68,7 +71,10 @@ impl ArmedFlags {
 
     pub fn remove(&self, session_id: &str) {
         self.disarm(session_id);
-        let mut flags = self.flags.write().unwrap_or_else(|e| e.into_inner());
+        let mut flags = self
+            .flags
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         flags.remove(session_id);
     }
 }

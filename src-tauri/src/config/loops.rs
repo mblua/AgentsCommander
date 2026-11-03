@@ -416,17 +416,16 @@ pub fn validate_cron_expr(expr: &str) -> Result<(), String> {
     }
     croner::Cron::from_str(expr)
         .map(|_| ())
-        .map_err(|e| format!("Invalid cron expression: {}", e))
+        .map_err(|e| format!("Invalid cron expression: {e}"))
 }
 
 pub fn next_due_after(expr: &str, after: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, String> {
     validate_cron_expr(expr)?;
-    let cron =
-        croner::Cron::from_str(expr).map_err(|e| format!("Invalid cron expression: {}", e))?;
+    let cron = croner::Cron::from_str(expr).map_err(|e| format!("Invalid cron expression: {e}"))?;
     let local_after = after.with_timezone(&Local);
     cron.find_next_occurrence(&local_after, false)
         .map(|next| Some(next.with_timezone(&Utc)))
-        .map_err(|e| format!("Failed to calculate next Loop due time: {}", e))
+        .map_err(|e| format!("Failed to calculate next Loop due time: {e}"))
 }
 
 pub fn latest_due_between(
@@ -438,12 +437,11 @@ pub fn latest_due_between(
     if after >= now {
         return Ok(None);
     }
-    let cron =
-        croner::Cron::from_str(expr).map_err(|e| format!("Invalid cron expression: {}", e))?;
+    let cron = croner::Cron::from_str(expr).map_err(|e| format!("Invalid cron expression: {e}"))?;
     let now_local = now.with_timezone(&Local);
     let latest = cron
         .find_previous_occurrence(&now_local, true)
-        .map_err(|e| format!("Failed to calculate Loop due time: {}", e))?
+        .map_err(|e| format!("Failed to calculate Loop due time: {e}"))?
         .with_timezone(&Utc);
     if latest > after && latest <= now {
         Ok(Some(latest))

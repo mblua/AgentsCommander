@@ -120,7 +120,9 @@ impl MailboxPoller {
         }
         let (binding, route_backend, route_identities, live) = {
             let manager = app.pty_routes();
-            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            let manager = manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (
                 manager.container_backend().credential_binding(session_id),
                 manager.backend_kind(session_id),
@@ -639,7 +641,9 @@ impl MailboxPoller {
         exited_id: Uuid,
         target: &crate::config::teams::VerifiedPtyInputIdentity,
     ) -> bool {
-        let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+        let manager = manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         manager.backend_kind(exited_id).is_some()
             || manager.has_pending_spawn_for_replica(&target.replica_identity)
     }

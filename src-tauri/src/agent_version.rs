@@ -198,11 +198,13 @@ impl AgentInstallCache {
     }
 
     fn lock(&self) -> MutexGuard<'_, CacheInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Fresh iff an entry exists and `now.duration_since(probed_at) <= ttl` (the
-    /// stored state, seq included); else InFlight iff a ticket is open for
+    /// stored state, seq included); else `InFlight` iff a ticket is open for
     /// `command`; else Absent (an expired entry is removed on the way).
     pub fn lookup(&self, command: &str, now: Instant, ttl: Duration) -> CacheLookup {
         let mut inner = self.lock();

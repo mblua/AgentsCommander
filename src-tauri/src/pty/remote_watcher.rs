@@ -250,7 +250,7 @@ impl RemoteActivityState {
             .snapshot
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         read(&snapshot)
     }
 
@@ -263,7 +263,7 @@ impl RemoteActivityState {
             .snapshot
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (path, activity) in entries {
             snapshot.insert(path.clone(), activity.clone());
         }

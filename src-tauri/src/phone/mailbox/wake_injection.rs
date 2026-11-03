@@ -282,15 +282,13 @@ impl MailboxPoller {
                     // error path run.
                     Some(s) if matches!(s.status, SessionStatus::Exited(_)) => {
                         return Err(format!(
-                            "Session {} exited before message injection",
-                            session_id
+                            "Session {session_id} exited before message injection"
                         ));
                     }
                     Some(s) => s.waiting_for_input,
                     None => {
                         return Err(format!(
-                            "Session {} was destroyed before message injection",
-                            session_id
+                            "Session {session_id} was destroyed before message injection"
                         ));
                     }
                 }
@@ -323,11 +321,9 @@ impl MailboxPoller {
                     // #2586 D3 - readiness exists only on this `Ok` branch.
                     if start.elapsed() >= max_wait {
                         log::warn!(
-                            "[mailbox] wake: timeout waiting for session {} to reach sustained \
-                            idle; injecting anyway (waiting_for_input={}, rendered={})",
-                            session_id,
-                            waiting,
-                            rendered
+                            "[mailbox] wake: timeout waiting for session {session_id} to reach \
+                            sustained idle; injecting anyway (waiting_for_input={waiting}, \
+                            rendered={rendered})"
                         );
                         return Ok(SettleReadiness::TimedOut);
                     }
@@ -336,11 +332,8 @@ impl MailboxPoller {
                 SettleAction::Wait => {
                     if was_settling && !ready {
                         log::info!(
-                            "[mailbox] wake: session {} left the settle window during settle \
-                            (waiting_for_input={}, rendered={}); re-waiting",
-                            session_id,
-                            waiting,
-                            rendered
+                            "[mailbox] wake: session {session_id} left the settle window during \
+                            settle (waiting_for_input={waiting}, rendered={rendered}); re-waiting"
                         );
                     }
                     tokio::time::sleep(poll).await;
@@ -352,7 +345,7 @@ impl MailboxPoller {
     /// (#1001 PR2 / B, grinch P1) Settle a LIVE session to paste-ready before a
     /// wake inject. The live-inject arm used to go straight to inject with no gate.
     /// The MEASURED live-path drop is the still-starting case (P2), closed by the
-    /// alive_age Starting route below; the established fresh-idle guard here is
+    /// `alive_age` Starting route below; the established fresh-idle guard here is
     /// DEFENSIVE retention (bias-to-deliver, cannot drop), NOT a measured-drop gate
     /// (the ~75% was PR1's cold-spawn measurement, not this path). Every tick reads ONE
     /// atomic `purge_readiness` snapshot and decides from the real-time
@@ -745,8 +738,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         let resolved = resolve_remote_pty_command(&shell, command)?;
         if !waiting_for_input {
             return Err(format!(
-                "Cannot execute remote command '{}': agent is busy (not idle)",
-                command
+                "Cannot execute remote command '{command}': agent is busy (not idle)"
             ));
         }
 
@@ -869,12 +861,8 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
                     .await
                 {
                     log::warn!(
-                        "[mailbox] Failed to inject follow-up after logical {} resolved as {} \
-                        for session {}: {}",
-                        command_owned,
-                        resolved_text,
-                        session_id,
-                        e
+                        "[mailbox] Failed to inject follow-up after logical {command_owned} \
+                        resolved as {resolved_text} for session {session_id}: {e}"
                     );
                 }
             }
@@ -937,7 +925,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
                         .join("responses");
                     let mgr = pty_mgr
                         .lock()
-                        .map_err(|e| format!("PTY lock failed: {}", e))?;
+                        .map_err(|e| format!("PTY lock failed: {e}"))?;
                     mgr.register_response_watcher(session_id, rid.clone(), response_dir);
                     drop(mgr);
                 }
@@ -977,8 +965,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
                 Some(_) => {} // busy — keep polling
                 None => {
                     return Err(format!(
-                        "Session {} destroyed before follow-up could be injected",
-                        session_id
+                        "Session {session_id} destroyed before follow-up could be injected"
                     ))
                 }
             }
