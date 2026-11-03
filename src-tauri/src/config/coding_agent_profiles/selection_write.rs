@@ -403,7 +403,7 @@ pub fn set_replica_coding_agent_selection(
         .iter()
         .any(|agent| agent.id == coding_agent_id)
     {
-        return Err(format!("Agent '{}' is not configured", coding_agent_id));
+        return Err(format!("Agent '{coding_agent_id}' is not configured"));
     }
     let profile = normalize_profile_letter(profile)
         .ok_or_else(|| "Profile must be a single letter A through Z".to_string())?;

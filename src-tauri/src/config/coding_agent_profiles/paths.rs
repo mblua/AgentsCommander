@@ -246,8 +246,7 @@ pub(super) fn normalize_profile_from_source(
             Some(letter) => Some(letter),
             None => {
                 warnings.push(format!(
-                    "Ignoring invalid profile letter '{}' from {}",
-                    value, source
+                    "Ignoring invalid profile letter '{value}' from {source}"
                 ));
                 None
             }
