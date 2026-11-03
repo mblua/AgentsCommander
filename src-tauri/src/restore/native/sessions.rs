@@ -284,10 +284,13 @@ impl RestoreContext {
                 if let Err(e) = detached_result {
                     if root {
                         log::warn!(
-    "[restore] detach_terminal_inner failed for root agent '{}': {} —         session stays live (attached)",
-    ps.name,
-    e
-);
+                            concat!(
+                                "[restore] detach_terminal_inner failed for root agent '{}': {} — ",
+                                "session stays live (attached)"
+                            ),
+                            ps.name,
+                            e
+                        );
                     } else {
                         log::warn!(
                             "[restore] detach_terminal_inner failed for '{}': {} — \

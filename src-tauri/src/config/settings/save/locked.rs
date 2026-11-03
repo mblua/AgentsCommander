@@ -416,37 +416,10 @@ fn prepare_save(
     };
     let (initial_disk, physical_sidecar, profile_gate) =
         capture_save_sources(path, disk_gate_stage)?;
-    let profiles_in_sidecar = physical_sidecar.as_ref().is_some_and(|map| {
-        map.contains_key("codingAgentProfiles")
-            || (map.contains_key("agents")
-                && initial_disk
-                    .as_ref()
-                    .is_none_or(|main| !main.contains_key("codingAgentProfiles")))
-    });
-    let profiles_unprotected = !settings
-        .local_overlay_state
-        .owns_top_level("codingAgentProfiles");
-    let profile_before = selected_registered_profile_owner(
-        &initial_disk.clone().unwrap_or_default(),
-        physical_sidecar.as_ref(),
-        profiles_unprotected,
-    );
-    let directional_split = profiles_in_sidecar
-        && physical_sidecar
-            .as_ref()
-            .is_some_and(|map| !map.contains_key("agents"))
-        && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
-            == Some(&Value::from(1));
-    let consolidate_legacy = profiles_unprotected
-        && profile_before
-            .get("codingAgentProfiles")
-            .is_some_and(|profiles| profiles.get("profileBindingVersion").is_none())
-        && physical_profile_rows(&profile_before, true).is_ok();
-    let profiles_in_sidecar = profiles_in_sidecar
-        || (profiles_unprotected
-            && profile_before
-                .get("codingAgentProfiles")
-                .is_none_or(|profiles| profiles.get("profileBindingVersion").is_none()));
+    let (
+        profile_before,
+        (directional_split, profiles_unprotected, profiles_in_sidecar, consolidate_legacy),
+    ) = save_profile_flags(settings, &initial_disk, &physical_sidecar);
     // Prove whole-row correspondence before any ID-keyed copying or conversion.
     let prepared_duplicate_agents = if matches!(mode, ProjectWriteMode::Preserve)
         && !settings.local_overlay_state.owns_top_level("agents")
@@ -769,4 +742,52 @@ fn capture_save_sources(
     let physical_sidecar = captured_sidecar;
 
     Ok((initial_disk, physical_sidecar, profile_gate))
+}
+
+fn save_profile_flags(
+    settings: &AppSettings,
+    initial_disk: &Option<Map<String, Value>>,
+    physical_sidecar: &Option<Map<String, Value>>,
+) -> (Value, (bool, bool, bool, bool)) {
+    let profiles_in_sidecar = physical_sidecar.as_ref().is_some_and(|map| {
+        map.contains_key("codingAgentProfiles")
+            || (map.contains_key("agents")
+                && initial_disk
+                    .as_ref()
+                    .is_none_or(|main| !main.contains_key("codingAgentProfiles")))
+    });
+    let profiles_unprotected = !settings
+        .local_overlay_state
+        .owns_top_level("codingAgentProfiles");
+    let profile_before = selected_registered_profile_owner(
+        &initial_disk.clone().unwrap_or_default(),
+        physical_sidecar.as_ref(),
+        profiles_unprotected,
+    );
+    let directional_split = profiles_in_sidecar
+        && physical_sidecar
+            .as_ref()
+            .is_some_and(|map| !map.contains_key("agents"))
+        && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+            == Some(&Value::from(1));
+    let consolidate_legacy = profiles_unprotected
+        && profile_before
+            .get("codingAgentProfiles")
+            .is_some_and(|profiles| profiles.get("profileBindingVersion").is_none())
+        && physical_profile_rows(&profile_before, true).is_ok();
+    let profiles_in_sidecar = profiles_in_sidecar
+        || (profiles_unprotected
+            && profile_before
+                .get("codingAgentProfiles")
+                .is_none_or(|profiles| profiles.get("profileBindingVersion").is_none()));
+
+    (
+        profile_before,
+        (
+            directional_split,
+            profiles_unprotected,
+            profiles_in_sidecar,
+            consolidate_legacy,
+        ),
+    )
 }
