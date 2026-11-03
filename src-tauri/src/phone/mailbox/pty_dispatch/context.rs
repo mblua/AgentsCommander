@@ -174,7 +174,7 @@ pub(super) async fn dispatch_selection_candidates<
         let (live, route_backend, route_identities) = {
             let manager = pty_manager
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (
                 manager.has_session(id),
                 manager.backend_kind(id),
@@ -273,9 +273,8 @@ pub(crate) async fn prepare_dispatch_claim(
                 .is_err()
             {
                 log::warn!(
-                    "[pty-input] corrupt-expiry rejection failed id={} \
-                        code=terminal_store_failed",
-                    injection_id
+                    "[pty-input] corrupt-expiry rejection failed id={injection_id} \
+                        code=terminal_store_failed"
                 );
             }
             return None;

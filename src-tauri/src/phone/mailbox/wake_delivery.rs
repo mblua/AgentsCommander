@@ -177,7 +177,7 @@ impl MailboxPoller {
                 }
                 _ => {
                     return Ok(std::ops::ControlFlow::Break(
-                        self.reject_message(path, msg, &format!("Unknown action '{}'", action))
+                        self.reject_message(path, msg, &format!("Unknown action '{action}'"))
                             .await,
                     ));
                 }
@@ -197,7 +197,7 @@ impl MailboxPoller {
                 self.reject_message(
                     path,
                     msg,
-                    &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
+                    &format!("Unsupported delivery mode '{mode}'. Valid: wake"),
                 )
                 .await,
             ));

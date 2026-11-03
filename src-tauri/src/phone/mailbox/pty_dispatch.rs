@@ -323,8 +323,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                     .is_err()
                 {
                     log::warn!(
-                        "[pty-input] invalid initial deadline id={} code=terminal_store_failed",
-                        injection_id
+                        "[pty-input] invalid initial deadline id={injection_id} \
+                            code=terminal_store_failed"
                     );
                 }
                 return Err(false);
@@ -351,8 +351,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                     .is_err()
                 {
                     log::warn!(
-                        "[pty-input] target-wait expiry failed id={} code=terminal_store_failed",
-                        injection_id
+                        "[pty-input] target-wait expiry failed id={injection_id} \
+                            code=terminal_store_failed"
                     );
                 }
                 return Err(false);
