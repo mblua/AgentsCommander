@@ -59,7 +59,7 @@ pub(crate) static TICK_RAISE_CALLS: std::sync::LazyLock<Mutex<HashMap<uuid::Uuid
 pub(crate) fn tick_raise_calls(session_id: uuid::Uuid) -> usize {
     TICK_RAISE_CALLS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session_id)
         .copied()
         .unwrap_or(0)
@@ -74,7 +74,7 @@ pub(crate) static RECHECK_CALLS: std::sync::LazyLock<Mutex<HashMap<uuid::Uuid, u
 pub(crate) fn tick_recheck_calls(session_id: uuid::Uuid) -> usize {
     RECHECK_CALLS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session_id)
         .copied()
         .unwrap_or(0)
@@ -169,7 +169,7 @@ pub(crate) async fn reraise_room_reader_demands<H: ReaderDemandHost + ?Sized>(ap
         {
             *TICK_RAISE_CALLS
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .entry(session_id)
                 .or_insert(0) += 1;
         }
@@ -180,7 +180,7 @@ pub(crate) async fn reraise_room_reader_demands<H: ReaderDemandHost + ?Sized>(ap
         {
             *RECHECK_CALLS
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .entry(session_id)
                 .or_insert(0) += 1;
         }
