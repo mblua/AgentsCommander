@@ -20,7 +20,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -84,7 +84,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
-    bin.parent().expect("bin parent").join(format!(".{}", stem))
+    bin.parent().expect("bin parent").join(format!(".{stem}"))
 }
 
 fn write_settings(config_dir: &Path, project_parent: &Path) {
@@ -161,7 +161,7 @@ fn find_refresh_request<'a>(
     requests
         .iter()
         .find(|request| request["reason"] == reason)
-        .unwrap_or_else(|| panic!("missing refresh request reason {}", reason))
+        .unwrap_or_else(|| panic!("missing refresh request reason {reason}"))
 }
 
 fn has_refresh_reason(config_dir: &Path, reason: &str) -> bool {
@@ -193,9 +193,9 @@ fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let ac_root = project.join(".ac");
     std::fs::create_dir_all(&ac_root).expect("create .ac");
     for agent in agents {
-        let dir = ac_root.join(format!("_agent_{}", agent));
+        let dir = ac_root.join(format!("_agent_{agent}"));
         std::fs::create_dir_all(dir.join("memory")).expect("agent memory");
-        std::fs::write(dir.join("Role.md"), format!("# {}\n", agent)).expect("role");
+        std::fs::write(dir.join("Role.md"), format!("# {agent}\n")).expect("role");
     }
     project
 }

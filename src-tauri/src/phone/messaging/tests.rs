@@ -393,8 +393,7 @@ fn validate_filename_shape_rejects_variants() {
     for c in cases {
         assert!(
             validate_filename_shape(c).is_err(),
-            "expected rejection for {:?}",
-            c
+            "expected rejection for {c:?}"
         );
     }
 }
@@ -452,8 +451,7 @@ fn resolve_rejects_traversal() {
     ] {
         assert!(
             resolve_existing_message(&tmp, bad).is_err(),
-            "expected rejection for {:?}",
-            bad
+            "expected rejection for {bad:?}"
         );
     }
 
@@ -615,7 +613,7 @@ fn file_notification_round_trips_path() {
 #[test]
 fn legacy_file_notification_still_parses() {
     let path = r"C:\tmp\wg-1-dev-team\messaging\20260630-120000-wg1-a-to-wg1-b-smoke.md";
-    let legacy = format!("New message: {}. Read this file.", path);
+    let legacy = format!("New message: {path}. Read this file.");
 
     assert_eq!(parse_file_notification(&legacy), Some(path));
 }
@@ -702,7 +700,7 @@ fn format_pty_wrap_round_trips_inputs() {
     assert!(rendered.ends_with("\n\r"));
 }
 
-/// PTY_SAFE_MAX clamp arithmetic — pathological long path must exceed
+/// `PTY_SAFE_MAX` clamp arithmetic — pathological long path must exceed
 /// `PTY_WRAP_FIXED + from.len() + body.len() > PTY_SAFE_MAX=1024`.
 #[test]
 fn pty_safe_max_clamp_rejects_long_path() {
@@ -712,10 +710,7 @@ fn pty_safe_max_clamp_rejects_long_path() {
     let overhead = PTY_WRAP_FIXED + from.len();
     assert!(
         body_len + overhead > PTY_SAFE_MAX,
-        "expected clamp to fire for body={} overhead={} max={}",
-        body_len,
-        overhead,
-        PTY_SAFE_MAX,
+        "expected clamp to fire for body={body_len} overhead={overhead} max={PTY_SAFE_MAX}",
     );
 }
 
@@ -728,10 +723,7 @@ fn pty_safe_max_clamp_accepts_typical() {
     let overhead = PTY_WRAP_FIXED + from.len();
     assert!(
         body_len + overhead <= PTY_SAFE_MAX,
-        "expected clamp to accept body={} overhead={} max={}",
-        body_len,
-        overhead,
-        PTY_SAFE_MAX,
+        "expected clamp to accept body={body_len} overhead={overhead} max={PTY_SAFE_MAX}",
     );
 }
 

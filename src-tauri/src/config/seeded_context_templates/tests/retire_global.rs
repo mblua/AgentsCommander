@@ -1,7 +1,7 @@
 use super::*;
 
 fn retired_backups(config_dir: &Path) -> Vec<PathBuf> {
-    let prefix = format!("{}.retired-", GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+    let prefix = format!("{GLOBAL_CONTEXT_TEMPLATE_FILENAME}.retired-");
     let mut found: Vec<PathBuf> = std::fs::read_dir(config_dir)
         .expect("read config dir")
         .filter_map(|entry| {
@@ -138,7 +138,7 @@ fn retire_preserves_v3_global_near_matches_byte_for_byte() {
 #[test]
 fn retire_backs_up_a_one_byte_edit_of_a_generated_default() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let edited = format!("{}X", STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS);
+    let edited = format!("{STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS}X");
     std::fs::write(live_global(temp.path()), &edited).expect("write edited global");
 
     retire_standalone_global_context(temp.path()).expect("retire");
@@ -154,7 +154,7 @@ fn retire_treats_normalized_variants_of_a_generated_default_as_custom() {
     let crlf = frozen.replace('\n', "\r\n").into_bytes();
     let mut bom = vec![0xEF_u8, 0xBB, 0xBF];
     bom.extend_from_slice(frozen.as_bytes());
-    let trailing = format!("{}\n", frozen).into_bytes();
+    let trailing = format!("{frozen}\n").into_bytes();
     let variants: Vec<(&str, Vec<u8>)> = vec![
         ("crlf", crlf),
         ("bom", bom),
@@ -168,14 +168,13 @@ fn retire_treats_normalized_variants_of_a_generated_default_as_custom() {
 
         retire_standalone_global_context(temp.path()).expect("retire");
 
-        assert!(!live_global(temp.path()).exists(), "case: {}", label);
+        assert!(!live_global(temp.path()).exists(), "case: {label}");
         let backups = retired_backups(temp.path());
-        assert_eq!(backups.len(), 1, "case: {}", label);
+        assert_eq!(backups.len(), 1, "case: {label}");
         assert_eq!(
             std::fs::read(&backups[0]).expect("read backup"),
             bytes,
-            "case: {}: bytes must survive",
-            label
+            "case: {label}: bytes must survive"
         );
     }
 }
