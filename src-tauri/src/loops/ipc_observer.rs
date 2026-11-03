@@ -586,7 +586,7 @@ impl IpcObserver {
         let marker = read_marker();
         let outcome = self.ingest_with_marker(records, marker.as_ref());
         for line in &outcome.lines {
-            log::warn!("{}", line);
+            log::warn!("{line}");
         }
         if outcome.marker_reported {
             delete_marker();
@@ -687,7 +687,7 @@ fn now_ms() -> u64 {
 fn stamp(ms: u64) -> String {
     match Local.timestamp_millis_opt(ms as i64) {
         chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f").to_string(),
-        _ => format!("+{}ms", ms),
+        _ => format!("+{ms}ms"),
     }
 }
 
@@ -792,7 +792,7 @@ fn tick(app: &impl IpcProbeEvents, observer: &IpcObserver, marker_warned: &mut b
             };
             *marker_warned = false;
             for line in silence_block(silent_for, last_invoke_at_ms, &snapshot, total_invokes) {
-                log::warn!("{}", line);
+                log::warn!("{line}");
             }
             write_marker(&marker, marker_warned);
             emit_probe(app, 1, now);

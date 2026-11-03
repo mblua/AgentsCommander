@@ -506,11 +506,11 @@ pub fn validate_enqueued_pty_input_result(
             .op_id
             .as_deref()
             .is_none_or(|value| parse_canonical_uuid_v4(value).is_err())
-        || result.sender.as_deref().is_none_or(|value| {
-            value.is_empty() || value.chars().any(|character| character.is_control())
+        || result.sender.as_deref().is_none_or(|identifier| {
+            identifier.is_empty() || identifier.chars().any(char::is_control)
         })
-        || result.target.as_deref().is_none_or(|value| {
-            value.is_empty() || value.chars().any(|character| character.is_control())
+        || result.target.as_deref().is_none_or(|identifier| {
+            identifier.is_empty() || identifier.chars().any(char::is_control)
         })
         || !matches!(result.payload_bytes, Some(1..=65_536))
         || result
@@ -618,7 +618,7 @@ impl fmt::Debug for PtyInputHostArtifact {
     }
 }
 
-/// Message format in outbox files. Shared between CLI verbs and MailboxPoller.
+/// Message format in outbox files. Shared between CLI verbs and `MailboxPoller`.
 /// New fields remain optional for backward compatibility.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

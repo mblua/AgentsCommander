@@ -43,7 +43,7 @@ pub(super) fn ensure_git_guard_wrapper(
         .ok_or_else(|| AppError::Other("Could not resolve app config directory".to_string()))?;
     let guard_dir = config_dir.join(GIT_GUARD_DIR_NAME);
     directories::ensure_git_guard_directory(&guard_dir)
-        .map_err(|e| AppError::Other(format!("Failed to create git-guard dir: {}", e)))?;
+        .map_err(|e| AppError::Other(format!("Failed to create git-guard dir: {e}")))?;
 
     let cmd_path = guard_dir.join("git.cmd");
     let ps1_path = guard_dir.join("git-guard.ps1");
@@ -122,9 +122,9 @@ exit $LASTEXITCODE
     );
 
     write_git_guard_file_if_changed(&cmd_path, cmd_content, sequence)
-        .map_err(|e| AppError::Other(format!("Failed to write git.cmd guard: {}", e)))?;
+        .map_err(|e| AppError::Other(format!("Failed to write git.cmd guard: {e}")))?;
     write_git_guard_file_if_changed(&ps1_path, ps1_content, sequence)
-        .map_err(|e| AppError::Other(format!("Failed to write git-guard.ps1: {}", e)))?;
+        .map_err(|e| AppError::Other(format!("Failed to write git-guard.ps1: {e}")))?;
 
     Ok(guard_dir)
 }
