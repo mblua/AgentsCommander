@@ -305,6 +305,28 @@ impl MenuGuard {
         }
     }
 
+    fn read_screen_since_last_seen(
+        &self,
+        pty_mgr_state: &Arc<Mutex<PtyManager>>,
+        session_uuid: Uuid,
+    ) -> ScreenRowsSince {
+        let last_seen_stamp = {
+            let sessions_guard = match self.sessions.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            sessions_guard
+                .get(&session_uuid)
+                .and_then(|s| s.last_seen_stamp)
+        };
+
+        let pty_guard = match pty_mgr_state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        pty_guard.screen_rows_since(session_uuid, last_seen_stamp)
+    }
+
     pub(crate) async fn scan_tick_with(
         &self,
         settings: &AppSettings,
@@ -341,25 +363,7 @@ impl MenuGuard {
                 .map(|agent| self.entries_for(agent))
                 .unwrap_or_default();
 
-            let last_seen_stamp = {
-                let sessions_guard = match self.sessions.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                sessions_guard
-                    .get(&session_uuid)
-                    .and_then(|s| s.last_seen_stamp)
-            };
-
-            let screen_read = {
-                let pty_guard = match pty_mgr_state.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                pty_guard.screen_rows_since(session_uuid, last_seen_stamp)
-            };
-
-            match screen_read {
+            match self.read_screen_since_last_seen(pty_mgr_state, session_uuid) {
                 ScreenRowsSince::Unchanged => {}
                 ScreenRowsSince::Frame(frame) => {
                     let stamp = frame.stamp;
