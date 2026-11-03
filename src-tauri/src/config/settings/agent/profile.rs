@@ -356,38 +356,7 @@ pub(crate) fn physical_profile_sets(
             result.labels.insert(hash.clone(), labels);
         }
     }
-    // Capture raw values before typed decoding. Existing arrays (including equal
-    // records) keep their order. Only newly appended equal records are suppressed.
-    let ids: std::collections::BTreeSet<_> = legacy_cells
-        .keys()
-        .chain(legacy_labels.keys())
-        .chain(identities.keys())
-        .collect();
-    for id in ids {
-        if result.rows.contains_key(id) {
-            continue;
-        }
-        let mut record = Map::new();
-        for (key, map) in [
-            ("cells", &legacy_cells),
-            ("labels", &legacy_labels),
-            ("identity", &identities),
-        ] {
-            if let Some(value) = map.get(id) {
-                record.insert(key.into(), value.clone());
-            }
-        }
-        let record = Value::Object(record);
-        let records = result
-            .orphans
-            .get_or_insert_with(Map::new)
-            .entry(id.clone())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        let records = records.as_array_mut().expect("validated quarantine array");
-        if !records.contains(&record) {
-            records.push(record);
-        }
-    }
+    quarantine_orphan_profiles(&mut result, &legacy_cells, &legacy_labels, &identities);
     Ok(result)
 }
 
@@ -504,26 +473,7 @@ pub(crate) fn canonical_profile_source(
         let mut cells = normalized_profile_cells(submitted_cells.get(id))?;
         let labels = Value::Object(profile_object(submitted_labels.get(id), labels_key)?);
         let old_cells = normalized_profile_cells(previous_cells)?;
-        if let (Some(new_cells), Some(previous)) = (cells.as_object_mut(), old_cells.as_object()) {
-            for (letter, cell) in new_cells {
-                if let (Some(cell), Some(previous)) = (
-                    cell.as_object_mut(),
-                    previous.get(letter).and_then(Value::as_object),
-                ) {
-                    let typed: ProfileCellConfig =
-                        serde_json::from_value(Value::Object(previous.clone()))
-                            .map_err(|e| e.to_string())?;
-                    let known = serde_json::to_value(typed).map_err(|e| e.to_string())?;
-                    for (key, value) in previous {
-                        if !known.as_object().unwrap().contains_key(key)
-                            && !["id_hash", "id_hash_debug"].contains(&key.as_str())
-                        {
-                            cell.entry(key.clone()).or_insert_with(|| value.clone());
-                        }
-                    }
-                }
-            }
-        }
+        preserve_unknown_cell_keys(&mut cells, &old_cells)?;
         let changed = cells != old_cells || labels != previous_labels;
         if changed {
             let value = (cells, labels);
@@ -568,6 +518,26 @@ pub(crate) fn canonical_profile_source(
         sets.cells.insert(hash.clone(), cells);
         sets.labels.insert(hash, labels);
     }
+    write_canonical_profile_source(
+        before,
+        incoming,
+        incoming_profiles,
+        registered,
+        sets,
+        [cells_key, labels_key],
+    )
+}
+
+/// Write the regrouped physical profile sets into a copy of `before`.
+fn write_canonical_profile_source(
+    before: &Value,
+    incoming: &Value,
+    incoming_profiles: &Value,
+    registered: bool,
+    sets: PhysicalProfileSets,
+    [cells_key, labels_key]: [&str; 2],
+) -> Result<Value, String> {
+    let empty = serde_json::json!({});
     let mut result = before.clone();
     let result_root = result.as_object_mut().ok_or("invalidSource")?;
     let incoming_root = incoming.as_object().ok_or("invalidSource")?;
@@ -621,6 +591,72 @@ pub(crate) fn canonical_profile_source(
     }
     refresh_physical_source_rows(&mut result, registered)?;
     Ok(result)
+}
+
+/// Quarantine legacy profile records whose agent ID no longer has a physical row.
+fn quarantine_orphan_profiles(
+    result: &mut PhysicalProfileSets,
+    legacy_cells: &Map<String, Value>,
+    legacy_labels: &Map<String, Value>,
+    identities: &Map<String, Value>,
+) {
+    // Capture raw values before typed decoding. Existing arrays (including equal
+    // records) keep their order. Only newly appended equal records are suppressed.
+    let ids: std::collections::BTreeSet<_> = legacy_cells
+        .keys()
+        .chain(legacy_labels.keys())
+        .chain(identities.keys())
+        .collect();
+    for id in ids {
+        if result.rows.contains_key(id) {
+            continue;
+        }
+        let mut record = Map::new();
+        for (key, map) in [
+            ("cells", legacy_cells),
+            ("labels", legacy_labels),
+            ("identity", identities),
+        ] {
+            if let Some(value) = map.get(id) {
+                record.insert(key.into(), value.clone());
+            }
+        }
+        let record = Value::Object(record);
+        let records = result
+            .orphans
+            .get_or_insert_with(Map::new)
+            .entry(id.clone())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let records = records.as_array_mut().expect("validated quarantine array");
+        if !records.contains(&record) {
+            records.push(record);
+        }
+    }
+}
+
+/// Carry raw extension keys of unchanged cells into the submitted cells.
+fn preserve_unknown_cell_keys(cells: &mut Value, old_cells: &Value) -> Result<(), String> {
+    if let (Some(new_cells), Some(previous)) = (cells.as_object_mut(), old_cells.as_object()) {
+        for (letter, cell) in new_cells {
+            if let (Some(cell), Some(previous)) = (
+                cell.as_object_mut(),
+                previous.get(letter).and_then(Value::as_object),
+            ) {
+                let typed: ProfileCellConfig =
+                    serde_json::from_value(Value::Object(previous.clone()))
+                        .map_err(|e| e.to_string())?;
+                let known = serde_json::to_value(typed).map_err(|e| e.to_string())?;
+                for (key, value) in previous {
+                    if !known.as_object().unwrap().contains_key(key)
+                        && !["id_hash", "id_hash_debug"].contains(&key.as_str())
+                    {
+                        cell.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn refresh_physical_source_rows(
