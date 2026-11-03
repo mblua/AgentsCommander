@@ -106,7 +106,7 @@ impl RestoreContext {
     async fn restore_awake_root(
         &self,
         ps: &sessions_persistence::PersistedSession,
-        root_path: &String,
+        root_path: &str,
         progress: &mut RestoreProgress,
     ) {
         let existing_root = {
@@ -177,7 +177,7 @@ impl RestoreContext {
     async fn create_awake_root(
         &self,
         ps: &sessions_persistence::PersistedSession,
-        root_path: &String,
+        root_path: &str,
         progress: &mut RestoreProgress,
     ) {
         let (rebuild_failed, resolved_spawn, resolved_agent_host_shell) = root_spawn_recipe(
@@ -192,7 +192,7 @@ impl RestoreContext {
                 &self.session_mgr_clone,
                 &self.pty_mgr_clone,
                 ps,
-                root_path.clone(),
+                root_path.to_owned(),
                 resolved_spawn,
                 resolved_agent_host_shell,
             )
