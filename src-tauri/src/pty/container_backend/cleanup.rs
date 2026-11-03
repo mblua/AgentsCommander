@@ -33,9 +33,8 @@ impl ContainerTransportBackend {
             .retain(None, Some(runtime), resources, reason);
         self.schedule_retained_cleanup(entry, Some(producer));
         log::debug!(
-            "[container-transport] tracking shutdown-owned stop session={} reason={}",
-            session_id,
-            reason
+            "[container-transport] tracking shutdown-owned stop session={session_id} \
+                reason={reason}"
         );
     }
 
@@ -71,9 +70,8 @@ impl ContainerTransportBackend {
         } else {
             log::warn!(
                 "[container-transport] cleanup retained for the explicit global sweep without \
-                    reopening sealed shutdown work session={} reason={} state=retained",
-                session_id,
-                reason
+                    reopening sealed shutdown work session={session_id} reason={reason} \
+                    state=retained"
             );
         }
     }
@@ -122,8 +120,7 @@ impl ContainerTransportBackend {
             ownership.attempt(entry, cleanup_epoch, control);
             if completed.send(()).is_err() {
                 log::debug!(
-                    "[container-transport] {} cleanup completed after caller cancellation",
-                    reason
+                    "[container-transport] {reason} cleanup completed after caller cancellation"
                 );
             }
         };
@@ -134,25 +131,19 @@ impl ContainerTransportBackend {
         } else {
             log::warn!(
                 "[container-transport] cleanup retained for the explicit global sweep without \
-                    reopening sealed shutdown work session={} reason={} state=retained",
-                session_id,
-                reason
+                    reopening sealed shutdown work session={session_id} reason={reason} \
+                    state=retained"
             );
         }
         match tokio::time::timeout(CLEANUP_TASK_TIMEOUT, completion).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                log::warn!(
-                    "[container-transport] {} cleanup task failed: {}",
-                    reason,
-                    error
-                );
+                log::warn!("[container-transport] {reason} cleanup task failed: {error}");
             }
             Err(_) => {
                 log::warn!(
-                    "[container-transport] {} cleanup exceeded {:?}; continuing",
-                    reason,
-                    CLEANUP_TASK_TIMEOUT
+                    "[container-transport] {reason} cleanup exceeded \
+                    {CLEANUP_TASK_TIMEOUT:?}; continuing"
                 );
             }
         }
@@ -185,9 +176,7 @@ impl ContainerTransportBackend {
                     {
                         log::warn!(
                             "[container-transport] pending-reaper reconciliation failed \
-                                session={}: {}",
-                            session_id,
-                            error
+                                session={session_id}: {error}"
                         );
                     }
                 }
