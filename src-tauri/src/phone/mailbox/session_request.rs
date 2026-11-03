@@ -8,7 +8,7 @@ use super::handoff::SELF_CLEAR_POLL;
 use super::handoff::SELF_CLEAR_SETTLE;
 use super::handoff::{ARCHIVE_TIMESTAMP_FORMAT, PURGE_WG_ACTION, SELF_HANDOFF_ROOT_NAME};
 use super::notice::derive_project_from_outbox_path;
-use super::poller::{evaluate_gate, MailboxPoller};
+use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer};
 use super::settle::{archive_root_md, capture_self_forget_summary};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
@@ -41,39 +41,11 @@ impl MailboxPoller {
         );
 
         // 2. Resolve WG scope and authorization, one call (§3.6).
-        let effective_paths = {
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            match derive_project_from_outbox_path(path) {
-                Ok(Some(root_project)) => {
-                    let canon = crate::filesystem::projects::canonical_refresh_project(
-                        std::path::Path::new(&root_project),
-                    )
-                    .ok();
-                    let already = paths.iter().any(|p| match &canon {
-                        Some(ct) => {
-                            crate::filesystem::projects::canonical_refresh_project(
-                                std::path::Path::new(p),
-                            )
-                            .ok()
-                            .as_ref()
-                                == Some(ct)
-                        }
-                        None => p == &root_project,
-                    });
-                    if !already {
-                        paths.push(root_project);
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return self.reject_message(path, msg, &e).await;
-                }
+        let effective_paths = match purge_effective_paths(app, path).await {
+            Ok(paths) => paths,
+            Err(e) => {
+                return self.reject_message(path, msg, &e).await;
             }
-            paths
         };
         let wg =
             match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
@@ -123,20 +95,7 @@ impl MailboxPoller {
 
         // 5. Take the mirror snapshot ONCE (F-4). One list_sessions(), one
         //    PTY-liveness pass. Per-peer filtering reuses the pure predicate.
-        let sessions: Vec<SessionInfo> = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            mgr.list_sessions().await
-        };
-        let pty_live: std::collections::HashSet<Uuid> = {
-            let pty = app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
-            let mgr = pty.lock().unwrap();
-            sessions
-                .iter()
-                .filter_map(|s| Uuid::parse_str(&s.id).ok())
-                .filter(|id| mgr.has_session(*id))
-                .collect()
-        };
+        let (sessions, pty_live) = purge_mirror_snapshot(app).await;
 
         // 6. Restore-in-progress guard (F-2: exit 3, not 0).
         {
@@ -175,21 +134,8 @@ impl MailboxPoller {
         };
 
         // 8. Readiness snapshot and the four-leg gate (§2.3.3, F-1).
-        let quiet = std::time::Duration::from_millis(
-            msg.quiet_period_ms.unwrap_or(3000).max(
-                crate::session::profile::IdleTuning::DEFAULT
-                    .idle_threshold
-                    .as_millis() as u64,
-            ),
-        );
-        let readiness_map: std::collections::HashMap<
-            Uuid,
-            crate::pty::idle_detector::PurgeReadiness,
-        > = {
-            let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
-            let readiness = idle.purge_readiness(&all_live_session_ids);
-            readiness.into_iter().map(|r| (r.session_id, r)).collect()
-        };
+        let quiet = purge_quiet_period(msg);
+        let readiness_map = purge_readiness_map(app, &all_live_session_ids);
         let gate_peers = purge::gate_peers(&peer_infos, &readiness_map);
 
         let decision = evaluate_gate(&gate_peers, quiet);
@@ -211,16 +157,30 @@ impl MailboxPoller {
         }
 
         // 11. Acquire the lease (F-14: clone Arc into a named local first).
+        let snapshot = self.run_purge_lease(app, msg, &gate_peers).await?;
+        let response =
+            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
+
+        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
+            .await
+    }
+
+    async fn run_purge_lease<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        gate_peers: &[PurgeGatePeer],
+    ) -> Result<super::teardown::PurgeSnapshot, String> {
         let mut target_sids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut target_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for session in &peer.live {
                 target_sids.insert(session.session_id);
             }
             target_fqns.insert(peer.fqn.clone());
         }
         // Also include non-live session IDs (Exited records) for destruction.
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for sid_str in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(sid_str) {
                     target_sids.insert(sid);
@@ -237,7 +197,7 @@ impl MailboxPoller {
             .ok_or_else(|| "purge observation budget overflow".to_string())?;
         let mut ids = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for id in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(id) {
                     if seen.insert(sid) {
@@ -275,12 +235,7 @@ impl MailboxPoller {
                 }
             },
         ));
-        let snapshot = super::teardown::observe_purge(progress, worker).await?;
-        let response =
-            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
-
-        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
-            .await
+        super::teardown::observe_purge(progress, worker).await
     }
 
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
@@ -761,4 +716,76 @@ impl MailboxPoller {
             Err(PlainError::Retryable(error) | PlainError::Transport(error)) => Err(error),
         }
     }
+}
+
+/// Step 2 of `handle_purge_wg`: configured projects plus the outbox's own
+/// project. `Err` carries the rejection reason.
+async fn purge_effective_paths<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let mut paths = {
+        let cfg = app.state::<SettingsState>();
+        let c = cfg.read().await;
+        c.project_paths.clone()
+    };
+    if let Some(root_project) = derive_project_from_outbox_path(path)? {
+        let canon = crate::filesystem::projects::canonical_refresh_project(std::path::Path::new(
+            &root_project,
+        ))
+        .ok();
+        let already = paths.iter().any(|p| match &canon {
+            Some(ct) => {
+                crate::filesystem::projects::canonical_refresh_project(std::path::Path::new(p))
+                    .ok()
+                    .as_ref()
+                    == Some(ct)
+            }
+            None => p == &root_project,
+        });
+        if !already {
+            paths.push(root_project);
+        }
+    }
+    Ok(paths)
+}
+
+/// Step 5 of `handle_purge_wg`: one `list_sessions()` and one PTY-liveness pass.
+async fn purge_mirror_snapshot<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> (Vec<SessionInfo>, std::collections::HashSet<Uuid>) {
+    let sessions: Vec<SessionInfo> = {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        mgr.list_sessions().await
+    };
+    let pty_live: std::collections::HashSet<Uuid> = {
+        let pty = app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
+        let mgr = pty.lock().unwrap();
+        sessions
+            .iter()
+            .filter_map(|s| Uuid::parse_str(&s.id).ok())
+            .filter(|id| mgr.has_session(*id))
+            .collect()
+    };
+    (sessions, pty_live)
+}
+
+fn purge_quiet_period(msg: &OutboxMessage) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        msg.quiet_period_ms.unwrap_or(3000).max(
+            crate::session::profile::IdleTuning::DEFAULT
+                .idle_threshold
+                .as_millis() as u64,
+        ),
+    )
+}
+
+fn purge_readiness_map<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    all_live_session_ids: &[Uuid],
+) -> std::collections::HashMap<Uuid, crate::pty::idle_detector::PurgeReadiness> {
+    let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+    let readiness = idle.purge_readiness(all_live_session_ids);
+    readiness.into_iter().map(|r| (r.session_id, r)).collect()
 }
