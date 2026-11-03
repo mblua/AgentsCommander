@@ -564,6 +564,58 @@ impl MailboxPoller {
         if !source_executor.bind(&continuation) {
             return Ok(PtySpawnStep::RetainedUnowned);
         }
+        let continuation = continuation.with_source_validation(self.owned_pty_source_validation(
+            app,
+            (claimed, initial, sender, api_client_store),
+            target,
+            &request,
+        ));
+        #[cfg(test)]
+        let Some((continuation, fixture_created)) = self
+            .prepare_pty_replacement_fixture(&coordinator, &request, continuation, fixture_lease)
+            .await
+        else {
+            return Ok(PtySpawnStep::RetainedUnowned);
+        };
+        #[cfg(test)]
+        let created = match fixture_created {
+            Some(created) => created,
+            None => {
+                crate::commands::session::create_owned_response_replacement(
+                    app,
+                    request,
+                    continuation.clone(),
+                    target_ownership,
+                )
+                .await
+            }
+        };
+        #[cfg(not(test))]
+        let created = crate::commands::session::create_owned_response_replacement(
+            app,
+            request,
+            continuation.clone(),
+            target_ownership,
+        )
+        .await;
+        Self::owned_pty_spawn_outcome(created, continuation)
+    }
+
+    /// Build the source validation that re-checks the PTY claim, spawn authority
+    /// and replacement recipe before the owned replacement proceeds.
+    fn owned_pty_source_validation<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        source: (
+            &crate::api::message_store::ClaimedPtyInputOperation,
+            &crate::phone::types::PtyInputResult,
+            &crate::config::teams::VerifiedPtyInputIdentity,
+            Option<&Arc<crate::api::auth::ApiClientStore>>,
+        ),
+        target: &crate::config::teams::VerifiedPtyInputIdentity,
+        request: &crate::commands::session::OwnedReplacementCreateRequest,
+    ) -> crate::session::selection::OwnedSourceValidation {
+        let (claimed, initial, sender, api_client_store) = source;
         let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();
         let validation_claim = claimed.clone();
@@ -572,7 +624,7 @@ impl MailboxPoller {
         let validation_target = target.clone();
         let validation_api = api_client_store.cloned();
         let validation_request = request.clone();
-        let continuation = continuation.with_source_validation(Arc::new(move || {
+        Arc::new(move || {
             let messages = Arc::clone(&validation_messages);
             let app = validation_app.clone();
             let claimed = validation_claim.clone();
@@ -607,36 +659,7 @@ impl MailboxPoller {
                     Err(Stop::AuthorityChanged)
                 }
             })
-        }));
-        #[cfg(test)]
-        let Some((continuation, fixture_created)) = self
-            .prepare_pty_replacement_fixture(&coordinator, &request, continuation, fixture_lease)
-            .await
-        else {
-            return Ok(PtySpawnStep::RetainedUnowned);
-        };
-        #[cfg(test)]
-        let created = match fixture_created {
-            Some(created) => created,
-            None => {
-                crate::commands::session::create_owned_response_replacement(
-                    app,
-                    request,
-                    continuation.clone(),
-                    target_ownership,
-                )
-                .await
-            }
-        };
-        #[cfg(not(test))]
-        let created = crate::commands::session::create_owned_response_replacement(
-            app,
-            request,
-            continuation.clone(),
-            target_ownership,
-        )
-        .await;
-        Self::owned_pty_spawn_outcome(created, continuation)
+        })
     }
 
     fn pty_removal_route_survived(
@@ -656,6 +679,30 @@ impl MailboxPoller {
     ) -> bool {
         let guard = sessions.read().await;
         guard.restore_communication(id, communication.clone()).await
+    }
+
+    /// Destroy the exited PTY target session and verify neither it nor its route
+    /// survived the removal.
+    async fn remove_exited_pty_target<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        exited: &SessionInfo,
+        target: &crate::config::teams::VerifiedPtyInputIdentity,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+    ) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        let exited_id = parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
+        let destroy_result = background_destroy_session_inner(app, exited_id).await;
+        let sessions = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+            .clone();
+        let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
+        let route_or_spawn_survived = {
+            let manager = app.state::<Arc<Mutex<PtyManager>>>();
+            Self::pty_removal_route_survived(&manager, exited_id, target)
+        };
+        Self::verify_pty_removal(survived || route_or_spawn_survived, destroy_result, claimed)?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -712,19 +759,7 @@ impl MailboxPoller {
         }
         drop(prepared_replacement);
         if let Some(exited) = input.exited {
-            let exited_id =
-                parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
-            let destroy_result = background_destroy_session_inner(app, exited_id).await;
-            let sessions = app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .inner()
-                .clone();
-            let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
-            let route_or_spawn_survived = {
-                let manager = app.state::<Arc<Mutex<PtyManager>>>();
-                Self::pty_removal_route_survived(&manager, exited_id, target)
-            };
-            Self::verify_pty_removal(survived || route_or_spawn_survived, destroy_result, claimed)?;
+            Self::remove_exited_pty_target(app, exited, target, claimed).await?;
         }
         self.require_current_pty_spawn(app, &authority).await?;
         let sessions = app

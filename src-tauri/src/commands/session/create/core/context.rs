@@ -135,10 +135,7 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
         shell,
         cwd,
         resolved_spawn,
-        inline_transaction,
         owned_replacement,
-        lifecycle_domain,
-        create_owner,
         ..
     } = ctx;
     // Resolve and inspect Claude transcript storage only for a canonically
@@ -162,38 +159,7 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
     let resolved_claude_projects_dir = resume_probe
         .as_ref()
         .and_then(|probe| probe.host_probe_path.clone());
-    let carrier_projects = match with_create_resource_region(
-        create_owner,
-        &mut input.pending.resource_permit,
-        acquire_lifecycle_create_publication_region(
-            create_owner,
-            &input.pending.mgr,
-            lifecycle_domain,
-            inline_transaction,
-        ),
-    )
-    .await
-    {
-        Ok(permit) => permit,
-        Err(error) => {
-            release_resource_launch_permit(
-                &input.pending.resource_monitor,
-                &mut input.pending.resource_permit,
-            );
-            return Err(error);
-        }
-    };
-    input
-        .pending
-        .mgr
-        .set_pending_resolved_claude_projects_dir_with_carrier_permit(
-            &carrier_projects,
-            input.pending.pending_binding,
-            resolved_claude_projects_dir.clone(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    drop(carrier_projects);
+    store_pending_claude_projects_dir(ctx, &mut input, &resolved_claude_projects_dir).await?;
     if let Some(continuation) = owned_replacement {
         if !continuation.validate_source().await {
             release_resource_launch_permit(
@@ -239,13 +205,61 @@ pub(crate) async fn prepare_resume<'a: 'b, 'b, R: tauri::Runtime>(
     prepare_instructions(ctx, input).await
 }
 
+/// Records the resolved Claude projects dir on the pending binding while the
+/// lifecycle create publication region is held; releases the launch permit when
+/// the region cannot be acquired.
+async fn store_pending_claude_projects_dir<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    input: &mut ContextReady,
+    resolved_claude_projects_dir: &Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let &CreateBodyContext {
+        inline_transaction,
+        lifecycle_domain,
+        create_owner,
+        ..
+    } = ctx;
+    let carrier_projects = match with_create_resource_region(
+        create_owner,
+        &mut input.pending.resource_permit,
+        acquire_lifecycle_create_publication_region(
+            create_owner,
+            &input.pending.mgr,
+            lifecycle_domain,
+            inline_transaction,
+        ),
+    )
+    .await
+    {
+        Ok(permit) => permit,
+        Err(error) => {
+            release_resource_launch_permit(
+                &input.pending.resource_monitor,
+                &mut input.pending.resource_permit,
+            );
+            return Err(error);
+        }
+    };
+    input
+        .pending
+        .mgr
+        .set_pending_resolved_claude_projects_dir_with_carrier_permit(
+            &carrier_projects,
+            input.pending.pending_binding,
+            resolved_claude_projects_dir.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    drop(carrier_projects);
+    Ok(())
+}
+
 pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
     ctx: &'b CreateBodyContext<'a, R>,
     mut input: ContextReady,
 ) -> Result<CreateCompletion, String> {
     let &CreateBodyContext {
         app,
-        session_mgr,
         pty_mgr,
         shell,
         cwd,
@@ -254,7 +268,6 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         create_owner,
         ..
     } = ctx;
-    let id = input.pending.session.id;
     // #529 - resolve the instructions filename from the configured coding agent
     // (falling back to detection for ad-hoc launches), plus the union of every
     // configured agent's filename for cleanup. Computed under a single settings
@@ -264,16 +277,7 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         let settings_state = app.state::<SettingsState>();
         let cfg = match settings_state.current_read().await {
             Ok(cfg) => cfg,
-            Err(error) => {
-                let error = error.to_string();
-                release_resource_launch_permit(
-                    &input.pending.resource_monitor,
-                    &mut input.pending.resource_permit,
-                );
-                drop(input.pending.mgr);
-                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
-                return Err(error);
-            }
+            Err(error) => return Err(rollback_context(ctx, input, error.to_string()).await),
         };
         let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
         let target = crate::config::agent_command::resolve_target_filename(
@@ -331,31 +335,42 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
             Ok(result) => result,
             Err(error) => {
                 let error = format!("replica context blocking preparation failed: {error}");
-                release_resource_launch_permit(
-                    &input.pending.resource_monitor,
-                    &mut input.pending.resource_permit,
-                );
-                drop(input.pending.mgr);
-                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
-                return Err(error);
+                return Err(rollback_context(ctx, input, error).await);
             }
         };
         match context_result {
             Ok(_) => {}
             Err(e) => {
                 notify_replica_context_failure(app, owned_replacement, &e);
-                release_resource_launch_permit(
-                    &input.pending.resource_monitor,
-                    &mut input.pending.resource_permit,
-                );
-                drop(input.pending.mgr);
-                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &e).await;
-                return Err(e);
+                return Err(rollback_context(ctx, input, e).await);
             }
         }
     }
 
     backend::spawn(ctx, input).await
+}
+
+/// Releases the launch permit, drops the manager and rolls back the pre-created
+/// session, returning `error` for the caller to propagate.
+async fn rollback_context<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    mut input: ContextReady,
+    error: String,
+) -> String {
+    let &CreateBodyContext {
+        app,
+        session_mgr,
+        pty_mgr,
+        ..
+    } = ctx;
+    let id = input.pending.session.id;
+    release_resource_launch_permit(
+        &input.pending.resource_monitor,
+        &mut input.pending.resource_permit,
+    );
+    drop(input.pending.mgr);
+    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
+    error
 }
 
 fn inject_claude_continue_args(
