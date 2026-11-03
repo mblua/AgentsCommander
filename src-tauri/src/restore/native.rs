@@ -193,7 +193,7 @@ fn collect_restart_resume_target(
             };
             restart_resume_targets_for_body
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(target);
         }
     }
@@ -340,8 +340,7 @@ impl RestoreContext {
             Ok(persisted) => persisted,
             Err(error) => {
                 log::error!(
-                    "[restore] Project state unavailable; automatic restore skipped: {}",
-                    error
+                    "[restore] Project state unavailable; automatic restore skipped: {error}"
                 );
                 return;
             }
@@ -406,9 +405,7 @@ impl RestoreContext {
             .await
         {
             log::error!(
-                "[restore] final canonical selection failed target={:?}: {}",
-                persisted_target,
-                error
+                "[restore] final canonical selection failed target={persisted_target:?}: {error}"
             );
         }
 
@@ -462,7 +459,7 @@ impl RestoreObservers {
         if let Err(e) = restore_observer_barrier.start("idle", || {
             idle_detector.start(shutdown.clone());
         }) {
-            log::error!("[restore] observer 'idle' start failed: {}", e);
+            log::error!("[restore] observer 'idle' start failed: {e}");
         }
 
         // (#1793) After the idle observer start, because that observer
@@ -472,7 +469,7 @@ impl RestoreObservers {
         let restart_resume_batch: Vec<commands::session::RestartResumeTarget> =
             restart_resume_targets
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .drain(..)
                 .collect();
         if !restart_resume_batch.is_empty() {
@@ -493,13 +490,13 @@ impl RestoreObservers {
         if let Err(e) = restore_observer_barrier.start("git", || {
             git_watcher.start(shutdown.clone());
         }) {
-            log::error!("[restore] observer 'git' start failed: {}", e);
+            log::error!("[restore] observer 'git' start failed: {e}");
         }
 
         if let Err(e) = restore_observer_barrier.start("discovery", || {
             discovery_branch_watcher.start(shutdown.clone());
         }) {
-            log::error!("[restore] observer 'discovery' start failed: {}", e);
+            log::error!("[restore] observer 'discovery' start failed: {e}");
         }
 
         resource_monitor::watchdog::start(
