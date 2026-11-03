@@ -167,27 +167,7 @@ pub(crate) fn changed_origin_units(
                     affected.insert(LegacyOriginUnit::Slot(key));
                 }
                 "identityByAgent" => {
-                    affected.extend(
-                        origin
-                            .represented
-                            .iter()
-                            .filter(|u| matches!(u, LegacyOriginUnit::Profile(k, _) if k == &key))
-                            .cloned(),
-                    );
-                    // A missing/orphan profile container still needs its own
-                    // identity ownership checked, not equality of the stamp.
-                    if origin.applied_paths.iter().any(|p| {
-                        origin_paths_overlap(
-                            p,
-                            &[
-                                "codingAgentProfiles".into(),
-                                "identityByAgent".into(),
-                                key.clone(),
-                            ],
-                        )
-                    }) {
-                        affected.insert(LegacyOriginUnit::Profile(key, String::new()));
-                    }
+                    mark_changed_identity(origin, key, &mut affected);
                 }
                 _ => {
                     let letters: std::collections::BTreeSet<_> = a
@@ -215,6 +195,34 @@ pub(crate) fn changed_origin_units(
         }
     }
     affected
+}
+
+fn mark_changed_identity(
+    origin: &LegacyCompatibilityOrigin,
+    key: String,
+    affected: &mut std::collections::BTreeSet<LegacyOriginUnit>,
+) {
+    affected.extend(
+        origin
+            .represented
+            .iter()
+            .filter(|u| matches!(u, LegacyOriginUnit::Profile(k, _) if k == &key))
+            .cloned(),
+    );
+    // A missing/orphan profile container still needs its own
+    // identity ownership checked, not equality of the stamp.
+    if origin.applied_paths.iter().any(|p| {
+        origin_paths_overlap(
+            p,
+            &[
+                "codingAgentProfiles".into(),
+                "identityByAgent".into(),
+                key.clone(),
+            ],
+        )
+    }) {
+        affected.insert(LegacyOriginUnit::Profile(key, String::new()));
+    }
 }
 
 pub(crate) fn unresolved_default_dependency(
@@ -482,48 +490,12 @@ pub(crate) fn prepare_source_candidate(
     prepare_source_candidate_with_original_links(snapshot, expected, candidate, origin, None)
 }
 
-pub(crate) fn prepare_source_candidate_with_original_links(
-    snapshot: &RawSourceSnapshot,
-    expected: &SourceRevision,
+fn validate_candidate_unknown_fields(
+    before: &Value,
     candidate: &Value,
-    origin: Option<&LegacyCompatibilityOrigin>,
-    proofs: Option<&SourceOriginalProofAggregate>,
-) -> Result<PreparedSourceCandidate, SourcePreparationError> {
-    if expected != &snapshot.snapshot.revision {
-        return Err(SourcePreparationError::StaleRevision);
-    }
-    if !snapshot.snapshot.capabilities.editable_save
-        && !snapshot.snapshot.capabilities.editable_create
-    {
-        return Err(SourcePreparationError::ReadOnly);
-    }
-    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
-    if registered {
-        decode_registered_raw(candidate)?;
-    }
-    let before = snapshot
-        .raw
-        .value()
-        .or_else(|| snapshot.candidate_template.clone())
-        .ok_or(SourcePreparationError::InvalidCandidate)?;
-    let mut retained_candidate = candidate.clone();
-    retain_configuration_commands(
-        &mut retained_candidate,
-        &before,
-        if registered { "id" } else { "key" },
-        !registered,
-        true,
-        true,
-    )
-    .map_err(|_| SourcePreparationError::InvalidCandidate)?;
-    let candidate = &retained_candidate;
-    let model = if registered {
-        let (agents, profiles) = decode_registered_raw(candidate)?;
-        serde_json::json!({"agents":agents, "codingAgentProfiles":profiles})
-    } else {
-        decode_physical_catalog(candidate).map_err(|_| SourcePreparationError::InvalidCandidate)?;
-        candidate.clone()
-    };
+    model: &Value,
+    registered: bool,
+) -> Result<(), SourcePreparationError> {
     // Binding fields are validated and preserved by canonical_profile_source,
     // including unresolved raw legacy entries omitted from the editor's ID view.
     let mut unknown_before = before.clone();
@@ -568,33 +540,20 @@ pub(crate) fn prepare_source_candidate_with_original_links(
             .expect("catalog object")
             .remove("profileSlots");
     }
-    if !preserve_unknown_fields(&unknown_before, candidate, &model) {
+    if !preserve_unknown_fields(&unknown_before, candidate, model) {
         return Err(SourcePreparationError::InvalidCandidate);
     }
-    validate_source_identity_groups(&before, candidate, registered)?;
-    if registered {
-        let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
-        if origin.unknown_paths.iter().any(Vec::is_empty) {
-            return Err(SourcePreparationError::OriginUnavailable);
-        }
-        if origin.binding.registered.is_none()
-            || origin.binding.settings.is_none()
-            || origin.binding.overlay.is_none()
-        {
-            return Err(SourcePreparationError::OriginUnavailable);
-        }
-        if origin.binding.context != snapshot.context
-            || origin.binding.registered.as_ref() != Some(expected)
-        {
-            return Err(SourcePreparationError::StaleRevision);
-        }
-        let units = changed_origin_units(&before, candidate, origin);
-        require_source_original_units(origin, &units, proofs)?;
-    }
-    let mut candidate = candidate.clone();
+    Ok(())
+}
+
+fn assign_candidate_names(
+    before: &Value,
+    candidate: &mut Value,
+    registered: bool,
+) -> Result<Vec<(String, String)>, SourcePreparationError> {
     let key_name = if registered { "id" } else { "key" };
     let label_name = "label";
-    let incumbents = raw_entries(&before, key_name);
+    let incumbents = raw_entries(before, key_name);
     let mut used = std::collections::BTreeSet::new();
     let mut names = Vec::new();
     if let Some(agents) = candidate.get_mut("agents").and_then(Value::as_array_mut) {
@@ -639,6 +598,74 @@ pub(crate) fn prepare_source_candidate_with_original_links(
             }
         }
     }
+    Ok(names)
+}
+
+pub(crate) fn prepare_source_candidate_with_original_links(
+    snapshot: &RawSourceSnapshot,
+    expected: &SourceRevision,
+    candidate: &Value,
+    origin: Option<&LegacyCompatibilityOrigin>,
+    proofs: Option<&SourceOriginalProofAggregate>,
+) -> Result<PreparedSourceCandidate, SourcePreparationError> {
+    if expected != &snapshot.snapshot.revision {
+        return Err(SourcePreparationError::StaleRevision);
+    }
+    if !snapshot.snapshot.capabilities.editable_save
+        && !snapshot.snapshot.capabilities.editable_create
+    {
+        return Err(SourcePreparationError::ReadOnly);
+    }
+    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    if registered {
+        decode_registered_raw(candidate)?;
+    }
+    let before = snapshot
+        .raw
+        .value()
+        .or_else(|| snapshot.candidate_template.clone())
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let mut retained_candidate = candidate.clone();
+    retain_configuration_commands(
+        &mut retained_candidate,
+        &before,
+        if registered { "id" } else { "key" },
+        !registered,
+        true,
+        true,
+    )
+    .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let candidate = &retained_candidate;
+    let model = if registered {
+        let (agents, profiles) = decode_registered_raw(candidate)?;
+        serde_json::json!({"agents":agents, "codingAgentProfiles":profiles})
+    } else {
+        decode_physical_catalog(candidate).map_err(|_| SourcePreparationError::InvalidCandidate)?;
+        candidate.clone()
+    };
+    validate_candidate_unknown_fields(&before, candidate, &model, registered)?;
+    validate_source_identity_groups(&before, candidate, registered)?;
+    if registered {
+        let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
+        if origin.unknown_paths.iter().any(Vec::is_empty) {
+            return Err(SourcePreparationError::OriginUnavailable);
+        }
+        if origin.binding.registered.is_none()
+            || origin.binding.settings.is_none()
+            || origin.binding.overlay.is_none()
+        {
+            return Err(SourcePreparationError::OriginUnavailable);
+        }
+        if origin.binding.context != snapshot.context
+            || origin.binding.registered.as_ref() != Some(expected)
+        {
+            return Err(SourcePreparationError::StaleRevision);
+        }
+        let units = changed_origin_units(&before, candidate, origin);
+        require_source_original_units(origin, &units, proofs)?;
+    }
+    let mut candidate = candidate.clone();
+    let names = assign_candidate_names(&before, &mut candidate, registered)?;
     // Naming is also part of the full diff. Recheck it before serialization.
     if registered {
         let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
@@ -718,37 +745,11 @@ pub(crate) fn source_general_field_names() -> Vec<&'static str> {
     names
 }
 
-/// General-only pure preparation over the captured settings base. Never calls
-/// a saver, migration, export, order/adoption/repair helper, or source writer.
 #[cfg(test)]
-pub(crate) fn prepare_settings_without_source_write(
-    inputs: &OriginInputs,
+fn apply_general_candidate(
+    out: &mut Value,
     candidate_general: &Value,
-) -> Result<PreparedSettingsWithoutSourceWrite, SourcePreparationError> {
-    let origin = LegacyCompatibilityOrigin::classify(inputs);
-    let mut out = match &inputs.settings {
-        OriginPhysicalInput::Absent => Value::Object(Map::new()),
-        OriginPhysicalInput::Bytes(_) => inputs
-            .settings
-            .value()
-            .ok_or(SourcePreparationError::OriginUnavailable)?,
-        OriginPhysicalInput::Unknown => return Err(SourcePreparationError::OriginUnavailable),
-    };
-    // Capture disk restoration before applying the draft. In particular, an
-    // overlay-owned general key must retain its raw absent/null/value state,
-    // rather than capturing the effective value echoed by the caller.
-    let mut restoration_base = out.clone();
-    let restoration = match &inputs.overlay {
-        OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes_paired(
-            &mut restoration_base,
-            bytes,
-            OVERLAY_INELIGIBLE_DISK_KEYS,
-            OVERLAY_INELIGIBLE_LEGACY_KEYS,
-            OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        ),
-        _ => LocalSettingsOverlay::default(),
-    };
+) -> Result<(), SourcePreparationError> {
     let map = out
         .as_object_mut()
         .ok_or(SourcePreparationError::InvalidCandidate)?;
@@ -781,6 +782,41 @@ pub(crate) fn prepare_settings_without_source_write(
     for (key, value) in general {
         map.insert(key.clone(), value.clone());
     }
+    Ok(())
+}
+
+/// General-only pure preparation over the captured settings base. Never calls
+/// a saver, migration, export, order/adoption/repair helper, or source writer.
+#[cfg(test)]
+pub(crate) fn prepare_settings_without_source_write(
+    inputs: &OriginInputs,
+    candidate_general: &Value,
+) -> Result<PreparedSettingsWithoutSourceWrite, SourcePreparationError> {
+    let origin = LegacyCompatibilityOrigin::classify(inputs);
+    let mut out = match &inputs.settings {
+        OriginPhysicalInput::Absent => Value::Object(Map::new()),
+        OriginPhysicalInput::Bytes(_) => inputs
+            .settings
+            .value()
+            .ok_or(SourcePreparationError::OriginUnavailable)?,
+        OriginPhysicalInput::Unknown => return Err(SourcePreparationError::OriginUnavailable),
+    };
+    // Capture disk restoration before applying the draft. In particular, an
+    // overlay-owned general key must retain its raw absent/null/value state,
+    // rather than capturing the effective value echoed by the caller.
+    let mut restoration_base = out.clone();
+    let restoration = match &inputs.overlay {
+        OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes_paired(
+            &mut restoration_base,
+            bytes,
+            OVERLAY_INELIGIBLE_DISK_KEYS,
+            OVERLAY_INELIGIBLE_LEGACY_KEYS,
+            OVERLAY_DERIVED_ID_CLOSURES,
+            CONFIGURATION_COMMAND_PAIRS,
+        ),
+        _ => LocalSettingsOverlay::default(),
+    };
+    apply_general_candidate(&mut out, candidate_general)?;
     let mut effective = out.clone();
     if let (Some(dst), Some(raw)) = (
         effective.as_object_mut(),
