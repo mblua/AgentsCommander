@@ -23,7 +23,6 @@ use super::response_close::{
 };
 use super::transaction::SelectionTransaction;
 use super::turn::IN_SELECTION_WORKER;
-use super::worker::worker_loop;
 use super::{
     ConditionalResponseClose, CoordinatorInner, CoordinatorJob, LifecycleAdmission,
     LifecycleExecutor, RestartJobRequest, RootJobRequest, SelectionCoordinator,
@@ -67,7 +66,7 @@ impl SelectionCoordinator {
             .ok_or(SelectionCoordinatorError::Unavailable)?;
         let inner = Arc::clone(&self.inner);
         let handle = tauri::async_runtime::spawn(IN_SELECTION_WORKER.scope((), async move {
-            worker_loop(app, inner, receiver, executor).await;
+            SelectionTransaction::worker_loop(app, inner, receiver, executor).await;
         }));
         let mut worker = self
             .inner

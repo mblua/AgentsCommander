@@ -235,7 +235,7 @@ impl RestoreContext {
         );
         if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
             attach_persisted_telegram_if_configured(
-                &self.app_handle,
+                self.restore_transaction_for_task.app(),
                 uuid,
                 ps.telegram_bot_id.as_deref(),
             )
