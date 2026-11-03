@@ -145,7 +145,7 @@ impl RetainedContainerCleanupRegistry {
         });
         self.entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, Arc::clone(&entry));
         entry
     }
@@ -154,7 +154,7 @@ impl RetainedContainerCleanupRegistry {
     pub(super) fn entries(&self) -> Vec<Arc<RetainedContainerCleanup>> {
         self.entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect()
@@ -302,7 +302,7 @@ impl RetainedContainerCleanupRegistry {
             let mut attempt = entry
                 .attempt
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if attempt.in_flight || attempt.last_epoch == Some(epoch) {
                 return;
             }
@@ -315,7 +315,7 @@ impl RetainedContainerCleanupRegistry {
             if let Some(non_runtime) = entry
                 .non_runtime
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
             {
                 if let Some(path) = non_runtime.container_credential_path.as_deref() {
@@ -354,7 +354,7 @@ impl RetainedContainerCleanupRegistry {
                 let mut attempt = entry
                     .attempt
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 attempt.in_flight = false;
                 attempt.last_error = Some(message);
                 false
@@ -369,7 +369,7 @@ impl RetainedContainerCleanupRegistry {
                 let mut attempt = entry
                     .attempt
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 attempt.in_flight = false;
                 attempt.last_error = Some("cleanup panicked".to_string());
                 false
@@ -381,14 +381,14 @@ impl RetainedContainerCleanupRegistry {
                 let mut attempt = entry
                     .attempt
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 attempt.in_flight = false;
                 attempt.last_error = None;
             }
             let mut entries = self
                 .entries
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if entries
                 .get(&entry.id)
                 .is_some_and(|owned| Arc::ptr_eq(owned, &entry))

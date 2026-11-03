@@ -33,7 +33,7 @@ pub(crate) fn write_combined_context_file(
             combined.push_str(content);
             first = false;
         } else {
-            combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
+            combined.push_str(&format!("\n\n---\n\n# Context: {label}\n\n"));
             combined.push_str(content);
         }
     }
@@ -42,12 +42,12 @@ pub(crate) fn write_combined_context_file(
         .ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
     crate::filesystem::session_context::ensure_context_directory(&context_dir)
-        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
+        .map_err(|e| format!("Failed to create context-cache dir: {e}"))?;
 
     let hash = simple_hash(cwd);
-    let file_path = context_dir.join(format!("{}-{}.md", filename_prefix, hash));
+    let file_path = context_dir.join(format!("{filename_prefix}-{hash}.md"));
     crate::filesystem::session_context::write_context_cache(&file_path, &combined)
-        .map_err(|e| format!("Failed to write combined context file: {}", e))?;
+        .map_err(|e| format!("Failed to write combined context file: {e}"))?;
 
     Ok(file_path.to_string_lossy().to_string())
 }
@@ -122,7 +122,7 @@ pub(crate) fn is_agent_dir(cwd: &str) -> bool {
         || super::super::root_agent::is_root_agent_dir_name(cwd)
 }
 
-/// Build the GIT_CEILING_DIRECTORIES value for agent sessions rooted in a Project AC Root.
+/// Build the `GIT_CEILING_DIRECTORIES` value for agent sessions rooted in a Project AC Root.
 /// This blocks Git from traversing upward into the parent project repo when the
 /// current directory is an agent matrix, a WG replica, or a descendant of those roots.
 pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
@@ -153,9 +153,7 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
         Err(e) => {
             log::warn!(
                 "[session_context] Rejected invalid WG replica identity while building Git ceiling \
-                    for '{}': {}",
-                cwd,
-                e
+                    for '{cwd}': {e}"
             );
         }
     }
@@ -246,16 +244,14 @@ pub(crate) fn render_agent_repos_string(
 
         if !directories::context_repo_exists(&resolved) {
             md.push_str(&format!(
-                "- **{}** — Path: `{}` — **(NOT FOUND)**\n",
-                repo_name, abs_path
+                "- **{repo_name}** — Path: `{abs_path}` — **(NOT FOUND)**\n"
             ));
             continue;
         }
 
         let branch = detect_git_branch(&abs_path).unwrap_or_else(|| "unknown".to_string());
         md.push_str(&format!(
-            "- **{}** — Path: `{}` — Branch: `{}`\n",
-            repo_name, abs_path, branch
+            "- **{repo_name}** — Path: `{abs_path}` — Branch: `{branch}`\n"
         ));
     }
 
@@ -288,8 +284,7 @@ pub(crate) fn render_agent_repos_containerized(
                 let branch = detect_git_branch(&host_path.to_string_lossy())
                     .unwrap_or_else(|| "unknown".to_string());
                 md.push_str(&format!(
-                    "- **{}** — Path: `{}` — Branch: `{}`\n",
-                    name, container_path, branch
+                    "- **{name}** — Path: `{container_path}` — Branch: `{branch}`\n"
                 ));
             }
             RepoOutcome::NotFound => {
