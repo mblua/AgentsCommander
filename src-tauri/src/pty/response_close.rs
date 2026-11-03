@@ -1,7 +1,7 @@
 use crate::pty::backend_kind::SessionBackendKind;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use uuid::Uuid;
 
 mod admission;
@@ -424,7 +424,7 @@ impl ResponseCloseState {
         })?
     }
     pub(crate) fn fail_closed(&self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
             log::debug!(
                 target: DIAG_TARGET,
@@ -497,7 +497,7 @@ impl ResponseCloseState {
     pub(in crate::pty) fn uuid_closing(&self, id: Uuid) -> bool {
         self.inner
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .routes
             .get(&id)
             .is_some_and(|route| route.closing.is_some())

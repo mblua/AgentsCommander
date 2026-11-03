@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
@@ -116,7 +116,11 @@ impl Cleanup {
 static UNWIND_CLEANUPS: Mutex<Vec<Cleanup>> = Mutex::new(Vec::new());
 
 pub(crate) fn take_unwind_cleanups() -> Vec<Cleanup> {
-    std::mem::take(&mut *UNWIND_CLEANUPS.lock().unwrap_or_else(|e| e.into_inner()))
+    std::mem::take(
+        &mut *UNWIND_CLEANUPS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    )
 }
 
 /// Owns the child from spawn to reap. While `child` is `Some`, terminating
@@ -240,7 +244,7 @@ impl Drop for ChildGuard {
             }
             UNWIND_CLEANUPS
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .push(c);
         }
     }
