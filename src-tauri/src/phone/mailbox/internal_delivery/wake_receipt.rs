@@ -16,15 +16,13 @@ pub(super) fn background_resume(
     let auto_closed_at = clocks.and_then(|clocks| {
         clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .auto_closed_at(marker_fqn)
     });
     let spawn_with_resume = internal_wake_resumes(spawn_with_resume, auto_closed_at.is_some());
     log::info!(
-        "[internal-wake] '{}' no-live-session spawn resume={} auto_closed_at={:?}",
-        target_fqn,
-        spawn_with_resume,
-        auto_closed_at
+        "[internal-wake] '{target_fqn}' no-live-session spawn resume={spawn_with_resume} \
+         auto_closed_at={auto_closed_at:?}"
     );
     let (_, local) = crate::config::teams::split_project_prefix(target_fqn);
     (spawn_with_resume, local.to_string())
@@ -86,8 +84,7 @@ pub(super) fn check_purge(
 ) -> Result<(), String> {
     if purge.blocks_agent(target_fqn) {
         return Err(format!(
-            "purge-room in progress for '{}'; context alert deferred",
-            target_fqn
+            "purge-room in progress for '{target_fqn}'; context alert deferred"
         ));
     }
     Ok(())
