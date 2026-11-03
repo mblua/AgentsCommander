@@ -50,27 +50,26 @@ fn orphan_warned_registry() -> &'static Mutex<HashSet<String>> {
 }
 
 /// §1295 — shared orphan-sweep WARN dedup + counters. Returns true on the
-/// FIRST sighting of `cwd` this run (caller should have WARNed), false on
+/// FIRST sighting of `cwd` this run (caller should have `WARNed`), false on
 /// repeats (caller should DEBUG instead). Used by all three drop sites (A, B
 /// hot + merge, C) so a persist storm collapses to one WARN per orphan.
 pub(super) fn note_orphan_cwd(cwd: &str) -> bool {
     let key = normalized_cwd_key(cwd);
     let mut registry = orphan_warned_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if registry.insert(key) {
         #[cfg(test)]
         bump_orphan_warned();
         log::warn!(
-            "[sessions] Dropping orphan persisted session at '{}' (outside current projectPaths); \
-             one WARN per orphan per run",
-            cwd
+            "[sessions] Dropping orphan persisted session at '{cwd}' \
+             (outside current projectPaths); \
+             one WARN per orphan per run"
         );
         true
     } else {
         log::debug!(
-            "[sessions] Orphan session at '{}' already warned this run; suppressing repeat WARN",
-            cwd
+            "[sessions] Orphan session at '{cwd}' already warned this run; suppressing repeat WARN"
         );
         false
     }
@@ -91,7 +90,7 @@ fn orphan_archived_registry() -> &'static Mutex<HashSet<Uuid>> {
 pub(super) fn note_orphan_archived_id(uuid: &Uuid) -> bool {
     orphan_archived_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(*uuid)
 }
 
@@ -100,7 +99,7 @@ pub(super) fn note_orphan_archived_id(uuid: &Uuid) -> bool {
 pub(crate) fn reset_orphan_archived() {
     orphan_archived_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
 }
 
@@ -146,7 +145,7 @@ pub(crate) fn reset_orphan_counters() {
 
 #[cfg(test)]
 pub(crate) fn orphan_counters() -> OrphanSweepCounts {
-    ORPHAN_SWEEP_COUNTERS.with(|slot| slot.get())
+    ORPHAN_SWEEP_COUNTERS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -154,7 +153,7 @@ pub(crate) fn reset_orphan_warned() {
     ORPHAN_WARNED_COUNT.with(|count| count.set(0));
     orphan_warned_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
 }
 
@@ -162,7 +161,7 @@ pub(crate) fn reset_orphan_warned() {
 /// (`note_orphan_cwd` bumps the thread-local counter on each first sighting).
 #[cfg(test)]
 pub(crate) fn orphan_warned_len() -> usize {
-    ORPHAN_WARNED_COUNT.with(|count| count.get())
+    ORPHAN_WARNED_COUNT.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -193,14 +192,19 @@ static TEST_ORPHAN_ARCHIVE_CAP: std::sync::OnceLock<Mutex<Option<u64>>> =
 #[cfg(test)]
 pub(crate) fn set_test_orphan_archive_cap(cap: Option<u64>) {
     let slot = TEST_ORPHAN_ARCHIVE_CAP.get_or_init(|| Mutex::new(None));
-    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = cap;
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = cap;
 }
 
 pub(super) fn orphan_archive_max_bytes() -> u64 {
     #[cfg(test)]
     {
         let slot = TEST_ORPHAN_ARCHIVE_CAP.get_or_init(|| Mutex::new(None));
-        if let Some(cap) = *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+        if let Some(cap) = *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             return cap;
         }
     }
@@ -240,10 +244,7 @@ pub(super) fn append_orphan_archive_record_locked(
     let line = match serde_json::to_string(&record) {
         Ok(line) => line,
         Err(e) => {
-            log::error!(
-                "[sessions] Failed to serialize orphan archive record: {}",
-                e
-            );
+            log::error!("[sessions] Failed to serialize orphan archive record: {e}");
             return;
         }
     };
@@ -251,9 +252,7 @@ pub(super) fn append_orphan_archive_record_locked(
         let result = append_orphan_archive_line(archive_path, &line);
         if let Err(e) = result {
             log::error!(
-                "[sessions] Failed to append orphan archive record to {:?}: {}",
-                archive_path,
-                e
+                "[sessions] Failed to append orphan archive record to {archive_path:?}: {e}"
             );
             false
         } else {
@@ -303,7 +302,7 @@ pub(crate) async fn append_orphan_archive_record(
 /// `logging::rotate` (logging.rs:275-365): shift `orphaned-sessions.archive.json`
 /// -> `.1` -> `.2` -> `.3`, dropping `.3`, ONLY when the ACTIVE file exceeds the
 /// soft cap. A Windows sharing violation (second instance holding the append
-/// handle without FILE_SHARE_DELETE) fails the rename: log ERROR and continue;
+/// handle without `FILE_SHARE_DELETE`) fails the rename: log ERROR and continue;
 /// the file may exceed the cap until the next successful rotation. Rotation
 /// failures never fail the persist. Deliberate LOCAL duplicate of the logging
 /// algorithm (logging.rs untouched; documented cross-reference).
@@ -383,7 +382,7 @@ pub(crate) async fn prepare_persist_snapshot(
         PersistPreparation { kept, drops }
     })
     .await
-    .map_err(|e| format!("session persistence prepare task failed: {}", e))
+    .map_err(|e| format!("session persistence prepare task failed: {e}"))
 }
 
 async fn dormant_orphan_ids(mgr: Option<&SessionManager>, drops: &[OrphanDrop]) -> HashSet<Uuid> {
