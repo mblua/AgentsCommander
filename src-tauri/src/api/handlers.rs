@@ -175,8 +175,7 @@ pub fn authenticate(
             "forbidden_scope",
         );
         return Err(ApiError::Forbidden(format!(
-            "token is not scoped for '{}'",
-            scope
+            "token is not scoped for '{scope}'"
         )));
     }
 

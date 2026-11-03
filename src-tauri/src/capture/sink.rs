@@ -8,7 +8,7 @@
 //! Leaf module: `tokio::sync`, std, `capture::record` and `capture::key` only.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::watch;
 
@@ -212,7 +212,7 @@ impl CaptureSlot {
     }
 
     fn lock_guards(&self) -> std::sync::MutexGuard<'_, Guards> {
-        self.guards.lock().unwrap_or_else(|e| e.into_inner())
+        self.guards.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

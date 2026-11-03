@@ -15,7 +15,7 @@
 //! reader is spawned here; the consumer is still a test.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -84,7 +84,7 @@ impl CaptureRegistry {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionCapture>> {
-        self.sessions.lock().unwrap_or_else(|e| e.into_inner())
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

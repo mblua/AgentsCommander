@@ -88,7 +88,7 @@ pub fn is_safe_instructions_filename(filename: &str) -> bool {
         return false;
     }
     // No control chars.
-    if filename.chars().any(|c| c.is_control()) {
+    if filename.chars().any(char::is_control) {
         return false;
     }
     // No leading/trailing whitespace and no trailing dot (Windows strips them).
