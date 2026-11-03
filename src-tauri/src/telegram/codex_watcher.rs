@@ -86,7 +86,7 @@ pub fn spawn_watch_task(
             sink,
         )
         .await;
-        log::info!("[CODEX_EXIT] Watcher task ended for session {}", session_id);
+        log::info!("[CODEX_EXIT] Watcher task ended for session {session_id}");
     })
 }
 
@@ -654,7 +654,7 @@ impl CodexWatchState {
                         }
                     }
                     Err(e) => {
-                        log::warn!("[CODEX_ERR] live-attach preamble read failed: {}", e);
+                        log::warn!("[CODEX_ERR] live-attach preamble read failed: {e}");
                     }
                 }
             }
@@ -728,7 +728,7 @@ impl CodexWatchState {
                     );
                 }
                 Err(e) => {
-                    bridge_log!(self, "CODEX_ERR", &format!("preamble scan failed: {}", e));
+                    bridge_log!(self, "CODEX_ERR", &format!("preamble scan failed: {e}"));
                     self.file_offset = jsonl_kernel::transcript_metadata(found)
                         .ok()
                         .map(|m| m.len())
@@ -798,7 +798,7 @@ impl CodexWatchState {
                     );
                     self.event_port.bridge_error(
                         &self.session_id,
-                        &format!("Codex JSONL read error: {}", e),
+                        &format!("Codex JSONL read error: {e}"),
                         None,
                     );
                 }
