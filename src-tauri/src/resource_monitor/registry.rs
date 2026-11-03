@@ -12,8 +12,12 @@ use super::types::{
 };
 
 mod sampling;
+mod selection;
 mod snapshot;
-mod termination;
+pub(crate) mod termination;
+
+use crate::cleanup_diagnostics::{operation::Operation, schema, store::Diagnostics};
+use termination::DiagnosticTerminationError;
 
 use snapshot::{build_snapshot, disabled_snapshot};
 
@@ -57,11 +61,92 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
         &self,
         process: &ObservedProcess,
     ) -> Result<TerminateOutcome, ResourceError>;
+    // Additive crate-internal diagnostics on an existing public backend port.
+    #[allow(private_interfaces)]
+    fn observe_diagnostic_identity(&self, pid: u32) -> schema::CurrentIdentity {
+        match self.observe_identity(pid) {
+            Ok(Some(value)) => schema::CurrentIdentity {
+                status: schema::IdentityStatus::Same,
+                identity: Some(selection::identity(value)),
+                executable: None,
+                os_error: None,
+            },
+            Ok(None) => schema::CurrentIdentity {
+                status: schema::IdentityStatus::Gone,
+                ..schema::CurrentIdentity::unknown()
+            },
+            Err(error) => schema::CurrentIdentity {
+                status: schema::IdentityStatus::Unreadable,
+                os_error: error
+                    .to_string()
+                    .rsplit_once("win32 error ")
+                    .and_then(|(_, code)| code.parse().ok()),
+                ..schema::CurrentIdentity::unknown()
+            },
+        }
+    }
+
+    #[allow(private_interfaces)]
+    fn terminate_verified_diagnostic(
+        &self,
+        process: &ObservedProcess,
+        row: &schema::SelectionRow,
+        operation: &Operation,
+    ) -> Result<TerminateOutcome, DiagnosticTerminationError> {
+        validate_diagnostic_row(process, row)?;
+        let mut precheck = self.observe_diagnostic_identity(process.identity.pid);
+        if let Some(identity) = precheck.identity {
+            precheck.status = if identity == row.expected {
+                schema::IdentityStatus::Same
+            } else {
+                schema::IdentityStatus::Reused
+            };
+        }
+        let ticket = operation.prepare(row, precheck, schema::CurrentIdentity::unknown())?;
+        let outcome = self.terminate_verified(process);
+        // This port wraps a backend result, not a native BOOL or a proven API call.
+        let exit = if matches!(outcome, Ok(TerminateOutcome::Terminated)) {
+            schema::ExitObservation::Exited { code: None }
+        } else {
+            schema::ExitObservation::Unknown
+        };
+        operation
+            .returned(
+                &ticket,
+                schema::RawApiResult {
+                    returned: Some(outcome.is_ok()),
+                    os_error: None,
+                    detail: format!("backend result: {outcome:?}"),
+                },
+            )
+            .map_err(|mut error| {
+                error.known_exit = Some(exit.clone());
+                error
+            })?;
+        operation.observed(&ticket, exit)?;
+        outcome.map_err(DiagnosticTerminationError::Ordinary)
+    }
+
     fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError>;
+}
+
+pub(crate) fn validate_diagnostic_row(
+    process: &ObservedProcess,
+    row: &schema::SelectionRow,
+) -> Result<(), schema::EvidenceError> {
+    if row.expected != selection::identity(process.identity) {
+        return Err(schema::EvidenceError::new(
+            "pre_call",
+            "row/process identity mismatch",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
 pub struct ResourceMonitorState {
+    diagnostics: Arc<Diagnostics>,
+    app_identity: Option<ProcessIdentity>,
     spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     inner: Arc<Mutex<ResourceMonitorInner>>,
     backend: Arc<dyn ProcessTreeBackend>,
@@ -75,6 +160,7 @@ struct ResourceMonitorInner {
 }
 
 struct ResourceAgentGroup {
+    generation: u64,
     session_id: Uuid,
     name: String,
     agent_id: Option<String>,
@@ -230,7 +316,21 @@ impl ResourceMonitorState {
         backend: Arc<dyn ProcessTreeBackend>,
         spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
     ) -> Self {
+        Self::with_backend_spawn_and_diagnostics(backend, spawn, Arc::new(Diagnostics::disabled()))
+    }
+
+    pub(crate) fn with_backend_spawn_and_diagnostics(
+        backend: Arc<dyn ProcessTreeBackend>,
+        spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
+        diagnostics: Arc<Diagnostics>,
+    ) -> Self {
+        let app_identity = diagnostics
+            .is_available()
+            .then(|| backend.observe_identity(std::process::id()).ok().flatten())
+            .flatten();
         Self {
+            diagnostics,
+            app_identity,
             spawn,
             inner: Arc::new(Mutex::new(ResourceMonitorInner {
                 groups: HashMap::new(),
@@ -347,6 +447,7 @@ impl ResourceMonitorState {
         let replaced = inner.groups.insert(
             session_id,
             ResourceAgentGroup {
+                generation: permit.generation,
                 session_id,
                 name,
                 agent_id,
