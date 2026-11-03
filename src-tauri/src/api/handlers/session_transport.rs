@@ -406,15 +406,13 @@ impl HelloRejection {
                 "container transport handshake failed: first frame was not hello".to_string()
             }
             Self::ProtocolMismatch { expected, reported } => format!(
-                "container transport protocol mismatch: host expects protocol {} but container \
-                image reported protocol {}. Rebuild or re-pull the AgentsCommander container image \
-                so it contains the current session-bridge.",
-                expected, reported
+                "container transport protocol mismatch: host expects protocol {expected} but \
+                container image reported protocol {reported}. Rebuild or re-pull the \
+                AgentsCommander container image so it contains the current session-bridge."
             ),
             Self::SessionIdMismatch { expected, reported } => format!(
-                "container transport handshake failed: hello session id {} did not match expected \
-                {}",
-                reported, expected
+                "container transport handshake failed: hello session id {reported} did not \
+                match expected {expected}"
             ),
             Self::RootMismatch => {
                 "container transport handshake failed: bridge root did not match bound root"
@@ -480,8 +478,8 @@ async fn handle_bridge_message(
         Message::Binary(data) => {
             if data.len() > MAX_TRANSPORT_FRAME_BYTES {
                 log::warn!(
-                    "[container-transport] closing session {} after oversized binary frame",
-                    session_id
+                    "[container-transport] closing session {session_id} after oversized \
+                     binary frame"
                 );
                 return false;
             }
@@ -492,8 +490,7 @@ async fn handle_bridge_message(
         Message::Text(text) => {
             if text.len() > MAX_TRANSPORT_FRAME_BYTES {
                 log::warn!(
-                    "[container-transport] closing session {} after oversized text frame",
-                    session_id
+                    "[container-transport] closing session {session_id} after oversized text frame"
                 );
                 return false;
             }

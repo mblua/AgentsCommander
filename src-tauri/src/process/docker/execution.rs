@@ -121,11 +121,13 @@ impl DockerProcessState {
                     let _active = ActiveDockerReaderGuard::new(active);
                     ready.wait();
                     let (released, changed) = &*gate;
-                    let mut released = released.lock().unwrap_or_else(|error| error.into_inner());
+                    let mut released = released
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     while !*released {
                         released = changed
                             .wait(released)
-                            .unwrap_or_else(|error| error.into_inner());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
                     Ok(CappedCommandStream::default())
                 })
@@ -357,8 +359,7 @@ impl DockerProcessState {
             let detail = redact_command_values(detail, spec);
             return Err(DockerCommandError {
                 source: AppError::PtyError(format!(
-                    "container runtime command exited {}: {}",
-                    status, detail
+                    "container runtime command exited {status}: {detail}"
                 )),
                 spawned: true,
             });
@@ -499,8 +500,7 @@ impl DockerProcessState {
                         };
                         return Err(DockerCommandError {
                             source: AppError::PtyError(format!(
-                                "container runtime command {reason} program={}",
-                                program
+                                "container runtime command {reason} program={program}"
                             )),
                             spawned: true,
                         });
