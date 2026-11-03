@@ -124,7 +124,6 @@ pub(super) fn protected_matches(
 /// Mappings are bound by their canonical digest, never copied source commands.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct PairReservationRequest {
     pub(crate) operation_id: String,
     pub(crate) source_physical_key: String,
@@ -200,7 +199,6 @@ pub(super) fn protected_plan(
         .map_err(|_| PreparedPairError::InvalidPlan("PAIR stage count"))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn protected_config_pair_revision(
     before: &[PhysicalState; 2],
 ) -> Result<[ProtectedRevision; 2], PreparedPairError> {
