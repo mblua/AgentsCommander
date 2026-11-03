@@ -390,6 +390,8 @@ pub(crate) enum SourcePreparationError {
     IndependentFormatRequired,
     #[error("invalidSourceCandidate")]
     InvalidCandidate,
+    // Constructed by the general-only preparation, which is currently test-only.
+    #[allow(dead_code)]
     #[error("protectedSettingsField")]
     ProtectedSettingsField,
     #[error("{0}")]
