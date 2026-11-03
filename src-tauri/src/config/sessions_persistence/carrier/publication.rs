@@ -362,11 +362,10 @@ pub(crate) struct CurrentCarrierCheckpoint {
     pub version: u64,
 }
 
-pub(in super::super) fn prepare_protected_publication(
+fn refresh_protected_rows(
     next: &mut PublicationState,
     rows: &[PersistedSession],
     captured: &crate::session::manager::CarrierSnapshot,
-    initial: Option<&InitialCarrierIntent>,
 ) -> bool {
     next.protections
         .retain(|protection| protection.lifetime.strong_count() != 0);
@@ -400,6 +399,18 @@ pub(in super::super) fn prepare_protected_publication(
         protection.row = row.clone();
         protection.version = *version;
         protection.epoch = next.epoch;
+    }
+    true
+}
+
+pub(in super::super) fn prepare_protected_publication(
+    next: &mut PublicationState,
+    rows: &[PersistedSession],
+    captured: &crate::session::manager::CarrierSnapshot,
+    initial: Option<&InitialCarrierIntent>,
+) -> bool {
+    if !refresh_protected_rows(next, rows, captured) {
+        return false;
     }
     let Some(initial) = initial else {
         return true;
