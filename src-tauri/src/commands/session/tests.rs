@@ -56,7 +56,7 @@ mod resume_injection;
 mod resume_policy;
 mod root_agent;
 mod samplers;
-pub(super) mod support;
+mod support;
 
 pub(crate) use backends::ScriptedSpawnBackend;
 use backends::{BarrierDestroyBackend, FailingSpawnBackend, GatedSpawnBackend};
@@ -67,10 +67,11 @@ use muse_resume::muse_resume_tokens;
 use muse_resume::{expected_muse_resume_argv, muse_spawn_for, muse_test_settings};
 use resume_policy::write_wrapper;
 use root_agent::make_info;
+pub(in crate::commands::session) use support::strict_target_fixture;
 use support::{
     assert_memory_pristine, assert_memory_rotated_once, assert_resume_left_memory_alone,
     capture_session_lifecycle, create_manual_cascade_fixture, create_target_for_test,
-    rotation_fixture, session_test_app, strict_target_fixture,
+    rotation_fixture, session_test_app,
 };
 pub(crate) use support::{
     close_test_coordinator, create_scripted_session, session_test_app_with_store, test_settings,

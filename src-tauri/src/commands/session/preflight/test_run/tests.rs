@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::commands::session::tests::support::{strict_target_fixture, test_settings};
+use crate::commands::session::tests::{strict_target_fixture, test_settings};
 use crate::config::settings::{new_settings_state, ConfigSeedConfig, ProfileCellConfig};
 use crate::errors::AppError;
 use crate::process::agent::{with_probe_settlement_hook, ProbeNativeObservation};
