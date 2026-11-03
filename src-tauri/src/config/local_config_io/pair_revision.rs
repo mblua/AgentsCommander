@@ -89,7 +89,7 @@ pub(crate) fn merge_monotonic_activity(
             .as_deref()
             .map(|old| timestamp_cmp(value, old))
             .transpose()?
-            .is_none_or(|order| order.is_gt())
+            .is_none_or(std::cmp::Ordering::is_gt)
         {
             maximum = Some(value.clone());
         }

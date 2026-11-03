@@ -205,7 +205,7 @@ fn cleanup_failed_retirement_reservation(live_path: &Path, backup_path: &Path) {
 ///
 /// The name is ALWAYS timestamped, so it can never collide with `create_backup`'s
 /// `{f}.bak` / `{f}.{ts}.bak` / `{f}.{ts}.{n}.bak` shapes. `create_backup` itself is
-/// unusable here: it write_all's a COPY and its first name is untimestamped.
+/// unusable here: it `write_all`'s a COPY and its first name is untimestamped.
 pub(crate) fn reserve_retired_backup_path(live_path: &Path) -> Result<PathBuf, String> {
     let parent = live_path.parent().ok_or_else(|| {
         format!(

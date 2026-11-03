@@ -173,7 +173,7 @@ impl AgentFileAuthority {
             .map(serde_json::from_value)
             .transpose()
             .map_err(|_| "invalidSourcePreferences".into())
-            .map(|value| value.unwrap_or_default())
+            .map(Option::unwrap_or_default)
     }
 
     pub(crate) fn registered_validation(
