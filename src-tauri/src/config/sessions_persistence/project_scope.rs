@@ -22,7 +22,7 @@ pub(crate) fn reset_normalize_call_count() {
 
 #[cfg(test)]
 pub(crate) fn normalize_call_count() -> usize {
-    NORMALIZE_CALLS.with(|calls| calls.get())
+    NORMALIZE_CALLS.with(std::cell::Cell::get)
 }
 
 pub(super) fn normalize_for_project_compare(path: &Path) -> String {
@@ -49,7 +49,7 @@ pub(super) fn path_is_under_or_equal(candidate: &str, root: &str) -> bool {
     if root == "/" {
         return candidate.starts_with('/');
     }
-    candidate.starts_with(&format!("{}/", root))
+    candidate.starts_with(&format!("{root}/"))
 }
 
 /// Raw-root convenience for active project lists where each candidate session
@@ -235,7 +235,7 @@ pub(super) async fn filter_sessions_for_project_paths_blocking(
         filter_sessions_for_project_paths(sessions, &project_paths)
     })
     .await
-    .map_err(|e| format!("session filter task failed: {}", e))
+    .map_err(|e| format!("session filter task failed: {e}"))
 }
 
 /// Structural (non-canonicalizing) form of a raw path for archived-root membership: the
@@ -314,15 +314,13 @@ pub(crate) fn validate_session_creation_cwd(
     let cwd_norm = normalize_for_project_compare(Path::new(cwd));
     if !working_directory_under_any_normalized_root(&cwd_norm, &retained_roots) {
         return Err(format!(
-            "sessionCreateBlocked: cwd '{}' is outside all registered projects",
-            cwd
+            "sessionCreateBlocked: cwd '{cwd}' is outside all registered projects"
         ));
     }
     // 4. Registered but the directory does not exist.
     if !crate::filesystem::directories::persisted_session_cwd_exists(Path::new(cwd)) {
         return Err(format!(
-            "sessionCreateBlocked: cwd '{}' does not exist on disk",
-            cwd
+            "sessionCreateBlocked: cwd '{cwd}' does not exist on disk"
         ));
     }
     // 5. Ok.
@@ -371,7 +369,7 @@ pub(crate) async fn enforce_creation_gate(
                 validate_session_creation_cwd(&cwd, &retained, &archived)
             })
             .await
-            .map_err(|e| format!("session creation gate task failed: {}", e))?
+            .map_err(|e| format!("session creation gate task failed: {e}"))?
         }
     }
 }
