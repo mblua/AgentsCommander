@@ -146,7 +146,7 @@ impl ManifestPathIdentity {
                 components.first().map(Vec::as_slice) == Some(b".ac".as_slice())
             }
             DecodedPathComponents::WindowsUtf16(components) => {
-                components.first().map(|component| component.as_slice())
+                components.first().map(std::vec::Vec::as_slice)
                     == Some([46_u16, 97_u16, 99_u16].as_slice())
             }
         };
@@ -209,14 +209,12 @@ pub(crate) fn validate_plain_component(
 ) -> Result<(), SeedManifestError> {
     if component.is_empty() || component == "." || component == ".." {
         return Err(SeedManifestError::Validation(format!(
-            "{} contains an empty or traversal component",
-            label
+            "{label} contains an empty or traversal component"
         )));
     }
     if component.contains('/') || component.contains('\0') {
         return Err(SeedManifestError::Validation(format!(
-            "{} contains a separator or NUL inside a component",
-            label
+            "{label} contains a separator or NUL inside a component"
         )));
     }
     Ok(())
