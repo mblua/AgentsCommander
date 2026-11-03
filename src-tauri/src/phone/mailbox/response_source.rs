@@ -19,6 +19,7 @@ use crate::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use uuid::Uuid;
 
 const HOST_PTY_CORE_LIMIT: usize = 8;
@@ -29,7 +30,7 @@ impl MailboxPoller {
         let work = self
             .response_sources
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&origin);
         if let Some(work) = work {
             let now = std::time::Instant::now();
@@ -188,7 +189,7 @@ impl MailboxPoller {
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         if app
             .response_selection()
-            .is_some_and(|coordinator| coordinator.restore_is_active())
+            .is_some_and(crate::session::selection::SelectionCoordinator::restore_is_active)
         {
             response_diag_local!(
                 "complete_request",
@@ -254,7 +255,7 @@ impl MailboxPoller {
         let work = self
             .response_sources
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&origin);
         let Some(work) = work else {
             response_diag!("complete_delivery", "source_work_absent", None::<Uuid>);
@@ -378,7 +379,7 @@ impl MailboxPoller {
         if let Some(previous) = self
             .response_sources
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .get(path)
             .cloned()
         {
@@ -423,7 +424,7 @@ impl MailboxPoller {
         );
         self.response_sources
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(path.to_path_buf(), work.clone());
         Some(work)
     }
