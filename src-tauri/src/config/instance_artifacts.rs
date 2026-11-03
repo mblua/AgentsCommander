@@ -851,7 +851,7 @@ pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 12] = [
 /// `.*.*.tmp` is a leading dot, then anything, then a dot, then anything, then
 /// the `.tmp` suffix, so the name needs a leading dot, the suffix, and at least
 /// one dot between them.
-#[allow(dead_code)] // called only from test code: the tie test and the agreement table
+#[cfg(test)] // called only from test code: the tie test and the agreement table
 pub(crate) fn matches_atomic_write_tmp_glob(file_name: &str) -> bool {
     let Some(rest) = file_name.strip_prefix('.') else {
         return false;
