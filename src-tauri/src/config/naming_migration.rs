@@ -169,11 +169,6 @@ impl Journal {
         }
     }
 
-    #[allow(dead_code)] // B1a API; no production caller yet
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub(crate) fn scope(&self, scope: &str) -> Option<&ScopeRecord> {
         self.scopes.get(scope)
     }
@@ -279,13 +274,13 @@ pub(crate) fn read_journal(dir: Option<&Path>) -> Result<Option<Journal>, Refusa
     }
 }
 
-#[allow(dead_code)] // first production caller: the B2 scope summary
+#[cfg(test)]
 pub(crate) fn status(j: &Journal, scope: &str) -> Option<ScopeStatus> {
     j.scopes.get(scope).map(|s| s.status)
 }
 
 /// For the journal summary only. Skip decisions call `scope_is_settled`.
-#[allow(dead_code)] // first production caller: the B2 scope summary
+#[cfg(test)]
 pub(crate) fn is_complete(j: &Journal, scope: &str) -> bool {
     status(j, scope) == Some(ScopeStatus::Complete)
 }
@@ -391,7 +386,6 @@ pub(crate) fn lock_scope(
 /// For a caller whose own handle already covers the NEW name: takes only the
 /// OLD sidecar. It never re-opens the caller's lock, which would block against
 /// that handle.
-#[allow(dead_code)] // first production caller: B2, under the catalog writer lock
 pub(crate) fn lock_scope_under_held(
     dir: &Path,
     old_lock: Option<&str>,

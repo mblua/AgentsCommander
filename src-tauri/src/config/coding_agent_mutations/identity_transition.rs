@@ -3,7 +3,6 @@ mod packets;
 use crate::config::settings::AppSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum IdentityTransitionReadState {
     NotFound,
     IntentStored,
@@ -13,8 +12,9 @@ pub(crate) enum IdentityTransitionReadState {
     Complete,
 }
 
-#[derive(Debug)]
+// Fields are read only by tests until the source protocol is activated (#2897).
 #[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) struct IdentityTransitionRead {
     pub(crate) state: IdentityTransitionReadState,
     pub(crate) operation_id: Option<String>,
@@ -23,7 +23,6 @@ pub(crate) struct IdentityTransitionRead {
 }
 
 /// Read-only stable observation; never consolidates an equivalent source after.
-#[allow(dead_code)]
 pub(crate) fn get_identity_transition(
     context: &crate::config::settings::SourceReadContext,
     source: &crate::config::settings::SourceRef,
@@ -151,7 +150,6 @@ pub(super) fn new_source_transition_id(
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct SourceResumeExpectation {
     pub(crate) source: crate::config::settings::SourceRevision,
     pub(crate) journal: crate::config::settings::SourceRevision,
@@ -161,6 +159,8 @@ pub(crate) struct SourceResumeExpectation {
 /// Reload is synchronous backend-local work only. It must not wait for IPC or
 /// frontend acknowledgement, await, dispatch a worker, or reacquire coordination
 /// leases. Any future activated caller must be reviewed against this contract.
+// Inactive entry point (#2897): no production caller until the source protocol is
+// activated; the rest of the transition is reached only from here and from resume.
 #[allow(dead_code)]
 pub(crate) fn commit_source_candidate(
     settings: &AppSettings,
@@ -197,7 +197,6 @@ pub(crate) fn commit_source_candidate(
     )
 }
 
-#[allow(dead_code)]
 pub(super) fn commit_source_candidate_internal(
     settings: &AppSettings,
     context: &crate::config::settings::SourceReadContext,
@@ -433,6 +432,7 @@ fn continue_candidate_intent(
 /// fresh observation. It never receives new paths, candidate bytes or roles.
 /// Reload obeys the same synchronous backend-local, nonblocking contract as Save;
 /// the Fn signature itself does not prove that an arbitrary callback is safe.
+// Inactive entry point (#2897): see `commit_source_candidate`.
 #[allow(dead_code)]
 pub(crate) fn resume_identity_transition(
     settings: &AppSettings,
@@ -458,7 +458,6 @@ pub(crate) fn resume_identity_transition(
     )
 }
 
-#[allow(dead_code)]
 pub(super) fn resume_identity_transition_internal(
     settings: &AppSettings,
     context: &crate::config::settings::SourceReadContext,
@@ -539,7 +538,6 @@ pub(super) fn source_original_inventory_slots(
 }
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub(crate) enum SourceTransitionError {
     #[error("sourceActivationRequired")]
     ActivationRequired,
@@ -558,7 +556,6 @@ pub(crate) enum SourceTransitionError {
 
 /// Progress never contains replacement images. PAIR remains recovery authority.
 /// Called only with settings-issued original inventory authority under C/source.
-#[allow(dead_code)]
 pub(super) fn drive_identity_transition(
     identity: &crate::config::settings::IdentityWriteLease,
     lease: &crate::config::settings::SourceWriteContext,
