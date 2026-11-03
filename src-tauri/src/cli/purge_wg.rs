@@ -9,9 +9,9 @@ use super::send::agent_name_from_root;
 
 /// Pure: decide CLI exit code from the daemon's response body.
 /// Exit codes:
-///   0 - purged (or dry_run_ready)
-///   3 - gate rejected (busy/restore_in_progress/dry_run_blocked)
-///   4 - a destroy failed after the gate passed (partial_failure/failed_root_guard)
+///   0 - purged (or `dry_run_ready`)
+///   3 - gate rejected (`busy/restore_in_progress/dry_run_blocked`)
+///   4 - a destroy failed after the gate passed (`partial_failure/failed_root_guard`)
 ///   2 - unparseable JSON, missing/unknown/non-string status (outcome unknown)
 ///   1 - auth/IO error or rejected (handled by the rejected/ path)
 fn interpret_purge_response_exit_code(content: &str) -> i32 {
@@ -97,7 +97,7 @@ pub struct PurgeWgArgs {
     pub wg: Option<String>,
 
     /// Inject an exit command and wait, instead of killing immediately.
-    /// Off by default: OpenCode ignores exit and burns the full timeout.
+    /// Off by default: `OpenCode` ignores exit and burns the full timeout.
     /// WARNING: --graceful stalls ALL inter-agent messaging daemon-wide for
     /// the duration of the purge (the message poller is sequential).
     #[arg(long)]
@@ -128,8 +128,8 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
     };
 
     if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
-        log::error!("{}", msg);
-        eprintln!("{}", msg);
+        log::error!("{msg}");
+        eprintln!("{msg}");
         return 1;
     }
 
@@ -180,24 +180,24 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
     let outbox_dir = ac_dir.join("outbox");
 
     if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
-        log::error!("failed to create outbox directory: {}", e);
-        eprintln!("Error: failed to create outbox directory: {}", e);
+        log::error!("failed to create outbox directory: {e}");
+        eprintln!("Error: failed to create outbox directory: {e}");
         return 1;
     }
 
-    let outbox_path = outbox_dir.join(format!("{}.json", msg_id));
+    let outbox_path = outbox_dir.join(format!("{msg_id}.json"));
     let json = match serde_json::to_string_pretty(&message) {
         Ok(j) => j,
         Err(e) => {
-            log::error!("failed to serialize message: {}", e);
-            eprintln!("Error: failed to serialize message: {}", e);
+            log::error!("failed to serialize message: {e}");
+            eprintln!("Error: failed to serialize message: {e}");
             return 1;
         }
     };
 
     if let Err(e) = documents::write_cli_outbox_message(&outbox_path, json.as_bytes()) {
-        log::error!("failed to write outbox file: {}", e);
-        eprintln!("Error: failed to write outbox file: {}", e);
+        log::error!("failed to write outbox file: {e}");
+        eprintln!("Error: failed to write outbox file: {e}");
         return 1;
     }
 
@@ -211,12 +211,10 @@ fn wait_for_purge_response(
     msg_id: &str,
     args: &PurgeWgArgs,
 ) -> i32 {
-    let response_path = ac_dir
-        .join("responses")
-        .join(format!("{}.json", request_id));
+    let response_path = ac_dir.join("responses").join(format!("{request_id}.json"));
     let rejected_reason_path = outbox_dir
         .join("rejected")
-        .join(format!("{}.reason.txt", msg_id));
+        .join(format!("{msg_id}.reason.txt"));
 
     // (#885 F-6) Single deadline: collapse close-session's two poll loops
     // into one. The 30s hardcoded confirm_timeout fires first on graceful
@@ -241,8 +239,8 @@ fn wait_for_purge_response(
                     return interpret_purge_response_exit_code(&content);
                 }
                 Err(e) => {
-                    log::error!("failed to read response: {}", e);
-                    eprintln!("Error: failed to read response: {}", e);
+                    log::error!("failed to read response: {e}");
+                    eprintln!("Error: failed to read response: {e}");
                     return 1;
                 }
             }
@@ -251,8 +249,8 @@ fn wait_for_purge_response(
             let reason = documents::read_cli_outbox_text(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             let trimmed = reason.trim();
-            log::error!("purge-wg rejected - {}", trimmed);
-            eprintln!("Error: purge-room rejected - {}", trimmed);
+            log::error!("purge-wg rejected - {trimmed}");
+            eprintln!("Error: purge-room rejected - {trimmed}");
             return 1;
         }
         if start.elapsed() >= deadline {
