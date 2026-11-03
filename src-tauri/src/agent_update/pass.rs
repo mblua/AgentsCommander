@@ -108,7 +108,7 @@ impl<E: ManagedBroadcastEvents> TargetTerminalizer<E> {
             self.gate
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .controls
                 .get(&self.target.command)
                 .map(|control| control.terminal_emitted),

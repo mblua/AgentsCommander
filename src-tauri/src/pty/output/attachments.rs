@@ -2,7 +2,7 @@ use super::{
     PtyOutputEmitError, PtyOutputPayload, RegisteredPtyOutputTarget, UI_BATCH_LIMIT_BYTES,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use uuid::Uuid;
 
 /// A window label, exactly as Tauri reports it for the calling webview. It is never a value
@@ -131,15 +131,13 @@ impl TerminalOutputAttachments {
     /// The gate must never stop gating because a thread panicked while holding it: a poisoned
     /// map that refused every read would leave every terminal black.
     pub(super) fn lock_state(&self) -> std::sync::MutexGuard<'_, AttachmentState> {
-        self.state.lock().unwrap_or_else(|error| error.into_inner())
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(super) fn lock_accumulator(
         accumulator: &Arc<Mutex<SessionAccumulator>>,
     ) -> std::sync::MutexGuard<'_, SessionAccumulator> {
-        accumulator
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        accumulator.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(super) fn labels_of(state: &AttachmentState, session_id: Uuid) -> Vec<WindowLabel> {
