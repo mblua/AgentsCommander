@@ -640,7 +640,7 @@ pub(crate) async fn wait_for_target_cancellation(cancel: &mut tokio::sync::watch
 /// `cmd.exe /C` (Windows) or `sh -c` (elsewhere), cwd = the target's directory,
 /// no stdin, output tail-captured concurrently with the wait (a chatty command
 /// must never block on the 64KB pipe buffer). Per-step timeout kills the WHOLE
-/// tree (Windows JobObject, Unix process-group kill).
+/// tree (Windows `JobObject`, Unix process-group kill).
 /// #2589 - one updater step's process, with `search_path` as its PATH so a
 /// GUI-launched app finds agents installed in the user's bin dirs.
 fn build_update_step_command(

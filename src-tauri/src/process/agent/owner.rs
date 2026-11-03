@@ -123,7 +123,7 @@ pub enum ProbeOutcome {
 }
 
 /// Outcome of a probe whose process owner observes a retained cancellation
-/// signal. Cancelled and CleanupFailed are returned only after every native
+/// signal. Cancelled and `CleanupFailed` are returned only after every native
 /// process/handle and pipe reader is definitively settled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CancellableProbeOutcome {

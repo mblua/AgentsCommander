@@ -146,7 +146,7 @@ pub(super) fn unresolved_targets_in_project(project_dir: &Path) -> Vec<Unresolve
 
 pub(super) fn loop_dirs(ac_root: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = loop_files::loop_discovery_entries(ac_root)
-        .map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
+        .map_err(|e| format!("Failed to read Project AC Root: {e}"))?;
     let mut dirs = Vec::new();
     for path in entries {
         if !loop_files::loop_path_is_directory(&path) {

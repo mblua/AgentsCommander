@@ -67,7 +67,7 @@ pub(crate) fn read_entries(outbox_dir: &Path) -> Option<(Vec<PathBuf>, Vec<PathB
     let mut claims: Vec<PathBuf> = Vec::new();
     match mailbox_disk::mailbox_directory_paths(outbox_dir) {
         Ok(rd) => {
-            for path in rd.filter_map(|e| e.ok()) {
+            for path in rd.filter_map(std::result::Result::ok) {
                 // Skip files in subdirectories (delivered/, rejected/)
                 if path.parent() != Some(outbox_dir) {
                     continue;
