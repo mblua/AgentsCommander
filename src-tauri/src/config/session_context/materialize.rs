@@ -44,10 +44,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
     } else if is_replica_agent_dir(cwd) {
         match build_replica_context_with_activation(cwd, repo_mounts, activation) {
             Ok(Some(combined_path)) => {
-                log::info!(
-                    "Using replica combined context for agent session: {}",
-                    combined_path
-                );
+                log::info!("Using replica combined context for agent session: {combined_path}");
                 combined_path
             }
             Ok(None) => ensure_session_context_with_config(cwd, None, repo_mounts, activation)?,
@@ -60,12 +57,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
     };
 
     let mut content = crate::filesystem::session_context::read_context_source(&context_path)
-        .map_err(|e| {
-            format!(
-                "Failed to read resolved session context {}: {}",
-                context_path, e
-            )
-        })?;
+        .map_err(|e| format!("Failed to read resolved session context {context_path}: {e}"))?;
 
     // #979: never append coordinator prose to Root, and never let a Root cwd reach
     // `read_or_create_context_template`. That call resolves its directory through
@@ -126,7 +118,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
 /// broadens the cleanup/write set from 3 fixed names to N configured + custom
 /// names, which is why this writer is hardened against a stray link at one of
 /// those names (an arbitrary-overwrite primitive, and a junction would brick
-/// every launch via remove_file -> Err -> rollback).
+/// every launch via `remove_file` -> Err -> rollback).
 pub fn materialize_agent_context_file_with_filename(
     cwd: &str,
     target_filename: &str,
@@ -185,8 +177,7 @@ pub(crate) fn materialize_resolved_context_file(
     // below guard against state no string validation can detect.
     if target_filename.contains('/') || target_filename.contains('\\') {
         return Err(format!(
-            "Refusing to write context to a path with separators: {}",
-            target_filename
+            "Refusing to write context to a path with separators: {target_filename}"
         ));
     }
 
@@ -338,10 +329,7 @@ pub fn sweep_context_cache_at_startup() {
     };
     let removed = sweep_context_cache_dir(&context_dir, SystemTime::now(), CONTEXT_CACHE_RETENTION);
     if removed > 0 {
-        log::info!(
-            "[context-cache] startup sweep removed {} stale cache file(s)",
-            removed
-        );
+        log::info!("[context-cache] startup sweep removed {removed} stale cache file(s)");
     }
 }
 
