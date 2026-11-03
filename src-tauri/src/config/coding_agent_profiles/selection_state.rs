@@ -209,10 +209,9 @@ impl ReplicaSelectionState {
                 configuration_ref: configuration_ref.clone(),
                 profile_override_source: profile_override_source.clone(),
             }),
-            Self::Invalid { diagnostic } => Err(format!(
-                "replica selection state is invalid: {}",
-                diagnostic
-            )),
+            Self::Invalid { diagnostic } => {
+                Err(format!("replica selection state is invalid: {diagnostic}"))
+            }
         }
     }
 }
@@ -324,8 +323,7 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
         .and_then(normalize_profile_letter);
     let warning = match (&profile, &legacy) {
         (Some(profile), Some(legacy)) if profile != legacy => Some(format!(
-            "tooling.profile ({}) differs from legacy instanceProfileOverride ({})",
-            profile, legacy
+            "tooling.profile ({profile}) differs from legacy instanceProfileOverride ({legacy})"
         )),
         _ => None,
     };

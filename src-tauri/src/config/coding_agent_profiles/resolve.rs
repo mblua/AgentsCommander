@@ -22,7 +22,7 @@ pub fn resolve_profile_selection(
         .iter()
         .any(|agent| agent.id == coding_agent_id)
     {
-        return Err(format!("Agent '{}' is not configured", coding_agent_id));
+        return Err(format!("Agent '{coding_agent_id}' is not configured"));
     }
 
     let validated = launch_path
@@ -125,7 +125,7 @@ pub fn resolve_profile(
             ),
             Ok(None) => None,
             Err(e) => {
-                warnings.push(format!("Ignoring origin default profile: {}", e));
+                warnings.push(format!("Ignoring origin default profile: {e}"));
                 None
             }
         });

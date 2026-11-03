@@ -113,8 +113,7 @@ impl ManifestState {
         let expected_coverage = COVERAGE.map(str::to_string).to_vec();
         if wire.coverage != expected_coverage {
             return Err(SeedManifestError::Validation(format!(
-                "coverage must equal {:?} in that order",
-                COVERAGE
+                "coverage must equal {COVERAGE:?} in that order"
             )));
         }
         if wire.files.len() > MAX_MANIFEST_ROWS {
@@ -729,7 +728,7 @@ pub(crate) fn read_bounded_file(
 /// the canonical row kind, the catalog scope and the `Builtin` source.
 ///
 /// * `Ok(true)` - at least one parsed canonical row matches.
-/// * `Ok(false)` - the manifest is absent (exact NotFound) or carries no such
+/// * `Ok(false)` - the manifest is absent (exact `NotFound`) or carries no such
 ///   row. Absence of proof is not proof, so the caller reports an untracked
 ///   publication rather than assuming the row was ever written.
 /// * `Err` - malformed, future, oversized, nonregular, link or unreadable
