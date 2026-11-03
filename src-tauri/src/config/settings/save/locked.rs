@@ -675,7 +675,7 @@ fn publish_settings(
     let out = prepare_registered_main_agent_groups(
         out,
         settings,
-        disk.as_ref(),
+        disk,
         &agents_groups,
         profiles_in_sidecar,
         (
