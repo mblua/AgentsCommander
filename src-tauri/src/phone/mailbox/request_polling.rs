@@ -52,7 +52,7 @@ fn sweep_stale_session_results(requests_dir: &Path) {
     // CLI and is removed here (worst case a few KB in an already-ephemeral,
     // ignored instance-artifact directory).
     if let Ok(rd) = mailbox_disk::mailbox_directory_paths(requests_dir) {
-        for path in rd.filter_map(|e| e.ok()) {
+        for path in rd.filter_map(std::result::Result::ok) {
             if !crate::cli::create_agent::is_session_request_result_path(&path) {
                 continue;
             }
@@ -87,7 +87,7 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
     let content = match read_text_bom_tolerant(path) {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("[session-requests] Failed to read {:?}: {}", path, e);
+            log::warn!("[session-requests] Failed to read {path:?}: {e}");
             return None;
         }
     };
@@ -95,7 +95,7 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
     let request = match serde_json::from_str(&content) {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("[session-requests] Failed to parse {:?}: {}", path, e);
+            log::warn!("[session-requests] Failed to parse {path:?}: {e}");
             // #1163: answer with a rejected result so the CLI can
             // distinguish rejection from a missing app. The request
             // filename IS `<id>.json`, so the id comes from the stem.
@@ -170,7 +170,7 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         let delivered_dir = path.parent().ok_or("No parent dir")?.join("delivered");
         mailbox_disk::ensure_mailbox_archive_directory(&delivered_dir)
-            .map_err(|e| format!("Failed to create delivered dir: {}", e))?;
+            .map_err(|e| format!("Failed to create delivered dir: {e}"))?;
 
         // Strip token before storing
         let mut stripped = msg.clone();
@@ -189,13 +189,13 @@ impl MailboxPoller {
         };
         let dest = delivered_dir.join(filename);
         let json = serde_json::to_string_pretty(&stripped)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
+            .map_err(|e| format!("Failed to serialize: {e}"))?;
         mailbox_disk::write_mailbox_document(&dest, json)
-            .map_err(|e| format!("Failed to write delivered file: {}", e))?;
+            .map_err(|e| format!("Failed to write delivered file: {e}"))?;
 
         // Remove original
         mailbox_disk::remove_mailbox_artifact(path)
-            .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+            .map_err(|e| format!("Failed to remove outbox file: {e}"))?;
         self.complete_response_delivery(app, path).await;
 
         log::info!("[mailbox] Message {} moved to delivered/", msg.id);
@@ -217,7 +217,7 @@ impl MailboxPoller {
 
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
-            .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
+            .map_err(|e| format!("Failed to create rejected dir: {e}"))?;
 
         // Write reason file FIRST — the CLI polls for this file to detect rejection
         let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
@@ -230,13 +230,13 @@ impl MailboxPoller {
 
         let dest = rejected_dir.join(format!("{}.json", msg.id));
         let json = serde_json::to_string_pretty(&stripped)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
+            .map_err(|e| format!("Failed to serialize: {e}"))?;
         mailbox_disk::write_mailbox_document(&dest, json)
-            .map_err(|e| format!("Failed to write rejected file: {}", e))?;
+            .map_err(|e| format!("Failed to write rejected file: {e}"))?;
 
         // Remove original
         mailbox_disk::remove_mailbox_artifact(path)
-            .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+            .map_err(|e| format!("Failed to remove outbox file: {e}"))?;
         self.settle_response_source(path, false);
 
         log::warn!(
@@ -247,11 +247,11 @@ impl MailboxPoller {
         Ok(())
     }
 
-    /// Reject a raw file that cannot be parsed as OutboxMessage.
+    /// Reject a raw file that cannot be parsed as `OutboxMessage`.
     pub(crate) fn reject_raw_file(path: &Path, reason: &str) -> Result<(), String> {
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
-            .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
+            .map_err(|e| format!("Failed to create rejected dir: {e}"))?;
 
         let filename = path
             .file_name()
@@ -264,17 +264,17 @@ impl MailboxPoller {
                 mailbox_disk::copy_mailbox_document(path, &dest)
                     .and_then(|_| mailbox_disk::remove_mailbox_artifact(path))
             })
-            .map_err(|e| format!("Failed to move file to rejected: {}", e))?;
+            .map_err(|e| format!("Failed to move file to rejected: {e}"))?;
 
         let stem = Path::new(filename)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
-        let reason_path = rejected_dir.join(format!("{}.reason.txt", stem));
+        let reason_path = rejected_dir.join(format!("{stem}.reason.txt"));
         mailbox_disk::write_mailbox_document(&reason_path, reason)
             .map_err(|_| "Failed to write reason file".to_string())?;
 
-        log::warn!("Rejected raw file {:?}: {}", path, reason);
+        log::warn!("Rejected raw file {path:?}: {reason}");
         Ok(())
     }
 
@@ -320,7 +320,7 @@ impl MailboxPoller {
 
         let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
             Ok(rd) => rd
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
                 // #1163: result sidecars (`<id>.result.json`) are ANSWERS, not
                 // requests; without this exclusion a leftover result file would
@@ -420,7 +420,7 @@ impl MailboxPoller {
     /// #786: poll `<config_dir>/coding-agent-requests/` for CLI mutation requests
     /// while the GUI runs. Scans bare `.json` files only (so `.processing`,
     /// `.tmp`, and the `results/` subdir are excluded). For each request, R8:
-    /// write-lock SettingsState, clone a candidate, run the pure per-request
+    /// write-lock `SettingsState`, clone a candidate, run the pure per-request
     /// handler (claim -> parse -> expiry -> apply -> write result -> delete
     /// `.processing`) against it, and on Applied swap the in-memory state and emit
     /// `coding_agent_settings_updated` AFTER the guard drops. `save_settings` is
@@ -442,7 +442,7 @@ impl MailboxPoller {
 
         let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
             Ok(rd) => rd
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
                 .collect(),
             Err(_) => return,
@@ -497,11 +497,7 @@ impl MailboxPoller {
                     "coding_agent_settings_updated",
                     serde_json::json!({ "op": op, "agentId": agent_id }),
                 );
-                log::info!(
-                    "[coding-agent-requests] applied op={} agentId={:?}",
-                    op,
-                    agent_id
-                );
+                log::info!("[coding-agent-requests] applied op={op} agentId={agent_id:?}");
             }
         }
     }

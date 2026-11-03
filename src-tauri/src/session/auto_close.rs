@@ -14,12 +14,12 @@ use crate::session::selection::{SelectionCoordinator, SelectionCoordinatorError}
 
 const TICK: Duration = Duration::from_secs(60);
 /// (#580) A just-woken session replays scrollback for ~1-2s; exclude its first
-/// REPAINT_GRACE of life from the idle-anchor advance so reopening an abandoned
+/// `REPAINT_GRACE` of life from the idle-anchor advance so reopening an abandoned
 /// team cannot reset its persisted idle. Feeds `member_post_repaint_silence`.
 const REPAINT_GRACE: Duration = Duration::from_secs(10);
-/// (#580) A session is not kill-eligible until alive past WAKE_GRACE, so a
+/// (#580) A session is not kill-eligible until alive past `WAKE_GRACE`, so a
 /// just-woken (or wake-on-restore) team is visible >=30s before any auto-close.
-/// MUST be > REPAINT_GRACE (a member protects its team via the anchor before it
+/// MUST be > `REPAINT_GRACE` (a member protects its team via the anchor before it
 /// can be killed) and is also the spawn-race guard (untracked -> not established).
 const WAKE_GRACE: Duration = Duration::from_secs(30);
 
@@ -59,14 +59,14 @@ impl AutoClose {
 
 /// (#580) Effective "post-repaint" silence for ONE live member, or None if the
 /// member must NOT advance the idle anchor this tick. None when:
-///   - untracked (alive_age or silence_age missing) -> spawn race, ignore;
-///   - alive <= REPAINT_GRACE (still inside the wake-repaint window);
+///   - untracked (`alive_age` or `silence_age` missing) -> spawn race, ignore;
+///   - alive <= `REPAINT_GRACE` (still inside the wake-repaint window);
 ///   - the member's LAST output landed inside its repaint window
-///     (silence_age >= alive_age - REPAINT_GRACE) -> that output was scrollback
+///     (`silence_age` >= `alive_age` - `REPAINT_GRACE`) -> that output was scrollback
 ///     replay (or nothing genuine has happened since), so it must not reset the
 ///     persisted idle of an abandoned-then-reopened team.
 ///
-/// Some(silence_age) ONLY when the last output is genuine post-repaint activity.
+/// `Some(silence_age)` ONLY when the last output is genuine post-repaint activity.
 /// Pure; this is the E1 fix and gets its own boundary-tested unit (§8.1).
 fn member_post_repaint_silence(
     alive_age: Option<Duration>,
@@ -105,7 +105,7 @@ fn team_min_silence(
 }
 
 /// (#580) Unified idle anchor as whole UNIX seconds: max(user-message, activity).
-/// i64::MIN for an absent component so the present one wins; both absent -> MIN
+/// `i64::MIN` for an absent component so the present one wins; both absent -> MIN
 /// (caller treats as "no badge"). Pure.
 fn team_idle_since_secs(
     last_user_message_at: Option<DateTime<Utc>>,
@@ -121,7 +121,7 @@ fn team_idle_since_secs(
 /// no persisted clock to key by the coordinator FQN). Falls back to the member's
 /// own in-memory silence (`now - silence_age`) so the orphan stays
 /// auto-close-eligible and is reaped on a later idle tick instead of reading
-/// `i64::MIN` and lingering until a manual close. `None` silence_age (a
+/// `i64::MIN` and lingering until a manual close. `None` `silence_age` (a
 /// just-spawned, untracked member) yields `i64::MIN` (not closeable this tick),
 /// matching the spawn-race conservatism elsewhere. Pure; unit-tested.
 fn orphan_anchor_secs(silence_age: Option<Duration>, now_secs: i64) -> i64 {
@@ -160,9 +160,9 @@ fn resolve_member_anchor(
 }
 
 /// (#580) KILL predicate for ONE team: closeable iff it has an ESTABLISHED
-/// member (alive past WAKE_GRACE, the visible-window + spawn-race gate) AND its
+/// member (alive past `WAKE_GRACE`, the visible-window + spawn-race gate) AND its
 /// unified anchor is idle past the timeout. `anchor_secs` is the output of
-/// `team_idle_since_secs`; i64::MIN (no anchor) is never closeable. Pure, so the
+/// `team_idle_since_secs`; `i64::MIN` (no anchor) is never closeable. Pure, so the
 /// kill rule is unit-tested directly (§8.1) instead of re-implemented in a test.
 fn team_is_closeable(
     established: bool,
@@ -249,7 +249,9 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
 
     // (2) BADGE: snapshot, RELEASE, then emit the unified anchor per team (deduped).
     let snap = {
-        let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let g = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         g.snapshot()
     };
     emit_idle_badges(&coord_refs, &snap, now_secs, last_emitted, |cwd, dt| {
@@ -343,7 +345,7 @@ fn mark_closed_badges(
         };
         let newly = clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_auto_closed(fqn, now);
         if newly {
             emit(cwd, now);
@@ -370,7 +372,9 @@ fn live_members(
     pty_mgr: &Mutex<PtyManager>,
     candidates: Vec<(Uuid, String)>,
 ) -> Vec<(Uuid, String)> {
-    let pm = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+    let pm = pty_mgr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     candidates
         .into_iter()
         .filter(|(id, _)| pm.has_session(*id))
@@ -517,7 +521,9 @@ fn advance_team_activity(
         member_post_repaint_silence(idle.alive_age(id), idle.silence_age(id), REPAINT_GRACE)
     });
     {
-        let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (team, (fqn, _)) in coord_refs {
             if let Some(sil) = team_sil.get(team) {
                 if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
@@ -611,7 +617,9 @@ async fn confirm_closeable_members(
         // member's first genuine byte only touches the in-memory silence clock,
         // never last_user_message_at, so the anchor re-read alone is blind to it.
         let fresh_anchor = {
-            let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let g = clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match id_to_team.get(&id).and_then(|t| coord_refs.get(t)) {
                 Some((fqn, _)) => {
                     team_idle_since_secs(g.last_user_message_at(fqn), g.last_activity_at(fqn))
@@ -649,14 +657,16 @@ fn flush_clocks(services: &impl AutoCloseServices) {
         // Snapshot under the lock, RELEASE, then do disk I/O (the same mutex is
         // on the keystroke path; never hold it across the ~260ms rename).
         let snapshot = {
-            let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !guard.take_dirty() {
                 return;
             }
             guard.snapshot()
         };
         if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-            log::warn!("[coordinator-clocks] save failed: {}", e);
+            log::warn!("[coordinator-clocks] save failed: {e}");
         }
     }
 }
