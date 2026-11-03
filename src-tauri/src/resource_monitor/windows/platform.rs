@@ -122,7 +122,8 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         let ok = unsafe {
             K32GetProcessMemoryInfo(
                 GetCurrentProcess(),
-                &mut counters as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+                (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX)
+                    .cast::<PROCESS_MEMORY_COUNTERS>(),
                 counters.cb,
             )
         };
@@ -383,7 +384,7 @@ fn process_memory(pid: u32) -> Result<ProcessMemory, ResourceError> {
     let ok = unsafe {
         K32GetProcessMemoryInfo(
             handle.raw(),
-            &mut counters as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(),
             counters.cb,
         )
     };

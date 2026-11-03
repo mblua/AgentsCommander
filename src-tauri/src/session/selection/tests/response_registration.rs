@@ -2,6 +2,10 @@
 use super::*;
 
 #[cfg(windows)]
+#[expect(
+    clippy::mem_forget,
+    reason = "Retain fixture directory while an unreaped child may still use it"
+)]
 #[tokio::test]
 async fn response_registration_physical_cwd_boundary() {
     const CHILD_MARKER: &str = "AGENTSCOMMANDER_REGISTRATION_CWD_CHILD_CONFIG_DIR";

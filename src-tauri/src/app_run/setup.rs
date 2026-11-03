@@ -765,11 +765,11 @@ fn apply_test_window_placement(
                     }
                 }
 
-                if IsZoomed(hwnd.0 as _) != 0 || geo.maximized {
-                    ShowWindow(hwnd.0 as _, SW_RESTORE);
+                if IsZoomed(hwnd.0.cast()) != 0 || geo.maximized {
+                    ShowWindow(hwnd.0.cast(), SW_RESTORE);
                 }
                 let ok = SetWindowPos(
-                    hwnd.0 as _,
+                    hwnd.0.cast(),
                     std::ptr::null_mut(),
                     x,
                     y,
@@ -789,15 +789,15 @@ fn apply_test_window_placement(
                         ptMaxPosition: POINT { x: -1, y: -1 },
                         rcNormalPosition: requested,
                     };
-                    if GetWindowPlacement(hwnd.0 as _, &mut placement) == 0 {
+                    if GetWindowPlacement(hwnd.0.cast(), &mut placement) == 0 {
                         log::warn!("[test-window] GetWindowPlacement failed before maximize");
                     }
                     placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
                     placement.showCmd = SW_SHOWMAXIMIZED as u32;
                     placement.rcNormalPosition = requested;
-                    if SetWindowPlacement(hwnd.0 as _, &placement) == 0 {
+                    if SetWindowPlacement(hwnd.0.cast(), &placement) == 0 {
                         log::warn!("[test-window] SetWindowPlacement maximize failed");
-                        ShowWindow(hwnd.0 as _, SW_SHOWMAXIMIZED);
+                        ShowWindow(hwnd.0.cast(), SW_SHOWMAXIMIZED);
                     }
                 }
                 return true;

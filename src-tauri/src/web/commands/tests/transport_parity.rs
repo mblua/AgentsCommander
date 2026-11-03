@@ -636,6 +636,10 @@ fn ws_state_for_1271(
     })
     .join()
     .expect("join selection bootstrap");
+    #[expect(
+        clippy::mem_forget,
+        reason = "Keep the Tauri application alive behind returned handles"
+    )]
     std::mem::forget(full_app);
 
     (
