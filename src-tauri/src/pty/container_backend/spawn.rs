@@ -302,6 +302,12 @@ impl ContainerTransportBackend {
         Ok(token)
     }
 
+    fn required_runtime(&self) -> Result<Arc<dyn ContainerRuntime>, AppError> {
+        self.runtime
+            .clone()
+            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))
+    }
+
     fn spawn_cancellation_guard(
         &self,
         id: Uuid,
@@ -323,10 +329,7 @@ impl ContainerTransportBackend {
         &self,
         spec: BackendSpawnSpec,
     ) -> Result<(), AppError> {
-        let runtime = self
-            .runtime
-            .clone()
-            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))?;
+        let runtime = self.required_runtime()?;
         let token_manager = self.token_manager.clone().ok_or_else(|| {
             AppError::Other("container API token manager is not configured".to_string())
         })?;
