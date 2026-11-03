@@ -41,7 +41,7 @@ pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
 }
 
 /// #2736 - the install command for THIS host: the platform key when present,
-/// else `default`. `windows` for target_os = "windows", `macos` for "macos",
+/// else `default`. `windows` for `target_os` = "windows", `macos` for "macos",
 /// `linux` for "linux"; every other target uses `default`.
 pub(crate) fn resolve_install_command(commands: &InstallCommands) -> &str {
     let os = if cfg!(target_os = "windows") {
@@ -70,7 +70,7 @@ pub(crate) fn install_command_for_os<'a>(commands: &'a InstallCommands, os: &str
 /// only: `normalize_legacy_agent_command` reduces the catalog string to its
 /// program token, then `agent_command::resolve_program` resolves it (bare name
 /// through `effective_search_path` plus PATHEXT on Windows; explicit path by
-/// is_file()). NO process is executed and nothing is cached or persisted.
+/// `is_file()`). NO process is executed and nothing is cached or persisted.
 pub(crate) fn command_is_present(command: &str) -> bool {
     command_is_present_with(command, crate::config::agent_command::resolve_program)
 }
@@ -313,7 +313,7 @@ pub struct CodingAgentCatalog {
 }
 
 /// #2892: an independent schema2 candidate, never a schema1 patch/composition.
-/// Existing readers, seeders and writers continue to use CodingAgentCatalog.
+/// Existing readers, seeders and writers continue to use `CodingAgentCatalog`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingAgentCatalogSchema2 {

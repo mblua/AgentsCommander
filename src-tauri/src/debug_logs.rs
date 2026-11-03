@@ -13,7 +13,7 @@ pub(crate) async fn save_debug_logs(
         .join(DEBUG_LOGS_FILE_NAME);
     crate::filesystem::debug_logs::write_debug_log_dump(&path, content)
         .await
-        .map_err(|e| format!("Failed to write logs: {}", e))?;
+        .map_err(|e| format!("Failed to write logs: {e}"))?;
     Ok(path)
 }
 

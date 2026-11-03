@@ -10,10 +10,7 @@ pub(crate) fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> R
     }
     settings_file::write_settings_migration_backup(&backup_path, contents)
         .map_err(|e| format!("Failed to write {}: {}", backup_path.display(), e))?;
-    log::info!(
-        "[settings-migration] wrote pre-384 v1 settings backup to {:?}",
-        backup_path
-    );
+    log::info!("[settings-migration] wrote pre-384 v1 settings backup to {backup_path:?}");
     Ok(())
 }
 

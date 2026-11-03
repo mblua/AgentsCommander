@@ -743,26 +743,17 @@ pub(crate) fn record_catalog_publication(
     )) {
         Ok(identity) => identity,
         Err(error) => {
-            log::warn!(
-                "[coding-agents] seed-manifest catalog row rejected path error={}",
-                error
-            );
+            log::warn!("[coding-agents] seed-manifest catalog row rejected path error={error}");
             return;
         }
     };
     let row = match PublishedManifestRow::coding_agent_catalog(identity, published_at) {
         Ok(row) => row,
         Err(error) => {
-            log::warn!(
-                "[coding-agents] seed-manifest catalog row rejected error={}",
-                error
-            );
+            log::warn!("[coding-agents] seed-manifest catalog row rejected error={error}");
             return;
         }
     };
     let outcome = guard.publication_permit().record_file(activation, row);
-    log::debug!(
-        "[coding-agents] seed-manifest catalog publication outcome={:?}",
-        outcome
-    );
+    log::debug!("[coding-agents] seed-manifest catalog publication outcome={outcome:?}");
 }
