@@ -60,7 +60,7 @@ pub(super) fn acquire_loop_lock_in(
             e
         )
     })?;
-    let lock_path = canonical_root.join(format!(".{}{}.lock", LOOP_DIR_PREFIX, loop_id));
+    let lock_path = canonical_root.join(format!(".{LOOP_DIR_PREFIX}{loop_id}.lock"));
     let guard =
         acquire_sidecar_write_lock(&lock_path, timeout, "loopLockTimeout", "Loop write lock")?;
     migrate_loop_state_name(&canonical_root, loop_id, journal_dir);
@@ -234,7 +234,7 @@ pub fn update_loop_files(
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
     let dir = loop_dir(ac_root, loop_id);
     if !loop_files::loop_path_is_directory(&dir) {
-        return Err(format!("Loop '{}' not found", loop_id));
+        return Err(format!("Loop '{loop_id}' not found"));
     }
     let mut config = read_loop_config(&dir)?;
     let reset_schedule = apply_loop_update_patch(&mut config, patch)?;
@@ -258,10 +258,10 @@ pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, Strin
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
     let dir = loop_dir(ac_root, loop_id);
     if !loop_files::loop_path_is_directory(&dir) {
-        return Err(format!("Loop '{}' not found", loop_id));
+        return Err(format!("Loop '{loop_id}' not found"));
     }
     loop_files::remove_loop_directory(&dir)
-        .map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+        .map_err(|e| format!("Failed to remove Loop directory: {e}"))?;
     Ok(dir)
 }
 
