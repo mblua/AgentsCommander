@@ -272,7 +272,7 @@ fn reserved_timestamp_input(
     if timestamp_value(&current[1])
         .map_err(|e| e.to_string())?
         .as_deref()
-        .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(|order| order.is_lt()))
+        .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(std::cmp::Ordering::is_lt))
     {
         return Err("targetTransitionPending: timestamp cannot decrease".into());
     }

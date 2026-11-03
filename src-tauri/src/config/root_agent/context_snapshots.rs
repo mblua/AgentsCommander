@@ -13,7 +13,7 @@ use super::{
 /// independent pristine-generation list. A snapshot wired into only one of
 /// the two reclassifies every pristine pre-rename root Role.md on the
 /// migration path while the recognizer test stays green. Never edit.
-/// Provenance: the d7008b34 blob, root_agent.rs lines 675-723; declaration
+/// Provenance: the d7008b34 blob, `root_agent.rs` lines 675-723; declaration
 /// 2501 bytes sha256 97136810...A095 (plan 3.12 Table A), value 2467 bytes
 /// sha256 7F82F28C...C52D (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.

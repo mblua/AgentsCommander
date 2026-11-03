@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use uuid::Uuid;
 
-/// Transient prepared native publication. The owner retains destination_key
+/// Transient prepared native publication. The owner retains `destination_key`
 /// before publishing; this value itself never enters the retained root.
 pub(crate) struct PreparedOwnedReplacementPublication {
     #[cfg(test)]
