@@ -614,7 +614,16 @@ impl MailboxPoller {
         ),
         target: &crate::config::teams::VerifiedPtyInputIdentity,
         request: &crate::commands::session::OwnedReplacementCreateRequest,
-    ) -> crate::session::selection::OwnedSourceValidation {
+    ) -> Arc<
+        dyn Fn() -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<(), crate::session::selection::OwnedSourceStop>,
+                        > + Send,
+                >,
+            > + Send
+            + Sync,
+    > {
         let (claimed, initial, sender, api_client_store) = source;
         let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();
@@ -721,7 +730,6 @@ impl MailboxPoller {
         source_executor: &mut crate::session::selection::SourceExecutorGuard,
         #[cfg(test)] fixture_lease: Option<&Arc<crate::commands::session::FixturePtyCutLease>>,
     ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
-        use crate::phone::types::PtyInputReasonCode as C;
         let root = Self::pty_target_root(claimed, target, target_ownership)?;
         let settings_state = app.state::<SettingsState>();
         let settings = settings_state.read().await.clone();
