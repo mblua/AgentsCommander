@@ -220,17 +220,8 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
         restore: restore.inner().clone(),
         purge: purge.inner().clone(),
     };
-    let service_request = crate::pty::terminal_snapshot::TerminalSnapshotServiceRequest {
-        request_id,
-        target: request.to.clone(),
-        format: request.format,
-        source_plane: crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
-        host_authorization_deadline: Some((monotonic_deadline, expires_at)),
-    };
-    let audit = crate::pty::terminal_snapshot::TerminalSnapshotAuditGuard::pre_admission(
-        crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
-    );
-    audit.accept_request(&service_request);
+    let (service_request, audit) =
+        prepare_service_request(&request, request_id, monotonic_deadline, expires_at);
     let admission = snapshot_state
         .pre_admit_requester(
             &context,
@@ -274,6 +265,29 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
         &audit,
     )
     .await;
+}
+
+fn prepare_service_request(
+    request: &HostTerminalSnapshotRequest,
+    request_id: uuid::Uuid,
+    monotonic_deadline: std::time::Instant,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> (
+    crate::pty::terminal_snapshot::TerminalSnapshotServiceRequest,
+    crate::pty::terminal_snapshot::TerminalSnapshotAuditGuard,
+) {
+    let service_request = crate::pty::terminal_snapshot::TerminalSnapshotServiceRequest {
+        request_id,
+        target: request.to.clone(),
+        format: request.format,
+        source_plane: crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
+        host_authorization_deadline: Some((monotonic_deadline, expires_at)),
+    };
+    let audit = crate::pty::terminal_snapshot::TerminalSnapshotAuditGuard::pre_admission(
+        crate::pty::terminal_snapshot::TerminalSnapshotSourcePlane::HostCli,
+    );
+    audit.accept_request(&service_request);
+    (service_request, audit)
 }
 
 async fn finalize_prepared(
