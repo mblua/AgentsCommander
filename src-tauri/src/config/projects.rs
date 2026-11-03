@@ -233,7 +233,7 @@ fn register_new_project_with_store(
     let mut transaction = store.begin(settings)?;
     let before_raw = transaction
         .as_ref()
-        .map(|token| token.raw_project_projection())
+        .map(crate::config::settings::ProjectPathsWriteTransaction::raw_project_projection)
         .transpose()
         .map_err(|error| ProjectError::ProjectSettingsFailed {
             operation: "refresh",
@@ -740,7 +740,7 @@ fn canonical_key(path: &Path) -> Option<String> {
 
 fn path_compare_key(s: &str) -> String {
     let without_extended = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else {
         s.strip_prefix(r"\\?\").unwrap_or(s).to_string()
     };

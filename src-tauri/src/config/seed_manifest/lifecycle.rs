@@ -615,8 +615,6 @@ impl ProjectSeedManifestGuard {
 pub(crate) fn log_record_failure(scope: &str, error: &SeedManifestError) {
     log::warn!(
         "[seed_manifest] target or lifecycle action succeeded but manifest persistence did not \
-            scope={} error={}",
-        scope,
-        error
+            scope={scope} error={error}"
     );
 }

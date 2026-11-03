@@ -19,9 +19,9 @@ pub(crate) fn read_discovery_replica_context(dir: &Path) -> Result<Vec<String>, 
     }
 
     let content = crate::filesystem::ac_discovery::read_replica_discovery_config(&config_path)
-        .map_err(|e| format!("Failed to read config.json: {}", e))?;
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+        .map_err(|e| format!("Failed to read config.json: {e}"))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config.json: {e}"))?;
 
     let files = parsed
         .get("context")

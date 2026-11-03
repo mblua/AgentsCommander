@@ -70,7 +70,7 @@ impl PairReservation {
                 .as_deref()
                 .map(|value| timestamp_cmp(value, floor))
                 .transpose()?
-                .is_none_or(|order| order.is_lt())
+                .is_none_or(std::cmp::Ordering::is_lt)
             {
                 return Err(PreparedPairError::Conflict);
             }
@@ -90,7 +90,7 @@ impl PairReservation {
                         .as_deref()
                         .map(|value| timestamp_cmp(value, &planned))
                         .transpose()?
-                        .is_none_or(|order| order.is_lt())
+                        .is_none_or(std::cmp::Ordering::is_lt)
                     {
                         continue;
                     }
