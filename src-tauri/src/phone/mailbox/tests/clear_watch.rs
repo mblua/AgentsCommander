@@ -665,7 +665,7 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             failure_rows(&backend, id);
             let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             finish(&mut poller).await;
-            assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
+            assert!(fault.as_ref().is_none_or(MailboxFaultGuard::consumed));
             drop(fault);
             assert_publication_pending(&source, &blocked, json_failure);
             assert!(!wake_claim_path(&source).exists());
@@ -673,7 +673,7 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             let before = fixture.recorded_effect_counts();
             let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             fixture.poll(&mut poller).await.unwrap();
-            assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
+            assert!(fault.as_ref().is_none_or(MailboxFaultGuard::consumed));
             drop(fault);
             assert_publication_pending(&source, &blocked, json_failure);
             let mut restart = fixture.poller();
@@ -682,7 +682,7 @@ async fn issue_3371_activated_reason_failure_then_restart_never_spawns_or_types_
             assert!(source.exists() && !wake_claim_path(&source).exists());
             let fault = json_failure.then(|| MailboxFaultGuard::install_document_write(&blocked));
             fixture.poll(&mut restart).await.unwrap();
-            assert!(fault.as_ref().is_none_or(|fault| fault.consumed()));
+            assert!(fault.as_ref().is_none_or(MailboxFaultGuard::consumed));
             drop(fault);
             assert_eq!(fixture.recorded_effect_counts(), before);
             if json_failure {

@@ -375,7 +375,7 @@ fn expired_control_deadline_with_unavailable_state_lock_still_seals_and_exits() 
         .shared
         .state
         .lock()
-        .unwrap_or_else(|error| error.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let drain_registry = Arc::clone(&registry);
     let drain = std::thread::spawn(move || {
         drain_registry.seal_and_drain_until(Instant::now() + Duration::from_millis(50))
@@ -513,7 +513,7 @@ fn registry_drop_helper_retains_only_busy_workers() {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.terminating = true;
         registry.shared.work_available.notify_all();
         registry.shared.state_changed.notify_all();
@@ -604,7 +604,7 @@ fn ensure_workers_does_not_spawn_or_spin_while_terminating() {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.terminating = true;
         registry.shared.work_available.notify_all();
         registry.shared.state_changed.notify_all();
@@ -633,7 +633,7 @@ fn ensure_workers_does_not_spawn_or_spin_while_terminating() {
         registry
             .workers
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len(),
         0
     );
