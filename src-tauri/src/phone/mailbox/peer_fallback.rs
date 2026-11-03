@@ -263,7 +263,9 @@ impl MailboxPoller {
         let Some(info) = continuation.refresh_completion_info(&manager, &pty).await else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
-        let id = continuation.binding().map(|binding| binding.session_id());
+        let id = continuation
+            .binding()
+            .map(crate::session::manager::PendingCreateBinding::session_id);
         let Some(id) = id else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
@@ -340,9 +342,9 @@ impl MailboxPoller {
             };
             let Some(shell) = shell else {
                 log::warn!(
-                    "[mailbox] wake: candidate {} vanished during logical-command preflight, \
-                    trying next",
-                    session_id
+                    "[mailbox] wake: candidate {session_id} vanished during \
+                    logical-command preflight, \
+                    trying next"
                 );
                 return Ok(None);
             };
@@ -394,9 +396,8 @@ impl MailboxPoller {
                 // races to dead, the spawn-persistent fall-through
                 // must still set spawn_with_resume.
                 log::warn!(
-                    "[mailbox] wake: candidate {} died after liveness probe ({}), trying next",
-                    session_id,
-                    e
+                    "[mailbox] wake: candidate {session_id} died after liveness probe ({e}), \
+                    trying next"
                 );
                 Ok(None)
             }
@@ -442,11 +443,7 @@ impl MailboxPoller {
         let (candidates, had_any_match) = self.peer_wake_candidates(app, msg).await;
 
         for &(session_id, ref status) in &candidates {
-            log::debug!(
-                "[mailbox] wake: candidate {} captured-status={:?}",
-                session_id,
-                status
-            );
+            log::debug!("[mailbox] wake: candidate {session_id} captured-status={status:?}");
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
@@ -483,10 +480,9 @@ impl MailboxPoller {
                         pending_exited_communication = communication;
                         spawn_with_resume = true;
                         log::debug!(
-                            "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending \
-                            later Inject success",
-                            session_id,
-                            status
+                            "[mailbox] wake: deferring Exited destroy for {session_id} \
+                            (status={status:?}) pending \
+                            later Inject success"
                         );
                     }
                 }
@@ -585,7 +581,7 @@ impl MailboxPoller {
             })?;
 
         let session_id =
-            Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
+            Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {e}"))?;
 
         Ok((
             session_id,
@@ -755,8 +751,7 @@ impl MailboxPoller {
 
         if let Some(exited_id) = pending_exited_destroy {
             log::debug!(
-                "[mailbox] wake: executing deferred destroy for Exited candidate {}",
-                exited_id
+                "[mailbox] wake: executing deferred destroy for Exited candidate {exited_id}"
             );
             if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
                 // Best-effort. Orphan SessionManager record lingers until AC3's
@@ -764,10 +759,9 @@ impl MailboxPoller {
                 // below still fires with the correct spawn_with_resume flag.
                 // (grinch G.M5 option (c).)
                 log::error!(
-                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until \
-                    AC3): {}",
-                    exited_id,
-                    e
+                    "[mailbox] wake: failed to destroy exited session {exited_id} \
+                    (orphan will linger until \
+                    AC3): {e}"
                 );
                 // (#747) The orphan Exited record still holds its restored
                 // raised hand. Do NOT clear it here: if the spawn below also

@@ -301,9 +301,9 @@ pub struct CodingAgentProfilesConfig {
     #[serde(default)]
     pub profiles_by_agent: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
     /// #548: per-(agent, letter) label override. Resolution is own label ->
-    /// legacy profile_slots[letter].label -> bare letter; there is no first-agent
-    /// inheritance. Always serializes (no skip_serializing_if) like
-    /// profiles_by_agent, so the key is always present on disk.
+    /// legacy `profile_slots[letter].label` -> bare letter; there is no first-agent
+    /// inheritance. Always serializes (no `skip_serializing_if`) like
+    /// `profiles_by_agent`, so the key is always present on disk.
     #[serde(default)]
     pub profile_labels_by_agent: BTreeMap<String, BTreeMap<String, String>>,
     /// #2450: agent id -> `agent_profile_identity` as of the last save. Rows for
@@ -436,7 +436,7 @@ pub struct AppSettings {
     /// Gemini model for voice transcription
     #[serde(default = "default_gemini_model")]
     pub gemini_model: String,
-    /// #2265 Co-managed: Jev (TypeSafe System One) API key. `""` means not configured.
+    /// #2265 Co-managed: Jev (`TypeSafe` System One) API key. `""` means not configured.
     #[serde(default)]
     pub jev_api_key: String,
     /// #2265 Co-managed: Jev model. Pinned to the version the 0.70/0.15
@@ -615,7 +615,7 @@ pub struct AppSettings {
     #[serde(default)]
     pub onboarding_dismissed: bool,
     /// When true, sort the Coordinator Quick-Access list by most-recent-activity descending.
-    /// Activity = busy→idle transition (IdleDetector emits session_idle).
+    /// Activity = busy→idle transition (`IdleDetector` emits `session_idle`).
     /// Per-session timestamps live in the frontend store and are NOT persisted.
     #[serde(default)]
     pub coord_sort_by_activity: bool,
@@ -648,7 +648,7 @@ pub struct AppSettings {
     pub theme_light: bool,
     /// #965 - rail project sections the user has explicitly collapsed by clicking
     /// their header. This is the RAIL's own state; it is deliberately NOT the
-    /// ProjectPanel's collapse (which stays session-only and auto-focus driven).
+    /// `ProjectPanel`'s collapse (which stays session-only and auto-focus driven).
     /// Entries are FRONTEND-NORMALIZED project paths (lowercase, forward slashes,
     /// no trailing slash: `normalizeProjectPathForCompare` in
     /// `src/sidebar/stores/project-refresh.ts`).
@@ -793,7 +793,7 @@ pub struct AppSettings {
     /// #930 - when true (default), container coding-agent sessions copy the host
     /// user's credential file for that agent into the replica config dir at spawn
     /// and delete it on teardown. When false, the user supplies credentials
-    /// themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row).
+    /// themselves (e.g. a `CLAUDE_CODE_OAUTH_TOKEN` env row).
     #[serde(default = "default_true")]
     pub container_credentials_from_host: bool,
     /// #1171 - root-level watcher patterns, keyed by watcher id.
