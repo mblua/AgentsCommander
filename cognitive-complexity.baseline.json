@@ -94,20 +94,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/session_request.rs::impl:MailboxPoller::handle_purge_wg",
-      "sites": {
-        "windows": [
-          "40cfe953061c"
-        ],
-        "linux": [
-          "40cfe953061c"
-        ],
-        "macos": [
-          "40cfe953061c"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/wake_workers.rs::impl:MailboxPoller::poll",
       "sites": {
         "windows": [

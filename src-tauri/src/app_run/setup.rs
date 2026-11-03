@@ -135,10 +135,6 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         &ctx.ipc_observer_for_setup,
         &ctx.shutdown_for_setup,
     );
-    // The authoritative scope of the activity window. `open_watchers_window` writes it
-    // before every emit and the window pulls it after subscribing, so a re-scope that
-    // races the window's own load is recovered instead of dropped in silence.
-    app.manage(commands::window::WatchersScopeState::default());
     start_web_server(
         app,
         WebServerStart {
@@ -842,13 +838,23 @@ pub(super) fn start_web_server(
     shutdown: &ShutdownSignal,
     web_access_token: &WebAccessToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    register_web_command_dispatcher(
-        app,
-        &start.session_mgr,
-        pty_mgr,
-        &start.settings,
-        &start.broadcaster,
-    )?;
+    // The authoritative scope of the activity window. `open_watchers_window` writes it
+    // before every emit and the window pulls it after subscribing, so a re-scope that
+    // races the window's own load is recovered instead of dropped in silence.
+    app.manage(commands::window::WatchersScopeState::default());
+    let dispatcher =
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
+            Arc::clone(&start.session_mgr),
+            Arc::clone(pty_mgr),
+            Arc::clone(&start.settings),
+            start.broadcaster.clone(),
+            app.handle().clone(),
+        ));
+    if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
+        Arc::new(dispatcher),
+    )) {
+        return Err("Web command dispatcher is already registered".into());
+    }
     let web_settings = config::settings::load_settings();
     if web_settings.web_server_enabled {
         let ws_handle = app.state::<WebServerHandle>().inner().clone();
@@ -925,27 +931,4 @@ pub(super) fn start_api_server(
             }
         }
     }
-}
-
-fn register_web_command_dispatcher(
-    app: SetupApp<'_>,
-    session_mgr_for_web: &Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: &Arc<Mutex<PtyManager>>,
-    settings_for_web: &SettingsState,
-    broadcaster_for_web: &WsBroadcaster,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let dispatcher =
-        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
-            Arc::clone(session_mgr_for_web),
-            Arc::clone(pty_mgr),
-            Arc::clone(settings_for_web),
-            broadcaster_for_web.clone(),
-            app.handle().clone(),
-        ));
-    if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
-        Arc::new(dispatcher),
-    )) {
-        return Err("Web command dispatcher is already registered".into());
-    }
-    Ok(())
 }
