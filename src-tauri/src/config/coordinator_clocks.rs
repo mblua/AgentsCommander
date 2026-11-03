@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -35,10 +35,7 @@ impl CoordinatorCreateOrder {
     }
 
     pub(crate) fn with_order<T>(&self, operation: impl FnOnce() -> T) -> T {
-        let _order = self
-            .order
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _order = self.order.lock().unwrap_or_else(PoisonError::into_inner);
         operation()
     }
 }
@@ -482,16 +479,14 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
 /// keys removed. Used by `delete_workgroup` and `delete_team`.
 pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, wg: &str) -> usize {
     let removed = {
-        let mut g = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut g = state.lock().unwrap_or_else(PoisonError::into_inner);
         g.remove_workgroup(project, wg)
     };
     if removed > 0 {
         let snap = {
             state
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .snapshot()
         };
         if let Err(e) = save_map(&snap) {
@@ -541,16 +536,14 @@ pub fn prune_orphaned_workgroups_and_persist(
         crate::config::projects::enumerate_registered_project_candidates(project_paths);
     let live_fqns = persisted_session_fqns();
     let removed = {
-        let mut guard = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = state.lock().unwrap_or_else(PoisonError::into_inner);
         prune_with(&mut guard, &candidates, &live_fqns)
     };
     if removed > 0 {
         let snap = {
             state
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .snapshot()
         };
         if let Err(e) = save_map(&snap) {

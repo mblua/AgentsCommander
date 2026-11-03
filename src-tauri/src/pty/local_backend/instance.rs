@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use portable_pty::{MasterPty, PtySize};
 use uuid::Uuid;
@@ -113,7 +113,7 @@ pub(super) fn resize_instance(
         let mut gate = instance
             .startup_gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         if gate.on_resize(cols, rows).is_none() {
             log::debug!(
                 "[pty] resize {id} to {cols}x{rows} held: the child has not rendered yet (#973)"
@@ -162,7 +162,7 @@ pub(super) fn send_size_to_conpty(
         let master = instance
             .master
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         master
             .resize(PtySize {
                 rows,
@@ -194,7 +194,7 @@ pub(super) fn hand_over_held_size(instance: &PtyInstance, id: Uuid) -> Option<(u
         let mut gate = instance
             .startup_gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         gate.open()
     };
     // Only a fast path for the read loop; the gate above is the truth. Publishing it late is
@@ -262,16 +262,11 @@ impl PtyInstance {
     // The two free functions above are the whole of C. Split out so they can be tested
     // without a live ConPTY: a `PtyInstance` owns real `MasterPty` handles.
     pub(super) fn size_changed_in(size: &Mutex<(u16, u16)>, cols: u16, rows: u16) -> bool {
-        *size
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            != (cols, rows)
+        *size.lock().unwrap_or_else(PoisonError::into_inner) != (cols, rows)
     }
 
     pub(super) fn remember_size_in(size: &Mutex<(u16, u16)>, cols: u16, rows: u16) {
-        *size
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (cols, rows);
+        *size.lock().unwrap_or_else(PoisonError::into_inner) = (cols, rows);
     }
 }
 

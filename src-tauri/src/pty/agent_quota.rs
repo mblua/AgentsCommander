@@ -20,7 +20,7 @@ pub(crate) mod source;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -209,27 +209,21 @@ impl AgentQuotaEngine {
 
     /// Start sampling a session.
     pub fn register_session(&self, id: Uuid, agent_id: String) {
-        let _sequence = self
-            .sequence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         let mut registered = self
             .registered
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         registered.insert(id, Registered { agent_id });
     }
 
     /// Stop sampling a session. Idempotent. Emits nothing: the account value outlives
     /// the terminal (#2566 D4).
     pub fn retire_session(&self, id: Uuid) {
-        let _sequence = self
-            .sequence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         self.registered
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&id);
     }
 
@@ -246,7 +240,7 @@ impl AgentQuotaEngine {
     pub fn published(&self) -> HashMap<String, Option<u8>> {
         self.published
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
@@ -255,10 +249,7 @@ impl AgentQuotaEngine {
     /// the rows read.
     fn resolve(&self, agent_id: &str, spec: &SourceSpec) -> Option<Arc<ResolvedSource>> {
         let key = source::spec_key(spec);
-        let mut cache = self
-            .resolved
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
 
         if let Some(cached) = cache.get(agent_id) {
             if cached.key() == key {
@@ -290,16 +281,13 @@ impl AgentQuotaEngine {
     fn prune_resolved(&self, configured: &HashMap<String, AgentQuotaSource>) {
         self.resolved
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .retain(|agent_id, _| configured.contains_key(agent_id));
     }
 
     pub(crate) async fn tick(&self) {
         let mut ids: Vec<(Uuid, String)> = {
-            let registered = self
-                .registered
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered
                 .iter()
                 .map(|(id, entry)| (*id, entry.agent_id.clone()))
@@ -313,12 +301,12 @@ impl AgentQuotaEngine {
             && self
                 .published
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .is_empty()
         {
             self.resolved
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .clear();
             return;
         }
@@ -358,13 +346,11 @@ impl AgentQuotaEngine {
                         // session retired mid-tick still contributes: the sample really
                         // was taken from that account.
                         if let Some(value) = source::sample(&resolved, &rows) {
-                            let _sequence = self
-                                .sequence
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let _sequence =
+                                self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
                             self.account_readings
                                 .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .unwrap_or_else(PoisonError::into_inner)
                                 .insert(src.account_key.clone(), value);
                         }
                         false
@@ -378,18 +364,12 @@ impl AgentQuotaEngine {
             }
         }
 
-        let _sequence = self
-            .sequence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         let mut account_readings = self
             .account_readings
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut published = self
-            .published
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut published = self.published.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut configured: Vec<(&String, &AgentQuotaSource)> = sources.iter().collect();
         configured.sort_unstable_by(|a, b| a.0.cmp(b.0));
