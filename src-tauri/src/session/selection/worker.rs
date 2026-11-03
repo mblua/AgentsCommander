@@ -84,13 +84,7 @@ pub(super) async fn drain_after_shutdown<R: Runtime>(
                     continue;
                 }
                 execute_rollback_create(transaction, request.binding).await;
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!(
                         "[selection] shutdown finalizer caller dropped session={}",
                         request.binding.session_id()
@@ -102,35 +96,17 @@ pub(super) async fn drain_after_shutdown<R: Runtime>(
                 hold.release();
             }
             CoordinatorJob::Transition { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued transition caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Snapshot { response } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued snapshot caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RouteLoss { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued route-loss caller dropped during shutdown");
                 }
             }
@@ -138,68 +114,32 @@ pub(super) async fn drain_after_shutdown<R: Runtime>(
                 hold.release();
             }
             CoordinatorJob::Destroy { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued destroy caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RestartLifecycle { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued restart caller dropped during shutdown");
                 }
             }
             CoordinatorJob::RootLifecycle { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued Root caller dropped during shutdown");
                 }
             }
             CoordinatorJob::ResourceKill { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued resource-kill caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Detach { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued detach caller dropped during shutdown");
                 }
             }
             CoordinatorJob::Attach { response, .. } => {
-                if hold
-                    .respond(
-                        response,
-                        Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    )
-                    .is_err()
-                {
+                if respond_unavailable(&mut hold, response) {
                     log::debug!("[selection] queued attach caller dropped during shutdown");
                 }
             }
@@ -229,41 +169,7 @@ pub(super) async fn execute_envelope<R: Runtime>(
             control,
             response,
         } => {
-            let owned = input.continuation.clone();
-            control.record(&owned, ReplacementFixtureCut::WorkerEntered);
-            let mut trace = ReplacementFixtureEnvelopeTrace {
-                hold: &mut hold,
-                control: &control,
-                owned: &owned,
-                released: false,
-                outcome: None,
-            };
-            let result = transaction
-                .lifecycle_executor()
-                .expect("fixture worker has its injected executor")
-                .execute_fixture(transaction, input)
-                .await;
-            let outcome = result.outcome;
-            control.record_outcome(
-                &owned,
-                ReplacementFixtureCut::AdapterReturned,
-                Some(outcome),
-            );
-            let resumed = ReplacementFixtureControl::wait_gate(&control.before_release_gate).await;
-            trace.outcome = Some(outcome);
-            trace.release();
-            let after_release = control
-                .reached(&owned, ReplacementFixtureCut::AfterReleaseBeforeSend)
-                .await;
-            if resumed && after_release {
-                if response.send(result).is_err() {
-                    control.record(&owned, ReplacementFixtureCut::ReceiverLost);
-                }
-            } else {
-                control.record(&owned, ReplacementFixtureCut::GateLost);
-                drop(result);
-                drop(response);
-            }
+            execute_fixture_job(transaction, &mut hold, input, control, response).await;
         }
         CoordinatorJob::Transition { request, response } => {
             let result = execute_transition(transaction, request).await;
@@ -278,43 +184,7 @@ pub(super) async fn execute_envelope<R: Runtime>(
             }
         }
         CoordinatorJob::FinalizeCreate { request, response } => {
-            let session_id = request.binding.session_id();
-            let owned = request.owned_replacement.clone();
-            let result = if owned.is_some() {
-                execute_owned_finalize_create(transaction, request).await
-            } else {
-                Some(execute_finalize_create(transaction, request).await)
-            };
-            match result {
-                Some(result) => {
-                    let observed = result.clone();
-                    hold.release();
-                    if owned.is_some() {
-                        drop(hold._create_ticket.take());
-                    }
-                    if let Some(owned) = owned {
-                        if let Ok(mut state) = owned.owner.state.lock() {
-                            state.completion = Some(observed);
-                            state.publication_observed = true;
-                            state.envelope_released = true;
-                        }
-                        owned.owner.changed.notify_waiters();
-                    }
-                    // No await separates recording the attempt from sending.
-                    // Only receipt permits the producer to certify work.
-                    let sent = response.send(result);
-                    if sent.is_err() {
-                        log::debug!(
-                            "[selection] create finalizer caller dropped session={}",
-                            session_id
-                        );
-                    }
-                }
-                None => {
-                    hold.release();
-                    drop(response);
-                }
-            }
+            execute_finalize_job(transaction, &mut hold, request, response).await;
         }
         CoordinatorJob::RollbackCreate { binding } => {
             execute_rollback_create(transaction, binding).await;
@@ -356,208 +226,321 @@ pub(super) async fn execute_envelope<R: Runtime>(
         }
         CoordinatorJob::RestartLifecycle {
             request,
-            mut entry,
+            entry,
             response,
         } => {
-            let executor = transaction
-                .lifecycle_executor()
-                .expect("selection start contract violated: lifecycle executor binding missing");
-            let Some(authority) = entry.authority.as_mut() else {
-                hold.release();
-                drop(response);
-                return;
-            };
-            #[cfg(test)]
-            let record = {
-                let trace = authority.port_test_trace();
-                let identity = (entry.owner.operation, entry.executor_nonce);
-                move |event| {
-                    if let Some(trace) = &trace {
-                        trace.lock().unwrap().push((identity.0, identity.1, event));
-                    }
-                }
-            };
-            let valid = executor.validate(transaction, authority).await;
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::Validate(valid));
-            if !valid {
-                hold.release();
-                drop(response);
-                return;
-            }
-            let transaction = transaction.for_lifecycle_entry(&entry);
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::Accepted(
-                transaction.has_accepted_lifecycle_core(),
-            ));
-            if !transaction.has_accepted_lifecycle_core() {
-                hold.release();
-                drop(response);
-                return;
-            }
-            let Some(authority) = entry.authority.as_ref() else {
-                hold.release();
-                drop(response);
-                return;
-            };
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::NativeEntered);
-            let result = executor.restart(&transaction, request, authority).await;
-            #[cfg(test)]
-            record(match &result {
-                LifecycleEntryOutcome::Interrupted => {
-                    super::SelectionPortTestEvent::NativeOutcome(false, false)
-                }
-                LifecycleEntryOutcome::Returned(result) => {
-                    super::SelectionPortTestEvent::NativeOutcome(true, result.is_ok())
-                }
-            });
-            let result = match result {
-                LifecycleEntryOutcome::Returned(result) => result,
-                LifecycleEntryOutcome::Interrupted => {
-                    entry.observe_authority_interruption();
-                    drop(transaction);
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::TransactionDropped);
-                    drop(entry);
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::EntryDropped);
-                    hold.release();
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::HoldReleased);
-                    drop(response);
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::ResponseDropped);
-                    return;
-                }
-            };
-            entry.observe_return(&result);
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::ReleaseAwaitBefore);
-            entry.release_lease(executor.as_ref()).await;
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::ReleaseAwaitAfter);
-            drop(transaction);
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::TransactionDropped);
-            drop(entry);
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::EntryDropped);
-            #[cfg(test)]
-            let sent = {
-                hold.release();
-                record(super::SelectionPortTestEvent::HoldReleased);
-                record(super::SelectionPortTestEvent::ResponseAttempted);
-                response.send(result)
-            };
-            #[cfg(not(test))]
-            let sent = hold.respond(response, result);
-            if sent.is_err() {
-                log::debug!("[selection] restart caller dropped before result delivery");
-            }
+            execute_restart_job(transaction, &mut hold, request, entry, response).await;
         }
         CoordinatorJob::RootLifecycle {
             request,
-            mut entry,
+            entry,
             response,
         } => {
-            let executor = transaction
-                .lifecycle_executor()
-                .expect("selection start contract violated: lifecycle executor binding missing");
-            let Some(authority) = entry.authority.as_mut() else {
+            execute_root_job(transaction, &mut hold, request, entry, response).await;
+        }
+        job @ (CoordinatorJob::ResourceKill { .. }
+        | CoordinatorJob::Detach { .. }
+        | CoordinatorJob::Attach { .. }) => {
+            execute_window_job(transaction, &mut hold, job).await;
+        }
+        CoordinatorJob::RestoreBarrier {
+            nonce,
+            started,
+            release,
+        } => {
+            if !transaction.begin_restore(nonce) {
+                drop(started);
                 hold.release();
-                drop(response);
-                return;
-            };
-            #[cfg(test)]
-            let record = {
-                let trace = authority.port_test_trace();
-                let identity = (entry.owner.operation, entry.executor_nonce);
-                move |event| {
-                    if let Some(trace) = &trace {
-                        trace.lock().unwrap().push((identity.0, identity.1, event));
-                    }
-                }
-            };
-            let valid = executor.validate(transaction, authority).await;
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::Validate(valid));
-            if !valid {
-                hold.release();
-                drop(response);
                 return;
             }
-            let transaction = transaction.for_lifecycle_entry(&entry);
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::Accepted(
-                transaction.has_accepted_lifecycle_core(),
-            ));
-            if !transaction.has_accepted_lifecycle_core() {
-                hold.release();
-                drop(response);
-                return;
+            if started.send(()).is_err() {
+                log::debug!("[selection] restore submitter dropped before barrier start");
             }
-            let Some(authority) = entry.authority.as_ref() else {
-                hold.release();
-                drop(response);
-                return;
-            };
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::NativeEntered);
-            let result = executor.root(&transaction, request, authority).await;
-            #[cfg(test)]
-            record(match &result {
-                LifecycleEntryOutcome::Interrupted => {
-                    super::SelectionPortTestEvent::NativeOutcome(false, false)
-                }
-                LifecycleEntryOutcome::Returned(result) => {
-                    super::SelectionPortTestEvent::NativeOutcome(true, result.is_ok())
-                }
-            });
-            let result = match result {
-                LifecycleEntryOutcome::Returned(result) => result,
-                LifecycleEntryOutcome::Interrupted => {
-                    entry.observe_authority_interruption();
-                    drop(transaction);
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::TransactionDropped);
-                    drop(entry);
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::EntryDropped);
-                    hold.release();
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::HoldReleased);
-                    drop(response);
-                    #[cfg(test)]
-                    record(super::SelectionPortTestEvent::ResponseDropped);
-                    return;
-                }
-            };
-            entry.observe_return(&result);
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::ReleaseAwaitBefore);
-            entry.release_lease(executor.as_ref()).await;
-            #[cfg(test)]
-            record(super::SelectionPortTestEvent::ReleaseAwaitAfter);
+            if release.await.is_err() {
+                log::warn!("[selection] restore barrier released by dropped owner");
+            }
+            transaction.release_restore(nonce);
+            hold.release();
+        }
+    }
+    debug_assert!(
+        hold.is_released(),
+        "#1580: a coordinator job arm finished without releasing admission and critical key"
+    );
+}
+
+fn respond_unavailable<T>(
+    hold: &mut super::envelope::EnvelopeHold,
+    response: tokio::sync::oneshot::Sender<Result<T, String>>,
+) -> bool {
+    hold.respond(
+        response,
+        Err(SelectionCoordinatorError::Unavailable.to_string()),
+    )
+    .is_err()
+}
+
+async fn execute_restart_job<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    request: super::RestartJobRequest,
+    mut entry: super::replacement::OwnedLifecycleEntry,
+    response: tokio::sync::oneshot::Sender<Result<crate::session::session::SessionInfo, String>>,
+) {
+    let executor = transaction
+        .lifecycle_executor()
+        .expect("selection start contract violated: lifecycle executor binding missing");
+    let Some(authority) = entry.authority.as_mut() else {
+        hold.release();
+        drop(response);
+        return;
+    };
+    #[cfg(test)]
+    let record = {
+        let trace = authority.port_test_trace();
+        let identity = (entry.owner.operation, entry.executor_nonce);
+        move |event| {
+            if let Some(trace) = &trace {
+                trace.lock().unwrap().push((identity.0, identity.1, event));
+            }
+        }
+    };
+    let valid = executor.validate(transaction, authority).await;
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::Validate(valid));
+    if !valid {
+        hold.release();
+        drop(response);
+        return;
+    }
+    let transaction = transaction.for_lifecycle_entry(&entry);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::Accepted(
+        transaction.has_accepted_lifecycle_core(),
+    ));
+    if !transaction.has_accepted_lifecycle_core() {
+        hold.release();
+        drop(response);
+        return;
+    }
+    let Some(authority) = entry.authority.as_ref() else {
+        hold.release();
+        drop(response);
+        return;
+    };
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::NativeEntered);
+    let result = executor.restart(&transaction, request, authority).await;
+    #[cfg(test)]
+    record(match &result {
+        LifecycleEntryOutcome::Interrupted => {
+            super::SelectionPortTestEvent::NativeOutcome(false, false)
+        }
+        LifecycleEntryOutcome::Returned(result) => {
+            super::SelectionPortTestEvent::NativeOutcome(true, result.is_ok())
+        }
+    });
+    let result = match result {
+        LifecycleEntryOutcome::Returned(result) => result,
+        LifecycleEntryOutcome::Interrupted => {
+            entry.observe_authority_interruption();
             drop(transaction);
             #[cfg(test)]
             record(super::SelectionPortTestEvent::TransactionDropped);
             drop(entry);
             #[cfg(test)]
             record(super::SelectionPortTestEvent::EntryDropped);
+            hold.release();
             #[cfg(test)]
-            let sent = {
-                hold.release();
-                record(super::SelectionPortTestEvent::HoldReleased);
-                record(super::SelectionPortTestEvent::ResponseAttempted);
-                response.send(result)
-            };
-            #[cfg(not(test))]
-            let sent = hold.respond(response, result);
-            if sent.is_err() {
-                log::debug!("[selection] Root caller dropped before result delivery");
+            record(super::SelectionPortTestEvent::HoldReleased);
+            drop(response);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::ResponseDropped);
+            return;
+        }
+    };
+    entry.observe_return(&result);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::ReleaseAwaitBefore);
+    entry.release_lease(executor.as_ref()).await;
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::ReleaseAwaitAfter);
+    drop(transaction);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::TransactionDropped);
+    drop(entry);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::EntryDropped);
+    #[cfg(test)]
+    let sent = {
+        hold.release();
+        record(super::SelectionPortTestEvent::HoldReleased);
+        record(super::SelectionPortTestEvent::ResponseAttempted);
+        response.send(result)
+    };
+    #[cfg(not(test))]
+    let sent = hold.respond(response, result);
+    if sent.is_err() {
+        log::debug!("[selection] restart caller dropped before result delivery");
+    }
+}
+
+async fn execute_root_job<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    request: super::RootJobRequest,
+    mut entry: super::replacement::OwnedLifecycleEntry,
+    response: tokio::sync::oneshot::Sender<Result<crate::session::session::SessionInfo, String>>,
+) {
+    let executor = transaction
+        .lifecycle_executor()
+        .expect("selection start contract violated: lifecycle executor binding missing");
+    let Some(authority) = entry.authority.as_mut() else {
+        hold.release();
+        drop(response);
+        return;
+    };
+    #[cfg(test)]
+    let record = {
+        let trace = authority.port_test_trace();
+        let identity = (entry.owner.operation, entry.executor_nonce);
+        move |event| {
+            if let Some(trace) = &trace {
+                trace.lock().unwrap().push((identity.0, identity.1, event));
             }
         }
+    };
+    let valid = executor.validate(transaction, authority).await;
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::Validate(valid));
+    if !valid {
+        hold.release();
+        drop(response);
+        return;
+    }
+    let transaction = transaction.for_lifecycle_entry(&entry);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::Accepted(
+        transaction.has_accepted_lifecycle_core(),
+    ));
+    if !transaction.has_accepted_lifecycle_core() {
+        hold.release();
+        drop(response);
+        return;
+    }
+    let Some(authority) = entry.authority.as_ref() else {
+        hold.release();
+        drop(response);
+        return;
+    };
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::NativeEntered);
+    let result = executor.root(&transaction, request, authority).await;
+    #[cfg(test)]
+    record(match &result {
+        LifecycleEntryOutcome::Interrupted => {
+            super::SelectionPortTestEvent::NativeOutcome(false, false)
+        }
+        LifecycleEntryOutcome::Returned(result) => {
+            super::SelectionPortTestEvent::NativeOutcome(true, result.is_ok())
+        }
+    });
+    let result = match result {
+        LifecycleEntryOutcome::Returned(result) => result,
+        LifecycleEntryOutcome::Interrupted => {
+            entry.observe_authority_interruption();
+            drop(transaction);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::TransactionDropped);
+            drop(entry);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::EntryDropped);
+            hold.release();
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::HoldReleased);
+            drop(response);
+            #[cfg(test)]
+            record(super::SelectionPortTestEvent::ResponseDropped);
+            return;
+        }
+    };
+    entry.observe_return(&result);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::ReleaseAwaitBefore);
+    entry.release_lease(executor.as_ref()).await;
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::ReleaseAwaitAfter);
+    drop(transaction);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::TransactionDropped);
+    drop(entry);
+    #[cfg(test)]
+    record(super::SelectionPortTestEvent::EntryDropped);
+    #[cfg(test)]
+    let sent = {
+        hold.release();
+        record(super::SelectionPortTestEvent::HoldReleased);
+        record(super::SelectionPortTestEvent::ResponseAttempted);
+        response.send(result)
+    };
+    #[cfg(not(test))]
+    let sent = hold.respond(response, result);
+    if sent.is_err() {
+        log::debug!("[selection] Root caller dropped before result delivery");
+    }
+}
+
+async fn execute_finalize_job<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    request: super::FinalizeCreateRequest,
+    response: tokio::sync::oneshot::Sender<Result<crate::session::session::SessionInfo, String>>,
+) {
+    let session_id = request.binding.session_id();
+    let owned = request.owned_replacement.clone();
+    let result = if owned.is_some() {
+        execute_owned_finalize_create(transaction, request).await
+    } else {
+        Some(execute_finalize_create(transaction, request).await)
+    };
+    match result {
+        Some(result) => {
+            let observed = result.clone();
+            hold.release();
+            if owned.is_some() {
+                drop(hold._create_ticket.take());
+            }
+            if let Some(owned) = owned {
+                if let Ok(mut state) = owned.owner.state.lock() {
+                    state.completion = Some(observed);
+                    state.publication_observed = true;
+                    state.envelope_released = true;
+                }
+                owned.owner.changed.notify_waiters();
+            }
+            // No await separates recording the attempt from sending.
+            // Only receipt permits the producer to certify work.
+            let sent = response.send(result);
+            if sent.is_err() {
+                log::debug!(
+                    "[selection] create finalizer caller dropped session={}",
+                    session_id
+                );
+            }
+        }
+        None => {
+            hold.release();
+            drop(response);
+        }
+    }
+}
+
+async fn execute_window_job<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    job: CoordinatorJob,
+) {
+    match job {
         CoordinatorJob::ResourceKill {
             session_id,
             intent,
@@ -609,28 +592,51 @@ pub(super) async fn execute_envelope<R: Runtime>(
                 );
             }
         }
-        CoordinatorJob::RestoreBarrier {
-            nonce,
-            started,
-            release,
-        } => {
-            if !transaction.begin_restore(nonce) {
-                drop(started);
-                hold.release();
-                return;
-            }
-            if started.send(()).is_err() {
-                log::debug!("[selection] restore submitter dropped before barrier start");
-            }
-            if release.await.is_err() {
-                log::warn!("[selection] restore barrier released by dropped owner");
-            }
-            transaction.release_restore(nonce);
-            hold.release();
-        }
+        _ => unreachable!("window job dispatch is restricted by execute_envelope"),
     }
-    debug_assert!(
-        hold.is_released(),
-        "#1580: a coordinator job arm finished without releasing admission and critical key"
+}
+
+#[cfg(test)]
+async fn execute_fixture_job<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    input: super::OpaqueFixtureInput,
+    control: Arc<ReplacementFixtureControl>,
+    response: tokio::sync::oneshot::Sender<super::OpaqueFixtureOutput>,
+) {
+    let owned = input.continuation.clone();
+    control.record(&owned, ReplacementFixtureCut::WorkerEntered);
+    let mut trace = ReplacementFixtureEnvelopeTrace {
+        hold,
+        control: &control,
+        owned: &owned,
+        released: false,
+        outcome: None,
+    };
+    let result = transaction
+        .lifecycle_executor()
+        .expect("fixture worker has its injected executor")
+        .execute_fixture(transaction, input)
+        .await;
+    let outcome = result.outcome;
+    control.record_outcome(
+        &owned,
+        ReplacementFixtureCut::AdapterReturned,
+        Some(outcome),
     );
+    let resumed = ReplacementFixtureControl::wait_gate(&control.before_release_gate).await;
+    trace.outcome = Some(outcome);
+    trace.release();
+    let after_release = control
+        .reached(&owned, ReplacementFixtureCut::AfterReleaseBeforeSend)
+        .await;
+    if resumed && after_release {
+        if response.send(result).is_err() {
+            control.record(&owned, ReplacementFixtureCut::ReceiverLost);
+        }
+    } else {
+        control.record(&owned, ReplacementFixtureCut::GateLost);
+        drop(result);
+        drop(response);
+    }
 }
