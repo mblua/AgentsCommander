@@ -12,7 +12,7 @@ use std::path::Path;
 /// Ensures the on-disk default skill file exists and, if it is a pristine copy of a defective
 /// version we shipped ourselves, repairs it in place (#909).
 ///
-/// The two arms are deliberately asymmetric and must stay that way. The **NotFound arm** creates
+/// The two arms are deliberately asymmetric and must stay that way. The **`NotFound` arm** creates
 /// the
 /// file and publishes with `hard_link`, which is create-only, and it propagates `Err`, because a
 /// root
@@ -207,13 +207,13 @@ pub(crate) fn warn_once_for_path(path: &Path, message: &str) {
     let first = {
         let mut seen = SKILL_REPAIR_WARNED
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         seen.insert(path.to_path_buf())
     };
     if first {
-        log::warn!("[skills] {} (logged once per process)", message);
+        log::warn!("[skills] {message} (logged once per process)");
     } else {
-        log::debug!("[skills] {}", message);
+        log::debug!("[skills] {message}");
     }
 }
 

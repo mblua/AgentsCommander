@@ -94,20 +94,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/session_request.rs::impl:MailboxPoller::handle_purge_wg",
-      "sites": {
-        "windows": [
-          "40cfe953061c"
-        ],
-        "linux": [
-          "40cfe953061c"
-        ],
-        "macos": [
-          "40cfe953061c"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/wake_workers.rs::impl:MailboxPoller::poll",
       "sites": {
         "windows": [
@@ -192,34 +178,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/session/selection.rs::drain_after_shutdown",
-      "sites": {
-        "windows": [
-          "7318d4f04c6b"
-        ],
-        "linux": [
-          "7318d4f04c6b"
-        ],
-        "macos": [
-          "7318d4f04c6b"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection.rs::execute_envelope",
-      "sites": {
-        "windows": [
-          "4643d8506375"
-        ],
-        "linux": [
-          "4643d8506375"
-        ],
-        "macos": [
-          "4643d8506375"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/session/selection.rs::mod:tests::assert_pending_container_shutdown_waits_for_stop",
       "sites": {
         "windows": [
@@ -244,6 +202,34 @@
         ],
         "macos": [
           "c1c6c13921ef"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::drain_after_shutdown",
+      "sites": {
+        "windows": [
+          "40c91cf940c1"
+        ],
+        "linux": [
+          "40c91cf940c1"
+        ],
+        "macos": [
+          "40c91cf940c1"
+        ]
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::execute_envelope",
+      "sites": {
+        "windows": [
+          "185e15600ecd"
+        ],
+        "linux": [
+          "185e15600ecd"
+        ],
+        "macos": [
+          "185e15600ecd"
         ]
       }
     },

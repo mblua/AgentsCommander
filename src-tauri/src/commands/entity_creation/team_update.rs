@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-/// Update an existing team's config.json in {project_path}/.ac/_team_{name}/
+/// Update an existing team's config.json in `{project_path}/.ac/_team_{name}/`
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -45,9 +45,9 @@ pub async fn update_team(
         .transpose()?;
     let guard = acquire_team_config_mutation_guard_async(&base).await?;
 
-    let team_dir = base.join(format!("_team_{}", team_name));
+    let team_dir = base.join(format!("_team_{team_name}"));
     if !team_directory_present(&team_dir) {
-        return Err(format!("Team '{}' not found", team_name));
+        return Err(format!("Team '{team_name}' not found"));
     }
 
     let context_alert_percentages = match supplied_context_alert_percentages {
@@ -76,7 +76,7 @@ pub async fn update_team(
     write_existing_team_config_guarded(&base, &team_name, &config, &guard)?;
     drop(guard);
 
-    log::info!("[entity_creation] Updated team: {}", team_name);
+    log::info!("[entity_creation] Updated team: {team_name}");
 
     // Propagate repo changes to existing workgroups (async now — awaits SessionManager refresh).
     match sync_workgroup_repos_inner(
@@ -100,7 +100,7 @@ pub async fn update_team(
             );
         }
         Err(e) => {
-            log::warn!("[entity_creation] Failed to sync workgroup repos: {}", e);
+            log::warn!("[entity_creation] Failed to sync workgroup repos: {e}");
             // Non-fatal: team config was saved successfully
         }
     }
@@ -112,8 +112,8 @@ pub async fn update_team(
     Ok(())
 }
 
-/// Canonicalize an absolute or relative repo path and derive (label, absolute_path).
-/// Mirrors ac_discovery.rs's source_path production so `Vec<SessionRepo>` equality
+/// Canonicalize an absolute or relative repo path and derive `(label, absolute_path)`.
+/// Mirrors `ac_discovery.rs`'s `source_path` production so `Vec<SessionRepo>` equality
 /// between the two writers holds (order and path shape both matter).
 pub(super) fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<SessionRepo> {
     let resolved = replica_dir.join(rel);
@@ -142,7 +142,7 @@ pub(super) fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<Sessio
 /// Core sync logic — updates repos and context in all replica configs for a team's workgroups.
 /// After successful per-replica writes, pushes the new `git_repos` to any matching live session
 /// via `refresh_git_repos_for_sessions` + watcher cache invalidation + `session_git_repos` emit.
-/// Async so it can await the RwLock on `SessionManager`.
+/// Async so it can await the `RwLock` on `SessionManager`.
 /// #2816 (C3) - site 7 lifted out of `sync_workgroup_repos_inner`, body
 /// verbatim, so its refusal of an absent `config.json` and its no-file
 /// guarantee are provable by a unit test.
@@ -266,7 +266,7 @@ pub(super) async fn sync_workgroup_repos_inner(
                 .iter()
                 .filter_map(|rel| build_session_repo(replica_dir, rel))
                 .collect();
-            let session_name = format!("{}/{}", wg_name, replica_name);
+            let session_name = format!("{wg_name}/{replica_name}");
             updates.push((session_name, session_repos));
             touched_replica_paths.push(replica_dir.to_string_lossy().to_string());
 
@@ -360,7 +360,7 @@ fn assigned_replica_repos(repos: &[RepoAssignment], replica_name: &str) -> Vec<S
         .filter(|r| r.agents.iter().any(|a| agent_matches(a, replica_name)))
         .map(|r| {
             let d = format!("repo-{}", repo_dir_name_from_url(&r.url));
-            format!("../{}", d)
+            format!("../{d}")
         })
         .collect()
 }

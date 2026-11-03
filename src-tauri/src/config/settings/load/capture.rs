@@ -13,6 +13,7 @@ use super::{
     FIELD_ARCHIVED_REL, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL,
     FIELD_PROJECT_PATH_REL,
 };
+use crate::config::settings::agent::RegisteredProfileCapture;
 use crate::filesystem::settings_file;
 
 pub(crate) fn capture_project_settings(
@@ -83,34 +84,8 @@ pub(crate) fn capture_project_settings_with_startup(
     if let Some(reason) = raw_profile_capture.ordinary_error() {
         log::warn!("[profiles] {reason}");
     }
-    let migration_error = if migrate
-        && raw_profile_capture.admits_project_migration(&transaction.path)
-    {
-        let mut checked = false;
-        ensure_project_paths_migrated_at_labeled_path(&transaction.path, path, &mut |stage, _| {
-            if !checked
-                && matches!(
-                    stage,
-                    "backup_create" | "destination_before_write" | "source_cleanup"
-                )
-            {
-                recheck_registered_profile_gate(&raw_profile_capture.participant_documents())
-                    .map_err(|reason| {
-                        project_migration_error_labeled(
-                            &transaction.path,
-                            path,
-                            SettingsSaveStage::ProjectPathsRefreshDiskGate,
-                            &reason,
-                        )
-                    })?;
-                checked = true;
-            }
-            Ok(())
-        })
-        .err()
-    } else {
-        None
-    };
+    let migration_error =
+        capture_migration_error(&transaction.path, path, migrate, &raw_profile_capture);
     let selected = match migration_error {
         Some(error) => Err(error),
         None => select_project_source_at_labeled_path_with_limit(
@@ -119,163 +94,246 @@ pub(crate) fn capture_project_settings_with_startup(
             16 * 1024 * 1024,
         ),
     };
-    let captured = if raw_profile_capture
-        .problems
-        .iter()
-        .any(|problem| problem.kind == RegisteredProfileProblemKind::DuplicateMember)
-        && selected
-            .as_ref()
-            .err()
-            .is_none_or(|error| error.target_path.as_path() == transaction.path.as_path())
-    {
+    let captured = if has_lenient_duplicate(
+        &raw_profile_capture,
+        selected.as_ref().err(),
+        &transaction.path,
+    ) {
         // The ordinary reader remains lenient. The strict project selector must
         // not turn an unrelated duplicate into project persistence failure.
-        let contents = settings_file::read_settings_text(&transaction.path).unwrap_or_else(|_| {
-            serde_json::to_string(&AppSettings::default()).expect("default settings")
-        });
-        let legacy: Value =
-            serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
-        let mut probe = legacy.clone();
-        apply_project_decode_to_value(
-            &mut probe,
-            production_instance_base().as_deref(),
-            &projects::FsCandidateResolver,
-        );
-        let projection = selected
-            .as_ref()
-            .ok()
-            .map(|selected| selected.projection.clone())
-            .unwrap_or_else(|| {
-                probe
-                    .as_object()
-                    .map(|map| {
-                        let mut projection = Map::new();
-                        for key in [
-                            FIELD_PROJECT_PATH,
-                            FIELD_PROJECT_PATHS,
-                            FIELD_ARCHIVED,
-                            FIELD_PROJECT_PATH_REL,
-                            FIELD_PROJECT_PATHS_REL,
-                            FIELD_ARCHIVED_REL,
-                        ] {
-                            if let Some(value) = map.get(key) {
-                                projection.insert(key.to_owned(), value.clone());
-                            }
-                        }
-                        projection
-                    })
-                    .unwrap_or_default()
-            });
-        let parsed = parse_settings_with_startup(
-            &contents,
-            &path.to_string_lossy(),
-            Some(&transaction.path),
-            Some(path),
-            Some(&projection),
+        capture_lenient_source(
+            path,
+            &transaction.path,
+            selected.as_ref().ok().map(|selected| &selected.projection),
             startup.as_deref_mut(),
-        );
-        parsed.map(|(settings, legacy)| (settings, legacy, Some(contents)))
+        )
     } else {
-        (|| {
-            match selected {
-                Ok(selected) => match selected.legacy {
-                    Some(legacy) => {
-                        let contents =
-                            String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
-                        match parse_settings_with_startup(
-                            &contents,
-                            &path.to_string_lossy(),
-                            Some(&transaction.path),
-                            Some(path),
-                            Some(&selected.projection),
-                            startup.as_deref_mut(),
-                        ) {
-                            Ok((settings, legacy_profiles)) => {
-                                Ok((settings, legacy_profiles, Some(contents)))
-                            }
-                            Err(error) => {
-                                if let Some(startup) = startup {
-                                    *startup = None;
-                                }
-                                log::error!("{error}");
-                                // Selection succeeded; unrelated decode failure must not
-                                // mark the authoritative project source unavailable.
-                                let mut settings = default_settings_with_overlay_captured(
-                                    &transaction.path,
-                                    &path.to_string_lossy(),
-                                    &selected.projection,
-                                );
-                                set_agents_layer_state(
-                                    &mut settings,
-                                    path,
-                                    agents_layer_state_at_labeled(&transaction.path, path),
-                                );
-                                Ok((settings, false, None))
-                            }
-                        }
-                    }
-                    None => Ok((
-                        default_settings_with_overlay_captured(
-                            &transaction.path,
-                            &path.to_string_lossy(),
-                            &selected.projection,
-                        ),
-                        false,
-                        None,
-                    )),
-                },
-                Err(error) => {
-                    let message = report_settings_save_error(
-                        error.with_capture_labels(path),
-                        SettingsSaveReportSurface::GeneralSettings,
-                    );
-                    // Preserve readable unrelated values while exposing no project authorization.
-                    let mut settings = read_raw_project_source_labeled_with_limit(
-                        &transaction.path,
-                        path,
-                        16 * 1024 * 1024,
-                        false,
-                    )
-                    .ok()
-                    .flatten()
-                    .and_then(|legacy| {
-                        let contents = String::from_utf8(legacy.bytes).ok()?;
-                        parse_settings_json_with_projection_labeled(
-                            &contents,
-                            &path.to_string_lossy(),
-                            Some(&transaction.path),
-                            Some(path),
-                            Some(&Map::new()),
-                        )
-                        .ok()
-                        .map(|pair| pair.0)
-                    })
-                    .unwrap_or_else(|| {
-                        default_settings_with_overlay_captured(
-                            &transaction.path,
-                            &path.to_string_lossy(),
-                            &Map::new(),
-                        )
-                    });
-                    set_agents_layer_state(
-                        &mut settings,
-                        path,
-                        agents_layer_state_at_labeled(&transaction.path, path),
-                    );
-                    Ok((unavailable_project_settings(settings, message), false, None))
-                }
-            }
-        })()
+        match selected {
+            Ok(selected) => match selected.legacy {
+                Some(legacy) => capture_legacy_source(
+                    path,
+                    &transaction.path,
+                    legacy.bytes,
+                    &selected.projection,
+                    startup,
+                ),
+                None => Ok(capture_default_source(
+                    path,
+                    &transaction.path,
+                    &selected.projection,
+                )),
+            },
+            Err(error) => Ok(capture_unavailable_source(path, &transaction.path, error)),
+        }
     };
     // Every fallback passes this check while the same lock is still held.
     if retained.verify_current().is_err() {
         let message = report(lock_error(SettingsSaveReason::LockIdentityRejected));
-        return match captured {
-            Ok((settings, _, _)) => {
-                Ok((unavailable_project_settings(settings, message), false, None))
-            }
-            Err(_) => Err(message),
-        };
+        return lock_rejected_capture(captured, message);
     }
     captured
+}
+
+fn capture_migration_error(
+    transaction_path: &Path,
+    path: &Path,
+    migrate: bool,
+    raw_profile_capture: &RegisteredProfileCapture,
+) -> Option<SettingsSaveError> {
+    if !(migrate && raw_profile_capture.admits_project_migration(transaction_path)) {
+        return None;
+    }
+    let mut checked = false;
+    ensure_project_paths_migrated_at_labeled_path(transaction_path, path, &mut |stage, _| {
+        if !checked
+            && matches!(
+                stage,
+                "backup_create" | "destination_before_write" | "source_cleanup"
+            )
+        {
+            recheck_registered_profile_gate(&raw_profile_capture.participant_documents()).map_err(
+                |reason| {
+                    project_migration_error_labeled(
+                        transaction_path,
+                        path,
+                        SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                        &reason,
+                    )
+                },
+            )?;
+            checked = true;
+        }
+        Ok(())
+    })
+    .err()
+}
+
+fn has_lenient_duplicate(
+    raw_profile_capture: &RegisteredProfileCapture,
+    selected_error: Option<&SettingsSaveError>,
+    transaction_path: &Path,
+) -> bool {
+    raw_profile_capture
+        .problems
+        .iter()
+        .any(|problem| problem.kind == RegisteredProfileProblemKind::DuplicateMember)
+        && selected_error.is_none_or(|error| error.target_path.as_path() == transaction_path)
+}
+
+fn capture_default_source(
+    path: &Path,
+    transaction_path: &Path,
+    projection: &Map<String, Value>,
+) -> (AppSettings, bool, Option<String>) {
+    (
+        default_settings_with_overlay_captured(
+            transaction_path,
+            &path.to_string_lossy(),
+            projection,
+        ),
+        false,
+        None,
+    )
+}
+
+fn capture_lenient_source(
+    path: &Path,
+    transaction_path: &Path,
+    selected_projection: Option<&Map<String, Value>>,
+    startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<(AppSettings, bool, Option<String>), String> {
+    let contents = settings_file::read_settings_text(transaction_path).unwrap_or_else(|_| {
+        serde_json::to_string(&AppSettings::default()).expect("default settings")
+    });
+    let legacy: Value = serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
+    let mut probe = legacy.clone();
+    apply_project_decode_to_value(
+        &mut probe,
+        production_instance_base().as_deref(),
+        &projects::FsCandidateResolver,
+    );
+    let projection = selected_projection
+        .cloned()
+        .unwrap_or_else(|| probe_projection(&probe));
+    let parsed = parse_settings_with_startup(
+        &contents,
+        &path.to_string_lossy(),
+        Some(transaction_path),
+        Some(path),
+        Some(&projection),
+        startup,
+    );
+    parsed.map(|(settings, legacy)| (settings, legacy, Some(contents)))
+}
+
+fn probe_projection(probe: &Value) -> Map<String, Value> {
+    probe
+        .as_object()
+        .map(|map| {
+            let mut projection = Map::new();
+            for key in [
+                FIELD_PROJECT_PATH,
+                FIELD_PROJECT_PATHS,
+                FIELD_ARCHIVED,
+                FIELD_PROJECT_PATH_REL,
+                FIELD_PROJECT_PATHS_REL,
+                FIELD_ARCHIVED_REL,
+            ] {
+                if let Some(value) = map.get(key) {
+                    projection.insert(key.to_owned(), value.clone());
+                }
+            }
+            projection
+        })
+        .unwrap_or_default()
+}
+
+fn capture_legacy_source(
+    path: &Path,
+    transaction_path: &Path,
+    bytes: Vec<u8>,
+    projection: &Map<String, Value>,
+    mut startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<(AppSettings, bool, Option<String>), String> {
+    let contents = String::from_utf8(bytes).map_err(|error| error.to_string())?;
+    match parse_settings_with_startup(
+        &contents,
+        &path.to_string_lossy(),
+        Some(transaction_path),
+        Some(path),
+        Some(projection),
+        startup.as_deref_mut(),
+    ) {
+        Ok((settings, legacy_profiles)) => Ok((settings, legacy_profiles, Some(contents))),
+        Err(error) => {
+            if let Some(startup) = startup {
+                *startup = None;
+            }
+            log::error!("{error}");
+            // Selection succeeded; unrelated decode failure must not
+            // mark the authoritative project source unavailable.
+            let mut settings = default_settings_with_overlay_captured(
+                transaction_path,
+                &path.to_string_lossy(),
+                projection,
+            );
+            set_agents_layer_state(
+                &mut settings,
+                path,
+                agents_layer_state_at_labeled(transaction_path, path),
+            );
+            Ok((settings, false, None))
+        }
+    }
+}
+
+fn capture_unavailable_source(
+    path: &Path,
+    transaction_path: &Path,
+    error: SettingsSaveError,
+) -> (AppSettings, bool, Option<String>) {
+    let message = report_settings_save_error(
+        error.with_capture_labels(path),
+        SettingsSaveReportSurface::GeneralSettings,
+    );
+    // Preserve readable unrelated values while exposing no project authorization.
+    let mut settings =
+        read_raw_project_source_labeled_with_limit(transaction_path, path, 16 * 1024 * 1024, false)
+            .ok()
+            .flatten()
+            .and_then(|legacy| {
+                let contents = String::from_utf8(legacy.bytes).ok()?;
+                parse_settings_json_with_projection_labeled(
+                    &contents,
+                    &path.to_string_lossy(),
+                    Some(transaction_path),
+                    Some(path),
+                    Some(&Map::new()),
+                )
+                .ok()
+                .map(|pair| pair.0)
+            })
+            .unwrap_or_else(|| {
+                default_settings_with_overlay_captured(
+                    transaction_path,
+                    &path.to_string_lossy(),
+                    &Map::new(),
+                )
+            });
+    set_agents_layer_state(
+        &mut settings,
+        path,
+        agents_layer_state_at_labeled(transaction_path, path),
+    );
+    (unavailable_project_settings(settings, message), false, None)
+}
+
+fn lock_rejected_capture(
+    captured: Result<(AppSettings, bool, Option<String>), String>,
+    message: String,
+) -> Result<(AppSettings, bool, Option<String>), String> {
+    match captured {
+        Ok((settings, _, _)) => Ok((unavailable_project_settings(settings, message), false, None)),
+        Err(_) => Err(message),
+    }
 }

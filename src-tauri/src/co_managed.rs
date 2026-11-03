@@ -94,12 +94,15 @@ impl CoManagedTestHooks {
     fn record_step(&self, step: &'static str) {
         self.steps
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(step);
     }
 
     pub(crate) fn steps(&self) -> Vec<&'static str> {
-        self.steps.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.steps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn commit_calls(&self) -> usize {
@@ -107,13 +110,16 @@ impl CoManagedTestHooks {
     }
 
     pub(crate) fn set_after_commit(&self, hook: Box<dyn FnOnce() + Send>) {
-        *self.after_commit.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+        *self
+            .after_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
     fn take_after_commit(&self) -> Option<Box<dyn FnOnce() + Send>> {
         self.after_commit
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
     }
 }
@@ -192,7 +198,9 @@ impl CoManagedSupervisorHandle {
     }
 
     pub(crate) fn lock_state(&self) -> std::sync::MutexGuard<'_, CoManagedSupervisorState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn is_watching(&self, id: &str) -> bool {
@@ -548,7 +556,7 @@ pub(crate) fn write_co_managed_queue_message(
         .map_err(|e| format!("queue envelope serialize failed: {e}"))?;
     let path = dir.join(format!("{}.json", envelope.id));
     let mut file = create_co_managed_queue_entry(&path)
-        .map_err(|e| format!("queue envelope create failed: {}", e))?;
+        .map_err(|e| format!("queue envelope create failed: {e}"))?;
     write_co_managed_queue_bytes(&mut file, &bytes)
         .map_err(|e| format!("queue envelope write failed: {e}"))?;
     flush_co_managed_queue_file(&mut file)

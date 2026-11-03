@@ -189,7 +189,10 @@ pub(crate) struct PendingRegistration {
 
 impl Drop for PendingRegistration {
     fn drop(&mut self) {
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         registry.pending.remove(&self.seq);
         self.response_close.end_unresolved_spawn();
     }
@@ -293,7 +296,10 @@ impl RouteRegistry {
         response_close: &ResponseCloseState,
     ) {
         let route = {
-            let registry = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let registry = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             registry
                 .routes
                 .get(&id)
@@ -306,7 +312,10 @@ impl RouteRegistry {
         let deferred_lifecycle = Arc::clone(&lifecycle);
         match lifecycle.try_lock() {
             Ok(_lifecycle_guard) => {
-                let mut registry = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut registry = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if registry
                     .routes
                     .get(&id)
@@ -323,8 +332,10 @@ impl RouteRegistry {
                 std::thread::spawn(move || {
                     let _lifecycle_guard = deferred_lifecycle
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut registry = registry
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if registry
                         .routes
                         .get(&id)
@@ -408,7 +419,7 @@ impl RouteRegistry {
     pub(crate) fn kind_for_session(&self, id: Uuid) -> Result<SessionBackendKind, AppError> {
         self.state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .routes
             .get(&id)
             .map(|entry| entry.kind)
@@ -418,7 +429,7 @@ impl RouteRegistry {
     pub(crate) fn backend_kind(&self, id: Uuid) -> Option<SessionBackendKind> {
         self.state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .routes
             .get(&id)
             .map(|entry| entry.kind)
@@ -432,7 +443,10 @@ impl RouteRegistry {
         Option<crate::path_identity::VerifiedPathIdentity>,
         u64,
     )> {
-        let registry = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let registry = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = registry.routes.get(&id)?;
         Some((
             entry.canonical_cwd_identity.clone(),
@@ -445,7 +459,10 @@ impl RouteRegistry {
         &self,
         replica: &crate::path_identity::VerifiedPathIdentity,
     ) -> bool {
-        let registry = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let registry = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         registry.pending.values().any(|pending| {
             crate::path_identity::verify_directory(std::path::Path::new(&pending.cwd))
                 .is_ok_and(|cwd| crate::path_identity::is_verified_descendant(&cwd, replica))
@@ -458,7 +475,10 @@ impl RouteRegistry {
         label: &str,
         response_close: &ResponseCloseState,
     ) -> PendingRegistration {
-        let mut registry = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registry = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = registry.next_seq;
         if registry.next_seq == u64::MAX {
             response_close.fail_closed();
@@ -484,7 +504,10 @@ impl RouteRegistry {
         ids: &[Uuid],
     ) -> (Vec<PendingRow>, Vec<Option<SessionBackendKind>>) {
         let (pending, route_kinds) = {
-            let registry = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let registry = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (
                 registry.pending.values().cloned().collect::<Vec<_>>(),
                 ids.iter()

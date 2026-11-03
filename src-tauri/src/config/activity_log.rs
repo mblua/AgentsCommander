@@ -77,7 +77,7 @@
 //!
 //! # Failure behavior
 //!
-//! Telemetry never degrades AgentsCommander. No public function here returns an
+//! Telemetry never degrades `AgentsCommander`. No public function here returns an
 //! error or panics: I/O failures warn and are swallowed, a record that fails to
 //! serialize is skipped while the rest of its batch continues, and a poisoned
 //! mutex is recovered with `into_inner()`. `append` and `append_batch` are inert
@@ -328,7 +328,7 @@ fn coalescer(owner: &ActivityCoalescer) -> &Mutex<LastIdleAt> {
 fn locked_coalescer(now: Instant, owner: &ActivityCoalescer) -> MutexGuard<'_, LastIdleAt> {
     let mut guard = coalescer(owner)
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.retain(|_, (stamped, _)| {
         now.checked_duration_since(*stamped)
             .is_some_and(|delta| delta <= BLOCK_WINDOW)
@@ -564,7 +564,7 @@ fn append_at(path: &Path, records: &[ActivityRecord], owner: &ActivityCoalescer)
     }
     let _writer = writer_lock(owner)
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut buffer = String::new();
     if rotate_if_needed(path) {
         // The fresh file's first line re-declares the metrics contract, for the
@@ -598,7 +598,7 @@ fn push_line(buffer: &mut String, record: &ActivityRecord) {
             buffer.push_str(&line);
             buffer.push('\n');
         }
-        Err(error) => log::warn!("[activity] record skipped, serialization failed: {}", error),
+        Err(error) => log::warn!("[activity] record skipped, serialization failed: {error}"),
     }
 }
 
@@ -716,10 +716,8 @@ fn init_run_at(dir: &Path, run_id: &str, owner: &ActivityCoalescer) {
     // invalidate what the scan just read.
     append_at(&dir.join(FILE_NAME), std::slice::from_ref(&record), owner);
     log::info!(
-        "[activity] run {} started, previous-run scan {:?}, concurrent instance {:?}",
-        run_id,
-        scan,
-        concurrent_instance_pid
+        "[activity] run {run_id} started, previous-run scan {scan:?}, \
+         concurrent instance {concurrent_instance_pid:?}"
     );
 }
 

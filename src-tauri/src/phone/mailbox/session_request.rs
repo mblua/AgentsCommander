@@ -8,7 +8,7 @@ use super::handoff::SELF_CLEAR_POLL;
 use super::handoff::SELF_CLEAR_SETTLE;
 use super::handoff::{ARCHIVE_TIMESTAMP_FORMAT, PURGE_WG_ACTION, SELF_HANDOFF_ROOT_NAME};
 use super::notice::derive_project_from_outbox_path;
-use super::poller::{evaluate_gate, MailboxPoller};
+use super::poller::{evaluate_gate, MailboxPoller, PurgeGatePeer};
 use super::settle::{archive_root_md, capture_self_forget_summary};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
@@ -40,103 +40,21 @@ impl MailboxPoller {
             "purge-room requires a session token; caller must enforce"
         );
 
-        // 2. Resolve WG scope and authorization, one call (§3.6).
-        let effective_paths = {
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            match derive_project_from_outbox_path(path) {
-                Ok(Some(root_project)) => {
-                    let canon = crate::filesystem::projects::canonical_refresh_project(
-                        std::path::Path::new(&root_project),
-                    )
-                    .ok();
-                    let already = paths.iter().any(|p| match &canon {
-                        Some(ct) => {
-                            crate::filesystem::projects::canonical_refresh_project(
-                                std::path::Path::new(p),
-                            )
-                            .ok()
-                            .as_ref()
-                                == Some(ct)
-                        }
-                        None => p == &root_project,
-                    });
-                    if !already {
-                        paths.push(root_project);
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return self.reject_message(path, msg, &e).await;
-                }
-            }
-            paths
+        // 2-4. Resolve and authorize the WG scope, then enumerate its peers.
+        let Some((project, wg_name, peer_fqns)) = self
+            .resolve_purge_scope(&app.state::<SettingsState>(), path, msg)
+            .await?
+        else {
+            return Ok(());
         };
-        let wg =
-            match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
-            {
-                Some(wg) => wg,
-                None => {
-                    return self
-                        .reject_message(
-                            path,
-                            msg,
-                            &format!(
-                                "Not authorized: '{}' is not the verified orchestrator of its room",
-                                msg.from
-                            ),
-                        )
-                        .await;
-                }
-            };
-
-        // 3. --wg assertion (§3.6: interlock, not selector).
-        if let Some(ref t) = msg.target {
-            if t != &wg.wg_name {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        &format!(
-                            "purge-room: --wg assertion '{}' does not match resolved room '{}'",
-                            t, wg.wg_name
-                        ),
-                    )
-                    .await;
-            }
-        }
-
-        // 4. Enumerate peers (Guard A). Only `__agent_*` dirs under the WG dir.
-        //    The coordinator does not purge itself.
-        let wg_dir = match wg.replica_dir.parent() {
-            Some(d) => d,
-            None => {
-                return self
-                    .reject_message(path, msg, "purge-room: cannot resolve Room directory")
-                    .await;
-            }
-        };
-        let peer_fqns = purge::peer_fqns(wg_dir, &wg.agent_name, &wg.project, &wg.wg_name);
 
         // 5. Take the mirror snapshot ONCE (F-4). One list_sessions(), one
         //    PTY-liveness pass. Per-peer filtering reuses the pure predicate.
-        let sessions: Vec<SessionInfo> = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            mgr.list_sessions().await
-        };
-        let pty_live: std::collections::HashSet<Uuid> = {
-            let pty = app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
-            let mgr = pty.lock().unwrap();
-            sessions
-                .iter()
-                .filter_map(|s| Uuid::parse_str(&s.id).ok())
-                .filter(|id| mgr.has_session(*id))
-                .collect()
-        };
+        let (sessions, pty_live) = purge_mirror_snapshot(
+            &app.state::<Arc<tokio::sync::RwLock<SessionManager>>>(),
+            &app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>(),
+        )
+        .await;
 
         // 6. Restore-in-progress guard (F-2: exit 3, not 0).
         {
@@ -144,7 +62,7 @@ impl MailboxPoller {
             if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                 let response = serde_json::json!({
                     "action": PURGE_WG_ACTION,
-                    "workgroup": format!("{}:{}", wg.project, wg.wg_name),
+                    "workgroup": format!("{}:{}", project, wg_name),
                     "status": "restore_in_progress",
                     "requested_by": msg.from,
                     "peers": [],
@@ -159,12 +77,7 @@ impl MailboxPoller {
         //    Collect live session info; the readiness snapshot (step 8) is
         //    correlated into gate_peers after.
         let (peer_infos, all_live_session_ids) = match purge::peer_live_info(
-            &peer_fqns,
-            &sessions,
-            &pty_live,
-            &wg.project,
-            &wg.wg_name,
-            msg,
+            &peer_fqns, &sessions, &pty_live, &project, &wg_name, msg,
         ) {
             Ok(snapshot) => snapshot,
             Err(response) => {
@@ -175,28 +88,18 @@ impl MailboxPoller {
         };
 
         // 8. Readiness snapshot and the four-leg gate (§2.3.3, F-1).
-        let quiet = std::time::Duration::from_millis(
-            msg.quiet_period_ms.unwrap_or(3000).max(
-                crate::session::profile::IdleTuning::DEFAULT
-                    .idle_threshold
-                    .as_millis() as u64,
-            ),
+        let quiet = purge_quiet_period(msg);
+        let readiness_map = purge_readiness_map(
+            &app.state::<Arc<crate::pty::idle_detector::IdleDetector>>(),
+            &all_live_session_ids,
         );
-        let readiness_map: std::collections::HashMap<
-            Uuid,
-            crate::pty::idle_detector::PurgeReadiness,
-        > = {
-            let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
-            let readiness = idle.purge_readiness(&all_live_session_ids);
-            readiness.into_iter().map(|r| (r.session_id, r)).collect()
-        };
         let gate_peers = purge::gate_peers(&peer_infos, &readiness_map);
 
         let decision = evaluate_gate(&gate_peers, quiet);
 
         // 9. Dry-run exit, BEFORE the gate rejection (F-9).
         if msg.dry_run == Some(true) {
-            let response = purge::dry_run_response(&wg.project, &wg.wg_name, msg, quiet, &decision);
+            let response = purge::dry_run_response(&project, &wg_name, msg, quiet, &decision);
             return self
                 .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
                 .await;
@@ -204,40 +107,130 @@ impl MailboxPoller {
 
         // 10. The gate. If any peer is not purgeable: reject, destroy nothing.
         if !decision.passed {
-            let response = purge::busy_response(&wg.project, &wg.wg_name, msg, quiet, &decision);
+            let response = purge::busy_response(&project, &wg_name, msg, quiet, &decision);
             return self
                 .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
                 .await;
         }
 
         // 11. Acquire the lease (F-14: clone Arc into a named local first).
+        let purge_guard = app
+            .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .inner()
+            .clone();
+        let owned_app = app.clone();
+        let close = move |poller: Self, sid, force, timeout_secs| {
+            let app = owned_app.clone();
+            async move {
+                poller
+                    .close_session_attempt(
+                        &app,
+                        sid,
+                        force,
+                        timeout_secs,
+                        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    )
+                    .await
+            }
+        };
+        let snapshot = self
+            .run_purge_lease(purge_guard, msg, &gate_peers, close)
+            .await?;
+        let response =
+            purge::completion_response(&project, &wg_name, msg, quiet, &decision, &snapshot);
+
+        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
+            .await
+    }
+
+    /// Steps 2-4 of `handle_purge_wg`: `None` once the request was rejected.
+    async fn resolve_purge_scope(
+        &self,
+        settings: &SettingsState,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+    ) -> Result<Option<(String, String, Vec<String>)>, String> {
+        // 2. Resolve WG scope and authorization, one call (§3.6).
+        let effective_paths = match purge_effective_paths(settings, path).await {
+            Ok(paths) => paths,
+            Err(e) => {
+                self.reject_message(path, msg, &e).await?;
+                return Ok(None);
+            }
+        };
+        let wg =
+            match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
+            {
+                Some(wg) => wg,
+                None => {
+                    self.reject_message(
+                        path,
+                        msg,
+                        &format!(
+                            "Not authorized: '{}' is not the verified orchestrator of its room",
+                            msg.from
+                        ),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+            };
+
+        // 3. --wg assertion (§3.6: interlock, not selector).
+        if let Some(reason) = purge_wg_assertion_error(msg, &wg.wg_name) {
+            self.reject_message(path, msg, &reason).await?;
+            return Ok(None);
+        }
+
+        // 4. Enumerate peers (Guard A). Only `__agent_*` dirs under the WG dir.
+        //    The coordinator does not purge itself.
+        let wg_dir = match wg.replica_dir.parent() {
+            Some(d) => d,
+            None => {
+                self.reject_message(path, msg, "purge-room: cannot resolve Room directory")
+                    .await?;
+                return Ok(None);
+            }
+        };
+        let peer_fqns = purge::peer_fqns(wg_dir, &wg.agent_name, &wg.project, &wg.wg_name);
+
+        Ok(Some((wg.project, wg.wg_name, peer_fqns)))
+    }
+
+    async fn run_purge_lease<C, F>(
+        &self,
+        purge_guard: Arc<crate::session::purge_guard::PurgeGuard>,
+        msg: &OutboxMessage,
+        gate_peers: &[PurgeGatePeer],
+        close: C,
+    ) -> Result<super::teardown::PurgeSnapshot, String>
+    where
+        C: Fn(Self, Uuid, bool, u32) -> F + Send + 'static,
+        F: std::future::Future<Output = super::teardown::TeardownOutcome> + Send + 'static,
+    {
         let mut target_sids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut target_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for session in &peer.live {
                 target_sids.insert(session.session_id);
             }
             target_fqns.insert(peer.fqn.clone());
         }
         // Also include non-live session IDs (Exited records) for destruction.
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for sid_str in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(sid_str) {
                     target_sids.insert(sid);
                 }
             }
         }
-        let purge_guard: Arc<crate::session::purge_guard::PurgeGuard> = app
-            .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-            .inner()
-            .clone();
         let force = msg.force.unwrap_or(true);
         let timeout_secs = msg.timeout_secs.unwrap_or(5);
         let budget = super::teardown::observation_budget(force, timeout_secs)
             .ok_or_else(|| "purge observation budget overflow".to_string())?;
         let mut ids = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for peer in &gate_peers {
+        for peer in gate_peers {
             for id in &peer.all_session_ids {
                 if let Ok(sid) = Uuid::parse_str(id) {
                     if seen.insert(sid) {
@@ -252,35 +245,15 @@ impl MailboxPoller {
             session_ids: target_sids,
             fqns: target_fqns,
         };
-        let owned_app = app.clone();
         let poller = self.delivery_poller();
         let worker = tokio::spawn(super::teardown::run_purge_batch(
             purge_guard,
             targets,
             progress.clone(),
             budget,
-            move |sid| {
-                let app = owned_app.clone();
-                let poller = poller.delivery_poller();
-                async move {
-                    poller
-                        .close_session_attempt(
-                            &app,
-                            sid,
-                            force,
-                            timeout_secs,
-                            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                        )
-                        .await
-                }
-            },
+            move |sid| close(poller.delivery_poller(), sid, force, timeout_secs),
         ));
-        let snapshot = super::teardown::observe_purge(progress, worker).await?;
-        let response =
-            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
-
-        self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
-            .await
+        super::teardown::observe_purge(progress, worker).await
     }
 
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
@@ -760,5 +733,85 @@ impl MailboxPoller {
             Err(PlainError::Rejected(error)) => self.reject_message(path, msg, &error).await,
             Err(PlainError::Retryable(error) | PlainError::Transport(error)) => Err(error),
         }
+    }
+}
+
+/// Step 2 of `handle_purge_wg`: configured projects plus the outbox's own
+/// project. `Err` carries the rejection reason.
+async fn purge_effective_paths(
+    cfg: &SettingsState,
+    path: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let mut paths = {
+        let c = cfg.read().await;
+        c.project_paths.clone()
+    };
+    if let Some(root_project) = derive_project_from_outbox_path(path)? {
+        let canon = crate::filesystem::projects::canonical_refresh_project(std::path::Path::new(
+            &root_project,
+        ))
+        .ok();
+        let already = paths.iter().any(|p| match &canon {
+            Some(ct) => {
+                crate::filesystem::projects::canonical_refresh_project(std::path::Path::new(p))
+                    .ok()
+                    .as_ref()
+                    == Some(ct)
+            }
+            None => p == &root_project,
+        });
+        if !already {
+            paths.push(root_project);
+        }
+    }
+    Ok(paths)
+}
+
+/// Step 5 of `handle_purge_wg`: one `list_sessions()` and one PTY-liveness pass.
+async fn purge_mirror_snapshot(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    pty: &std::sync::Mutex<crate::pty::manager::PtyManager>,
+) -> (Vec<SessionInfo>, std::collections::HashSet<Uuid>) {
+    let sessions: Vec<SessionInfo> = {
+        let mgr = session_mgr.read().await;
+        mgr.list_sessions().await
+    };
+    let pty_live: std::collections::HashSet<Uuid> = {
+        let mgr = pty.lock().unwrap();
+        sessions
+            .iter()
+            .filter_map(|s| Uuid::parse_str(&s.id).ok())
+            .filter(|id| mgr.has_session(*id))
+            .collect()
+    };
+    (sessions, pty_live)
+}
+
+fn purge_quiet_period(msg: &OutboxMessage) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        msg.quiet_period_ms.unwrap_or(3000).max(
+            crate::session::profile::IdleTuning::DEFAULT
+                .idle_threshold
+                .as_millis() as u64,
+        ),
+    )
+}
+
+fn purge_readiness_map(
+    idle: &crate::pty::idle_detector::IdleDetector,
+    all_live_session_ids: &[Uuid],
+) -> std::collections::HashMap<Uuid, crate::pty::idle_detector::PurgeReadiness> {
+    let readiness = idle.purge_readiness(all_live_session_ids);
+    readiness.into_iter().map(|r| (r.session_id, r)).collect()
+}
+
+/// Step 3 of `handle_purge_wg`: `--wg` is an interlock, not a selector (§3.6).
+fn purge_wg_assertion_error(msg: &OutboxMessage, wg_name: &str) -> Option<String> {
+    match msg.target {
+        Some(ref t) if t.as_str() != wg_name => Some(format!(
+            "purge-room: --wg assertion '{}' does not match resolved room '{}'",
+            t, wg_name
+        )),
+        _ => None,
     }
 }
