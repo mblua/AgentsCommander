@@ -36,161 +36,19 @@ pub(crate) fn save_settings_value_locked_with_startup(
     main_window_placement_mode: MainWindowPlacementWriteMode,
     startup: Option<&StartupAgentRows>,
 ) -> Result<AppSettings, SettingsSaveError> {
-    let disk_gate_stage = match &mode {
-        ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
-        #[cfg(test)]
-        ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
-    };
-    let initial_disk = read_disk_object_for_write_typed(path, disk_gate_stage)?;
-    let reject_profiles = |reason: String| {
-        SettingsSaveError::semantic(
-            disk_gate_stage,
-            path,
-            None,
-            SettingsSaveReason::DiskSettingsValidationRejected,
-            SettingsSaveLegacyOutward::DiskValidation(reason),
-        )
-    };
-    let profile_gate = capture_registered_profile_gate(path).map_err(&reject_profiles)?;
-    let physical_sidecar =
-        read_agents_instance_file(&agents_instance_path(path)).map_err(&reject_profiles)?;
-    // Preparation and ownership use the original bytes checked by this gate,
-    // rather than independently captured generations of the two files.
-    let captured_main =
-        captured_registered_profile_object(&profile_gate, path).map_err(&reject_profiles)?;
-    let captured_sidecar =
-        captured_registered_profile_object(&profile_gate, &agents_instance_path(path))
-            .map_err(&reject_profiles)?;
-    if initial_disk != captured_main || physical_sidecar != captured_sidecar {
-        return Err(reject_profiles(format!(
-            "staleProfileSource: {}",
-            path.display()
-        )));
-    }
-    let initial_disk = captured_main;
-    let physical_sidecar = captured_sidecar;
-    let profiles_in_sidecar = physical_sidecar.as_ref().is_some_and(|map| {
-        map.contains_key("codingAgentProfiles")
-            || (map.contains_key("agents")
-                && initial_disk
-                    .as_ref()
-                    .is_none_or(|main| !main.contains_key("codingAgentProfiles")))
-    });
-    let profiles_unprotected = !settings
-        .local_overlay_state
-        .owns_top_level("codingAgentProfiles");
-    let profile_before = selected_registered_profile_owner(
-        &initial_disk.clone().unwrap_or_default(),
-        physical_sidecar.as_ref(),
-        profiles_unprotected,
-    );
-    let directional_split = profiles_in_sidecar
-        && physical_sidecar
-            .as_ref()
-            .is_some_and(|map| !map.contains_key("agents"))
-        && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
-            == Some(&Value::from(1));
-    let consolidate_legacy = profiles_unprotected
-        && profile_before
-            .get("codingAgentProfiles")
-            .is_some_and(|profiles| profiles.get("profileBindingVersion").is_none())
-        && physical_profile_rows(&profile_before, true).is_ok();
-    let profiles_in_sidecar = profiles_in_sidecar
-        || (profiles_unprotected
-            && profile_before
-                .get("codingAgentProfiles")
-                .is_none_or(|profiles| profiles.get("profileBindingVersion").is_none()));
-    // Prove whole-row correspondence before any ID-keyed copying or conversion.
-    let prepared_duplicate_agents = if matches!(mode, ProjectWriteMode::Preserve)
-        && !settings.local_overlay_state.owns_top_level("agents")
-    {
-        preflight_duplicate_agents(settings, path, initial_disk.as_ref(), startup)?
-    } else {
-        None
-    };
-    let prepared_profiles = if matches!(mode, ProjectWriteMode::Preserve) {
-        let (profile_incoming, owner_has_active_agents, duplicate_rows) =
-            prepare_registered_profile_incoming(
-                (settings, path),
-                &profile_before,
-                &physical_sidecar,
-                &initial_disk,
-                &profile_gate,
-                (
-                    directional_split,
-                    profiles_unprotected,
-                    profiles_in_sidecar,
-                    consolidate_legacy,
-                ),
-                prepared_duplicate_agents.as_ref(),
-            )
-            .map_err(&reject_profiles)?;
-        let mut prepared_profiles = prepare_registered_profile_owner(
-            settings,
-            path,
-            &profile_before,
-            &profile_incoming,
-            profiles_in_sidecar,
-            startup,
-            (owner_has_active_agents && prepared_duplicate_agents.is_some()) || duplicate_rows,
-        )
-        .map_err(&reject_profiles)?;
-        // Original main bytes are backed up below before any cleanup publish.
-        if !physical_sidecar
-            .as_ref()
-            .is_some_and(|map| map.contains_key("codingAgentProfiles"))
-            && owner_has_active_agents
-        {
-            if let Some(profiles) = prepared_profiles
-                .as_mut()
-                .and_then(|prepared| prepared.get_mut("codingAgentProfiles"))
-                .and_then(Value::as_object_mut)
-            {
-                for key in ["letters", "matrix", "agentDefaults"] {
-                    profiles.remove(key);
-                }
-            }
-        }
-        if let Some(prepared) = &prepared_profiles {
-            validate_physical_identity_delta(
-                profile_before.as_object().unwrap(),
-                prepared.as_object().unwrap(),
-                !settings.local_overlay_state.owns_top_level("agents"),
-                !directional_split,
-            )
-            .map_err(&reject_profiles)?;
-            if directional_split {
-                validate_directional_prepared_identity(&profile_before, prepared)
-                    .map_err(&reject_profiles)?;
-            }
-        }
-        if directional_split || settings.local_overlay_state.owns_top_level("agents") {
-            if let Some(prepared) = prepared_profiles.as_mut().and_then(Value::as_object_mut) {
-                prepared.remove("agents");
-            }
-        }
-        prepared_profiles
-    } else {
-        None
-    };
-    // Validate the main-row packet as well before any migration, backup or
-    // sidecar publisher. The real publishers below retain their existing order.
-    prevalidate_registered_main_packet(
-        (settings, path),
-        &initial_disk,
-        &physical_sidecar,
-        prepared_profiles.as_ref(),
-        prepared_duplicate_agents.as_ref(),
-        (
-            &mode,
-            disk_gate_stage,
-            terminal_snapshot_gate_mode,
-            &main_window_placement_mode,
-            directional_split,
-            profiles_in_sidecar,
-        ),
+    let PreparedSave {
+        profiles_in_sidecar,
+        physical_sidecar,
+        prepared_profiles,
+        prepared_duplicate_agents,
+    } = prepare_save(
+        settings,
+        path,
+        &mode,
+        terminal_snapshot_gate_mode,
+        &main_window_placement_mode,
+        startup,
     )?;
-    recheck_registered_profile_gate(&profile_gate).map_err(&reject_profiles)?;
     ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(()))?;
     let selected_projection = select_project_source_at_locked_path(path)?.projection;
     let base = production_instance_base();
@@ -211,39 +69,16 @@ pub(crate) fn save_settings_value_locked_with_startup(
     // tuple is reduced to its object half.
     let previous_contents: Option<String> = disk_read.as_ref().map(|(_, c)| c.clone());
     let disk = disk_read.map(|(map, _)| map);
-    let serialize_object = || -> Result<Map<String, Value>, SettingsSaveError> {
-        match serde_json::to_value(settings).map_err(|source| {
-            let outward = format!("Failed to serialize settings: {source}");
-            SettingsSaveError::json(
-                SettingsSaveStage::Serialize,
-                path,
-                None,
-                source,
-                SettingsSaveLegacyOutward::Serialize(outward),
-            )
-        })? {
-            Value::Object(m) => Ok(m),
-            _ => Err(SettingsSaveError::semantic(
-                SettingsSaveStage::Serialize,
-                path,
-                None,
-                SettingsSaveReason::SerializedJsonNotObject,
-                SettingsSaveLegacyOutward::SerializedJsonNotObject(
-                    "settings did not serialize to a JSON object".to_string(),
-                ),
-            )),
-        }
-    };
 
     // Base object: Preserve starts from the incoming settings (non-project edits
     // apply); Reconcile is project-only and starts from the fresh disk object
     // (or the live settings when the file is absent).
     let mut out: Map<String, Value> = match mode {
-        ProjectWriteMode::Preserve => serialize_object()?,
+        ProjectWriteMode::Preserve => serialize_settings_object(settings, path)?,
         #[cfg(test)]
         ProjectWriteMode::Reconcile { .. } => match &disk {
             Some(m) => m.clone(),
-            None => serialize_object()?,
+            None => serialize_settings_object(settings, path)?,
         },
     };
 
@@ -271,7 +106,7 @@ pub(crate) fn save_settings_value_locked_with_startup(
     let effective: Option<Map<String, Value>> = if settings.local_overlay_state.is_empty() {
         None
     } else {
-        Some(serialize_object()?)
+        Some(serialize_settings_object(settings, path)?)
     };
     // #1737: last writer over `out`, so no earlier stage can leak an overlay value
     // into the base file. Runs in both project write modes: Reconcile seeds `out`
@@ -282,105 +117,31 @@ pub(crate) fn save_settings_value_locked_with_startup(
     }
     settings.local_overlay_state.restore_base(&mut out);
 
-    // #2716 (B3): the agents file is written first; only the keys it now holds
-    // leave `out`, in both modes. A failure returns before the settings write.
-    let agents_groups = save_agents_instance_file(
+    let (value, agents_groups) = publish_settings(
         settings,
         path,
         &mode,
-        #[cfg(test)]
         disk.as_ref(),
-        &out,
-        disk_gate_stage,
+        out,
+        previous_contents,
         (
-            prepared_duplicate_agents.as_ref(),
-            prepared_profiles.as_ref().filter(|_| profiles_in_sidecar),
-            Some(profiles_in_sidecar),
+            disk_gate_stage,
+            &prepared_profiles,
+            &prepared_duplicate_agents,
+            physical_sidecar.as_ref(),
+            profiles_in_sidecar,
         ),
     )?;
-    out = prepare_registered_main_agent_groups(
-        out,
+    let mut value = value;
+    replace_project_projection(value.as_object_mut().unwrap(), &selected_projection);
+    decode_written_settings(
         settings,
-        disk.as_ref(),
-        &agents_groups,
-        profiles_in_sidecar,
-        (
-            prepared_profiles.as_ref(),
-            prepared_duplicate_agents.as_ref(),
-            physical_sidecar.as_ref(),
-            path,
-        ),
-        &mode,
-    )
-    .map_err(|reason| {
-        SettingsSaveError::semantic(
-            disk_gate_stage,
-            path,
-            None,
-            SettingsSaveReason::DiskSettingsValidationRejected,
-            SettingsSaveLegacyOutward::DiskValidation(reason),
-        )
-    })?;
-    let value = Value::Object(out);
-    let written_bytes = write_value_atomic(&value, path)?;
-    if let Some(previous) = previous_contents {
-        if previous.as_bytes() != written_bytes.as_slice() {
-            rotate_settings_backups(path, previous.as_bytes());
-        }
-    }
-
-    let mut written_value = value;
-    replace_project_projection(written_value.as_object_mut().unwrap(), &selected_projection);
-    // #2716 (B3): the re-decode sees what a load would, the agents file's groups
-    // in the base object, under the overlay reapplied below.
-    let physical_groups = agents_groups.keys().cloned().collect::<Vec<_>>();
-    let profile_owner = selected_registered_profile_owner(
-        written_value.as_object().expect("written settings object"),
-        Some(&agents_groups),
-        !settings
-            .local_overlay_state
-            .owns_top_level("codingAgentProfiles"),
-    );
-    let profile_owner_view = registered_profiles_for_read(&profile_owner);
-    let base_profiles = profile_owner.get("codingAgentProfiles").cloned();
-    restore_agents_groups_for_redecode(&mut written_value, agents_groups);
-    let identity_physical =
-        coding_agent_identity_with_physical_overlay(written_value.clone(), path, &physical_groups);
-    if let Some(profiles) = profile_owner_view.get("codingAgentProfiles") {
-        written_value["codingAgentProfiles"] = profiles.clone();
-    }
-    // #1737: disk holds the base, memory holds the effective value. Without this the
-    // caller would adopt base values for every overlay-owned key on the first save.
-    if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
-        settings.local_overlay_state.reapply_from(effective, object);
-    }
-    restore_codex_home_carrier(
-        written_value.as_object_mut().unwrap(),
-        base_profiles.as_ref(),
-    );
-    let fresh_state = apply_project_decode_to_value(
-        &mut written_value,
+        path,
+        value,
+        agents_groups,
+        effective,
         base.as_deref(),
-        &projects::FsCandidateResolver,
-    );
-    let mut written: AppSettings = serde_json::from_value(written_value).map_err(|source| {
-        let outward = format!("Failed to re-decode written settings: {source}");
-        SettingsSaveError::json(
-            SettingsSaveStage::ReDecode,
-            path,
-            None,
-            source,
-            SettingsSaveLegacyOutward::ReDecode(outward),
-        )
-    })?;
-    refresh_agent_id_hashes(&mut written.agents);
-    refresh_pair_id_hashes(&written.agents, &mut written.coding_agent_profiles);
-    written.project_path_state = Arc::new(fresh_state);
-    written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
-    written.local_overlay_state = settings.local_overlay_state.clone();
-    repair_loaded_response_close_settings(&mut written, &path.display().to_string());
-    repair_loaded_room_idle_confirmation_settings(&mut written, &path.display().to_string());
-    Ok(written)
+    )
 }
 
 pub(crate) fn prevalidate_registered_main_packet(
@@ -622,4 +383,390 @@ pub(crate) fn validate_directional_prepared_identity(
         }
     }
     Ok(())
+}
+
+struct PreparedSave {
+    profiles_in_sidecar: bool,
+    physical_sidecar: Option<Map<String, Value>>,
+    prepared_profiles: Option<Value>,
+    prepared_duplicate_agents: Option<Value>,
+}
+
+fn prepare_save(
+    settings: &AppSettings,
+    path: &Path,
+    mode: &ProjectWriteMode,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
+    main_window_placement_mode: &MainWindowPlacementWriteMode,
+    startup: Option<&StartupAgentRows>,
+) -> Result<PreparedSave, SettingsSaveError> {
+    let disk_gate_stage = match &mode {
+        ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+        #[cfg(test)]
+        ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
+    };
+    let reject_profiles = |reason: String| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    let (initial_disk, physical_sidecar, profile_gate) =
+        capture_save_sources(path, disk_gate_stage)?;
+    let profiles_in_sidecar = physical_sidecar.as_ref().is_some_and(|map| {
+        map.contains_key("codingAgentProfiles")
+            || (map.contains_key("agents")
+                && initial_disk
+                    .as_ref()
+                    .is_none_or(|main| !main.contains_key("codingAgentProfiles")))
+    });
+    let profiles_unprotected = !settings
+        .local_overlay_state
+        .owns_top_level("codingAgentProfiles");
+    let profile_before = selected_registered_profile_owner(
+        &initial_disk.clone().unwrap_or_default(),
+        physical_sidecar.as_ref(),
+        profiles_unprotected,
+    );
+    let directional_split = profiles_in_sidecar
+        && physical_sidecar
+            .as_ref()
+            .is_some_and(|map| !map.contains_key("agents"))
+        && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+            == Some(&Value::from(1));
+    let consolidate_legacy = profiles_unprotected
+        && profile_before
+            .get("codingAgentProfiles")
+            .is_some_and(|profiles| profiles.get("profileBindingVersion").is_none())
+        && physical_profile_rows(&profile_before, true).is_ok();
+    let profiles_in_sidecar = profiles_in_sidecar
+        || (profiles_unprotected
+            && profile_before
+                .get("codingAgentProfiles")
+                .is_none_or(|profiles| profiles.get("profileBindingVersion").is_none()));
+    // Prove whole-row correspondence before any ID-keyed copying or conversion.
+    let prepared_duplicate_agents = if matches!(mode, ProjectWriteMode::Preserve)
+        && !settings.local_overlay_state.owns_top_level("agents")
+    {
+        preflight_duplicate_agents(settings, path, initial_disk.as_ref(), startup)?
+    } else {
+        None
+    };
+    let prepared_profiles = if matches!(mode, ProjectWriteMode::Preserve) {
+        prepare_save_profiles(
+            settings,
+            path,
+            &profile_before,
+            &physical_sidecar,
+            &initial_disk,
+            &profile_gate,
+            (
+                directional_split,
+                profiles_unprotected,
+                profiles_in_sidecar,
+                consolidate_legacy,
+            ),
+            prepared_duplicate_agents.as_ref(),
+            startup,
+        )
+        .map_err(&reject_profiles)?
+    } else {
+        None
+    };
+    // Validate the main-row packet as well before any migration, backup or
+    // sidecar publisher. The real publishers below retain their existing order.
+    prevalidate_registered_main_packet(
+        (settings, path),
+        &initial_disk,
+        &physical_sidecar,
+        prepared_profiles.as_ref(),
+        prepared_duplicate_agents.as_ref(),
+        (
+            &mode,
+            disk_gate_stage,
+            terminal_snapshot_gate_mode,
+            &main_window_placement_mode,
+            directional_split,
+            profiles_in_sidecar,
+        ),
+    )?;
+    recheck_registered_profile_gate(&profile_gate).map_err(&reject_profiles)?;
+
+    Ok(PreparedSave {
+        profiles_in_sidecar,
+        physical_sidecar,
+        prepared_profiles,
+        prepared_duplicate_agents,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_save_profiles(
+    settings: &AppSettings,
+    path: &Path,
+    profile_before: &Value,
+    physical_sidecar: &Option<Map<String, Value>>,
+    initial_disk: &Option<Map<String, Value>>,
+    profile_gate: &[RegisteredProfileDocument],
+    flags: (bool, bool, bool, bool),
+    prepared_duplicate_agents: Option<&Value>,
+    startup: Option<&StartupAgentRows>,
+) -> Result<Option<Value>, String> {
+    let (directional_split, profiles_unprotected, profiles_in_sidecar, consolidate_legacy) = flags;
+
+    let (profile_incoming, owner_has_active_agents, duplicate_rows) =
+        prepare_registered_profile_incoming(
+            (settings, path),
+            profile_before,
+            physical_sidecar,
+            initial_disk,
+            profile_gate,
+            (
+                directional_split,
+                profiles_unprotected,
+                profiles_in_sidecar,
+                consolidate_legacy,
+            ),
+            prepared_duplicate_agents,
+        )?;
+    let mut prepared_profiles = prepare_registered_profile_owner(
+        settings,
+        path,
+        profile_before,
+        &profile_incoming,
+        profiles_in_sidecar,
+        startup,
+        (owner_has_active_agents && prepared_duplicate_agents.is_some()) || duplicate_rows,
+    )?;
+    // Original main bytes are backed up below before any cleanup publish.
+    if !physical_sidecar
+        .as_ref()
+        .is_some_and(|map| map.contains_key("codingAgentProfiles"))
+        && owner_has_active_agents
+    {
+        if let Some(profiles) = prepared_profiles
+            .as_mut()
+            .and_then(|prepared| prepared.get_mut("codingAgentProfiles"))
+            .and_then(Value::as_object_mut)
+        {
+            for key in ["letters", "matrix", "agentDefaults"] {
+                profiles.remove(key);
+            }
+        }
+    }
+    if let Some(prepared) = &prepared_profiles {
+        validate_physical_identity_delta(
+            profile_before.as_object().unwrap(),
+            prepared.as_object().unwrap(),
+            !settings.local_overlay_state.owns_top_level("agents"),
+            !directional_split,
+        )?;
+        if directional_split {
+            validate_directional_prepared_identity(profile_before, prepared)?;
+        }
+    }
+    if directional_split || settings.local_overlay_state.owns_top_level("agents") {
+        if let Some(prepared) = prepared_profiles.as_mut().and_then(Value::as_object_mut) {
+            prepared.remove("agents");
+        }
+    }
+    Ok(prepared_profiles)
+}
+
+fn serialize_settings_object(
+    settings: &AppSettings,
+    path: &Path,
+) -> Result<Map<String, Value>, SettingsSaveError> {
+    match serde_json::to_value(settings).map_err(|source| {
+        let outward = format!("Failed to serialize settings: {source}");
+        SettingsSaveError::json(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::Serialize(outward),
+        )
+    })? {
+        Value::Object(m) => Ok(m),
+        _ => Err(SettingsSaveError::semantic(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            SettingsSaveReason::SerializedJsonNotObject,
+            SettingsSaveLegacyOutward::SerializedJsonNotObject(
+                "settings did not serialize to a JSON object".to_string(),
+            ),
+        )),
+    }
+}
+
+fn decode_written_settings(
+    settings: &AppSettings,
+    path: &Path,
+    value: Value,
+    agents_groups: Map<String, Value>,
+    effective: Option<Map<String, Value>>,
+    base: Option<&Path>,
+) -> Result<AppSettings, SettingsSaveError> {
+    let mut written_value = value;
+    // #2716 (B3): the re-decode sees what a load would, the agents file's groups
+    // in the base object, under the overlay reapplied below.
+    let physical_groups = agents_groups.keys().cloned().collect::<Vec<_>>();
+    let profile_owner = selected_registered_profile_owner(
+        written_value.as_object().expect("written settings object"),
+        Some(&agents_groups),
+        !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles"),
+    );
+    let profile_owner_view = registered_profiles_for_read(&profile_owner);
+    let base_profiles = profile_owner.get("codingAgentProfiles").cloned();
+    restore_agents_groups_for_redecode(&mut written_value, agents_groups);
+    let identity_physical =
+        coding_agent_identity_with_physical_overlay(written_value.clone(), path, &physical_groups);
+    if let Some(profiles) = profile_owner_view.get("codingAgentProfiles") {
+        written_value["codingAgentProfiles"] = profiles.clone();
+    }
+    // #1737: disk holds the base, memory holds the effective value. Without this the
+    // caller would adopt base values for every overlay-owned key on the first save.
+    if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
+        settings.local_overlay_state.reapply_from(effective, object);
+    }
+    restore_codex_home_carrier(
+        written_value.as_object_mut().unwrap(),
+        base_profiles.as_ref(),
+    );
+    let fresh_state =
+        apply_project_decode_to_value(&mut written_value, base, &projects::FsCandidateResolver);
+    let mut written: AppSettings = serde_json::from_value(written_value).map_err(|source| {
+        let outward = format!("Failed to re-decode written settings: {source}");
+        SettingsSaveError::json(
+            SettingsSaveStage::ReDecode,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::ReDecode(outward),
+        )
+    })?;
+    refresh_agent_id_hashes(&mut written.agents);
+    refresh_pair_id_hashes(&written.agents, &mut written.coding_agent_profiles);
+    written.project_path_state = Arc::new(fresh_state);
+    written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
+    written.local_overlay_state = settings.local_overlay_state.clone();
+    repair_loaded_response_close_settings(&mut written, &path.display().to_string());
+    repair_loaded_room_idle_confirmation_settings(&mut written, &path.display().to_string());
+    Ok(written)
+}
+
+fn publish_settings(
+    settings: &AppSettings,
+    path: &Path,
+    mode: &ProjectWriteMode,
+    disk: Option<&Map<String, Value>>,
+    out: Map<String, Value>,
+    previous_contents: Option<String>,
+    prepared: (
+        SettingsSaveStage,
+        &Option<Value>,
+        &Option<Value>,
+        Option<&Map<String, Value>>,
+        bool,
+    ),
+) -> Result<(Value, Map<String, Value>), SettingsSaveError> {
+    let (
+        disk_gate_stage,
+        prepared_profiles,
+        prepared_duplicate_agents,
+        physical_sidecar,
+        profiles_in_sidecar,
+    ) = prepared;
+    // #2716 (B3): the agents file is written first; only the keys it now holds
+    // leave `out`, in both modes. A failure returns before the settings write.
+    let agents_groups = save_agents_instance_file(
+        settings,
+        path,
+        mode,
+        #[cfg(test)]
+        disk,
+        &out,
+        disk_gate_stage,
+        (
+            prepared_duplicate_agents.as_ref(),
+            prepared_profiles.as_ref().filter(|_| profiles_in_sidecar),
+            Some(profiles_in_sidecar),
+        ),
+    )?;
+    let out = prepare_registered_main_agent_groups(
+        out,
+        settings,
+        disk.as_ref(),
+        &agents_groups,
+        profiles_in_sidecar,
+        (
+            prepared_profiles.as_ref(),
+            prepared_duplicate_agents.as_ref(),
+            physical_sidecar,
+            path,
+        ),
+        &mode,
+    )
+    .map_err(|reason| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    })?;
+    let value = Value::Object(out);
+    let written_bytes = write_value_atomic(&value, path)?;
+    if let Some(previous) = previous_contents {
+        if previous.as_bytes() != written_bytes.as_slice() {
+            rotate_settings_backups(path, previous.as_bytes());
+        }
+    }
+
+    Ok((value, agents_groups))
+}
+
+type SaveSource = Option<Map<String, Value>>;
+
+fn capture_save_sources(
+    path: &Path,
+    disk_gate_stage: SettingsSaveStage,
+) -> Result<(SaveSource, SaveSource, Vec<RegisteredProfileDocument>), SettingsSaveError> {
+    let initial_disk = read_disk_object_for_write_typed(path, disk_gate_stage)?;
+    let reject_profiles = |reason: String| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    let profile_gate = capture_registered_profile_gate(path).map_err(&reject_profiles)?;
+    let physical_sidecar =
+        read_agents_instance_file(&agents_instance_path(path)).map_err(&reject_profiles)?;
+    // Preparation and ownership use the original bytes checked by this gate,
+    // rather than independently captured generations of the two files.
+    let captured_main =
+        captured_registered_profile_object(&profile_gate, path).map_err(&reject_profiles)?;
+    let captured_sidecar =
+        captured_registered_profile_object(&profile_gate, &agents_instance_path(path))
+            .map_err(&reject_profiles)?;
+    if initial_disk != captured_main || physical_sidecar != captured_sidecar {
+        return Err(reject_profiles(format!(
+            "staleProfileSource: {}",
+            path.display()
+        )));
+    }
+    let initial_disk = captured_main;
+    let physical_sidecar = captured_sidecar;
+
+    Ok((initial_disk, physical_sidecar, profile_gate))
 }
