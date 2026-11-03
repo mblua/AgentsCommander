@@ -8,7 +8,7 @@
 //! and produces no notification. The task is detached, so startup never blocks.
 //!
 //! #1925 - the same detached, fail-silent startup shape also downloads the remote
-//! blocking-menu patterns (run_remote_blocking_menus_startup); that download never
+//! blocking-menu patterns (`run_remote_blocking_menus_startup`); that download never
 //! notifies and applies at the next start.
 
 use std::path::Path;
@@ -40,7 +40,7 @@ const DIST_TAGS_URL: &str =
     "https://registry.npmjs.org/-/package/@mblua%2Fagentscommander/dist-tags";
 const CHECK_INTERVAL_HOURS: i64 = 24;
 const REQUEST_TIMEOUT_SECS: u64 = 10;
-/// Hard cap on the dist-tags response body, mirroring fetch_home_markdown's
+/// Hard cap on the dist-tags response body, mirroring `fetch_home_markdown`'s
 /// length-check (L1). The JSON is tiny; 64 KB is a generous bound.
 const DIST_TAGS_MAX_BYTES: usize = 64 * 1024;
 
@@ -111,7 +111,7 @@ fn plan_check(enabled: bool, cache: &Option<UpdateCache>, now: DateTime<Utc>) ->
 }
 
 /// Pure: plan + fetch outcome + existing cache -> (latest to compare against,
-/// write_back?). `fetched` is `Some` only on a successful network call.
+/// `write_back`?). `fetched` is `Some` only on a successful network call.
 /// `write_back` is true ONLY on a fresh successful fetch (write-only-on-success);
 /// the caller stamps `now` and writes when it is true.
 fn resolve_latest(
@@ -161,11 +161,11 @@ fn parse_latest(body: &str) -> Option<String> {
     v.get("latest")?
         .as_str()
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 fn upgrade_command() -> String {
-    format!("npm i -g {}", PACKAGE_NAME)
+    format!("npm i -g {PACKAGE_NAME}")
 }
 
 /// Detached startup task. Reads the toggle, applies the 24h throttle, queries
@@ -235,11 +235,7 @@ pub async fn run_startup_check<H: UpdateCheckHost>(app: H, cache_state: Arc<Once
             info.latest_version
         );
     } else {
-        log::debug!(
-            "[update-check] up to date (current {}, latest {})",
-            current,
-            latest
-        );
+        log::debug!("[update-check] up to date (current {current}, latest {latest})");
     }
 }
 
@@ -330,7 +326,7 @@ fn cli_notice(cache: &UpdateCache, current: &str, enabled: bool) -> Option<Strin
 /// the setting ONLY after confirming a newer version is actually cached (the
 /// caller in `main.rs` has already confirmed an interactive stderr). We use the
 /// read-only `load_settings_for_cli` loader so the CLI never writes settings.json
-/// (the GUI `load_settings` would auto-gen root_token + save, violating the
+/// (the GUI `load_settings` would auto-gen `root_token` + save, violating the
 /// read-only-CLI contract).
 pub fn read_cached_notice() -> Option<String> {
     let cache = read_cache()?;

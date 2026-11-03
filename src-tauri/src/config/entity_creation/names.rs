@@ -65,12 +65,11 @@ pub(crate) fn sanitize_name(raw: &str) -> Result<String, String> {
 /// with the `BLOCKERS:` / `DIRTY_REPOS:` sentinel prefixes.
 pub(crate) fn validate_existing_name(name: &str, entity_label: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err(format!("{} name cannot be empty", entity_label));
+        return Err(format!("{entity_label} name cannot be empty"));
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err(format!(
-            "Invalid {} name: only alphanumeric characters and hyphens are allowed",
-            entity_label
+            "Invalid {entity_label} name: only alphanumeric characters and hyphens are allowed"
         ));
     }
     Ok(())
@@ -123,23 +122,21 @@ pub(crate) fn resolve_agent_ref(ac_root: &Path, raw_agent: &str) -> Result<Strin
     }
     if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
         return Err(format!(
-            "Invalid agent reference '{}': team configs must use portable refs like '_agent_name' \
-             or 'name', not filesystem paths",
-            raw_agent
+            "Invalid agent reference '{raw_agent}': team configs must use portable refs like \
+             '_agent_name' or 'name', not filesystem paths"
         ));
     }
     if Path::new(trimmed).is_absolute() {
         return Err(format!(
-            "Invalid agent reference '{}': absolute paths are not allowed in team configs",
-            raw_agent
+            "Invalid agent reference '{raw_agent}': absolute paths are not allowed in team configs"
         ));
     }
     let bare = trimmed.strip_prefix("_agent_").unwrap_or(trimmed);
     validate_existing_name(bare, "Agent")?;
-    let canonical_ref = format!("_agent_{}", bare);
+    let canonical_ref = format!("_agent_{bare}");
     let matrix_dir = ac_root.join(&canonical_ref);
     if !agent_matrix_directory_present(&matrix_dir) {
-        return Err(format!("Agent '{}' not found", bare));
+        return Err(format!("Agent '{bare}' not found"));
     }
     Ok(canonical_ref)
 }

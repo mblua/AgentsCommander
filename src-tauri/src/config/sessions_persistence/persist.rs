@@ -51,10 +51,7 @@ pub(super) async fn load_sessions_purging_outside_project_paths_in_dir(
     match purge_sessions_outside_project_paths_in_dir_locked(dir, project_paths, settings).await {
         Ok((_, filtered)) => filtered,
         Err(e) => {
-            log::error!(
-                "Failed to rewrite sessions.json after orphan-session purge: {}",
-                e
-            );
+            log::error!("Failed to rewrite sessions.json after orphan-session purge: {e}");
             // Read-only fallback (no save): a stale read here cannot violate the
             // atomicity contract because nothing is written back. Restore
             // reconciles on the next persist.
@@ -66,7 +63,7 @@ pub(super) async fn load_sessions_purging_outside_project_paths_in_dir(
             {
                 Ok(filtered) => filtered,
                 Err(e) => {
-                    log::error!("Failed to filter sessions after purge failure: {}", e);
+                    log::error!("Failed to filter sessions after purge failure: {e}");
                     load_sessions_from_path_with_settings(&snapshot_path(dir), settings)
                 }
             }
@@ -266,7 +263,7 @@ pub(super) async fn persist_merging_failed_to_dir_for_project_paths_result_core(
 
 pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSession]) {
     if let Err(e) = persist_merging_failed_result(mgr, failed).await {
-        log::error!("Failed to persist sessions (with merge): {}", e);
+        log::error!("Failed to persist sessions (with merge): {e}");
     }
 }
 
@@ -841,7 +838,7 @@ pub(crate) async fn persist_current_state_to_dir_result(
 
 pub async fn persist_current_state(mgr: &SessionManager) {
     if let Err(e) = persist_current_state_result(mgr).await {
-        log::error!("Failed to persist sessions: {}", e);
+        log::error!("Failed to persist sessions: {e}");
     }
 }
 
@@ -854,7 +851,7 @@ pub async fn persist_current_state_prune_dormant(mgr: &SessionManager) {
     let dir = match dir {
         Ok(dir) => dir,
         Err(e) => {
-            log::error!("Failed to persist sessions (prune): {}", e);
+            log::error!("Failed to persist sessions (prune): {e}");
             return;
         }
     };
@@ -862,7 +859,7 @@ pub async fn persist_current_state_prune_dormant(mgr: &SessionManager) {
     let project_paths = match session_retention_project_paths(&settings) {
         Ok(paths) => paths,
         Err(error) => {
-            log::error!("Session persistence blocked: {}", error);
+            log::error!("Session persistence blocked: {error}");
             return;
         }
     };
@@ -874,6 +871,6 @@ pub async fn persist_current_state_prune_dormant(mgr: &SessionManager) {
     )
     .await
     {
-        log::error!("Failed to persist sessions (prune): {}", e);
+        log::error!("Failed to persist sessions (prune): {e}");
     }
 }
