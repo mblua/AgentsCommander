@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 
 #[test]
 fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes() {
@@ -348,7 +349,7 @@ fn p03_production_new_project_migrates_once_and_preserves_other_sources() {
         )
         .unwrap();
         assert!(
-            settings.get("rootToken").is_none_or(|v| v.is_null()),
+            settings.get("rootToken").is_none_or(Value::is_null),
             "incidental loader generated root privilege: {settings}"
         );
         assert_eq!(settings["defaultShell"], "powershell.exe");

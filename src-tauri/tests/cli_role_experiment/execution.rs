@@ -94,7 +94,7 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
         ]
     );
     for (path, hash) in before {
-        assert_eq!(after.get(&path), Some(&hash), "changed {}", path);
+        assert_eq!(after.get(&path), Some(&hash), "changed {path}");
     }
     assert!(!run_dir.join("transcripts").exists());
 
