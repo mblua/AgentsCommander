@@ -44,7 +44,17 @@ struct PtySpawnInput<'a> {
     )>,
 }
 
-/// Same shape as the selection replacement source validation.type PtySourceValidation = Arc<    dyn Fn() -> std::pin::Pin<            Box<                dyn std::future::Future<                        Output = Result<(), crate::session::selection::OwnedSourceStop>,                    > + Send,            >,        > + Send        + Sync,>;
+/// Same shape as the selection replacement source validation.
+type PtySourceValidation = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), crate::session::selection::OwnedSourceStop>,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
+>;
 enum PtyReplacementAdmission {
     Reacquire(Option<crate::session::selection::PreparedOwnedReplacement>),
     Accepted(crate::session::selection::OwnedReplacementContinuation),
