@@ -51,7 +51,7 @@ impl ContainerSpawnCancellationGuard<'_> {
         if let Some(handle) = self
             .late_handle
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             if let Some(runtime) = self.backend.runtime.clone() {
@@ -139,8 +139,7 @@ impl ContainerTransportBackend {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.contains_key(&id) {
             return Err(AppError::PtyError(format!(
-                "container transport session {} already exists",
-                id
+                "container transport session {id} already exists"
             )));
         }
         sessions.insert(id, ContainerSessionState::Pending(pending));
@@ -151,10 +150,7 @@ impl ContainerTransportBackend {
             .unwrap()
             .insert(id, ticket.clone());
 
-        log::info!(
-            "[container-transport] issued one-time attach ticket for session {}",
-            id
-        );
+        log::info!("[container-transport] issued one-time attach ticket for session {id}");
         Ok(ticket)
     }
 
@@ -166,7 +162,7 @@ impl ContainerTransportBackend {
         let mut sessions = self
             .sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = sessions
             .get_mut(&session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
@@ -227,11 +223,11 @@ impl ContainerTransportBackend {
                 // here would suppress the login wizard on a container with no
                 // credential. With no token, that wizard is the correct UX.
                 Ok(CopyOutcome::SkippedReparse) => log::warn!(
-                    "[container-cred] copy-in skipped for session {}; not stamping first-run state",
-                    id
+                    "[container-cred] copy-in skipped for session {id}; \
+                        not stamping first-run state"
                 ),
                 // Best-effort, mirror config-seed: never abort the spawn.
-                Err(e) => log::warn!("[container-cred] copy-in failed for session {}: {}", id, e),
+                Err(e) => log::warn!("[container-cred] copy-in failed for session {id}: {e}"),
             }
             // F1 - if a concurrent teardown removed the session while we were
             // copying, its remove_copied ran before the file existed (no-op). The
@@ -461,7 +457,7 @@ impl ContainerTransportBackend {
                 let canceled_handle = {
                     let mut slot = late_handle_for_start
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *slot = Some(handle);
                     if canceled_for_start.load(Ordering::Acquire) || control.shutdown_requested() {
                         slot.take()
@@ -516,7 +512,7 @@ impl ContainerTransportBackend {
         let handle = match start_result {
             Ok(Ok(())) => late_handle
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
                 .ok_or_else(|| {
                     AppError::Other("container runtime start was canceled".to_string())

@@ -350,7 +350,7 @@ impl ContainerTransportBackend {
     pub fn credential_binding(&self, session_id: Uuid) -> Option<ContainerCredentialBinding> {
         self.sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session_id)
             .and_then(ContainerSessionState::credential_binding)
             .cloned()
@@ -401,16 +401,14 @@ impl ContainerTransportBackend {
             Err(TryLockError::Poisoned(_)) => {
                 log::error!(
                     "[container-transport] deferred route-remover registry lock poisoned \
-                        session={} state=retained",
-                    session_id
+                        session={session_id} state=retained"
                 );
                 None
             }
             Err(TryLockError::WouldBlock) => {
                 log::warn!(
                     "[container-transport] deferred route-remover registry lock unavailable \
-                        session={} state=retained",
-                    session_id
+                        session={session_id} state=retained"
                 );
                 None
             }
@@ -422,14 +420,12 @@ impl ContainerTransportBackend {
                 match catch_unwind(AssertUnwindSafe(|| remove(session_id, deadline))) {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => log::warn!(
-                        "[container-transport] deferred sync route removal failed session={} \
-                            error={}",
-                        session_id,
-                        error
+                        "[container-transport] deferred sync route removal failed \
+                            session={session_id} error={error}"
                     ),
                     Err(_) => log::error!(
-                        "[container-transport] deferred sync route removal panicked session={}",
-                        session_id
+                        "[container-transport] deferred sync route removal panicked \
+                            session={session_id}"
                     ),
                 }
             }
@@ -437,9 +433,7 @@ impl ContainerTransportBackend {
                 if let Err(error) = sender.route_lost(session_id, exit_code).await {
                     log::warn!(
                         "[container-transport] deferred sync route-loss reconciliation failed \
-                            session={}: {}",
-                        session_id,
-                        error
+                            session={session_id}: {error}"
                     );
                 }
             }
@@ -458,9 +452,8 @@ impl ContainerTransportBackend {
                         let count = backend.reap_expired_pending_sessions().await;
                         if count > 0 {
                             log::warn!(
-                                "[container-transport] reaped {} expired pending container \
-                                    session(s)",
-                                count
+                                "[container-transport] reaped {count} expired pending container \
+                                    session(s)"
                             );
                         }
                     }
