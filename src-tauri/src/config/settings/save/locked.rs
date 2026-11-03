@@ -458,10 +458,10 @@ fn prepare_save(
         prepared_profiles.as_ref(),
         prepared_duplicate_agents.as_ref(),
         (
-            &mode,
+            mode,
             disk_gate_stage,
             terminal_snapshot_gate_mode,
-            &main_window_placement_mode,
+            main_window_placement_mode,
             directional_split,
             profiles_in_sidecar,
         ),
@@ -641,13 +641,7 @@ fn publish_settings(
     disk: Option<&Map<String, Value>>,
     out: Map<String, Value>,
     previous_contents: Option<String>,
-    prepared: (
-        SettingsSaveStage,
-        &Option<Value>,
-        &Option<Value>,
-        Option<&Map<String, Value>>,
-        bool,
-    ),
+    prepared: PreparedPublication<'_>,
 ) -> Result<(Value, Map<String, Value>), SettingsSaveError> {
     let (
         disk_gate_stage,
@@ -684,7 +678,7 @@ fn publish_settings(
             physical_sidecar,
             path,
         ),
-        &mode,
+        mode,
     )
     .map_err(|reason| {
         SettingsSaveError::semantic(
@@ -791,3 +785,11 @@ fn save_profile_flags(
         ),
     )
 }
+
+type PreparedPublication<'a> = (
+    SettingsSaveStage,
+    &'a Option<Value>,
+    &'a Option<Value>,
+    Option<&'a Map<String, Value>>,
+    bool,
+);
