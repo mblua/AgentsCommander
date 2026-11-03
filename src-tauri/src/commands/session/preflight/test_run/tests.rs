@@ -633,8 +633,14 @@ async fn test_never_seeds() {
         .expect("configured");
     let seed = spawn.seed.expect("active seed");
     let source = &seed.candidates[0].path;
-    assert!(source.starts_with(fx._temp.path()), "{source:?}");
     std::fs::create_dir_all(source).unwrap();
+    // CI's TEMP is an 8.3 short name; the resolver spells the long one. Compare canonical forms.
+    let canonical = std::fs::canonicalize(source).unwrap();
+    let root = std::fs::canonicalize(fx._temp.path()).unwrap();
+    assert!(
+        canonical.starts_with(&root),
+        "{canonical:?} not under {root:?}"
+    );
     std::fs::write(source.join("seeded.txt"), "seed").unwrap();
     std::fs::create_dir_all(&seed.dest).unwrap();
     std::fs::write(seed.dest.join("kept.txt"), "kept bytes").unwrap();
