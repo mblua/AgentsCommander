@@ -4,9 +4,10 @@ use tokio_util::sync::CancellationToken;
 
 /// Unified shutdown signal for all background tasks.
 ///
-/// - Async tasks (MailboxPoller, web server) use `token()` with `tokio::select!`
-/// - Native threads with own tokio runtimes (GitWatcher, DiscoveryBranchWatcher) also use `token()`
-/// - Pure native threads (IdleDetector) use `is_cancelled()` which checks an AtomicBool
+/// - Async tasks (`MailboxPoller`, web server) use `token()` with `tokio::select!`
+/// - Native threads with own tokio runtimes (`GitWatcher`, `DiscoveryBranchWatcher`) also use
+///   `token()`
+/// - Pure native threads (`IdleDetector`) use `is_cancelled()` which checks an `AtomicBool`
 ///
 /// A single `trigger()` call cancels both mechanisms simultaneously.
 ///
@@ -42,7 +43,7 @@ impl ShutdownSignal {
         self.token.cancel();
     }
 
-    /// For async tasks: returns the CancellationToken to use in tokio::select!
+    /// For async tasks: returns the `CancellationToken` to use in `tokio::select!`
     pub fn token(&self) -> &CancellationToken {
         &self.token
     }

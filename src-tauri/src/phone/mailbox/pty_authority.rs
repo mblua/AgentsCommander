@@ -564,23 +564,18 @@ impl MailboxPoller {
         if !source_executor.bind(&continuation) {
             return Ok(PtySpawnStep::RetainedUnowned);
         }
-        let validation_messages = Arc::clone(&self.messages);
-        let validation_app = app.clone();
-        let validation_claim = claimed.clone();
-        let validation_initial = initial.clone();
-        let validation_sender = sender.clone();
-        let validation_target = target.clone();
-        let validation_api = api_client_store.cloned();
-        let validation_request = request.clone();
+        let captured = (
+            Arc::clone(&self.messages),
+            app.clone(),
+            claimed.clone(),
+            initial.clone(),
+            sender.clone(),
+            target.clone(),
+            api_client_store.cloned(),
+            request.clone(),
+        );
         let continuation = continuation.with_source_validation(Arc::new(move || {
-            let messages = Arc::clone(&validation_messages);
-            let app = validation_app.clone();
-            let claimed = validation_claim.clone();
-            let initial = validation_initial.clone();
-            let sender = validation_sender.clone();
-            let target = validation_target.clone();
-            let api = validation_api.clone();
-            let request = validation_request.clone();
+            let (messages, app, claimed, initial, sender, target, api, request) = captured.clone();
             Box::pin(async move {
                 use crate::session::selection::OwnedSourceStop as Stop;
                 let delivery = MailboxPoller::delivery_only(messages);
@@ -711,27 +706,20 @@ impl MailboxPoller {
                 .await;
         }
         drop(prepared_replacement);
-        if let Some(exited) = input.exited {
-            let exited_id =
-                parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
-            let destroy_result = background_destroy_session_inner(app, exited_id).await;
-            let sessions = app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .inner()
-                .clone();
-            let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
-            let route_or_spawn_survived = {
-                let manager = app.state::<Arc<Mutex<PtyManager>>>();
-                Self::pty_removal_route_survived(&manager, exited_id, target)
-            };
-            Self::verify_pty_removal(survived || route_or_spawn_survived, destroy_result, claimed)?;
-        }
-        self.require_current_pty_spawn(app, &authority).await?;
         let sessions = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
             .inner()
             .clone();
         let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        if let Some(exited) = input.exited {
+            let exited_id =
+                parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
+            let destroy_result = background_destroy_session_inner(app, exited_id).await;
+            let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
+            let route_or_spawn_survived = Self::pty_removal_route_survived(&pty, exited_id, target);
+            Self::verify_pty_removal(survived || route_or_spawn_survived, destroy_result, claimed)?;
+        }
+        self.require_current_pty_spawn(app, &authority).await?;
         let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
         let created = crate::commands::session::create_session_inner_with_pty_target_ownership(
             app,
