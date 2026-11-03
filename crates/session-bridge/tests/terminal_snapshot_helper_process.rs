@@ -579,6 +579,16 @@ fn terminal_snapshot_helper_process_bypasses_proxy_and_never_forwards_bearer() {
     assert_request_contract(&direct_requests[0]);
 }
 
+fn png_timeout_response_head(body_length: usize) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json; \
+        charset=utf-8\r\nCache-Control: no-store\r\nPragma: \
+        no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_length
+    )
+    .into_bytes()
+}
+
 #[test]
 fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber(
 ) {
@@ -590,13 +600,7 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
     let timeout_text = timeout_path.to_string_lossy().into_owned();
     let timeout_server = TestServer::start(|request, _| {
         let body = success_body(request);
-        let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; \
-            charset=utf-8\r\nCache-Control: no-store\r\nPragma: \
-            no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .into_bytes();
+        let head = png_timeout_response_head(body.len());
         Reply::Trickle {
             head,
             first: body[..1].to_vec(),
