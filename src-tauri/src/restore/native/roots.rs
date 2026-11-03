@@ -153,13 +153,13 @@ impl RestoreContext {
                 progress.n_woken += 1;
                 if let Ok(uuid) = uuid::Uuid::parse_str(&existing.id) {
                     attach_persisted_telegram_if_configured(
-                        &self.app_handle,
+                        self.restore_transaction_for_task.app(),
                         uuid,
                         ps.telegram_bot_id.as_deref(),
                     )
                     .await;
                     commands::session::seed_root_last_prompt(
-                        &self.app_handle,
+                        self.restore_transaction_for_task.app(),
                         &self.session_mgr_clone,
                         uuid,
                         ps,
@@ -205,7 +205,7 @@ impl RestoreContext {
                     progress.n_woken += 1;
                     if let Ok(uuid) = uuid::Uuid::parse_str(&info.id) {
                         attach_persisted_telegram_if_configured(
-                            &self.app_handle,
+                            self.restore_transaction_for_task.app(),
                             uuid,
                             ps.telegram_bot_id.as_deref(),
                         )
@@ -252,7 +252,7 @@ impl RestoreContext {
                 .await;
                 drop(mgr);
                 commands::session::seed_root_last_prompt(
-                    &self.app_handle,
+                    self.restore_transaction_for_task.app(),
                     &self.session_mgr_clone,
                     uuid,
                     ps,

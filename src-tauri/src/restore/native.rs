@@ -53,7 +53,6 @@ pub(crate) fn start_native_restore_startup(
 ) -> tauri::async_runtime::JoinHandle<()> {
     let lifecycle_owner = Arc::clone(&settings_state);
     let lifecycle_observer = Arc::clone(&restore_observer_barrier);
-    let app_handle = app.clone();
     let pty_mgr_clone = pty_mgr.clone();
     let session_mgr_clone = session_mgr;
     let settings_state_clone = settings_state;
@@ -65,7 +64,6 @@ pub(crate) fn start_native_restore_startup(
     let body = Box::new(move || -> futures::future::BoxFuture<'static, ()> {
         Box::pin(async move {
             RestoreContext {
-                app_handle,
                 session_mgr_clone,
                 pty_mgr_clone,
                 settings_state_clone,
@@ -317,7 +315,6 @@ mod roots;
 mod sessions;
 
 struct RestoreContext {
-    app_handle: tauri::AppHandle,
     session_mgr_clone: Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr_clone: Arc<Mutex<PtyManager>>,
     settings_state_clone: SettingsState,
