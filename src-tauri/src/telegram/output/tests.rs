@@ -75,7 +75,7 @@ fn open_temp_log(dir: &std::path::Path, name: &str) -> std::fs::File {
 
 /// LOW-3 — `BridgeLogger::log` must redact any Telegram token in the
 /// `text` payload before writing to `telegram-bridge.log` (the log
-/// bypasses env_logger's sink scrub). Guards against a future caller
+/// bypasses `env_logger`'s sink scrub). Guards against a future caller
 /// passing an unscrubbed reqwest error string.
 #[test]
 fn bridgelogger_log_redacts_telegram_token_in_text() {
@@ -85,8 +85,7 @@ fn bridgelogger_log_redacts_telegram_token_in_text() {
     let mut logger = BridgeLogger { file: Some(f) };
 
     let leak_shaped = format!(
-        "error sending request for url (https://api.telegram.org/bot{}/getUpdates?offset=0)",
-        FAKE_TG_TOKEN
+        "error sending request for url (https://api.telegram.org/bot{FAKE_TG_TOKEN}/getUpdates?offset=0)"
     );
     logger.log("ERR", "sid-test", &leak_shaped);
     drop(logger); // close handle before read
@@ -102,7 +101,7 @@ fn bridgelogger_log_redacts_telegram_token_in_text() {
     );
 }
 
-/// LOW-1 — BridgeLogger truncates at 500 bytes. The redact step must
+/// LOW-1 — `BridgeLogger` truncates at 500 bytes. The redact step must
 /// run BEFORE truncation, otherwise a token positioned so the cut
 /// lands inside its tail leaves only a partial fragment (sub
 /// 10-char floor) that the redactor refuses to match — leaking the
@@ -180,10 +179,7 @@ fn diaglogger_log_raw_redacts_telegram_token() {
         sent_file: None,
     };
 
-    let row = format!(
-        "POST https://api.telegram.org/bot{}/sendMessage failed",
-        FAKE_TG_TOKEN
-    );
+    let row = format!("POST https://api.telegram.org/bot{FAKE_TG_TOKEN}/sendMessage failed");
     logger.log_raw(&row);
     drop(logger);
 
@@ -213,8 +209,7 @@ fn diaglogger_log_sent_redacts_gemini_key() {
 
     let row = format!(
         "Gemini call: https://generativelanguage.googleapis.com/v1beta/models/\
-         gemini-2.5-flash:generateContent?key={}",
-        FAKE_GEMINI_KEY
+         gemini-2.5-flash:generateContent?key={FAKE_GEMINI_KEY}"
     );
     logger.log_sent(&row);
     drop(logger);

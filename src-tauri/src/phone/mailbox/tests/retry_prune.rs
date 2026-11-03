@@ -1,7 +1,7 @@
 use super::*;
 
 /// (#1399 T9 / R1) A panicking worker cannot strand its claim: the
-/// WakeOutcomeReport guard reports a transient error from the unwind, the
+/// `WakeOutcomeReport` guard reports a transient error from the unwind, the
 /// drain releases ownership, and the attempt is counted. Without the guard
 /// the claim stays owned forever and reclamation skips it on every cycle.
 #[tokio::test]
@@ -392,7 +392,7 @@ fn outbox_verification_failure_drops_aliases_before_reclamation() {
         };
         scans += 1;
         let claims: Vec<PathBuf> = rd
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("in-flight"))
             .collect();
@@ -423,7 +423,7 @@ fn outbox_verification_failure_drops_aliases_before_reclamation() {
     );
     let claims: Vec<PathBuf> = std::fs::read_dir(&next_cycle_candidates[0])
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("in-flight"))
         .collect();
@@ -601,7 +601,7 @@ fn retry_prune_retains_state_when_live_claim_restores_between_probes() {
 }
 
 /// (#1399 AC-2) Two messages to one target inside one cycle: the first is
-/// claimed and handed off, the second gets LaneBusy and stays untouched in
+/// claimed and handed off, the second gets `LaneBusy` and stays untouched in
 /// the outbox, and exactly one spawn happens while the delivery is in
 /// flight.
 #[tokio::test]

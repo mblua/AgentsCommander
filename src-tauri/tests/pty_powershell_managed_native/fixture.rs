@@ -153,7 +153,7 @@ fn config_dir_for_test() -> PathBuf {
 pub(crate) fn make_fixture() -> Fixture {
     let env_lock = TEST_CONFIG_ENV_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let repo_root = temp.path().join("repo-1271-native");
     let config_dir = config_dir_for_test();
@@ -447,7 +447,10 @@ pub(crate) fn agent_config(
 pub(crate) fn base_settings(host_program: &str, host_args: &[&str], project: &Path) -> AppSettings {
     let mut settings = AppSettings::default();
     settings.default_shell = host_program.to_string();
-    settings.default_shell_args = host_args.iter().map(|s| s.to_string()).collect();
+    settings.default_shell_args = host_args
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     settings.project_paths = vec![path_to_string(project)];
     settings
 }
@@ -506,7 +509,7 @@ pub(crate) async fn create_plain_session(
         &fixture.session_mgr,
         &fixture.pty_mgr,
         shell.to_string(),
-        args.iter().map(|s| s.to_string()).collect(),
+        args.iter().map(std::string::ToString::to_string).collect(),
         cwd.to_string(),
         Some(name.to_string()),
         None,
@@ -572,7 +575,7 @@ pub(crate) async fn wait_for_snapshot_contains(
 }
 
 /// Poll the spawn record until the awaited child exit is observable. Returns
-/// the child's exit code (the host shell propagated it through WaitForExit or
+/// the child's exit code (the host shell propagated it through `WaitForExit` or
 /// cmd /C).
 pub(crate) async fn wait_for_exit_code(
     fixture: &Fixture,

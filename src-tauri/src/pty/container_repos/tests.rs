@@ -12,7 +12,7 @@ fn try_symlink_dir(target: &Path, link: &Path) -> bool {
 }
 
 /// Build `<tmp>/.ac/wg-test-team/` with the given replica name, and return
-/// (tmp, wg_root, replica_root). `find_ac_root_ancestor` keys on a `.ac`
+/// (tmp, `wg_root`, `replica_root`). `find_ac_root_ancestor` keys on a `.ac`
 /// ancestor and the wg-root name must start with `wg-`, so both are created.
 fn make_workgroup(replica: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().expect("tmp");
@@ -56,7 +56,7 @@ fn normal_sibling_repo_resolves_to_repos_container_path() {
             assert_eq!(name, "repo-AgentsCommander");
             assert_eq!(container_path, "/repos/repo-AgentsCommander");
         }
-        other @ RepoOutcome::NotFound => panic!("expected Mounted, got {:?}", other),
+        other @ RepoOutcome::NotFound => panic!("expected Mounted, got {other:?}"),
     }
     let mounts: Vec<_> = resolution.mounts().collect();
     assert_eq!(mounts.len(), 1);
@@ -101,8 +101,7 @@ fn symlink_named_repo_but_targeting_sibling_replica_is_rejected() {
     let result = resolve_repo_mounts(&replica);
     assert!(
         result.is_err(),
-        "a repo-*-named symlink to a sibling replica must hard-fail, got {:?}",
-        result
+        "a repo-*-named symlink to a sibling replica must hard-fail, got {result:?}"
     );
 }
 
