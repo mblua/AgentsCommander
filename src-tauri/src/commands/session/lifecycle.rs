@@ -1,3 +1,5 @@
+mod admission;
+
 use crate::pty::manager::PtyManager;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::SessionManager;
@@ -449,30 +451,7 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     let Some(prepared_source) = prepare_lifecycle_source(source_row, &snapshot)? else {
         return Ok(LifecycleAuthorityAdmission::Waiting);
     };
-    let lease = if let Some(key) = key {
-        let gate = app
-            .try_state::<crate::api::message_store::PtyInputTargetGateState>()
-            .and_then(|state| state.gate.as_ref().ok().map(Arc::clone))
-            .or_else(|| {
-                app.try_state::<crate::api::message_store::MessageStoreState>()
-                    .and_then(|state| state.target_gate.as_ref().ok().map(Arc::clone))
-            })
-            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-        let stripe = gate
-            .acquire_target_lock(&key)
-            .await
-            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-        let exact = gate.acquire_exact(&key).await;
-        LifecycleTargetLease::Keyed {
-            key,
-            destination,
-            gate,
-            stripe,
-            exact,
-        }
-    } else {
-        LifecycleTargetLease::VerifiedNoReplica { destination }
-    };
+    let lease = admission::acquire_target_lease(app, key, destination).await?;
     // Gate acquisition may have suspended. Never admit an identity verified
     // only before those waits; cancellation drops exact then stripe normally.
     if !prepared_lifecycle_identity_matches(&lease, prepared_source.identity.as_ref()) {
@@ -562,17 +541,8 @@ pub(crate) async fn validate_lifecycle_entry_authority<R: tauri::Runtime>(
     ) {
         return false;
     }
-    let source_key = match authority
-        .source
-        .as_ref()
-        .map(|source| {
-            crate::config::teams::pty_input_create_gate_key_from_cwd(
-                &source.directory.canonical_path,
-            )
-        })
-        .transpose()
-    {
-        Ok(key) => key.flatten(),
+    let source_key = match admission::source_gate_key(authority) {
+        Ok(key) => key,
         Err(_) => return false,
     };
     let target = key
@@ -667,17 +637,8 @@ pub(crate) async fn retire_lifecycle_entry_protection<R: tauri::Runtime>(
     ) {
         return false;
     }
-    let source_key = match authority
-        .source
-        .as_ref()
-        .map(|source| {
-            crate::config::teams::pty_input_create_gate_key_from_cwd(
-                &source.directory.canonical_path,
-            )
-        })
-        .transpose()
-    {
-        Ok(key) => key.flatten(),
+    let source_key = match admission::source_gate_key(authority) {
+        Ok(key) => key,
         Err(_) => return false,
     };
     let target = destination_key
