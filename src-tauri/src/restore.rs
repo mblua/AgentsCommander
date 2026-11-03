@@ -221,7 +221,7 @@ impl RestoreCompletionGuard {
             barrier.finish();
         }
         if let Err(e) = self.observer.mark_restore_complete() {
-            log::error!("[restore] observer barrier completion failed: {}", e);
+            log::error!("[restore] observer barrier completion failed: {e}");
         }
         self.completed = true;
     }
@@ -290,8 +290,7 @@ pub(crate) fn spawn_restore_startup<J: RestoreStartupTask>(
         });
         if let Err(panic) = caught_body.catch_unwind().await {
             log::error!(
-                "[restore] restore task panicked (partial restore; retried next boot): {:?}",
-                panic
+                "[restore] restore task panicked (partial restore; retried next boot): {panic:?}"
             );
         }
         drop(restore_guard);
@@ -300,8 +299,7 @@ pub(crate) fn spawn_restore_startup<J: RestoreStartupTask>(
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
                 "[restore] post-restore startup panicked (services after the panic point not \
-                    started): {:?}",
-                panic
+                    started): {panic:?}"
             );
         }
     }))

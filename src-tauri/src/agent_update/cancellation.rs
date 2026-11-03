@@ -6,7 +6,7 @@ use super::{
     AgentUpdateCancelResponse, AgentUpdateCancellationChanged, AgentUpdateCommandRef,
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 pub(crate) fn cancellation_snapshot(state: &GateState) -> AgentUpdateCancellationChanged {
     AgentUpdateCancellationChanged {
@@ -36,7 +36,7 @@ pub async fn cancel_update(
     let mut closed_prompt = None;
     let mut changed = None;
     let disposition = {
-        let mut state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some((phase, claim)) = state
             .controls
             .get(&command)
@@ -122,7 +122,7 @@ pub async fn cancel_all_updates(
     let mut waits = CancelAllWaits::default();
     let mut closed_prompt = None;
     let changed = {
-        let mut state = gate.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.nodes.is_empty() {
             drop(state);
             drop(serial);

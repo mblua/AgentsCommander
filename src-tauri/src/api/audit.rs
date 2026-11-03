@@ -296,7 +296,7 @@ pub fn record(client_id: &str, bound_fqn: &str, op: &str, outcome: &str) {
         sanitize(outcome),
     );
     if let Err(e) = append(&path, &line) {
-        log::warn!("[api-audit] failed to write audit line (continuing): {}", e);
+        log::warn!("[api-audit] failed to write audit line (continuing): {e}");
     }
 }
 
@@ -320,7 +320,7 @@ fn rotate_if_needed(path: &std::path::Path) {
     }
     let rotated = path.with_extension("log.1");
     if let Err(e) = activity_log::rename_activity(path, &rotated) {
-        log::warn!("[api-audit] rotation failed (continuing): {}", e);
+        log::warn!("[api-audit] rotation failed (continuing): {e}");
     }
 }
 
