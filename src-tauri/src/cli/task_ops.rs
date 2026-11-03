@@ -93,7 +93,7 @@ pub(crate) fn read_title(root: &Path) -> Result<Option<String>, String> {
     let content = match crate::filesystem::tasks::read_task_title_text(&task_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("read TASK.md: {}", e)),
+        Err(e) => return Err(format!("read TASK.md: {e}")),
     };
     let parsed = parse_task(&content);
     Ok(title_value_of(&parsed))
@@ -117,7 +117,7 @@ pub enum TaskOp {
     SetBody(String),
     /// Replace BOTH frontmatter title AND body with the canonical Clean form
     /// (title: 'Clean', empty body). Preserves the
-    /// file's existing BOM and frontmatter line ending; body has no bytes. NoOp when the
+    /// file's existing BOM and frontmatter line ending; body has no bytes. `NoOp` when the
     /// file is already in canonical Clean form.
     Clean,
 }
@@ -193,7 +193,7 @@ pub(crate) fn user_owned_title(input: &str) -> String {
     if is_user_owned_title(trimmed) {
         trimmed.to_string()
     } else {
-        format!("{} {}", USER_TITLE_PREFIX, trimmed)
+        format!("{USER_TITLE_PREFIX} {trimmed}")
     }
 }
 
@@ -270,8 +270,8 @@ fn format_rename_failed(io_err: &std::io::Error, backup: &Option<PathBuf>) -> St
             p.display()
         ),
         None => format!(
-            "failed to publish TASK.md (rename): {}. No backup (TASK.md did not exist before).",
-            io_err
+            "failed to publish TASK.md (rename): {io_err}. \
+             No backup (TASK.md did not exist before)."
         ),
     }
 }
@@ -292,7 +292,7 @@ pub(crate) struct ParsedTask {
     /// inter-line separators in `render`. The body slice is preserved byte-for-byte regardless.
     pub line_ending: &'static str,
     pub has_frontmatter: bool,
-    /// Raw frontmatter lines (eol-stripped, trim_end_matches(['\r','\n'])).
+    /// Raw frontmatter lines (eol-stripped, `trim_end_matches(['\r','\n'])`).
     pub frontmatter: Vec<String>,
     /// Everything after the closing `---<eol>` (or whole post-BOM input when
     /// `has_frontmatter == false`).
@@ -407,7 +407,7 @@ fn apply_set_body(parsed: &ParsedTask, text: &str) -> ParsedTask {
 
 fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
     let escaped = title.replace('\'', "''");
-    let new_title_line = format!("title: '{}'", escaped);
+    let new_title_line = format!("title: '{escaped}'");
 
     // Brand-new file: parsed has empty body and no frontmatter. The set-title
     // matrix says born-LF and BOM-less per entity_creation.rs convention.
@@ -446,9 +446,8 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
         .count();
     if title_count > 1 {
         log::warn!(
-            "TASK.md frontmatter contains {} title: lines; replacing the first only — \
-             downstream YAML parsers may pick a different one",
-            title_count
+            "TASK.md frontmatter contains {title_count} title: lines; replacing the first only — \
+             downstream YAML parsers may pick a different one"
         );
     }
 
@@ -462,7 +461,7 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
             let leading = title_line(&new_fm[idx])
                 .map(|title| title.leading)
                 .unwrap_or("");
-            new_fm[idx] = format!("{}{}", leading, new_title_line);
+            new_fm[idx] = format!("{leading}{new_title_line}");
         }
         None => {
             new_fm.insert(0, new_title_line);
@@ -481,7 +480,7 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
 fn apply_append_body(parsed: &ParsedTask, text: &str) -> ParsedTask {
     let trimmed_text = text.trim_end();
     let new_body = if parsed.body.trim().is_empty() {
-        format!("{}\n", trimmed_text)
+        format!("{trimmed_text}\n")
     } else {
         // trim_end on the existing body collapses any number of trailing newlines/spaces
         // to zero; the literal "\n\n" inserts exactly one blank-line separator;
