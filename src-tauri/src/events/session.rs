@@ -36,8 +36,7 @@ impl<R: Runtime> SessionWarningEvents for AppHandle<R> {
                 Err(err) => {
                     log::warn!(
                         target: "agentscommander_lib::session::warnings",
-                        "[session-warning] warning buffer lock poisoned; live emit only: {}",
-                        err
+                        "[session-warning] warning buffer lock poisoned; live emit only: {err}"
                     );
                 }
             }

@@ -312,7 +312,7 @@ pub(crate) fn compare_dirs(
 #[cfg(windows)]
 pub(crate) fn display_canonical(canonical: &str) -> String {
     if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = canonical.strip_prefix(r"\\?\") {
         let bytes = rest.as_bytes();
         if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {

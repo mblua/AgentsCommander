@@ -150,7 +150,7 @@ pub(crate) fn command_account_key(command: &str) -> Option<String> {
 }
 
 /// Write a master's embedded files verbatim into `dir` (creating it and any
-/// parents). Rejects a rel_path with empty/`.`/`..` segments.
+/// parents). Rejects a `rel_path` with empty/`.`/`..` segments.
 pub(crate) fn write_embedded_files_into(
     dir: &Path,
     master: &EmbeddedSeedMaster,
