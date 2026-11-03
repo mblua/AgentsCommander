@@ -198,8 +198,8 @@ pub(crate) async fn acquire_team_config_mutation_guard_async(
         .await
         .map_err(|e| {
             format!(
-                "Failed to acquire team config lock for workspace '{}': blocking task failed: {}",
-                ac_root_label, e
+                "Failed to acquire team config lock for workspace '{ac_root_label}': \
+                blocking task failed: {e}"
             )
         })?
 }
@@ -297,10 +297,7 @@ pub(crate) fn read_raw_team_config(
     match publication::read_team_config_bytes(&path) {
         Ok(bytes) => Ok(Some((path, bytes))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "Cannot read team '{}' config.json: {}",
-            team_name, e
-        )),
+        Err(e) => Err(format!("Cannot read team '{team_name}' config.json: {e}")),
     }
 }
 
@@ -325,7 +322,7 @@ pub(crate) fn normalized_team_config_bytes(
 ) -> Result<Vec<u8>, String> {
     let normalized = normalize_team_config_for_project(ac_root, config)?;
     serde_json::to_vec_pretty(&normalized)
-        .map_err(|e| format!("Failed to serialize config.json: {}", e))
+        .map_err(|e| format!("Failed to serialize config.json: {e}"))
 }
 
 pub(crate) fn write_team_config_guarded(
@@ -351,9 +348,9 @@ pub(crate) fn write_existing_team_config_guarded(
 ) -> Result<PathBuf, String> {
     guard.require_ac_root(ac_root)?;
     validate_existing_name(team_name, "Team")?;
-    let team_dir = ac_root.join(format!("_team_{}", team_name));
+    let team_dir = ac_root.join(format!("_team_{team_name}"));
     if !publication::team_directory_present(&team_dir) {
-        return Err(format!("Team '{}' not found", team_name));
+        return Err(format!("Team '{team_name}' not found"));
     }
     write_team_config_guarded(ac_root, team_name, config, guard)
 }
@@ -371,14 +368,14 @@ where
     guard.require_ac_root(ac_root)?;
     validate_existing_name(team_name, "Team")?;
     let config_bytes = normalized_team_config_bytes(ac_root, config)?;
-    let team_dir = ac_root.join(format!("_team_{}", team_name));
+    let team_dir = ac_root.join(format!("_team_{team_name}"));
     publication::ensure_team_directory(&team_dir)
-        .map_err(|e| format!("Failed to create team directory: {}", e))?;
+        .map_err(|e| format!("Failed to create team directory: {e}"))?;
     publication::ensure_team_memory_directory(&team_dir)
-        .map_err(|e| format!("Failed to create memory directory: {}", e))?;
+        .map_err(|e| format!("Failed to create memory directory: {e}"))?;
     conventions::ensure_empty_if_absent(&team_dir)?;
     publication::publish_team_config(&config_path(ac_root, team_name), &config_bytes, publish)
-        .map_err(|e| format!("Failed to publish config.json: {}", e))?;
+        .map_err(|e| format!("Failed to publish config.json: {e}"))?;
     Ok(team_dir)
 }
 
@@ -400,20 +397,20 @@ pub(crate) fn create_new_team_config_on_disk_guarded(
     guard.require_ac_root(ac_root)?;
     validate_existing_name(team_name, "Team")?;
     let config_bytes = normalized_team_config_bytes(ac_root, config)?;
-    let team_dir = ac_root.join(format!("_team_{}", team_name));
+    let team_dir = ac_root.join(format!("_team_{team_name}"));
     publication::create_team_directory(&team_dir).map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => format!("Team '{}' already exists", team_name),
-        _ => format!("Failed to create team directory: {}", e),
+        std::io::ErrorKind::AlreadyExists => format!("Team '{team_name}' already exists"),
+        _ => format!("Failed to create team directory: {e}"),
     })?;
     publication::create_team_memory_directory(&team_dir)
-        .map_err(|e| format!("Failed to create memory directory: {}", e))?;
+        .map_err(|e| format!("Failed to create memory directory: {e}"))?;
     conventions::write_empty_for_new_team(&team_dir)?;
     publication::publish_team_config(
         &config_path(ac_root, team_name),
         &config_bytes,
         crate::config::local_config_io::write_file_atomic,
     )
-    .map_err(|e| format!("Failed to publish config.json: {}", e))?;
+    .map_err(|e| format!("Failed to publish config.json: {e}"))?;
     Ok(team_dir)
 }
 
@@ -431,7 +428,7 @@ pub(crate) fn resolve_context_alert_argument(
     match supplied {
         Some(values) => normalize_context_alert_percentages(&values),
         None if mode == ContextAlertWriteMode::Create => Ok(Vec::new()),
-        None => current.map(|values| values.to_vec()).ok_or_else(|| {
+        None => current.map(<[u8]>::to_vec).ok_or_else(|| {
             "Current team config is required when contextAlertPercentages is omitted on update"
                 .to_string()
         }),
@@ -470,7 +467,7 @@ pub(crate) fn normalize_team_config_for_project(
 
 pub(crate) fn config_path(ac_root: &Path, team_name: &str) -> PathBuf {
     ac_root
-        .join(format!("_team_{}", team_name))
+        .join(format!("_team_{team_name}"))
         .join("config.json")
 }
 
