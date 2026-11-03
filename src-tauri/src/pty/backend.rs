@@ -338,7 +338,6 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     fn kill_all_jobs(&self) -> (usize, usize);
 
     /// #3516 - preflights run only on the local backend; every other backend refuses.
-    #[allow(dead_code)] // #3516: consumed in P03
     fn prepare_preflight_launch(
         &self,
         _request: PreflightLaunchRequest,

@@ -48,6 +48,7 @@ mod co_managed;
 mod create;
 mod destroy;
 mod lifecycle;
+mod preflight;
 mod restart;
 mod restart_resume;
 mod resume_args;
@@ -132,6 +133,7 @@ use lifecycle::prepare_restore_lifecycle_authority;
 #[cfg(test)]
 pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
+pub(crate) use preflight::PreflightState;
 pub(crate) use restart::carry_communication_for_restart;
 use restart::effective_create_skip_auto_resume;
 #[cfg(test)]

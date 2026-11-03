@@ -1,4 +1,3 @@
-#![allow(dead_code)] // #3516: consumed in P03
 //! #3516 - one contained, finite, bounded-output preflight process. Reuses the version-probe
 //! owner, so the run returns only after the native proof that the process tree is gone.
 

@@ -9,8 +9,7 @@ use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use regex::Regex;
 mod command_run;
-#[allow(unused_imports)] // #3516: consumed in P03
-pub(crate) use command_run::{run_contained, ContainedRun, ContainedRunEnd, ContainedRunSpec};
+pub(crate) use command_run::{run_contained, ContainedRunEnd, ContainedRunSpec};
 
 /// Per-probe wall-clock cap. On expiry the whole tree is killed and the probe
 /// reports `probeFailed`.

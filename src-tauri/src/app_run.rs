@@ -294,6 +294,9 @@ pub(crate) fn run(
         .manage(message_store_state)
         .manage(pty_target_gate_state)
         .manage(config_seed_lock)
+        .manage(std::sync::Arc::new(
+            crate::commands::session::PreflightState::default(),
+        ))
         .manage(update_check_state)
         .manage(agent_update_gate)
         .manage(agent_install_cache)
