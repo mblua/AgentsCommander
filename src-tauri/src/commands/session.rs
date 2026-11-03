@@ -937,15 +937,8 @@ pub(crate) async fn start_preflight_test(
     replica_path: String,
     settings_revision: String,
 ) -> Result<String, String> {
-    let deps = preflight_deps(&app)?;
-    start_preflight_test_inner(
-        deps,
-        agent_id,
-        profile_letter,
-        replica_path,
-        settings_revision,
-    )
-    .await
+    let d = preflight_deps(&app)?;
+    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, settings_revision).await
 }
 
 #[tauri::command]
