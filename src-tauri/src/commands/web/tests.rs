@@ -669,7 +669,59 @@ async fn ws_and_inner_describe_match() {
         json!({"id": 2, "result": serde_json::to_value(inner).unwrap()})
     );
 
+    let replica = replica_fixture(folder.path());
+    let agent: crate::config::settings::AgentConfig = serde_json::from_value(json!({
+        "id": "claude", "label": "Fake", "command": "fake-cli", "color": "#000000"
+    }))
+    .expect("agent row");
+    let cfg = AppSettings {
+        agents: vec![agent],
+        ..AppSettings::default()
+    };
+    let state = WsState {
+        settings: new_settings_state(cfg),
+        ..state
+    };
+    let deps = crate::commands::session::PreflightTestDeps {
+        settings: state.settings.clone(),
+        ..deps
+    };
+    let lettered = json!({"agentId": "claude", "replicaPath": replica, "profileLetter": "Z"});
+    let inner = crate::commands::session::describe_preflight_target_inner(
+        &deps,
+        "claude".to_string(),
+        Some("Z".to_string()),
+        replica.clone(),
+    )
+    .await
+    .expect("describe");
+    let reason = inner.unavailable_reason.clone().expect("letter mismatch");
+    assert!(reason.ends_with("not Profile Z."), "{reason}");
+    let ws = dispatch(&state, 4, "describe_preflight_target", &lettered).await;
+    assert_eq!(
+        ws,
+        json!({"id": 4, "result": serde_json::to_value(inner).unwrap()})
+    );
+
     let unknown = crate::commands::session::get_preflight_test_inner(&preflight, "nope");
     let ws = dispatch(&state, 3, "get_preflight_test", &json!({"runId": "nope"})).await;
     assert_eq!(ws, json!({"id": 3, "error": unknown.unwrap_err()}));
+}
+
+/// A temp project whose `wg-1-team/__agent_dev-one` replica passes the agent-folder check.
+fn replica_fixture(root: &std::path::Path) -> String {
+    let ac = root.join("project").join(".ac");
+    let replica = ac.join("wg-1-team").join("__agent_dev-one");
+    for dir in [
+        ac.join("_team_team"),
+        ac.join("_agent_dev-one"),
+        replica.clone(),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let team = r#"{"agents":["../_agent_dev-one"],"coordinator":"../_agent_dev-one"}"#;
+    std::fs::write(ac.join("_team_team").join("config.json"), team).unwrap();
+    let identity = r#"{"identity":"../../_agent_dev-one"}"#;
+    std::fs::write(replica.join("config.json"), identity).unwrap();
+    replica.to_string_lossy().into_owned()
 }

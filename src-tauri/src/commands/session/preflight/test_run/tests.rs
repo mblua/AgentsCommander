@@ -356,7 +356,8 @@ fn revision_scope() {
         edit(&mut cfg);
         assert_eq!(preflight_revision(&cfg, ID), revision, "keep {index}");
     }
-    let moves: [fn(&mut AppSettings); 4] = [
+    let moves: [fn(&mut AppSettings); 5] = [
+        |c| c.default_shell.push_str("-other"),
         |c| c.agents[0].preflight_timeout_seconds = Some(9),
         |c| {
             let cells = c
@@ -576,6 +577,14 @@ fn retention_is_bounded() {
         active_run_id: None,
         unavailable_reason: None,
     };
+    let unfinished = pending_snapshot("unfinished", &description);
+    let (cancel, _) = tokio::sync::watch::channel(false);
+    let run = StoredRun {
+        snapshot: unfinished,
+        cancel,
+        key: String::new(),
+    };
+    state.runs().insert("unfinished".to_string(), run);
     let ids: Vec<String> = (0..20).map(|n| format!("run-{n}")).collect();
     for id in &ids {
         let mut snapshot = pending_snapshot(id, &description);
@@ -593,6 +602,13 @@ fn retention_is_bounded() {
     }
     assert_eq!(state.runs().runs.len(), MAX_STORED_RUNS);
     assert_eq!(state.runs().order.len(), MAX_STORED_RUNS);
+    let kept = get_preflight_test_inner(&state, "unfinished").expect("unfinished run kept");
+    assert_eq!(kept.phase, PreflightTestPhase::Preparing);
+    assert_eq!(
+        get_preflight_test_inner(&state, &ids[4]),
+        Err(UNKNOWN_RUN.to_string())
+    );
+    assert!(get_preflight_test_inner(&state, &ids[5]).is_ok());
     assert_eq!(
         get_preflight_test_inner(&state, &ids[0]),
         Err(UNKNOWN_RUN.to_string())
