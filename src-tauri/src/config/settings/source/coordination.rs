@@ -21,7 +21,6 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 pub(crate) enum SourceTransitionPhase {
     IntentStored,
     Prepared,
@@ -31,7 +30,6 @@ pub(crate) enum SourceTransitionPhase {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
 pub(crate) struct SourcePacketRecord {
     pub(crate) target: PathBuf,
     pub(crate) target_id: String,
@@ -43,7 +41,6 @@ pub(crate) struct SourcePacketRecord {
 // This is metadata only; original candidate bytes stay in the private Intent.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
 pub(crate) struct SourceIdentityMapping {
     pub(crate) entry_hint: String,
     pub(crate) old_calculated_id: Option<String>,
@@ -54,7 +51,6 @@ pub(crate) struct SourceIdentityMapping {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
 pub(crate) struct SourceReceipt {
     pub(crate) operation_id: String,
     pub(crate) source_revision: SourceRevision,
@@ -80,13 +76,11 @@ pub(crate) fn valid_coordination_revision(revision: &SourceRevision) -> bool {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct IdentityWriteLease {
     pub(crate) _lock: crate::config::local_config_io::SidecarWriteLock,
     pub(crate) parent: crate::path_identity::RetainedDirectory,
     pub(crate) instance_id: String,
 }
-#[allow(dead_code)]
 impl IdentityWriteLease {
     pub(crate) fn instance_id(&self) -> &str {
         &self.instance_id
@@ -136,7 +130,6 @@ impl IdentityWriteLease {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct SourceWriteContext<'a> {
     pub(crate) identity: &'a IdentityWriteLease,
     pub(crate) parent: crate::path_identity::RetainedDirectory,
@@ -146,7 +139,6 @@ pub(crate) struct SourceWriteContext<'a> {
     pub(crate) physical_source_key: String,
 }
 
-#[allow(dead_code)]
 impl<'a> SourceWriteContext<'a> {
     pub(crate) fn source(&self) -> &SourceRef {
         &self.source
@@ -313,29 +305,22 @@ pub(crate) fn reject_legacy_source_ledger(path: &Path) -> Result<(), SourceCoord
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub(crate) struct IdentityTransitionSummary {
     pub(crate) operation_id: String,
     pub(crate) phase: SourceTransitionPhase,
-    pub(crate) source: SourceRef,
-    pub(crate) source_revision_observed: SourceRevision,
     pub(crate) expected_source_revision: SourceRevision,
     pub(crate) after_source_revision: SourceRevision,
-    pub(crate) journal_revision: SourceRevision,
-    pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) receipt: Option<SourceReceipt>,
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct SourceTransitionStatus {
+    #[cfg(test)]
     pub(crate) journal_revision: SourceRevision,
     pub(crate) source_revision_observed: SourceRevision,
     pub(crate) summary: Option<IdentityTransitionSummary>,
 }
 
 /// Stable journal -> source -> journal observation; no write proofs or effects.
-#[allow(dead_code)]
 pub(crate) fn read_source_transition(
     context: &SourceReadContext,
     source: &SourceRef,
@@ -373,17 +358,13 @@ pub(crate) fn read_source_transition(
                 Some(IdentityTransitionSummary {
                     operation_id: operation_id.into(),
                     phase: progress.phase(),
-                    source: source.clone(),
-                    source_revision_observed: observed.clone(),
                     expected_source_revision: intent.expected_revision.clone(),
                     after_source_revision: source_bytes_revision(&intent.serialized_after),
-                    journal_revision: revision.clone(),
-                    mappings: intent.mappings.clone(),
-                    receipt: progress.receipt.clone(),
                 })
             }
         };
         return Ok(SourceTransitionStatus {
+            #[cfg(test)]
             journal_revision: revision,
             source_revision_observed: observed,
             summary,
@@ -395,7 +376,6 @@ pub(crate) fn read_source_transition(
 /// Original private Intent. Persisted with inventory before any packet/source effect.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
 pub(crate) struct SourceStoredIntent {
     pub(crate) schema_version: u32,
     pub(crate) operation_id: String,
@@ -413,7 +393,6 @@ pub(crate) struct SourceStoredIntent {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
 pub(crate) struct SourcePrivateJournal {
     pub(crate) schema_version: u32,
     pub(crate) intents: BTreeMap<String, SourceStoredIntent>,

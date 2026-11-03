@@ -17,21 +17,21 @@ use uuid::Uuid;
 /// (#1001 PR2 / B, grinch P1) Pure per-tick decision for the LIVE-inject settle,
 /// sourced ENTIRELY from the real-time `activity_age` snapshot - never the lagged
 /// `SessionManager.waiting_for_input`, which the watcher flips idle up to ~500ms
-/// after `activity_age` crosses `idle_threshold` (watcher granularity + on_idle +
+/// after `activity_age` crosses `idle_threshold` (watcher granularity + `on_idle` +
 /// spawned `mark_idle`). Reading `waiting_for_input` in the loop re-opened the
 /// fresh-idle drop during `activity_age ∈ [idle_threshold, T_flip]` (grinch P1);
 /// `activity_age` is stamped synchronously (`idle_detector.rs`), so it has no lag
 /// in either direction.
 ///
-/// - `elapsed >= max_wait`: InjectNow (cap first - never drop a delivery).
+/// - `elapsed >= max_wait`: `InjectNow` (cap first - never drop a delivery).
 /// - recent resize (`last_resize_age < resize_grace`): `activity_age` is FROZEN
 ///   and untrustworthy and the TUI is repainting - Wait (never inject a repaint;
 ///   grinch G8). See `PurgeReadiness.last_resize_age` doc.
-/// - `activity_age` unknown (untracked / just destroyed): InjectNow best-effort;
+/// - `activity_age` unknown (untracked / just destroyed): `InjectNow` best-effort;
 ///   the inject then surfaces the real state.
-/// - `activity_age < idle_threshold`: busy / mid-turn - InjectNow (bias-to-deliver).
+/// - `activity_age < idle_threshold`: busy / mid-turn - `InjectNow` (bias-to-deliver).
 /// - `activity_age >= settle` (`idle_threshold + FRESH_IDLE_GUARD`): long-idle -
-///   InjectNow (no added latency for a genuinely-ready wake).
+///   `InjectNow` (no added latency for a genuinely-ready wake).
 /// - otherwise (the `[idle_threshold, settle)` fresh-idle window): Wait.
 pub(crate) fn live_settle_action(
     activity_age: Option<std::time::Duration>,
@@ -73,7 +73,7 @@ pub(crate) fn live_settle_action(
 /// over-estimating only adds bounded, capped latency for a session younger than
 /// this that is genuinely mid-turn (rare - a just-booted agent has no work yet),
 /// while under-estimating re-opens the still-starting drop. See the `startup_probe`
-/// mode in tests/wake_consumption_measure/main.rs.
+/// mode in `tests/wake_consumption_measure/main.rs`.
 pub(crate) const STARTUP_SETTLE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// (#1001 PR2 P2 / B, option-a) Route a live wake by session age: a candidate whose
@@ -84,7 +84,7 @@ pub(crate) const STARTUP_SETTLE_THRESHOLD: std::time::Duration = std::time::Dura
 ///
 /// `alive_age == None` (untracked / just destroyed) -> `Established`: best-effort,
 /// consistent with `live_settle_action` mapping an unknown `activity_age` to
-/// InjectNow. The boundary is exclusive: `alive_age == startup_threshold` is
+/// `InjectNow`. The boundary is exclusive: `alive_age == startup_threshold` is
 /// `Established`.
 pub(crate) fn live_wake_route(
     alive_age: Option<std::time::Duration>,
@@ -168,7 +168,7 @@ pub(crate) struct SelfClearGateState {
     pub phase: SelfClearPhase,
     /// Instant the session was first seen continuously idle in the CURRENT phase, or None.
     pub idle_since: Option<std::time::Instant>,
-    /// Start of the CURRENT phase, for the per-phase MAX_DEFER cap.
+    /// Start of the CURRENT phase, for the per-phase `MAX_DEFER` cap.
     pub phase_started: std::time::Instant,
 }
 
@@ -209,9 +209,9 @@ pub(crate) enum SelfClearBoundary {
     ContentInjected,
 }
 
-/// #626 - pure two-stage gate step. Returns (next_state, action). `session_present == false` means
-/// the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to None
-/// and
+/// #626 - pure two-stage gate step. Returns (`next_state`, action). `session_present == false`
+/// means the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to
+/// None and
 /// `phase_started` to `now`, so the Phase 2 window can NOT be satisfied by pre-clear idle. Same
 /// "pure decision, thin timer loop" pattern as #617's `self_clear_gate_step` (replaced here),
 /// reusing the #611 `next_sustained_idle_state` settle/reset core. Unit-testable WITHOUT timers,
@@ -276,8 +276,8 @@ pub(crate) fn self_clear_gate_advance(
 /// is supplied by the caller so this is deterministic in tests. Returns the archived path on
 /// success.
 /// `std::fs::rename` is atomic within the same filesystem (the agent root and its `self-clear/`
-/// child share it). On Windows a source held open without FILE_SHARE_DELETE yields
-/// ERROR_SHARING_VIOLATION (os error 32); the caller treats any `Err` as a non-fatal warn (no
+/// child share it). On Windows a source held open without `FILE_SHARE_DELETE` yields
+/// `ERROR_SHARING_VIOLATION` (os error 32); the caller treats any `Err` as a non-fatal warn (no
 /// clobber, the source stays). NO retries (a retry loop would block the caller). Consumers:
 /// SELF-FORGET.md at queue time (#626) and SELF-HANDOFF.md immediately before the Phase-2 prompt
 /// inject (#749, via `archive_handoff_for_inject`).
@@ -286,12 +286,12 @@ pub(crate) fn archive_root_md(
     stem: &str,
     timestamp: &str,
 ) -> std::io::Result<Option<std::path::PathBuf>> {
-    let src = root.join(format!("{}.md", stem));
+    let src = root.join(format!("{stem}.md"));
     if !phone_mailbox::mailbox_path_is_file(&src) {
         return Ok(None); // no-op when absent
     }
     let archive_dir = root.join("self-clear");
-    let dst = archive_dir.join(format!("{}_{}.md", timestamp, stem));
+    let dst = archive_dir.join(format!("{timestamp}_{stem}.md"));
     if phone_mailbox::mailbox_path_exists(&dst) {
         // Same-second collision (effectively impossible: archiving happens once per >=60s cycle).
         // Refuse to clobber an existing archive; leave the source in place.
@@ -334,7 +334,7 @@ pub(crate) fn archive_handoff_for_inject(
                 dst.display()
             );
             let prompt_path = dst.strip_prefix(root).map_or_else(
-                |_| format!("self-clear/{}_SELF-HANDOFF.md", timestamp),
+                |_| format!("self-clear/{timestamp}_SELF-HANDOFF.md"),
                 |rel| {
                     rel.components()
                         .map(|c| c.as_os_str().to_string_lossy())
@@ -436,10 +436,7 @@ where
     // their post-boundary-content event only on a real injection.
     if let Err(e) = inject(session_id, prompt).await {
         log::warn!(
-            "[mailbox] {}: handoff prompt injection failed for session {}: {}",
-            action,
-            session_id,
-            e
+            "[mailbox] {action}: handoff prompt injection failed for session {session_id}: {e}"
         );
         if let Some(archived) = archived.as_deref() {
             restore_handoff_after_failed_inject(root, archived, action);
@@ -598,12 +595,12 @@ pub(crate) fn resolve_wg_path_from_session_dirs(
         return None;
     }
 
-    let wg_marker = format!("/{}/", wg_name);
+    let wg_marker = format!("/{wg_name}/");
     for (_, cwd) in dirs {
         let normalized = cwd.replace('\\', "/");
         if let Some(wg_pos) = normalized.rfind(&wg_marker) {
             let wg_dir = &normalized[..wg_pos + 1 + wg_name.len()];
-            let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
+            let candidate = format!("{wg_dir}/__agent_{agent_short}");
             if !phone_mailbox::mailbox_path_is_dir(std::path::Path::new(&candidate)) {
                 continue;
             }
@@ -616,10 +613,7 @@ pub(crate) fn resolve_wg_path_from_session_dirs(
                 }
             }
 
-            log::debug!(
-                "[mailbox] wake: resolved WG agent path from sibling session: {}",
-                candidate
-            );
+            log::debug!("[mailbox] wake: resolved WG agent path from sibling session: {candidate}");
             return Some(
                 std::path::PathBuf::from(&candidate)
                     .to_string_lossy()

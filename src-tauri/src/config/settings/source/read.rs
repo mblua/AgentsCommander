@@ -50,7 +50,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct SourceReadContext {
     pub(crate) settings_path: PathBuf,
     pub(crate) catalog_root: PathBuf,
@@ -58,7 +57,6 @@ pub(crate) struct SourceReadContext {
     pub(crate) revision: String,
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 impl SourceReadContext {
     /// Backend-only context: P comes from the current registry, never the
     /// assignment target Q or a deserialized SourceRef.
@@ -160,7 +158,6 @@ impl SourceReadContext {
     }
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn list_active_sources(context: &SourceReadContext) -> Vec<SourceRef> {
     let mut contexts = vec![context.clone()];
     if context.project {
@@ -205,7 +202,6 @@ pub(crate) fn list_active_sources(context: &SourceReadContext) -> Vec<SourceRef>
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct RawSourceSnapshot {
     pub(crate) snapshot: SourceSnapshot<Value>,
     pub(crate) candidate_template: Option<Value>,
@@ -213,7 +209,6 @@ pub(crate) struct RawSourceSnapshot {
     pub(crate) context: SourceReadContext,
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn source_diagnostic(code: &str) -> SourceDiagnostic {
     SourceDiagnostic {
         code: code.into(),
@@ -223,7 +218,6 @@ pub(crate) fn source_diagnostic(code: &str) -> SourceDiagnostic {
     }
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn decode_registered_raw(
     value: &Value,
 ) -> Result<(Vec<AgentConfig>, CodingAgentProfilesConfig), SourcePreparationError> {
@@ -266,7 +260,6 @@ pub(crate) fn decode_registered_raw(
     Ok((agents, profiles))
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn read_source_snapshot(
     context: &SourceReadContext,
     source: &SourceRef,
@@ -453,7 +446,6 @@ pub(crate) fn source_snapshot_from_original(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) enum LegacyOriginUnit {
     Entry(String),
     Profile(String, String),
@@ -462,7 +454,6 @@ pub(crate) enum LegacyOriginUnit {
     Slot(String),
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 impl LegacyOriginUnit {
     pub(crate) fn paths(&self) -> Vec<Vec<String>> {
         let p = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
@@ -487,13 +478,11 @@ impl LegacyOriginUnit {
     }
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn origin_paths_overlap(a: &[String], b: &[String]) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct OriginBinding {
     pub(crate) registered: Option<SourceRevision>,
     pub(crate) settings: Option<SourceRevision>,
@@ -502,7 +491,6 @@ pub(crate) struct OriginBinding {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct OriginInputs {
     pub(crate) registered: OriginPhysicalInput,
     pub(crate) settings: OriginPhysicalInput,
@@ -510,7 +498,6 @@ pub(crate) struct OriginInputs {
     pub(crate) binding: OriginBinding,
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 impl OriginInputs {
     pub(crate) fn read(context: &SourceReadContext) -> Self {
         let registered = OriginPhysicalInput::read(&agents_instance_path(&context.settings_path));
@@ -572,27 +559,23 @@ impl OriginInputs {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct LegacyCompatibilityOrigin {
     pub(crate) applied_paths: Vec<Vec<String>>,
     pub(crate) unknown_paths: Vec<Vec<String>>,
     pub(crate) represented: std::collections::BTreeSet<LegacyOriginUnit>,
     pub(crate) binding: OriginBinding,
+    #[cfg(test)]
     pub(crate) base: Value,
-    pub(crate) effective: Value,
-    pub(crate) overlay_diagnostics: Vec<crate::config::local_overlay::OverlayDiagnostic>,
 }
 
 /// Evidence issued by the backend that owns the original selection. No serde
 /// implementation: source save payloads cannot claim an authorization or link.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct LegacyOriginLinkProof {
     pub(crate) binding: OriginBinding,
     pub(crate) units: std::collections::BTreeSet<LegacyOriginUnit>,
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 impl LegacyCompatibilityOrigin {
     pub(crate) fn classify(inputs: &OriginInputs) -> Self {
         let mut unknown_paths = Vec::new();
@@ -606,6 +589,7 @@ impl LegacyCompatibilityOrigin {
                 Value::Null
             }
         };
+        #[cfg(test)]
         let settings_base = base.clone();
         let raw30 = inputs.registered.value();
         if let Some(raw) = &raw30 {
@@ -675,9 +659,8 @@ impl LegacyCompatibilityOrigin {
             unknown_paths,
             represented,
             binding: inputs.binding.clone(),
+            #[cfg(test)]
             base: settings_base,
-            effective,
-            overlay_diagnostics: overlay.diagnostics("settings overlay"),
         }
     }
 
@@ -710,6 +693,7 @@ impl LegacyCompatibilityOrigin {
     /// The future inventory owner supplies authorization and full target CAS;
     /// this pure seam verifies that evidence against the captured source and
     /// complete origin binding, without scanning or mutating any matrix.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)] // Complete original source and target CAS evidence.
     pub(crate) fn bind_original_selection(
         &self,
@@ -831,7 +815,6 @@ impl LegacyCompatibilityOrigin {
     }
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn collect_origin_units(
     value: &Value,
     out: &mut std::collections::BTreeSet<LegacyOriginUnit>,

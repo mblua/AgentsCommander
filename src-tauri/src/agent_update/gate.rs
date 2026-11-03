@@ -114,7 +114,10 @@ impl AgentUpdateGate {
     }
 
     pub fn mark_started(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).started = true;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .started = true;
     }
 
     /// Register the prompt for `command` and return the answer channel. The
@@ -125,7 +128,10 @@ impl AgentUpdateGate {
         command: &str,
         label: &str,
     ) -> tokio::sync::oneshot::Receiver<bool> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert!(
             !state.pending.contains_key(command),
             "duplicate prompt for {command}"
@@ -172,7 +178,10 @@ impl AgentUpdateGate {
     /// prompt's reference iff THIS call removed the entry, and the caller then
     /// owns the single `agent_update_prompt_closed` emission for that prompt.
     pub fn drop_pending(&self, command: &str) -> Option<AgentUpdateCommandRef> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::take_pending(&mut state, command).map(|pending| AgentUpdateCommandRef {
             command: command.to_string(),
             label: pending.label,
@@ -188,7 +197,10 @@ impl AgentUpdateGate {
     /// #1551: kept for its pinned semantics; production answers go through
     /// `answer_prompt`, which records the policy and owns the closure.
     pub fn resolve_answer(&self, command: &str, enabled: bool) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(pending) = Self::take_pending(&mut state, command) else {
             return false;
         };
@@ -202,7 +214,10 @@ impl AgentUpdateGate {
     /// UNCONDITIONALLY, which is why only `answer_prompt` may call it in
     /// production, after classifying inside the serial section.
     pub fn claim_answer(&self, command: &str, enabled: bool) -> AnswerClaim {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let taken = Self::take_pending(&mut state, command);
         state.answered.insert(command.to_string(), enabled);
         match taken {
@@ -243,7 +258,10 @@ impl AgentUpdateGate {
     /// #1551 - classification for `answer_prompt`, one lock take. `answered` is
     /// checked first: once a policy is recorded, no further answer may persist.
     pub fn prompt_state(&self, command: &str) -> PromptState {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(value) = state.answered.get(command) {
             return PromptState::Answered(*value);
         }
@@ -272,7 +290,10 @@ impl AgentUpdateGate {
         label: &str,
         install_before: Option<InstallState>,
     ) -> AgentUpdateNode {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.running.iter().any(|entry| entry.command == command) {
             state.running.push(AgentUpdateCommandRef {
                 command: command.to_string(),
@@ -297,7 +318,10 @@ impl AgentUpdateGate {
     /// result is upserted, in ONE lock take, so no snapshot can observe a command
     /// in both `running` and `results`.
     pub fn mark_command_finished(&self, result: AgentUpdateResult) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let command = result.command.clone();
         state.running.retain(|entry| entry.command != command);
         if let Some(existing) = state
@@ -317,7 +341,10 @@ impl AgentUpdateGate {
     /// #1551 - round 5: the pass starts with its node set in ONE lock take, so no
     /// snapshot can observe started without nodes.
     pub fn mark_started_with_nodes(&self, nodes: Vec<AgentUpdateNode>) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.started = true;
         state.cancel_all_requested = false;
         state.controls = nodes
@@ -337,7 +364,10 @@ impl AgentUpdateGate {
     /// Returns the ref iff THIS call removed the node, so the loop emits
     /// `agent_update_command_skipped` exactly once per skipped command.
     pub fn mark_command_skipped(&self, command: &str) -> Option<AgentUpdateCommandRef> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let index = state
             .nodes
             .iter()
@@ -355,14 +385,14 @@ impl AgentUpdateGate {
     pub fn is_finished(&self) -> bool {
         self.state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .finished
     }
 
     pub fn was_prompted(&self, command: &str) -> bool {
         self.state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prompted
             .contains(command)
     }
@@ -370,7 +400,10 @@ impl AgentUpdateGate {
     /// Store the final pass snapshot while admission remains closed. The sole
     /// supervisor calls this before emitting `agent_updates_finished`.
     pub(crate) fn store_final_results(&self, results: Vec<AgentUpdateResult>) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.pending.clear();
         state.pending_prompt = None;
         state.running.clear();
@@ -382,7 +415,10 @@ impl AgentUpdateGate {
     /// the pass-finished event is enqueued before any waiter can return.
     pub(crate) fn release_finished(&self) {
         {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for control in state.controls.values_mut() {
                 control.phase = TargetPhase::Terminal;
                 control.terminal_publication.open();
@@ -400,7 +436,10 @@ impl AgentUpdateGate {
     }
 
     pub fn snapshot(&self) -> AgentUpdateStatus {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ordered_controls = state
             .nodes
             .iter()
@@ -440,7 +479,10 @@ impl AgentUpdateGate {
         command: &str,
         work: TargetWork,
     ) -> Option<(u64, tokio::sync::watch::Receiver<bool>)> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let control = state.controls.get_mut(command)?;
         if control.phase == TargetPhase::Terminal {
             return None;
@@ -456,7 +498,10 @@ impl AgentUpdateGate {
     }
 
     pub(crate) fn commit_step(&self, command: &str, work: TargetWork, epoch: u64) -> StepAdmission {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(control) = state.controls.get_mut(command) else {
             return StepAdmission::Cancelled;
         };
@@ -477,7 +522,10 @@ impl AgentUpdateGate {
     #[cfg(test)]
     pub(crate) async fn hold_after_step_begin_for_test(&self, command: &str) {
         let (ready, release) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let hook = state
                 .controls
                 .get_mut(command)
@@ -498,7 +546,10 @@ impl AgentUpdateGate {
     #[cfg(test)]
     pub(crate) async fn hold_after_step_commit_for_test(&self, command: &str) {
         let (ready, release) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let hook = state
                 .controls
                 .get_mut(command)
@@ -519,7 +570,10 @@ impl AgentUpdateGate {
     #[cfg(test)]
     pub(crate) async fn hold_response_release_for_test(&self, command: &str) {
         let (ready, release) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let hook = state
                 .controls
                 .get_mut(command)
@@ -540,7 +594,10 @@ impl AgentUpdateGate {
     #[cfg(test)]
     pub(crate) async fn hold_after_post_probe_settled_for_test(&self, command: &str) {
         let (ready, release) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let hook = state
                 .controls
                 .get_mut(command)
@@ -559,7 +616,10 @@ impl AgentUpdateGate {
     }
 
     pub(crate) fn owner_installed(&self, command: &str, work: TargetWork, epoch: u64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         {
             let Some(control) = state.controls.get_mut(command) else {
                 return;
@@ -579,7 +639,10 @@ impl AgentUpdateGate {
     }
 
     pub(crate) fn owner_observed_cancellation(&self, command: &str, work: TargetWork, epoch: u64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(control) = state.controls.get_mut(command) {
             if control.claim == TargetClaim::CancellationReserved {
                 control.phase = TargetPhase::Cleanup(work, epoch);
@@ -598,7 +661,10 @@ impl AgentUpdateGate {
         work: TargetWork,
         epoch: u64,
     ) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(control) = state.controls.get_mut(command) else {
             return false;
         };
@@ -615,7 +681,10 @@ impl AgentUpdateGate {
     }
 
     pub(crate) fn owner_returned(&self, command: &str, work: TargetWork, epoch: u64) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(control) = state.controls.get_mut(command) else {
             return false;
         };
@@ -631,7 +700,7 @@ impl AgentUpdateGate {
     pub(crate) fn cancellation_reserved(&self, command: &str) -> bool {
         self.state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .controls
             .get(command)
             .is_some_and(|control| control.claim == TargetClaim::CancellationReserved)
@@ -641,7 +710,7 @@ impl AgentUpdateGate {
         if let Some(control) = self
             .state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .controls
             .get(command)
         {
@@ -655,7 +724,7 @@ impl AgentUpdateGate {
         let fence = self
             .state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .controls
             .get(command)
             .filter(|control| control.claim == TargetClaim::CancellationReserved)
@@ -670,7 +739,10 @@ impl AgentUpdateGate {
         result: AgentUpdateResult,
         allow_reserved: bool,
     ) -> TerminalPublish {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let command = result.command.clone();
         let Some(control) = state.controls.get(&command) else {
             return TerminalPublish::AlreadyTerminal;
@@ -718,7 +790,7 @@ impl AgentUpdateGate {
         if let Some(control) = self
             .state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .controls
             .get_mut(command)
         {
@@ -731,7 +803,10 @@ impl AgentUpdateGate {
 
     pub(crate) async fn wait_all_terminal_publications(&self) {
         let fences: Vec<Arc<AsyncFence>> = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state
                 .nodes
                 .iter()
@@ -747,14 +822,17 @@ impl AgentUpdateGate {
     pub(crate) fn supervisor_failure_reserved(&self, command: &str) -> bool {
         self.state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .controls
             .get(command)
             .is_some_and(|control| control.supervisor_failure)
     }
 
     pub(crate) fn reserve_supervisor_failure(&self) -> Option<AgentUpdateCommandRef> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let commands: Vec<String> = state
             .nodes
             .iter()
@@ -798,7 +876,10 @@ impl AgentUpdateGate {
     }
 
     pub(crate) fn unfinished_nodes(&self) -> Vec<AgentUpdateNode> {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .nodes
             .iter()
@@ -822,7 +903,7 @@ impl AgentUpdateGate {
             if let Some(registered) = self
                 .wait_registered
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
             {
                 let _ = registered.send(());
@@ -830,7 +911,7 @@ impl AgentUpdateGate {
             if self
                 .state
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .finished
             {
                 return;

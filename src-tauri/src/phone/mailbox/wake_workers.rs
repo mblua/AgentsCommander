@@ -74,7 +74,7 @@ impl MailboxPoller {
         tauri::async_runtime::spawn(async move {
             // Initial poll without delay (matches original behavior)
             if let Err(e) = self.poll(&app).await {
-                log::warn!("MailboxPoller error: {}", e);
+                log::warn!("MailboxPoller error: {e}");
             }
             loop {
                 tokio::select! {
@@ -91,7 +91,7 @@ impl MailboxPoller {
                     }
                     _ = tokio::time::sleep(self.poll_interval) => {
                         if let Err(e) = self.poll(&app).await {
-                            log::warn!("MailboxPoller error: {}", e);
+                            log::warn!("MailboxPoller error: {e}");
                         }
                     }
                 }
@@ -124,7 +124,7 @@ impl MailboxPoller {
             }
             let old_enough = mailbox_disk::mailbox_path_symlink_metadata(&path)
                 .ok()
-                .filter(|metadata| metadata.is_file())
+                .filter(std::fs::Metadata::is_file)
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(|modified| modified.elapsed().ok())
                 .is_some_and(|age| age >= std::time::Duration::from_secs(10 * 60));
@@ -178,9 +178,7 @@ impl MailboxPoller {
                 Ok(settled) => settled,
                 Err(error) => {
                     log::warn!(
-                        "[mailbox] #1399 could not inspect receipts for unowned claim {}: {}",
-                        id,
-                        error
+                        "[mailbox] #1399 could not inspect receipts for unowned claim {id}: {error}"
                     );
                     continue;
                 }
@@ -199,29 +197,19 @@ impl MailboxPoller {
                             self.settle_response_source(&origin, false);
                         }
                         log::warn!(
-                            "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
-                            id
+                            "[mailbox] #1399 dropped unowned claim {id} (receipt already present)"
                         );
                     }
-                    Err(error) => log::warn!(
-                        "[mailbox] #1399 could not drop unowned claim {}: {}",
-                        id,
-                        error
-                    ),
+                    Err(error) => {
+                        log::warn!("[mailbox] #1399 could not drop unowned claim {id}: {error}");
+                    }
                 }
             } else if let Err(error) = mailbox_disk::rename_mailbox_document(claim, &origin) {
                 // Retried on the next cycle. This is the only reason a locked
                 // file cannot wedge the message.
-                log::warn!(
-                    "[mailbox] #1399 could not return unowned claim {}: {}",
-                    id,
-                    error
-                );
+                log::warn!("[mailbox] #1399 could not return unowned claim {id}: {error}");
             } else {
-                log::warn!(
-                    "[mailbox] #1399 returned unowned claim {} to the outbox",
-                    id
-                );
+                log::warn!("[mailbox] #1399 returned unowned claim {id} to the outbox");
             }
         }
     }
@@ -269,7 +257,7 @@ impl MailboxPoller {
             }
             Some(Err(crate::pty::manager::ResponseCloseError::Unavailable)) | None => None,
             Some(Err(error)) => {
-                return WakeHandoff::ClaimFailed(format!("response close admission: {:?}", error))
+                return WakeHandoff::ClaimFailed(format!("response close admission: {error:?}"))
             }
             Some(Ok(reservation)) => Some(reservation),
         };
@@ -301,7 +289,7 @@ impl MailboxPoller {
             return if error.kind() == std::io::ErrorKind::NotFound {
                 WakeHandoff::LaneBusy // the file vanished; nothing to do
             } else {
-                WakeHandoff::ClaimFailed(format!("Failed to claim outbox message: {}", error))
+                WakeHandoff::ClaimFailed(format!("Failed to claim outbox message: {error}"))
             };
         }
         let worker_app = app.clone();
@@ -342,8 +330,7 @@ impl MailboxPoller {
                 // drains, and the condition must be greppable.
                 log::error!(
                     "[mailbox] #1399 wake worker task failed (a claim may be stranded until its \
-                    outcome drains): {}",
-                    error
+                    outcome drains): {error}"
                 );
             }
         }
@@ -364,12 +351,12 @@ impl MailboxPoller {
             // metadata/access failure into `false`, release the ledger, and either
             // count against an absent origin or resurrect an unreadable receipt.
             let settlement = (|| -> Result<(bool, bool, bool), String> {
-                let claim_present = claim.try_exists().map_err(|error| {
-                    format!("could not inspect owned claim {:?}: {}", claim, error)
-                })?;
-                let origin_present = path.try_exists().map_err(|error| {
-                    format!("could not inspect owned origin {:?}: {}", path, error)
-                })?;
+                let claim_present = claim
+                    .try_exists()
+                    .map_err(|error| format!("could not inspect owned claim {claim:?}: {error}"))?;
+                let origin_present = path
+                    .try_exists()
+                    .map_err(|error| format!("could not inspect owned origin {path:?}: {error}"))?;
                 let payload_receipt_present = wake_claim_has_settled_receipt(&path)?;
                 let claim_has_receipt = claim_present && payload_receipt_present;
 
@@ -386,7 +373,7 @@ impl MailboxPoller {
                         )
                     };
                     disk_result.map_err(|error| {
-                        format!("could not {} owned claim {:?}: {}", action, claim, error)
+                        format!("could not {action} owned claim {claim:?}: {error}")
                     })?;
                 }
 
@@ -397,10 +384,8 @@ impl MailboxPoller {
                 Ok(state) => state,
                 Err(error) => {
                     log::warn!(
-                        "[mailbox] #1399 could not settle owned claim {:?}: {}; outcome remains \
-                        pending",
-                        claim,
-                        error
+                        "[mailbox] #1399 could not settle owned claim {claim:?}: {error}; \
+                         outcome remains pending"
                     );
                     // The receiver snapshot is already finite, so this report is
                     // not observed again until a later drain and cannot spin here.
@@ -408,8 +393,7 @@ impl MailboxPoller {
                         // Structurally unreachable while `self` owns the receiver.
                         // Keep ledger ownership; durable disk state is the restart fallback.
                         log::error!(
-                            "[mailbox] #1399 could not requeue outcome for owned claim {:?}",
-                            claim
+                            "[mailbox] #1399 could not requeue outcome for owned claim {claim:?}"
                         );
                     }
                     continue;
@@ -426,8 +410,7 @@ impl MailboxPoller {
                 // deletion or corruption visible before preserving today's
                 // outcome-recording behavior.
                 log::error!(
-                    "[mailbox] #1399 outcome has no claim, origin, or payload receipt: {:?}",
-                    path
+                    "[mailbox] #1399 outcome has no claim, origin, or payload receipt: {path:?}"
                 );
             }
 
@@ -449,13 +432,13 @@ impl MailboxPoller {
     }
 
     /// (#1399) Deterministic replacement for "the delivery finished inside
-    /// poll()". Takes no `AppHandle`: joining and draining need none, and the
+    /// `poll()`". Takes no `AppHandle`: joining and draining need none, and the
     /// drain is the SHARED `drain_wake_outcomes` rather than a second copy.
     #[cfg(test)]
     pub(crate) async fn settle_wake_workers(&mut self) {
         while let Some(result) = self.wake_workers.join_next().await {
             if let Err(error) = result {
-                log::warn!("[mailbox] wake worker failed: {}", error);
+                log::warn!("[mailbox] wake worker failed: {error}");
             }
         }
         self.drain_wake_outcomes().await;
@@ -480,7 +463,7 @@ impl MailboxPoller {
                 retain_unarchived_session_dirs(session_dirs, &roots)
             })
             .await
-            .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
+            .map_err(|e| format!("archived mailbox-session filter task failed: {e}"))?
         };
 
         let mut startup_project_paths = repo_paths.clone();
@@ -708,9 +691,7 @@ impl MailboxPoller {
                             self.retry_tracker.remove(&path);
                         }
                         Err(error) => log::warn!(
-                            "[mailbox] prior clear attempt settlement pending {:?}: {}",
-                            path,
-                            error
+                            "[mailbox] prior clear attempt settlement pending {path:?}: {error}"
                         ),
                     }
                     continue;
@@ -806,12 +787,7 @@ impl MailboxPoller {
                     None
                 };
                 if let Some(held_by) = held_by {
-                    log::debug!(
-                        "[mailbox] message delivery deferred by {} {:?}: {}",
-                        held_by,
-                        path,
-                        e
-                    );
+                    log::debug!("[mailbox] message delivery deferred by {held_by} {path:?}: {e}");
                     return;
                 }
                 let is_permanent = is_permanent_delivery_error(&e);
@@ -854,10 +830,7 @@ impl MailboxPoller {
                             .get(&path)
                             .map(|s| s.attempt_count)
                             .unwrap_or(0);
-                        format!(
-                            "Undeliverable after {} attempts. Last error: {}",
-                            attempts, e
-                        )
+                        format!("Undeliverable after {attempts} attempts. Last error: {e}")
                     };
 
                     // §130-stuck-file: on read failure (e.g. non-UTF-8 non-BOM file),
@@ -877,7 +850,7 @@ impl MailboxPoller {
                     if rejected {
                         self.retry_tracker.remove(&path);
                     } else {
-                        log::error!("Failed to reject outbox message {:?}; will retry", path);
+                        log::error!("Failed to reject outbox message {path:?}; will retry");
                     }
                 }
             }

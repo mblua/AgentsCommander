@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use portable_pty::{MasterPty, PtySize};
 use uuid::Uuid;
@@ -12,7 +12,7 @@ pub(super) struct PtyInstance {
     pub(super) writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub(super) child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     pub(super) job: Option<crate::pty::job::JobObject>,
-    /// #973 (C) - the size the ConPTY is actually at, so a resize that changes nothing is
+    /// #973 (C) - the size the `ConPTY` is actually at, so a resize that changes nothing is
     /// not sent to the child. Seeded from the size the PTY was opened at.
     pub(super) size: Mutex<(u16, u16)>,
     /// #973 (B) - held closed until the child has rendered something. See `StartupGate`.
@@ -26,7 +26,7 @@ pub(super) struct PtyInstance {
 /// #973 (B) - a PTY resize that lands while a coding agent's TUI is starting up makes it
 /// redraw its still-empty viewport and lose the wakeup for the content that becomes ready
 /// right after. The terminal stays blank, the process stays alive, and any keypress paints
-/// it. Measured on a bare ConPTY: a resize in that window blanks Codex 8 times in 10.
+/// it. Measured on a bare `ConPTY`: a resize in that window blanks Codex 8 times in 10.
 ///
 /// So AC does not resize a child that has not rendered anything yet. Resizes are held, the
 /// LAST one is kept, and it is applied the moment the child paints - which is the earliest
@@ -75,10 +75,10 @@ pub(super) enum StartupGate {
 
 /// #973 - decide what to do with a resize the view asked for, and do it. This is the whole
 /// of B and C, and it is a free function over the instance so it can be tested against a
-/// real ConPTY: the backend itself cannot be built in a unit test, because its `GitWatcher`
+/// real `ConPTY`: the backend itself cannot be built in a unit test, because its `GitWatcher`
 /// needs a Tauri `AppHandle`, and none of that has anything to do with resizing a PTY.
 ///
-/// Returns whether the ConPTY was actually resized.
+/// Returns whether the `ConPTY` was actually resized.
 pub(super) fn resize_instance(
     instance: &PtyInstance,
     id: Uuid,
@@ -113,7 +113,7 @@ pub(super) fn resize_instance(
         let mut gate = instance
             .startup_gate
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(PoisonError::into_inner);
         if gate.on_resize(cols, rows).is_none() {
             log::debug!(
                 "[pty] resize {id} to {cols}x{rows} held: the child has not rendered yet (#973)"
@@ -126,12 +126,12 @@ pub(super) fn resize_instance(
 
 /// #973 (C) - do not tell the child about a resize that is not a resize.
 ///
-/// ConPTY delivers even a same-size `ResizePseudoConsole` to the client as a real event, and
+/// `ConPTY` delivers even a same-size `ResizePseudoConsole` to the client as a real event, and
 /// the view fires 5-20 identical resizes per attach (`TerminalView.tsx:85-95`, a double
 /// `requestAnimationFrame` plus a `ResizeObserver`), so today every attach shakes the child
 /// for nothing.
 ///
-/// The cached size is written only AFTER the ConPTY has accepted the new one: if the resize
+/// The cached size is written only AFTER the `ConPTY` has accepted the new one: if the resize
 /// failed and we recorded it anyway, every retry would be skipped as a no-op and the PTY
 /// would be wedged at the wrong size forever.
 pub(super) fn send_size_to_conpty(
@@ -159,7 +159,10 @@ pub(super) fn send_size_to_conpty(
     }
 
     {
-        let master = instance.master.lock().unwrap_or_else(|e| e.into_inner());
+        let master = instance
+            .master
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         master
             .resize(PtySize {
                 rows,
@@ -174,13 +177,13 @@ pub(super) fn send_size_to_conpty(
 }
 
 /// #973 (B) - the child has rendered something, so the startup window is behind us. Open the
-/// gate for good and hand the ConPTY the size the view has been waiting to give it.
+/// gate for good and hand the `ConPTY` the size the view has been waiting to give it.
 ///
-/// Returns the size the ConPTY ACTUALLY took, so the caller can bring the vt100 screen along
+/// Returns the size the `ConPTY` ACTUALLY took, so the caller can bring the vt100 screen along
 /// with it - and `None` if nothing was held, or the held size was refused, or it failed.
 ///
 /// Free over the instance, like `resize_instance`, so the hand-over can be driven by a test
-/// against a real ConPTY: `open_startup_gate`, its only caller, needs a `LocalProcessBackend`,
+/// against a real `ConPTY`: `open_startup_gate`, its only caller, needs a `LocalProcessBackend`,
 /// whose `GitWatcher` needs a Tauri `AppHandle`. A test that re-implemented these lines rather
 /// than calling them would not be testing this code.
 pub(super) fn hand_over_held_size(instance: &PtyInstance, id: Uuid) -> Option<(u16, u16)> {
@@ -191,7 +194,7 @@ pub(super) fn hand_over_held_size(instance: &PtyInstance, id: Uuid) -> Option<(u
         let mut gate = instance
             .startup_gate
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(PoisonError::into_inner);
         gate.open()
     };
     // Only a fast path for the read loop; the gate above is the truth. Publishing it late is
@@ -217,7 +220,7 @@ pub(super) fn hand_over_held_size(instance: &PtyInstance, id: Uuid) -> Option<(u
 }
 
 impl StartupGate {
-    /// The view asked for a resize. Returns the size to hand the ConPTY, or `None` if the
+    /// The view asked for a resize. Returns the size to hand the `ConPTY`, or `None` if the
     /// child is still starting up and it must be held.
     pub(super) fn on_resize(&mut self, cols: u16, rows: u16) -> Option<(u16, u16)> {
         match self {
@@ -244,12 +247,12 @@ impl PtyInstance {
     ///
     /// The frontend calls resize unconditionally (`TerminalView.tsx:85-95`, from a double
     /// `requestAnimationFrame` plus a `ResizeObserver`), so one attach fires 5-20 identical
-    /// resizes, and ConPTY hands every one of them to the child as a real event.
+    /// resizes, and `ConPTY` hands every one of them to the child as a real event.
     pub(super) fn size_changed(&self, cols: u16, rows: u16) -> bool {
         Self::size_changed_in(&self.size, cols, rows)
     }
 
-    /// Only after the ConPTY has actually accepted it: if `resize` failed, the cached size
+    /// Only after the `ConPTY` has actually accepted it: if `resize` failed, the cached size
     /// must stay stale so the next attempt is not skipped as a no-op and the PTY is not
     /// wedged at the wrong size forever.
     pub(super) fn remember_size(&self, cols: u16, rows: u16) {
@@ -259,11 +262,11 @@ impl PtyInstance {
     // The two free functions above are the whole of C. Split out so they can be tested
     // without a live ConPTY: a `PtyInstance` owns real `MasterPty` handles.
     pub(super) fn size_changed_in(size: &Mutex<(u16, u16)>, cols: u16, rows: u16) -> bool {
-        *size.lock().unwrap_or_else(|e| e.into_inner()) != (cols, rows)
+        *size.lock().unwrap_or_else(PoisonError::into_inner) != (cols, rows)
     }
 
     pub(super) fn remember_size_in(size: &Mutex<(u16, u16)>, cols: u16, rows: u16) {
-        *size.lock().unwrap_or_else(|e| e.into_inner()) = (cols, rows);
+        *size.lock().unwrap_or_else(PoisonError::into_inner) = (cols, rows);
     }
 }
 

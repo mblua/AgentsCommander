@@ -44,20 +44,17 @@ async fn resolve_wg_root(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     session_id: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let uuid = Uuid::parse_str(session_id).map_err(|e| format!("invalid session id: {}", e))?;
+    let uuid = Uuid::parse_str(session_id).map_err(|e| format!("invalid session id: {e}"))?;
     let mgr = session_mgr.read().await.clone();
     let cwd = mgr
         .get_session(uuid)
         .await
         .map(|s| s.working_directory.clone())
-        .ok_or_else(|| format!("session {} not found", session_id))?;
+        .ok_or_else(|| format!("session {session_id} not found"))?;
     drop(mgr);
 
     let task_path = find_workgroup_task_path_for_cwd(&cwd).ok_or_else(|| {
-        format!(
-            "session {} is not under a `room-*` or legacy `wg-*` Room directory",
-            session_id
-        )
+        format!("session {session_id} is not under a `room-*` or legacy `wg-*` Room directory")
     })?;
     let wg_root = task_path
         .parent()
@@ -89,16 +86,12 @@ fn validate_wg_root(
     // 1. Canonicalize: proves existence and resolves `..` + symlinks to a real
     //    absolute path. Mirrors open_in_explorer (window.rs). A traversal or a
     //    symlink that escapes is normalized here and then caught by gate 4.
-    let canonical = canonical_project_path(Path::new(workgroup_root)).map_err(|_| {
-        format!(
-            "room root does not exist or is inaccessible: {}",
-            workgroup_root
-        )
-    })?;
+    let canonical = canonical_project_path(Path::new(workgroup_root))
+        .map_err(|_| format!("room root does not exist or is inaccessible: {workgroup_root}"))?;
 
     // 2. Must be a directory.
     if !project_path_is_dir(&canonical) {
-        return Err(format!("room root is not a directory: {}", workgroup_root));
+        return Err(format!("room root is not a directory: {workgroup_root}"));
     }
 
     // 3. Leaf name must start with `wg-`. Matches the discovery invariant and the
@@ -110,8 +103,7 @@ fn validate_wg_root(
         .is_some_and(crate::config::entity_prefix::has_entity_prefix);
     if !is_wg {
         return Err(format!(
-            "room root is not a `room-*` or legacy `wg-*` Room directory: {}",
-            workgroup_root
+            "room root is not a `room-*` or legacy `wg-*` Room directory: {workgroup_root}"
         ));
     }
 
@@ -128,8 +120,7 @@ fn validate_wg_root(
     });
     if !under_known_root {
         return Err(format!(
-            "room root is not under a configured project path: {}",
-            workgroup_root
+            "room root is not under a configured project path: {workgroup_root}"
         ));
     }
 
@@ -147,8 +138,7 @@ fn validate_wg_root(
         .is_some_and(is_ac_root_name);
     if !parent_is_ac_root {
         return Err(format!(
-            "room root is not a direct child of an .ac workspace dir: {}",
-            workgroup_root
+            "room root is not a direct child of an .ac workspace dir: {workgroup_root}"
         ));
     }
 
@@ -162,7 +152,7 @@ fn strip_unc(p: &Path) -> String {
             .strip_prefix(r"\\?\UNC\")
             .or_else(|| raw.strip_prefix(r"\??\UNC\"))
         {
-            return format!(r"\\{}", rest);
+            return format!(r"\\{rest}");
         }
         if let Some(rest) = raw
             .strip_prefix(r"\\?\")
@@ -288,11 +278,7 @@ pub async fn task_set_title(
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
     let outcome =
         task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
-    log::info!(
-        "[task] set_title for session {} -> {:?}",
-        session_id,
-        outcome
-    );
+    log::info!("[task] set_title for session {session_id} -> {outcome:?}");
 
     publish_committed_task(&app, wg_root).await
 }
@@ -308,14 +294,14 @@ pub async fn task_clean(
 ) -> Result<TaskUpdateResult, String> {
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
     let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
-    log::info!("[task] clean for session {} -> {:?}", session_id, outcome);
+    log::info!("[task] clean for session {session_id} -> {outcome:?}");
 
     publish_committed_task(&app, wg_root).await
 }
 
 /// Clear the workgroup TASK.md addressed directly by its `wg-*` root path, for
 /// cold workgroups with no live/exited session to resolve from (#545). Mirrors
-/// `task_clean` after the root is resolved: same perform + emit + TaskUpdateResult.
+/// `task_clean` after the root is resolved: same perform + emit + `TaskUpdateResult`.
 /// The raw path is validated by `validate_wg_root` before any write (see the
 /// helper docs for the threat model).
 #[tauri::command]
@@ -337,7 +323,7 @@ pub async fn task_clean_at(
     let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
 
     let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
-    log::info!("[task] clean_at for {} -> {:?}", workgroup_root, outcome);
+    log::info!("[task] clean_at for {workgroup_root} -> {outcome:?}");
 
     publish_committed_task(&app, wg_root).await
 }
@@ -345,7 +331,7 @@ pub async fn task_clean_at(
 /// Set the YAML-frontmatter `title:` field of the workgroup TASK.md addressed
 /// directly by its `wg-*` root path, for cold workgroups with no live/exited
 /// session to resolve from (#1536). Mirrors `task_set_title` after validation:
-/// same perform + emit + TaskUpdateResult. The raw path is validated by
+/// same perform + emit + `TaskUpdateResult`. The raw path is validated by
 /// `validate_wg_root` before any write (see the helper docs for the threat
 /// model).
 #[tauri::command]
@@ -370,11 +356,7 @@ pub async fn task_set_title_at(
 
     let outcome =
         task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
-    log::info!(
-        "[task] set_title_at for {} -> {:?}",
-        workgroup_root,
-        outcome
-    );
+    log::info!("[task] set_title_at for {workgroup_root} -> {outcome:?}");
 
     publish_committed_task(&app, wg_root).await
 }

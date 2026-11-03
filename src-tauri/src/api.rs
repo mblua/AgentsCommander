@@ -250,8 +250,7 @@ pub async fn wait_for_startup_ready(
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("API server startup task ended before reporting readiness".to_string()),
         Err(_) => Err(format!(
-            "API server did not report bind readiness within {:?}",
-            STARTUP_READY_TIMEOUT
+            "API server did not report bind readiness within {STARTUP_READY_TIMEOUT:?}"
         )),
     }
 }
@@ -342,7 +341,7 @@ where
         Some(s) => Arc::new(s),
         None => {
             let message = "Cannot resolve config_dir for API server".to_string();
-            log::error!("[api-server] {}; API server not started", message);
+            log::error!("[api-server] {message}; API server not started");
             let _ = readiness_tx.send(Err(message));
             return ApiServerStart {
                 join_handle: app_handle.spawn_owned(Box::pin(async {})),
@@ -353,7 +352,7 @@ where
     let message_store = match startup_message_store(&app_handle) {
         Ok(store) => store,
         Err(message) => {
-            log::error!("[api-server] {}; API server not started", message);
+            log::error!("[api-server] {message}; API server not started");
             let _send_result = readiness_tx.send(Err(message));
             return ApiServerStart {
                 join_handle: app_handle.spawn_owned(Box::pin(async {})),
@@ -385,8 +384,8 @@ where
                         Ok(a) => a,
                         Err(e) => {
                             let message =
-                                format!("Invalid API server bind address {}:{}: {}", bind, port, e);
-                            log::error!("[api-server] {}", message);
+                                format!("Invalid API server bind address {bind}:{port}: {e}");
+                            log::error!("[api-server] {message}");
                             if let Some(tx) = readiness_tx.take() {
                                 let _ = tx.send(Err(message));
                             }
@@ -402,8 +401,8 @@ where
                 match tokio::net::TcpListener::bind(addr).await {
                     Ok(l) => (l, addr),
                     Err(e) => {
-                        let message = format!("API server bind failed on {}: {}", addr, e);
-                        log::error!("[api-server] {}; API server not started", message);
+                        let message = format!("API server bind failed on {addr}: {e}");
+                        log::error!("[api-server] {message}; API server not started");
                         if let Some(tx) = readiness_tx.take() {
                             let _ = tx.send(Err(message));
                         }
@@ -420,8 +419,8 @@ where
                     (l, addr)
                 }
                 Err(e) => {
-                    let message = format!("API server could not adopt prebound listener: {}", e);
-                    log::error!("[api-server] {}; API server not started", message);
+                    let message = format!("API server could not adopt prebound listener: {e}");
+                    log::error!("[api-server] {message}; API server not started");
                     if let Some(tx) = readiness_tx.take() {
                         let _ = tx.send(Err(message));
                     }
@@ -482,8 +481,8 @@ async fn serve_api<J: ApiJoinTask>(
     shutdown: CancellationToken,
     dispatcher_handle: J,
 ) {
-    log::info!("[api-server] listening on http://{}", addr);
-    println!("[api-server] listening on http://{}", addr);
+    log::info!("[api-server] listening on http://{addr}");
+    println!("[api-server] listening on http://{addr}");
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let server_shutdown = shutdown.clone();
@@ -494,7 +493,7 @@ async fn serve_api<J: ApiJoinTask>(
         })
         .await
     {
-        log::error!("[api-server] server error: {}", e);
+        log::error!("[api-server] server error: {e}");
     }
     shutdown.cancel();
     wait_for_dispatcher(dispatcher_handle, "server-stop").await;
@@ -504,12 +503,11 @@ async fn serve_api<J: ApiJoinTask>(
 fn warn_on_non_loopback(addr: SocketAddr) {
     if !addr.ip().is_loopback() {
         let warning = format!(
-            "[api-server] WARNING: bound on {} (non-loopback); ensure a host firewall \
-restricts this port to the Docker/WSL subnet.",
-            addr
+            "[api-server] WARNING: bound on {addr} (non-loopback); ensure a host firewall \
+restricts this port to the Docker/WSL subnet."
         );
-        log::warn!("{}", warning);
-        println!("{}", warning);
+        log::warn!("{warning}");
+        println!("{warning}");
     }
 }
 
@@ -531,17 +529,12 @@ async fn wait_for_dispatcher<J: ApiJoinTask>(mut dispatcher_handle: J, reason: &
     match tokio::time::timeout(DISPATCHER_SHUTDOWN_TIMEOUT, &mut dispatcher_handle).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
-            log::warn!(
-                "[api-server] dispatcher task failed during {} shutdown: {}",
-                reason,
-                err
-            );
+            log::warn!("[api-server] dispatcher task failed during {reason} shutdown: {err}");
         }
         Err(_) => {
             log::warn!(
-                "[api-server] dispatcher did not stop within {:?} during {}; aborting",
-                DISPATCHER_SHUTDOWN_TIMEOUT,
-                reason
+                "[api-server] dispatcher did not stop within \
+                 {DISPATCHER_SHUTDOWN_TIMEOUT:?} during {reason}; aborting"
             );
             dispatcher_handle.abort();
         }
