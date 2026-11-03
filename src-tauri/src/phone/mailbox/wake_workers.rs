@@ -201,7 +201,7 @@ impl MailboxPoller {
                         );
                     }
                     Err(error) => {
-                        log::warn!("[mailbox] #1399 could not drop unowned claim {id}: {error}")
+                        log::warn!("[mailbox] #1399 could not drop unowned claim {id}: {error}");
                     }
                 }
             } else if let Err(error) = mailbox_disk::rename_mailbox_document(claim, &origin) {
