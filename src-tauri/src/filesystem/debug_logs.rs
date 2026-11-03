@@ -39,3 +39,21 @@ pub(crate) fn create_app_log(path: &Path) -> io::Result<File> {
 pub(crate) fn append_app_log(file: &mut File, bytes: &[u8]) -> io::Result<()> {
     file.write_all(bytes)
 }
+
+pub(crate) fn flush_diagnostic_file(file: &mut File) -> io::Result<()> {
+    file.flush()
+}
+
+pub(crate) fn sync_diagnostic_file(file: &File) -> io::Result<()> {
+    file.sync_data()
+}
+
+pub(crate) fn list_diagnostic_files(dir: &Path) -> io::Result<Vec<std::path::PathBuf>> {
+    std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect()
+}
+
+pub(crate) fn read_diagnostic_file(path: &Path) -> io::Result<Vec<u8>> {
+    std::fs::read(path)
+}
