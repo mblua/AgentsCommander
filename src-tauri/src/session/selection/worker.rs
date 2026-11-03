@@ -179,8 +179,8 @@ impl<R: Runtime> SelectionTransaction<R> {
                 let result = execute_route_loss(transaction, session_id, exit_code).await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
-                        "[selection] route-loss caller dropped before result delivery session={}",
-                        session_id
+                        "[selection] route-loss caller dropped before result delivery \
+                        session={session_id}"
                     );
                 }
             }
@@ -192,7 +192,7 @@ impl<R: Runtime> SelectionTransaction<R> {
                     .conditional_close(transaction, request.ticket)
                     .await
                 {
-                    log::warn!("[response-close] conditional operation failed: {}", error);
+                    log::warn!("[response-close] conditional operation failed: {error}");
                 }
                 hold.release();
             }
@@ -498,10 +498,7 @@ impl<R: Runtime> SelectionTransaction<R> {
                 // Only receipt permits the producer to certify work.
                 let sent = response.send(result);
                 if sent.is_err() {
-                    log::debug!(
-                        "[selection] create finalizer caller dropped session={}",
-                        session_id
-                    );
+                    log::debug!("[selection] create finalizer caller dropped session={session_id}");
                 }
             }
             None => {
@@ -530,9 +527,9 @@ impl<R: Runtime> SelectionTransaction<R> {
                 .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
-                    "[selection] resource-kill caller dropped before result delivery session={}",
-                    session_id
-                );
+                        "[selection] resource-kill caller dropped before result delivery \
+                        session={session_id}"
+                    );
                 }
             }
             CoordinatorJob::Detach {
@@ -550,8 +547,8 @@ impl<R: Runtime> SelectionTransaction<R> {
                 .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
-                        "[selection] detach caller dropped before result delivery session={}",
-                        session_id
+                        "[selection] detach caller dropped before result delivery \
+                        session={session_id}"
                     );
                 }
             }
@@ -564,8 +561,8 @@ impl<R: Runtime> SelectionTransaction<R> {
                         .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
-                        "[selection] attach caller dropped before result delivery session={}",
-                        session_id
+                        "[selection] attach caller dropped before result delivery \
+                        session={session_id}"
                     );
                 }
             }

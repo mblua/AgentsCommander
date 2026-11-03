@@ -212,9 +212,8 @@ pub(super) async fn process_sample(
         } => {
             if percent > 100 {
                 log::error!(
-                    "[context-alert] impossible producer reading session={} percent={}",
-                    session_id,
-                    percent
+                    "[context-alert] impossible producer reading session={session_id} \
+                    percent={percent}"
                 );
                 return;
             }
@@ -346,7 +345,7 @@ fn set_policy_error(
 
 fn clear_policy_error(session: &mut SessionAlertState, session_id: Uuid) -> bool {
     if session.policy_error.take().is_some() {
-        log::info!("[context-alert] policy recovered session={}", session_id);
+        log::info!("[context-alert] policy recovered session={session_id}");
         true
     } else {
         false
@@ -370,10 +369,7 @@ fn set_runtime_error(session: &mut SessionAlertState, session_id: Uuid, message:
 
 fn clear_runtime_error(session: &mut SessionAlertState, session_id: Uuid) -> bool {
     if session.runtime_error.take().is_some() {
-        log::info!(
-            "[context-alert] resolution recovered session={}",
-            session_id
-        );
+        log::info!("[context-alert] resolution recovered session={session_id}");
         true
     } else {
         false
@@ -651,7 +647,7 @@ pub(super) async fn dispatch_due_batch(
                 let delivery = tokio::spawn(async move { runtime.deliver_attempt(attempt).await });
                 let result = match delivery.await {
                     Ok(result) => result,
-                    Err(error) => Err(format!("Context alert delivery task failed: {}", error)),
+                    Err(error) => Err(format!("Context alert delivery task failed: {error}")),
                 };
                 let _ = tx.send(DeliveryCompletion { generation, result }).await;
             });
@@ -666,11 +662,7 @@ pub(super) async fn dispatch_due_batch(
             reason,
             current_policy,
         } => {
-            log::debug!(
-                "[context-alert] canceled pending generation={} reason={}",
-                generation,
-                reason
-            );
+            log::debug!("[context-alert] canceled pending generation={generation} reason={reason}");
             reconcile_canceled_batch(
                 state,
                 batch.session_id,
@@ -739,9 +731,7 @@ pub(super) async fn handle_delivery_completion(
     let slot_generation = slot.generation;
     if let Err(error) = slot.join.await {
         log::warn!(
-            "[context-alert] delivery wrapper generation={} join failed: {}",
-            slot_generation,
-            error
+            "[context-alert] delivery wrapper generation={slot_generation} join failed: {error}"
         );
     }
     if slot_generation != completion.generation {
@@ -801,10 +791,7 @@ async fn finish_in_flight_shutdown(
     if let Some(slot) = in_flight.take() {
         slot.cancellation.cancel();
         if let Err(error) = slot.join.await {
-            log::warn!(
-                "[context-alert] delivery wrapper join failed during shutdown: {}",
-                error
-            );
+            log::warn!("[context-alert] delivery wrapper join failed during shutdown: {error}");
         } else if let Ok(completion) = completion_rx.try_recv() {
             if let Err(error) = completion.result {
                 log::warn!(
