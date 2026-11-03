@@ -43,7 +43,7 @@ pub const PTY_WRAP_FIXED: usize = "\n[Message from ] \n\r".len();
 /// expansion against `PTY_WRAP_FIXED` — any edit to the literal here trips
 /// the test before the clamp accounting can drift.
 pub fn format_pty_wrap(from: &str, body: &str) -> String {
-    format!("\n[Message from {}] {}\n\r", from, body)
+    format!("\n[Message from {from}] {body}\n\r")
 }
 
 /// Fixed-char portion of the `--get-output` response-marker framing that the
@@ -69,17 +69,13 @@ pub const PTY_RESPONSE_MARKER_FIXED: usize =
 /// does not size marker overhead.
 pub fn format_pty_wrap_with_markers(from: &str, body: &str, request_id: &str) -> String {
     format!(
-        "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... \
-        %%AC_RESPONSE::{}::END%%)\n\r",
-        from, body, request_id, request_id
+        "\n[Message from {from}] {body}\n(Reply between markers: \
+        %%AC_RESPONSE::{request_id}::START%% ... %%AC_RESPONSE::{request_id}::END%%)\n\r"
     )
 }
 
 pub fn format_file_notification(abs_path: &str) -> String {
-    format!(
-        "{}{}{}",
-        FILE_NOTIFICATION_PREFIX, abs_path, FILE_NOTIFICATION_SUFFIX
-    )
+    format!("{FILE_NOTIFICATION_PREFIX}{abs_path}{FILE_NOTIFICATION_SUFFIX}")
 }
 
 pub fn parse_file_notification(body: &str) -> Option<&str> {
@@ -214,7 +210,7 @@ pub fn agent_short_name(full_name: &str) -> String {
         Some((prefix, suffix)) => {
             let short_prefix = parse_wg_prefix(prefix).unwrap_or_else(|| sanitize(prefix));
             let short_suffix = sanitize(suffix);
-            format!("{}-{}", short_prefix, short_suffix)
+            format!("{short_prefix}-{short_suffix}")
         }
         None => sanitize(full_name),
     }
@@ -440,7 +436,7 @@ pub fn create_message_file(
         let filename = if n == 0 {
             base_filename.to_string()
         } else {
-            format!("{}.{}.md", stem, n)
+            format!("{stem}.{n}.md")
         };
         let path = messaging_dir.join(&filename);
         match phone_messaging::create_message_stage(&path) {
