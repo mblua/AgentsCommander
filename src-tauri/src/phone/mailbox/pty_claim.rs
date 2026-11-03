@@ -291,8 +291,8 @@ pub(crate) async fn reject_pty_input_before_boundary(
         }
         Err(_) => {
             log::warn!(
-                "[pty-input] rejection persistence failed id={} code=terminal_store_failed",
-                injection_id
+                "[pty-input] rejection persistence failed id={injection_id} \
+                code=terminal_store_failed"
             );
             false
         }
@@ -902,7 +902,7 @@ impl ResponseWakeWork {
         *self
             .attempt
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = Some(attempt.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(attempt.clone());
         ResponseCandidateDisposal(attempt)
     }
 }

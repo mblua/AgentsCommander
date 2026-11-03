@@ -382,10 +382,7 @@ impl MailboxPoller {
         NoteFut: std::future::Future<Output = ()> + Send,
     {
         let Some(lease) = pending.legacy_lease(session_id) else {
-            log::warn!(
-                "[mailbox] clear driver missing legacy reservation for {}",
-                session_id
-            );
+            log::warn!("[mailbox] clear driver missing legacy reservation for {session_id}");
             return clear_self_handoff_outcome(
                 session_id,
                 root,
@@ -450,10 +447,8 @@ impl MailboxPoller {
                     // Greppable abandon line so a silently-dropped clear/handoff is diagnosable.
                     // The CLI already warned the caller it is best-effort.
                     log::warn!(
-                        "[mailbox] self-handoff-and-clear ABANDONED for session {}: {} (agent may \
-                        re-issue)",
-                        session_id,
-                        reason
+                        "[mailbox] self-handoff-and-clear ABANDONED for session {session_id}: \
+                        {reason} (agent may re-issue)"
                     );
                     break Some(reason.to_string());
                 }
@@ -786,11 +781,8 @@ where
     // The idle-to-final-Enter race matches the remote logical-clear path.
     if let Err(e) = inject(session_id, clear_text.to_string()).await {
         log::warn!(
-            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: \
-            {}",
-            clear_text,
-            session_id,
-            e
+            "[mailbox] self-handoff-and-clear: {clear_text} injection failed for session \
+            {session_id}: {e}"
         );
         return Err(e); // clear may have been partially submitted
     }
@@ -964,11 +956,8 @@ fn archive_self_forget(root: &Path, session_id: Uuid, action: &str) -> Option<Fo
         ),
         Ok(None) => {}
         Err(e) => log::warn!(
-            "[mailbox] {}: SELF-FORGET.md archive failed for session \
-            {} (non-fatal): {}",
-            action,
-            session_id,
-            e
+            "[mailbox] {action}: SELF-FORGET.md archive failed for session \
+            {session_id} (non-fatal): {e}"
         ),
     }
     forgotten_summary

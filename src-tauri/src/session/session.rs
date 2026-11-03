@@ -38,7 +38,7 @@ pub const TEMP_SESSION_PREFIX: &str = "[temp]";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRepo {
-    /// Repo dir name with leading "repo-" stripped (e.g. "AgentsCommander").
+    /// Repo dir name with leading "repo-" stripped (e.g. `AgentsCommander`).
     pub label: String,
     /// Absolute path to the repo root. Local Git status detection runs in this directory.
     pub source_path: String,
@@ -132,7 +132,7 @@ pub struct Session {
     /// Monotonic generation counter for `git_repos`. Bumped on every refresh/watcher write.
     /// Used for compare-and-swap in `set_git_repos_if_gen` so an in-flight watcher poll
     /// cannot overwrite a refresh that landed during its detection window. Runtime-only;
-    /// never persisted and never exposed via SessionInfo.
+    /// never persisted and never exposed via `SessionInfo`.
     #[serde(skip)]
     pub git_repos_gen: u64,
     /// #1682 - a message write reached one of this session's arming sites in this process, so its
@@ -383,7 +383,7 @@ pub struct SessionInfo {
     #[serde(default)]
     pub profile_outdated: bool,
     /// Internal carrier for sessions persistence. Not part of the frontend contract;
-    /// the UI uses BridgeInfo events/listing for live bridge state.
+    /// the UI uses `BridgeInfo` events/listing for live bridge state.
     #[serde(skip)]
     pub telegram_bot_id: Option<String>,
     #[serde(default)]
