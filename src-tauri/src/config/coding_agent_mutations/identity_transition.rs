@@ -267,14 +267,9 @@ pub(super) fn commit_source_candidate_internal(
         capture,
         &operation_id,
     )?;
-    let (witness, targets) = source_discovery_evidence(settings)?;
-    authority.verify_complete_discovery(&witness, &targets)?;
+    verify_complete_source_discovery(settings, &authority)?;
     verify_source_classification(&authority, source)?;
-    let rediscover = || -> Result<(), SourceTransitionError> {
-        let (witness, targets) = source_discovery_evidence(settings)?;
-        authority.verify_complete_discovery(&witness, &targets)?;
-        Ok(())
-    };
+    let rediscover = || verify_complete_source_discovery(settings, &authority);
     let validate = || authority.validate(&identity, &lease, context);
     source_durable_boundary(
         "beforeIntent",
@@ -315,6 +310,15 @@ pub(super) fn commit_source_candidate_internal(
         #[cfg(test)]
         controls,
     )
+}
+
+fn verify_complete_source_discovery(
+    settings: &AppSettings,
+    authority: &crate::config::settings::SourceInventoryProof,
+) -> Result<(), SourceTransitionError> {
+    let (witness, targets) = source_discovery_evidence(settings)?;
+    authority.verify_complete_discovery(&witness, &targets)?;
+    Ok(())
 }
 
 fn source_candidate_admission(
@@ -660,25 +664,14 @@ pub(super) fn drive_identity_transition(
     complete_identity_transition(&packets, context, progress, after, &persist, reload)
 }
 
-fn complete_identity_transition(
+fn verify_transition_references(
     packets: &packets::TransitionPackets<'_>,
-    context: &crate::config::settings::SourceReadContext,
-    mut progress: crate::config::settings::SourceLocalProgress,
-    after: crate::config::settings::SourceRevision,
-    persist: &dyn Fn(
-        crate::config::settings::SourceLocalProgress,
-    )
-        -> Result<crate::config::settings::SourceLocalProgress, SourceTransitionError>,
-    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    progress: &crate::config::settings::SourceLocalProgress,
+) -> Result<(), SourceTransitionError> {
     use crate::config::coding_agent_profiles::apply_identity_reference_patch;
-    use crate::config::settings::{
-        release_identity_reference_pair_guarded, source_complete_proof,
-        verify_completed_source_target, SourceCoordinationError, SourceReceipt,
-    };
-    let lease = packets.lease;
-    let operation_id = packets.operation_id;
+    use crate::config::settings::{verify_completed_source_target, SourceCoordinationError};
     let inventory = packets.authority.inventory();
+    let operation_id = packets.operation_id;
     let rediscover = packets.rediscover;
     let validate = packets.validate;
     #[cfg(test)]
@@ -708,6 +701,32 @@ fn complete_identity_transition(
             controls,
         )?;
     }
+    Ok(())
+}
+
+fn complete_identity_transition(
+    packets: &packets::TransitionPackets<'_>,
+    context: &crate::config::settings::SourceReadContext,
+    mut progress: crate::config::settings::SourceLocalProgress,
+    after: crate::config::settings::SourceRevision,
+    persist: &dyn Fn(
+        crate::config::settings::SourceLocalProgress,
+    )
+        -> Result<crate::config::settings::SourceLocalProgress, SourceTransitionError>,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    use crate::config::settings::{
+        release_identity_reference_pair_guarded, source_complete_proof,
+        verify_completed_source_target, SourceCoordinationError, SourceReceipt,
+    };
+    let lease = packets.lease;
+    let operation_id = packets.operation_id;
+    let inventory = packets.authority.inventory();
+    let rediscover = packets.rediscover;
+    let validate = packets.validate;
+    #[cfg(test)]
+    let controls = packets.controls;
+    verify_transition_references(packets, &progress)?;
     if !progress.refs_verified {
         progress.refs_verified = true;
         progress = persist(progress)?;
