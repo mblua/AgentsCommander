@@ -8,15 +8,16 @@ use super::super::{
     canonical_profile_source, capture_registered_profile_gate, captured_registered_profile_object,
     is_valid_profile_letter, normalized_profile_cells, physical_profile_rows,
     project_physical_profiles, recheck_registered_profile_gate, validate_agent_commands,
-    ProfileCellConfig,
+    ProfileCellConfig, ProfileSlotConfig,
 };
 use super::{
     agent_file_checkpoint, agent_file_decode, agent_file_read, read_agent_file_snapshot,
-    AgentFileEdits, AgentFileRowAction, AgentFileSaveOutcome, AgentFileSaveReply,
-    AgentFileSourceMenu, AgentFileSourcePreferences, SelectedAgentFileSnapshot,
+    AgentFileEdits, AgentFileProfileEdit, AgentFileRowAction, AgentFileRowEdit,
+    AgentFileSaveOutcome, AgentFileSaveReply, AgentFileSourceMenu, AgentFileSourcePreferences,
+    SelectedAgentFileSnapshot,
 };
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 pub(crate) fn prepare_agent_file_edits(
@@ -30,8 +31,38 @@ pub(crate) fn prepare_agent_file_edits(
         .get_mut("agents")
         .and_then(Value::as_array_mut)
         .ok_or("invalidAgentsArray")?;
+    apply_agent_row_edits(rows, key, registered, &edits.rows)?;
+    let mut canonical = canonical_profile_source(before, &incoming, registered)?;
+    let hashes = physical_profile_rows(&canonical, registered)?;
+    let owner = if registered {
+        canonical
+            .get_mut("codingAgentProfiles")
+            .and_then(Value::as_object_mut)
+            .ok_or("invalidProfileContainer")?
+    } else {
+        canonical.as_object_mut().ok_or("invalidSource")?
+    };
+    apply_profile_set_edits(owner, &hashes, &edits.profile_sets)?;
+    if let Some(slots) = &edits.profile_slots {
+        apply_profile_slot_edits(owner, slots)?;
+    }
+    let (agents, profiles) = agent_file_decode(&canonical, registered)?;
+    validate_agent_commands(&AppSettings {
+        agents,
+        coding_agent_profiles: profiles,
+        ..AppSettings::default()
+    })?;
+    Ok(canonical)
+}
+
+fn apply_agent_row_edits(
+    rows: &mut Vec<Value>,
+    key: &str,
+    registered: bool,
+    row_edits: &[AgentFileRowEdit],
+) -> Result<(), String> {
     let mut seen = HashSet::new();
-    for edit in &edits.rows {
+    for edit in row_edits {
         if edit.entry_hint.is_empty() || !seen.insert(&edit.entry_hint) {
             return Err("duplicateOrInvalidRowEdit".into());
         }
@@ -58,70 +89,7 @@ pub(crate) fn prepare_agent_file_edits(
         });
         let object = row.as_object_mut().ok_or("invalidAgentRow")?;
         for (field, value) in &edit.patch {
-            let common = [
-                "label",
-                "color",
-                "command",
-                "baseCommand",
-                "envs",
-                "instructionsFilename",
-                "configSeed",
-                "isolatedHome",
-            ];
-            let owned = common.contains(&field.as_str())
-                || (registered
-                    && [
-                        "preflight",
-                        "preflightTimeoutSeconds",
-                        "contextRegex",
-                        "backend",
-                        "order",
-                        "blockingMenus",
-                    ]
-                    .contains(&field.as_str()))
-                || (!registered
-                    && [
-                        "description",
-                        "remove",
-                        "removable",
-                        "updateCommands",
-                        "autoUpdate",
-                        "idleBurst",
-                        "installCommands",
-                    ]
-                    .contains(&field.as_str()));
-            if !owned {
-                return Err("uneditablePatchKey".into());
-            }
-            if value.is_null() {
-                if ![
-                    "preflight",
-                    "preflightTimeoutSeconds",
-                    "instructionsFilename",
-                    "configSeed",
-                    "contextRegex",
-                    "order",
-                    "blockingMenus",
-                ]
-                .contains(&field.as_str())
-                {
-                    return Err("requiredFieldRemoval".into());
-                }
-                object.remove(field);
-            } else {
-                if field == "order"
-                    && value
-                        .as_u64()
-                        .is_none_or(|order| order > u64::from(u32::MAX))
-                {
-                    return Err("invalidAgentOrder".into());
-                }
-                if field == "command" || field == "baseCommand" {
-                    object.remove("command");
-                    object.remove("baseCommand");
-                }
-                object.insert(field.clone(), value.clone());
-            }
+            apply_agent_row_field(object, field, value, registered)?;
         }
         if index.is_none() && !registered {
             let complete = serde_json::json!({"schemaVersion":2,"agents":[row.clone()]});
@@ -136,18 +104,89 @@ pub(crate) fn prepare_agent_file_edits(
             rows.push(row);
         }
     }
-    let mut canonical = canonical_profile_source(before, &incoming, registered)?;
-    let hashes = physical_profile_rows(&canonical, registered)?;
-    let owner = if registered {
-        canonical
-            .get_mut("codingAgentProfiles")
-            .and_then(Value::as_object_mut)
-            .ok_or("invalidProfileContainer")?
+    Ok(())
+}
+
+fn apply_agent_row_field(
+    object: &mut Map<String, Value>,
+    field: &String,
+    value: &Value,
+    registered: bool,
+) -> Result<(), String> {
+    let common = [
+        "label",
+        "color",
+        "command",
+        "baseCommand",
+        "envs",
+        "instructionsFilename",
+        "configSeed",
+        "isolatedHome",
+    ];
+    let owned = common.contains(&field.as_str())
+        || (registered
+            && [
+                "preflight",
+                "preflightTimeoutSeconds",
+                "contextRegex",
+                "backend",
+                "order",
+                "blockingMenus",
+            ]
+            .contains(&field.as_str()))
+        || (!registered
+            && [
+                "description",
+                "remove",
+                "removable",
+                "updateCommands",
+                "autoUpdate",
+                "idleBurst",
+                "installCommands",
+            ]
+            .contains(&field.as_str()));
+    if !owned {
+        return Err("uneditablePatchKey".into());
+    }
+    if value.is_null() {
+        if ![
+            "preflight",
+            "preflightTimeoutSeconds",
+            "instructionsFilename",
+            "configSeed",
+            "contextRegex",
+            "order",
+            "blockingMenus",
+        ]
+        .contains(&field.as_str())
+        {
+            return Err("requiredFieldRemoval".into());
+        }
+        object.remove(field);
     } else {
-        canonical.as_object_mut().ok_or("invalidSource")?
-    };
+        if field == "order"
+            && value
+                .as_u64()
+                .is_none_or(|order| order > u64::from(u32::MAX))
+        {
+            return Err("invalidAgentOrder".into());
+        }
+        if field == "command" || field == "baseCommand" {
+            object.remove("command");
+            object.remove("baseCommand");
+        }
+        object.insert(field.clone(), value.clone());
+    }
+    Ok(())
+}
+
+fn apply_profile_set_edits(
+    owner: &mut Map<String, Value>,
+    hashes: &BTreeMap<String, String>,
+    profile_sets: &[AgentFileProfileEdit],
+) -> Result<(), String> {
     let mut seen = HashSet::new();
-    for edit in &edits.profile_sets {
+    for edit in profile_sets {
         if !seen.insert(&edit.base_hash) {
             return Err("duplicateProfileEdit".into());
         }
@@ -169,40 +208,10 @@ pub(crate) fn prepare_agent_file_edits(
             if !is_valid_profile_letter(letter) {
                 return Err("invalidProfileLetter".into());
             }
-            let cell: ProfileCellConfig =
-                serde_json::from_value(raw.clone()).map_err(|_| "invalidProfileCells")?;
-            let mut cell = serde_json::to_value(cell).map_err(|_| "invalidProfileCells")?;
-            let known = [
-                "enabled",
-                "command",
-                "additionalArguments",
-                "env",
-                "notes",
-                "preflight",
-                "preflightTimeoutSeconds",
-                "id_hash",
-                "id_hash_debug",
-            ];
             let old = previous
                 .and_then(|set| set.get(letter))
                 .and_then(Value::as_object);
-            for (field, value) in raw.as_object().ok_or("invalidProfileCells")? {
-                if !known.contains(&field.as_str())
-                    && old.and_then(|old| old.get(field)) != Some(value)
-                {
-                    return Err("uneditableProfileKey".into());
-                }
-            }
-            if let Some(old) = old {
-                for (field, value) in old {
-                    if !known.contains(&field.as_str()) {
-                        cell.as_object_mut()
-                            .unwrap()
-                            .insert(field.clone(), value.clone());
-                    }
-                }
-            }
-            submitted.insert(letter.clone(), cell);
+            submitted.insert(letter.clone(), submitted_profile_cell(raw, old)?);
         }
         let cells = normalized_profile_cells(Some(&Value::Object(submitted)))?;
         owner
@@ -219,30 +228,61 @@ pub(crate) fn prepare_agent_file_edits(
                 serde_json::to_value(&edit.labels).map_err(|_| "invalidProfileLabels")?,
             );
     }
-    if let Some(slots) = &edits.profile_slots {
-        if slots.keys().any(|letter| !is_valid_profile_letter(letter)) {
-            return Err("invalidProfileLetter".into());
+    Ok(())
+}
+
+fn submitted_profile_cell(raw: &Value, old: Option<&Map<String, Value>>) -> Result<Value, String> {
+    let cell: ProfileCellConfig =
+        serde_json::from_value(raw.clone()).map_err(|_| "invalidProfileCells")?;
+    let mut cell = serde_json::to_value(cell).map_err(|_| "invalidProfileCells")?;
+    let known = [
+        "enabled",
+        "command",
+        "additionalArguments",
+        "env",
+        "notes",
+        "preflight",
+        "preflightTimeoutSeconds",
+        "id_hash",
+        "id_hash_debug",
+    ];
+    for (field, value) in raw.as_object().ok_or("invalidProfileCells")? {
+        if !known.contains(&field.as_str()) && old.and_then(|old| old.get(field)) != Some(value) {
+            return Err("uneditableProfileKey".into());
         }
-        let mut replacement = Map::new();
-        for (letter, slot) in slots {
-            let mut raw = owner
-                .get("profileSlots")
-                .and_then(|slots| slots.get(letter))
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            raw.insert("label".into(), Value::String(slot.label.clone()));
-            replacement.insert(letter.clone(), Value::Object(raw));
-        }
-        owner.insert("profileSlots".into(), Value::Object(replacement));
     }
-    let (agents, profiles) = agent_file_decode(&canonical, registered)?;
-    validate_agent_commands(&AppSettings {
-        agents,
-        coding_agent_profiles: profiles,
-        ..AppSettings::default()
-    })?;
-    Ok(canonical)
+    if let Some(old) = old {
+        for (field, value) in old {
+            if !known.contains(&field.as_str()) {
+                cell.as_object_mut()
+                    .unwrap()
+                    .insert(field.clone(), value.clone());
+            }
+        }
+    }
+    Ok(cell)
+}
+
+fn apply_profile_slot_edits(
+    owner: &mut Map<String, Value>,
+    slots: &BTreeMap<String, ProfileSlotConfig>,
+) -> Result<(), String> {
+    if slots.keys().any(|letter| !is_valid_profile_letter(letter)) {
+        return Err("invalidProfileLetter".into());
+    }
+    let mut replacement = Map::new();
+    for (letter, slot) in slots {
+        let mut raw = owner
+            .get("profileSlots")
+            .and_then(|slots| slots.get(letter))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        raw.insert("label".into(), Value::String(slot.label.clone()));
+        replacement.insert(letter.clone(), Value::Object(raw));
+    }
+    owner.insert("profileSlots".into(), Value::Object(replacement));
+    Ok(())
 }
 
 pub(crate) fn save_agent_file_locked(

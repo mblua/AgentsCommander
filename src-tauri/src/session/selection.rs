@@ -935,13 +935,13 @@ impl SelectionCoordinator {
                 drop(slot.send(envelope));
                 let mut queue = self.inner.receiver.lock().unwrap().take().unwrap();
                 queue.close();
-                worker::drain_after_shutdown(t, &mut queue).await;
+                SelectionTransaction::drain_after_shutdown(t, &mut queue).await;
                 assert!(receiver.await.unwrap().is_err());
             }
             SelectionPortTestExit::ReceiverLoss => {
                 drop(slot);
                 drop(receiver);
-                worker::execute_envelope(t, envelope).await;
+                SelectionTransaction::execute_envelope(t, envelope).await;
             }
             SelectionPortTestExit::FailedEnqueue => unreachable!(),
         }

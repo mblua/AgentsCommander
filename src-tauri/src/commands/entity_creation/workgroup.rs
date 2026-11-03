@@ -79,7 +79,7 @@ pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
 }
 
 // Compatibility entry point for callers without an existing operation.
-#[allow(dead_code)]
+#[allow(dead_code)] // test-only; cfg(test) kills Origin::OnDisk outside #3595
 pub(crate) async fn create_workgroup_on_disk(
     args: WorkgroupDiskCreateArgs,
 ) -> Result<WorkgroupCloneResult, String> {
@@ -292,7 +292,7 @@ pub(super) fn initialize_replica_config_on_disk(
 /// and the on-disk path provably share the same guarded initializer instead of
 /// a second destructive writer.
 // Compatibility entry point for callers without creation diagnostics.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn initialize_workgroup_replicas_on_disk(
     ac_root: &Path,
     wg_dir: &Path,

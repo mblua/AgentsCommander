@@ -71,7 +71,6 @@ pub(crate) fn hold_agents_layer_state_for_test() -> impl Sized {
 }
 
 // Dormant until the P05 carrier publication consumer is wired.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentsPublicationLockError {
     WouldBlock,
@@ -81,7 +80,6 @@ pub(crate) enum AgentsPublicationLockError {
 /// Runs a synchronous publication step while the suppression registry is locked.
 /// The callback receives the unreadable flag and must not await or reacquire
 /// this registry. Contention and poison never authorize publication.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn try_with_agents_layer_publication_state<R>(
     dir: &Path,
     f: impl FnOnce(bool) -> R,
@@ -91,7 +89,6 @@ pub(crate) fn try_with_agents_layer_publication_state<R>(
 
 // A local registry lets poison tests exercise this same path without poisoning
 // the process-wide registry used by other settings tests.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn try_with_agents_layer_publication_state_in<R>(
     registry: &std::sync::Mutex<HashSet<PathBuf>>,
     dir: &Path,

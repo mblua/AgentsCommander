@@ -369,6 +369,20 @@ impl ContainerShutdownWorkRegistry {
             .workers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.reap_finished_workers(&mut workers, context);
+        self.spawn_missing_workers(&mut workers, context);
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .worker_count
+    }
+
+    fn reap_finished_workers(
+        &self,
+        workers: &mut Vec<std::thread::JoinHandle<()>>,
+        context: &ContainerShutdownWorkContext,
+    ) {
         let mut retained = Vec::with_capacity(workers.len());
         for worker in workers.drain(..) {
             if worker.is_finished() {
@@ -396,7 +410,13 @@ impl ContainerShutdownWorkRegistry {
             }
         }
         *workers = retained;
+    }
 
+    fn spawn_missing_workers(
+        &self,
+        workers: &mut Vec<std::thread::JoinHandle<()>>,
+        context: &ContainerShutdownWorkContext,
+    ) {
         let deficit = {
             let state = self
                 .shared
@@ -469,11 +489,6 @@ impl ContainerShutdownWorkRegistry {
                 }
             }
         }
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .worker_count
     }
 
     pub(super) fn begin_shutdown(&self, deadline: Instant) -> bool {
@@ -502,6 +517,12 @@ impl ContainerShutdownWorkRegistry {
                 retained: vec!["reason=shutdown-begin state=retained".to_string()],
             };
         }
+        let drained = self.wait_for_drain_until(deadline);
+        let worker_lock_retained = self.join_finished_workers_bounded();
+        self.shutdown_report(drained, worker_lock_retained)
+    }
+
+    fn wait_for_drain_until(&self, deadline: Instant) -> bool {
         let mut drained = false;
         loop {
             let Some(mut state) = lock_mutex_until(&self.shared.state, deadline) else {
@@ -526,34 +547,43 @@ impl ContainerShutdownWorkRegistry {
             }
             std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
         }
+        drained
+    }
 
-        let mut worker_lock_retained = false;
-        if let Ok(mut workers) = self.workers.try_lock() {
-            let mut unfinished = Vec::new();
-            for worker in workers.drain(..) {
-                if worker.is_finished() {
-                    if worker.join().is_err() {
-                        {
-                            let mut state = self
-                                .shared
-                                .state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            decrement_shutdown_worker_count(&mut state, &self.shared);
-                        }
-                        log::error!(
-                            "[container-transport] shutdown worker panicked during bounded join"
-                        );
+    /// Returns `true` when the workers lock was unavailable and their ownership is retained.
+    fn join_finished_workers_bounded(&self) -> bool {
+        let Ok(mut workers) = self.workers.try_lock() else {
+            return true;
+        };
+        let mut unfinished = Vec::new();
+        for worker in workers.drain(..) {
+            if worker.is_finished() {
+                if worker.join().is_err() {
+                    {
+                        let mut state = self
+                            .shared
+                            .state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        decrement_shutdown_worker_count(&mut state, &self.shared);
                     }
-                } else {
-                    unfinished.push(worker);
+                    log::error!(
+                        "[container-transport] shutdown worker panicked during bounded join"
+                    );
                 }
+            } else {
+                unfinished.push(worker);
             }
-            *workers = unfinished;
-        } else {
-            worker_lock_retained = true;
         }
+        *workers = unfinished;
+        false
+    }
 
+    fn shutdown_report(
+        &self,
+        drained: bool,
+        worker_lock_retained: bool,
+    ) -> ContainerShutdownReport {
         let state = match self.shared.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
