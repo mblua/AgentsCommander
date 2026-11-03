@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::config::coordinator_clocks::{ClockEntry, CoordinatorClocksState};
@@ -24,10 +23,24 @@ const REPAINT_GRACE: Duration = Duration::from_secs(10);
 /// can be killed) and is also the spawn-race guard (untracked -> not established).
 const WAKE_GRACE: Duration = Duration::from_secs(30);
 
-/// Spawn the auto-close watcher. Mirrors MailboxPoller/LoopScheduler::start
-/// (lib.rs): a tokio task with a `select!` on the shutdown token.
-pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
-    tauri::async_runtime::spawn(async move {
+pub(crate) trait AutoCloseServices: Send + Sync {
+    fn settings(&self) -> SettingsState;
+    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>>;
+    fn pty_manager(&self) -> Arc<Mutex<PtyManager>>;
+    fn idle_detector(&self) -> Arc<IdleDetector>;
+    fn selection_coordinator(&self) -> SelectionCoordinator;
+    fn coordinator_clocks(&self) -> Option<CoordinatorClocksState>;
+    fn idle_badge(&self, cwd: &str, at: DateTime<Utc>);
+    fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>);
+}
+
+pub(crate) struct AutoClose;
+
+impl AutoClose {
+    pub(crate) async fn run<S: AutoCloseServices>(
+        services: S,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) {
         // (#580) per-team last-emitted anchor (seconds) for the badge dedup;
         // task-local, self-bounded via `retain` in `tick`.
         let mut last_emitted: HashMap<String, i64> = HashMap::new();
@@ -36,12 +49,12 @@ pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
                 biased;
                 _ = shutdown.token().cancelled() => break,
                 _ = tokio::time::sleep(TICK) => {
-                    tick(&app, &mut last_emitted).await;
-                    flush_clocks(&app); // debounced disk flush for the badge store
+                    tick(&services, &mut last_emitted).await;
+                    flush_clocks(&services); // debounced disk flush for the badge store
                 }
             }
         }
-    });
+    }
 }
 
 /// (#580) Effective "post-repaint" silence for ONE live member, or None if the
@@ -185,16 +198,16 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
     coord_id_of_team == Some(destroyed_id)
 }
 
-async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<String, i64>) {
-    let settings = app.state::<SettingsState>();
+async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<String, i64>) {
+    let settings = services.settings();
     let close_settings = read_close_settings(&settings).await;
     // NOTE: the enabled/timeout gate moved DOWN: steps 1-2 (advance + badge
     // emit) run even when auto-close is OFF (the badge is informational). Only
     // step 3 (kill) is gated.
 
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-    let idle = app.state::<Arc<IdleDetector>>();
+    let session_mgr = services.session_manager();
+    let pty_mgr = services.pty_manager();
+    let idle = services.idle_detector();
 
     // Agent-owned sessions + their team key (read lock released here).
     let candidates = session_mgr.read().await.agent_team_members().await;
@@ -227,7 +240,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     let coord_ids = session_mgr.read().await.coordinator_ids_by_team().await;
 
     let now_secs = Utc::now().timestamp();
-    let Some(clocks) = app.try_state::<CoordinatorClocksState>() else {
+    let Some(clocks) = services.coordinator_clocks() else {
         return;
     };
 
@@ -240,10 +253,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
         g.snapshot()
     };
     emit_idle_badges(&coord_refs, &snap, now_secs, last_emitted, |cwd, dt| {
-        let _ = app.emit(
-            "coordinator_clock_updated",
-            serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": dt.to_rfc3339() }),
-        );
+        services.idle_badge(cwd, dt);
     });
 
     // (3) KILL: gated on the setting; SAME anchor; established + timeout.
@@ -264,7 +274,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     if to_close.is_empty() {
         return;
     }
-    let coordinator = app.state::<SelectionCoordinator>();
+    let coordinator = services.selection_coordinator();
     let teams = AutoCloseTeams {
         id_to_team: &id_to_team,
         coord_refs: &coord_refs,
@@ -289,14 +299,9 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     // the persisted marker). mark_auto_closed is idempotent (emits once). The
     // dirty flag set here is persisted by flush_clocks at the end of this tick.
     if !coord_closed_teams.is_empty() {
-        if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-        {
+        if let Some(clocks) = services.coordinator_clocks() {
             mark_closed_badges(&clocks, &coord_closed_teams, &coord_refs, |cwd, now| {
-                let _ = app.emit(
-                    "coordinator_auto_close_changed",
-                    serde_json::json!({ "replicaPath": cwd, "autoClosedAt": now.to_rfc3339() }),
-                );
+                services.auto_closed_badge(cwd, now);
             });
         }
     }
@@ -639,10 +644,8 @@ async fn confirm_closeable_members(
     confirmed
 }
 
-fn flush_clocks<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if let Some(clocks) =
-        app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-    {
+fn flush_clocks(services: &impl AutoCloseServices) {
+    if let Some(clocks) = services.coordinator_clocks() {
         // Snapshot under the lock, RELEASE, then do disk I/O (the same mutex is
         // on the keystroke path; never hold it across the ~260ms rename).
         let snapshot = {
