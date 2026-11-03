@@ -524,16 +524,12 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
         for (letter, cell) in cells {
             if !is_valid_profile_letter(letter) {
                 return Err(format!(
-                    "Coding agent profile cell '{}:{}' uses an invalid profile letter",
-                    agent_id, letter
+                    "Coding agent profile cell '{agent_id}:{letter}' uses an invalid profile letter"
                 ));
             }
             validate_env_map(
                 &cell.env,
-                &format!(
-                    "Coding agent profile '{}:{}' env settings",
-                    agent_id, letter
-                ),
+                &format!("Coding agent profile '{agent_id}:{letter}' env settings"),
             )?;
             if cell.enabled && !cell.command.trim().is_empty() {
                 // #597 - the cell holds params appended to the agent base command,
@@ -553,7 +549,7 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                 let effective =
                     crate::config::agent_command::compose_effective_command(base, &cell.command);
                 validate_agent_command_text(
-                    &format!("Coding agent profile '{}:{}'", agent_id, letter),
+                    &format!("Coding agent profile '{agent_id}:{letter}'"),
                     &effective,
                 )?;
             }
@@ -563,8 +559,7 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
     for (agent_name, letter) in &settings.coding_agent_profiles.default_profile_by_agent {
         if !is_valid_profile_letter(letter) {
             return Err(format!(
-                "Coding agent default profile for '{}' must be A through Z",
-                agent_name
+                "Coding agent default profile for '{agent_name}' must be A through Z"
             ));
         }
     }
