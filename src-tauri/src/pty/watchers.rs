@@ -465,7 +465,7 @@ pub struct WatcherEngine {
 
 impl WatcherEngine {
     // Retained for unit-test callers; production uses new_with_activity_factory.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn new(
         backends: Arc<dyn WatcherBackendSource>,
         patterns: Arc<dyn WatcherPatternSource>,
@@ -624,7 +624,7 @@ impl WatcherEngine {
     }
 
     // Retained for unit-test assertions; production does not query registration.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()
