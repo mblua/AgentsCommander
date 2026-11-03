@@ -48,7 +48,7 @@ impl MailboxPoller {
         let mut matches = filter_sessions_by_fqn(&sessions, agent_name);
 
         if matches.is_empty() {
-            log::warn!("[mailbox] No session matched for '{}'", agent_name);
+            log::warn!("[mailbox] No session matched for '{agent_name}'");
             return None;
         }
 
@@ -89,7 +89,7 @@ impl MailboxPoller {
     /// Find ALL viable CWD-matched candidates for wake delivery, sorted by
     /// preference (Active/Running first, then Idle, then Exited; non-temp before
     /// temp). Filters out records whose `SessionStatus` is non-`Exited` but
-    /// whose PtyManager entry is missing — those are desync phantoms (issue
+    /// whose `PtyManager` entry is missing — those are desync phantoms (issue
     /// #223). `Exited(_)` candidates are RETAINED for the respawn path.
     ///
     /// Returns `(viable, had_any_match)`:
@@ -153,11 +153,8 @@ impl MailboxPoller {
                 // Phantom skip — observable in prod logs to scope the AC3
                 // follow-up. (dev-rust R1.B4.)
                 log::warn!(
-                    "[mailbox] skipping desync phantom: id={} status={:?} has_pty={} name='{}'",
-                    id,
-                    status,
-                    has_pty,
-                    name
+                    "[mailbox] skipping desync phantom: id={id} status={status:?} \
+                     has_pty={has_pty} name='{name}'"
                 );
             } else {
                 viable.push((id, status));
@@ -331,7 +328,7 @@ impl MailboxPoller {
                         .reject_message(
                             path,
                             msg,
-                            &format!("close-session target unresolvable: {}", e),
+                            &format!("close-session target unresolvable: {e}"),
                         )
                         .await;
                 }
@@ -486,8 +483,7 @@ async fn persist_unmatched_close_sessions(session_mgr: &Arc<tokio::sync::RwLock<
     if let Err(e) = crate::config::sessions_persistence::persist_current_state_result(&mgr).await {
         log::warn!(
             "[mailbox] close-session: failed to persist cleaned sessions.json after \
-            no_match: {}",
-            e
+            no_match: {e}"
         );
     }
 }
@@ -618,10 +614,7 @@ async fn write_close_session_response(
         let json = match serde_json::to_string_pretty(&response) {
             Ok(j) => j,
             Err(e) => {
-                log::warn!(
-                    "[mailbox] Failed to serialize close-session response: {}",
-                    e
-                );
+                log::warn!("[mailbox] Failed to serialize close-session response: {e}");
                 return;
             }
         };
@@ -662,12 +655,11 @@ async fn write_close_session_response(
                 .join(crate::config::agent_local_dir_name())
                 .join("responses");
             let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-            let response_path = responses_dir.join(format!("{}.json", rid));
+            let response_path = responses_dir.join(format!("{rid}.json"));
             if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                 log::warn!(
                     "[mailbox] Failed to write close-session response to resolved-sender path: \
-                    {}",
-                    e
+                    {e}"
                 );
             }
         } else if is_app_outbox {
@@ -693,20 +685,17 @@ fn write_outbox_close_session_response(path: &std::path::Path, rid: &str, json: 
         .map(|ac_dir| ac_dir.join("responses"));
     if let Some(responses_dir) = outbox_relative_responses_dir {
         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-        let response_path = responses_dir.join(format!("{}.json", rid));
+        let response_path = responses_dir.join(format!("{rid}.json"));
         if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, json) {
             log::warn!(
                 "[mailbox] Failed to write close-session response to outbox-relative \
-                path {:?}: {}",
-                response_path,
-                e
+                path {response_path:?}: {e}"
             );
         }
     } else {
         log::warn!(
             "[mailbox] close-session: cannot derive outbox-relative responses dir from \
-            message path {:?}",
-            path
+            message path {path:?}"
         );
     }
 }
