@@ -248,19 +248,7 @@ pub(super) async fn execute_envelope<R: Runtime>(
             started,
             release,
         } => {
-            if !transaction.begin_restore(nonce) {
-                drop(started);
-                hold.release();
-                return;
-            }
-            if started.send(()).is_err() {
-                log::debug!("[selection] restore submitter dropped before barrier start");
-            }
-            if release.await.is_err() {
-                log::warn!("[selection] restore barrier released by dropped owner");
-            }
-            transaction.release_restore(nonce);
-            hold.release();
+            execute_restore_barrier(transaction, &mut hold, nonce, started, release).await;
         }
     }
     debug_assert!(
@@ -639,4 +627,26 @@ async fn execute_fixture_job<R: Runtime>(
         drop(result);
         drop(response);
     }
+}
+
+async fn execute_restore_barrier<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    hold: &mut super::envelope::EnvelopeHold,
+    nonce: uuid::Uuid,
+    started: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+) {
+    if !transaction.begin_restore(nonce) {
+        drop(started);
+        hold.release();
+        return;
+    }
+    if started.send(()).is_err() {
+        log::debug!("[selection] restore submitter dropped before barrier start");
+    }
+    if release.await.is_err() {
+        log::warn!("[selection] restore barrier released by dropped owner");
+    }
+    transaction.release_restore(nonce);
+    hold.release();
 }
