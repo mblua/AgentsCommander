@@ -311,7 +311,7 @@ async fn veto_case(retain: bool, generation: bool) {
         .await
         .unwrap()
         .unwrap();
-    assert_veto(&f, &d, &owner, &before, &persisted, retain).await;
+    assert_veto(&f, &d, &owner, &before, &persisted, retain, generation).await;
     n.coordinator.close_and_join().await;
 }
 
@@ -322,6 +322,7 @@ async fn assert_veto(
     before: &crate::session::session::Session,
     persisted: &[u8],
     retain: bool,
+    generation: bool,
 ) {
     let n = &f.native;
     assert!(owner.kill_failed());
@@ -353,11 +354,7 @@ async fn assert_veto(
         .unwrap()
         .contains(&n.source));
     assert_eq!(disk(), persisted);
-    let snapshot = d.monitor.snapshot(limits());
-    assert_eq!(snapshot.groups[0].state, ResourceGroupState::Running);
-    assert!(snapshot.groups[0].last_error.is_none());
-    assert_eq!(snapshot.groups[0].root_identity, d.backend.root);
-    // Gen2 timestamp None is a source invariant: registry initialization + pass.owns rejection.
+    assert_snapshot(d, generation);
     let frozen = d.counts();
     assert_eq!(frozen.1, 0);
     assert_eq!(
@@ -384,6 +381,21 @@ async fn assert_veto(
             assert!(owners(&f).is_empty());
             assert!(crate::session::selection::response_close_registration(n.source).is_none());
         }
+    }
+}
+
+fn assert_snapshot(d: &Fixture, generation: bool) {
+    let snapshot = d.monitor.snapshot(limits());
+    let group = &snapshot.groups[0];
+    assert_eq!(group.state, ResourceGroupState::Running);
+    assert_eq!(group.root_identity, d.backend.root);
+    if generation {
+        assert!(group.last_error.is_none());
+        // Gen2 timestamp None: registry initialization + pass.owns rejection (source invariant).
+    } else {
+        let error = group.last_error.as_deref().expect("gen1 records veto");
+        assert!(error.contains("evidence_gap"));
+        assert!(error.contains("restored:Running"));
     }
 }
 

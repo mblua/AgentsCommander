@@ -255,7 +255,7 @@ impl Fixture {
                 assert_eq!(self.pty.terminate_count.load(Ordering::SeqCst), 1);
             }
             1 => {
-                let result = crate::commands::session::destroy::teardown_legacy_destroy_runtime(
+                let result = crate::commands::session::teardown_legacy_destroy_runtime(
                     &transaction,
                     self.id,
                     &crate::session::selection::DestructionSource::ManualClose,
@@ -267,7 +267,7 @@ impl Fixture {
                 }
             }
             2 => {
-                let result = crate::commands::session::restart::teardown_old_for_restart(
+                let result = crate::commands::session::teardown_old_for_restart(
                     &transaction,
                     self.id,
                     false,
