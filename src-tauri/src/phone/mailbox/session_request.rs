@@ -41,7 +41,8 @@ impl MailboxPoller {
         );
 
         // 2. Resolve WG scope and authorization, one call (§3.6).
-        let effective_paths = match purge_effective_paths(app, path).await {
+        let effective_paths = match purge_effective_paths(&app.state::<SettingsState>(), path).await
+        {
             Ok(paths) => paths,
             Err(e) => {
                 return self.reject_message(path, msg, &e).await;
@@ -84,7 +85,11 @@ impl MailboxPoller {
 
         // 5. Take the mirror snapshot ONCE (F-4). One list_sessions(), one
         //    PTY-liveness pass. Per-peer filtering reuses the pure predicate.
-        let (sessions, pty_live) = purge_mirror_snapshot(app).await;
+        let (sessions, pty_live) = purge_mirror_snapshot(
+            &app.state::<Arc<tokio::sync::RwLock<SessionManager>>>(),
+            &app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>(),
+        )
+        .await;
 
         // 6. Restore-in-progress guard (F-2: exit 3, not 0).
         {
@@ -124,7 +129,10 @@ impl MailboxPoller {
 
         // 8. Readiness snapshot and the four-leg gate (§2.3.3, F-1).
         let quiet = purge_quiet_period(msg);
-        let readiness_map = purge_readiness_map(app, &all_live_session_ids);
+        let readiness_map = purge_readiness_map(
+            &app.state::<Arc<crate::pty::idle_detector::IdleDetector>>(),
+            &all_live_session_ids,
+        );
         let gate_peers = purge::gate_peers(&peer_infos, &readiness_map);
 
         let decision = evaluate_gate(&gate_peers, quiet);
@@ -146,7 +154,28 @@ impl MailboxPoller {
         }
 
         // 11. Acquire the lease (F-14: clone Arc into a named local first).
-        let snapshot = self.run_purge_lease(app, msg, &gate_peers).await?;
+        let purge_guard = app
+            .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .inner()
+            .clone();
+        let owned_app = app.clone();
+        let close = move |poller: Self, sid, force, timeout_secs| {
+            let app = owned_app.clone();
+            async move {
+                poller
+                    .close_session_attempt(
+                        &app,
+                        sid,
+                        force,
+                        timeout_secs,
+                        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    )
+                    .await
+            }
+        };
+        let snapshot = self
+            .run_purge_lease(purge_guard, msg, &gate_peers, close)
+            .await?;
         let response =
             purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
 
@@ -154,12 +183,17 @@ impl MailboxPoller {
             .await
     }
 
-    async fn run_purge_lease<R: tauri::Runtime>(
+    async fn run_purge_lease<C, F>(
         &self,
-        app: &tauri::AppHandle<R>,
+        purge_guard: Arc<crate::session::purge_guard::PurgeGuard>,
         msg: &OutboxMessage,
         gate_peers: &[PurgeGatePeer],
-    ) -> Result<super::teardown::PurgeSnapshot, String> {
+        close: C,
+    ) -> Result<super::teardown::PurgeSnapshot, String>
+    where
+        C: Fn(Self, Uuid, bool, u32) -> F + Send + 'static,
+        F: std::future::Future<Output = super::teardown::TeardownOutcome> + Send,
+    {
         let mut target_sids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut target_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
         for peer in gate_peers {
@@ -176,10 +210,6 @@ impl MailboxPoller {
                 }
             }
         }
-        let purge_guard: Arc<crate::session::purge_guard::PurgeGuard> = app
-            .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-            .inner()
-            .clone();
         let force = msg.force.unwrap_or(true);
         let timeout_secs = msg.timeout_secs.unwrap_or(5);
         let budget = super::teardown::observation_budget(force, timeout_secs)
@@ -201,28 +231,13 @@ impl MailboxPoller {
             session_ids: target_sids,
             fqns: target_fqns,
         };
-        let owned_app = app.clone();
         let poller = self.delivery_poller();
         let worker = tokio::spawn(super::teardown::run_purge_batch(
             purge_guard,
             targets,
             progress.clone(),
             budget,
-            move |sid| {
-                let app = owned_app.clone();
-                let poller = poller.delivery_poller();
-                async move {
-                    poller
-                        .close_session_attempt(
-                            &app,
-                            sid,
-                            force,
-                            timeout_secs,
-                            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                        )
-                        .await
-                }
-            },
+            move |sid| close(poller.delivery_poller(), sid, force, timeout_secs),
         ));
         super::teardown::observe_purge(progress, worker).await
     }
@@ -709,12 +724,11 @@ impl MailboxPoller {
 
 /// Step 2 of `handle_purge_wg`: configured projects plus the outbox's own
 /// project. `Err` carries the rejection reason.
-async fn purge_effective_paths<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn purge_effective_paths(
+    cfg: &SettingsState,
     path: &std::path::Path,
 ) -> Result<Vec<String>, String> {
     let mut paths = {
-        let cfg = app.state::<SettingsState>();
         let c = cfg.read().await;
         c.project_paths.clone()
     };
@@ -740,16 +754,15 @@ async fn purge_effective_paths<R: tauri::Runtime>(
 }
 
 /// Step 5 of `handle_purge_wg`: one `list_sessions()` and one PTY-liveness pass.
-async fn purge_mirror_snapshot<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn purge_mirror_snapshot(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+    pty: &std::sync::Mutex<crate::pty::manager::PtyManager>,
 ) -> (Vec<SessionInfo>, std::collections::HashSet<Uuid>) {
     let sessions: Vec<SessionInfo> = {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         mgr.list_sessions().await
     };
     let pty_live: std::collections::HashSet<Uuid> = {
-        let pty = app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>();
         let mgr = pty.lock().unwrap();
         sessions
             .iter()
@@ -770,11 +783,10 @@ fn purge_quiet_period(msg: &OutboxMessage) -> std::time::Duration {
     )
 }
 
-fn purge_readiness_map<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn purge_readiness_map(
+    idle: &crate::pty::idle_detector::IdleDetector,
     all_live_session_ids: &[Uuid],
 ) -> std::collections::HashMap<Uuid, crate::pty::idle_detector::PurgeReadiness> {
-    let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
     let readiness = idle.purge_readiness(all_live_session_ids);
     readiness.into_iter().map(|r| (r.session_id, r)).collect()
 }

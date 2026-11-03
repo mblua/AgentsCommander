@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{Emitter, Manager};
 
+use crate::{api, ApiServerHandle, ApiServerTask, WebServerHandle, WEB_SERVER_START_CANCELLED};
+
 use crate::{
     agent_update, codex_activity_factory, commands, config, install_container_route_remover,
     load_startup_sessions, loops, normalize_persisted_active_flags, resource_monitor,
@@ -19,8 +21,18 @@ use crate::{
 };
 
 mod geometry;
-mod servers;
-mod window;
+
+/// The single owner of the live Tauri `App` that the setup helpers borrow.
+#[derive(Clone, Copy)]
+pub(super) struct SetupApp<'a>(&'a tauri::App);
+
+impl std::ops::Deref for SetupApp<'_> {
+    type Target = tauri::App;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
 
 pub(super) struct SetupCtx {
     pub(super) owners: crate::AppOwners,
@@ -55,6 +67,7 @@ pub(super) struct SetupCtx {
     pub(super) ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
 }
 pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn std::error::Error>> {
+    let app = SetupApp(app);
     let messages = ctx.owners.messages;
     // Make AppHandle available to idle detector callbacks
     let _ = ctx.app_handle_lock.set(app.handle().clone());
@@ -124,9 +137,9 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // before every emit and the window pulls it after subscribing, so a re-scope that
     // races the window's own load is recovered instead of dropped in silence.
     app.manage(commands::window::WatchersScopeState::default());
-    servers::start_web_server(
+    start_web_server(
         app,
-        servers::WebServerStart {
+        WebServerStart {
             settings: ctx.settings_for_web,
             web_token: ctx.web_token_for_server,
             session_mgr: ctx.session_mgr_for_web,
@@ -137,7 +150,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         &ctx.web_access_token,
     )?;
 
-    servers::start_api_server(
+    start_api_server(
         app,
         &ctx.session_mgr_for_api,
         &pty_mgr,
@@ -173,7 +186,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // removed; `persisted` is reused by the restore task below.
     let startup_sessions = mark_restore_in_progress(app);
 
-    window::create_main_window(app, ctx.test_window_placement.as_ref())?;
+    geometry::create_main_window(app, ctx.test_window_placement.as_ref())?;
 
     // Restore sessions from last run
     //
@@ -225,7 +238,6 @@ struct RestoreStart {
 struct AdmittedRestore {
     restore_barrier: crate::session::selection::RestoreBarrierGuard,
     restore_observer_barrier: RestoreObserverStartBarrier,
-    restore_transaction: crate::session::selection::SelectionTransaction<tauri::Wry>,
 }
 
 /// The settings snapshot and persisted sessions the restore task reuses.
@@ -234,7 +246,7 @@ struct StartupSessions {
     persisted: Result<Vec<sessions_persistence::PersistedSession>, String>,
 }
 
-fn mark_restore_in_progress(app: &tauri::App) -> StartupSessions {
+fn mark_restore_in_progress(app: SetupApp<'_>) -> StartupSessions {
     let restore_settings_snapshot = config::settings::load_settings();
     let persisted = load_normalized_startup_sessions(&restore_settings_snapshot);
     let restore_flag = app.state::<Arc<RestoreInProgress>>().inner().clone();
@@ -247,7 +259,7 @@ fn mark_restore_in_progress(app: &tauri::App) -> StartupSessions {
     }
 }
 
-fn start_startup_housekeeping(app: &tauri::App) {
+fn start_startup_housekeeping(app: SetupApp<'_>) {
     spawn_screenshot_hotkey_registration(app);
 
     // #264 — spawn the background task that emits `error_log_event`
@@ -266,7 +278,7 @@ fn start_startup_housekeeping(app: &tauri::App) {
     crate::config::session_context::sweep_context_cache_at_startup();
 }
 
-fn start_restore(app: &tauri::App, start: RestoreStart) {
+fn start_restore(app: SetupApp<'_>, start: RestoreStart) {
     let RestoreStart {
         admitted,
         startup_sessions,
@@ -305,7 +317,7 @@ fn start_restore(app: &tauri::App, start: RestoreStart) {
     // TRUE before mailbox_poller.start(); we only need to grab a
     // fresh Arc clone here for the RAII guard inside the spawned task.
     let restore_flag_for_task = app.state::<Arc<RestoreInProgress>>().inner().clone();
-    let restore_transaction_for_task = admitted.restore_transaction.clone();
+    let restore_transaction_for_task = admitted.restore_barrier.transaction(app.handle().clone());
 
     start_native_restore_startup(
         app_handle,
@@ -341,7 +353,7 @@ fn start_restore(app: &tauri::App, start: RestoreStart) {
 // restore window, which grows with the number of sessions. Its own
 // short task keeps the async settings read off the main thread; a
 // `block_on` here would reintroduce the #1341 WebView2 starvation.
-fn spawn_screenshot_hotkey_registration(app: &tauri::App) {
+fn spawn_screenshot_hotkey_registration(app: SetupApp<'_>) {
     let app_for_hotkey = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         let configured = app_for_hotkey
@@ -360,7 +372,7 @@ fn spawn_screenshot_hotkey_registration(app: &tauri::App) {
 }
 
 fn start_git_watchers(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     git_rows: Arc<tokio::sync::RwLock<SessionManager>>,
     rows: Arc<tokio::sync::RwLock<SessionManager>>,
     sweep_rows: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -394,7 +406,7 @@ fn start_git_watchers(
 }
 
 fn start_remote_activity(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     git_rows: Arc<tokio::sync::RwLock<SessionManager>>,
     git: Arc<crate::pty::git_watcher::GitState>,
     remote: Arc<crate::pty::remote_watcher::RemoteActivityState>,
@@ -440,7 +452,7 @@ fn start_remote_activity(
 // web, phone) blocks inside `create_session_inner_impl` until the
 // updates finish or time out.
 fn spawn_startup_agent_updates(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     agent_update_gate_for_setup: &Arc<agent_update::AgentUpdateGate>,
 ) {
     let app_for_agent_updates = app.handle().clone();
@@ -451,7 +463,7 @@ fn spawn_startup_agent_updates(
 }
 
 fn admit_restore_first(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     selection_coordinator_for_setup: &crate::session::selection::SelectionCoordinator,
 ) -> Result<AdmittedRestore, Box<dyn std::error::Error>> {
     selection_coordinator_for_setup
@@ -461,19 +473,17 @@ fn admit_restore_first(
     let restore_barrier =
         tauri::async_runtime::block_on(selection_coordinator_for_setup.submit_restore_first())?;
     restore_observer_barrier.mark_restore_admitted()?;
-    let restore_transaction = restore_barrier.transaction(app.handle().clone());
     app.state::<Arc<RestoreInProgress>>()
         .0
         .store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(AdmittedRestore {
         restore_barrier,
         restore_observer_barrier,
-        restore_transaction,
     })
 }
 
 fn start_session_observers(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     session_mgr_for_scraper: Arc<tokio::sync::RwLock<SessionManager>>,
     idle_detector_for_setup: &Arc<IdleDetector>,
@@ -533,7 +543,7 @@ fn start_session_observers(
 }
 
 fn start_watcher_engine(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     idle_detector_for_setup: &Arc<IdleDetector>,
     shutdown_for_setup: &ShutdownSignal,
@@ -566,7 +576,7 @@ fn start_watcher_engine(
 }
 
 fn start_menu_guard_and_ipc_observer(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     response_close_for_setup: &crate::pty::manager::ResponseCloseState,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     idle_detector_for_setup: &Arc<IdleDetector>,
@@ -750,7 +760,7 @@ fn enable_response_close_readiness(
 }
 
 fn start_detached_startup_downloads(
-    app: &tauri::App,
+    app: SetupApp<'_>,
     update_check_state_for_setup: &UpdateCheckState,
 ) {
     // Issue #609 - detached "npm update available" check. Fully fail-silent;
@@ -781,4 +791,128 @@ fn start_detached_startup_downloads(
                 .await;
         });
     }
+}
+
+/// The owned values the web server start consumes.
+pub(super) struct WebServerStart {
+    pub(super) settings: SettingsState,
+    pub(super) web_token: Arc<WebAccessToken>,
+    pub(super) session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    pub(super) broadcaster: WsBroadcaster,
+}
+
+// Start web server if enabled in settings
+pub(super) fn start_web_server(
+    app: SetupApp<'_>,
+    start: WebServerStart,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shutdown: &ShutdownSignal,
+    web_access_token: &WebAccessToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    register_web_command_dispatcher(
+        app,
+        &start.session_mgr,
+        pty_mgr,
+        &start.settings,
+        &start.broadcaster,
+    )?;
+    let web_settings = config::settings::load_settings();
+    if web_settings.web_server_enabled {
+        let ws_handle = app.state::<WebServerHandle>().inner().clone();
+        let waiter = commands::config::begin_web_server_start(
+            ws_handle.clone(),
+            start.settings,
+            start.web_token,
+            start.session_mgr,
+            pty_mgr.clone(),
+            start.broadcaster,
+            app.handle().clone(),
+            shutdown.clone(),
+        );
+        match tauri::async_runtime::block_on(waiter.wait()) {
+            Ok(true) => {
+                if let Some((bind, port)) = ws_handle.snapshot().endpoint {
+                    println!(
+                        "[web-token] Remote URL: \
+                            http://{}:{}/?window=main&remoteToken={}",
+                        bind,
+                        port,
+                        web_access_token.value()
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(error) if error == WEB_SERVER_START_CANCELLED => {
+                log::info!("[web-server] autostart cancelled by lifecycle stop");
+            }
+            Err(error) => {
+                log::warn!("[web-server] startup failed: {}", error);
+            }
+        }
+    }
+    Ok(())
+}
+
+// #791 - start the control-plane API server if enabled in settings.
+// Opt-in (default false), mirroring the web server block above. The
+// managed handle is stored only after bind readiness is confirmed.
+pub(super) fn start_api_server(
+    app: SetupApp<'_>,
+    session_mgr_for_api: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shutdown: &ShutdownSignal,
+) {
+    let api_settings = config::settings::load_settings();
+    if api_settings.api_server_enabled {
+        let bind = api_settings.api_server_bind.clone();
+        let port = api_settings.api_server_port;
+        let api_shutdown = shutdown.token().child_token();
+        let server_start = api::start_server(
+            bind,
+            port,
+            app.handle().clone(),
+            session_mgr_for_api.clone(),
+            pty_mgr.clone(),
+            api_shutdown.clone(),
+        );
+        match tauri::async_runtime::block_on(api::wait_for_startup_ready(server_start.readiness)) {
+            Ok(bound_addr) => {
+                let api_handle = app.state::<ApiServerHandle>();
+                if let Err(e) = api_handle.store_if_idle(ApiServerTask::new(
+                    server_start.join_handle,
+                    api_shutdown,
+                    bound_addr,
+                )) {
+                    log::error!("[api-server] failed to store server handle: {}", e);
+                }
+            }
+            Err(err) => {
+                api_shutdown.cancel();
+                log::warn!("[api-server] startup failed: {}", err);
+            }
+        }
+    }
+}
+
+fn register_web_command_dispatcher(
+    app: SetupApp<'_>,
+    session_mgr_for_web: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    settings_for_web: &SettingsState,
+    broadcaster_for_web: &WsBroadcaster,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dispatcher =
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
+            Arc::clone(session_mgr_for_web),
+            Arc::clone(pty_mgr),
+            Arc::clone(settings_for_web),
+            broadcaster_for_web.clone(),
+            app.handle().clone(),
+        ));
+    if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
+        Arc::new(dispatcher),
+    )) {
+        return Err("Web command dispatcher is already registered".into());
+    }
+    Ok(())
 }
