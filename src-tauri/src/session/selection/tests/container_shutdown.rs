@@ -89,7 +89,7 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
             container_id: format!("container-{}", pending.id),
         });
     pty.lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_route(pending.id, SessionBackendKind::ContainerTransport);
 
     let mut finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
@@ -156,13 +156,13 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     let aggregate = manager_handle.aggregate_snapshot().await;
     let pre_route = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .has_session(pending.id);
 
     // Collect both snapshots and finish the single authorized sweep before assertions.
     let global_report = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stop_all_started_containers_blocking(Duration::from_secs(1));
     let stopped_signal = tokio::time::timeout(Duration::from_secs(1), stop_started_rx).await;
     await_state_eq(
@@ -242,8 +242,8 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     assert_eq!(
         pre_retained,
         vec![pending.id],
-        "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
-        pre_contexts
+        "post-seal pending cleanup must remain owned for the authorized global sweep: \
+         {pre_contexts:?}"
     );
     assert!(aggregate.pending_ids.is_empty());
     assert!(aggregate.sessions.is_empty());
@@ -380,7 +380,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
             let _ticket = ticket;
             let _spawn_mark = create_pty
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .mark_spawning(&create_root, "container");
             tokio::select! {
                 biased;
@@ -413,7 +413,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     assert!(aggregate.sessions.is_empty());
     let (pending_spawns, live_routes) = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .archive_liveness(&[pending_id]);
     assert_eq!(pending_spawns.len(), 1);
     assert_eq!(live_routes, vec![false]);
@@ -590,8 +590,8 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         } else {
             Vec::new()
         },
-        "the deterministic canceled-start handle must remain owned after a nonterminal stop: {:?}",
-        retained_contexts
+        "the deterministic canceled-start handle must remain owned after a nonterminal stop: \
+         {retained_contexts:?}"
     );
     assert!(
         retained_contexts.iter().all(|context| {
@@ -626,13 +626,13 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     assert!(aggregate.sessions.is_empty());
     let (pending_spawns, live_routes) = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .archive_liveness(&[pending_id]);
     assert!(pending_spawns.is_empty());
     assert_eq!(live_routes, vec![false]);
     assert!(pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .backend_kind(pending_id)
         .is_none());
 
@@ -641,7 +641,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     }
     let global_report = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stop_all_started_containers_blocking(Duration::from_secs(1));
     assert!(
         global_report.terminal,

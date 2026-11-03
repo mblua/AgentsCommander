@@ -10,7 +10,9 @@ use super::*;
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -81,7 +83,9 @@ async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent()
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn purge_archives_existing_cwd_outside_roots() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -130,7 +134,9 @@ async fn purge_archives_existing_cwd_outside_roots() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn purge_keeps_root_agent_and_archived_root_rows() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -175,12 +181,14 @@ async fn purge_keeps_root_agent_and_archived_root_rows() {
 
 /// AC3 (test 4): a dormant orphan leaves the manager + disk on the first
 /// persist and is recorded; a live orphan keeps running in RAM, is dropped
-/// from disk, counts live_kept, and is NOT recorded (its recipe is still
+/// from disk, counts `live_kept`, and is NOT recorded (its recipe is still
 /// live). A second persist is silent with frozen counters.
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -310,7 +318,9 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn persist_is_silent_when_nothing_orphaned() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -354,13 +364,15 @@ async fn persist_is_silent_when_nothing_orphaned() {
 
 /// Test 6 (dispatch req): the transition border. A NO-PRUNE (transitional)
 /// persist keeps a dormant orphan in RAM (transition-owned) while archiving
-/// it once and dropping it from disk; the subsequent STEADY PruneDormant
+/// it once and dropping it from disk; the subsequent STEADY `PruneDormant`
 /// persist removes it from RAM but does NOT re-append the archive record
 /// (B1-once first-sighting tie). warned stays 1 across the boundary.
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     reset_orphan_archived();
@@ -467,11 +479,13 @@ async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
 
 /// N4c (test 6): run purge (site A) then persist (site B) in one process for
 /// the SAME orphan cwd; the run-level registry collapses the second sighting
-/// (warned stays 1, suppressed_repeat becomes 1).
+/// (warned stays 1, `suppressed_repeat` becomes 1).
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn cross_site_dedup_purge_then_persist_warns_once() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -539,7 +553,9 @@ async fn cross_site_dedup_purge_then_persist_warns_once() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn site_c_record_reason_restore_cwd_missing() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::tempdir().expect("tempdir");
     let ps = PersistedSession {
         name: "restore-skip".into(),
@@ -579,7 +595,9 @@ async fn site_c_record_reason_restore_cwd_missing() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn archive_appends_and_rotates_best_effort() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path().to_path_buf();
     let ps = PersistedSession {
@@ -594,8 +612,8 @@ async fn archive_appends_and_rotates_best_effort() {
     set_test_orphan_archive_cap(None);
 
     let base = dir.join(ORPHAN_ARCHIVE_FILENAME);
-    let one = dir.join(format!("{}.1", ORPHAN_ARCHIVE_FILENAME));
-    let four = dir.join(format!("{}.4", ORPHAN_ARCHIVE_FILENAME));
+    let one = dir.join(format!("{ORPHAN_ARCHIVE_FILENAME}.1"));
+    let four = dir.join(format!("{ORPHAN_ARCHIVE_FILENAME}.4"));
     assert!(base.exists(), "active archive file exists");
     assert!(one.exists(), ".1 rotated");
     // KEEP=3: at most .1/.2/.3 retained; a .4 must never appear.
@@ -670,7 +688,9 @@ fn p05_assert_error_since(start: usize, expected: &str) {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn characterize_3254_p05_ndjson_bytes() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::logging::test_install_logger();
     crate::config::sessions_persistence::reset_orphan_archived();
     crate::config::sessions_persistence::reset_orphan_warned();
@@ -763,7 +783,9 @@ async fn characterize_3254_p05_ndjson_bytes() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn characterize_3254_p05_rotation() {
-    let _serial = ORPHAN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::logging::test_install_logger();
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join(ORPHAN_ARCHIVE_FILENAME);
