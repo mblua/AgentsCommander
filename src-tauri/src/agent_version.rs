@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -198,9 +198,7 @@ impl AgentInstallCache {
     }
 
     fn lock(&self) -> MutexGuard<'_, CacheInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Fresh iff an entry exists and `now.duration_since(probed_at) <= ttl` (the
