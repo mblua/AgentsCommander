@@ -218,7 +218,7 @@ pub fn resolve_config_seed(
             candidates.push(ConfigSeedCandidate {
                 tier,
                 os_specific: true,
-                path: root.join(format!("{}.{}", folder, os)),
+                path: root.join(format!("{folder}.{os}")),
             });
         }
         candidates.push(ConfigSeedCandidate {
@@ -232,13 +232,13 @@ pub fn resolve_config_seed(
             &mut candidates,
             ConfigSeedTier::MatrixProfile,
             mx,
-            format!("default_profile_{}{}", letter, dest_name),
+            format!("default_profile_{letter}{dest_name}"),
         );
         push_tier(
             &mut candidates,
             ConfigSeedTier::MatrixBase,
             mx,
-            format!("default{}", dest_name),
+            format!("default{dest_name}"),
         );
     }
     if let Some(ws) = context.ac_root.as_ref() {
@@ -246,13 +246,13 @@ pub fn resolve_config_seed(
             &mut candidates,
             ConfigSeedTier::WorkspaceProfile,
             ws,
-            format!("default_profile_{}{}", letter, dest_name),
+            format!("default_profile_{letter}{dest_name}"),
         );
         push_tier(
             &mut candidates,
             ConfigSeedTier::WorkspaceBase,
             ws,
-            format!("default{}", dest_name),
+            format!("default{dest_name}"),
         );
     }
     if candidates.is_empty() {
