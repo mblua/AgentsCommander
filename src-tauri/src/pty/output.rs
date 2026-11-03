@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 #[cfg(test)]
 use std::time::Duration;
 #[cfg(any(windows, test))]
@@ -31,8 +31,8 @@ use terminal_snapshot_renderer::{TerminalActiveBuffer, TerminalCellWidth, Termin
 use uuid::Uuid;
 
 /// Tracks active response marker watchers per session.
-/// Key: (session_id, request_id) -> accumulated output buffer.
-/// The read loop scans for %%AC_RESPONSE::<rid>::START/END%% markers.
+/// Key: (`session_id`, `request_id`) -> accumulated output buffer.
+/// The read loop scans for `%%AC_RESPONSE::<rid>::START/END%%` markers.
 pub type ResponseWatcherMap = Arc<Mutex<HashMap<(Uuid, String), ResponseWatcher>>>;
 
 pub struct ResponseWatcher {
@@ -346,7 +346,7 @@ impl ReaderOperationGate {
     }
 
     fn close(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.lifecycle_closing = true;
         if state.admitted_count == 0 {
             self.drained.notify_all();
@@ -361,17 +361,17 @@ impl ReaderOperationGate {
     }
 
     fn wait_for_drain(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         while state.admitted_count != 0 {
             state = self
                 .drained
                 .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 
     fn complete(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.admitted_count == 0 {
             log::error!("[terminal-output] reader lease underflow");
             return;
