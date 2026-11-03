@@ -111,6 +111,23 @@ impl PtyDispatchGuards<'_> {
     }
 }
 
+fn sort_dispatch_candidates(matching: &mut [SessionInfo]) {
+    matching.sort_by(|left, right| {
+        fn rank(status: &SessionStatus) -> u8 {
+            match status {
+                SessionStatus::Active => 0,
+                SessionStatus::Running => 1,
+                SessionStatus::Idle => 2,
+                SessionStatus::Exited(_) => 3,
+            }
+        }
+        rank(&left.status)
+            .cmp(&rank(&right.status))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
 pub(super) async fn dispatch_selection_candidates<
     F: std::future::Future<Output = crate::config::settings::AppSettings>,
 >(
@@ -131,20 +148,7 @@ pub(super) async fn dispatch_selection_candidates<
                 == claimed.target_fqn
         })
         .collect();
-    matching.sort_by(|left, right| {
-        fn rank(status: &SessionStatus) -> u8 {
-            match status {
-                SessionStatus::Active => 0,
-                SessionStatus::Running => 1,
-                SessionStatus::Idle => 2,
-                SessionStatus::Exited(_) => 3,
-            }
-        }
-        rank(&left.status)
-            .cmp(&rank(&right.status))
-            .then_with(|| right.created_at.cmp(&left.created_at))
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    sort_dispatch_candidates(&mut matching);
 
     let pty_profile_settings = settings().await;
     let mut eligible = Vec::new();
