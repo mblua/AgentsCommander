@@ -760,8 +760,7 @@ impl SelectionCoordinator {
                     .map(|state| state.retained_effect_diagnostic())
                     .unwrap_or_else(|| "detail=owner-state-unreadable".into());
                 retained.push(format!(
-                    "reason=retained-lifecycle-entry operation={} state=unsafe {}",
-                    operation, detail
+                    "reason=retained-lifecycle-entry operation={operation} state=unsafe {detail}"
                 ));
             }
         }

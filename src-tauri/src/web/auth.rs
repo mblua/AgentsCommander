@@ -1,5 +1,5 @@
 /// Dedicated token for WebSocket authentication.
-/// Separate from MasterToken to limit blast radius if captured via network sniffing.
+/// Separate from `MasterToken` to limit blast radius if captured via network sniffing.
 pub struct WebAccessToken(String);
 
 impl WebAccessToken {

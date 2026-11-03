@@ -430,7 +430,7 @@ pub(super) fn add_cli_truncation_diagnostics(
     let mut diagnostics = response
         .diagnostics
         .take()
-        .filter(|value| value.is_object())
+        .filter(serde_json::Value::is_object)
         .and_then(|value| match value {
             Value::Object(map) => Some(map),
             _ => None,
