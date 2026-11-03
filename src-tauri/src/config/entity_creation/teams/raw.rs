@@ -94,27 +94,13 @@ pub(crate) fn collect_agent_team_mutations_raw(
         }
 
         if changed {
-            let object = value.as_object_mut().ok_or_else(|| {
-                format!(
-                    "Cannot delete agent '{}': team '{}' config.json must be an object",
-                    agent_name, team_name
-                )
-            })?;
-            normalize_raw_context_alert_percentages(object).map_err(|e| {
-                format!(
-                    "Cannot delete agent '{}': team '{}' has invalid contextAlertPercentages: {}",
-                    agent_name, team_name, e
-                )
-            })?;
-            let mut after_json = serde_json::to_vec_pretty(&value)
-                .map_err(|e| format!("Cannot serialize team '{}' config.json: {}", team_name, e))?;
-            after_json.push(b'\n');
-            mutations.push(AgentTeamMutation {
-                team_name: team_name.to_string(),
+            mutations.push(prepare_team_mutation(
+                team_name,
+                agent_name,
                 config_path,
                 before_json,
-                after_json,
-            });
+                value,
+            )?);
         }
     }
 
@@ -129,6 +115,36 @@ pub(crate) fn collect_agent_team_mutations_raw(
     }
 
     Ok(mutations)
+}
+
+fn prepare_team_mutation(
+    team_name: &str,
+    agent_name: &str,
+    config_path: PathBuf,
+    before_json: Vec<u8>,
+    mut value: serde_json::Value,
+) -> Result<AgentTeamMutation, String> {
+    let object = value.as_object_mut().ok_or_else(|| {
+        format!(
+            "Cannot delete agent '{}': team '{}' config.json must be an object",
+            agent_name, team_name
+        )
+    })?;
+    normalize_raw_context_alert_percentages(object).map_err(|e| {
+        format!(
+            "Cannot delete agent '{}': team '{}' has invalid contextAlertPercentages: {}",
+            agent_name, team_name, e
+        )
+    })?;
+    let mut after_json = serde_json::to_vec_pretty(&value)
+        .map_err(|e| format!("Cannot serialize team '{}' config.json: {}", team_name, e))?;
+    after_json.push(b'\n');
+    Ok(AgentTeamMutation {
+        team_name: team_name.to_string(),
+        config_path,
+        before_json,
+        after_json,
+    })
 }
 
 fn normalize_raw_context_alert_percentages(
