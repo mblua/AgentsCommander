@@ -696,6 +696,28 @@ fn response_pair_current_diagnostic(
     });
 }
 
+fn response_pair_verified_diagnostic(
+    current: &crate::session::manager::CarrierSnapshot,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+) {
+    response_diag_debug_only(|| {
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+            site={} outcome=observed stage=verified_pair scope=stage_current member={} \
+            coordinator={} captured_member_version={} captured_coordinator_version={} \
+            current_member_version={:?} current_coordinator_version={:?} \
+            token_backend_role_physical_generation_checks=true",
+            line!(),
+            member.session_id,
+            coordinator.session_id,
+            member.carrier_version,
+            coordinator.carrier_version,
+            current.versions.get(&member.session_id),
+            current.versions.get(&coordinator.session_id)
+        );
+    });
+}
+
 /// Both frozen route lifecycles and the caller's current interior manager read
 /// remain live through the pure tracker transition. The coordinator keeps its
 /// actual backend; the member alone must be a local interactive process.
@@ -800,21 +822,7 @@ pub(crate) fn with_verified_response_pair<T>(
         response_diag_local!("verified_pair", "generation_mismatch", None::<Uuid>);
         return None;
     }
-    response_diag_debug_only(|| {
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
-            site={} outcome=observed stage=verified_pair scope=stage_current member={} \
-            coordinator={} captured_member_version={} captured_coordinator_version={} \
-            current_member_version={:?} current_coordinator_version={:?} \
-            token_backend_role_physical_generation_checks=true",
-            line!(),
-            member.session_id,
-            coordinator.session_id,
-            member.carrier_version,
-            coordinator.carrier_version,
-            current.versions.get(&member.session_id),
-            current.versions.get(&coordinator.session_id)
-        );
-    });
+    response_pair_verified_diagnostic(current, member, coordinator);
     response_diag_local!("verified_pair", "callback_reached", None::<Uuid>);
     Some(publish(member_row, coordinator_row))
 }
