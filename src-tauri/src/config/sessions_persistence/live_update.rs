@@ -147,7 +147,7 @@ pub async fn set_blocked_menu_and_persist(
     let project_paths = match session_retention_project_paths(settings) {
         Ok(paths) => paths,
         Err(error) => {
-            log::error!("Blocked-menu persistence blocked: {}", error);
+            log::error!("Blocked-menu persistence blocked: {error}");
             return BlockedMenuPersistOutcome::NotApplicable;
         }
     };
@@ -161,7 +161,7 @@ pub async fn set_blocked_menu_and_persist(
     )
     .await;
     if let Some(e) = error {
-        log::error!("Failed to persist blocked-menu set: {}", e);
+        log::error!("Failed to persist blocked-menu set: {e}");
     }
     outcome
 }
@@ -246,7 +246,7 @@ pub async fn clear_blocked_menu_and_persist(mgr: &SessionManager, session_id: Uu
     let project_paths = match session_retention_project_paths(&settings) {
         Ok(paths) => paths,
         Err(error) => {
-            log::error!("Session persistence blocked: {}", error);
+            log::error!("Session persistence blocked: {error}");
             return false;
         }
     };
@@ -258,7 +258,7 @@ pub async fn clear_blocked_menu_and_persist(mgr: &SessionManager, session_id: Uu
     )
     .await;
     if let Some(e) = error {
-        log::error!("Failed to persist blocked-menu clear: {}", e);
+        log::error!("Failed to persist blocked-menu clear: {e}");
     }
     cleared
 }
