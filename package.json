@@ -59,7 +59,9 @@
     "sanitizing:disk_access": "node scripts/sanitizing_disk_access.mjs",
     "sanitizing:process_env": "node scripts/sanitizing_process_env.mjs",
     "sanitizing:self": "node --test scripts/sanitizing_tests.mjs",
-    "sanitizing:containers": "node scripts/sanitizing_containers.mjs"
+    "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
+    "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
+    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
