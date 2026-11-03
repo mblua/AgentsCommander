@@ -285,3 +285,117 @@ fn issue_3530_operation_quota_counts_escaped_json_and_no_truncated_complete() {
     let bytes = std::fs::read(&entry.path).unwrap();
     assert!(parse_complete(&bytes, diagnostics.run_id(), id).is_none());
 }
+
+#[test]
+fn issue_3530_prune_missing_completed_recovers() {
+    let (_directory, diagnostics, clock) = store();
+    let completed: Vec<_> = (0..COMPLETED_LIMIT)
+        .map(|_| {
+            clock.0.fetch_add(1, Ordering::SeqCst);
+            complete(&diagnostics)
+        })
+        .collect();
+    let missing_path = &completed[0];
+    let (_, missing_id) = owned_name(missing_path).unwrap();
+    let missing_bytes = std::fs::metadata(missing_path).unwrap().len();
+    let incomplete = diagnostics
+        .inspect_operation(binding(&diagnostics))
+        .unwrap();
+    let incomplete_id = incomplete.id();
+    let incomplete_path = diagnostics.filename(incomplete_id).unwrap();
+    drop(incomplete);
+    let incomplete_content = std::fs::read(&incomplete_path).unwrap();
+    let foreign_path = diagnostics.directory().unwrap().join("app.log");
+    std::fs::write(&foreign_path, b"foreign evidence").unwrap();
+    let before_total: u64 = diagnostics
+        .metadata()
+        .unwrap()
+        .files
+        .values()
+        .map(|entry| entry.bytes)
+        .sum();
+
+    std::fs::remove_file(missing_path).unwrap();
+    clock.0.fetch_add(1, Ordering::SeqCst);
+    let operation = diagnostics
+        .inspect_operation(binding(&diagnostics))
+        .unwrap();
+    let operation_id = operation.id();
+    let path = diagnostics.filename(operation_id).unwrap();
+    operation.selection(&[]).unwrap();
+    operation.finish(summary()).unwrap();
+    drop(operation);
+
+    let total = {
+        let metadata = diagnostics.metadata().unwrap();
+        assert!(!metadata.files.contains_key(&missing_id));
+        assert_eq!(
+            metadata
+                .files
+                .values()
+                .filter(|entry| entry.complete)
+                .count(),
+            COMPLETED_LIMIT
+        );
+        let entry = &metadata.files[&operation_id];
+        assert!(entry.complete && !entry.active);
+        let content = std::fs::read(&path).unwrap();
+        assert_eq!(entry.bytes, u64::try_from(content.len()).unwrap());
+        assert!(parse_complete(&content, diagnostics.run_id(), operation_id).is_some());
+        let total: u64 = metadata.files.values().map(|entry| entry.bytes).sum();
+        assert_eq!(total, before_total - missing_bytes + entry.bytes);
+        let physical: u64 = metadata
+            .files
+            .values()
+            .map(|entry| std::fs::metadata(&entry.path).unwrap().len())
+            .sum();
+        assert_eq!(total, physical);
+        let incomplete = &metadata.files[&incomplete_id];
+        assert!(!incomplete.complete && !incomplete.active);
+        total
+    };
+    let reservation = diagnostics.reserve().unwrap();
+    assert_eq!(
+        diagnostics
+            .metadata()
+            .unwrap()
+            .files
+            .values()
+            .map(|entry| entry.bytes)
+            .sum::<u64>(),
+        total + OP_BYTES
+    );
+    drop(reservation);
+    assert_eq!(
+        diagnostics
+            .metadata()
+            .unwrap()
+            .files
+            .values()
+            .map(|entry| entry.bytes)
+            .sum::<u64>(),
+        total
+    );
+    assert_eq!(std::fs::read(&incomplete_path).unwrap(), incomplete_content);
+    assert_eq!(std::fs::read(&foreign_path).unwrap(), b"foreign evidence");
+}
+
+#[test]
+fn issue_3530_prune_other_error_preserves_accounting() {
+    let (_directory, diagnostics, clock) = store();
+    let path = complete(&diagnostics);
+    let (_, id) = owned_name(&path).unwrap();
+    let bytes = std::fs::metadata(&path).unwrap().len();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    clock.0.store(RETENTION.as_secs() + 1, Ordering::SeqCst);
+
+    let error = diagnostics.reserve().err().unwrap();
+    assert_eq!(error.stage, "prune");
+    let metadata = diagnostics.metadata().unwrap();
+    assert_eq!(metadata.files.len(), 1);
+    let entry = &metadata.files[&id];
+    assert_eq!(entry.bytes, bytes);
+    assert!(entry.complete && !entry.active);
+    assert!(path.is_dir());
+}

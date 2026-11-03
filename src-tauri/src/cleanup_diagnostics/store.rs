@@ -186,8 +186,11 @@ impl Shared {
             }
             let entry = &metadata.files[&id];
             // Paths enter this table only through a validated name or our own factory.
-            debug_logs::remove_app_log(&entry.path)
-                .map_err(|error| EvidenceError::new("prune", error))?;
+            match debug_logs::remove_app_log(&entry.path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(EvidenceError::new("prune", error)),
+            }
             total = total.saturating_sub(entry.bytes);
             count -= 1;
             metadata.files.remove(&id);
