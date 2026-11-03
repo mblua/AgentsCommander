@@ -778,7 +778,7 @@ impl ResourceMonitorState {
         let accounting = self
             .inner
             .lock()
-            .map_err(|_| "resource monitor lock poisoned".to_string())
+            .map_err(|_error| "resource monitor lock poisoned".to_string())
             .and_then(|mut inner| {
                 let group = inner
                     .groups

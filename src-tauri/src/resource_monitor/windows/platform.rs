@@ -481,9 +481,10 @@ impl TerminationCalls for NativeTerminationCalls {
         schema::RawApiResult {
             returned: Some(ok != 0),
             os_error,
-            detail: os_error
-                .map(|code| format!("TerminateProcess failed: win32 error {code}"))
-                .unwrap_or_else(|| "TerminateProcess returned nonzero".into()),
+            detail: os_error.map_or_else(
+                || "TerminateProcess returned nonzero".into(),
+                |code| format!("TerminateProcess failed: win32 error {code}"),
+            ),
         }
     }
 
