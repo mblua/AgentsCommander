@@ -221,7 +221,11 @@ export const PreflightTestPanel: Component<PreflightTestPanelProps> = (props) =>
     try {
       const id = await PreflightTestAPI.start(props.agentId, props.letter, path,
         d.settingsRevision);
-      if (exited) return;
+      if (exited) {
+        // AC-3516-021 - closed while start was in flight: never leak the run.
+        void PreflightTestAPI.cancel(id).catch(() => {});
+        return;
+      }
       attach(id, d.cwd);
     } catch (err) {
       if (exited) return;

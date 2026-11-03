@@ -71,6 +71,7 @@ interface Harness {
   setDraft: (edit: (draft: AppSettings) => void) => void;
   setPending: (pending: boolean) => void;
   closed: () => number;
+  unmount: () => void;
   cleanup: () => void;
 }
 
@@ -122,7 +123,7 @@ async function mount(describeReply: () => Reply<PreflightTargetDescription>): Pr
       edit(next);
       return next;
     }),
-    setPending, closed: () => closed, cleanup: r.cleanup,
+    setPending, closed: () => closed, unmount: () => setOpen(false), cleanup: r.cleanup,
   };
 }
 
@@ -326,6 +327,25 @@ describe("PreflightTestPanel (#3516)", () => {
       { cmd: "cancel_preflight_test", args: { runId: "run-1" } },
     ]);
     expect(x.fake.callsFor("get_preflight_test")).toHaveLength(1);
+  });
+
+  it.each(["unmount", "close"])("cancels a run whose start resolves after %s", async (how) => {
+    h = await mount(() => target());
+    let resolveStart: (id: string) => void = () => {};
+    h.fake.onInvoke("start_preflight_test", () => new Promise((r) => { resolveStart = r; }));
+    await select(h);
+    runButton(h)!.click();
+    await settle();
+    if (how === "close") q<HTMLButtonElement>(h.root, ".close")!.click();
+    else h.unmount();
+    expect(q(h.root, "")).toBeNull();
+    expect(h.fake.callsFor("cancel_preflight_test")).toHaveLength(0);
+    resolveStart("run-late");
+    await settle(2000);
+    expect(h.fake.callsFor("cancel_preflight_test")).toEqual([
+      { cmd: "cancel_preflight_test", args: { runId: "run-late" } },
+    ]);
+    expect(h.fake.callsFor("get_preflight_test")).toHaveLength(0);
   });
 
   it("closes on Escape before a document listener sees it", async () => {
