@@ -118,7 +118,7 @@ impl ContainerShutdownWorkRegistry {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.phase != ContainerShutdownPhase::Accepting {
             return None;
         }
@@ -151,7 +151,7 @@ impl ContainerShutdownWorkRegistry {
                 .shared
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.terminating || state.queued.len() >= CONTAINER_SHUTDOWN_QUEUE_CAPACITY {
                 false
             } else {
@@ -216,7 +216,7 @@ impl ContainerShutdownWorkRegistry {
                 .shared
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             loop {
                 let deadline = control.shutdown_deadline();
                 if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -261,7 +261,7 @@ impl ContainerShutdownWorkRegistry {
                     self.shared
                         .state_changed
                         .wait(state)
-                        .unwrap_or_else(|error| error.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                 };
             }
         };
@@ -272,7 +272,7 @@ impl ContainerShutdownWorkRegistry {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.active.remove(&id);
         if state.active_fallbacks == 0 {
             log::error!(
@@ -368,7 +368,7 @@ impl ContainerShutdownWorkRegistry {
         let mut workers = self
             .workers
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut retained = Vec::with_capacity(workers.len());
         for worker in workers.drain(..) {
             if worker.is_finished() {
@@ -378,7 +378,7 @@ impl ContainerShutdownWorkRegistry {
                             .shared
                             .state
                             .lock()
-                            .unwrap_or_else(|error| error.into_inner());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         decrement_shutdown_worker_count(&mut state, &self.shared);
                     }
                     log::error!(
@@ -402,7 +402,7 @@ impl ContainerShutdownWorkRegistry {
                 .shared
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.terminating {
                 0
             } else {
@@ -415,7 +415,7 @@ impl ContainerShutdownWorkRegistry {
                 .shared
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .fail_worker_spawn
             {
                 log::warn!(
@@ -437,7 +437,7 @@ impl ContainerShutdownWorkRegistry {
                     .shared
                     .state
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.worker_count += 1;
             }
             match std::thread::Builder::new()
@@ -451,7 +451,7 @@ impl ContainerShutdownWorkRegistry {
                             .shared
                             .state
                             .lock()
-                            .unwrap_or_else(|error| error.into_inner());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         decrement_shutdown_worker_count(&mut state, &self.shared);
                     }
                     log::warn!(
@@ -472,7 +472,7 @@ impl ContainerShutdownWorkRegistry {
         self.shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .worker_count
     }
 
@@ -538,7 +538,7 @@ impl ContainerShutdownWorkRegistry {
                                 .shared
                                 .state
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner());
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             decrement_shutdown_worker_count(&mut state, &self.shared);
                         }
                         log::error!(
@@ -620,7 +620,7 @@ impl ContainerShutdownWorkRegistry {
         self.shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fail_worker_spawn = true;
     }
 
@@ -629,7 +629,7 @@ impl ContainerShutdownWorkRegistry {
         self.shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fail_worker_spawn = false;
     }
 
@@ -638,7 +638,7 @@ impl ContainerShutdownWorkRegistry {
         self.shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .worker_count
     }
 
@@ -648,7 +648,7 @@ impl ContainerShutdownWorkRegistry {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             state.phase.is_sealed(),
             state.active_producers,
@@ -662,7 +662,7 @@ impl ContainerShutdownWorkRegistry {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             state.phase.is_sealed(),
             state.active_producers,
@@ -683,7 +683,7 @@ impl ContainerShutdownWorkRegistry {
         let mut workers = self
             .workers
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             let mut unfinished = Vec::with_capacity(workers.len());
             for worker in workers.drain(..) {
@@ -694,7 +694,7 @@ impl ContainerShutdownWorkRegistry {
                                 .shared
                                 .state
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner());
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             decrement_shutdown_worker_count(&mut state, &self.shared);
                         }
                         log::error!(
@@ -733,7 +733,7 @@ impl Drop for ContainerShutdownWorkRegistry {
                 .shared
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.phase == ContainerShutdownPhase::Accepting {
                 state.phase = ContainerShutdownPhase::Draining;
             }
@@ -743,7 +743,9 @@ impl Drop for ContainerShutdownWorkRegistry {
         }
         let retained = PROCESS_RETAINED_CONTAINER_WORKERS.get_or_init(|| Mutex::new(Vec::new()));
         {
-            let mut retained = retained.lock().unwrap_or_else(|error| error.into_inner());
+            let mut retained = retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut unfinished = Vec::with_capacity(retained.len());
             for worker in retained.drain(..) {
                 if worker.is_finished() {
@@ -764,11 +766,11 @@ impl Drop for ContainerShutdownWorkRegistry {
         let retained_count = remaining.len();
         retained
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend(remaining);
         log::warn!(
-            "[container-transport] registry drop retained {} unfinished shutdown workers",
-            retained_count
+            "[container-transport] registry drop retained {retained_count} \
+             unfinished shutdown workers"
         );
     }
 }
@@ -779,7 +781,7 @@ pub(super) fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>
             let mut state = shared
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             loop {
                 if let Some(work) = state
                     .queued
@@ -814,7 +816,7 @@ pub(super) fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>
                         state = shared
                             .work_available
                             .wait_timeout(state, CONTAINER_SHUTDOWN_IDLE_RECHECK)
-                            .unwrap_or_else(|error| error.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .0;
                     }
                     Some(deadline) => {
@@ -822,14 +824,14 @@ pub(super) fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>
                         state = shared
                             .work_available
                             .wait_timeout(state, remaining)
-                            .unwrap_or_else(|error| error.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .0;
                     }
                     None => {
                         state = shared
                             .work_available
                             .wait_timeout(state, CONTAINER_SHUTDOWN_IDLE_RECHECK)
-                            .unwrap_or_else(|error| error.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .0;
                     }
                 }
@@ -843,7 +845,7 @@ pub(super) fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>
         let mut state = shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.active.remove(&id);
         shared.state_changed.notify_all();
     }
@@ -883,7 +885,7 @@ impl Drop for ContainerShutdownProducer {
             .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.active_producers == 0 {
             log::error!("[container-transport] shutdown-work producer count underflow");
             return;
