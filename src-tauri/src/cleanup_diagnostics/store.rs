@@ -273,7 +273,7 @@ impl Diagnostics {
             let Some((run, operation)) = owned_name(&path) else {
                 continue;
             };
-            let info = std::fs::symlink_metadata(&path)
+            let info = debug_logs::diagnostic_file_metadata(&path)
                 .map_err(|error| EvidenceError::new("metadata", error))?;
             if !info.file_type().is_file() {
                 continue;

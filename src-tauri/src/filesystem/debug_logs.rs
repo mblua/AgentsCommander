@@ -57,3 +57,7 @@ pub(crate) fn list_diagnostic_files(dir: &Path) -> io::Result<Vec<std::path::Pat
 pub(crate) fn read_diagnostic_file(path: &Path) -> io::Result<Vec<u8>> {
     std::fs::read(path)
 }
+
+pub(crate) fn diagnostic_file_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
+    std::fs::symlink_metadata(path)
+}

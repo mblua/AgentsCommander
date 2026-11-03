@@ -53,7 +53,7 @@ impl State {
         error
     }
 
-    fn emit(&mut self, stage: &str, event: EvidenceEvent) -> Result<u64, EvidenceError> {
+    fn write_record(&mut self, stage: &str, event: EvidenceEvent) -> Result<u64, EvidenceError> {
         if self.finished || (self.gap && !matches!(event, EvidenceEvent::OperationComplete { .. }))
         {
             return Err(self.error(stage, "operation is finished or has an evidence gap"));
@@ -114,7 +114,7 @@ impl Operation {
         };
         {
             let mut state = operation.lock()?;
-            state.emit("header", EvidenceEvent::OperationBegin)?;
+            state.write_record("header", EvidenceEvent::OperationBegin)?;
             state.sync("header")?;
         }
         Ok(operation)
@@ -138,14 +138,14 @@ impl Operation {
             return Err(state.error("selection", "duplicate selection or unordered indexes"));
         }
         for row in rows {
-            state.emit(
+            state.write_record(
                 "selection",
                 EvidenceEvent::Target {
                     row: Box::new(row.clone()),
                 },
             )?;
         }
-        state.emit(
+        state.write_record(
             "selection",
             EvidenceEvent::SelectionComplete { count: rows.len() },
         )?;
@@ -165,7 +165,7 @@ impl Operation {
         if !matches || state.calls.contains_key(&row.index) {
             return Err(state.error("pre_call", "row is unselected or already prepared"));
         }
-        let seq = state.emit(
+        let seq = state.write_record(
             "pre_call",
             EvidenceEvent::PreCall {
                 index: row.index,
@@ -204,7 +204,7 @@ impl Operation {
             call.returned = Some(raw_result.clone());
         }
         let result = state
-            .emit(
+            .write_record(
                 "api_return",
                 EvidenceEvent::ApiReturn {
                     index: ticket.index,
@@ -232,7 +232,7 @@ impl Operation {
         }
         let known_api_return = call.returned.clone();
         let result = state
-            .emit(
+            .write_record(
                 "exit_observed",
                 EvidenceEvent::ExitObserved {
                     index: ticket.index,
@@ -261,7 +261,7 @@ impl Operation {
         summary.accounting = "proposed".into();
         summary.evidence_gap |= state.gap;
         summary.partial |= summary.evidence_gap;
-        state.emit("footer", EvidenceEvent::OperationComplete { summary })?;
+        state.write_record("footer", EvidenceEvent::OperationComplete { summary })?;
         state.sync("footer")?;
         let result = state.writer.complete();
         state.check("footer", result)?;
