@@ -16,7 +16,7 @@ use super::{
 
 /// Best-effort, Windows-safe seed execution (H1). NEVER aborts the spawn.
 /// `unique_sfx` (the session id) keeps the temp/trash leaves unique per spawn
-/// (M3) and short (I2/MAX_PATH).
+/// (M3) and short (I2/`MAX_PATH`).
 ///
 /// CONCURRENCY CONTRACT (grinch HIGH-1): callers MUST serialize this for the
 /// same replica, because step 2 sweeps ALL `<dest>.acseed-*` scratch by prefix
@@ -233,8 +233,8 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
     };
 
     // M3: unique per spawn. Same-volume siblings of dest, so renames are atomic.
-    let temp = parent.join(format!("{}.acseed-tmp-{}", dest_name, unique_sfx));
-    let trash = parent.join(format!("{}.acseed-old-{}", dest_name, unique_sfx));
+    let temp = parent.join(format!("{dest_name}.acseed-tmp-{unique_sfx}"));
+    let trash = parent.join(format!("{dest_name}.acseed-old-{unique_sfx}"));
 
     // 2. Reclaim ALL stale seed scratch for this dest (any session id), not just
     //    this spawn's. A trash dir whose removal failed earlier (locked by a
@@ -277,7 +277,7 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
 
     // 7. Emit the deferred config-dir warning + the success line.
     if let Some(w) = &seed.config_dir_warning {
-        log::warn!("[config-seed] {}", w);
+        log::warn!("[config-seed] {w}");
     }
     log::info!(
         "[config-seed] seeded '{}' into replica from {:?}{} source '{}'",
@@ -387,7 +387,7 @@ fn install_seed_or_restore(
                                 seed.dest.display(),
                                 reason
                             );
-                            format!("config:{}", dest_name)
+                            format!("config:{dest_name}")
                         }),
                         trash_path: trash.to_path_buf(),
                         install_error,

@@ -20,7 +20,9 @@ pub fn note_spawn_attempt(
 ) -> SpawnWindow {
     let window = thresholds.concurrency_window;
     let now = Instant::now();
-    let mut registry = registry(owner).lock().unwrap_or_else(|e| e.into_inner());
+    let mut registry = registry(owner)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     while let Some((at, _)) = registry.recent.front() {
         if now.duration_since(*at) > window {
@@ -58,7 +60,7 @@ pub fn register(init: SpawnRecordInit, owner: &super::SpawnRegistry) -> Arc<Spaw
     record.log_spawn();
     registry(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .records
         .insert(record.session_id, Arc::clone(&record));
     record
@@ -78,7 +80,7 @@ pub fn mark_ac_stop(
 ) -> Option<Arc<SpawnRecord>> {
     let record = registry(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .records
         .get(&session_id)
         .cloned()?;
@@ -89,7 +91,7 @@ pub fn mark_ac_stop(
 pub fn forget(session_id: Uuid, owner: &super::SpawnRegistry) {
     registry(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .records
         .remove(&session_id);
 }
@@ -101,7 +103,7 @@ pub fn forget(session_id: Uuid, owner: &super::SpawnRegistry) {
 pub fn record_for(session_id: Uuid, owner: &super::SpawnRegistry) -> Option<Arc<SpawnRecord>> {
     registry(owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .records
         .get(&session_id)
         .cloned()
@@ -109,7 +111,7 @@ pub fn record_for(session_id: Uuid, owner: &super::SpawnRegistry) -> Option<Arc<
 
 /// One monitor thread per local session. It owns two signals the PTY reader cannot
 /// carry: the startup verdict at the deadline, and the exit of a child that dies
-/// without AC asking (ConPTY keeps the pipe open past the death of the child, so reader
+/// without AC asking (`ConPTY` keeps the pipe open past the death of the child, so reader
 /// EOF is not a reliable witness). It ends when the child exits, when the session is
 /// gone, or when the probe itself panics.
 pub fn watch_child<P>(record: Arc<SpawnRecord>, probe: P) -> JoinHandle<()>
