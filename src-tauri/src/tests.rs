@@ -314,7 +314,7 @@ fn queue_files(room_root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| {
             entries
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .map(|e| e.path())
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
                 .collect()
@@ -329,7 +329,7 @@ fn messaging_files(room_root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| {
             entries
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .map(|e| e.path())
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
                 .collect()

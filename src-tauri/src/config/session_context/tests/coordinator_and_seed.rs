@@ -727,7 +727,7 @@ fn failed_template_seed_removes_partial_file_and_retry_uses_complete_defaults() 
         );
         let temp_leftovers = std::fs::read_dir(&ac_root)
             .expect("read workspace dir")
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|entry| {
                 entry
                     .file_name()

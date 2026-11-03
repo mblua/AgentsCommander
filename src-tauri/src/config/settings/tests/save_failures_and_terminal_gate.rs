@@ -52,10 +52,7 @@ fn windows_atomic_replace_failure_retains_os_metadata() {
     assert_eq!(recorded_pid, std::process::id());
     assert_eq!(recorded_temp.parent(), Some(temp.path()));
     let temp_name = recorded_temp.file_name().unwrap().to_string_lossy();
-    assert!(temp_name.starts_with(&format!(
-        "settings.30.instance.no-git.json.{}.",
-        recorded_pid
-    )));
+    assert!(temp_name.starts_with(&format!("settings.30.instance.no-git.json.{recorded_pid}.")));
     assert!(temp_name.ends_with(".tmp"));
 
     let (records, _capture_guard) = capture_settings_save_diagnostics();

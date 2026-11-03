@@ -326,7 +326,7 @@ fn raise_hand_delivered_path(cwd: &Path, msg_id: &str) -> PathBuf {
     cwd.join(crate::config::agent_local_dir_name())
         .join("outbox")
         .join("delivered")
-        .join(format!("{}.json", msg_id))
+        .join(format!("{msg_id}.json"))
 }
 
 #[tokio::test]

@@ -130,7 +130,7 @@ fn publish_over_a_destination_longer_than_max_path_succeeds() {
 }
 
 /// Inverse control for the long-path publish test: raw non-verbatim
-/// arguments still fail with ERROR_PATH_NOT_FOUND, so that test is not
+/// arguments still fail with `ERROR_PATH_NOT_FOUND`, so that test is not
 /// vacuous. If this ever goes red, the process gained long-path awareness
 /// (for example through a manifest); re-triage #2378 instead of relaxing
 /// this test.
