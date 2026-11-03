@@ -26,6 +26,7 @@ pub(crate) const GATE_UNAVAILABLE: &str =
 #[derive(Default)]
 pub(crate) struct PreflightState {
     holds: Mutex<HashMap<String, Hold>>,
+    runs: Mutex<test_run::PreflightRuns>,
 }
 
 #[derive(Default)]
@@ -37,10 +38,17 @@ struct Hold {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HoldRefusal {
     Test,
+    Launching,
 }
 
 /// One launch's shared hold, released on drop.
 pub(crate) struct LaunchShare {
+    state: Arc<PreflightState>,
+    key: String,
+}
+
+/// A preflight test's exclusive hold, released on drop.
+pub(crate) struct TestHold {
     state: Arc<PreflightState>,
     key: String,
 }
@@ -64,6 +72,29 @@ impl PreflightState {
         })
     }
 
+    /// Takes the folder alone for a preflight test; never waits.
+    pub(crate) fn try_test(self: &Arc<Self>, cwd: &str) -> Result<TestHold, HoldRefusal> {
+        let key = destination_key(cwd);
+        let mut holds = self.holds();
+        let hold = holds.entry(key.clone()).or_default();
+        if hold.test {
+            return Err(HoldRefusal::Test);
+        }
+        if hold.launches > 0 {
+            return Err(HoldRefusal::Launching);
+        }
+        hold.test = true;
+        Ok(TestHold {
+            state: Arc::clone(self),
+            key,
+        })
+    }
+
+    /// No launch share and no test hold on the folder of `cwd`.
+    pub(crate) fn is_free(&self, cwd: &str) -> bool {
+        !self.holds().contains_key(&destination_key(cwd))
+    }
+
     /// The number of launch shares on the folder of `cwd` (0 when it has no entry).
     #[cfg(test)]
     pub(crate) fn launch_count(&self, cwd: &str) -> usize {
@@ -78,6 +109,18 @@ impl PreflightState {
             hold.launches = hold.launches.saturating_sub(1);
             if hold.launches == 0 && !hold.test {
                 holds.remove(key);
+            }
+        }
+    }
+}
+
+impl Drop for TestHold {
+    fn drop(&mut self) {
+        let mut holds = self.state.holds();
+        if let Some(hold) = holds.get_mut(&self.key) {
+            hold.test = false;
+            if hold.launches == 0 {
+                holds.remove(&self.key);
             }
         }
     }
@@ -356,6 +399,7 @@ pub(crate) fn refusal_message(refusal: HoldRefusal) -> &'static str {
             "A preflight test is running on this agent. \
              The CLI will not start because the gate failed."
         }
+        HoldRefusal::Launching => "This agent is starting. Try again when it is stopped.",
     }
 }
 
@@ -381,6 +425,8 @@ pub(crate) fn seed_gate(report: Option<&ConfigSeedReport>) -> Result<(), String>
     };
     Err(format!("Preparation gate failed: {reason}. {GATE_SUFFIX}"))
 }
+
+pub(crate) mod test_run;
 
 #[cfg(test)]
 mod tests;

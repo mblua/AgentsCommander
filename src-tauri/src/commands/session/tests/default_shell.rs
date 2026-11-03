@@ -1,6 +1,7 @@
 use super::*;
 use crate::commands::session::preflight::{
-    resolution_failure_message, seed_gate, PreflightState, CONTAINER_REFUSAL,
+    refusal_message, resolution_failure_message, seed_gate, HoldRefusal, PreflightState,
+    CONTAINER_REFUSAL,
 };
 
 // --- #1271 configured default-shell propagation --------------------------
@@ -22,6 +23,8 @@ pub(super) struct CapturingSpawnBackend {
     /// #3516 - the hold state and cwd whose launch count `spawn` records.
     pub(super) share_probe: Mutex<Option<(Arc<PreflightState>, String)>>,
     pub(super) share_counts: Mutex<Vec<usize>>,
+    /// #3516 - `try_test` on the probed folder, taken inside `spawn`.
+    pub(super) test_probes: Mutex<Vec<Result<(), HoldRefusal>>>,
 }
 
 impl PtyBackend for CapturingSpawnBackend {
@@ -39,6 +42,8 @@ impl PtyBackend for CapturingSpawnBackend {
                     .lock()
                     .unwrap()
                     .push(state.launch_count(cwd));
+                let probe = state.try_test(cwd).map(drop);
+                self.test_probes.lock().unwrap().push(probe);
             }
             self.live.lock().unwrap().insert(spec.id);
             self.specs.lock().unwrap().push(spec);
@@ -756,4 +761,38 @@ async fn stale_seed_with_chain_blocks_launch() {
     assert_eq!(run.result.expect_err("strict seed"), expected);
     assert!(run.backend.specs.lock().unwrap().is_empty());
     assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_hold_blocks_any_launch() {
+    for preflight in [Some(preflight_text(0)), None] {
+        let held = Mutex::new(None);
+        let run = gate_create(preflight.clone(), false, true, |state, cwd| {
+            *held.lock().unwrap() = Some(state.try_test(cwd).expect("test hold"));
+        })
+        .await;
+        let error = run.result.expect_err("a test hold blocks the launch");
+        assert_eq!(error, refusal_message(HoldRefusal::Test));
+        assert!(run.backend.specs.lock().unwrap().is_empty());
+        drop(held);
+
+        let run = gate_create(preflight, false, true, |state, cwd| {
+            drop(state.try_test(cwd).expect("test hold"));
+        })
+        .await;
+        run.result.expect("a dropped test hold no longer blocks");
+        assert_eq!(run.backend.specs.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn test_refused_inside_launch_spawn() {
+    let run = gate_create(Some(preflight_text(0)), false, true, |_, _| {}).await;
+    run.result.expect("launch");
+    assert_eq!(
+        *run.backend.test_probes.lock().unwrap(),
+        vec![Err(HoldRefusal::Launching)]
+    );
+    let state = run.state.expect("managed");
+    assert!(state.try_test(&run.cwd).is_ok());
 }

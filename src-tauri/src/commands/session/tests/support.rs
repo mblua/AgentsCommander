@@ -151,7 +151,7 @@ pub(super) fn session_test_app(
     session_test_app_with_store(settings, session_mgr, pty_mgr, SessionTestStoreState::Ready)
 }
 
-pub(super) fn strict_target_fixture() -> (tempfile::TempDir, String, String) {
+pub(in crate::commands::session) fn strict_target_fixture() -> (tempfile::TempDir, String, String) {
     let temp = tempfile::TempDir::new().unwrap();
     let project = temp.path().join("project");
     let ac_root = project.join(".ac");

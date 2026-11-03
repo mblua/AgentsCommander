@@ -56,7 +56,7 @@ mod resume_injection;
 mod resume_policy;
 mod root_agent;
 mod samplers;
-mod support;
+pub(super) mod support;
 
 pub(crate) use backends::ScriptedSpawnBackend;
 use backends::{BarrierDestroyBackend, FailingSpawnBackend, GatedSpawnBackend};

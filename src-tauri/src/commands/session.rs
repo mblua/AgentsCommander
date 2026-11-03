@@ -133,6 +133,11 @@ use lifecycle::prepare_restore_lifecycle_authority;
 #[cfg(test)]
 pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
+pub(crate) use preflight::test_run::{
+    cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
+    start_preflight_test_inner, PreflightTargetDescription, PreflightTestDeps,
+    PreflightTestSnapshot,
+};
 pub(crate) use preflight::PreflightState;
 pub(crate) use restart::carry_communication_for_restart;
 use restart::effective_create_skip_auto_resume;
@@ -893,6 +898,70 @@ pub async fn get_last_agent_message(
     Ok(agent_config::read_last_agent_message_at(
         &session.working_directory,
     ))
+}
+
+fn preflight_deps(app: &AppHandle) -> Result<PreflightTestDeps, String> {
+    Ok(PreflightTestDeps {
+        settings: app.state::<SettingsState>().inner().clone(),
+        session_mgr: app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+            .clone(),
+        pty_mgr: app.state::<Arc<Mutex<PtyManager>>>().inner().clone(),
+        state: app
+            .try_state::<Arc<PreflightState>>()
+            .ok_or_else(|| "Preflight tests are unavailable.".to_string())?
+            .inner()
+            .clone(),
+    })
+}
+
+/// #3516 - the saved preflight chain of a stopped agent folder.
+#[tauri::command]
+pub(crate) async fn describe_preflight_target(
+    app: AppHandle,
+    agent_id: String,
+    profile_letter: Option<String>,
+    replica_path: String,
+) -> Result<PreflightTargetDescription, String> {
+    let deps = preflight_deps(&app)?;
+    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path).await
+}
+
+/// #3516 - starts a preflight test run; returns its id.
+#[tauri::command]
+pub(crate) async fn start_preflight_test(
+    app: AppHandle,
+    agent_id: String,
+    profile_letter: Option<String>,
+    replica_path: String,
+    settings_revision: String,
+) -> Result<String, String> {
+    let deps = preflight_deps(&app)?;
+    start_preflight_test_inner(
+        deps,
+        agent_id,
+        profile_letter,
+        replica_path,
+        settings_revision,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) fn get_preflight_test(
+    state: State<'_, Arc<PreflightState>>,
+    run_id: String,
+) -> Result<PreflightTestSnapshot, String> {
+    get_preflight_test_inner(&state, &run_id)
+}
+
+#[tauri::command]
+pub(crate) fn cancel_preflight_test(
+    state: State<'_, Arc<PreflightState>>,
+    run_id: String,
+) -> Result<PreflightTestSnapshot, String> {
+    cancel_preflight_test_inner(&state, &run_id)
 }
 
 #[cfg(test)]

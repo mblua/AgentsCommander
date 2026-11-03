@@ -24,6 +24,7 @@ struct TestOperations {
     restore: Option<Arc<crate::app_state::RestoreInProgress>>,
     purge: Option<Arc<crate::session::purge_guard::PurgeGuard>>,
     create_fails: AtomicBool,
+    preflight: Option<Arc<crate::commands::session::PreflightState>>,
 }
 
 impl AgentUpdateOperations for TestOperations {
@@ -99,6 +100,10 @@ impl WebOperations for TestOperations {
 
     fn detached(&self) -> &crate::app_state::DetachedSessionsState {
         panic!("unexpected detached")
+    }
+
+    fn preflight_state(&self) -> Option<Arc<crate::commands::session::PreflightState>> {
+        self.preflight.clone()
     }
 
     fn restore(&self) -> Option<&Arc<crate::app_state::RestoreInProgress>> {
@@ -349,6 +354,7 @@ fn fixture(
             .map(|active| Arc::new(crate::app_state::RestoreInProgress(AtomicBool::new(active)))),
         purge,
         create_fails: AtomicBool::new(false),
+        preflight: None,
     });
     let state = WsState {
         session_mgr: Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
@@ -617,4 +623,53 @@ async fn publication_order_child() {
     let reply = dispatch(&state, 51, "update_settings", &json!({"newSettings": next})).await;
     assert_eq!(reply, json!({"id": 51, "result": null}));
     assert_eq!(*observed.lock().unwrap(), [expected]);
+}
+
+#[tokio::test]
+async fn ws_and_inner_describe_match() {
+    let (plain, host, _, _) = fixture(None, None);
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().to_string_lossy().to_string();
+    let args = json!({"agentId": "claude", "replicaPath": path});
+    let unavailable = dispatch(&plain, 1, "describe_preflight_target", &args).await;
+    let expected = json!({"id": 1, "error": "Preflight tests are unavailable."});
+    assert_eq!(unavailable, expected);
+
+    let preflight = Arc::new(crate::commands::session::PreflightState::default());
+    let operations = Arc::new(TestOperations {
+        log: host.log.clone(),
+        pty: host.pty.clone(),
+        restore: None,
+        purge: None,
+        create_fails: AtomicBool::new(false),
+        preflight: Some(preflight.clone()),
+    });
+    let state = WsState {
+        operations: operations.clone(),
+        desktop_events: operations,
+        ..plain
+    };
+    let deps = crate::commands::session::PreflightTestDeps {
+        settings: state.settings.clone(),
+        session_mgr: state.session_mgr.clone(),
+        pty_mgr: state.pty_mgr.clone(),
+        state: preflight.clone(),
+    };
+    let inner = crate::commands::session::describe_preflight_target_inner(
+        &deps,
+        "claude".to_string(),
+        None,
+        path.clone(),
+    )
+    .await
+    .expect("describe");
+    let ws = dispatch(&state, 2, "describe_preflight_target", &args).await;
+    assert_eq!(
+        ws,
+        json!({"id": 2, "result": serde_json::to_value(inner).unwrap()})
+    );
+
+    let unknown = crate::commands::session::get_preflight_test_inner(&preflight, "nope");
+    let ws = dispatch(&state, 3, "get_preflight_test", &json!({"runId": "nope"})).await;
+    assert_eq!(ws, json!({"id": 3, "error": unknown.unwrap_err()}));
 }
