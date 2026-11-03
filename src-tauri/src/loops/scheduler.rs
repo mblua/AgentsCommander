@@ -490,6 +490,24 @@ impl LoopScheduler {
         Ok(false)
     }
 
+    async fn ready_scan_snapshot(
+        &self,
+        context: &SchedulerContext,
+        project_dir: &Path,
+        dir: &Path,
+    ) -> Result<Option<LoopScanSnapshot>, String> {
+        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+            return Ok(None);
+        };
+        if self
+            .finish_scan_entry(context, project_dir, dir, &snapshot)
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(Some(snapshot))
+    }
+
     async fn scan_loop(
         &self,
         context: &SchedulerContext,
@@ -498,15 +516,9 @@ impl LoopScheduler {
         startup: bool,
         pending_only: bool,
     ) -> Result<(), String> {
-        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+        let Some(snapshot) = self.ready_scan_snapshot(context, project_dir, dir).await? else {
             return Ok(());
         };
-        if self
-            .finish_scan_entry(context, project_dir, dir, &snapshot)
-            .await?
-        {
-            return Ok(());
-        }
         let LoopScanSnapshot {
             config,
             mut state,
