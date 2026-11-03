@@ -169,7 +169,7 @@ where
     let driver: Driver = Box::pin(async move {
         match inject(sid, text).await {
             Ok(()) => note_boundary(sid).await,
-            Err(error) => log::warn!("[mailbox] self-clear attempt for {} failed: {}", sid, error),
+            Err(error) => log::warn!("[mailbox] self-clear attempt for {sid} failed: {error}"),
         }
         driver_pending.release(&driver_lease);
     });

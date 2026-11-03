@@ -237,7 +237,7 @@ fn snapshot(metadata: &Metadata, links: u64) -> VerifiedMetadata {
 }
 
 /// Which identity rule rejected a path. The vocabulary is closed and every
-/// variant renders to a compile-time snake_case literal, so no filesystem text
+/// variant renders to a compile-time `snake_case` literal, so no filesystem text
 /// can ever escape through a rule name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathRule {
