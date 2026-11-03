@@ -6,6 +6,8 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.46.0
+
 ### Added
 
 - A **WWW** button next to Home opens an embedded web browser in the central pane, with back, forward, refresh and a URL bar. Agents can drive it with `web-browser navigate|reload|status`. (#3367, #3427)
@@ -52,7 +54,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 - Internal preparation for choosing profiles per agents file: profile storage keyed by BASE hash, agent-file source APIs and source references in persisted selections. The UI is still pending. (#2902, #3117, #2905, #3141, #2900, #3144)
 - Agent and profile records carry optional `id_hash_debug` metadata that shows the inputs of each identity hash. Existing hashes are unchanged. (#3052, #3089, #3098, #3105, #3099, #3106, #3100, #3108, #3101, #3112)
 - About 150 behavior-preserving refactor PRs break module cycles, give disk access and global state a single owner, apply Clippy pedantic fixes and remove dead code. CI adds sanitizing, function-length and Clippy lint-budget gates, and PR regression jobs run faster. (#3170, #3173, #3183, #3185, #3296, #3514, #3519, #3524, #3531)
-
 ## 0.45.1
 
 ### Added
