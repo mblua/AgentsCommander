@@ -90,22 +90,14 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     );
 
     start_startup_housekeeping(app);
-    let git = ctx.owners.git;
-    let settings = app.state::<SettingsState>().inner().clone();
-    let (git_watcher, discovery_branch_watcher) = start_git_watchers(
+    let (git_watcher, discovery_branch_watcher) = start_git_and_remote_watchers(
         app,
-        settings.clone(),
-        ctx.session_mgr_for_git.clone(),
-        ctx.session_mgr_for_discovery,
-        ctx.session_mgr_for_git_sweeper,
-        &git,
-        &ctx.shutdown_for_setup,
-    );
-    start_remote_activity(
-        app,
-        settings,
-        ctx.session_mgr_for_git,
-        git,
+        [
+            ctx.session_mgr_for_git,
+            ctx.session_mgr_for_discovery,
+            ctx.session_mgr_for_git_sweeper,
+        ],
+        ctx.owners.git,
         ctx.owners.remote,
         &ctx.shutdown_for_setup,
         &messages,
@@ -379,6 +371,37 @@ fn spawn_screenshot_hotkey_registration(app: SetupApp<'_>) {
             }
         }
     });
+}
+
+/// Starts the git branch watchers, then remote activity, sharing one settings clone.
+fn start_git_and_remote_watchers(
+    app: SetupApp<'_>,
+    [git_rows, rows, sweep_rows]: [Arc<tokio::sync::RwLock<SessionManager>>; 3],
+    git: Arc<crate::pty::git_watcher::GitState>,
+    remote: Arc<crate::pty::remote_watcher::RemoteActivityState>,
+    shutdown_for_setup: &ShutdownSignal,
+    messages: &Arc<crate::config::injected_messages::MessageWarnings>,
+) -> (Arc<GitWatcher>, Arc<DiscoveryBranchWatcher>) {
+    let settings = app.state::<SettingsState>().inner().clone();
+    let watchers = start_git_watchers(
+        app,
+        settings.clone(),
+        git_rows.clone(),
+        rows,
+        sweep_rows,
+        &git,
+        shutdown_for_setup,
+    );
+    start_remote_activity(
+        app,
+        settings,
+        git_rows,
+        git,
+        remote,
+        shutdown_for_setup,
+        messages,
+    );
+    watchers
 }
 
 fn start_git_watchers(

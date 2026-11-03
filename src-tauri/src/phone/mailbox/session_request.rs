@@ -40,48 +40,13 @@ impl MailboxPoller {
             "purge-room requires a session token; caller must enforce"
         );
 
-        // 2. Resolve WG scope and authorization, one call (§3.6).
-        let effective_paths = match purge_effective_paths(&app.state::<SettingsState>(), path).await
-        {
-            Ok(paths) => paths,
-            Err(e) => {
-                return self.reject_message(path, msg, &e).await;
-            }
+        // 2-4. Resolve and authorize the WG scope, then enumerate its peers.
+        let Some((project, wg_name, peer_fqns)) = self
+            .resolve_purge_scope(&app.state::<SettingsState>(), path, msg)
+            .await?
+        else {
+            return Ok(());
         };
-        let wg =
-            match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
-            {
-                Some(wg) => wg,
-                None => {
-                    return self
-                        .reject_message(
-                            path,
-                            msg,
-                            &format!(
-                                "Not authorized: '{}' is not the verified orchestrator of its room",
-                                msg.from
-                            ),
-                        )
-                        .await;
-                }
-            };
-
-        // 3. --wg assertion (§3.6: interlock, not selector).
-        if let Some(reason) = purge_wg_assertion_error(msg, &wg.wg_name) {
-            return self.reject_message(path, msg, &reason).await;
-        }
-
-        // 4. Enumerate peers (Guard A). Only `__agent_*` dirs under the WG dir.
-        //    The coordinator does not purge itself.
-        let wg_dir = match wg.replica_dir.parent() {
-            Some(d) => d,
-            None => {
-                return self
-                    .reject_message(path, msg, "purge-room: cannot resolve Room directory")
-                    .await;
-            }
-        };
-        let peer_fqns = purge::peer_fqns(wg_dir, &wg.agent_name, &wg.project, &wg.wg_name);
 
         // 5. Take the mirror snapshot ONCE (F-4). One list_sessions(), one
         //    PTY-liveness pass. Per-peer filtering reuses the pure predicate.
@@ -97,7 +62,7 @@ impl MailboxPoller {
             if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                 let response = serde_json::json!({
                     "action": PURGE_WG_ACTION,
-                    "workgroup": format!("{}:{}", wg.project, wg.wg_name),
+                    "workgroup": format!("{}:{}", project, wg_name),
                     "status": "restore_in_progress",
                     "requested_by": msg.from,
                     "peers": [],
@@ -112,12 +77,7 @@ impl MailboxPoller {
         //    Collect live session info; the readiness snapshot (step 8) is
         //    correlated into gate_peers after.
         let (peer_infos, all_live_session_ids) = match purge::peer_live_info(
-            &peer_fqns,
-            &sessions,
-            &pty_live,
-            &wg.project,
-            &wg.wg_name,
-            msg,
+            &peer_fqns, &sessions, &pty_live, &project, &wg_name, msg,
         ) {
             Ok(snapshot) => snapshot,
             Err(response) => {
@@ -139,7 +99,7 @@ impl MailboxPoller {
 
         // 9. Dry-run exit, BEFORE the gate rejection (F-9).
         if msg.dry_run == Some(true) {
-            let response = purge::dry_run_response(&wg.project, &wg.wg_name, msg, quiet, &decision);
+            let response = purge::dry_run_response(&project, &wg_name, msg, quiet, &decision);
             return self
                 .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
                 .await;
@@ -147,7 +107,7 @@ impl MailboxPoller {
 
         // 10. The gate. If any peer is not purgeable: reject, destroy nothing.
         if !decision.passed {
-            let response = purge::busy_response(&wg.project, &wg.wg_name, msg, quiet, &decision);
+            let response = purge::busy_response(&project, &wg_name, msg, quiet, &decision);
             return self
                 .write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
                 .await;
@@ -177,10 +137,64 @@ impl MailboxPoller {
             .run_purge_lease(purge_guard, msg, &gate_peers, close)
             .await?;
         let response =
-            purge::completion_response(&wg.project, &wg.wg_name, msg, quiet, &decision, &snapshot);
+            purge::completion_response(&project, &wg_name, msg, quiet, &decision, &snapshot);
 
         self.write_purge_response_and_deliver(app, path, msg, is_app_outbox, &response)
             .await
+    }
+
+    /// Steps 2-4 of `handle_purge_wg`: `None` once the request was rejected.
+    async fn resolve_purge_scope(
+        &self,
+        settings: &SettingsState,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+    ) -> Result<Option<(String, String, Vec<String>)>, String> {
+        // 2. Resolve WG scope and authorization, one call (§3.6).
+        let effective_paths = match purge_effective_paths(settings, path).await {
+            Ok(paths) => paths,
+            Err(e) => {
+                self.reject_message(path, msg, &e).await?;
+                return Ok(None);
+            }
+        };
+        let wg =
+            match crate::config::teams::verified_wg_coordinator_target(&msg.from, &effective_paths)
+            {
+                Some(wg) => wg,
+                None => {
+                    self.reject_message(
+                        path,
+                        msg,
+                        &format!(
+                            "Not authorized: '{}' is not the verified orchestrator of its room",
+                            msg.from
+                        ),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+            };
+
+        // 3. --wg assertion (§3.6: interlock, not selector).
+        if let Some(reason) = purge_wg_assertion_error(msg, &wg.wg_name) {
+            self.reject_message(path, msg, &reason).await?;
+            return Ok(None);
+        }
+
+        // 4. Enumerate peers (Guard A). Only `__agent_*` dirs under the WG dir.
+        //    The coordinator does not purge itself.
+        let wg_dir = match wg.replica_dir.parent() {
+            Some(d) => d,
+            None => {
+                self.reject_message(path, msg, "purge-room: cannot resolve Room directory")
+                    .await?;
+                return Ok(None);
+            }
+        };
+        let peer_fqns = purge::peer_fqns(wg_dir, &wg.agent_name, &wg.project, &wg.wg_name);
+
+        Ok(Some((wg.project, wg.wg_name, peer_fqns)))
     }
 
     async fn run_purge_lease<C, F>(
