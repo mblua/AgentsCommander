@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[tokio::test]
 async fn ci_counts_only_runs_on_the_current_branch() {
@@ -7,7 +8,7 @@ async fn ci_counts_only_runs_on_the_current_branch() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_rows(
             &sha_of('a'),
             &[
@@ -43,7 +44,7 @@ async fn incident_replay_identical_branch_and_default_get_no_notice() {
     );
     harness.set_work(&[default_repo.clone(), feature_repo.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         let round_one = ci_rows(
@@ -129,7 +130,7 @@ async fn non_identical_branch_notifies_only_its_own_rooms() {
     );
     harness.set_work(&[default_repo.clone(), feature_repo.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         for _ in 0..4 {
@@ -204,7 +205,7 @@ async fn non_identical_branch_notifies_only_its_own_rooms() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .count("/compare/"),
         4,
         "one identity compare per round for the non-default branch, none for the default one"
@@ -222,7 +223,7 @@ async fn resolved_default_branch_ci_is_suppressed() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
@@ -255,7 +256,7 @@ async fn resolved_default_branch_ci_is_suppressed() {
             "the transition chain stays broken across suppressed rounds"
         );
     }
-    let gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+    let gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
     assert_eq!(
         gh.count("/actions/runs?"),
         3,
@@ -283,7 +284,7 @@ async fn unresolved_default_branch_does_not_suppress() {
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         // No repo_info answer is queued and no symbolic-ref answer is queued,
         // so the label stays unresolved and rule 2 cannot be decided.
         gh.ci.push_back(Ok(ok_output(&ci_rows(
@@ -361,7 +362,7 @@ async fn identity_compare_failure_is_unknown() {
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.ci.push_back(Ok(ok_output(&ci_rows(
@@ -387,7 +388,7 @@ async fn branch_change_on_same_commit_retires_the_key_without_a_transition() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_rows(
             &sha_of('a'),
             &[("main", "in_progress")],
@@ -432,7 +433,7 @@ async fn unknown_is_transparent_and_never_expires() {
         let repo = harness.repo("repo-a");
         harness.set_work(&[repo]);
         {
-            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
             gh.ci
                 .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
             gh.ci.push_back(Err(FailureKind::Timeout));
@@ -482,7 +483,7 @@ async fn last_confirmed_at_advances_on_every_confirmed_round() {
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         for _ in 0..20 {
             gh.ci
                 .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
@@ -532,7 +533,7 @@ async fn head_sha_change_retires_the_key_without_a_transition() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci
             .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
@@ -543,7 +544,7 @@ async fn head_sha_change_retires_the_key_without_a_transition() {
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'b');
     tick(&mut now, &mut wall, 60);
     harness.round(now, wall).await;
@@ -565,7 +566,7 @@ async fn stale_to_current_emits_nothing() {
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.compare
             .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
         gh.compare
@@ -597,7 +598,7 @@ async fn current_to_stale_emits_once_only() {
     );
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.compare
             .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
         for _ in 0..6 {
@@ -630,7 +631,7 @@ async fn stale_on_default_branch_sends_no_notice_but_keeps_the_chip() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -670,7 +671,7 @@ async fn stale_on_default_branch_with_own_commits_still_sends_no_notice() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare

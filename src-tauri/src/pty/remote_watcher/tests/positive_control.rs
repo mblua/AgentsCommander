@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[test]
 fn ci_query_endpoint_is_exactly_the_expected_string() {
@@ -259,7 +260,7 @@ async fn unpushed_head_404_maps_to_unknown() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         // CI: no runs exist for an unpushed SHA, which is honestly idle.
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         // Staleness: compare returns 404, which is unknown, not current.
@@ -319,17 +320,17 @@ async fn every_failure_maps_to_unknown() {
             harness
                 .git
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .set_origin_failure(&repo, "no origin");
         }
         if index == 6 {
             harness
                 .git
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .set_origin(&repo, "https://gitlab.com/a/b.git");
         }
-        case(&mut harness.gh.lock().unwrap_or_else(|e| e.into_inner()));
+        case(&mut harness.gh.lock().unwrap_or_else(PoisonError::into_inner));
 
         harness.round(Instant::now(), Local::now()).await;
 
@@ -350,7 +351,7 @@ async fn failure_does_not_retain_the_previous_state() {
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci
             .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
         gh.ci.push_back(Err(FailureKind::Timeout));
@@ -386,7 +387,7 @@ async fn cold_start_emits_no_transition() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .ci
             .push_back(Ok(ok_output(&body)));
 

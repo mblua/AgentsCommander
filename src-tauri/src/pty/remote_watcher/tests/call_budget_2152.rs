@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[tokio::test]
 async fn secondary_rate_limit_backs_off_one_minute() {
@@ -7,7 +8,7 @@ async fn secondary_rate_limit_backs_off_one_minute() {
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.ci.push_back(Ok(secondary_limit_output()));
     }
@@ -59,7 +60,7 @@ async fn default_branch_ci_failure_keeps_idle_chip_and_arms_the_backoff() {
         let repo = harness.repo("repo-a");
         harness.set_work(std::slice::from_ref(&repo));
         {
-            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
@@ -78,7 +79,7 @@ async fn default_branch_ci_failure_keeps_idle_chip_and_arms_the_backoff() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .ci
             .push_back(Ok(failure));
         tick(&mut now, &mut wall, 60);
@@ -213,12 +214,12 @@ async fn running_ci_wins_the_last_token() {
         let second = harness.repo("z");
         harness.set_work(&[first.clone(), second.clone()]);
         {
-            let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+            let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
             git.set_origin(&first, "git@github.com:mblua/repo-a.git");
             git.set_origin(&second, "git@github.com:mblua/repo-z.git");
         }
         {
-            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
             gh.route(
                 &format!(
                     "repos/mblua/repo-z/actions/runs?head_sha={}&per_page=100",
@@ -300,7 +301,7 @@ async fn running_ci_wins_the_last_token() {
             harness
                 .gh
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .count("/actions/runs/"),
             0
         );
@@ -317,7 +318,7 @@ async fn a_secondary_limit_silences_the_next_round() {
     harness.set_jitter(0.0);
     let _paths = two_repos(&harness);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.route(
             &format!(
                 "repos/mblua/repo-a/actions/runs?head_sha={}&per_page=100",
@@ -380,7 +381,7 @@ async fn jitter_spans_the_half_open_range() {
     low.set_work(&[repo]);
     low.gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .ci
         .push_back(Ok(secondary_limit_output()));
     low.round(now, wall).await;
@@ -396,7 +397,7 @@ async fn jitter_spans_the_half_open_range() {
     high.set_work(&[repo]);
     high.gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .ci
         .push_back(Ok(secondary_limit_output()));
     high.round(now, wall).await;
@@ -415,7 +416,7 @@ async fn a_primary_limit_closes_the_gate_for_fifteen_minutes() {
     harness.set_jitter(0.0);
     let _paths = two_repos(&harness);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.route(
             &format!(
                 "repos/mblua/repo-a/actions/runs?head_sha={}&per_page=100",
