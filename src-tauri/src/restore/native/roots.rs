@@ -65,7 +65,7 @@ impl RestoreContext {
     }
 
     async fn restore_first_root(&self, root_path: &str, progress: &mut RestoreProgress) -> bool {
-        let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_path);
+        let last_coding_agent = crate::config::root_agent::read_last_coding_agent(root_path);
         let should_auto_create = {
             let cfg = match self.settings_state_clone.current_read().await {
                 Ok(cfg) => cfg,
@@ -183,7 +183,7 @@ impl RestoreContext {
         let (rebuild_failed, resolved_spawn, resolved_agent_host_shell) = root_spawn_recipe(
             ps,
             &self.settings_snapshot,
-            &root_path,
+            root_path,
             &mut progress.failed_recoverable,
         );
         if !rebuild_failed {
