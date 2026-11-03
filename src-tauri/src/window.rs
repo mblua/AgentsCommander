@@ -90,8 +90,7 @@ pub(crate) fn apply_main_display_state<E: fmt::Display>(
     if state == config::settings::MainWindowDisplayState::Maximized {
         if let Err(e) = maximize() {
             log::warn!(
-                "[window-setup] main: failed to maximize the main window; leaving it normal: {}",
-                e
+                "[window-setup] main: failed to maximize the main window; leaving it normal: {e}"
             );
         }
     }
@@ -115,9 +114,9 @@ pub(crate) fn response_close_wiring_matches(
 
 pub(crate) fn validate_explorer_target(path: &str) -> Result<PathBuf, String> {
     let canonical = crate::filesystem::directories::canonical_explorer_target(Path::new(path))
-        .map_err(|_| format!("Path does not exist or is inaccessible: {}", path))?;
+        .map_err(|_| format!("Path does not exist or is inaccessible: {path}"))?;
     if !crate::filesystem::directories::explorer_target_is_dir(&canonical) {
-        return Err(format!("Path is not a directory: {}", path));
+        return Err(format!("Path is not a directory: {path}"));
     }
     Ok(canonical)
 }

@@ -37,7 +37,7 @@ fn main() {
                             Ok(placement) => placement,
                             Err(e) => {
                                 agentscommander_lib::cli::attach_parent_console();
-                                eprintln!("Error: {}", e);
+                                eprintln!("Error: {e}");
                                 agentscommander_lib::cli::flush_outputs();
                                 std::process::exit(1);
                             }
@@ -49,7 +49,7 @@ fn main() {
                                 Ok(enabled) => enabled,
                                 Err(e) => {
                                     agentscommander_lib::cli::attach_parent_console();
-                                    eprintln!("{}", e);
+                                    eprintln!("{e}");
                                     agentscommander_lib::cli::flush_outputs();
                                     std::process::exit(1);
                                 }
@@ -170,7 +170,7 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
             use std::io::IsTerminal;
             if std::io::stderr().is_terminal() && std::env::var_os("AC_MACHINE_OUTPUT").is_none() {
                 if let Some(notice) = agentscommander_lib::update_check::read_cached_notice() {
-                    eprintln!("{}", notice);
+                    eprintln!("{notice}");
                 }
             }
         }

@@ -65,7 +65,7 @@ pub(crate) fn append_loop_audit_line(path: &Path, line: &str) -> Result<(), Stri
         .append(true)
         .open(path)
         .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-    writeln!(file, "{}", line).map_err(|e| format!("Failed to append {}: {}", path.display(), e))
+    writeln!(file, "{line}").map_err(|e| format!("Failed to append {}: {}", path.display(), e))
 }
 
 /// Writes `content` to `tmp_path` and replaces `config_path` with it. On any
@@ -79,7 +79,7 @@ pub(crate) fn write_config_via_tmp(
         .and_then(|()| replace_file_with_retry(tmp_path, config_path))
         .map_err(|e| {
             let _ = std::fs::remove_file(tmp_path);
-            format!("Failed to write Loop config: {}", e)
+            format!("Failed to write Loop config: {e}")
         })
 }
 
