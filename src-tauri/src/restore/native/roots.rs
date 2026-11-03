@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    attach_persisted_telegram_if_configured, commands, execute_destroy_transaction,
+    root_spawn_recipe, sessions_persistence, should_auto_create_root_agent_on_first_restore,
+    should_wake_root_agent_on_restore, DestroyRequest, DestructionSource, RestoreContext,
+    RestoreProgress, TrustedCreateIntent,
+};
 
 impl RestoreContext {
     pub(super) async fn restore_root(
