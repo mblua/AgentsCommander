@@ -19,13 +19,20 @@ pub(super) struct WebServerStart {
 }
 
 // Start web server if enabled in settings
-pub(super) fn start_web_server_if_enabled(
+pub(super) fn start_web_server(
     app: &tauri::App,
     start: WebServerStart,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     shutdown: &ShutdownSignal,
     web_access_token: &WebAccessToken,
-) {
+) -> Result<(), Box<dyn std::error::Error>> {
+    register_web_command_dispatcher(
+        app,
+        &start.session_mgr,
+        pty_mgr,
+        &start.settings,
+        &start.broadcaster,
+    )?;
     let web_settings = config::settings::load_settings();
     if web_settings.web_server_enabled {
         let ws_handle = app.state::<WebServerHandle>().inner().clone();
@@ -60,12 +67,13 @@ pub(super) fn start_web_server_if_enabled(
             }
         }
     }
+    Ok(())
 }
 
 // #791 - start the control-plane API server if enabled in settings.
 // Opt-in (default false), mirroring the web server block above. The
 // managed handle is stored only after bind readiness is confirmed.
-pub(super) fn start_api_server_if_enabled(
+pub(super) fn start_api_server(
     app: &tauri::App,
     session_mgr_for_api: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
@@ -101,4 +109,27 @@ pub(super) fn start_api_server_if_enabled(
             }
         }
     }
+}
+
+fn register_web_command_dispatcher(
+    app: &tauri::App,
+    session_mgr_for_web: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    settings_for_web: &SettingsState,
+    broadcaster_for_web: &WsBroadcaster,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dispatcher =
+        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
+            Arc::clone(session_mgr_for_web),
+            Arc::clone(pty_mgr),
+            Arc::clone(settings_for_web),
+            broadcaster_for_web.clone(),
+            app.handle().clone(),
+        ));
+    if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
+        Arc::new(dispatcher),
+    )) {
+        return Err("Web command dispatcher is already registered".into());
+    }
+    Ok(())
 }

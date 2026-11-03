@@ -13,6 +13,7 @@ use super::{
     FIELD_ARCHIVED_REL, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL,
     FIELD_PROJECT_PATH_REL,
 };
+use crate::config::settings::agent::RegisteredProfileCapture;
 use crate::filesystem::settings_file;
 
 pub(crate) fn capture_project_settings(
@@ -84,21 +85,7 @@ pub(crate) fn capture_project_settings_with_startup(
         log::warn!("[profiles] {reason}");
     }
     let migration_error =
-        if migrate && raw_profile_capture.admits_project_migration(&transaction.path) {
-            capture_migration_error(&transaction.path, path, || {
-                recheck_registered_profile_gate(&raw_profile_capture.participant_documents())
-                    .map_err(|reason| {
-                        project_migration_error_labeled(
-                            &transaction.path,
-                            path,
-                            SettingsSaveStage::ProjectPathsRefreshDiskGate,
-                            &reason,
-                        )
-                    })
-            })
-        } else {
-            None
-        };
+        capture_migration_error(&transaction.path, path, migrate, &raw_profile_capture);
     let selected = match migration_error {
         Some(error) => Err(error),
         None => select_project_source_at_labeled_path_with_limit(
@@ -107,15 +94,11 @@ pub(crate) fn capture_project_settings_with_startup(
             16 * 1024 * 1024,
         ),
     };
-    let captured = if raw_profile_capture
-        .problems
-        .iter()
-        .any(|problem| problem.kind == RegisteredProfileProblemKind::DuplicateMember)
-        && selected
-            .as_ref()
-            .err()
-            .is_none_or(|error| error.target_path.as_path() == transaction.path.as_path())
-    {
+    let captured = if has_lenient_duplicate(
+        &raw_profile_capture,
+        selected.as_ref().err(),
+        &transaction.path,
+    ) {
         // The ordinary reader remains lenient. The strict project selector must
         // not turn an unrelated duplicate into project persistence failure.
         capture_lenient_source(
@@ -134,14 +117,10 @@ pub(crate) fn capture_project_settings_with_startup(
                     &selected.projection,
                     startup,
                 ),
-                None => Ok((
-                    default_settings_with_overlay_captured(
-                        &transaction.path,
-                        &path.to_string_lossy(),
-                        &selected.projection,
-                    ),
-                    false,
-                    None,
+                None => Ok(capture_default_source(
+                    path,
+                    &transaction.path,
+                    &selected.projection,
                 )),
             },
             Err(error) => Ok(capture_unavailable_source(path, &transaction.path, error)),
@@ -150,12 +129,7 @@ pub(crate) fn capture_project_settings_with_startup(
     // Every fallback passes this check while the same lock is still held.
     if retained.verify_current().is_err() {
         let message = report(lock_error(SettingsSaveReason::LockIdentityRejected));
-        return match captured {
-            Ok((settings, _, _)) => {
-                Ok((unavailable_project_settings(settings, message), false, None))
-            }
-            Err(_) => Err(message),
-        };
+        return lock_rejected_capture(captured, message);
     }
     captured
 }
@@ -163,8 +137,12 @@ pub(crate) fn capture_project_settings_with_startup(
 fn capture_migration_error(
     transaction_path: &Path,
     path: &Path,
-    recheck: impl Fn() -> Result<(), SettingsSaveError>,
+    migrate: bool,
+    raw_profile_capture: &RegisteredProfileCapture,
 ) -> Option<SettingsSaveError> {
+    if !(migrate && raw_profile_capture.admits_project_migration(transaction_path)) {
+        return None;
+    }
     let mut checked = false;
     ensure_project_paths_migrated_at_labeled_path(transaction_path, path, &mut |stage, _| {
         if !checked
@@ -173,12 +151,49 @@ fn capture_migration_error(
                 "backup_create" | "destination_before_write" | "source_cleanup"
             )
         {
-            recheck()?;
+            recheck_registered_profile_gate(&raw_profile_capture.participant_documents()).map_err(
+                |reason| {
+                    project_migration_error_labeled(
+                        transaction_path,
+                        path,
+                        SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                        &reason,
+                    )
+                },
+            )?;
             checked = true;
         }
         Ok(())
     })
     .err()
+}
+
+fn has_lenient_duplicate(
+    raw_profile_capture: &RegisteredProfileCapture,
+    selected_error: Option<&SettingsSaveError>,
+    transaction_path: &Path,
+) -> bool {
+    raw_profile_capture
+        .problems
+        .iter()
+        .any(|problem| problem.kind == RegisteredProfileProblemKind::DuplicateMember)
+        && selected_error.is_none_or(|error| error.target_path.as_path() == transaction_path)
+}
+
+fn capture_default_source(
+    path: &Path,
+    transaction_path: &Path,
+    projection: &Map<String, Value>,
+) -> (AppSettings, bool, Option<String>) {
+    (
+        default_settings_with_overlay_captured(
+            transaction_path,
+            &path.to_string_lossy(),
+            projection,
+        ),
+        false,
+        None,
+    )
 }
 
 fn capture_lenient_source(
@@ -311,4 +326,14 @@ fn capture_unavailable_source(
         agents_layer_state_at_labeled(transaction_path, path),
     );
     (unavailable_project_settings(settings, message), false, None)
+}
+
+fn lock_rejected_capture(
+    captured: Result<(AppSettings, bool, Option<String>), String>,
+    message: String,
+) -> Result<(AppSettings, bool, Option<String>), String> {
+    match captured {
+        Ok((settings, _, _)) => Ok((unavailable_project_settings(settings, message), false, None)),
+        Err(_) => Err(message),
+    }
 }

@@ -66,19 +66,8 @@ impl MailboxPoller {
             };
 
         // 3. --wg assertion (§3.6: interlock, not selector).
-        if let Some(ref t) = msg.target {
-            if t != &wg.wg_name {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        &format!(
-                            "purge-room: --wg assertion '{}' does not match resolved room '{}'",
-                            t, wg.wg_name
-                        ),
-                    )
-                    .await;
-            }
+        if let Some(reason) = purge_wg_assertion_error(msg, &wg.wg_name) {
+            return self.reject_message(path, msg, &reason).await;
         }
 
         // 4. Enumerate peers (Guard A). Only `__agent_*` dirs under the WG dir.
@@ -788,4 +777,15 @@ fn purge_readiness_map<R: tauri::Runtime>(
     let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
     let readiness = idle.purge_readiness(all_live_session_ids);
     readiness.into_iter().map(|r| (r.session_id, r)).collect()
+}
+
+/// Step 3 of `handle_purge_wg`: `--wg` is an interlock, not a selector (§3.6).
+fn purge_wg_assertion_error(msg: &OutboxMessage, wg_name: &str) -> Option<String> {
+    match msg.target {
+        Some(ref t) if t.as_str() != wg_name => Some(format!(
+            "purge-room: --wg assertion '{}' does not match resolved room '{}'",
+            t, wg_name
+        )),
+        _ => None,
+    }
 }

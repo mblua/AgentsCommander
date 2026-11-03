@@ -6,18 +6,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 use crate::{
-    agent_update, api, apply_main_display_state, centered_default_main_geometry,
-    codex_activity_factory, commands, config, effective_main_display_state,
-    install_container_route_remover, load_startup_sessions, loops,
-    normalize_persisted_active_flags, resource_monitor, response_close_wiring_matches,
-    sessions_persistence, spawn_co_managed_supervisor, start_native_restore_startup,
-    AgentQuotaEngine, ApiServerHandle, ApiServerTask, CoManagedSupervisorHandle, CoManagedTrigger,
+    agent_update, codex_activity_factory, commands, config, install_container_route_remover,
+    load_startup_sessions, loops, normalize_persisted_active_flags, resource_monitor,
+    response_close_wiring_matches, sessions_persistence, spawn_co_managed_supervisor,
+    start_native_restore_startup, AgentQuotaEngine, CoManagedSupervisorHandle, CoManagedTrigger,
     ContextScraper, DiscoveryBranchWatcher, GitWatcher, IdleDetector, OutputSenderMap,
     PersistedActiveFlagNormalization, PtyManager, QuotaRows, QuotaSink, QuotaSources,
     RestoreInProgress, RestoreObserverStartBarrier, ScraperPatterns, ScraperPersist, ScraperRows,
     ScraperSamples, ScraperSink, SessionManager, SettingsState, ShutdownSignal, UpdateCheckState,
     WatcherBackends, WatcherDelivery, WatcherEngine, WatcherPatterns, WatcherSink, WebAccessToken,
-    WebServerHandle, WsBroadcaster, WEB_SERVER_START_CANCELLED,
+    WsBroadcaster,
 };
 
 mod geometry;
@@ -57,142 +55,96 @@ pub(super) struct SetupCtx {
     pub(super) ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
 }
 pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn std::error::Error>> {
-    let SetupCtx {
-        owners: _owners,
-        test_window_placement,
-        app_handle_lock,
-        co_managed_supervisor_for_setup,
-        co_managed_triggers,
-        response_close_for_setup,
-        session_mgr_for_git: git_rows,
-        session_mgr_for_git_sweeper: sweep_rows,
-        session_mgr_for_discovery: rows,
-        session_mgr_for_web,
-        session_mgr_for_api,
-        session_mgr_for_scraper,
-        output_senders_for_pty,
-        idle_detector_for_pty,
-        idle_detector_for_setup,
-        broadcaster_for_pty,
-        broadcaster_for_web,
-        web_access_token,
-        web_token_for_server,
-        settings_for_web,
-        loop_scheduler_for_setup,
-        non_stop_state_for_setup,
-        ipc_observer_for_setup,
-        update_check_state_for_setup,
-        agent_update_gate_for_setup,
-        shutdown_for_setup,
-        selection_coordinator_for_setup,
-        resource_monitor_for_setup,
-        ui_automation_state_for_setup,
-    } = ctx;
-    let messages = _owners.messages;
+    let messages = ctx.owners.messages;
     // Make AppHandle available to idle detector callbacks
-    let _ = app_handle_lock.set(app.handle().clone());
+    let _ = ctx.app_handle_lock.set(app.handle().clone());
 
     // #2232 phase 7: start the Co-managed supervisor once the app
     // handle exists. It owns the slot watchers, the idle-edge handling
     // and the effect, all inside existing SCC members.
     spawn_co_managed_supervisor(
         app.handle().clone(),
-        co_managed_supervisor_for_setup.clone(),
-        co_managed_triggers,
-        shutdown_for_setup.token().clone(),
+        ctx.co_managed_supervisor_for_setup.clone(),
+        ctx.co_managed_triggers,
+        ctx.shutdown_for_setup.token().clone(),
     );
 
-    spawn_screenshot_hotkey_registration(app);
-
-    // #264 — spawn the background task that emits `error_log_event`
-    // pings to the UI when ERROR entries are captured. The task runs
-    // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
-    // logged before this point stay buffered; the frontend's first
-    // `drain_error_logs` call collects them.
-    tauri::async_runtime::spawn(crate::logging::spawn_error_emit_task(app.handle().clone()));
-
-    // #271 — seed `<config_dir>/agent-templates/` + README on startup.
-    crate::commands::role_templates::ensure_default_templates_dir_at_config();
-    // (#621) GC the context-cache: unlink generated *-context-*.md files
-    // older than the retention window. Cleans orphans from removed
-    // workgroups AND caps the unbounded-growth secondary finding. Robust +
-    // self-healing: live agents re-write their cache every launch.
-    crate::config::session_context::sweep_context_cache_at_startup();
-    let git = _owners.git;
+    start_startup_housekeeping(app);
+    let git = ctx.owners.git;
     let (git_watcher, discovery_branch_watcher) = start_git_watchers(
         app,
-        git_rows.clone(),
-        rows,
-        sweep_rows,
+        ctx.session_mgr_for_git.clone(),
+        ctx.session_mgr_for_discovery,
+        ctx.session_mgr_for_git_sweeper,
         &git,
-        &shutdown_for_setup,
+        &ctx.shutdown_for_setup,
     );
     start_remote_activity(
         app,
-        git_rows,
+        ctx.session_mgr_for_git,
         git,
-        _owners.remote,
-        &shutdown_for_setup,
+        ctx.owners.remote,
+        &ctx.shutdown_for_setup,
         &messages,
     );
     let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
-        output_senders_for_pty,
-        idle_detector_for_pty,
+        ctx.output_senders_for_pty,
+        ctx.idle_detector_for_pty,
         Arc::clone(&git_watcher),
-        Some(broadcaster_for_pty),
-        Some(selection_coordinator_for_setup.container_lifecycle_sender()),
+        Some(ctx.broadcaster_for_pty),
+        Some(
+            ctx.selection_coordinator_for_setup
+                .container_lifecycle_sender(),
+        ),
         #[cfg(windows)]
-        _owners.git_guard.clone(),
-        _owners.spawn,
+        ctx.owners.git_guard.clone(),
+        ctx.owners.spawn,
     )));
-    prepare_startup_pty(&pty_mgr, &response_close_for_setup);
+    prepare_startup_pty(&pty_mgr, &ctx.response_close_for_setup);
     app.manage(pty_mgr.clone());
-    spawn_startup_agent_updates(app, &agent_update_gate_for_setup);
-    let (restore_barrier, restore_observer_barrier, restore_transaction) =
-        admit_restore_first(app, &selection_coordinator_for_setup)?;
+    spawn_startup_agent_updates(app, &ctx.agent_update_gate_for_setup);
+    let admitted = admit_restore_first(app, &ctx.selection_coordinator_for_setup)?;
     start_session_observers(
         app,
         &pty_mgr,
-        session_mgr_for_scraper,
-        &idle_detector_for_setup,
-        &shutdown_for_setup,
+        ctx.session_mgr_for_scraper,
+        &ctx.idle_detector_for_setup,
+        &ctx.shutdown_for_setup,
         &messages,
     );
     start_menu_guard_and_ipc_observer(
         app,
-        &response_close_for_setup,
+        &ctx.response_close_for_setup,
         &pty_mgr,
-        &idle_detector_for_setup,
-        &ipc_observer_for_setup,
-        &shutdown_for_setup,
+        &ctx.idle_detector_for_setup,
+        &ctx.ipc_observer_for_setup,
+        &ctx.shutdown_for_setup,
     );
     // The authoritative scope of the activity window. `open_watchers_window` writes it
     // before every emit and the window pulls it after subscribing, so a re-scope that
     // races the window's own load is recovered instead of dropped in silence.
     app.manage(commands::window::WatchersScopeState::default());
-    register_web_command_dispatcher(
-        app,
-        &session_mgr_for_web,
-        &pty_mgr,
-        &settings_for_web,
-        &broadcaster_for_web,
-    )?;
-    servers::start_web_server_if_enabled(
+    servers::start_web_server(
         app,
         servers::WebServerStart {
-            settings: settings_for_web,
-            web_token: web_token_for_server,
-            session_mgr: session_mgr_for_web,
-            broadcaster: broadcaster_for_web,
+            settings: ctx.settings_for_web,
+            web_token: ctx.web_token_for_server,
+            session_mgr: ctx.session_mgr_for_web,
+            broadcaster: ctx.broadcaster_for_web,
         },
         &pty_mgr,
-        &shutdown_for_setup,
-        &web_access_token,
+        &ctx.shutdown_for_setup,
+        &ctx.web_access_token,
+    )?;
+
+    servers::start_api_server(
+        app,
+        &ctx.session_mgr_for_api,
+        &pty_mgr,
+        &ctx.shutdown_for_setup,
     );
 
-    servers::start_api_server_if_enabled(app, &session_mgr_for_api, &pty_mgr, &shutdown_for_setup);
-
-    start_detached_startup_downloads(app, &update_check_state_for_setup);
+    start_detached_startup_downloads(app, &ctx.update_check_state_for_setup);
 
     provision_startup_messages(messages.as_ref());
 
@@ -219,14 +171,9 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     //
     // The matching `load_sessions()` call at the original site is
     // removed; `persisted` is reused by the restore task below.
-    let restore_settings_snapshot = config::settings::load_settings();
-    let persisted = load_normalized_startup_sessions(&restore_settings_snapshot);
-    let restore_flag = app.state::<Arc<RestoreInProgress>>().inner().clone();
-    restore_flag
-        .0
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let startup_sessions = mark_restore_in_progress(app);
 
-    window::create_main_window(app, test_window_placement.as_ref())?;
+    window::create_main_window(app, ctx.test_window_placement.as_ref())?;
 
     // Restore sessions from last run
     //
@@ -240,20 +187,17 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     start_restore(
         app,
         RestoreStart {
-            restore_barrier,
-            restore_observer_barrier,
-            restore_transaction,
-            settings_snapshot: restore_settings_snapshot,
-            persisted,
-            idle_detector: idle_detector_for_setup,
+            admitted,
+            startup_sessions,
+            idle_detector: ctx.idle_detector_for_setup,
             git_watcher,
             discovery_branch_watcher,
-            resource_monitor: resource_monitor_for_setup,
-            selection_coordinator: selection_coordinator_for_setup,
-            loop_scheduler: loop_scheduler_for_setup,
-            non_stop_state: non_stop_state_for_setup,
-            ui_automation_state: ui_automation_state_for_setup,
-            shutdown: shutdown_for_setup,
+            resource_monitor: ctx.resource_monitor_for_setup,
+            selection_coordinator: ctx.selection_coordinator_for_setup,
+            loop_scheduler: ctx.loop_scheduler_for_setup,
+            non_stop_state: ctx.non_stop_state_for_setup,
+            ui_automation_state: ctx.ui_automation_state_for_setup,
+            shutdown: ctx.shutdown_for_setup,
             messages,
         },
     );
@@ -263,11 +207,8 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
 
 /// The owned values the startup restore task consumes.
 struct RestoreStart {
-    restore_barrier: crate::session::selection::RestoreBarrierGuard,
-    restore_observer_barrier: RestoreObserverStartBarrier,
-    restore_transaction: crate::session::selection::SelectionTransaction<tauri::Wry>,
-    settings_snapshot: config::settings::AppSettings,
-    persisted: Result<Vec<sessions_persistence::PersistedSession>, String>,
+    admitted: AdmittedRestore,
+    startup_sessions: StartupSessions,
     idle_detector: Arc<IdleDetector>,
     git_watcher: Arc<GitWatcher>,
     discovery_branch_watcher: Arc<DiscoveryBranchWatcher>,
@@ -280,7 +221,57 @@ struct RestoreStart {
     messages: Arc<crate::config::injected_messages::MessageWarnings>,
 }
 
+/// The restore admission taken before the observers start.
+struct AdmittedRestore {
+    restore_barrier: crate::session::selection::RestoreBarrierGuard,
+    restore_observer_barrier: RestoreObserverStartBarrier,
+    restore_transaction: crate::session::selection::SelectionTransaction<tauri::Wry>,
+}
+
+/// The settings snapshot and persisted sessions the restore task reuses.
+struct StartupSessions {
+    settings_snapshot: config::settings::AppSettings,
+    persisted: Result<Vec<sessions_persistence::PersistedSession>, String>,
+}
+
+fn mark_restore_in_progress(app: &tauri::App) -> StartupSessions {
+    let restore_settings_snapshot = config::settings::load_settings();
+    let persisted = load_normalized_startup_sessions(&restore_settings_snapshot);
+    let restore_flag = app.state::<Arc<RestoreInProgress>>().inner().clone();
+    restore_flag
+        .0
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    StartupSessions {
+        settings_snapshot: restore_settings_snapshot,
+        persisted,
+    }
+}
+
+fn start_startup_housekeeping(app: &tauri::App) {
+    spawn_screenshot_hotkey_registration(app);
+
+    // #264 — spawn the background task that emits `error_log_event`
+    // pings to the UI when ERROR entries are captured. The task runs
+    // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
+    // logged before this point stay buffered; the frontend's first
+    // `drain_error_logs` call collects them.
+    tauri::async_runtime::spawn(crate::logging::spawn_error_emit_task(app.handle().clone()));
+
+    // #271 — seed `<config_dir>/agent-templates/` + README on startup.
+    crate::commands::role_templates::ensure_default_templates_dir_at_config();
+    // (#621) GC the context-cache: unlink generated *-context-*.md files
+    // older than the retention window. Cleans orphans from removed
+    // workgroups AND caps the unbounded-growth secondary finding. Robust +
+    // self-healing: live agents re-write their cache every launch.
+    crate::config::session_context::sweep_context_cache_at_startup();
+}
+
 fn start_restore(app: &tauri::App, start: RestoreStart) {
+    let RestoreStart {
+        admitted,
+        startup_sessions,
+        ..
+    } = start;
     let session_mgr_clone = app
         .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
         .inner()
@@ -291,7 +282,7 @@ fn start_restore(app: &tauri::App, start: RestoreStart) {
 
     // #248 — read the new setting and always discover teams (the coord check
     // is run for every persisted session, regardless of the setting's value).
-    let settings_snapshot = start.settings_snapshot.clone();
+    let settings_snapshot = startup_sessions.settings_snapshot.clone();
     let setting_on = settings_snapshot.restore_coordinator_wake_state;
     let teams = crate::config::teams::discover_teams();
 
@@ -299,7 +290,11 @@ fn start_restore(app: &tauri::App, start: RestoreStart) {
         teams.len(),
         settings_snapshot.project_paths.len(),
         setting_on,
-        start.persisted.as_ref().map(Vec::len).unwrap_or(0),
+        startup_sessions
+            .persisted
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(0),
     );
 
     // §224 A.2.5 — RAII guard inside the closure clears the flag
@@ -310,19 +305,19 @@ fn start_restore(app: &tauri::App, start: RestoreStart) {
     // TRUE before mailbox_poller.start(); we only need to grab a
     // fresh Arc clone here for the RAII guard inside the spawned task.
     let restore_flag_for_task = app.state::<Arc<RestoreInProgress>>().inner().clone();
-    let restore_transaction_for_task = start.restore_transaction.clone();
+    let restore_transaction_for_task = admitted.restore_transaction.clone();
 
     start_native_restore_startup(
         app_handle,
-        start.restore_barrier,
-        Arc::new(start.restore_observer_barrier),
+        admitted.restore_barrier,
+        Arc::new(admitted.restore_observer_barrier),
         restore_transaction_for_task,
         restore_flag_for_task,
         session_mgr_clone,
         pty_mgr_clone,
         settings_state_clone,
         settings_snapshot,
-        start.persisted,
+        startup_sessions.persisted,
         teams,
         setting_on,
         start.idle_detector,
@@ -458,14 +453,7 @@ fn spawn_startup_agent_updates(
 fn admit_restore_first(
     app: &tauri::App,
     selection_coordinator_for_setup: &crate::session::selection::SelectionCoordinator,
-) -> Result<
-    (
-        crate::session::selection::RestoreBarrierGuard,
-        RestoreObserverStartBarrier,
-        crate::session::selection::SelectionTransaction<tauri::Wry>,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<AdmittedRestore, Box<dyn std::error::Error>> {
     selection_coordinator_for_setup
         .start(app.handle().clone())
         .map_err(|error| error.to_string())?;
@@ -477,11 +465,11 @@ fn admit_restore_first(
     app.state::<Arc<RestoreInProgress>>()
         .0
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    Ok((
+    Ok(AdmittedRestore {
         restore_barrier,
         restore_observer_barrier,
         restore_transaction,
-    ))
+    })
 }
 
 fn start_session_observers(
@@ -624,29 +612,6 @@ fn start_menu_guard_and_ipc_observer(
         shutdown_for_setup.clone(),
     );
     app.manage(Arc::clone(&menu_guard));
-}
-
-fn register_web_command_dispatcher(
-    app: &tauri::App,
-    session_mgr_for_web: &Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: &Arc<Mutex<PtyManager>>,
-    settings_for_web: &SettingsState,
-    broadcaster_for_web: &WsBroadcaster,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let dispatcher =
-        crate::web::commands::WebCommandsDispatcher::new(crate::web::commands::WsState::new(
-            Arc::clone(session_mgr_for_web),
-            Arc::clone(pty_mgr),
-            Arc::clone(settings_for_web),
-            broadcaster_for_web.clone(),
-            app.handle().clone(),
-        ));
-    if !app.manage(crate::web::command_port::ManagedWebCommandDispatcher(
-        Arc::new(dispatcher),
-    )) {
-        return Err("Web command dispatcher is already registered".into());
-    }
-    Ok(())
 }
 
 fn provision_startup_messages(messages: &crate::config::injected_messages::MessageWarnings) {
