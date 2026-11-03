@@ -21,7 +21,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -81,7 +81,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
-    bin.parent().expect("bin parent").join(format!(".{}", stem))
+    bin.parent().expect("bin parent").join(format!(".{stem}"))
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
@@ -106,20 +106,19 @@ fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
 fn assert_no_stdout_on_error(stdout: &str) {
     assert!(
         stdout.trim().is_empty(),
-        "error contract should not write stdout, got:\n{}",
-        stdout
+        "error contract should not write stdout, got:\n{stdout}"
     );
 }
 
 fn assert_success_json_array(stdout: &str) -> Value {
     let value: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON array");
-    assert!(value.is_array(), "expected JSON array, got {}", value);
+    assert!(value.is_array(), "expected JSON array, got {value}");
     value
 }
 
 fn assert_success_json_object(stdout: &str) -> Value {
     let value: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON object");
-    assert!(value.is_object(), "expected JSON object, got {}", value);
+    assert!(value.is_object(), "expected JSON object, got {value}");
     value
 }
 
@@ -143,9 +142,9 @@ fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let ac_root = project.join(".ac");
     std::fs::create_dir_all(&ac_root).expect("create .ac");
     for agent in agents {
-        let dir = ac_root.join(format!("_agent_{}", agent));
+        let dir = ac_root.join(format!("_agent_{agent}"));
         std::fs::create_dir_all(dir.join("memory")).expect("agent memory");
-        std::fs::write(dir.join("Role.md"), format!("# {}\n", agent)).expect("role");
+        std::fs::write(dir.join("Role.md"), format!("# {agent}\n")).expect("role");
     }
     project
 }
@@ -217,7 +216,7 @@ fn make_wg_agent_root(tmp: &Path) -> PathBuf {
 }
 
 /// Run `task-set-title` with `RUST_LOG=agentscommander=info` pinned, so the
-/// clean-output assertions hold even under verbose logging: the AC_MACHINE_OUTPUT
+/// clean-output assertions hold even under verbose logging: the `AC_MACHINE_OUTPUT`
 /// allowlist must suppress stderr log lines and the startup log-path line.
 fn run_task_title(
     bin: &Path,

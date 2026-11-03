@@ -134,7 +134,7 @@ fn from_record_redacts_gemini_key_in_message() {
         &log::Record::builder()
             .level(log::Level::Error)
             .target("agentscommander_lib::commands::voice")
-            .args(format_args!("Gemini API request failed: {}", fake_url))
+            .args(format_args!("Gemini API request failed: {fake_url}"))
             .build(),
     );
     assert!(
@@ -163,7 +163,7 @@ fn from_record_redacts_telegram_token_in_message() {
         &log::Record::builder()
             .level(log::Level::Error)
             .target("agentscommander_lib::telegram::bridge")
-            .args(format_args!("Telegram poll error: {}", fake_url))
+            .args(format_args!("Telegram poll error: {fake_url}"))
             .build(),
     );
     assert!(
@@ -186,16 +186,12 @@ fn from_record_redacts_telegram_token_in_message() {
 #[test]
 fn error_log_entry_serializes_camel_case() {
     let json = serde_json::to_string(&entry("boom")).expect("serialize");
-    assert!(
-        json.contains("\"timestamp\""),
-        "missing timestamp: {}",
-        json
-    );
-    assert!(json.contains("\"level\""), "missing level: {}", json);
-    assert!(json.contains("\"target\""), "missing target: {}", json);
-    assert!(json.contains("\"message\""), "missing message: {}", json);
-    assert!(json.contains("\"typeId\""), "missing typeId: {}", json);
-    assert!(!json.contains("type_id"), "snake_case leaked: {}", json);
+    assert!(json.contains("\"timestamp\""), "missing timestamp: {json}");
+    assert!(json.contains("\"level\""), "missing level: {json}");
+    assert!(json.contains("\"target\""), "missing target: {json}");
+    assert!(json.contains("\"message\""), "missing message: {json}");
+    assert!(json.contains("\"typeId\""), "missing typeId: {json}");
+    assert!(!json.contains("type_id"), "snake_case leaked: {json}");
 }
 
 // ── #3036 error-popup mute tests ────────────────────────────────
@@ -604,7 +600,7 @@ fn rotate_caps_total_file_count_at_keep_plus_one() {
     // After rotation: active + KEEP numbered files = KEEP + 1.
     let count = std::fs::read_dir(tmp.path())
         .expect("read dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             name == "app.log" || name.starts_with("app.log.")
@@ -616,14 +612,13 @@ fn rotate_caps_total_file_count_at_keep_plus_one() {
     let overflow = tmp.path().join(format!("app.log.{}", APP_LOG_KEEP + 1));
     assert!(
         !overflow.exists(),
-        "overflow file should not exist: {:?}",
-        overflow
+        "overflow file should not exist: {overflow:?}"
     );
 
     // Oldest retained slot (.<KEEP>) is the former .<KEEP - 1> content
     // (because we walked descending and renamed .<KEEP - 1> over the
     // prior .<KEEP>, evicting it).
-    let oldest = read_marker(tmp.path(), &format!("app.log.{}", APP_LOG_KEEP));
+    let oldest = read_marker(tmp.path(), &format!("app.log.{APP_LOG_KEEP}"));
     assert_eq!(
         oldest.as_deref(),
         Some(format!("DOT_{}", APP_LOG_KEEP - 1).as_str())
@@ -665,8 +660,8 @@ fn rotate_is_idempotent_under_concurrent_invocations() {
 // ── #612 runtime log-level gate tests ───────────────────────────
 
 /// Build the fixed inner `env_logger::Logger` for the gate WITHOUT reading
-/// RUST_LOG (hermetic): `Builder::new()` + the exact production filter, so a
-/// dev with RUST_LOG exported in their shell cannot perturb these tests.
+/// `RUST_LOG` (hermetic): `Builder::new()` + the exact production filter, so a
+/// dev with `RUST_LOG` exported in their shell cannot perturb these tests.
 fn gate_inner() -> env_logger::Logger {
     let mut builder = env_logger::Builder::new();
     builder.parse_filters(GATE_INNER_FILTER);
@@ -801,7 +796,7 @@ fn level_gate_atomic_flip_changes_verdict_at_runtime() {
 /// process-wide global, so assert our unique message was captured (a delta
 /// check) rather than an absolute count, to stay robust under the parallel
 /// test runner. This crate's only unit-test global-sink drainer is this
-/// test, so the entry cannot be stolen between log() and drain().
+/// test, so the entry cannot be stolen between `log()` and `drain()`.
 #[test]
 fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
     // #1883 — hold the shared sink-drain lock for the whole window: the
