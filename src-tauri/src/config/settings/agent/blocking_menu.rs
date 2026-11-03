@@ -549,6 +549,41 @@ pub(crate) fn export_blocking_menus_with_startup(
     if let Some(context) = startup.as_deref_mut() {
         context.expected = settings.agents.clone();
     }
+    let candidates = match blocking_menus_export_candidates(settings, &local_path) {
+        Ok(candidates) => candidates,
+        Err(aborted) => return aborted,
+    };
+    let mut root = match read_blocking_menus_root(&local_path) {
+        Ok(root) => root,
+        Err(aborted) => return aborted,
+    };
+    let inserted = match merge_blocking_menus_candidates(&mut root, &local_path, candidates) {
+        Ok(inserted) => inserted,
+        Err(aborted) => return aborted,
+    };
+    if inserted > 0 {
+        if let Err(aborted) = publish_blocking_menus_root(root, &local_path, publish) {
+            return aborted;
+        }
+        log::info!(
+            "[settings-migration] #1905 - exported {inserted} blockingMenus array(s) to {}",
+            local_path.display()
+        );
+    }
+    for agent in &mut settings.agents {
+        agent.blocking_menus = None;
+    }
+    if let Some(context) = startup {
+        context.expected = settings.agents.clone();
+    }
+    true
+}
+
+/// `Err` carries the `abort_blocking_menus_export` result the caller returns unchanged.
+fn blocking_menus_export_candidates(
+    settings: &AppSettings,
+    local_path: &Path,
+) -> Result<Vec<(String, Vec<BlockingMenuEntry>)>, bool> {
     // One id, one array, one command: two agents sharing an id with different arrays cannot
     // both live under byAgent[id], and equal arrays under different commands would make the
     // pristine test below order-dependent, so the export aborts and layer 0 keeps serving both.
@@ -560,51 +595,64 @@ pub(crate) fn export_blocking_menus_with_startup(
         let current = (agent.command.as_str(), entries);
         if let Some(previous) = by_id.insert(agent.id.as_str(), current) {
             if previous != current {
-                return abort_blocking_menus_export(
-                    &local_path,
+                return Err(abort_blocking_menus_export(
+                    local_path,
                     &format!(
                         "two agents share the id \
                     '{}' with different blockingMenus arrays or commands",
                         agent.id
                     ),
-                );
+                ));
             }
         }
     }
-    let candidates: Vec<(String, Vec<BlockingMenuEntry>)> = by_id
+    Ok(by_id
         .iter()
         .filter(|(_, (command, entries))| **entries != default_blocking_menus_for_command(command))
         .map(|(id, (_, entries))| ((*id).to_string(), (*entries).clone()))
-        .collect();
-    let raw = match crate::filesystem::agent_settings::read_blocking_menus_text(&local_path) {
+        .collect())
+}
+
+fn read_blocking_menus_root(local_path: &Path) -> Result<Map<String, Value>, bool> {
+    let raw = match crate::filesystem::agent_settings::read_blocking_menus_text(local_path) {
         Ok(contents) => Some(contents),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
-            return abort_blocking_menus_export(
-                &local_path,
+            return Err(abort_blocking_menus_export(
+                local_path,
                 &format!("could not read the file: {e}"),
-            )
+            ))
         }
     };
-    let mut root = match raw.as_deref() {
+    Ok(match raw.as_deref() {
         None => Map::new(),
         Some(contents) => {
             // Schema parity: the runtime's own parser, on the complete file, before any mutation.
             if let Err(e) = parse_blocking_menus_file(contents) {
-                return abort_blocking_menus_export(&local_path, &format!("the file {e}"));
+                return Err(abort_blocking_menus_export(
+                    local_path,
+                    &format!("the file {e}"),
+                ));
             }
             match serde_json::from_str::<Value>(contents) {
                 Ok(Value::Object(map)) => map,
                 // Unreachable once the parser above rejected non-objects; kept as a guard.
                 _ => {
-                    return abort_blocking_menus_export(
-                        &local_path,
+                    return Err(abort_blocking_menus_export(
+                        local_path,
                         "the file is not a JSON object",
-                    )
+                    ))
                 }
             }
         }
-    };
+    })
+}
+
+fn merge_blocking_menus_candidates(
+    root: &mut Map<String, Value>,
+    local_path: &Path,
+    candidates: Vec<(String, Vec<BlockingMenuEntry>)>,
+) -> Result<usize, bool> {
     root.entry("schemaVersion")
         .or_insert_with(|| Value::from(BLOCKING_MENUS_SCHEMA_VERSION));
     let Some(by_agent) = root
@@ -612,7 +660,10 @@ pub(crate) fn export_blocking_menus_with_startup(
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
     else {
-        return abort_blocking_menus_export(&local_path, "byAgent is not an object");
+        return Err(abort_blocking_menus_export(
+            local_path,
+            "byAgent is not an object",
+        ));
     };
     let mut inserted = 0usize;
     for (id, entries) in candidates {
@@ -629,52 +680,49 @@ pub(crate) fn export_blocking_menus_with_startup(
                 inserted += 1;
             }
             Err(e) => {
-                return abort_blocking_menus_export(
-                    &local_path,
+                return Err(abort_blocking_menus_export(
+                    local_path,
                     &format!("could not serialize blockingMenus of '{id}': {e}"),
-                )
+                ))
             }
         }
     }
-    if inserted > 0 {
-        let bytes = match pretty_json_bytes(&Value::Object(root)) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                return abort_blocking_menus_export(
-                    &local_path,
-                    &format!("could not serialize the file: {e}"),
-                )
-            }
-        };
-        // Schema parity again, on the exact bytes about to be published.
-        if let Err(e) = std::str::from_utf8(&bytes)
-            .map_err(|e| e.to_string())
-            .and_then(parse_blocking_menus_file)
-        {
-            return abort_blocking_menus_export(&local_path, &format!("the merged file {e}"));
+    Ok(inserted)
+}
+
+fn publish_blocking_menus_root(
+    root: Map<String, Value>,
+    local_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+) -> Result<(), bool> {
+    let bytes = match pretty_json_bytes(&Value::Object(root)) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return Err(abort_blocking_menus_export(
+                local_path,
+                &format!("could not serialize the file: {e}"),
+            ))
         }
-        if let Err(e) = crate::config::local_config_io::write_file_atomic_with_publish(
-            &local_path,
-            &bytes,
-            publish,
-        ) {
-            return abort_blocking_menus_export(
-                &local_path,
-                &format!("could not write the file: {e}"),
-            );
-        }
-        log::info!(
-            "[settings-migration] #1905 - exported {inserted} blockingMenus array(s) to {}",
-            local_path.display()
-        );
+    };
+    // Schema parity again, on the exact bytes about to be published.
+    if let Err(e) = std::str::from_utf8(&bytes)
+        .map_err(|e| e.to_string())
+        .and_then(parse_blocking_menus_file)
+    {
+        return Err(abort_blocking_menus_export(
+            local_path,
+            &format!("the merged file {e}"),
+        ));
     }
-    for agent in &mut settings.agents {
-        agent.blocking_menus = None;
+    if let Err(e) =
+        crate::config::local_config_io::write_file_atomic_with_publish(local_path, &bytes, publish)
+    {
+        return Err(abort_blocking_menus_export(
+            local_path,
+            &format!("could not write the file: {e}"),
+        ));
     }
-    if let Some(context) = startup {
-        context.expected = settings.agents.clone();
-    }
-    true
+    Ok(())
 }
 
 impl BlockingMenusStore {
