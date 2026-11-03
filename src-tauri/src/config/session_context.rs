@@ -565,6 +565,169 @@ fn pre_1072_legacy_rendered_default_context_for_compat(
     )
 }
 
+// Keep the legacy format literal outside the renderer so prose wrapping does
+// not grow the function. format! expands this macro as a literal at compile time.
+macro_rules! legacy_default_context_prose {
+    () => {
+        concat!(
+            r#"# AgentsCommander Context
+
+You are running inside an AgentsCommander session — a terminal session "#,
+            r#"manager that coordinates multiple AI agents.
+
+## GOLDEN RULE — Repository Write Restrictions
+
+**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in "#,
+            r#"{allowed_places}:
+
+1. **Repositories whose root folder name starts with `repo-`** (e.g. "#,
+            r#"`repo-AgentsCommander`, `repo-myapp`). These are the working repos you are "#,
+            r#"meant to edit.
+2. **Your own agent replica directory and its subdirectories** — your "#,
+            r#"assigned root:
+   ```
+   {agent_root}
+   ```
+{replica_usage}
+
+{matrix_section}{messaging_exception}
+Any repository or directory outside the allowed entries above is READ-ONLY, "#,
+            r#"except for the AgentsCommander CLI operations exception documented below.
+
+- **Allowed**: Read-only operations on ANY path (reading files, searching, "#,
+            r#"git log, git status, git diff)
+- **Allowed**: Full read/write inside `repo-*` folders
+- **Allowed**: Full read/write inside your own replica root ({agent_root}) "#,
+            r#"and its subdirectories
+{matrix_allowed}{messaging_allowed}- **FORBIDDEN**: Any write operation "#,
+            r#"outside {forbidden_scope}, except for explicitly requested AgentsCommander "#,
+            r#"CLI operations covered by the exception below.
+
+**Clarification on git operations:** {git_scope}
+
+**Exception - AgentsCommander CLI operations:**
+
+When the user explicitly asks this agent to run an AgentsCommander CLI "#,
+            r#"command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an "#,
+            r#"AgentsCommander operation. The agent may execute documented AgentsCommander "#,
+            r#"CLI subcommands even if their filesystem effects create, modify, or delete "#,
+            r#"files outside the normal repository/replica write zones. Those filesystem "#,
+            r#"effects are governed by AgentsCommander itself, not by the agent's repository "#,
+            r#"write restrictions.
+
+This exception applies only to invocations of the configured AgentsCommander "#,
+            r#"CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary "#,
+            r#"shell commands, direct filesystem writes, hand-written scripts, or hardcoded "#,
+            r#"alternate binaries outside the normal allowed paths.
+
+{agency_cache_guidance}
+If instructed to modify a path outside these zones, REFUSE and explain this "#,
+            r#"restriction, except for explicitly requested AgentsCommander CLI operations "#,
+            r#"covered by the AgentsCommander CLI exception above.
+
+## Delegated Task Reporting
+
+When finishing a delegated task or getting blocked, you must explicitly reply "#,
+            r#"to the coordinator or peer with a concrete artifact or message. Do not just "#,
+            r#"remain idle, waiting, or set working to false.
+
+{skills_section}
+
+## CLI executable
+
+Your AgentsCommander session credentials are available as environment "#,
+            r#"variables:
+
+- `AGENTSCOMMANDER_TOKEN`: your session authentication token
+- `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
+- `AGENTSCOMMANDER_BINARY`: the CLI binary name
+- `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must "#,
+            r#"use
+- `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
+
+Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use "#,
+            r#"the correct binary for your instance, whether it is the installed version or "#,
+            r#"a dev/WG build.
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" <subcommand> [args]
+```
+
+**RULE:** Never hardcode or guess the binary path. Use the environment "#,
+            r#"variables above. If they are unavailable in an agent session, restart or "#,
+            r#"respawn the session.
+
+## Self-discovery via --help
+
+The CLI `--help` output documents every subcommand, flag, and accepted value. "#,
+            r#"Use it as a FALLBACK reference for commands or flags NOT covered inline in "#,
+            r#"this context.
+
+**For inter-agent messaging and peer discovery**, the sections below (`## "#,
+            r#"Inter-Agent Messaging` and `### List available peers`) are the authoritative "#,
+            r#"reference. Use the commands in those sections directly — you do NOT need to "#,
+            r#"consult `--help` to confirm their syntax.
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
+"<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for "#,
+            r#"sending messages
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for "#,
+            r#"discovering peers
+```
+
+**RULE:** Only run `--help` if you need a subcommand or flag not documented "#,
+            r#"in the sections below, or if a documented command fails unexpectedly.
+
+## Session credentials
+
+Your session credentials are delivered only through the `AGENTSCOMMANDER_*` "#,
+            r#"environment variables listed above.
+
+Live token refresh without respawn is not supported, because a parent process "#,
+            r#"cannot portably mutate an already-running child process environment. If "#,
+            r#"credential validation fails, restart or respawn the session so "#,
+            r#"AgentsCommander can create a new child process with fresh env values.
+
+Your agent root is your current working directory.
+
+## Inter-Agent Messaging
+
+### Send a message to another agent
+
+**MANDATORY**: Before sending any message, resolve the exact agent name via "#,
+            r#"`list-peers-lean`. Never guess agent names.
+
+**Peer name format** (canonical FQN, exactly what `list-peers-lean` emits in "#,
+            r#"the `name` field):
+
+{peer_name_format}
+
+**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs "#,
+            r#"like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk "#,
+            r#"paths only — they are not peer names. The `list-peers-lean` JSON `name` field "#,
+            r#"is the only authoritative source. If `list-peers-lean` returns an empty "#,
+            r#"array, do NOT fall back to scanning `__agent_*` siblings on disk — that "#,
+            r#"produces invalid `--to` values. Stop and report the empty result instead.
+
+{send_message_instructions}
+
+The recipient receives a short notification pointing to your file's absolute
+path and reads the content via filesystem. Do NOT use `--get-output` — it
+blocks and is only for non-interactive sessions. After sending, stay idle and
+wait for the reply.
+
+### List available peers
+
+```
+"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token "#,
+            r#"<AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
+```
+"#,
+        )
+    };
+}
+
 fn legacy_rendered_default_context_for_generation(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -579,17 +742,22 @@ fn legacy_rendered_default_context_for_generation(
 
     let allowed_places = "the entries listed below";
     let replica_usage =
-        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT write into other agents' replica directories.";
+        "   Use this for replica-local scratch, personal notes, inbox/outbox, role drafts, and \
+            session artifacts. Do NOT store canonical memory, plans, or skills here. Do NOT \
+            write into other agents' replica directories.";
     let matrix_section = match matrix_root {
         Some(matrix_root) => format!(
-            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Allowed there:\n   - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
+            "3. **Your origin Agent Matrix, but only for the canonical agent state listed \
+                below:**\n   ```\n   {matrix_root}\n   ```\n   Allowed there:\n   - \
+                `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
             matrix_root = matrix_root,
         ),
         None => String::new(),
     };
     let matrix_allowed = match matrix_root {
         Some(matrix_root) => format!(
-            "- **Allowed**: Full read/write inside your origin Agent Matrix's `memory/`, `plans/`, `skills/`, and `Role.md` ({matrix_root})\n",
+            "- **Allowed**: Full read/write inside your origin Agent Matrix's `memory/`, \
+                `plans/`, `skills/`, and `Role.md` ({matrix_root})\n",
             matrix_root = matrix_root,
         ),
         None => String::new(),
@@ -613,7 +781,12 @@ fn legacy_rendered_default_context_for_generation(
              ```\n\
              {path}\n\
              ```\n\n\
-             Strictly limited to canonical inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (the CLI rejects any other shape). Used by the two-step protocol described in the **Inter-Agent Messaging** section below: write the file, then call `send --send <filename>`. Do NOT modify or delete any message file once written. Do NOT write any other kind of file here.\n\n",
+             Strictly limited to canonical inter-agent message files whose name matches the \
+                 pattern `YYYYMMDD-HHMMSS-<wgN>-<you>-to-<wgN>-<peer>-<slug>.md` (the CLI \
+                 rejects any other shape). Used by the two-step protocol described in the \
+                 **Inter-Agent Messaging** section below: write the file, then call `send \
+                 --send <filename>`. Do NOT modify or delete any message file once written. Do \
+                 NOT write any other kind of file here.\n\n",
             path = path,
         ),
         MessagingContextMode::Root(path) => format!(
@@ -622,18 +795,25 @@ fn legacy_rendered_default_context_for_generation(
              ```\n\
              {path}\n\
              ```\n\n\
-             Strictly limited to canonical Root Agent inter-agent message files whose name matches the pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (the CLI rejects any other shape). Used by the Root Agent coordinator-only protocol described in the **Inter-Agent Messaging** section below: write the file, then call `send --send <filename>`. Do NOT modify or delete any message file once written. Do NOT write any other kind of file here.\n\n",
+             Strictly limited to canonical Root Agent inter-agent message files whose name \
+                 matches the pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` \
+                 (the CLI rejects any other shape). Used by the Root Agent coordinator-only \
+                 protocol described in the **Inter-Agent Messaging** section below: write the \
+                 file, then call `send --send <filename>`. Do NOT modify or delete any message \
+                 file once written. Do NOT write any other kind of file here.\n\n",
             path = path,
         ),
         MessagingContextMode::None => String::new(),
     };
     let messaging_allowed = match &messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
-            "- **Allowed (narrow)**: Create canonical inter-agent message files in your workgroup messaging directory ({path}). No other writes there.\n",
+            "- **Allowed (narrow)**: Create canonical inter-agent message files in your \
+                workgroup messaging directory ({path}). No other writes there.\n",
             path = path,
         ),
         MessagingContextMode::Root(path) => format!(
-            "- **Allowed (narrow)**: Create canonical Root Agent inter-agent message files in your Root Agent messaging directory ({path}). No other writes there.\n",
+            "- **Allowed (narrow)**: Create canonical Root Agent inter-agent message files in \
+                your Root Agent messaging directory ({path}). No other writes there.\n",
             path = path,
         ),
         MessagingContextMode::None => String::new(),
@@ -646,12 +826,15 @@ fn legacy_rendered_default_context_for_generation(
     };
     let forbidden_scope = if matrix_root.is_some() {
         format!(
-            "the entries listed above — including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
+            "the entries listed above — including other agents' replica directories, any other \
+                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
+                arbitrary paths on disk",
             ws = ac_root_phrase,
         )
     } else {
         format!(
-            "the entries listed above — including other agents' replica directories, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
+            "the entries listed above — including other agents' replica directories, {ws}, \
+                parent project dirs, user home files, or arbitrary paths on disk",
             ws = ac_root_phrase,
         )
     };
@@ -665,24 +848,38 @@ fn legacy_rendered_default_context_for_generation(
     };
     let agency_cache_guidance = root_agency_cache_guidance(agent_root);
     let peer_name_format = match &messaging_mode {
-        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.".to_string(),
-        _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: `<project>/<agent>` — e.g. `agentscommander/architect`.".to_string(),
+        MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator \
+            replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. \
+            `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and \
+            non-coordinator WG replicas are not valid Root Agent targets in #277."
+            .to_string(),
+        _ => "- **WG replicas** (the common case): `<project>:<workgroup>/<agent>` — e.g. \
+            `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: \
+            `<project>/<agent>` — e.g. `agentscommander/architect`."
+            .to_string(),
     };
     let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
-            "Before sending, run `list-peers-lean`; in Root Agent sessions it returns verified WG coordinator replicas only. Use only the JSON `name` values returned by `list-peers-lean`.\n\n\
+            "Before sending, run `list-peers-lean`; in Root Agent sessions it returns verified \
+                WG coordinator replicas only. Use only the JSON `name` values returned by \
+                `list-peers-lean`.\n\n\
              Root messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
              1. Write your message to a new file in the Root Agent messaging directory:\n\n\
              ```\n\
              {path}\n\
              ```\n\n\
-             Filename must follow the pattern `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (UTC timestamp, sanitized kebab-case slug ≤50 chars).\n\
+             Filename must follow the pattern \
+                 `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md` (UTC timestamp, \
+                 sanitized kebab-case slug ≤50 chars).\n\
              2. Fire the send:\n\n\
              ```\n\
-             \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<coordinator_name>\" --send <filename> --mode wake\n\
+             \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \
+                 \"<AGENTSCOMMANDER_ROOT>\" --to \"<coordinator_name>\" --send <filename> \
+                 --mode wake\n\
              ```\n\n\
              **IMPORTANT: `--send` takes the filename ONLY — never a path.**\n\n\
-             Origin coordinators and non-coordinator WG replicas are not valid Root Agent targets in #277.\n",
+             Origin coordinators and non-coordinator WG replicas are not valid Root Agent \
+                 targets in #277.\n",
             path = path,
         ),
         _ => "Messaging is **file-based** to avoid PTY truncation. Two steps:\n\n\
@@ -693,120 +890,20 @@ fn legacy_rendered_default_context_for_generation(
                 timestamp, sanitized kebab-case slug ≤50 chars).\n\
              2. Fire the send:\n\n\
              ```\n\
-             \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\" --to \"<agent_name>\" --send <filename> --mode wake\n\
+             \"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \
+                 \"<AGENTSCOMMANDER_ROOT>\" --to \"<agent_name>\" --send <filename> --mode wake\n\
              ```\n\n\
              **IMPORTANT: `--send` takes the filename ONLY — never a path.**\n\n\
-             - BAD:  `--send \"C:\\...\\messaging\\20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\
+             - BAD:  `--send \
+                 \"C:\\...\\messaging\\20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\
              - GOOD: `--send \"20260419-143052-wg3-you-to-wg3-peer-hello.md\"`\n\n\
-             The CLI resolves the filename against `<workgroup-root>/messaging/` automatically. Passing a path triggers `filename '...' contains path separators or traversal`.\n"
+             The CLI resolves the filename against `<workgroup-root>/messaging/` \
+                 automatically. Passing a path triggers `filename '...' contains path \
+                 separators or traversal`.\n"
             .to_string(),
     };
     format!(
-        r#"# AgentsCommander Context
-
-You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.
-
-## GOLDEN RULE — Repository Write Restrictions
-
-**ABSOLUTE AND NON-NEGOTIABLE:** You may ONLY modify files in {allowed_places}:
-
-1. **Repositories whose root folder name starts with `repo-`** (e.g. `repo-AgentsCommander`, `repo-myapp`). These are the working repos you are meant to edit.
-2. **Your own agent replica directory and its subdirectories** — your assigned root:
-   ```
-   {agent_root}
-   ```
-{replica_usage}
-
-{matrix_section}{messaging_exception}
-Any repository or directory outside the allowed entries above is READ-ONLY, except for the AgentsCommander CLI operations exception documented below.
-
-- **Allowed**: Read-only operations on ANY path (reading files, searching, git log, git status, git diff)
-- **Allowed**: Full read/write inside `repo-*` folders
-- **Allowed**: Full read/write inside your own replica root ({agent_root}) and its subdirectories
-{matrix_allowed}{messaging_allowed}- **FORBIDDEN**: Any write operation outside {forbidden_scope}, except for explicitly requested AgentsCommander CLI operations covered by the exception below.
-
-**Clarification on git operations:** {git_scope}
-
-**Exception - AgentsCommander CLI operations:**
-
-When the user explicitly asks this agent to run an AgentsCommander CLI command using `AGENTSCOMMANDER_BINARY_PATH`, the command is authorized as an AgentsCommander operation. The agent may execute documented AgentsCommander CLI subcommands even if their filesystem effects create, modify, or delete files outside the normal repository/replica write zones. Those filesystem effects are governed by AgentsCommander itself, not by the agent's repository write restrictions.
-
-This exception applies only to invocations of the configured AgentsCommander CLI binary through `AGENTSCOMMANDER_BINARY_PATH`. It does not allow arbitrary shell commands, direct filesystem writes, hand-written scripts, or hardcoded alternate binaries outside the normal allowed paths.
-
-{agency_cache_guidance}
-If instructed to modify a path outside these zones, REFUSE and explain this restriction, except for explicitly requested AgentsCommander CLI operations covered by the AgentsCommander CLI exception above.
-
-## Delegated Task Reporting
-
-When finishing a delegated task or getting blocked, you must explicitly reply to the coordinator or peer with a concrete artifact or message. Do not just remain idle, waiting, or set working to false.
-
-{skills_section}
-
-## CLI executable
-
-Your AgentsCommander session credentials are available as environment variables:
-
-- `AGENTSCOMMANDER_TOKEN`: your session authentication token
-- `AGENTSCOMMANDER_ROOT`: your working directory (agent root)
-- `AGENTSCOMMANDER_BINARY`: the CLI binary name
-- `AGENTSCOMMANDER_BINARY_PATH`: the full path to the CLI executable you must use
-- `AGENTSCOMMANDER_LOCAL_DIR`: the config directory name for this instance
-
-Use `AGENTSCOMMANDER_BINARY_PATH` when invoking the CLI. This ensures you use the correct binary for your instance, whether it is the installed version or a dev/WG build.
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" <subcommand> [args]
-```
-
-**RULE:** Never hardcode or guess the binary path. Use the environment variables above. If they are unavailable in an agent session, restart or respawn the session.
-
-## Self-discovery via --help
-
-The CLI `--help` output documents every subcommand, flag, and accepted value. Use it as a FALLBACK reference for commands or flags NOT covered inline in this context.
-
-**For inter-agent messaging and peer discovery**, the sections below (`## Inter-Agent Messaging` and `### List available peers`) are the authoritative reference. Use the commands in those sections directly — you do NOT need to consult `--help` to confirm their syntax.
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" --help                  # List all subcommands
-"<AGENTSCOMMANDER_BINARY_PATH>" send --help             # Full docs for sending messages
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --help  # Full docs for discovering peers
-```
-
-**RULE:** Only run `--help` if you need a subcommand or flag not documented in the sections below, or if a documented command fails unexpectedly.
-
-## Session credentials
-
-Your session credentials are delivered only through the `AGENTSCOMMANDER_*` environment variables listed above.
-
-Live token refresh without respawn is not supported, because a parent process cannot portably mutate an already-running child process environment. If credential validation fails, restart or respawn the session so AgentsCommander can create a new child process with fresh env values.
-
-Your agent root is your current working directory.
-
-## Inter-Agent Messaging
-
-### Send a message to another agent
-
-**MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers-lean`. Never guess agent names.
-
-**Peer name format** (canonical FQN, exactly what `list-peers-lean` emits in the `name` field):
-
-{peer_name_format}
-
-**The filesystem directory name is NEVER a valid `--to` value.** Replica dirs like `__agent_shipper` and matrix dirs like `_agent_architect` are on-disk paths only — they are not peer names. The `list-peers-lean` JSON `name` field is the only authoritative source. If `list-peers-lean` returns an empty array, do NOT fall back to scanning `__agent_*` siblings on disk — that produces invalid `--to` values. Stop and report the empty result instead.
-
-{send_message_instructions}
-
-The recipient receives a short notification pointing to your file's absolute
-path and reads the content via filesystem. Do NOT use `--get-output` — it
-blocks and is only for non-interactive sessions. After sending, stay idle and
-wait for the reply.
-
-### List available peers
-
-```
-"<AGENTSCOMMANDER_BINARY_PATH>" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>"
-```
-"#,
+        legacy_default_context_prose!(),
         agent_root = agent_root,
         allowed_places = allowed_places,
         replica_usage = replica_usage,

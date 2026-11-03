@@ -1,13 +1,20 @@
+#[cfg(test)]
 use super::super::agents_instance_groups;
+#[cfg(test)]
 use super::super::apply_project_decode_to_value;
 use super::super::canonical_profile_source;
 use super::super::decode_physical_catalog;
+#[cfg(test)]
 use super::super::production_instance_base;
 use super::super::retain_configuration_commands;
 use super::super::AppSettings;
+#[cfg(test)]
 use super::super::CONFIGURATION_COMMAND_PAIRS;
+#[cfg(test)]
 use super::super::OVERLAY_DERIVED_ID_CLOSURES;
+#[cfg(test)]
 use super::super::OVERLAY_INELIGIBLE_DISK_KEYS;
+#[cfg(test)]
 use super::super::OVERLAY_INELIGIBLE_LEGACY_KEYS;
 use super::identity::configuration_identity;
 use super::identity::profile_identity;
@@ -27,7 +34,9 @@ use super::SourceKind;
 use super::SourcePreparationError;
 use super::SourceRef;
 use super::SourceRevision;
+#[cfg(test)]
 use crate::config::local_overlay::LocalSettingsOverlay;
+#[cfg(test)]
 use crate::config::settings::project_path as projects;
 use serde::Deserialize;
 use serde::Serialize;
@@ -37,7 +46,6 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) struct PreparedSourceCandidate {
     pub(crate) source: SourceRef,
     pub(crate) expected_revision: SourceRevision,
@@ -48,7 +56,6 @@ pub(crate) struct PreparedSourceCandidate {
     pub(crate) origin_binding: Option<OriginBinding>,
 }
 
-#[allow(dead_code)] // The later writer calls this while holding its proofs.
 impl PreparedSourceCandidate {
     pub(crate) fn revalidate_before_write(
         &self,
@@ -79,7 +86,6 @@ impl PreparedSourceCandidate {
     }
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn raw_entries(value: &Value, key_name: &str) -> BTreeMap<String, Value> {
     value
         .get("agents")
@@ -95,7 +101,6 @@ pub(crate) fn raw_entries(value: &Value, key_name: &str) -> BTreeMap<String, Val
         .collect()
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn changed_origin_units(
     before: &Value,
     after: &Value,
@@ -212,7 +217,6 @@ pub(crate) fn changed_origin_units(
     affected
 }
 
-#[allow(dead_code)] // Dependency inventory is owned by the later coordinator.
 pub(crate) fn unresolved_default_dependency(
     origin: &LegacyCompatibilityOrigin,
     units: &std::collections::BTreeSet<LegacyOriginUnit>,
@@ -230,7 +234,6 @@ pub(crate) fn unresolved_default_dependency(
 
 /// Unknown persisted fields are not discarded by the typed validation view.
 /// Schema keys derive from the concrete model; raw absence/null remains raw.
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn preserve_unknown_fields(before: &Value, after: &Value, model: &Value) -> bool {
     match (before, after, model) {
         (Value::Object(old), Value::Object(new), Value::Object(known)) => {
@@ -265,7 +268,6 @@ pub(crate) fn preserve_unknown_fields(before: &Value, after: &Value, model: &Val
     }
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn validate_source_identity_groups(
     before: &Value,
     after: &Value,
@@ -353,7 +355,6 @@ pub(crate) fn validate_source_identity_groups(
     Ok(())
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 /// Grouping preserves each original selection's Entry/Profile/Default relation.
 /// Only the complete backend inventory factory may construct this aggregate.
 #[derive(Debug)]
@@ -471,7 +472,7 @@ pub(crate) fn require_source_original_units(
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn prepare_source_candidate(
     snapshot: &RawSourceSnapshot,
     expected: &SourceRevision,
@@ -663,7 +664,7 @@ pub(crate) fn prepare_source_candidate_with_original_links(
     })
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
+#[cfg(test)]
 pub(crate) const SOURCE_GENERAL_PROTECTED: &[&str] = &[
     "agents",
     "codingAgentProfiles",
@@ -681,13 +682,12 @@ pub(crate) const SOURCE_GENERAL_PROTECTED: &[&str] = &[
     "localOverlayState",
 ];
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
+#[cfg(test)]
 pub(crate) struct PreparedSettingsWithoutSourceWrite {
     pub(crate) serialized_after: Vec<u8>,
     pub(crate) redecoded_settings: AppSettings,
 }
 
-#[allow(dead_code)] // Serde's field table also includes omitted optional fields.
 pub(crate) fn source_general_field_names() -> Vec<&'static str> {
     struct Fields<'a>(&'a mut Vec<&'static str>);
     impl<'de> serde::Deserializer<'de> for Fields<'_> {
@@ -720,7 +720,7 @@ pub(crate) fn source_general_field_names() -> Vec<&'static str> {
 
 /// General-only pure preparation over the captured settings base. Never calls
 /// a saver, migration, export, order/adoption/repair helper, or source writer.
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
+#[cfg(test)]
 pub(crate) fn prepare_settings_without_source_write(
     inputs: &OriginInputs,
     candidate_general: &Value,

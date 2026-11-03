@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ impl CoordinatorCreateOrder {
     }
 
     pub(crate) fn with_order<T>(&self, operation: impl FnOnce() -> T) -> T {
-        let _order = self.order.lock().unwrap_or_else(|error| error.into_inner());
+        let _order = self.order.lock().unwrap_or_else(PoisonError::into_inner);
         operation()
     }
 }
@@ -181,7 +181,7 @@ impl CoordinatorClocks {
 
     /// Record a user message for `fqn` at `now`. Coalesces: returns `true`
     /// (caller should emit/flag dirty) only if no value existed or the prior
-    /// value is older than COALESCE_SECS. Returns `false` when skipped.
+    /// value is older than `COALESCE_SECS`. Returns `false` when skipped.
     pub fn note_user_message(&mut self, fqn: &str, now: DateTime<Utc>) -> bool {
         let entry = self.map.entry(fqn.to_string()).or_default();
         if let Some(prev) = entry.last_user_message_at {
@@ -228,7 +228,7 @@ impl CoordinatorClocks {
     /// (#580) Advance `last_activity_at` for `fqn` to `candidate` iff it is newer
     /// than the stored value (monotonic forward). Returns true (and dirties the
     /// store) only when it actually moved, so an idle team (stable candidate) does
-    /// not churn the file each tick. Preserves last_user_message_at / auto_closed_at.
+    /// not churn the file each tick. Preserves `last_user_message_at` / `auto_closed_at`.
     pub fn note_activity(&mut self, fqn: &str, candidate: DateTime<Utc>) -> bool {
         let entry = self.map.entry(fqn.to_string()).or_default();
         if entry.last_activity_at.is_none_or(|prev| candidate > prev) {
@@ -287,7 +287,7 @@ impl CoordinatorClocks {
     /// `true` only on the None -> Some transition so the caller emits once. Clears
     /// `auto_closed_at` ON THE TRANSITION (mutual-exclusion that also keeps the
     /// dirty flag honest; manual is the deliberate action). Preserves
-    /// last_user_message_at / last_activity_at.
+    /// `last_user_message_at` / `last_activity_at`.
     pub fn mark_manually_closed(&mut self, fqn: &str, now: DateTime<Utc>) -> bool {
         let entry = self.map.entry(fqn.to_string()).or_default();
         if entry.manually_closed_at.is_some() {
@@ -301,7 +301,7 @@ impl CoordinatorClocks {
 
     /// #588 Clear the manual-close marker on reopen. Returns `true` only on the
     /// Some -> None transition so the caller emits the clear once. Preserves
-    /// last_user_message_at.
+    /// `last_user_message_at`.
     pub fn clear_manually_closed(&mut self, fqn: &str) -> bool {
         if let Some(entry) = self.map.get_mut(fqn) {
             if entry.manually_closed_at.is_some() {
@@ -366,7 +366,7 @@ impl CoordinatorClocks {
     /// `Ok(0)`-silently miss a case-drifted project. Case-insensitive project+wg
     /// identity IS the FS identity, so this still cannot touch another workgroup.
     pub fn remove_workgroup(&mut self, project: &str, wg: &str) -> usize {
-        let prefix = format!("{}:{}/", project, wg);
+        let prefix = format!("{project}:{wg}/");
         self.retain_keys(|k| !key_has_prefix_ignore_ascii_case(k, &prefix))
     }
 
@@ -430,7 +430,7 @@ pub fn load() -> CoordinatorClocks {
 }
 
 /// Atomic save of the flat map. Symmetric with `load`. Reuses the hardened
-/// rename path (create_dir_all + rename_with_retry) shared with sessions.
+/// rename path (`create_dir_all` + `rename_with_retry`) shared with sessions.
 /// No-op (Ok) when no config dir resolves.
 pub fn save_map(map: &HashMap<String, ClockEntry>) -> Result<(), String> {
     let Some(path) = clocks_path() else {
@@ -479,13 +479,18 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
 /// keys removed. Used by `delete_workgroup` and `delete_team`.
 pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, wg: &str) -> usize {
     let removed = {
-        let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = state.lock().unwrap_or_else(PoisonError::into_inner);
         g.remove_workgroup(project, wg)
     };
     if removed > 0 {
-        let snap = { state.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        let snap = {
+            state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .snapshot()
+        };
         if let Err(e) = save_map(&snap) {
-            log::warn!("[coordinator-clocks] workgroup-remove save failed: {}", e);
+            log::warn!("[coordinator-clocks] workgroup-remove save failed: {e}");
         }
     }
     removed
@@ -531,17 +536,21 @@ pub fn prune_orphaned_workgroups_and_persist(
         crate::config::projects::enumerate_registered_project_candidates(project_paths);
     let live_fqns = persisted_session_fqns();
     let removed = {
-        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = state.lock().unwrap_or_else(PoisonError::into_inner);
         prune_with(&mut guard, &candidates, &live_fqns)
     };
     if removed > 0 {
-        let snap = { state.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        let snap = {
+            state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .snapshot()
+        };
         if let Err(e) = save_map(&snap) {
-            log::warn!("[coordinator-clocks] startup prune save failed: {}", e);
+            log::warn!("[coordinator-clocks] startup prune save failed: {e}");
         }
         log::info!(
-            "[coordinator-clocks] startup prune removed {} orphaned workgroup key(s)",
-            removed
+            "[coordinator-clocks] startup prune removed {removed} orphaned workgroup key(s)"
         );
     }
 }

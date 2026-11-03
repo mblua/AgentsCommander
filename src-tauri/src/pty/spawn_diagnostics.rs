@@ -40,9 +40,9 @@
 //!
 //! - The first bytes off the PTY are never the child. Measured on the shipping spawn
 //!   shape (`cmd.exe /C codex ...`, which is what AC does for every npm-installed agent
-//!   CLI), **71 bytes arrive within ~45ms with the child still doing nothing**: ConPTY's
+//!   CLI), **71 bytes arrive within ~45ms with the child still doing nothing**: `ConPTY`'s
 //!   own handshake (`ESC[?9001h ESC[?1004h`), its screen setup (`ESC[?25l ESC[2J ESC[m
-//!   ESC[H`), and the npm shim's own `title %COMSPEC%` line, which ConPTY renders as an
+//!   ESC[H`), and the npm shim's own `title %COMSPEC%` line, which `ConPTY` renders as an
 //!   OSC title sequence. The paint floor has to sit ABOVE that band or a hung agent
 //!   reads as painted: 64 did not, 256 does. A real coding-agent TUI crosses 256 bytes in
 //!   ~350ms when healthy (measured, fresh codex) and takes seconds when it is hanging.
@@ -61,7 +61,7 @@
 //! Container sessions produce **nothing** here: no spawn record, no deadline report, no
 //! exit event (`container_backend` registers no record, so `mark_ac_stop` is a genuine
 //! no-op for them). A containerised coding-agent hang leaves zero evidence. That is an
-//! accepted gap: #942 is a local-spawn bug. It never MISreports a container session, it
+//! accepted gap: #942 is a local-spawn bug. It never `MISreports` a container session, it
 //! simply says nothing about one.
 //!
 //! ## Exit attribution: where the witness comes from, and the one path without it
@@ -115,7 +115,7 @@ use crate::session::profile::CodingAgentKind;
 const DEFAULT_STALL_TIMEOUT_MS: u64 = 5_000;
 const MAX_STALL_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 /// Output below this many bytes is not a painted screen; it is the shell saying hello.
-/// Measured on the real spawn shape (`cmd.exe /C codex ...`): ConPTY's handshake and
+/// Measured on the real spawn shape (`cmd.exe /C codex ...`): `ConPTY`'s handshake and
 /// screen setup plus the npm shim's `title %COMSPEC%` put **71 bytes** on the PTY within
 /// ~45ms while the agent itself has written nothing. A floor of 64 was therefore crossed
 /// by noise alone, which made every hung coding agent read as "painted" and silently
@@ -381,13 +381,16 @@ impl SpawnRecord {
     /// #1873 test-only: the cause stamped by the single accepted `log_child_exit`.
     #[cfg(test)]
     pub fn exit_cause(&self) -> Option<ExitCause> {
-        *self.exit_cause.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .exit_cause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn final_liveness(&self) -> Option<ChildLiveness> {
         self.final_liveness
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -453,7 +456,10 @@ impl SpawnRecord {
     }
 
     fn head_log(&self) -> String {
-        let head = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        let head = self
+            .head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if head.is_empty() {
             return "<empty>".to_string();
         }
@@ -483,7 +489,7 @@ impl SpawnRecord {
     fn stop_source(&self) -> String {
         self.ac_stop_source
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or_else(|| "none".to_string())
     }
@@ -491,7 +497,7 @@ impl SpawnRecord {
     fn pre_stop_liveness(&self) -> Option<ChildLiveness> {
         self.pre_stop_liveness
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -580,7 +586,7 @@ impl SpawnRecord {
         *self
             .ac_stop_source
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(source.to_string());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source.to_string());
         let stamp = (self.started.elapsed().as_micros().min(u64::MAX as u128) as u64).max(1);
         self.ac_stop_at_us.store(stamp, Ordering::SeqCst);
         // Published last: any thread that sees this flag also sees the source, the
@@ -595,7 +601,7 @@ impl SpawnRecord {
         *self
             .final_liveness
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(liveness.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(liveness.clone());
     }
 
     fn record_witness(&self, pre_stop: Option<ChildLiveness>, episode_open: bool) {
@@ -607,7 +613,7 @@ impl SpawnRecord {
         let mut current = self
             .pre_stop_liveness
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match current.as_ref() {
             // Sticky: a dead child does not come back.
             Some(ChildLiveness::Exited { .. }) => {}
@@ -619,7 +625,7 @@ impl SpawnRecord {
     }
 
     /// A stop AC asked for, recent enough that the teardown it triggers is still in
-    /// flight. ConPTY repaints the master when the session is torn down (milliseconds
+    /// flight. `ConPTY` repaints the master when the session is torn down (milliseconds
     /// after the kill), and that repaint is not the child painting. Deliberately a short
     /// window of its own, NOT the 60s attribution window: a stop that fails to kill the
     /// child must not blind the startup timings of a session that keeps running.
@@ -720,7 +726,10 @@ impl SpawnRecord {
 
     fn capture_head(&self, chunk: &[u8]) {
         let cap = self.thresholds.head_bytes;
-        let mut head = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        let mut head = self
+            .head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if head.len() >= cap {
             self.head_full.store(true, Ordering::Relaxed);
             return;
@@ -732,7 +741,7 @@ impl SpawnRecord {
         }
     }
 
-    /// The child never painted a screen: nothing at all, or nothing past the ConPTY
+    /// The child never painted a screen: nothing at all, or nothing past the `ConPTY`
     /// handshake for a coding agent (which always paints a TUI immediately). A plain
     /// shell whose prompt is legitimately tiny is not stalled, it is just quiet.
     ///
@@ -794,9 +803,9 @@ impl SpawnRecord {
             self.head_log()
         );
         if stalled {
-            log::warn!("{}", line);
+            log::warn!("{line}");
         } else {
-            log::info!("{}", line);
+            log::info!("{line}");
         }
         true
     }
@@ -807,7 +816,10 @@ impl SpawnRecord {
         if self.exit_reported.swap(true, Ordering::SeqCst) {
             return false;
         }
-        *self.exit_cause.lock().unwrap_or_else(|e| e.into_inner()) = Some(cause);
+        *self
+            .exit_cause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cause);
 
         let uptime = self.started.elapsed();
         let bytes = self.bytes_read.load(Ordering::Relaxed);
@@ -852,9 +864,9 @@ impl SpawnRecord {
                 self.head_log()
             );
             if unexpected {
-                log::warn!("{}", line);
+                log::warn!("{line}");
             } else {
-                log::info!("{}", line);
+                log::info!("{line}");
             }
         } else {
             log::info!(

@@ -355,7 +355,7 @@ fn observe_submit_seam(
     };
     let observation =
         format_submit_seam_observation(instant, settle, rows.as_deref(), written_payload);
-    log::info!("{} session={}", observation, session_id);
+    log::info!("{observation} session={session_id}");
     #[cfg(test)]
     tests::record_seam_observation(session_id, observation);
     Ok(())
@@ -396,14 +396,14 @@ pub async fn submit_exact_agent_input_with_permit(
 /// Inject a text block into a session's PTY stdin.
 ///
 /// Direct Claude, Codex, Antigravity, Cursor agent, and the exact-stem Pi,
-/// Hermes, OpenCode, and Grok Build shells receive `\r` twice, at 1500 ms and
+/// Hermes, `OpenCode`, and Grok Build shells receive `\r` twice, at 1500 ms and
 /// 2000 ms after the text write, as a reliability measure against Enter not
 /// registering on the first attempt. Plain shells do not receive an added
 /// Enter.
 ///
 /// This is the ONLY function that should be used for text-block injection.
-/// Direct keystrokes from xterm.js bypass this and call PtyManager::write()
-/// directly via the pty_write Tauri command.
+/// Direct keystrokes from xterm.js bypass this and call `PtyManager::write()`
+/// directly via the `pty_write` Tauri command.
 pub async fn inject_text_into_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
@@ -500,7 +500,7 @@ where
         settle,
         codex_clear_observation,
         |session, current| {
-            let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            let session = session.ok_or_else(|| format!("Session not found: {session_id}"))?;
             let current = current.expect("peer boundary supplies current facts");
             if observe_codex_clear
                 && (!shell_file_stem(&session.shell).starts_with("codex")
@@ -541,7 +541,7 @@ where
         SettleReadiness::Unknown,
         None,
         move |session, _| {
-            session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            session.ok_or_else(|| format!("Session not found: {session_id}"))?;
             pre_write_check()
         },
     )
@@ -554,17 +554,15 @@ where
 fn validate_supported_agent_session(session: &Session, session_id: Uuid) -> Result<(), String> {
     if session.is_root_agent {
         return Err(format!(
-            "Session {} is a root session, not a supported orchestrator agent",
-            session_id
+            "Session {session_id} is a root session, not a supported orchestrator agent"
         ));
     }
     if matches!(session.status, SessionStatus::Exited(_)) {
-        return Err(format!("Session {} exited before injection", session_id));
+        return Err(format!("Session {session_id} exited before injection"));
     }
     if session.agent_id.is_none() {
         return Err(format!(
-            "Session {} has no configured coding-agent identity",
-            session_id
+            "Session {session_id} has no configured coding-agent identity"
         ));
     }
     if !needs_explicit_enter(&session.shell) {
@@ -595,10 +593,7 @@ where
         None,
         move |session, _| {
             let session = session.ok_or_else(|| {
-                format!(
-                    "Session {} is missing before supported-agent injection",
-                    session_id
-                )
+                format!("Session {session_id} is missing before supported-agent injection")
             })?;
             validate_supported_agent_session(session, session_id)?;
             pre_write_check(session)
@@ -656,10 +651,7 @@ where
         None,
         move |session, _| {
             let session = session.ok_or_else(|| {
-                format!(
-                    "Session {} is missing before supported-agent injection",
-                    session_id
-                )
+                format!("Session {session_id} is missing before supported-agent injection")
             })?;
             validate_supported_agent_session(session, session_id)?;
             pre_write_check(session)
@@ -702,17 +694,17 @@ where
                     None => PtyManager::lock_route_for_write(permit),
                 };
                 let route_guard =
-                    route_guard.map_err(|error| format!("PTY write failed: {}", error))?;
+                    route_guard.map_err(|error| format!("PTY write failed: {error}"))?;
                 let session = current.rows.iter().find(|session| session.id == session_id);
                 check(session, Some(current))?;
                 route_guard
                     .write(text.as_bytes())
-                    .map_err(|error| format!("PTY write failed: {}", error))
+                    .map_err(|error| format!("PTY write failed: {error}"))
             })
             .await
     } else {
         PtyManager::write_with_permit(permit, text.as_bytes())
-            .map_err(|error| format!("PTY write failed: {}", error))
+            .map_err(|error| format!("PTY write failed: {error}"))
     }
 }
 
@@ -862,12 +854,7 @@ async fn session_injection_mode(
     let session = manager.get_session(session_id).await;
     let shell = session.as_ref().map(|session| session.shell.clone());
     let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
-    log::info!(
-        "[inject] session={} shell={:?} send_enter={}",
-        session_id,
-        shell,
-        send_enter
-    );
+    log::info!("[inject] session={session_id} shell={shell:?} send_enter={send_enter}");
 
     (session, send_enter)
 }
@@ -881,18 +868,10 @@ fn finish_injected_text_write(
         if error == OWNED_WORK_SCOPE_WAIT {
             return error;
         }
-        log::error!(
-            "[inject] PTY write FAILED session={}: {}",
-            session_id,
-            error
-        );
+        log::error!("[inject] PTY write FAILED session={session_id}: {error}");
         error
     })?;
-    log::info!(
-        "[inject] PTY write OK session={} bytes={}",
-        session_id,
-        text_bytes
-    );
+    log::info!("[inject] PTY write OK session={session_id} bytes={text_bytes}");
     Ok(())
 }
 
@@ -906,22 +885,18 @@ async fn submit_injected_enters(
 ) -> Result<(), String> {
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     observe_submit_seam(pty_manager, session_id, "T0", settle, text, watch)?;
-    log::info!("[inject] sending Enter (1/2) for session {}", session_id);
+    log::info!("[inject] sending Enter (1/2) for session {session_id}");
     PtyManager::write_with_permit(permit, b"\r")
-        .map_err(|error| format!("PTY Enter (1/2) write failed: {}", error))?;
+        .map_err(|error| format!("PTY Enter (1/2) write failed: {error}"))?;
 
     if let Some(watch) = watch {
         watch.submitted();
     }
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     observe_submit_seam(pty_manager, session_id, "T1", settle, text, watch)?;
-    log::info!("[inject] sending Enter (2/2) for session {}", session_id);
+    log::info!("[inject] sending Enter (2/2) for session {session_id}");
     if let Err(error) = PtyManager::write_with_permit(permit, b"\r") {
-        log::warn!(
-            "[inject] Enter (2/2) failed for session {} (non-fatal): {}",
-            session_id,
-            error
-        );
+        log::warn!("[inject] Enter (2/2) failed for session {session_id} (non-fatal): {error}");
     }
 
     // #2586 D2 - T2: one added wait after the second Enter, observation only.

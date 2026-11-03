@@ -109,7 +109,7 @@ impl CacheLock {
                 e
             )
         })?;
-        let path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
+        let path = config_dir.join(format!("{AGENCY_TEMPLATES_DIR}.lock"));
         loop {
             match create_agency_lock(&path) {
                 Ok(mut file) => {
@@ -124,7 +124,7 @@ impl CacheLock {
                     write_agency_lock(
                         &mut file,
                         &serde_json::to_string(&info)
-                            .map_err(|e| format!("Failed to encode Agency cache lock: {}", e))?,
+                            .map_err(|e| format!("Failed to encode Agency cache lock: {e}"))?,
                     )
                     .map_err(|e| {
                         format!(
@@ -174,7 +174,7 @@ fn recover_stale_lock_if_possible(config_dir: &Path, path: &Path) -> Result<bool
     let raw = read_agency_text(path).unwrap_or_default();
     let pid = serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
-        .and_then(|value| value.get("pid").and_then(|pid| pid.as_u64()))
+        .and_then(|value| value.get("pid").and_then(serde_json::Value::as_u64))
         .and_then(|pid| u32::try_from(pid).ok());
     let stale = match pid {
         Some(pid) => !process_is_running(pid),
@@ -204,7 +204,7 @@ fn live_missing_with_one_valid_previous_cache(config_dir: &Path) -> bool {
     let mut valid_prev = 0usize;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&format!("{}.prev-", AGENCY_TEMPLATES_DIR))
+        if name.starts_with(&format!("{AGENCY_TEMPLATES_DIR}.prev-"))
             && collect_agency_templates_from_dir(&entry.path()).is_ok()
         {
             valid_prev += 1;
@@ -273,8 +273,7 @@ pub(crate) fn list_cache_at(
         Err(e) if e.contains("already running") => {
             return Err(format!(
                 "Agency template cache is locked; run agency-templates status \
-                 and retry after the updater finishes ({})",
-                e
+                 and retry after the updater finishes ({e})"
             ));
         }
         Err(e) => return Err(e),
@@ -334,12 +333,12 @@ pub fn update_cache_at(
         },
     )?;
     let templates = collect_agency_templates_from_dir(staging.path())
-        .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
+        .map_err(|e| format!("Staged Agency cache failed validation: {e}"))?;
     let mut manifest = read_staged_agency_manifest(staging.path())?;
     manifest.template_count = templates.len();
     write_staged_agency_manifest(staging.path(), &manifest)?;
     collect_agency_templates_from_dir(staging.path())
-        .map_err(|e| format!("Staged Agency cache failed validation: {}", e))?;
+        .map_err(|e| format!("Staged Agency cache failed validation: {e}"))?;
 
     publish_staging(config_dir, staging.path())?;
     cleanup_publish_residue(config_dir);
@@ -388,16 +387,16 @@ pub(crate) fn normalize_extracted_repo_to_cache(
 ) -> Result<(), String> {
     if agency_path_exists(staging) {
         remove_agency_tree(staging)
-            .map_err(|e| format!("Failed to remove existing staging dir: {}", e))?;
+            .map_err(|e| format!("Failed to remove existing staging dir: {e}"))?;
     }
     ensure_agency_directory(staging)
         .map_err(|e| format!("Failed to create staging dir {}: {}", staging.display(), e))?;
     let mut ids = std::collections::HashSet::new();
     let mut paths_ci = std::collections::HashSet::new();
     for division in agency_entries(extracted_root)
-        .map_err(|e| format!("Failed to read extracted Agency repo: {}", e))?
+        .map_err(|e| format!("Failed to read extracted Agency repo: {e}"))?
     {
-        let division = division.map_err(|e| format!("Failed to read Agency division: {}", e))?;
+        let division = division.map_err(|e| format!("Failed to read Agency division: {e}"))?;
         let division_name = division.file_name().to_string_lossy().to_string();
         if should_skip_upstream_division(&division_name) {
             continue;
@@ -408,8 +407,7 @@ pub(crate) fn normalize_extracted_repo_to_cache(
                 continue;
             }
             return Err(format!(
-                "Agency division {} is not a regular directory",
-                division_name
+                "Agency division {division_name} is not a regular directory"
             ));
         }
         let division_slug = slug_segment(&division_name)?;
@@ -428,7 +426,7 @@ pub(crate) fn normalize_extracted_repo_to_cache(
     }
     write_normalized_agency_manifest(staging, &manifest)?;
     collect_agency_templates_from_dir(staging)
-        .map_err(|e| format!("Normalized Agency cache failed validation: {}", e))?;
+        .map_err(|e| format!("Normalized Agency cache failed validation: {e}"))?;
     Ok(())
 }
 
@@ -447,7 +445,7 @@ fn normalize_agency_role_tree(
             e
         )
     })? {
-        let entry = entry.map_err(|e| format!("Failed to read Agency role entry: {}", e))?;
+        let entry = entry.map_err(|e| format!("Failed to read Agency role entry: {e}"))?;
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
         if matches!(file_name.as_str(), "CLAUDE.md" | "AGENTS.md") {
@@ -499,7 +497,7 @@ fn normalize_agency_role_file(
 ) -> Result<(), String> {
     let relative = path
         .strip_prefix(division_root)
-        .map_err(|e| format!("Failed to relativize Agency role file: {}", e))?;
+        .map_err(|e| format!("Failed to relativize Agency role file: {e}"))?;
     let mut slug_parts = Vec::new();
     for component in relative.components() {
         let value = component
@@ -523,18 +521,14 @@ fn normalize_agency_role_file(
         ));
     }
     let role_slug = slug_parts.join("-");
-    let id = format!("agency:{}-{}", division_slug, role_slug);
+    let id = format!("agency:{division_slug}-{role_slug}");
     if !ids.insert(id.clone()) {
-        return Err(format!(
-            "Duplicate Agency template id after slugging: {}",
-            id
-        ));
+        return Err(format!("Duplicate Agency template id after slugging: {id}"));
     }
-    let path_key = format!("{}\\{}", division_slug, role_slug).to_ascii_lowercase();
+    let path_key = format!("{division_slug}\\{role_slug}").to_ascii_lowercase();
     if !paths_ci.insert(path_key) {
         return Err(format!(
-            "Duplicate Agency template output path after slugging: {}/{}",
-            division_slug, role_slug
+            "Duplicate Agency template output path after slugging: {division_slug}/{role_slug}"
         ));
     }
     let raw = read_agency_text(path)
@@ -561,10 +555,10 @@ fn normalize_agency_role_file(
     let role_path = staging.join(division_slug).join(&role_slug).join("Role.md");
     if let Some(parent) = role_path.parent() {
         ensure_agency_directory(parent)
-            .map_err(|e| format!("Failed to create normalized role dir: {}", e))?;
+            .map_err(|e| format!("Failed to create normalized role dir: {e}"))?;
     }
     write_agency_text(&role_path, &normalized)
-        .map_err(|e| format!("Failed to write normalized Role.md: {}", e))?;
+        .map_err(|e| format!("Failed to write normalized Role.md: {e}"))?;
     Ok(())
 }
 
@@ -611,7 +605,7 @@ fn should_skip_upstream_division(name: &str) -> bool {
 
 fn yaml_scalar(value: &str) -> String {
     serde_yaml::to_string(value)
-        .unwrap_or_else(|_| format!("{:?}", value))
+        .unwrap_or_else(|_| format!("{value:?}"))
         .trim()
         .trim_start_matches("---")
         .trim()
@@ -642,12 +636,12 @@ fn publish_staging(config_dir: &Path, staging: &Path) -> Result<(), String> {
         if had_live {
             if let Err(rollback_err) = rename_agency_path(&previous, &live) {
                 return Err(format!(
-                    "Failed to publish Agency cache: {}; rollback also failed: {}",
-                    publish_err, rollback_err
+                    "Failed to publish Agency cache: {publish_err}; \
+                     rollback also failed: {rollback_err}"
                 ));
             }
         }
-        return Err(format!("Failed to publish Agency cache: {}", publish_err));
+        return Err(format!("Failed to publish Agency cache: {publish_err}"));
     }
     if had_live {
         let _ = remove_agency_tree(&previous);
@@ -663,11 +657,11 @@ fn recover_interrupted_publish(config_dir: &Path) -> Result<String, String> {
     }
     let mut valid_prev = Vec::new();
     for entry in
-        agency_entries(config_dir).map_err(|e| format!("Failed to read config dir: {}", e))?
+        agency_entries(config_dir).map_err(|e| format!("Failed to read config dir: {e}"))?
     {
-        let entry = entry.map_err(|e| format!("Failed to read config dir entry: {}", e))?;
+        let entry = entry.map_err(|e| format!("Failed to read config dir entry: {e}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&format!("{}.prev-", AGENCY_TEMPLATES_DIR))
+        if name.starts_with(&format!("{AGENCY_TEMPLATES_DIR}.prev-"))
             && collect_agency_templates_from_dir(&entry.path()).is_ok()
         {
             valid_prev.push(entry.path());
@@ -694,10 +688,10 @@ fn cleanup_publish_residue(config_dir: &Path) {
     if let Ok(entries) = agency_entries(config_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&format!("{}.next-", AGENCY_TEMPLATES_DIR))
-                || name.starts_with(&format!("{}.download-", AGENCY_TEMPLATES_DIR))
+            if name.starts_with(&format!("{AGENCY_TEMPLATES_DIR}.next-"))
+                || name.starts_with(&format!("{AGENCY_TEMPLATES_DIR}.download-"))
                 || (agency_path_exists(&agency_templates_dir(config_dir))
-                    && name.starts_with(&format!("{}.prev-", AGENCY_TEMPLATES_DIR)))
+                    && name.starts_with(&format!("{AGENCY_TEMPLATES_DIR}.prev-")))
             {
                 let _ = remove_agency_tree(&entry.path());
             }

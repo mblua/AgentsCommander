@@ -32,11 +32,9 @@ pub(super) struct ResponseCloseInner {
     pub(in crate::pty) diagnostic_poll_modulo: u8,
     pub(in crate::pty) diagnostic_poll_initialized: bool,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) ready: bool,
     pub(in crate::pty) publishers: u8,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) work_bootstrapped: bool,
     pub(in crate::pty) enabled: bool,
     pub(in crate::pty) seconds: u32,
@@ -44,17 +42,13 @@ pub(super) struct ResponseCloseInner {
     pub(in crate::pty) failed: bool,
     pub(in crate::pty) routes: HashMap<Uuid, ResponseCloseRoute>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) work: HashMap<String, ResponseCloseWork>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) create_owners: HashMap<String, HashMap<Uuid, bool>>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) next_return_sequence: u64,
     pub(in crate::pty) unknown_spawns: usize,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) terminal_returns:
         HashMap<(ResponseRouteIdentity, ResponseRouteIdentity, String), String>,
 }
@@ -62,16 +56,12 @@ pub(super) struct ResponseCloseInner {
 #[derive(Default)]
 pub(super) struct ResponseCloseWork {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) provisional: usize,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) dispatch: usize,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) pending: HashMap<String, String>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) terminal: HashMap<String, String>,
 }
 
@@ -88,34 +78,25 @@ pub(crate) struct ResponseRouteIdentity {
 #[derive(Clone)]
 pub(super) struct ResponseClosePolicy {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) nonce: Uuid,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) member: ResponseRouteIdentity,
     pub(in crate::pty) coordinator: ResponseRouteIdentity,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) work_epoch: u64,
     pub(in crate::pty) settings_epoch: u64,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) request_key: String,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) request_digest: String,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) opened_at: std::time::Instant,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) submitted: bool,
     pub(in crate::pty) registered_at: Option<std::time::Instant>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) success_at: Option<std::time::Instant>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) returns: HashMap<String, (String, u64)>,
     pub(in crate::pty) selected: Option<Uuid>,
 }
@@ -141,10 +122,8 @@ pub(super) struct ResponseCloseRoute {
     pub(in crate::pty) policy: Option<ResponseClosePolicy>,
     pub(in crate::pty) closing: Option<Uuid>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) closing_target: Option<String>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) committed_binding: Option<ResponseCloseCommittedBinding>,
 }
 
@@ -234,13 +213,11 @@ pub(crate) enum ResponseCloseError {
     ClosingDeferred,
     Unknown,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     Conflict,
     Unavailable,
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct WorkAdmission {
     pub(in crate::pty) state: ResponseCloseState,
     pub(in crate::pty) target: String,
@@ -249,7 +226,6 @@ pub(crate) struct WorkAdmission {
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct WorkDeliveryReservation {
     pub(in crate::pty) state: ResponseCloseState,
     pub(in crate::pty) target: String,
@@ -263,11 +239,11 @@ pub(crate) struct WriterAdmission {
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct CreateOwnerReservation {
     pub(in crate::pty) state: ResponseCloseState,
     pub(in crate::pty) target: String,
     pub(in crate::pty) nonce: Uuid,
+    #[allow(dead_code)] // Read only by tests; constructed outside this file (#3550).
     pub(in crate::pty) classification: CreateClassification,
 }
 
@@ -275,37 +251,34 @@ pub(crate) struct CreateOwnerReservation {
 /// A reservation records ownership; it does not prove protection or identity.
 #[derive(Clone)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) enum CreateClassification {
     Foreign {
+        #[allow(dead_code)] // Constructed outside this file (#3550).
         publication_epoch: u64,
     },
     Protected {
         identity: ResponseRouteIdentity,
-        // Dormant until P05 integration; remove with real callers.
-        #[allow(dead_code)]
+        #[allow(dead_code)] // Constructed outside this file (#3550).
         publication_epoch: u64,
     },
     Preparing {
         owner_nonce: Uuid,
         identity: ResponseRouteIdentity,
-        // Dormant until P05 integration; remove with real callers.
-        #[allow(dead_code)]
+        #[allow(dead_code)] // Constructed outside this file (#3550).
         publication_epoch: u64,
     },
+    #[allow(dead_code)] // Matched in response_close/admission.rs; built only by tests (#3550).
     Unknown,
 }
 
 impl CreateOwnerReservation {
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn classification(&self) -> &CreateClassification {
         &self.classification
     }
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) enum CreateAdmission {
     Reserved(CreateOwnerReservation),
     ClosingDeferred,
@@ -314,14 +287,12 @@ pub(crate) enum CreateAdmission {
 
 #[derive(Clone)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ResponseDeliveryContext {
     pub(in crate::pty) session_id: Uuid,
     pub(in crate::pty) nonce: Uuid,
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ResponseDeliveryProof {
     pub context: ResponseDeliveryContext,
     pub member: ResponseRouteIdentity,
@@ -331,7 +302,6 @@ pub(crate) struct ResponseDeliveryProof {
 
 #[derive(Clone)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ReturnObservationContext {
     pub(in crate::pty) settings_epoch: u64,
     pub(in crate::pty) sequence: u64,
@@ -345,14 +315,12 @@ pub(crate) struct ReturnObservationContext {
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ReturnDeliveryProof {
     pub context: ReturnObservationContext,
 }
 
 #[derive(Clone)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ResponseCloseTicket {
     pub(in crate::pty) session_id: Uuid,
     pub(in crate::pty) generation: u64,
@@ -379,7 +347,6 @@ impl ResponseCloseTicket {
     }
 
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn committed_binding(&self) -> ResponseCloseCommittedBinding {
         ResponseCloseCommittedBinding {
             member: self.member.clone(),
@@ -391,7 +358,6 @@ impl ResponseCloseTicket {
 /// These are owned facts from P05's latest guarded manager/Confirmed checkpoint
 /// validation. P03 never performs I/O or imports its publication/effect types.
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ResponseCloseCurrentSettlement {
     pub current_carrier_version: u64,
     pub confirmed_carrier_version: u64,
@@ -402,7 +368,6 @@ pub(crate) struct ResponseCloseCurrentSettlement {
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) enum ResponseCloseSettlementOutcome {
     Dormant {
         exact_backend_absent: bool,
@@ -419,7 +384,6 @@ pub(crate) enum ResponseCloseSettlementOutcome {
 }
 
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct ResponseCloseSettlementEvidence {
     pub committed_binding: ResponseCloseCommittedBinding,
     pub current_settlement: ResponseCloseCurrentSettlement,
@@ -428,7 +392,6 @@ pub(crate) struct ResponseCloseSettlementEvidence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct StaleOrInvalidSettlement;
 
 impl ResponseCloseInner {
@@ -448,7 +411,6 @@ impl ResponseCloseState {
             .unwrap_or(false)
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn mark_work_bootstrapped(&self) {
         let _ = self.with_inner(|inner| inner.work_bootstrapped = true);
     }
