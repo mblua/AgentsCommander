@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    attach_persisted_telegram_if_configured, collect_restart_resume_target, commands,
+    restore_session_should_become_active, session_spawn_recipe, session_wake_decision,
+    sessions_persistence, skip_auto_resume_for_restore, RestoreContext, RestoreProgress,
+};
 
 impl RestoreContext {
     pub(super) async fn restore_session(
