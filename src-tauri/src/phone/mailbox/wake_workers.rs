@@ -550,13 +550,7 @@ impl MailboxPoller {
             Self::maintain_pty_input_runtime(&state).await;
         }
         let settings = app.state::<SettingsState>();
-        let (repo_paths, archived) = {
-            let cfg = settings.read().await;
-            (
-                cfg.project_paths.clone(),
-                cfg.archived_project_paths.clone(),
-            )
-        };
+        let (repo_paths, archived) = Self::poll_project_paths(&settings).await;
 
         // Also scan CWDs of active sessions for repos not in settings
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -657,10 +651,38 @@ impl MailboxPoller {
             }
         }
 
+        self.finish_poll_cycle(cycle_started, scan_dirs.len(), messages_processed);
+
+        // Poll project-refresh-requests directory from create-agent-matrix CLI.
+        self.poll_project_refresh_requests(app).await;
+
+        // Poll session-requests directory (from create-agent CLI)
+        self.poll_session_requests(app).await;
+
+        // #786: poll coding-agent-requests (from `coding-agent` CLI mutations).
+        self.poll_coding_agent_requests(app).await;
+
+        Ok(())
+    }
+
+    async fn poll_project_paths(settings: &SettingsState) -> (Vec<String>, Vec<String>) {
+        let cfg = settings.read().await;
+        (
+            cfg.project_paths.clone(),
+            cfg.archived_project_paths.clone(),
+        )
+    }
+
+    fn finish_poll_cycle(
+        &mut self,
+        cycle_started: std::time::Instant,
+        outboxes: usize,
+        messages_processed: usize,
+    ) {
         log::info!(
             "[mailbox] poll cycle done elapsed_ms={} outboxes={} messages={}",
             cycle_started.elapsed().as_millis(),
-            scan_dirs.len(),
+            outboxes,
             messages_processed
         );
 
@@ -675,17 +697,6 @@ impl MailboxPoller {
             #[cfg(test)]
             None,
         );
-
-        // Poll project-refresh-requests directory from create-agent-matrix CLI.
-        self.poll_project_refresh_requests(app).await;
-
-        // Poll session-requests directory (from create-agent CLI)
-        self.poll_session_requests(app).await;
-
-        // #786: poll coding-agent-requests (from `coding-agent` CLI mutations).
-        self.poll_coding_agent_requests(app).await;
-
-        Ok(())
     }
 
     fn classify_polled_document(

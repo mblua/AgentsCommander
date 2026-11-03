@@ -536,7 +536,7 @@ impl MailboxPoller {
             Option<&crate::session::selection::OwnedReplacementContinuation>,
         ),
     ) -> Result<(), String> {
-        let (response, owned_replacement) = context;
+        let (_, owned_replacement) = context;
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
         // Logical actions precede standard message handling.
