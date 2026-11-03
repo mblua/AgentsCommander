@@ -27,7 +27,7 @@ pub(crate) async fn internal_dirs(
 pub(crate) async fn ensure_snapshot_directory(dir: &Path) -> Result<(), String> {
     filesystem::create_spec_directory(dir)
         .await
-        .map_err(|e| format!("Failed to create snapshot directory: {}", e))
+        .map_err(|e| format!("Failed to create snapshot directory: {e}"))
 }
 
 pub(crate) async fn initialize_document_dirs(
@@ -38,7 +38,7 @@ pub(crate) async fn initialize_document_dirs(
     ensure_snapshot_directory(&snapshot_dir).await?;
     filesystem::create_spec_directory(&draft_dir)
         .await
-        .map_err(|e| format!("Failed to create draft directory: {}", e))?;
+        .map_err(|e| format!("Failed to create draft directory: {e}"))?;
     Ok((snapshot_dir, draft_dir))
 }
 
@@ -46,23 +46,22 @@ pub(crate) async fn prepare_default_spec_directory(repo: &Path) -> Result<PathBu
     let default_dir = repo.join("specs").join("mermaids");
     filesystem::create_spec_directory(&default_dir)
         .await
-        .map_err(|e| format!("Failed to create default spec directory: {}", e))?;
+        .map_err(|e| format!("Failed to create default spec directory: {e}"))?;
     Ok(default_dir)
 }
 
 pub(crate) async fn read_open_spec(path: &Path) -> Result<String, String> {
     let metadata = filesystem::spec_path_metadata(path)
         .await
-        .map_err(|e| format!("Failed to inspect spec file: {}", e))?;
+        .map_err(|e| format!("Failed to inspect spec file: {e}"))?;
     if metadata.len() > MAX_FILE_BYTES {
         return Err(format!(
-            "Spec file is too large. Maximum size is {} bytes.",
-            MAX_FILE_BYTES
+            "Spec file is too large. Maximum size is {MAX_FILE_BYTES} bytes."
         ));
     }
     let bytes = filesystem::read_spec_bytes(path)
         .await
-        .map_err(|e| format!("Failed to read spec file: {}", e))?;
+        .map_err(|e| format!("Failed to read spec file: {e}"))?;
     let content =
         String::from_utf8(bytes).map_err(|_| "Spec file must be valid UTF-8".to_string())?;
     Ok(content)
@@ -71,7 +70,7 @@ pub(crate) async fn read_open_spec(path: &Path) -> Result<String, String> {
 pub(crate) async fn read_saved_spec(path: &Path) -> Result<String, String> {
     let final_bytes = filesystem::read_spec_bytes(path)
         .await
-        .map_err(|e| format!("Failed to read saved spec file: {}", e))?;
+        .map_err(|e| format!("Failed to read saved spec file: {e}"))?;
     String::from_utf8(final_bytes).map_err(|_| "Saved spec file is not UTF-8".to_string())
 }
 
@@ -83,7 +82,7 @@ pub(crate) async fn save_spec_content(path: &Path, content: &str) -> Result<(), 
     if let Some(parent) = path.parent() {
         filesystem::create_spec_directory(parent)
             .await
-            .map_err(|e| format!("Failed to create spec directory: {}", e))?;
+            .map_err(|e| format!("Failed to create spec directory: {e}"))?;
     }
     atomic_write_utf8(path, content).await
 }
@@ -101,7 +100,7 @@ pub(crate) async fn atomic_write_utf8(path: &Path, content: &str) -> Result<(), 
     ));
     filesystem::write_spec_stage(&temp, content)
         .await
-        .map_err(|e| format!("Failed to write temporary spec file: {}", e))?;
+        .map_err(|e| format!("Failed to write temporary spec file: {e}"))?;
     commit_temp_file(&temp, path, "spec file").await?;
     Ok(())
 }
@@ -109,7 +108,7 @@ pub(crate) async fn atomic_write_utf8(path: &Path, content: &str) -> Result<(), 
 async fn commit_temp_file(temp: &Path, target: &Path, label: &str) -> Result<(), String> {
     filesystem::commit_spec_stage(temp, target)
         .await
-        .map_err(|e| format!("Failed to commit {}: {}", label, e))
+        .map_err(|e| format!("Failed to commit {label}: {e}"))
 }
 
 pub(crate) async fn metadata_fingerprint(
@@ -117,7 +116,7 @@ pub(crate) async fn metadata_fingerprint(
 ) -> Result<(u64, Option<std::time::SystemTime>), String> {
     let meta = filesystem::spec_path_metadata(path)
         .await
-        .map_err(|e| format!("Failed to inspect watched file: {}", e))?;
+        .map_err(|e| format!("Failed to inspect watched file: {e}"))?;
     Ok((meta.len(), meta.modified().ok()))
 }
 
@@ -137,10 +136,10 @@ pub(crate) async fn write_snapshot_atomic(
         uuid::Uuid::new_v4()
     ));
     let bytes = serde_json::to_vec_pretty(snapshot)
-        .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+        .map_err(|e| format!("Failed to serialize snapshot: {e}"))?;
     filesystem::write_spec_stage(&temp, bytes)
         .await
-        .map_err(|e| format!("Failed to write snapshot: {}", e))?;
+        .map_err(|e| format!("Failed to write snapshot: {e}"))?;
     commit_temp_file(&temp, &target, "snapshot").await?;
     Ok(())
 }
@@ -191,8 +190,7 @@ pub(crate) async fn read_snapshot_files(dir: &Path) -> Result<Vec<SnapshotFile>,
     if corrupt > 0 {
         log::warn!(
             target: "agentscommander_lib::commands::spec_board::snapshots",
-            "[spec-board] skipped {} corrupt snapshot(s)",
-            corrupt
+            "[spec-board] skipped {corrupt} corrupt snapshot(s)"
         );
     }
     files.sort_by_key(|s| (s.created_at_ms, s.sequence));
