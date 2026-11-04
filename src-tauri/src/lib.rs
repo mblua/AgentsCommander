@@ -124,6 +124,8 @@ pub(crate) use co_managed::{
     co_managed_candidate_label, utf8_safe_excerpt, CO_MANAGED_EXCERPT_BYTES,
 };
 #[cfg(test)]
+pub(crate) use config::settings::INSTANCE_FAMILIES_RENAMES;
+#[cfg(test)]
 use pty::agent_quota::source::SourceSpec;
 #[cfg(test)]
 use pty::agent_quota::{AgentQuotaSource, QuotaSourceProvider};
@@ -140,7 +142,7 @@ pub(crate) use restore::{should_wake_on_restore, should_wake_working_agent_on_re
 #[cfg(test)]
 pub(crate) use startup::{
     preflight_config_startup_for, preflight_config_startup_in, take_naming_migration_summary,
-    StartupErrorKind, INSTANCE_FAMILIES_RENAMES,
+    StartupErrorKind,
 };
 
 /// Snapshot scanner terminality is deliberately not an input here.

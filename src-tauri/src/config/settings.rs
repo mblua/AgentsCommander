@@ -3,11 +3,16 @@ mod app_defaults;
 mod field;
 mod instance;
 mod load;
+mod naming;
 mod overlay;
 mod owner;
 pub(crate) mod project_path;
 mod save;
 mod source;
+
+#[cfg(test)]
+pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
+pub(crate) use naming::{migrate_instance_settings_families, SettingsNamingError};
 
 #[cfg(test)]
 use super::projects;
