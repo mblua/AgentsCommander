@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-/// A real ConPTY, with no child. `LocalProcessBackend` itself cannot be built here (its
+/// A real `ConPTY`, with no child. `LocalProcessBackend` itself cannot be built here (its
 /// `GitWatcher` needs a Tauri `AppHandle`), and it does not need to be: `PtyBackend::resize`
 /// is a four-line wrapper - lock, delegate to `resize_instance`, broadcast - and
 /// `resize_instance` is the whole of the decision.
@@ -46,7 +46,7 @@ fn size_the_child_sees(master: &Arc<Mutex<Box<dyn MasterPty + Send>>>) -> (u16, 
 /// resize burst 300-500 ms later - straight into the startup window of the first coding
 /// agent the user launches. **Option A cannot cover this. This is what covers it.**
 ///
-/// Red without the gate: the resize reaches the ConPTY immediately, and the child is
+/// Red without the gate: the resize reaches the `ConPTY` immediately, and the child is
 /// resized while it is still coming up, which is what costs Codex its first content
 /// render (measured: 8 blanks in 10).
 #[test]
@@ -125,7 +125,7 @@ fn once_the_child_has_rendered_resizes_go_straight_through() {
     );
 }
 
-/// #973 (C) - a resize that changes nothing must not be sent. ConPTY hands even a
+/// #973 (C) - a resize that changes nothing must not be sent. `ConPTY` hands even a
 /// same-size resize to the child as a real event, and the view fires 5-20 of them.
 #[test]
 fn a_resize_that_changes_nothing_is_not_sent() {
@@ -149,7 +149,7 @@ fn a_resize_that_changes_nothing_is_not_sent() {
 /// which is the entire point of it. The guard used to sit in `send_size_to_conpty`, PAST
 /// the gate, so nothing checked a size on its way IN: the gate took the `0x0` last-wins
 /// over the real `74x23`, the hand-over popped it, `send_size_to_conpty` refused it, and
-/// the pending slot was consumed and gone. **Nothing retries.** The ConPTY then stays at
+/// the pending slot was consumed and gone. **Nothing retries.** The `ConPTY` then stays at
 /// the size it was OPENED at, for good - on cold start, a 120x30 child behind a 74x23
 /// terminal, until the user drags the window.
 ///
@@ -193,10 +193,10 @@ fn a_degenerate_resize_cannot_evict_the_size_held_for_the_child() {
 /// makes no claim about the gate.
 ///
 /// It caught a real one. I had assumed portable-pty would reject `0x0`. **It does not**:
-/// `master.resize(0x0)` returns Ok and the ConPTY is genuinely set to zero, so before the
+/// `master.resize(0x0)` returns Ok and the `ConPTY` is genuinely set to zero, so before the
 /// guard this failed with `left: (0, 0)`.
 ///
-/// The cache matters as much as the refusal: if a size the ConPTY never took were
+/// The cache matters as much as the refusal: if a size the `ConPTY` never took were
 /// cached, every retry would be skipped as a no-op and the terminal would be wedged at
 /// the wrong size forever.
 #[test]

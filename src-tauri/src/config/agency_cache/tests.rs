@@ -174,9 +174,9 @@ fn normalize_rejects_symlinked_upstream_md_role_file() {
 fn legacy_stale_lock_with_missing_live_cache_recovers_one_valid_previous_cache() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_dir = tmp.path();
-    let prev = config_dir.join(format!("{}.prev-one", AGENCY_TEMPLATES_DIR));
+    let prev = config_dir.join(format!("{AGENCY_TEMPLATES_DIR}.prev-one"));
     write_valid_cache(&prev);
-    let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
+    let lock_path = config_dir.join(format!("{AGENCY_TEMPLATES_DIR}.lock"));
     fs::write(&lock_path, "").expect("write legacy stale lock");
 
     let lock = CacheLock::acquire(config_dir).expect("recover stale lock");
@@ -195,14 +195,14 @@ fn legacy_stale_lock_with_missing_live_cache_recovers_one_valid_previous_cache()
 fn dead_owner_lock_is_replaced() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_dir = tmp.path();
-    let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
+    let lock_path = config_dir.join(format!("{AGENCY_TEMPLATES_DIR}.lock"));
     let dead_pid = 999_999;
     if process_is_running(dead_pid) {
         return;
     }
     fs::write(
         &lock_path,
-        format!(r#"{{"pid":{},"createdUnixSecs":1}}"#, dead_pid),
+        format!(r#"{{"pid":{dead_pid},"createdUnixSecs":1}}"#),
     )
     .expect("write dead-owner lock");
 
@@ -217,7 +217,7 @@ fn dead_owner_lock_is_replaced() {
 fn status_cache_at_recovers_valid_previous_cache() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_dir = tmp.path();
-    let prev = config_dir.join(format!("{}.prev-one", AGENCY_TEMPLATES_DIR));
+    let prev = config_dir.join(format!("{AGENCY_TEMPLATES_DIR}.prev-one"));
     write_valid_cache(&prev);
 
     let status = status_cache_at(config_dir).expect("status recovers previous cache");
@@ -232,7 +232,7 @@ fn status_cache_at_recovers_valid_previous_cache() {
 fn status_cache_at_reports_live_lock_as_locked() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_dir = tmp.path();
-    let lock_path = config_dir.join(format!("{}.lock", AGENCY_TEMPLATES_DIR));
+    let lock_path = config_dir.join(format!("{AGENCY_TEMPLATES_DIR}.lock"));
     fs::write(
         &lock_path,
         format!(r#"{{"pid":{},"createdUnixSecs":1}}"#, process::id()),

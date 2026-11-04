@@ -33,7 +33,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -209,8 +209,7 @@ fn task_set_title_audit_line_reaches_file_sink() {
     let task_contents = std::fs::read_to_string(&task_path).expect("read TASK.md");
     assert!(
         task_contents.contains("title: 'cli-logger smoke title'"),
-        "unexpected TASK.md contents:\n{}",
-        task_contents
+        "unexpected TASK.md contents:\n{task_contents}"
     );
     assert!(task_contents.contains("# Old title\n\nOriginal body"));
     assert_eq!(
@@ -273,13 +272,11 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
     let task_contents = std::fs::read_to_string(&task_path).expect("read TASK.md");
     assert!(
         task_contents.starts_with("# Existing title\n\nOriginal body"),
-        "unexpected TASK.md prefix:\n{}",
-        task_contents
+        "unexpected TASK.md prefix:\n{task_contents}"
     );
     assert!(
         task_contents.contains("Appended body from subprocess"),
-        "TASK.md did not contain appended body:\n{}",
-        task_contents
+        "TASK.md did not contain appended body:\n{task_contents}"
     );
     assert_eq!(
         std::fs::read_to_string(&outside_sentinel).expect("read outside sentinel"),
