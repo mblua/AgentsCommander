@@ -220,7 +220,7 @@ pub fn start<H: WatchdogHost>(app: H, state: NonStopWatchdogState, shutdown: Shu
         let mut interval = tokio::time::interval(TICK_INTERVAL);
         loop {
             tokio::select! {
-                _ = shutdown.token().cancelled() => break,
+                () = shutdown.token().cancelled() => break,
                 _ = interval.tick() => tick(&app, &state).await,
             }
         }

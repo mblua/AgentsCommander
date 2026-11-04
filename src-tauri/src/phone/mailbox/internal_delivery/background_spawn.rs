@@ -13,7 +13,7 @@ where
     tokio::pin!(spawn);
     let spawn_result = tokio::select! {
         biased;
-        _ = cancellation.cancelled() => {
+        () = cancellation.cancelled() => {
             return Err(
                 "Context alert delivery was canceled during background spawn".to_string(),
             );

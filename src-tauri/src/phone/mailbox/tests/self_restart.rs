@@ -704,17 +704,15 @@ async fn self_restart_driver_inject_failure_renames_handoff_back() {
         "restart resume notes",
         "a failed prompt inject must rename the archived handoff back to the root"
     );
-    let leftovers = std::fs::read_dir(temp.path().join("self-clear"))
-        .map(|rd| {
-            rd.filter_map(std::result::Result::ok)
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .ends_with("_SELF-HANDOFF.md")
-                })
-                .count()
-        })
-        .unwrap_or(0);
+    let leftovers = std::fs::read_dir(temp.path().join("self-clear")).map_or(0, |rd| {
+        rd.filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .ends_with("_SELF-HANDOFF.md")
+            })
+            .count()
+    });
     assert_eq!(
         leftovers, 0,
         "no archived handoff may remain under self-clear/"
@@ -786,8 +784,7 @@ async fn self_switch_driver_flavor_preserves_switch_prompt() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.file_name()
-                .map(|n| n.to_string_lossy().ends_with("_SELF-HANDOFF.md"))
-                .unwrap_or(false)
+                .is_some_and(|n| n.to_string_lossy().ends_with("_SELF-HANDOFF.md"))
         })
         .collect();
     assert_eq!(archived.len(), 1);
