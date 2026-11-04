@@ -112,7 +112,7 @@ fn ensure_seeded_instance_leaves_a_corrupt_instance_file_untouched() {
 
 /// AC-5: a MANAGED instance base must not be imported as legacy territory
 /// by a later project; the project gets a fresh managed base instead of
-/// MIGRATION_CONFLICT. This drives the same production initialization path
+/// `MIGRATION_CONFLICT`. This drives the same production initialization path
 /// that `ensure_seeded_for_project_with_token` uses, with the instance
 /// catalog dir injected explicitly because the process-global `config_dir()`
 /// has no test seam.

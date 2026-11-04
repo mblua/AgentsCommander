@@ -548,9 +548,9 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
 }
 
 /// #1271 - full create-path harness for the web dispatcher. `ws_state_for`
-/// lacks the SelectionCoordinator and the other states `create_session_inner`
+/// lacks the `SelectionCoordinator` and the other states `create_session_inner`
 /// requires, so the web-path invalid-input postcondition test builds them
-/// here, mirroring the pty_lifecycle harness (plan Finding F).
+/// here, mirroring the `pty_lifecycle` harness (plan Finding F).
 #[cfg(windows)]
 fn ws_state_for_1271(
     settings: AppSettings,

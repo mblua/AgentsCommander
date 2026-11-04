@@ -57,7 +57,10 @@ fn response_close_ordinary_ack_requires_full_interval_and_raw_output_revokes_tic
             state.begin_delivery(&member.target),
             Err(ResponseCloseError::ClosingDeferred)
         ));
-        let inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = state
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(inner.work[&member.target].pending["after-commit"], "body");
         assert_eq!(inner.routes[&member.session_id].closing, Some(nonce));
         assert_eq!(inner.failed, matches!(fault, "failed" | "poison"));

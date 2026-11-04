@@ -108,7 +108,7 @@ async fn client_cannot_forge_backend_lifecycle_broadcasts() {
 }
 
 /// #973 - `pty_resize` is network-facing, and the old `as u16` cast SILENTLY TRUNCATED.
-/// `cols: 65536` reached the PTY as **0** and `cols: 65537` as **1**: a zero-column ConPTY
+/// `cols: 65536` reached the PTY as **0** and `cols: 65537` as **1**: a zero-column `ConPTY`
 /// (the very thing #973 exists to keep out) conjured from a number that looked fine on the
 /// wire. Rejected at the boundary now, exactly as serde rejects it for the Tauri command.
 #[test]
