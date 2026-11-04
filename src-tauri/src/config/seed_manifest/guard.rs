@@ -676,8 +676,8 @@ impl ProjectSeedManifestGuard {
         let write_result = temp
             .file
             .write_all(&bytes)
-            .and_then(|_| temp.file.flush())
-            .and_then(|_| temp.file.sync_all());
+            .and_then(|()| temp.file.flush())
+            .and_then(|()| temp.file.sync_all());
         if let Err(source) = write_result {
             self.cleanup_owned_temp(&temp, None);
             return Err(SeedManifestError::TempFile {

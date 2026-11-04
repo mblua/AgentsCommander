@@ -174,12 +174,10 @@ fn cleanup_failed_retirement_reservation(live_path: &Path, backup_path: &Path) {
     // custom source is a valid unknown file, so "the source disappeared" is never
     // proof that an empty destination is disposable.
     let source_intact = crate::filesystem::context_templates::inspect_template_source(live_path)
-        .map(|m| !is_link_or_reparse(&m) && m.is_file())
-        .unwrap_or(false);
+        .is_ok_and(|m| !is_link_or_reparse(&m) && m.is_file());
     let dest_is_reservation =
         crate::filesystem::context_templates::inspect_template_source(backup_path)
-            .map(|m| !is_link_or_reparse(&m) && m.is_file() && m.len() == 0)
-            .unwrap_or(false);
+            .is_ok_and(|m| !is_link_or_reparse(&m) && m.is_file() && m.len() == 0);
     if source_intact && dest_is_reservation {
         if let Err(cleanup_error) =
             crate::filesystem::context_templates::remove_template_entry(backup_path)

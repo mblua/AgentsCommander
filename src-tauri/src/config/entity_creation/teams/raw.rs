@@ -197,13 +197,11 @@ fn contains_whole_agent_token(raw: &str, token: &str) -> bool {
         let before_ok = haystack[..match_start]
             .chars()
             .next_back()
-            .map(|c| !is_agent_token_char(c))
-            .unwrap_or(true);
+            .is_none_or(|c| !is_agent_token_char(c));
         let after_ok = haystack[match_end..]
             .chars()
             .next()
-            .map(|c| !is_agent_token_char(c))
-            .unwrap_or(true);
+            .is_none_or(|c| !is_agent_token_char(c));
         if before_ok && after_ok {
             return true;
         }

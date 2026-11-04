@@ -42,8 +42,7 @@ pub fn find_ac_root_ancestor(path: &Path) -> Option<PathBuf> {
             ancestor
                 .file_name()
                 .and_then(|name| name.to_str())
-                .map(is_ac_root_name)
-                .unwrap_or(false)
+                .is_some_and(is_ac_root_name)
         })
         .map(Path::to_path_buf)
 }
@@ -157,8 +156,7 @@ pub fn wg_replica_layout_from_agent_dir(
     if !ac_root
         .file_name()
         .and_then(|name| name.to_str())
-        .map(is_ac_root_name)
-        .unwrap_or(false)
+        .is_some_and(is_ac_root_name)
     {
         return Ok(None);
     }

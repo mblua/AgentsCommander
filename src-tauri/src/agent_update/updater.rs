@@ -87,14 +87,14 @@ impl TargetOwnerSlot {
         let detail = if let Some(owner) = self.updater.as_mut() {
             let settlement = owner
                 .settle_observing_cancellation(&TargetWait::Cancelled, &mut lease.cancel, || {
-                    gate.owner_observed_cancellation(command, work, epoch)
+                    gate.owner_observed_cancellation(command, work, epoch);
                 })
                 .await;
             (!settlement.defects.is_empty()).then(|| settlement.defects.join("; "))
         } else if self.probe.is_some() {
             self.probe
                 .settle_after_panic(&mut lease.cancel, || {
-                    gate.owner_observed_cancellation(command, work, epoch)
+                    gate.owner_observed_cancellation(command, work, epoch);
                 })
                 .await
         } else {
