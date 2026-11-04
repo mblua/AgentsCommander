@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ fn command_for_binary(bin: &Path) -> Command {
 }
 
 fn test_lock() -> MutexGuard<'static, ()> {
-    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 struct Tmp(PathBuf);

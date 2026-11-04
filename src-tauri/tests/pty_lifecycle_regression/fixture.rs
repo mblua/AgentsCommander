@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use agentscommander_lib::commands::pty::get_screen_snapshot;
@@ -169,7 +169,7 @@ pub(crate) struct LifecycleFixture {
 pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     let env_lock = TEST_CONFIG_ENV_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(PoisonError::into_inner);
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let repo_root = temp.path().join("repo-pty-lifecycle");
     let config_dir = lifecycle_test_config_dir();

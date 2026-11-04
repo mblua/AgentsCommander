@@ -90,7 +90,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
     let found = peers.as_array().expect("array").iter().any(|peer| {
         peer["name"] == "ProjectAlpha:room-1-dev-team/dev-rust" && peer["reachable"] == true
     });
-    assert!(found, "added peer should be reachable: {}", peers);
+    assert!(found, "added peer should be reachable: {peers}");
     let requests = read_project_refresh_requests(&config_dir);
     assert_eq!(requests.len(), 3);
     assert_refresh_request(

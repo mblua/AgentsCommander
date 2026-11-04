@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Excludes one test's open write descriptor on a freshly copied binary from
 /// overlapping another test's fork/exec.
@@ -15,9 +15,7 @@ static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
-    SPAWN_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    SPAWN_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {

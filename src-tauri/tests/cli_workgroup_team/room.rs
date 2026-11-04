@@ -189,7 +189,7 @@ fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
         ("purge-room", "--wg", "d"),
     ] {
         // A root per invocation, so the four runs cannot race on one outbox.
-        let root = tmp.path().join(format!("root-{}", slot));
+        let root = tmp.path().join(format!("root-{slot}"));
         std::fs::create_dir_all(&root).expect("create agent root");
 
         let mut command = command_for_binary(&bin);
