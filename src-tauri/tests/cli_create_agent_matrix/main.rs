@@ -82,7 +82,8 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
-    bin.parent().expect("bin parent").join(format!(".{stem}"))
+    // issue_1867 source contract: keep `format!(".{}", stem)`; do not inline.
+    bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
 fn write_settings(config_dir: &Path, settings: serde_json::Value) {
