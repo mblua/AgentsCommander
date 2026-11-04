@@ -525,7 +525,7 @@ impl UiAutomationState {
                     "Failed to emit automation request to the requested WebView.",
                 );
                 response.available_windows = Some(app.available_windows());
-                response.diagnostics = Some(json!({ "message": e.to_string() }));
+                response.diagnostics = Some(json!({ "message": e.clone() }));
                 let _ = write_json_atomic_new(&pending.response_path, &response);
                 let _ = retry_remove_file(&pending.inflight_path);
             }

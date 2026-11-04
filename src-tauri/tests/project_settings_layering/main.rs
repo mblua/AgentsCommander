@@ -292,7 +292,7 @@ fn defines_emitter(body: &str) -> bool {
     while let Some(offset) = body[from..].find(EMITTER_NAME) {
         let after = from + offset + EMITTER_NAME.len();
         let next = body[after..].trim_start().chars().next();
-        if matches!(next, Some('(') | Some('<')) {
+        if matches!(next, Some('(' | '<')) {
             return true;
         }
         from = after;

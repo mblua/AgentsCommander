@@ -157,7 +157,7 @@ fn production_library(root: &Path, scratch: &Path) -> Library {
             .arg("--message-format=json")
             .env("RUSTC", &compiler),
         &prefix,
-        Duration::from_secs(40 * 60),
+        Duration::from_mins(40),
     );
     assert!(
         status.success(),

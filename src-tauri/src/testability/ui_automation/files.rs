@@ -171,7 +171,7 @@ pub(super) fn retry_fs(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()>
 }
 
 pub(super) fn is_transient_fs_error(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32) | Some(33))
+    e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32 | 33))
 }
 
 pub(super) fn cleanup_stale_automation_files(automation_dir: &Path) -> io::Result<()> {
