@@ -73,10 +73,9 @@ impl Drop for TimingSinkRegistration {
 
 /// How many sinks are registered for `command` right now.
 pub(crate) fn registered_sinks(command: &str) -> usize {
-    SELECTION_TIMING_SINKS
-        .lock()
-        .map(|sinks| sinks.iter().filter(|(_, name, _)| *name == command).count())
-        .unwrap_or(0)
+    SELECTION_TIMING_SINKS.lock().map_or(0, |sinks| {
+        sinks.iter().filter(|(_, name, _)| *name == command).count()
+    })
 }
 
 pub(crate) fn timing_field_ms(line: &str, name: &str) -> f64 {

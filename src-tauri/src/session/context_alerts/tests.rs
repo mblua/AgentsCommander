@@ -297,10 +297,10 @@ impl ContextAlertRuntime for ScriptedRuntime {
             .unwrap()
             .get(&session_id)
             .cloned()
-            .map(MemberPolicyResolution::Eligible)
-            .unwrap_or_else(|| {
-                MemberPolicyResolution::PermanentIneligible("missing policy".to_string())
-            });
+            .map_or_else(
+                || MemberPolicyResolution::PermanentIneligible("missing policy".to_string()),
+                MemberPolicyResolution::Eligible,
+            );
         let blocked = self.blocked_resolution.lock().unwrap().take();
         Box::pin(async move {
             if let Some(blocked) = blocked {

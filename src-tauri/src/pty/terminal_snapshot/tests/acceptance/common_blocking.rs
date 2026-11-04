@@ -139,7 +139,7 @@ fn common_blocking_late_completion_retains_authority_without_disclosure() {
                 fixture
                     .local_backend
                     .fanout
-                    .remove_session(fixture.live_member.id)
+                    .remove_session(fixture.live_member.id);
             },
         )
         .await;

@@ -384,7 +384,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
                 .mark_spawning(&create_root, "container");
             tokio::select! {
                 biased;
-                _ = create_shutdown.cancelled() => {
+                () = create_shutdown.cancelled() => {
                     Err(SelectionCoordinatorError::Unavailable.to_string())
                 }
                 result = PtyManager::spawn(
