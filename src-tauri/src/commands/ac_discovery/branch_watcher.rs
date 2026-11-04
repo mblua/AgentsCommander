@@ -138,8 +138,8 @@ impl DiscoveryBranchWatcher {
         );
         if !has_workspace {
             log::warn!(
-                "[DiscoveryBranchWatcher] update_replicas_for_project called with {project_dir} which has no \
-                    Project AC Root, ignoring"
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with \
+                    {project_dir} which has no Project AC Root, ignoring"
             );
             return;
         }
