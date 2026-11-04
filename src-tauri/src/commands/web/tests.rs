@@ -610,7 +610,7 @@ async fn publication_order_child() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let callbacks = observed.clone();
     let settings = state.settings.clone();
-    let file = path.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+    let file = crate::config::settings::settings_fixture_path(&path);
     app.listen_any("room_idle_confirmation_updated", move |_| {
         let published = settings
             .try_read()

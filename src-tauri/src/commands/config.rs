@@ -154,8 +154,6 @@ use self::web_server::{
     MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
 };
 #[cfg(test)]
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
-#[cfg(test)]
 use crate::web::broadcast::WsBroadcaster;
 #[cfg(test)]
 use agent_file_source::finish_remember_agent_file_report;

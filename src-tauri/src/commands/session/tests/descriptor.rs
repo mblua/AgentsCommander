@@ -259,9 +259,9 @@ async fn a_restart_refuses_instead_of_becoming_a_plain_terminal() {
 /// the agents file and without option S's fourth sentence.
 #[test]
 fn create_session_refuses_under_the_mark() {
-    use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+    use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     let temp = tempfile::tempdir().unwrap();
-    let settings_path = temp.path().join(SETTINGS_FILE_NAME);
+    let settings_path = crate::config::settings::settings_fixture_path(temp.path());
     std::fs::write(
         &settings_path,
         r##"{
