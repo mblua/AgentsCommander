@@ -54,7 +54,7 @@ pub fn execute(args: AgencyTemplatesArgs) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -66,7 +66,7 @@ fn print_json<T: Serialize>(value: &T, pretty: bool) -> Result<(), String> {
     } else {
         serde_json::to_string(value)
     }
-    .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
+    .map_err(|e| format!("Failed to serialize JSON: {e}"))?;
     crate::cli_println!("{}", json);
     Ok(())
 }

@@ -18,8 +18,7 @@ impl FixtureRoot {
             prefix,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("fixture root");
@@ -58,5 +57,5 @@ fn open_project_returns_1_when_no_ac() {
 fn help_text_documents_open_project() {
     use clap::CommandFactory;
     let help = crate::cli::Cli::command().render_help().to_string();
-    assert!(help.contains("open-project"), "help missing verb: {}", help);
+    assert!(help.contains("open-project"), "help missing verb: {help}");
 }

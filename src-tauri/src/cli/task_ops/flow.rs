@@ -200,9 +200,9 @@ where
         let mut chosen: Option<PathBuf> = None;
         for n in 0..=99u32 {
             let candidate = if n == 0 {
-                wg_root.join(format!("TASK.{}.bak.md", ts))
+                wg_root.join(format!("TASK.{ts}.bak.md"))
             } else {
-                wg_root.join(format!("TASK.{}.{}.bak.md", ts, n))
+                wg_root.join(format!("TASK.{ts}.{n}.bak.md"))
             };
             match reserve_task_backup(&candidate) {
                 Ok(()) => {
@@ -214,7 +214,7 @@ where
             }
         }
         let bp = chosen.ok_or_else(|| {
-            TaskOpError::BackupExhausted(wg_root.join(format!("TASK.{}.bak.md", ts)))
+            TaskOpError::BackupExhausted(wg_root.join(format!("TASK.{ts}.bak.md")))
         })?;
         match copy_description_backup(task_path, &bp) {
             Ok(_) => Some(bp),

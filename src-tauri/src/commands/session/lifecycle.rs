@@ -82,10 +82,7 @@ impl LifecycleEntryAuthority {
         !claimed || tracker.is_some_and(|tracker| tracker.is_healthy())
     }
     pub(crate) fn has_owned_claim(&self) -> bool {
-        self.reservation
-            .lock()
-            .ok()
-            .is_some_and(|claim| claim.is_some())
+        self.reservation.lock().is_ok_and(|claim| claim.is_some())
     }
 
     fn destination(&self) -> Option<&crate::path_identity::VerifiedPathIdentity> {
@@ -462,7 +459,7 @@ pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
     let tracker = app
         .state::<Arc<Mutex<PtyManager>>>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .response_close_state();
     let target = destination_key
         .map(str::to_owned)
@@ -552,7 +549,7 @@ pub(crate) async fn validate_lifecycle_entry_authority<R: tauri::Runtime>(
     let tracker = app
         .state::<Arc<Mutex<PtyManager>>>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .response_close_state();
     let permit = acquire_carrier_mutation_permit().await;
     {
