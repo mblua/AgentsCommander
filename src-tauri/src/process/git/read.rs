@@ -62,7 +62,7 @@ pub(crate) async fn run_project_git(cwd: PathBuf, args: Vec<String>) -> Result<V
     let mut cmd = project_command(&cwd, &args);
 
     // args[3] is the subcommand after the shared prefix; stderr stays out of the result.
-    let subcommand = args.get(3).map(String::as_str).unwrap_or("?");
+    let subcommand = args.get(3).map_or("?", String::as_str);
     let out = cmd
         .output()
         .await
@@ -83,7 +83,7 @@ pub(crate) async fn remote_origin_output(
 
 fn branch_command(dir: &str) -> tokio::process::Command {
     #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mut cmd = tokio::process::Command::new("git");
     crate::process::host::credentials::scrub_credentials_from_tokio_command(&mut cmd);
@@ -100,7 +100,7 @@ fn branch_command(dir: &str) -> tokio::process::Command {
 
 fn project_command(cwd: &std::path::Path, args: &[String]) -> tokio::process::Command {
     #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mut cmd = tokio::process::Command::new("git");
     crate::process::host::credentials::scrub_credentials_from_tokio_command(&mut cmd);
@@ -121,7 +121,7 @@ fn project_command(cwd: &std::path::Path, args: &[String]) -> tokio::process::Co
 
 fn remote_origin_command(working_dir: &str) -> tokio::process::Command {
     #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mut cmd = tokio::process::Command::new("git");
     crate::process::host::credentials::scrub_credentials_from_tokio_command(&mut cmd);

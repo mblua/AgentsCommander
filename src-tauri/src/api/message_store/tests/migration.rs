@@ -3,7 +3,7 @@ use super::*;
 fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS api_message_schema(
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL
@@ -414,7 +414,7 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         INSERT INTO api_message_schema(version, applied_at)
 
         VALUES(2, '2026-08-30T00:00:01.000Z');
-        "#,
+        ",
     )
     .unwrap();
     conn
@@ -442,7 +442,7 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
     let path = dir.path().join(DB_FILENAME);
     let conn = setup_v2_database(&path);
     conn.execute_batch(
-        r#"
+        r"
         INSERT INTO pty_input_operations(
             injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
             request_fingerprint,confirmation_tag,version,enter_mode,
@@ -523,7 +523,7 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
             '2099-08-30T00:00:05.000Z','rejected','invalid_text',
             'The payload text contains prohibited control characters.'
         );
-        "#,
+        ",
     )
     .unwrap();
 
@@ -535,9 +535,9 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
     assert_eq!(version, 2);
     let v2_schema: String = conn
         .query_row(
-            r#"SELECT group_concat(sql, char(10)) FROM sqlite_schema
+            r"SELECT group_concat(sql, char(10)) FROM sqlite_schema
                WHERE type='table'
-                 AND name IN ('pty_input_operations','pty_input_tombstones')"#,
+                 AND name IN ('pty_input_operations','pty_input_tombstones')",
             [],
             |row| row.get(0),
         )
@@ -545,9 +545,9 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
     assert!(!v2_schema.contains("menu_guard_blocked"));
     assert!(conn
         .execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                SET reason_code='menu_guard_blocked', reason_detail='blocked'
-               WHERE injection_id='00000000-0000-4000-8000-000000000003'"#,
+               WHERE injection_id='00000000-0000-4000-8000-000000000003'",
             [],
         )
         .is_err());
@@ -579,8 +579,8 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
     assert_eq!(version, 3);
     let due_index: (String, String, String) = conn
         .query_row(
-            r#"SELECT name,tbl_name,sql FROM sqlite_schema
-               WHERE type='index' AND name='idx_pty_input_due'"#,
+            r"SELECT name,tbl_name,sql FROM sqlite_schema
+               WHERE type='index' AND name='idx_pty_input_due'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )

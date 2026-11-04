@@ -26,14 +26,14 @@ impl MessageStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let inserted = tx.execute(
-            r#"
+            r"
             INSERT OR IGNORE INTO messages(
                 message_id, sender_fqn, target_fqn, op_id, content_type, body,
                 body_sha256, body_bytes, source_plane, source_ref, status,
                 attempt, next_attempt_at, created_at
             )
             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)
-            "#,
+            ",
             params![
                 message_id,
                 req.sender_fqn,
@@ -52,11 +52,11 @@ impl MessageStore {
         )?;
 
         let result = tx.query_row(
-            r#"
+            r"
             SELECT message_id, sender_fqn, target_fqn, op_id, status
             FROM messages
             WHERE sender_fqn = ?1 AND op_id = ?2
-            "#,
+            ",
             params![req.sender_fqn, req.op_id],
             |row| {
                 Ok(EnqueueResult {
@@ -104,7 +104,7 @@ impl MessageStore {
         let tx = conn.transaction()?;
         let ids = {
             let mut stmt = tx.prepare(
-                r#"
+                r"
                 SELECT message_id, target_fqn
                 FROM messages
                 WHERE (
@@ -114,7 +114,7 @@ impl MessageStore {
                 )
                 ORDER BY created_at ASC
                 LIMIT ?5
-                "#,
+                ",
             )?;
             let rows = stmt.query_map(
                 params![
@@ -135,7 +135,7 @@ impl MessageStore {
                 continue;
             }
             let changed = tx.execute(
-                r#"
+                r"
                 UPDATE messages
                 SET status = ?1, lease_owner = ?2, lease_until = ?3, last_error = NULL
                 WHERE message_id = ?4
@@ -143,7 +143,7 @@ impl MessageStore {
                     (status IN (?5, ?6) AND next_attempt_at <= ?7)
                     OR (status = ?8 AND lease_until IS NOT NULL AND lease_until <= ?7)
                   )
-                "#,
+                ",
                 params![
                     STATUS_DELIVERING,
                     lease_owner,
@@ -159,11 +159,11 @@ impl MessageStore {
                 continue;
             }
             let msg = tx.query_row(
-                r#"
+                r"
                 SELECT message_id, sender_fqn, target_fqn, op_id, content_type, body, attempt
                 FROM messages
                 WHERE message_id = ?1
-                "#,
+                ",
                 [id],
                 |row| {
                     Ok(LeasedMessage {
@@ -203,12 +203,12 @@ impl MessageStore {
             )
             .optional()?;
         tx.execute(
-            r#"
+            r"
             UPDATE messages
             SET status = ?1, delivered_at = ?2, lease_owner = NULL, lease_until = NULL,
                 last_error = NULL
             WHERE message_id = ?3
-            "#,
+            ",
             params![STATUS_DELIVERED, now_s, message_id],
         )?;
         insert_audit(&tx, message_id, STATUS_DELIVERED, None, &now_s)?;
@@ -262,12 +262,12 @@ impl MessageStore {
         let backoff = retry_backoff_seconds(next_attempt);
         let next_attempt_at = (now + chrono::Duration::seconds(backoff)).to_rfc3339();
         tx.execute(
-            r#"
+            r"
             UPDATE messages
             SET status = ?1, attempt = ?2, next_attempt_at = ?3,
                 lease_owner = NULL, lease_until = NULL, last_error = ?4
             WHERE message_id = ?5
-            "#,
+            ",
             params![
                 next_status,
                 next_attempt,
@@ -302,12 +302,12 @@ impl MessageStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(
-            r#"
+            r"
             UPDATE messages
             SET status = ?1, next_attempt_at = ?2,
                 lease_owner = NULL, lease_until = NULL, last_error = ?3
             WHERE message_id = ?4
-            "#,
+            ",
             params![STATUS_QUEUED, now_s, reason, message_id],
         )?;
         insert_audit(
@@ -325,14 +325,14 @@ impl MessageStore {
         let cutoff_s = cutoff.to_rfc3339();
         let conn = self.conn.lock().unwrap();
         let deleted = conn.execute(
-            r#"
+            r"
             DELETE FROM messages
             WHERE (
                 status = ?1 AND delivered_at IS NOT NULL AND delivered_at < ?2
             ) OR (
                 status = ?3 AND next_attempt_at < ?2
             )
-            "#,
+            ",
             params![STATUS_DELIVERED, cutoff_s, STATUS_POISONED],
         )?;
         Ok(deleted)
