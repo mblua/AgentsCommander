@@ -123,7 +123,7 @@ fn mint(a: MintArgs) -> i32 {
         .filter(|s| !s.is_empty())
         .collect();
     if let Err(e) = auth::validate_scopes(&scopes) {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         return 1;
     }
 
@@ -171,7 +171,7 @@ fn mint(a: MintArgs) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: mint failed: {}", e);
+            eprintln!("Error: mint failed: {e}");
             1
         }
     }
@@ -197,7 +197,7 @@ fn revoke(a: RevokeArgs) -> i32 {
             1
         }
         Err(e) => {
-            eprintln!("Error: revoke failed: {}", e);
+            eprintln!("Error: revoke failed: {e}");
             1
         }
     }
@@ -224,7 +224,7 @@ fn list(a: ListArgs) -> i32 {
             }
         }
         Err(e) => {
-            eprintln!("Error: failed to serialize client list: {}", e);
+            eprintln!("Error: failed to serialize client list: {e}");
             1
         }
     }

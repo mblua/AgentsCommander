@@ -158,9 +158,7 @@ pub(crate) async fn resolve_coding_agent_binding<R: tauri::Runtime>(
                     })),
                     Err(error) => {
                         log::warn!(
-                            "[session] binding seed unavailable for '{}': {}",
-                            original_agent_id,
-                            error
+                            "[session] binding seed unavailable for '{original_agent_id}': {error}"
                         );
                         None
                     }
@@ -333,9 +331,9 @@ pub(crate) fn create_owner(
             replacement_pty: owned_replacement.map(|_| pty_mgr.clone()),
             tracker: pty_mgr
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .response_close_state(),
-            target: create_target_key.unwrap_or_else(|| format!("create-cwd:{}", cwd)),
+            target: create_target_key.unwrap_or_else(|| format!("create-cwd:{cwd}")),
             cwd: std::path::PathBuf::from(cwd),
             nonce: create_nonce,
             binding: create_binding,
@@ -419,6 +417,6 @@ pub(crate) fn pending_launch(
 pub(crate) fn take_marker_ticket<T>(ticket: &Mutex<Option<T>>) -> Option<T> {
     ticket
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
 }
