@@ -223,8 +223,7 @@ pub async fn diagnose_delete_root_blockers(
         report
             .restart_manager_error
             .as_ref()
-            .map(|e| e.message.as_str())
-            .unwrap_or("none"),
+            .map_or("none", |e| e.message.as_str()),
         report.raw_delete_error
     );
 

@@ -161,7 +161,7 @@ pub(crate) fn run(
     response_close.bind_publisher(crate::pty::manager::ResponseClosePublisher::Detector);
     let response_close_for_output = response_close.clone();
     if !idle_detector.bind_raw_output_observer(response_close.wiring_identity(), move |id, now| {
-        response_close_for_output.observe_raw_output(id, now)
+        response_close_for_output.observe_raw_output(id, now);
     }) {
         response_close.fail_closed();
     }

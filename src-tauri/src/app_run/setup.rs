@@ -300,11 +300,7 @@ fn start_restore(app: SetupApp<'_>, start: RestoreStart) {
         teams.len(),
         settings_snapshot.project_paths.len(),
         setting_on,
-        startup_sessions
-            .persisted
-            .as_ref()
-            .map(Vec::len)
-            .unwrap_or(0),
+        startup_sessions.persisted.as_ref().map_or(0, Vec::len),
     );
 
     // §224 A.2.5 — RAII guard inside the closure clears the flag
@@ -361,9 +357,9 @@ fn spawn_screenshot_hotkey_registration(app: SetupApp<'_>) {
             .screenshot_capture_hotkey
             .clone();
         match crate::screenshot::register_configured_hotkey(&app_for_hotkey, &configured) {
-            Ok(()) => log::info!("[screenshot] global hotkey registered '{}'", configured),
+            Ok(()) => log::info!("[screenshot] global hotkey registered '{configured}'"),
             Err(error) => {
-                log::warn!("[screenshot] global hotkey registration failed: {}", error)
+                log::warn!("[screenshot] global hotkey registration failed: {error}");
             }
         }
     });
@@ -656,10 +652,7 @@ fn start_menu_guard_and_ipc_observer(
 fn provision_startup_messages(messages: &crate::config::injected_messages::MessageWarnings) {
     use crate::config::injected_messages as injected;
     if let Err(e) = crate::config::root_agent::ensure_root_agent_dir() {
-        log::error!(
-            "[root-agent] Failed to provision root agent directory: {}",
-            e
-        );
+        log::error!("[root-agent] Failed to provision root agent directory: {e}");
     }
 
     // #1157 - seed and reconcile the operator-editable injected-message templates. Best effort,
@@ -671,7 +664,7 @@ fn provision_startup_messages(messages: &crate::config::injected_messages::Messa
     // "non-blocking"; moving it to tokio::spawn would buy nothing and would race the registry load.
     if let Some(dir) = crate::config::config_dir() {
         if let Err(e) = injected::ensure_injected_messages(&dir, messages) {
-            log::warn!("[injected-messages] provisioning failed: {}", e);
+            log::warn!("[injected-messages] provisioning failed: {e}");
         }
     }
     // Force the registry once, so the first alert - whose line() runs
@@ -699,10 +692,7 @@ fn load_normalized_startup_sessions(
         )
     });
     if let Err(error) = &persisted {
-        log::error!(
-            "[restore] Project state unavailable; session load/purge skipped: {}",
-            error
-        );
+        log::error!("[restore] Project state unavailable; session load/purge skipped: {error}");
     }
     if let Ok(persisted) = &mut persisted {
         match normalize_persisted_active_flags(persisted) {
@@ -712,8 +702,7 @@ fn load_normalized_startup_sessions(
             PersistedActiveFlagNormalization::One { index } => {
                 log::debug!(
                     "[restore] persisted selection flags normalized: exactly one \
-                        rowIndex={}",
-                    index
+                        rowIndex={index}"
                 );
             }
             PersistedActiveFlagNormalization::Multiple { identities } => {
@@ -754,12 +743,8 @@ fn log_restore_inventory(
     // is a real failure mode; without this line the user sees coords stay
     // dormant with no log clue. Emits exactly once per launch.
     log::info!(
-        "[restore] {} teams discovered across {} project paths; setting_on={}; \
-            evaluating {} persisted sessions",
-        team_count,
-        project_path_count,
-        setting_on,
-        persisted_count
+        "[restore] {team_count} teams discovered across {project_path_count} project paths; setting_on={setting_on}; \
+            evaluating {persisted_count} persisted sessions"
     );
 }
 
@@ -885,7 +870,7 @@ pub(super) fn start_web_server(
                 log::info!("[web-server] autostart cancelled by lifecycle stop");
             }
             Err(error) => {
-                log::warn!("[web-server] startup failed: {}", error);
+                log::warn!("[web-server] startup failed: {error}");
             }
         }
     }
@@ -922,12 +907,12 @@ pub(super) fn start_api_server(
                     api_shutdown,
                     bound_addr,
                 )) {
-                    log::error!("[api-server] failed to store server handle: {}", e);
+                    log::error!("[api-server] failed to store server handle: {e}");
                 }
             }
             Err(err) => {
                 api_shutdown.cancel();
-                log::warn!("[api-server] startup failed: {}", err);
+                log::warn!("[api-server] startup failed: {err}");
             }
         }
     }

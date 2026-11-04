@@ -112,8 +112,8 @@ async fn unsupported_backend_manual_kill_is_side_effect_free() {
     );
 }
 
-/// Build the 4-state mock app (manager, PtyManager, ResourceMonitorState,
-/// DetachedSessionsState) with a Group-neutral GatedBackend (supports process
+/// Build the 4-state mock app (manager, `PtyManager`, `ResourceMonitorState`,
+/// `DetachedSessionsState`) with a Group-neutral `GatedBackend` (supports process
 /// tree enforcement = true) but NO group registration, so `kill_group` reports
 /// Terminated immediately with no coordinator/reaper barrier. Used by the S1
 /// defer-arm test without any coordinator.
@@ -234,7 +234,7 @@ async fn resource_monitor_kill_error_defers_exited_while_pty_live() {
 }
 
 /// Builds the 4-state mock app for the round-3 bounded-deferred-teardown tests
-/// (tests 19-20): a GatedBackend with no group registration so `kill_group` reports
+/// (tests 19-20): a `GatedBackend` with no group registration so `kill_group` reports
 /// Terminated immediately, and a backend-setup closure so each test configures how the
 /// PTY `kill` fails. Returns the result, manager, session id, backend, and pty manager.
 async fn run_bounded_teardown_branch(

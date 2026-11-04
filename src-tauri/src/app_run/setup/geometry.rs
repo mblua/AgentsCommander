@@ -80,15 +80,7 @@ pub(crate) fn resolve_main_geometry(
 pub(crate) fn log_monitors(monitors: &[(f64, f64, f64, f64, f64)]) {
     log::info!("[window-setup] {} monitors detected", monitors.len());
     for (i, (mx, my, mx2, my2, scale)) in monitors.iter().enumerate() {
-        log::info!(
-            "[window-setup]   monitor {}: ({}, {}) -> ({}, {}) scale={}",
-            i,
-            mx,
-            my,
-            mx2,
-            my2,
-            scale
-        );
+        log::info!("[window-setup]   monitor {i}: ({mx}, {my}) -> ({mx2}, {my2}) scale={scale}");
     }
 }
 
@@ -149,7 +141,7 @@ pub(super) fn create_main_window(
             && !native_handled
         {
             if let Err(e) = main_win.maximize() {
-                log::warn!("[test-window] failed to maximize main window: {}", e);
+                log::warn!("[test-window] failed to maximize main window: {e}");
             }
         }
         log_main_window_info(&main_win);
@@ -174,10 +166,10 @@ fn available_monitor_bounds(app: SetupApp<'_>) -> Vec<(f64, f64, f64, f64, f64)>
             let pos = m.position();
             let size = m.size();
             (
-                pos.x as f64,
-                pos.y as f64,
-                pos.x as f64 + size.width as f64,
-                pos.y as f64 + size.height as f64,
+                f64::from(pos.x),
+                f64::from(pos.y),
+                f64::from(pos.x) + f64::from(size.width),
+                f64::from(pos.y) + f64::from(size.height),
                 m.scale_factor(),
             )
         })
@@ -189,25 +181,20 @@ fn default_main_geometry(app: SetupApp<'_>) -> config::settings::WindowGeometry 
     // Convert to logical pixels (physical / scale) since WebviewWindowBuilder
     // ::inner_size() and ::position() expect logical coordinates.
     let primary = app.primary_monitor().ok().flatten();
-    let primary_scale = primary.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
-    let (screen_w, screen_h) = primary
-        .as_ref()
-        .map(|m| {
-            let s = m.size();
-            (
-                s.width as f64 / primary_scale,
-                s.height as f64 / primary_scale,
-            )
-        })
-        .unwrap_or((1920.0, 1080.0));
+    let primary_scale = primary.as_ref().map_or(1.0, |m| m.scale_factor());
+    let (screen_w, screen_h) = primary.as_ref().map_or((1920.0, 1080.0), |m| {
+        let s = m.size();
+        (
+            f64::from(s.width) / primary_scale,
+            f64::from(s.height) / primary_scale,
+        )
+    });
     let primary_x = primary
         .as_ref()
-        .map(|m| m.position().x as f64 / primary_scale)
-        .unwrap_or(0.0);
+        .map_or(0.0, |m| f64::from(m.position().x) / primary_scale);
     let primary_y = primary
         .as_ref()
-        .map(|m| m.position().y as f64 / primary_scale)
-        .unwrap_or(0.0);
+        .map_or(0.0, |m| f64::from(m.position().y) / primary_scale);
 
     // Default main window: centered at 1400×900, or the primary monitor size
     // minus a small margin if the screen is narrower than 1400.
@@ -220,11 +207,7 @@ fn log_main_window_info(win: &tauri::WebviewWindow) {
     let size = win.outer_size().ok();
     let maximized = win.is_maximized().ok();
     log::info!(
-        "[test-window] actual pid={} position={:?} size={:?} maximized={:?}",
-        pid,
-        pos,
-        size,
-        maximized
+        "[test-window] actual pid={pid} position={pos:?} size={size:?} maximized={maximized:?}"
     );
     println!(
         concat!(
@@ -275,11 +258,7 @@ fn apply_test_window_placement(
                 if monitor.is_null() {
                     log::warn!(
                         "[test-window] MonitorFromRect returned null for requested \
-                            rect ({}, {}) {}x{}",
-                        x,
-                        y,
-                        width,
-                        height
+                            rect ({x}, {y}) {width}x{height}"
                     );
                 } else {
                     let mut monitor_info = MONITORINFO {
@@ -301,11 +280,7 @@ fn apply_test_window_placement(
                     if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
                         log::warn!(
                             "[test-window] GetMonitorInfoW failed for requested \
-                                rect ({}, {}) {}x{}",
-                            x,
-                            y,
-                            width,
-                            height
+                                rect ({x}, {y}) {width}x{height}"
                         );
                     } else {
                         log::info!(
@@ -367,16 +342,16 @@ fn apply_test_window_placement(
                 return true;
             },
             Err(e) => {
-                log::warn!("[test-window] failed to get HWND: {}", e);
+                log::warn!("[test-window] failed to get HWND: {e}");
             }
         }
     }
 
     if let Err(e) = win.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height })) {
-        log::warn!("[test-window] failed to set physical size: {}", e);
+        log::warn!("[test-window] failed to set physical size: {e}");
     }
     if let Err(e) = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y })) {
-        log::warn!("[test-window] failed to set physical position: {}", e);
+        log::warn!("[test-window] failed to set physical position: {e}");
     }
     false
 }

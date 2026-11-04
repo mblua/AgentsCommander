@@ -34,10 +34,7 @@ fn missing_switch_reservation(
     flavor: &SelfHandoffFlavor,
     forgotten: bool,
 ) -> SelfHandoffOutcome {
-    log::warn!(
-        "[mailbox] switch driver missing legacy reservation for {}",
-        original_session_id
-    );
+    log::warn!("[mailbox] switch driver missing legacy reservation for {original_session_id}");
     SelfHandoffOutcome::Failed(SelfHandoffFailure {
         action: flavor.action,
         attempt: Uuid::new_v4(),
@@ -102,7 +99,7 @@ fn collect_replica_matches(
     // outer loop so ambiguity across projects is detected.
     if crate::config::entity_prefix::has_entity_prefix(target_local) {
         if let Some((wg_name, agent_short)) = target_local.split_once('/') {
-            let replica_dir = format!("__agent_{}", agent_short);
+            let replica_dir = format!("__agent_{agent_short}");
 
             let project_matches = |dir_name: &str| -> bool {
                 match target_project {
@@ -298,7 +295,7 @@ impl MailboxPoller {
         let json = match serde_json::to_string_pretty(response) {
             Ok(j) => j,
             Err(e) => {
-                log::warn!("[mailbox] Failed to serialize purge-wg response: {}", e);
+                log::warn!("[mailbox] Failed to serialize purge-wg response: {e}");
                 return self.move_to_delivered(app, path, msg).await;
             }
         };
@@ -311,13 +308,11 @@ impl MailboxPoller {
                     .map(|ac_dir| ac_dir.join("responses"));
                 if let Some(responses_dir) = outbox_relative_responses_dir {
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                    let response_path = responses_dir.join(format!("{}.json", rid));
+                    let response_path = responses_dir.join(format!("{rid}.json"));
                     if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                         log::warn!(
                             "[mailbox] Failed to write purge-wg response to outbox-relative path \
-                            {:?}: {}",
-                            response_path,
-                            e
+                            {response_path:?}: {e}"
                         );
                     }
                 }
@@ -328,11 +323,10 @@ impl MailboxPoller {
                     .join(crate::config::agent_local_dir_name())
                     .join("responses");
                 let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                let response_path = responses_dir.join(format!("{}.json", rid));
+                let response_path = responses_dir.join(format!("{rid}.json"));
                 if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                     log::warn!(
-                        "[mailbox] Failed to write purge-wg response to resolved-sender path: {}",
-                        e
+                        "[mailbox] Failed to write purge-wg response to resolved-sender path: {e}"
                     );
                 }
             }
@@ -371,7 +365,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -383,7 +377,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -422,7 +416,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -433,7 +427,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -475,7 +469,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -486,7 +480,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -523,7 +517,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -534,7 +528,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
