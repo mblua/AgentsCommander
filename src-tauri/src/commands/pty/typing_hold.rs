@@ -28,7 +28,9 @@ pub(super) fn record_typing_hold_keystroke<R: tauri::Runtime>(
                 })
         });
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut hold = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         hold.note_qualifying_key(session_id);
         if let Some(publisher) = response_close_hold_publisher(app) {
             publisher.publish_typing_key(session_id, window, std::time::Instant::now());
@@ -66,7 +68,9 @@ pub(super) fn typing_hold_snapshot<R: tauri::Runtime>(
 ) -> crate::pty::input_activity::TypingHoldSnapshot {
     match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
         Some(state) => {
-            let hold = state.lock().unwrap_or_else(|error| error.into_inner());
+            let hold = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let snapshot = hold.snapshot(session_id, window);
             if let Some(publisher) = response_close_hold_publisher(app) {
                 publisher.refresh_hold_snapshot(
@@ -109,7 +113,9 @@ pub(crate) fn note_held_wake<R: tauri::Runtime>(
     message_id: &str,
 ) {
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut hold = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         hold.record_held_message(session_id, message_id);
         if let Some(publisher) = response_close_hold_publisher(app) {
             publisher.publish_held_key(session_id, message_id, true, std::time::Instant::now());
@@ -124,7 +130,9 @@ pub(crate) fn clear_held_wake<R: tauri::Runtime>(
     message_id: &str,
 ) {
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut hold = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         hold.clear_held_message(session_id, message_id);
         if let Some(publisher) = response_close_hold_publisher(app) {
             publisher.publish_held_key(session_id, message_id, false, std::time::Instant::now());
