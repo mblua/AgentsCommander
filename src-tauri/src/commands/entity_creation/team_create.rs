@@ -98,8 +98,7 @@ pub(super) fn list_all_agents_for_destination(
 
             // Try to read Role.md frontmatter for richer metadata
             let (fm_name, fm_description) = directories::agent_matrix_role(&path)
-                .map(|content| parse_role_frontmatter(&content))
-                .unwrap_or((None, None));
+                .map_or((None, None), |content| parse_role_frontmatter(&content));
 
             agents.push(AgentInfo {
                 name: fm_name.unwrap_or(agent_name_from_dir),
@@ -298,7 +297,7 @@ fn record_workgroup_clone_result(
     result: Result<(), String>,
 ) -> Option<CloneError> {
     match result {
-        Ok(_) => {
+        Ok(()) => {
             log::info!("[entity_creation] Cloned {} → {}", url, target.display());
             None
         }

@@ -251,7 +251,7 @@ async fn watcher_loaded_room_without_session_and_shared_session_root() {
         capture
             .lock()
             .unwrap()
-            .push(serde_json::from_str(event.payload()).unwrap())
+            .push(serde_json::from_str(event.payload()).unwrap());
     });
     let entries = [ReplicaBranchEntry {
         replica_path: root.join("__agent_fixture").to_string_lossy().into_owned(),
@@ -371,6 +371,6 @@ fn task_sentinels_preserve_presence_metadata_and_errors() {
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(
         task_sentinels(root).err(),
-        Some(format!("snapshot sentinel read failed: {}", error))
+        Some(format!("snapshot sentinel read failed: {error}"))
     );
 }

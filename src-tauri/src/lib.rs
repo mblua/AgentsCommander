@@ -267,9 +267,9 @@ pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoar
 /// (MED-2).
 const SHUTDOWN_CLEANUP_BUDGET_SECS: u64 = 5;
 
-/// Master token generated at app startup. Allows bypassing team validation (can_reach).
-/// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See
-/// #34.
+/// Master token generated at app startup. Allows bypassing team validation (`can_reach`).
+/// Persisted to `master-token.txt` in `config_dir` for CLI use. Regenerated on each app startup.
+/// See #34.
 /// Field is private — use `matches()` for constant-time comparison.
 pub struct MasterToken(String);
 
@@ -886,8 +886,7 @@ impl app_run::exit::ExitHost for tauri::AppHandle {
             .len();
         if destroyed > 0 {
             log::info!(
-                "[shutdown] main destroyed: destroyed {} detached terminal window(s)",
-                destroyed
+                "[shutdown] main destroyed: destroyed {destroyed} detached terminal window(s)"
             );
         }
     }

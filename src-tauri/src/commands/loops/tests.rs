@@ -263,7 +263,7 @@ impl CommandFixture {
     fn assert_no_scan_audit_row(&self) {
         let audit = self.dir.join(crate::config::loops::LOOP_AUDIT_FILE);
         let rows = std::fs::read_to_string(audit).unwrap_or_default();
-        assert!(rows.trim().is_empty(), "no scan audit row: {}", rows);
+        assert!(rows.trim().is_empty(), "no scan audit row: {rows}");
     }
 
     fn create_request(&self) -> LoopCreateRequest {
@@ -346,7 +346,7 @@ async fn update_loop_completes_while_a_delivery_is_held() {
     )
     .await;
     let elapsed = started.elapsed();
-    eprintln!("T2: update_loop returned in {:?}", elapsed);
+    eprintln!("T2: update_loop returned in {elapsed:?}");
 
     result.expect("update_loop");
     assert!(elapsed < std::time::Duration::from_millis(1000));

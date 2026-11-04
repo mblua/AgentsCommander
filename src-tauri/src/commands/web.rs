@@ -176,7 +176,7 @@ impl WebOperations for tauri::AppHandle {
         byte_count: usize,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            crate::commands::pty::mark_successful_pty_write_busy(self, uuid, byte_count).await
+            crate::commands::pty::mark_successful_pty_write_busy(self, uuid, byte_count).await;
         })
     }
 
@@ -191,7 +191,7 @@ impl WebOperations for tauri::AppHandle {
                 uuid,
                 crate::commands::pty::UserInputSource::Web(data),
             )
-            .await
+            .await;
         })
     }
 
@@ -298,7 +298,7 @@ impl WebOperations for tauri::AppHandle {
             let status =
                 tauri::async_runtime::spawn_blocking(crate::cli::agency_templates::status_cache)
                     .await
-                    .map_err(|e| format!("Agency template status task failed: {}", e))??;
+                    .map_err(|e| format!("Agency template status task failed: {e}"))??;
             serde_json::to_value(status).map_err(|e| e.to_string())
         })
     }
@@ -313,7 +313,7 @@ impl WebOperations for tauri::AppHandle {
                 )
             })
             .await
-            .map_err(|e| format!("Agency template update task failed: {}", e))??;
+            .map_err(|e| format!("Agency template update task failed: {e}"))??;
             serde_json::to_value(result).map_err(|e| e.to_string())
         })
     }

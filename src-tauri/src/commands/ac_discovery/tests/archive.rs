@@ -469,7 +469,9 @@ async fn archive_project_inner_pending_spawn_mark_blocks_precheck() {
     let (app, state, mut rx, session_mgr, pty_mgr) = archive_command_app(settings);
     let app_handle = app.handle().clone();
     let _mark = {
-        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         pty.mark_spawning(&agent.to_string_lossy(), "spawning")
     };
 
@@ -528,7 +530,7 @@ async fn archive_project_inner_rolls_back_with_unarchive_event_when_liveness_app
     };
     pty_mgr
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_route(
             session_id,
             crate::pty::backend::SessionBackendKind::LocalProcess,
@@ -592,7 +594,7 @@ async fn archive_project_inner_rolls_back_vanished_project_without_validation() 
     };
     pty_mgr
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_route(
             session_id,
             crate::pty::backend::SessionBackendKind::LocalProcess,

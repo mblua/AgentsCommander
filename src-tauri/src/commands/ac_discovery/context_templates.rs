@@ -9,7 +9,7 @@ pub async fn keep_custom_context_template(
     current_default_sha256: String,
 ) -> Result<(), String> {
     let ac_root = existing_ac_root(Path::new(&path))
-        .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
+        .ok_or_else(|| format!("Project AC Root not found for {path}"))?;
     crate::config::seeded_context_templates::dismiss_context_template_update(
         &ac_root,
         &filename,
@@ -90,7 +90,7 @@ pub async fn overwrite_context_template_with_default(
     current_default_sha256: String,
 ) -> Result<crate::config::seeded_context_templates::ContextTemplateOverwriteResult, String> {
     let ac_root = existing_ac_root(Path::new(&path))
-        .ok_or_else(|| format!("Project AC Root not found for {}", path))?;
+        .ok_or_else(|| format!("Project AC Root not found for {path}"))?;
     crate::config::seed_manifest::run_blocking_owned(move || {
         // #1065 Stage F: production records the overwrite under the gate; a
         // `#[cfg(test)]` lib build stays non-emitting.
@@ -133,6 +133,6 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
         Ok(())
     })?;
 
-    log::info!("Updated context files for replica at {}: {:?}", path, files);
+    log::info!("Updated context files for replica at {path}: {files:?}");
     Ok(())
 }

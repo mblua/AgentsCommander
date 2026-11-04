@@ -277,9 +277,9 @@ impl<'a> StageGuard<'a> {
         let json = serde_json::to_string(&record).expect("room creation record is serializable");
         match outcome {
             Some(Outcome::Error | Outcome::Timeout | Outcome::Interrupted) => {
-                log::warn!(target: TARGET, "room_creation {}", json);
+                log::warn!(target: TARGET, "room_creation {json}");
             }
-            _ => log::info!(target: TARGET, "room_creation {}", json),
+            _ => log::info!(target: TARGET, "room_creation {json}"),
         }
     }
 }

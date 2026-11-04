@@ -84,7 +84,7 @@ pub(crate) fn broadcast_project_archive_changed<R: tauri::Runtime>(
         folder_name: project_folder_name(path),
         archived,
         reason,
-        session_name: session_name.map(|name| name.to_string()),
+        session_name: session_name.map(std::string::ToString::to_string),
     });
     crate::web::commands::broadcast_all_r(app, "project_archive_changed", &payload);
 }
@@ -144,10 +144,7 @@ pub(crate) async fn open_project_inner_with_event_and_settings_path<R: tauri::Ru
         })
         .await
         {
-            log::warn!(
-                "[ac-discovery] catalog seed after open-project failed: {}",
-                error
-            );
+            log::warn!("[ac-discovery] catalog seed after open-project failed: {error}");
         }
     }
     Ok(result)
@@ -179,7 +176,7 @@ pub async fn open_project(
 }
 
 /// Ensure an AC project at `path` (creating `.ac/` if missing) and
-/// register it in `settings.project_paths`. Mirrors the ActionBar "New
+/// register it in `settings.project_paths`. Mirrors the `ActionBar` "New
 /// Project" flow at `src/sidebar/components/ActionBar.tsx:58-71`.
 #[tauri::command]
 pub async fn new_project(
