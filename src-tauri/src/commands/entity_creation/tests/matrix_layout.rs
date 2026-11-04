@@ -90,8 +90,7 @@ fn create_agent_matrix_layout_creates_root_and_canonical_subdirs() {
     for canonical in &["memory", "plans", "skills"] {
         assert!(
             agent_dir.join(canonical).is_dir(),
-            "expected canonical state dir {}/",
-            canonical
+            "expected canonical state dir {canonical}/"
         );
     }
     assert!(agent_dir.join("inbox").is_dir(), "expected inbox/");
@@ -142,8 +141,7 @@ fn create_agent_matrix_on_disk_creates_full_layout_without_template() {
     for canonical in AGENT_MATRIX_DIRS {
         assert!(
             agent_dir.join(canonical).is_dir(),
-            "missing canonical dir {}",
-            canonical
+            "missing canonical dir {canonical}"
         );
     }
 }
@@ -305,8 +303,7 @@ fn agent_matrix_dirs_contains_memory_plans_skills() {
     for required in &["memory", "plans", "skills"] {
         assert!(
             names.contains(required),
-            "AGENT_MATRIX_DIRS must contain {} (issue #209)",
-            required
+            "AGENT_MATRIX_DIRS must contain {required} (issue #209)"
         );
     }
 }
@@ -369,8 +366,7 @@ fn team_config_normalization_stores_portable_agent_refs() {
         .expect("read config");
     assert!(
         !written.contains(&tmp.path().to_string_lossy().to_string()),
-        "team config must not persist absolute project paths: {}",
-        written
+        "team config must not persist absolute project paths: {written}"
     );
 }
 
@@ -391,11 +387,7 @@ fn team_config_normalization_rejects_filesystem_paths() {
     };
     let err = normalize_team_config_for_project(&ac_root, &absolute_config)
         .expect_err("absolute path refs must be rejected");
-    assert!(
-        err.contains("filesystem paths"),
-        "unexpected error: {}",
-        err
-    );
+    assert!(err.contains("filesystem paths"), "unexpected error: {err}");
 
     let windows_config = TeamConfigResult {
         agents: vec![r"C:\Users\maria\project\.ac\_agent_architect".to_string()],
@@ -405,11 +397,7 @@ fn team_config_normalization_rejects_filesystem_paths() {
     };
     let err = normalize_team_config_for_project(&ac_root, &windows_config)
         .expect_err("windows path refs must be rejected");
-    assert!(
-        err.contains("filesystem paths"),
-        "unexpected error: {}",
-        err
-    );
+    assert!(err.contains("filesystem paths"), "unexpected error: {err}");
 }
 
 #[test]
@@ -429,11 +417,7 @@ fn replica_creation_rejects_filesystem_agent_paths() {
     })
     .expect_err("absolute path refs must be rejected");
 
-    assert!(
-        err.contains("filesystem paths"),
-        "unexpected error: {}",
-        err
-    );
+    assert!(err.contains("filesystem paths"), "unexpected error: {err}");
     assert!(
         !wg_dir
             .join(format!("__agent_{}", matrix_dir.to_string_lossy()))
@@ -463,8 +447,7 @@ fn create_agent_replica_layout_creates_only_inbox_outbox() {
     for canonical in &["memory", "plans", "skills"] {
         assert!(
             !replica_dir.join(canonical).exists(),
-            "replica MUST NOT have {}/; origin matrix is canonical",
-            canonical
+            "replica MUST NOT have {canonical}/; origin matrix is canonical"
         );
     }
 }
@@ -540,11 +523,7 @@ fn create_replica_rejects_filesystem_agent_ref() {
     })
     .expect_err("filesystem path refs must be rejected");
 
-    assert!(
-        err.contains("filesystem paths"),
-        "unexpected error: {}",
-        err
-    );
+    assert!(err.contains("filesystem paths"), "unexpected error: {err}");
     assert!(
         !wg_dir.join("__agent_tech-lead").exists(),
         "path refs must not create replicas"
