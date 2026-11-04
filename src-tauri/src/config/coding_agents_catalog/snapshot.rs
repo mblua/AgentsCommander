@@ -82,7 +82,7 @@ pub(crate) fn analyze_base_bytes(
         });
     }
     if let Some(version) = root.get("schemaVersion") {
-        if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
+        if version.as_u64() != Some(u64::from(CATALOG_SCHEMA_VERSION)) {
             return Err(catalog_diagnostic(
                 REPORT_CODE_BASE_INVALID,
                 base_path,
@@ -250,7 +250,7 @@ fn analyze_managed_marker(
             }
             let owner = object.get("owner").and_then(serde_json::Value::as_str);
             let version = object.get("version").and_then(serde_json::Value::as_u64);
-            if owner == Some(MANAGED_OWNER) && version == Some(MANAGED_VERSION as u64) {
+            if owner == Some(MANAGED_OWNER) && version == Some(u64::from(MANAGED_VERSION)) {
                 match (
                     object.get("revision").and_then(serde_json::Value::as_str),
                     object

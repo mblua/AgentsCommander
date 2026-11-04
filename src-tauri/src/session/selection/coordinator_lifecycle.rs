@@ -325,7 +325,7 @@ impl SelectionCoordinator {
             .iter()
             .find(|row| row.id == carrier.session_id)
             .cloned()?;
-        let absent = pty.try_lock().ok().is_some_and(|pty| {
+        let absent = pty.try_lock().is_ok_and(|pty| {
             pty.backend_kind(carrier.session_id).is_none()
                 && tracker.generation(carrier.session_id).is_none()
         });
@@ -606,11 +606,7 @@ impl SelectionCoordinator {
                 .as_ref()
                 .map(|create| (create.binding, create.stage))
         });
-        let claim_reached = owner
-            .state
-            .lock()
-            .ok()
-            .is_some_and(|state| state.claim_reached);
+        let claim_reached = owner.state.lock().is_ok_and(|state| state.claim_reached);
         let permit = if claim_reached || binding.is_some() {
             Some(crate::session::manager::acquire_carrier_mutation_permit().await)
         } else {
@@ -748,7 +744,7 @@ impl SelectionCoordinator {
                 return;
             };
             cursor = Some(operation);
-            let safe = owner.state.try_lock().ok().is_some_and(|state| {
+            let safe = owner.state.try_lock().is_ok_and(|state| {
                 state.replacement_terminal_is_verified()
                     || state.entry_terminal_is_verified(operation)
             });

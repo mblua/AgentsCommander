@@ -475,12 +475,10 @@ fn single_editor_r3_cas_error_classification() {
                     .map(|e| e.path())
                     .any(|p| {
                         p.extension().is_some_and(|e| e == "tmp")
-                            && std::fs::read(&p).ok().is_some_and(|b| {
-                                serde_json::from_slice::<serde_json::Value>(&b)
-                                    .ok()
-                                    .is_some_and(|v| {
-                                        v["progress"][&operation]["sourcePublication"].is_object()
-                                    })
+                            && std::fs::read(&p).is_ok_and(|b| {
+                                serde_json::from_slice::<serde_json::Value>(&b).is_ok_and(|v| {
+                                    v["progress"][&operation]["sourcePublication"].is_object()
+                                })
                             })
                     });
                 if metadata_stage && !reached.replace(true) {
