@@ -1,6 +1,7 @@
 mod agent;
 mod app_defaults;
 mod field;
+mod instance;
 mod load;
 mod owner;
 pub(crate) mod project_path;
@@ -121,8 +122,16 @@ pub use field::{
     WatcherEntry, WatcherMode, WindowGeometry, DEFAULT_TYPING_HOLD_SECONDS,
     TYPING_HOLD_SECONDS_MAX, TYPING_HOLD_SECONDS_MIN,
 };
+pub(crate) use instance::settings_path;
+#[cfg(test)]
+pub(crate) use instance::{
+    instance_settings_display_path, instance_settings_target, persisted_instance_token_matches,
+    settings_fixture_path, SettingsFileTarget, SettingsProjectCheckpoint,
+    SettingsProjectTransaction,
+};
 #[cfg(test)]
 pub(crate) use load::load_settings_from_path;
+pub(crate) use load::parse_api_server_socket_addr;
 #[cfg(test)]
 use load::{
     actionable_profile_legacy_work, apply_issue_248_migration, capture_project_settings,
@@ -147,7 +156,6 @@ pub use load::{
     validate_room_number_mask, validate_screenshot_hotkey, validate_sidebar_compact_hotkey,
     validate_typing_hold_settings, CONFIG_SEED_OS_TOKENS, ROOM_NUMBER_MASK_MAX_WIDTH,
 };
-pub(crate) use load::{parse_api_server_socket_addr, settings_path};
 pub(crate) use owner::CapturedSource;
 #[cfg(test)]
 use owner::OWNER_CAPTURE_PANIC;
