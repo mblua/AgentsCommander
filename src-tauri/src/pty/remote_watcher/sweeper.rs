@@ -4,7 +4,7 @@ use round::RoundReservations;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
@@ -211,7 +211,7 @@ impl RemoteSweeper {
     }
 
     pub(crate) fn lock_state(&self) -> std::sync::MutexGuard<'_, SweeperState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The work list, built exactly as `GitSweeper` builds it: union of discovery
@@ -456,7 +456,7 @@ impl RemoteSweeper {
     pub(crate) async fn local_git(&self, path: &str, args: &[&str]) -> Result<String, String> {
         (self.local_git_runner)(
             path.to_string(),
-            args.iter().map(|arg| arg.to_string()).collect(),
+            args.iter().map(ToString::to_string).collect(),
         )
         .await
     }

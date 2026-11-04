@@ -114,7 +114,7 @@ pub struct AgentBackendConfig {
     #[serde(default)]
     pub kind: SessionBackendKind,
     /// #868 - optional per-agent Docker image override for container runtime.
-    /// None falls back to AGENTSCOMMANDER_CONTAINER_IMAGE at launch.
+    /// `None` falls back to `AGENTSCOMMANDER_CONTAINER_IMAGE` at launch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 }
@@ -169,7 +169,7 @@ pub struct AgentConfig {
     /// Base environment rows applied to every launch of this coding agent.
     #[serde(default)]
     pub envs: Vec<CodingAgentEnv>,
-    /// When true for Codex, AC provides an isolated CODEX_HOME at spawn time.
+    /// When true for Codex, AC provides an isolated `CODEX_HOME` at spawn time.
     #[serde(default, alias = "isolateCodexHome")]
     pub isolated_home: bool,
     /// #529 - filename AC writes into the agent root at launch (content = AC

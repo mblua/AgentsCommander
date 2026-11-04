@@ -395,7 +395,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         let authority_container_backend = selection
             .pty_manager
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .container_backend();
         let authority_route =
             match PtyManager::authority_route_proof(selection.pty_manager, authority_id) {
