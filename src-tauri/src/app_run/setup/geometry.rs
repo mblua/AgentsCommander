@@ -225,6 +225,71 @@ fn log_main_window_info(win: &tauri::WebviewWindow) {
     );
 }
 
+/// Logs the monitor Windows selects for the requested test-window rect.
+#[cfg(target_os = "windows")]
+fn log_selected_monitor(
+    requested: &windows_sys::Win32::Foundation::RECT,
+    (x, y, width, height): (i32, i32, u32, u32),
+    maximized: bool,
+) {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    unsafe {
+        let monitor = MonitorFromRect(requested, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            log::warn!(
+                "[test-window] MonitorFromRect returned null for requested \
+                    rect ({x}, {y}) {width}x{height}"
+            );
+        } else {
+            let mut monitor_info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                rcMonitor: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                rcWork: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                dwFlags: 0,
+            };
+            if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
+                log::warn!(
+                    "[test-window] GetMonitorInfoW failed for requested \
+                        rect ({x}, {y}) {width}x{height}"
+                );
+            } else {
+                log::info!(
+                    "[test-window] selected monitor rect=({}, {}) {}x{} \
+                        work=({}, {}) {}x{} for requested rect ({}, {}) \
+                        {}x{} maximized={}",
+                    monitor_info.rcMonitor.left,
+                    monitor_info.rcMonitor.top,
+                    monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                    monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                    monitor_info.rcWork.left,
+                    monitor_info.rcWork.top,
+                    monitor_info.rcWork.right - monitor_info.rcWork.left,
+                    monitor_info.rcWork.bottom - monitor_info.rcWork.top,
+                    x,
+                    y,
+                    width,
+                    height,
+                    maximized
+                );
+            }
+        }
+    }
+}
+
 fn apply_test_window_placement(
     win: &tauri::WebviewWindow,
     geo: &crate::testability::window_placement::TestWindowPlacement,
@@ -237,9 +302,6 @@ fn apply_test_window_placement(
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::Foundation::{POINT, RECT};
-        use windows_sys::Win32::Graphics::Gdi::{
-            GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-        };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetWindowPlacement, IsZoomed, SetWindowPlacement, SetWindowPos, ShowWindow,
             SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWMAXIMIZED,
@@ -254,55 +316,7 @@ fn apply_test_window_placement(
                     right: x.saturating_add(width as i32),
                     bottom: y.saturating_add(height as i32),
                 };
-                let monitor = MonitorFromRect(&requested, MONITOR_DEFAULTTONEAREST);
-                if monitor.is_null() {
-                    log::warn!(
-                        "[test-window] MonitorFromRect returned null for requested \
-                            rect ({x}, {y}) {width}x{height}"
-                    );
-                } else {
-                    let mut monitor_info = MONITORINFO {
-                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                        rcMonitor: RECT {
-                            left: 0,
-                            top: 0,
-                            right: 0,
-                            bottom: 0,
-                        },
-                        rcWork: RECT {
-                            left: 0,
-                            top: 0,
-                            right: 0,
-                            bottom: 0,
-                        },
-                        dwFlags: 0,
-                    };
-                    if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
-                        log::warn!(
-                            "[test-window] GetMonitorInfoW failed for requested \
-                                rect ({x}, {y}) {width}x{height}"
-                        );
-                    } else {
-                        log::info!(
-                            "[test-window] selected monitor rect=({}, {}) {}x{} \
-                                work=({}, {}) {}x{} for requested rect ({}, {}) \
-                                {}x{} maximized={}",
-                            monitor_info.rcMonitor.left,
-                            monitor_info.rcMonitor.top,
-                            monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
-                            monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
-                            monitor_info.rcWork.left,
-                            monitor_info.rcWork.top,
-                            monitor_info.rcWork.right - monitor_info.rcWork.left,
-                            monitor_info.rcWork.bottom - monitor_info.rcWork.top,
-                            x,
-                            y,
-                            width,
-                            height,
-                            geo.maximized
-                        );
-                    }
-                }
+                log_selected_monitor(&requested, (x, y, width, height), geo.maximized);
 
                 if IsZoomed(hwnd.0.cast()) != 0 || geo.maximized {
                     ShowWindow(hwnd.0.cast(), SW_RESTORE);

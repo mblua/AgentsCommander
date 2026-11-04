@@ -642,6 +642,32 @@ fn execute_requires_runtime_guard(args: &RunArgs) -> Result<(), Vec<CliError>> {
     }
 }
 
+/// Writes run.json, the attempts, report.json and report.md, in that order.
+fn write_dry_run_artifacts(
+    run_dir: &Path,
+    run_artifact: &RunArtifact,
+    attempts: &[super::AttemptArtifact],
+    report_artifact: &ReportArtifact,
+) -> Result<(), Vec<CliError>> {
+    let report_markdown = render_report_markdown(report_artifact);
+
+    write_json_new(&run_dir.join("run.json"), run_artifact)?;
+    create_attempts(run_dir, attempts)?;
+    write_json_new(&run_dir.join("report.json"), report_artifact)?;
+    write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())
+}
+
+/// Warns when the run has more than 50 attempts.
+fn push_large_run_warning(warnings: &mut Vec<super::CliWarning>, attempt_count: usize) {
+    if attempt_count > 50 {
+        warnings.push(warn(
+            "large_run_size",
+            "Prompt count multiplied by variant count and replicates exceeds 50",
+            None,
+        ));
+    }
+}
+
 pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     validate_run_mode(&args)?;
     execute_requires_runtime_guard(&args)?;
@@ -715,21 +741,10 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         true,
         None,
     );
-    let report_markdown = render_report_markdown(&report_artifact);
-
-    write_json_new(&run_dir.join("run.json"), &run_artifact)?;
-    create_attempts(&run_dir, &attempts)?;
-    write_json_new(&run_dir.join("report.json"), &report_artifact)?;
-    write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())?;
+    write_dry_run_artifacts(&run_dir, &run_artifact, &attempts, &report_artifact)?;
 
     let mut warnings = validation.warnings;
-    if attempts.len() > 50 {
-        warnings.push(warn(
-            "large_run_size",
-            "Prompt count multiplied by variant count and replicates exceeds 50",
-            None,
-        ));
-    }
+    push_large_run_warning(&mut warnings, attempts.len());
 
     Ok(CommandOutput {
         data: serde_json::json!({
