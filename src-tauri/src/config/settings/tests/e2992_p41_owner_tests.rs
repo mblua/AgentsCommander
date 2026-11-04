@@ -172,7 +172,7 @@ fn e2992_p41_publisher_recovery() {
     panic_classification_cases();
 }
 
-/// Rejected before any publisher, then PartialOrUnknown after `publisher`
+/// Rejected before any publisher, then `PartialOrUnknown` after `publisher`
 /// wrote and the principal failed or panicked.
 fn publisher_partial_cases(path: &Path, publisher: SettingsPublisher) -> Arc<SettingsOwner> {
     let owner = SettingsOwner::open_active(path, WAIT).unwrap();
