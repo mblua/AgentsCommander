@@ -97,7 +97,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin has stem")
         .to_string_lossy()
         .to_string();
-    bin.parent().expect("bin parent").join(format!(".{stem}"))
+    bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
 fn seed_master_token(config_dir: &Path, token: &str) {

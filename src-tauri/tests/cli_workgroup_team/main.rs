@@ -84,7 +84,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
-    bin.parent().expect("bin parent").join(format!(".{stem}"))
+    bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
 fn write_settings(config_dir: &Path, project_parent: &Path) {
