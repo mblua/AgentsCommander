@@ -147,24 +147,8 @@ pub(super) async fn cleanup_pending_creates_after_join(
             match retained_entry_owns_binding(&cleanup_inner, binding) {
                 Ok(None) => {}
                 Ok(Some(owner)) => {
-                    let nonce =
-                        owner.state.lock().ok().and_then(|state| {
-                            state.replacement.as_ref().map(|_| state.executor_nonce)
-                        });
-                    let cleaned = if let Some(executor_nonce) = nonce {
-                        OwnedReplacementContinuation {
-                            owner,
-                            coordinator: Arc::downgrade(&cleanup_inner),
-                            executor_nonce,
-                            source_validation: None,
-                            #[cfg(test)]
-                            fixture: None,
-                        }
-                        .cleanup_stopped_source(&manager, &pty)
-                        .await
-                    } else {
-                        false
-                    };
+                    let cleaned =
+                        cleanup_owned_pending_entry(&cleanup_inner, owner, &manager, &pty).await;
                     if cleaned {
                         continue;
                     }
@@ -231,6 +215,33 @@ pub(super) async fn cleanup_pending_creates_after_join(
         retained
     });
     await_pending_create_cleanup(inner, deadline, cleanup).await
+}
+
+async fn cleanup_owned_pending_entry(
+    cleanup_inner: &Arc<CoordinatorInner>,
+    owner: Arc<ReplacementOwner>,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> bool {
+    let nonce = owner
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.replacement.as_ref().map(|_| state.executor_nonce));
+    if let Some(executor_nonce) = nonce {
+        OwnedReplacementContinuation {
+            owner,
+            coordinator: Arc::downgrade(cleanup_inner),
+            executor_nonce,
+            source_validation: None,
+            #[cfg(test)]
+            fixture: None,
+        }
+        .cleanup_stopped_source(manager, pty)
+        .await
+    } else {
+        false
+    }
 }
 
 async fn await_pending_create_cleanup(

@@ -659,17 +659,7 @@ impl SelectionCoordinator {
                             _ => None,
                         });
                     state.entry_terminal = Some(EntryTerminal {
-                        disposition: if terminal_result.is_ok() {
-                            EntryTerminalDisposition::Success
-                        } else if state
-                            .entry_create
-                            .as_ref()
-                            .is_some_and(|create| create.stage == EntryCreateStage::RolledBack)
-                        {
-                            EntryTerminalDisposition::RolledBack
-                        } else {
-                            EntryTerminalDisposition::Failure
-                        },
+                        disposition: Self::entry_terminal_disposition(&state, &terminal_result),
                         actual_result: terminal_result,
                         release_receipt: EntryReleaseReceipt {
                             operation: owner.operation,
@@ -701,6 +691,23 @@ impl SelectionCoordinator {
         drop(permit);
         if removable {
             self.remove_terminal_entry(owner);
+        }
+    }
+
+    fn entry_terminal_disposition(
+        state: &ReplacementState,
+        terminal_result: &Result<SessionInfo, String>,
+    ) -> EntryTerminalDisposition {
+        if terminal_result.is_ok() {
+            EntryTerminalDisposition::Success
+        } else if state
+            .entry_create
+            .as_ref()
+            .is_some_and(|create| create.stage == EntryCreateStage::RolledBack)
+        {
+            EntryTerminalDisposition::RolledBack
+        } else {
+            EntryTerminalDisposition::Failure
         }
     }
 
