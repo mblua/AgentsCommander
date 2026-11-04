@@ -645,7 +645,7 @@ fn b3_assert_a_failed_sidecar_write_strips_nothing(reconcile: bool) {
     let before = std::fs::read(&path).unwrap();
 
     let result = if reconcile {
-        super::super::save_settings_with_project_paths_to_path(&settings, &path).map(|()| ())
+        super::super::save_settings_with_project_paths_to_path(&settings, &path)
     } else {
         super::super::save_settings_to_path_preserving_project_paths(&settings, &path).map(|_| ())
     };
