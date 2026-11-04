@@ -216,7 +216,7 @@ fn default_mask_reproduces_todays_names() {
 #[test]
 fn room_dir_name_pads_and_never_truncates() {
     for width in 1usize..=9 {
-        for n in [1u32, 9, 10, 99, 100, 4294967295] {
+        for n in [1u32, 9, 10, 99, 100, 4_294_967_295] {
             let digits = n.to_string();
             let expected = if digits.len() < width {
                 format!("room-{}{digits}-team", "0".repeat(width - digits.len()))

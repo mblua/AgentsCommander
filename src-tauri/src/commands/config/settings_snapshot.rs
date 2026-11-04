@@ -194,7 +194,7 @@ pub(crate) fn compute_issue_id(
     ]);
     let serialized = serde_json::to_string(&tuple).unwrap_or_default();
     let digest = Sha256::digest(serialized.as_bytes());
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub(crate) fn side_status_label(status: SideStatus) -> &'static str {

@@ -76,8 +76,7 @@ fn context_alert_normalizer_rejects_product_invalid_values() {
     ] {
         assert!(
             normalize_context_alert_percentages(&invalid).is_err(),
-            "invalid percentages were accepted: {:?}",
-            invalid
+            "invalid percentages were accepted: {invalid:?}"
         );
     }
 }

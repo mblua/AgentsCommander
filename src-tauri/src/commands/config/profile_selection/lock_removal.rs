@@ -162,7 +162,7 @@ pub(crate) async fn apply_selection_lock_removal_inner(
                     &expected,
                 ) {
                     Ok(outcome) if outcome.changed => {
-                        removed_replica_paths.push(target.replica_path.clone())
+                        removed_replica_paths.push(target.replica_path.clone());
                     }
                     Ok(_unchanged) => already_unlocked_paths.push(target.replica_path.clone()),
                     Err(e) => {

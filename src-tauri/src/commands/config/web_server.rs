@@ -402,8 +402,7 @@ pub(crate) fn validate_mint_api_client_root(
     let is_replica = canonical
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("__agent_"))
-        .unwrap_or(false);
+        .is_some_and(|name| name.starts_with("__agent_"));
     if !is_replica {
         return Err(format!("unknown or invalid root: {root}"));
     }
@@ -839,8 +838,7 @@ impl crate::api::ApiServerFactory for tauri::AppHandle {
 impl crate::api::dispatcher::DispatcherDelivery for tauri::AppHandle {
     fn purging(&self) -> bool {
         self.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-            .map(|guard| guard.is_active())
-            .unwrap_or(false)
+            .is_some_and(|guard| guard.is_active())
     }
 
     fn message_store_state(&self) -> Option<crate::api::message_store::MessageStoreState> {

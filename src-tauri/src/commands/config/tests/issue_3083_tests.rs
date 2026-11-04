@@ -131,8 +131,8 @@ fn issue_3083_numeric_type_and_range_validation() {
         ("atMs", json!(-0.1)),
         ("atMs", json!("0")),
         ("durationMs", json!(-1)),
-        ("pointerId", json!(2147483648u64)),
-        ("pointerId", json!(-2147483649i64)),
+        ("pointerId", json!(2_147_483_648u64)),
+        ("pointerId", json!(-2_147_483_649i64)),
         ("button", json!(-2)),
         ("button", json!(6)),
     ] {

@@ -108,7 +108,7 @@ pub(crate) fn sha256_hex<T: serde::Serialize>(value: &T) -> Result<String, Strin
         .map_err(|e| format!("Failed to serialize selection fingerprint: {e}"))?;
     Ok(Sha256::digest(&serialized)
         .iter()
-        .map(|byte| format!("{:02x}", byte))
+        .map(|byte| format!("{byte:02x}"))
         .collect())
 }
 
@@ -624,7 +624,7 @@ pub(crate) fn refresh_locked_count(enumeration: &ProfileTargetEnumeration) -> Op
         )) {
             crate::config::coding_agent_profiles::ReplicaSelectionState::Unlocked { .. } => {}
             crate::config::coding_agent_profiles::ReplicaSelectionState::Locked { .. } => {
-                count += 1
+                count += 1;
             }
             crate::config::coding_agent_profiles::ReplicaSelectionState::Invalid { .. } => {
                 return None

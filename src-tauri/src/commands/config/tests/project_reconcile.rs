@@ -1,6 +1,6 @@
 use super::*;
 
-/// Build a pending (companion-population-eligible) SettingsState by decoding a
+/// Build a pending (companion-population-eligible) `SettingsState` by decoding a
 /// legacy `[project]` file (no companion) from `settings_path`.
 fn pending_state_from_legacy(settings_path: &Path, project: &str) -> SettingsState {
     write_settings_file(
