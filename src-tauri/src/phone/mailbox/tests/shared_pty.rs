@@ -8,6 +8,55 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
     // The scope/readiness observation does not turn an ordinary Foreign
     // Container recipe into a protected Local replacement requirement.
+    assert_foreign_container_scope_resumes(&app, &route).await;
+    let (store, _state) =
+        assert_shared_engine_injects_exact_text(&fixture, &app, &route, sender_id, target_id).await;
+    // The same store supplies real Queued metadata and a single actual
+    // Preparing claim; resume renews it without reclaiming/burning attempt.
+    let connection =
+        assert_resume_refresh_uses_real_claim(&fixture, &store, &route, sender_id).await;
+    assert_terminal_refresh_certifies_release(&store, &connection, &route, sender_id).await;
+
+    // Same real engine, same idle fixture, now committed Closing before enqueue.
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle().clone();
+    let tracker = crate::pty::manager::ResponseCloseState::default();
+    assert!(app.manage(tracker.clone()));
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    pty.lock().unwrap().bind_response_close(tracker.clone());
+    let (route, sender_id, target_id) =
+        seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+    let database = fixture._temp.path().join("shared-engine-closing.sqlite3");
+    let store = Arc::new(crate::api::message_store::MessageStore::open(database.clone()).unwrap());
+    store.bind_response_close(tracker.clone());
+    let (now, member, coordinator) =
+        seed_closing_route_identities(&tracker, &route, sender_id, target_id);
+    commit_closing_ticket(&tracker, &pty, &member, &coordinator, target_id, now);
+    assert!(tracker.target_is_closing(&member.target));
+    let (injection_id, _closing_held) =
+        assert_closing_dispatch_keeps_queued(&app, &store, &database, &route, sender_id, target_id)
+            .await;
+    let key = format!(
+        "pty:{}:{}:{}",
+        route.sender.canonical_fqn.len(),
+        route.sender.canonical_fqn,
+        injection_id
+    );
+    let digest =
+        crate::phone::types::sha256_hex(format!("shared-engine:{injection_id}").as_bytes());
+    let mut duplicate = tracker.reserve_work(&member.target, &key).unwrap();
+    assert_eq!(duplicate.accept_durable(&digest), Ok(false));
+    assert_eq!(
+        duplicate.accept_durable("collision"),
+        Err(crate::pty::manager::ResponseCloseError::Conflict)
+    );
+    assert!(tracker.target_is_closing(&member.target));
+}
+
+async fn assert_foreign_container_scope_resumes(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+) {
     let original_settings = app.state::<SettingsState>().read().await.clone();
     {
         let settings_state = app.state::<SettingsState>();
@@ -32,28 +81,40 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
             SessionBackendKind::ContainerTransport
         );
     }
-    let (scope, retained) = observe_pty_spawn_scope(&app, &route.target).await;
+    let (scope, retained) = observe_pty_spawn_scope(app, &route.target).await;
     assert!(matches!(
         scope,
         crate::config::sessions_persistence::CreateCarrierScope::Foreign { .. }
     ));
     assert!(retained.is_none());
-    assert!(pty_spawn_scope_may_resume(&app, &route.target).await);
+    assert!(pty_spawn_scope_may_resume(app, &route.target).await);
     *app.state::<SettingsState>().write().await = original_settings;
+}
+
+async fn assert_shared_engine_injects_exact_text(
+    fixture: &MailboxFixture,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender_id: Uuid,
+    target_id: Uuid,
+) -> (
+    Arc<crate::api::message_store::MessageStore>,
+    crate::api::message_store::MessageStoreState,
+) {
     let store = Arc::new(
         crate::api::message_store::MessageStore::open(
             fixture._temp.path().join("shared-engine-positive.sqlite3"),
         )
         .unwrap(),
     );
-    let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+    let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(store));
     let injection_id =
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"exact shared input");
 
     tokio::time::timeout(
         Duration::from_secs(10),
         MailboxPoller::default().dispatch_pty_input_operation(
-            &app,
+            app,
             &state,
             &injection_id,
             crate::phone::types::PtyInputSourcePlane::HostCli,
@@ -76,15 +137,22 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         crate::phone::types::PtyInputPublicStatus::Injected
     );
     assert_eq!(
-        shared_engine_writes(&app, target_id),
+        shared_engine_writes(app, target_id),
         vec![
             b"exact shared input".to_vec(),
             b"\r".to_vec(),
             b"\r".to_vec()
         ]
     );
-    // The same store supplies real Queued metadata and a single actual
-    // Preparing claim; resume renews it without reclaiming/burning attempt.
+    (store, state)
+}
+
+async fn assert_resume_refresh_uses_real_claim(
+    fixture: &MailboxFixture,
+    store: &Arc<crate::api::message_store::MessageStore>,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender_id: Uuid,
+) -> rusqlite::Connection {
     let resume_id =
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"resume metadata");
     let original = store
@@ -164,7 +232,15 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         )
         .await
         .unwrap();
+    connection
+}
 
+async fn assert_terminal_refresh_certifies_release(
+    store: &Arc<crate::api::message_store::MessageStore>,
+    connection: &rusqlite::Connection,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender_id: Uuid,
+) {
     let terminal_id =
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"terminal metadata");
     let terminal_original = store
@@ -190,7 +266,7 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         crate::phone::types::PtyInputReasonCode::AuthorityChanged
     );
     let mut terminal_heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
-        Arc::clone(&store),
+        Arc::clone(store),
         terminal_id.clone(),
         terminal_claim.lease_owner.clone(),
         crate::phone::types::parse_canonical_pty_timestamp(&terminal_claim.expires_at).unwrap(),
@@ -241,22 +317,19 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         .unwrap()
         .unwrap();
     assert_eq!(after_terminal, terminal_result);
+}
 
-    // Same real engine, same idle fixture, now committed Closing before enqueue.
-    let fixture = make_mailbox_fixture();
-    let app = fixture.app.handle().clone();
-    let tracker = crate::pty::manager::ResponseCloseState::default();
-    assert!(app.manage(tracker.clone()));
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    pty.lock().unwrap().bind_response_close(tracker.clone());
-    let (route, sender_id, target_id) =
-        seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
-    let database = fixture._temp.path().join("shared-engine-closing.sqlite3");
-    let store = Arc::new(crate::api::message_store::MessageStore::open(database.clone()).unwrap());
-    store.bind_response_close(tracker.clone());
-    use crate::pty::manager::{
-        ResponseClosePublisher, ResponseDeliveryProof, ResponseRouteIdentity, ReturnDeliveryProof,
-    };
+fn seed_closing_route_identities(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender_id: Uuid,
+    target_id: Uuid,
+) -> (
+    std::time::Instant,
+    crate::pty::manager::ResponseRouteIdentity,
+    crate::pty::manager::ResponseRouteIdentity,
+) {
+    use crate::pty::manager::{ResponseClosePublisher, ResponseRouteIdentity};
     for publisher in [
         ResponseClosePublisher::Manager,
         ResponseClosePublisher::Pty,
@@ -300,6 +373,18 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
     tracker.observe_detector(target_id, false, now);
     tracker.publish_menu(target_id, Some(false), now);
     tracker.publish_hold(target_id, None, true, now);
+    (now, member, coordinator)
+}
+
+fn commit_closing_ticket(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    pty: &Arc<Mutex<PtyManager>>,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+    target_id: Uuid,
+    now: std::time::Instant,
+) {
+    use crate::pty::manager::{ResponseDeliveryProof, ReturnDeliveryProof};
     let mut admission = tracker.reserve_work(&member.target, "request").unwrap();
     admission.accept_durable("body").unwrap();
     drop(admission);
@@ -338,12 +423,28 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
         .unwrap();
     let at = now + Duration::from_secs(30);
     let ticket = tracker.select_ticket(target_id, at).unwrap();
-    PtyManager::authority_route_proof(&pty, target_id)
+    PtyManager::authority_route_proof(pty, target_id)
         .unwrap()
         .try_commit_response_close(&tracker, &ticket, at)
         .unwrap();
-    assert!(tracker.target_is_closing(&member.target));
-    let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+}
+
+async fn assert_closing_dispatch_keeps_queued(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    store: &Arc<crate::api::message_store::MessageStore>,
+    database: &std::path::Path,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender_id: Uuid,
+    target_id: Uuid,
+) -> (
+    String,
+    (
+        MailboxTestHooks,
+        rusqlite::Connection,
+        crate::api::message_store::MessageStoreState,
+    ),
+) {
+    let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(store));
     let injection_id =
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must remain queued");
     let connection = rusqlite::Connection::open(&database).unwrap();
@@ -375,7 +476,7 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
     let hooks = MailboxTestHooks::default();
     MailboxPoller::new_with_test_hooks(hooks.clone())
         .dispatch_pty_input_operation(
-            &app,
+            app,
             &state,
             &injection_id,
             crate::phone::types::PtyInputSourcePlane::HostCli,
@@ -385,25 +486,11 @@ async fn shared_pty_engine_injects_exact_text_and_enters_for_verified_idle_targe
     assert_eq!(snapshot(), before);
     assert_eq!(before.0, "queued");
     assert_eq!(before.1, 0);
-    assert!(shared_engine_writes(&app, target_id).is_empty());
+    assert!(shared_engine_writes(app, target_id).is_empty());
     assert!(hooks.inject_calls.lock().unwrap().is_empty());
     assert!(hooks.destroy_calls.lock().unwrap().is_empty());
     assert!(hooks.spawn_calls.lock().unwrap().is_empty());
-    let key = format!(
-        "pty:{}:{}:{}",
-        route.sender.canonical_fqn.len(),
-        route.sender.canonical_fqn,
-        injection_id
-    );
-    let digest =
-        crate::phone::types::sha256_hex(format!("shared-engine:{injection_id}").as_bytes());
-    let mut duplicate = tracker.reserve_work(&member.target, &key).unwrap();
-    assert_eq!(duplicate.accept_durable(&digest), Ok(false));
-    assert_eq!(
-        duplicate.accept_durable("collision"),
-        Err(crate::pty::manager::ResponseCloseError::Conflict)
-    );
-    assert!(tracker.target_is_closing(&member.target));
+    (injection_id, (hooks, connection, state))
 }
 
 #[tokio::test]

@@ -18,25 +18,37 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
 
     let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::new());
     assert!(fixture.app.manage(Arc::clone(&menu_guard)));
+    let (site_a_session, site_b_session) =
+        seed_menu_blocked_sites(&app, &fixture, &menu_guard).await;
+    let poller = MailboxPoller::default();
+    assert_sites_defer_silently(&poller, &app, site_a_session, site_b_session).await;
+    assert_sites_report_real_failures(&poller, &app, &menu_guard, site_a_session, site_b_session)
+        .await;
+}
 
+async fn seed_menu_blocked_sites(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    fixture: &MailboxFixture,
+    menu_guard: &crate::pty::menu_guard::MenuGuard,
+) -> (Uuid, Uuid) {
     let site_a_session = add_mailbox_session_with_shell(
-        &app,
+        app,
         &fixture.target_cwd,
         "1883-site-a",
         "pi.cmd",
         SessionStatus::Idle,
     )
     .await;
-    register_mock_pty_route(&app, site_a_session);
+    register_mock_pty_route(app, site_a_session);
     let site_b_session = add_mailbox_session_with_shell(
-        &app,
+        app,
         &fixture.target_cwd,
         "1883-site-b",
         "pi.cmd",
         SessionStatus::Idle,
     )
     .await;
-    register_mock_pty_route(&app, site_b_session);
+    register_mock_pty_route(app, site_b_session);
 
     let entries = vec![crate::config::settings::BlockingMenuEntry::Valid(
         crate::config::settings::BlockingMenuConfig {
@@ -55,15 +67,21 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
         menu_guard.evaluate_logical_rows(session_id, &rows, &entries);
         assert!(menu_guard.is_blocked(session_id));
     }
+    (site_a_session, site_b_session)
+}
 
-    let poller = MailboxPoller::default();
-
+async fn assert_sites_defer_silently(
+    poller: &MailboxPoller,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    site_a_session: Uuid,
+    site_b_session: Uuid,
+) {
     // Leg A — site A (logical command branch) defers silently.
     let mut defer_a = logical_command_message("clear", "");
     defer_a.id = "1883-a-defer".to_string();
     let err_a = poller
         .inject_into_pty(
-            &app,
+            app,
             site_a_session,
             &defer_a,
             true,
@@ -77,14 +95,14 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
         crate::pty::menu_guard::is_menu_guard_deferred_error(&err_a),
         "site A must defer with the canonical prefix: {err_a}"
     );
-    assert!(mock_pty_writes_for(&app, site_a_session).is_empty());
+    assert!(mock_pty_writes_for(app, site_a_session).is_empty());
 
     // Leg B — site B (standard wake branch) defers silently.
     let mut defer_b = wake_message_to_target();
     defer_b.id = "1883-b-defer".to_string();
     let err_b = poller
         .inject_into_pty(
-            &app,
+            app,
             site_b_session,
             &defer_b,
             true,
@@ -98,7 +116,7 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
         crate::pty::menu_guard::is_menu_guard_deferred_error(&err_b),
         "site B must defer with the canonical prefix: {err_b}"
     );
-    assert!(mock_pty_writes_for(&app, site_b_session).is_empty());
+    assert!(mock_pty_writes_for(app, site_b_session).is_empty());
 
     // Neither deferral may reach the Application Error sink (debug is
     // filtered out at the default info level, so nothing is captured).
@@ -111,20 +129,28 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
             "deferral {canary} reached Application Error: {defer_entries:?}"
         );
     }
+}
 
+async fn assert_sites_report_real_failures(
+    poller: &MailboxPoller,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    menu_guard: &crate::pty::menu_guard::MenuGuard,
+    site_a_session: Uuid,
+    site_b_session: Uuid,
+) {
     // Positive control — both sites must still raise a real PTY write
     // failure at ERROR. Clear the guard so the injector reaches the write.
     for session_id in [site_a_session, site_b_session] {
         menu_guard.evaluate_logical_rows(session_id, &[], &[]);
         assert!(!menu_guard.is_blocked(session_id));
     }
-    set_mock_pty_write_failure(&app, true);
+    set_mock_pty_write_failure(app, true);
 
     let mut fail_a = logical_command_message("clear", "");
     fail_a.id = "1883-a-fail".to_string();
     let err_a = poller
         .inject_into_pty(
-            &app,
+            app,
             site_a_session,
             &fail_a,
             true,
@@ -144,7 +170,7 @@ async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
     fail_b.id = "1883-b-fail".to_string();
     let err_b = poller
         .inject_into_pty(
-            &app,
+            app,
             site_b_session,
             &fail_b,
             true,
@@ -357,6 +383,19 @@ async fn remote_pi_compact_existing_session_has_no_actuation() {
 #[tokio::test]
 async fn deliver_wake_terminal_commands_preflight_before_lifecycle() {
     // Live Pi compact rejects before settle or injection.
+    let _live_fixture = assert_live_pi_compact_preflight().await;
+
+    // No-session Pi compact rejects before spawn.
+    let _cold_fixture = assert_cold_pi_compact_preflight().await;
+
+    // An Exited Pi record is left intact when the carried spawn shell has no mapping.
+    let _exited_fixture = assert_exited_pi_compact_preflight().await;
+
+    // Unknown wire input is parsed before candidate settling.
+    let _unknown_fixture = assert_unknown_command_preflight().await;
+}
+
+async fn assert_live_pi_compact_preflight() -> MailboxFixture {
     let live_fixture = make_mailbox_fixture();
     let live_app = app_handle(&live_fixture.app);
     let live_id = add_mailbox_session_with_shell(
@@ -385,8 +424,10 @@ async fn deliver_wake_terminal_commands_preflight_before_lifecycle() {
     assert!(live_error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND));
     assert!(live_hooks.settle_calls.lock().unwrap().is_empty());
     assert!(live_hooks.events.lock().unwrap().is_empty());
+    live_fixture
+}
 
-    // No-session Pi compact rejects before spawn.
+async fn assert_cold_pi_compact_preflight() -> MailboxFixture {
     let cold_fixture = make_mailbox_fixture();
     let cold_app = app_handle(&cold_fixture.app);
     {
@@ -407,8 +448,10 @@ async fn deliver_wake_terminal_commands_preflight_before_lifecycle() {
         .unwrap_err();
     assert!(cold_error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND));
     assert!(cold_hooks.events.lock().unwrap().is_empty());
+    cold_fixture
+}
 
-    // An Exited Pi record is left intact when the carried spawn shell has no mapping.
+async fn assert_exited_pi_compact_preflight() -> MailboxFixture {
     let exited_fixture = make_mailbox_fixture();
     let exited_app = app_handle(&exited_fixture.app);
     {
@@ -448,8 +491,10 @@ async fn deliver_wake_terminal_commands_preflight_before_lifecycle() {
         guard.clone()
     };
     assert!(exited_manager.get_session(exited_id).await.is_some());
+    exited_fixture
+}
 
-    // Unknown wire input is parsed before candidate settling.
+async fn assert_unknown_command_preflight() -> MailboxFixture {
     let unknown_fixture = make_mailbox_fixture();
     let unknown_app = app_handle(&unknown_fixture.app);
     let unknown_id = add_mailbox_session_with_shell(
@@ -481,6 +526,7 @@ async fn deliver_wake_terminal_commands_preflight_before_lifecycle() {
     );
     assert!(unknown_hooks.settle_calls.lock().unwrap().is_empty());
     assert!(unknown_hooks.events.lock().unwrap().is_empty());
+    unknown_fixture
 }
 
 #[tokio::test]
