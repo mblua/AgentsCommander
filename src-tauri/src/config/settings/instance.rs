@@ -4,8 +4,8 @@ use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use std::path::PathBuf;
 
 #[cfg(test)]
-use super::{AgentHelpFile, BlockingMenusFile, ProjectPathsRepairStage};
-use super::{AppSettings, ProjectPathsWriteTransaction};
+use super::{AgentHelpFile, BlockingMenusFile};
+use super::{AppSettings, ProjectPathsRepairStage, ProjectPathsWriteTransaction};
 #[cfg(test)]
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
@@ -24,9 +24,8 @@ pub(crate) fn instance_settings_target() -> Option<SettingsFileTarget> {
     settings_path().map(|path| SettingsFileTarget { path })
 }
 
-#[cfg(test)]
 pub(crate) fn instance_settings_display_path() -> Option<String> {
-    settings_path().map(|path| path.display().to_string())
+    super::super::config_dir().map(|d| d.join(SETTINGS_FILE_NAME).to_string_lossy().into_owned())
 }
 
 pub(crate) fn persisted_instance_token_matches(directory: &Path, token: &str) -> bool {
@@ -62,7 +61,6 @@ impl SettingsFileTarget {
             .map(|transaction| SettingsProjectTransaction { transaction })
     }
 
-    #[cfg(test)]
     pub(crate) fn repair_project_paths(
         &self,
         current: &mut AppSettings,

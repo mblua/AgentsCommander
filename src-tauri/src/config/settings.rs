@@ -123,12 +123,12 @@ pub use field::{
     WatcherEntry, WatcherMode, WindowGeometry, DEFAULT_TYPING_HOLD_SECONDS,
     TYPING_HOLD_SECONDS_MAX, TYPING_HOLD_SECONDS_MIN,
 };
-pub(crate) use instance::settings_path;
 #[cfg(test)]
-pub(crate) use instance::{instance_settings_display_path, settings_fixture_path};
+pub(crate) use instance::settings_fixture_path;
+pub(crate) use instance::settings_path;
 pub(crate) use instance::{
-    instance_settings_target, persisted_instance_token_matches, SettingsFileTarget,
-    SettingsProjectCheckpoint, SettingsProjectTransaction,
+    instance_settings_display_path, instance_settings_target, persisted_instance_token_matches,
+    SettingsFileTarget, SettingsProjectCheckpoint, SettingsProjectTransaction,
 };
 #[cfg(test)]
 pub(crate) use load::load_settings_from_path;
