@@ -193,13 +193,13 @@ impl AgentQuotaEngine {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = tokio::time::sleep(interval) => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = tokio::time::sleep(interval) => {}
                     }
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = engine.tick() => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = engine.tick() => {}
                     }
                 }
                 log::info!("[agent_quota] Shutdown signal received, stopping");

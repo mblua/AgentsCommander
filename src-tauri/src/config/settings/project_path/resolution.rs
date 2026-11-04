@@ -354,8 +354,7 @@ pub(super) fn pair_is_canonical(pair: &RawPair, selected: Option<&str>, rel: &Si
         .absolute
         .value
         .as_deref()
-        .map(|v| v == selected)
-        .unwrap_or(false);
+        .is_some_and(|v| v == selected);
     // The companion is fine if it is present and it resolved to the same dir.
     let rel_ok = pair.relative.present && rel.status.is_valid();
     abs_matches && rel_ok
@@ -512,18 +511,13 @@ pub(super) fn apply_quarantine(pairs: &mut [ResolvedPair], quarantine: &Quaranti
         let id_hit = pair
             .selected_identity
             .as_ref()
-            .map(|id| quarantine.identities.contains(id))
-            .unwrap_or(false);
-        let scope_hit = pair
-            .selected_canonical_raw
-            .as_deref()
-            .map(|canon| {
-                quarantine
-                    .canonical_paths
-                    .iter()
-                    .any(|q| paths_overlap(canon, q))
-            })
-            .unwrap_or(false);
+            .is_some_and(|id| quarantine.identities.contains(id));
+        let scope_hit = pair.selected_canonical_raw.as_deref().is_some_and(|canon| {
+            quarantine
+                .canonical_paths
+                .iter()
+                .any(|q| paths_overlap(canon, q))
+        });
         if id_hit || scope_hit {
             pair.selected = None;
             pair.selected_canonical_raw = None;
