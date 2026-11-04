@@ -374,12 +374,12 @@ impl SelectionCoordinator {
         }
     }
 
-    async fn admit_lifecycle_entry<R: Runtime>(
+    async fn admit_lifecycle_entry<T>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &T,
         owner: &Arc<ReplacementOwner>,
         executor_nonce: Uuid,
-        executor: &Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
+        executor: &Arc<dyn LifecycleExecutor<T>>,
         (requested, root_request): (Option<Uuid>, bool),
         mut root_directory: Option<String>,
     ) -> Result<LifecycleLease, String> {

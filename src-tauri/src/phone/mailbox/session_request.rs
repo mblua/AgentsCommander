@@ -266,9 +266,44 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let (session, session_id) = match self.resolve_self_clear_session(app, path, msg).await {
-            Ok(resolved) => resolved,
-            Err(rejected) => return rejected,
+        // 1. Resolve the caller's OWN session from the token (the sole authority).
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear requires a valid session token; restart or respawn the session",
+                    )
+                    .await;
+            }
+        };
+        let session = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        };
+        let session = match session {
+            Some(s) => s,
+            None => {
+                return self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear: no live session owns this token; restart or respawn the \
+                        session",
+                    )
+                    .await;
+            }
+        };
+        let session_id = match Uuid::parse_str(&session.id) {
+            Ok(u) => u,
+            Err(_) => {
+                return self
+                    .reject_message(path, msg, "self-clear: internal error resolving session id")
+                    .await;
+            }
         };
 
         // Resolve before the handoff existence gate so an unsupported source
@@ -297,8 +332,32 @@ impl MailboxPoller {
 
         let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
         if msg.action.as_deref() == Some(super::PLAIN_SELF_CLEAR_ACTION) {
+            #[cfg(not(test))]
+            let inject = {
+                let app = app.clone();
+                move |sid, text: String| async move {
+                    crate::pty::inject::inject_text_into_session(&app, sid, &text).await
+                }
+            };
+            #[cfg(test)]
+            let inject = |_sid, _text: String| async {
+                Err("self-clear synthetic test injector: no PTY input".to_string())
+            };
+            let boundary_app = app.clone();
+            let note_boundary = move |sid| async move {
+                crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
+            };
+            let transport = || self.move_to_delivered(app, path, msg);
+            let launch = Self::launch_self_clear_driver::<super::self_clear::Driver>;
             return self
-                .plain_self_clear_from_request(app, path, msg, session, clear_text, pending)
+                .handle_plain_self_clear(
+                    path,
+                    msg,
+                    session,
+                    clear_text,
+                    pending,
+                    (launch, transport, inject, note_boundary),
+                )
                 .await;
         }
 
@@ -347,13 +406,61 @@ impl MailboxPoller {
         //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
-            Self::queue_legacy_self_clear(
-                app,
-                msg,
+            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
+            // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
+            // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
+            // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
+            // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
+            // leaves SELF-FORGET archived but uncleared; content is preserved in
+            // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
+            let root = std::path::Path::new(&session.working_directory);
+            let forgotten_summary = capture_self_forget_summary(root);
+            let ts = chrono::Local::now()
+                .format(ARCHIVE_TIMESTAMP_FORMAT)
+                .to_string();
+            match archive_root_md(root, "SELF-FORGET", &ts) {
+                Ok(Some(p)) => log::info!(
+                    "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
+                    p.display()
+                ),
+                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
+                Err(e) => log::warn!(
+                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
+                        {session_id} (non-fatal): {e}"
+                ),
+            }
+
+            #[cfg(not(test))]
+            {
+                let app_clone = app.clone();
+                // #749 - the root travels with the task (same queue-time snapshot the
+                // SELF-FORGET archive above used) so Phase 2 can archive the handoff
+                // without a mid-flight session-manager lookup. A session's working
+                // directory never changes while its id stays alive.
+                let root = root.to_path_buf();
+                Self::launch_self_clear_driver(async move {
+                    Self::run_self_clear_after_sustained_idle(
+                        &app_clone,
+                        session_id,
+                        clear_text,
+                        root,
+                        forgotten_summary,
+                        SELF_CLEAR_SETTLE,
+                        SELF_CLEAR_POLL,
+                        SELF_CLEAR_MAX_DEFER,
+                    )
+                    .await;
+                });
+            }
+            #[cfg(test)]
+            let _ = (clear_text, &forgotten_summary);
+            log::info!(
+                "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
                 session_id,
-                clear_text,
-                &session.working_directory,
+                msg.from
             );
+            #[cfg(test)]
+            let _ = app;
         } else {
             log::info!(
                 "[mailbox] self-handoff-and-clear already pending for session {} (from '{}')",
@@ -365,158 +472,6 @@ impl MailboxPoller {
         // 5. Write the queue-ack response, then move the message to delivered/.
         self.write_self_clear_response(app, path, msg, session_id, status, is_app_outbox)
             .await
-    }
-
-    /// Step 4 of `handle_self_clear` for a newly inserted legacy reservation.
-    fn queue_legacy_self_clear<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
-        msg: &OutboxMessage,
-        session_id: Uuid,
-        clear_text: &'static str,
-        working_directory: &str,
-    ) {
-        // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
-        // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
-        // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
-        // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
-        // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
-        // leaves SELF-FORGET archived but uncleared; content is preserved in
-        // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
-        let root = std::path::Path::new(working_directory);
-        let forgotten_summary = capture_self_forget_summary(root);
-        let ts = chrono::Local::now()
-            .format(ARCHIVE_TIMESTAMP_FORMAT)
-            .to_string();
-        match archive_root_md(root, "SELF-FORGET", &ts) {
-            Ok(Some(p)) => log::info!(
-                "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
-                p.display()
-            ),
-            Ok(None) => {} // no SELF-FORGET.md; nothing to archive
-            Err(e) => log::warn!(
-                "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
-                        {session_id} (non-fatal): {e}"
-            ),
-        }
-
-        #[cfg(not(test))]
-        {
-            let app_clone = app.clone();
-            // #749 - the root travels with the task (same queue-time snapshot the
-            // SELF-FORGET archive above used) so Phase 2 can archive the handoff
-            // without a mid-flight session-manager lookup. A session's working
-            // directory never changes while its id stays alive.
-            let root = root.to_path_buf();
-            Self::launch_self_clear_driver(async move {
-                Self::run_self_clear_after_sustained_idle(
-                    &app_clone,
-                    session_id,
-                    clear_text,
-                    root,
-                    forgotten_summary,
-                    SELF_CLEAR_SETTLE,
-                    SELF_CLEAR_POLL,
-                    SELF_CLEAR_MAX_DEFER,
-                )
-                .await;
-            });
-        }
-        #[cfg(test)]
-        let _ = (clear_text, &forgotten_summary);
-        log::info!(
-            "[mailbox] self-handoff-and-clear queued for session {} (from '{}')",
-            session_id,
-            msg.from
-        );
-        #[cfg(test)]
-        let _ = app;
-    }
-
-    /// Step 1 of `handle_self_clear`: on rejection, `Err` carries the already
-    /// written rejection outcome.
-    async fn resolve_self_clear_session<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        path: &std::path::Path,
-        msg: &OutboxMessage,
-    ) -> Result<(SessionInfo, Uuid), Result<(), String>> {
-        // 1. Resolve the caller's OWN session from the token (the sole authority).
-        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
-            Some(u) => u,
-            None => {
-                return Err(self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-clear requires a valid session token; restart or respawn the session",
-                    )
-                    .await);
-            }
-        };
-        let session = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            mgr.find_by_token(token_uuid).await
-        };
-        let session = match session {
-            Some(s) => s,
-            None => {
-                return Err(self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-clear: no live session owns this token; restart or respawn the \
-                        session",
-                    )
-                    .await);
-            }
-        };
-        let session_id = match Uuid::parse_str(&session.id) {
-            Ok(u) => u,
-            Err(_) => {
-                return Err(self
-                    .reject_message(path, msg, "self-clear: internal error resolving session id")
-                    .await);
-            }
-        };
-        Ok((session, session_id))
-    }
-
-    async fn plain_self_clear_from_request<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        path: &std::path::Path,
-        msg: &OutboxMessage,
-        session: SessionInfo,
-        clear_text: &'static str,
-        pending: Arc<PendingSelfClear>,
-    ) -> Result<(), String> {
-        #[cfg(not(test))]
-        let inject = {
-            let app = app.clone();
-            move |sid, text: String| async move {
-                crate::pty::inject::inject_text_into_session(&app, sid, &text).await
-            }
-        };
-        #[cfg(test)]
-        let inject = |_sid, _text: String| async {
-            Err("self-clear synthetic test injector: no PTY input".to_string())
-        };
-        let boundary_app = app.clone();
-        let note_boundary = move |sid| async move {
-            crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
-        };
-        let transport = || self.move_to_delivered(app, path, msg);
-        let launch = Self::launch_self_clear_driver::<super::self_clear::Driver>;
-        self.handle_plain_self_clear(
-            path,
-            msg,
-            session,
-            clear_text,
-            pending,
-            (launch, transport, inject, note_boundary),
-        )
-        .await
     }
 
     fn session_has_visible_raise_hand_slot(session: &SessionInfo) -> bool {

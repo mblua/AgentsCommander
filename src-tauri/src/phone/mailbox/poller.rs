@@ -173,21 +173,21 @@ pub(crate) struct PreparedResponseRequest {
     pub(crate) roots: Vec<String>,
 }
 
-/// Pre-write gates of `reserve_response_request_at_write`; `None` means the
-/// reservation stops here.
-fn response_request_settings_at_write<R: tauri::Runtime>(
+pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    current: &crate::session::manager::CarrierSnapshot,
+    session: &Session,
     prepared: &PreparedResponseRequest,
     work: &ResponseWakeWork,
     attempt: &Arc<ResponseCandidateAttempt>,
-) -> Option<tokio::sync::OwnedRwLockReadGuard<crate::config::settings::AppSettings>> {
+) {
     if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
         response_diag_local!(
             "prewrite_reserve",
             "attempt_disarmed",
             work.diagnostic_message_id
         );
-        return None;
+        return;
     }
     if app
         .try_state::<crate::session::selection::SelectionCoordinator>()
@@ -198,7 +198,7 @@ fn response_request_settings_at_write<R: tauri::Runtime>(
             "restore_active",
             work.diagnostic_message_id
         );
-        return None;
+        return;
     }
     let settings = app.state::<SettingsState>().inner().clone();
     let Ok(settings) = settings.try_read_owned() else {
@@ -207,7 +207,7 @@ fn response_request_settings_at_write<R: tauri::Runtime>(
             "settings_busy",
             work.diagnostic_message_id
         );
-        return None;
+        return;
     };
     if settings.project_paths != prepared.roots {
         response_diag_local!(
@@ -215,22 +215,8 @@ fn response_request_settings_at_write<R: tauri::Runtime>(
             "roots_changed",
             work.diagnostic_message_id
         );
-        return None;
-    }
-    Some(settings)
-}
-
-pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    current: &crate::session::manager::CarrierSnapshot,
-    session: &Session,
-    prepared: &PreparedResponseRequest,
-    work: &ResponseWakeWork,
-    attempt: &Arc<ResponseCandidateAttempt>,
-) {
-    let Some(settings) = response_request_settings_at_write(app, prepared, work, attempt) else {
         return;
-    };
+    }
     let Some((member, coordinator)) =
         response_request_participants(current, session, prepared, work)
     else {
