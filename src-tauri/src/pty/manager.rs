@@ -318,10 +318,7 @@ impl PtyManager {
         let live = ids
             .iter()
             .zip(route_kinds)
-            .map(|(id, kind)| {
-                kind.map(|kind| self.backend_for_kind(kind).has_session(*id))
-                    .unwrap_or(false)
-            })
+            .map(|(id, kind)| kind.is_some_and(|kind| self.backend_for_kind(kind).has_session(*id)))
             .collect();
         (pending, live)
     }

@@ -1,4 +1,4 @@
-/// Issue #295 — full command regression needs a Tauri AppHandle fixture with
+/// Issue #295 — full command regression needs a Tauri `AppHandle` fixture with
 /// managed SessionManager/PtyManager/TelegramBridgeState and an injectable
 /// sessions.json failure path. Keep the harness shape next to the command
 /// code so the ordering contract is explicit until such a fixture exists.

@@ -128,7 +128,7 @@ pub(crate) fn project_git_args(args: &[&str]) -> Vec<String> {
     ["--no-optional-locks", "-c", "core.fsmonitor=false"]
         .iter()
         .chain(args)
-        .map(|arg| arg.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 

@@ -558,7 +558,7 @@ async fn clone_missing_repos_for_workgroup_traced(
             }
         }
         match result {
-            Ok(_) => log::info!(
+            Ok(()) => log::info!(
                 "[entity_creation] Cloned {} -> {}",
                 repo.url,
                 target.display()

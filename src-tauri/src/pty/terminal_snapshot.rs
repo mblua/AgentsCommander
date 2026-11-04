@@ -408,7 +408,7 @@ impl TerminalSnapshotState {
             return Err(TerminalSnapshotReasonCode::RateLimited);
         }
         let in_flight = limiter.requester_in_flight.get(&key).copied().unwrap_or(0);
-        let attempts = limiter.requester.get(&key).map(VecDeque::len).unwrap_or(0);
+        let attempts = limiter.requester.get(&key).map_or(0, VecDeque::len);
         if attempts >= SNAPSHOT_REQUESTER_RATE
             || in_flight >= 1
             || limiter.global_in_flight >= SNAPSHOT_GLOBAL_IN_FLIGHT

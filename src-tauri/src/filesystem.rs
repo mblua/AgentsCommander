@@ -306,8 +306,8 @@ pub(crate) fn publish_terminal_snapshot_request(
     }
     stage("publish_request.write_temporary");
     file.write_all(bytes)
-        .and_then(|_| file.flush())
-        .and_then(|_| file.sync_all())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all())
         .map_err(|_| "response_unavailable".to_string())?;
     stage("publish_request.verify_temporary");
     let temporary_identity =

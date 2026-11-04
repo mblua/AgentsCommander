@@ -314,7 +314,7 @@ fn arm_catalog_path_fault(point: &'static str, path: &Path, kind: std::io::Error
             point,
             path: path.to_path_buf(),
             kind,
-        })
+        });
     });
 }
 

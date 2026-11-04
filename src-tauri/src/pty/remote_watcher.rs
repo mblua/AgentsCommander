@@ -131,7 +131,7 @@ pub(crate) fn base_branch_display(branch: &str, base_label: &str) -> String {
 }
 
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The per-round line is a `debug!`, deliberately diverging from `GitSweeper`'s
 /// `info!` round line: at this cadence an `info!` is about 2880 lines a day for

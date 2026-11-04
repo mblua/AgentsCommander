@@ -283,8 +283,7 @@ fn validate_wg_root_accepts_case_variant_input() {
     let r = validate_wg_root(&variant, &paths_of(proj.path()));
     assert!(
         r.is_ok(),
-        "case-variant drive letter should validate: {:?}",
-        r
+        "case-variant drive letter should validate: {r:?}"
     );
 }
 
@@ -431,6 +430,6 @@ fn read_title_invalid_utf8_preserves_read_error() {
     let error = std::fs::read_to_string(&path).unwrap_err();
     assert_eq!(
         task_ops::read_title(dir.path()).unwrap_err(),
-        format!("read TASK.md: {}", error)
+        format!("read TASK.md: {error}")
     );
 }

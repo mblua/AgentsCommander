@@ -22,7 +22,7 @@ pub(crate) fn install_before_install(key: &str) -> Arc<ReaderDemandBarrier> {
     let barrier = Arc::new(ReaderDemandBarrier::default());
     BEFORE_INSTALL
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert_with(HashMap::new)
         .insert(key.to_string(), Arc::clone(&barrier));
     barrier
@@ -31,7 +31,7 @@ pub(crate) fn install_before_install(key: &str) -> Arc<ReaderDemandBarrier> {
 pub(crate) async fn hit_before_install(key: &str) {
     let barrier = BEFORE_INSTALL
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
         .and_then(|map| map.remove(key));
     if let Some(barrier) = barrier {
