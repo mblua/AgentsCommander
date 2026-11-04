@@ -308,9 +308,7 @@ pub(super) fn capture_binding_origins(
                 .get_or_insert_with(|| Uuid::new_v4().to_string());
         }
         if let Some(id) = ps.coding_agent_binding_id.as_ref() {
-            let key = Uuid::parse_str(id)
-                .map(|id| id.to_string())
-                .unwrap_or_else(|_| id.clone());
+            let key = Uuid::parse_str(id).map_or_else(|_| id.clone(), |id| id.to_string());
             *counts.entry(key).or_insert(0usize) += 1;
         }
     }
@@ -321,9 +319,7 @@ pub(super) fn capture_binding_origins(
                 "rawFileSHA256": digest,
                 "originalOrdinal": ordinal,
             }));
-            let key = Uuid::parse_str(id)
-                .map(|id| id.to_string())
-                .unwrap_or_else(|_| id.clone());
+            let key = Uuid::parse_str(id).map_or_else(|_| id.clone(), |id| id.to_string());
             ps.coding_agent_binding_conflict = counts.get(&key).copied().unwrap_or(0) > 1;
         }
     }

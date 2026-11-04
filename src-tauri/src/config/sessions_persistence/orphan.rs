@@ -455,9 +455,7 @@ pub(super) async fn handle_orphan_drops(
             counts.suppressed_repeat += 1;
         }
         let is_dormant = match drop.session.id.as_deref() {
-            Some(id) => Uuid::parse_str(id)
-                .map(|uuid| dormant.contains(&uuid))
-                .unwrap_or(false),
+            Some(id) => Uuid::parse_str(id).map_or(false, |uuid| dormant.contains(&uuid)),
             // No live row (recipe-only row, e.g. a failed-recoverable merge or
             // a restore-skipped entry): treat as dormant and record it.
             None => true,
@@ -467,9 +465,7 @@ pub(super) async fn handle_orphan_drops(
             // this session id this run. A row first archived by a no-prune site
             // is NOT re-appended when the steady site later prunes it from RAM.
             let first_archive = match drop.session.id.as_deref() {
-                Some(id) => Uuid::parse_str(id)
-                    .map(|uuid| note_orphan_archived_id(&uuid))
-                    .unwrap_or(true),
+                Some(id) => Uuid::parse_str(id).map_or(true, |uuid| note_orphan_archived_id(&uuid)),
                 None => true,
             };
             if first_archive {
