@@ -27,12 +27,12 @@ mod profile;
 
 use product::{
     copy_product_binary, inject_injected_home, print_retained, run_child,
-    strip_inherited_config_env,
+    strip_inherited_config_env, ChildRun,
 };
 use profile::{
     census_unchanged, profile_census, profile_entry_absent, read_json, refusal_census_self_control,
     regular_file, regular_file_nonempty, scan_canonical_for_legacy, session_row, snapshot,
-    write_json, write_legacy_root,
+    write_json, write_legacy_root, InventoryEntry,
 };
 
 use std::fs;
@@ -178,6 +178,65 @@ fn absolute_other_home() -> PathBuf {
     }
 }
 
+fn broken_admission_rows<'a>(
+    home: &'a Path,
+    other: &'a Path,
+    relative: &'a Path,
+) -> [AdmissionRow<'a>; 8] {
+    [
+        (
+            "gha missing",
+            None,
+            Some("github-hosted"),
+            Some(home),
+            Some(home),
+        ),
+        (
+            "gha false",
+            Some("false"),
+            Some("github-hosted"),
+            Some(home),
+            Some(home),
+        ),
+        (
+            "runner self-hosted",
+            Some("true"),
+            Some("self-hosted"),
+            Some(home),
+            Some(home),
+        ),
+        ("runner missing", Some("true"), None, Some(home), Some(home)),
+        (
+            "known home missing",
+            Some("true"),
+            Some("github-hosted"),
+            None,
+            Some(home),
+        ),
+        (
+            "known home relative",
+            Some("true"),
+            Some("github-hosted"),
+            Some(relative),
+            Some(relative),
+        ),
+        (
+            "user profile missing",
+            Some("true"),
+            Some("github-hosted"),
+            Some(home),
+            None,
+        ),
+        (
+            "user profile different",
+            Some("true"),
+            Some("github-hosted"),
+            Some(home),
+            Some(other),
+        ),
+    ]
+}
+
 /// Pure table test of the admission gate. The `Err` rows are the positive
 /// control that a present marker with broken admission refuses rather than
 /// degrading to `RefusalOnly`.
@@ -218,64 +277,7 @@ fn issue_1850_admission_gate_table() {
         Mode::RealProfile
     );
 
-    let broken: [AdmissionRow<'_>; 8] = [
-        (
-            "gha missing",
-            None,
-            Some("github-hosted"),
-            Some(&home),
-            Some(&home),
-        ),
-        (
-            "gha false",
-            Some("false"),
-            Some("github-hosted"),
-            Some(&home),
-            Some(&home),
-        ),
-        (
-            "runner self-hosted",
-            Some("true"),
-            Some("self-hosted"),
-            Some(&home),
-            Some(&home),
-        ),
-        (
-            "runner missing",
-            Some("true"),
-            None,
-            Some(&home),
-            Some(&home),
-        ),
-        (
-            "known home missing",
-            Some("true"),
-            Some("github-hosted"),
-            None,
-            Some(&home),
-        ),
-        (
-            "known home relative",
-            Some("true"),
-            Some("github-hosted"),
-            Some(relative),
-            Some(relative),
-        ),
-        (
-            "user profile missing",
-            Some("true"),
-            Some("github-hosted"),
-            Some(&home),
-            None,
-        ),
-        (
-            "user profile different",
-            Some("true"),
-            Some("github-hosted"),
-            Some(&home),
-            Some(&other),
-        ),
-    ];
+    let broken = broken_admission_rows(&home, &other, relative);
     for (label, gha, runner, known, profile) in broken {
         assert!(
             admission(true, Some("1"), gha, runner, known, profile).is_err(),
@@ -559,33 +561,142 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
     }
 
     let adjacent = bin_dir.join(CANONICAL);
-    if case.adjacent_legacy {
-        write_legacy_root(
-            &adjacent,
-            LEGACY_ADJACENT_TOKEN,
-            LEGACY_ADJACENT_SESSION,
-            &cli_root,
-        )?;
-    }
     let home_new = home.join(LEGACY_HOME_NEW);
-    if case.home_new {
-        write_legacy_root(&home_new, LEGACY_NEW_TOKEN, LEGACY_NEW_SESSION, &cli_root)?;
-    }
     let home_new_dev = home.join(LEGACY_HOME_NEW_DEV);
-    if case.home_new_dev {
-        write_legacy_root(
-            &home_new_dev,
-            LEGACY_NEW_DEV_TOKEN,
-            LEGACY_NEW_DEV_SESSION,
-            &cli_root,
-        )?;
-    }
+    seed_legacy_roots(case, &adjacent, &home_new, &home_new_dev, &cli_root)?;
 
     let canonical = home.join(CANONICAL);
+    seed_canonical_root(case, &canonical, &cli_root)?;
+
+    // Roots this case created under the case HOME. The canonical root always
+    // joins the list: its absence was established above, so whatever ends up
+    // there is test-owned output.
+    let mut owned_home_roots: Vec<PathBuf> = Vec::new();
+    if case.home_new {
+        owned_home_roots.push(home_new.clone());
+    }
+    if case.home_new_dev {
+        owned_home_roots.push(home_new_dev.clone());
+    }
+    owned_home_roots.push(canonical.clone());
+
+    print_case_fixtures(case, case_root, home);
+
+    // Step 4 snapshot.
+    let adjacent_before = snapshot(&adjacent)?;
+    let home_new_before = snapshot(&home_new)?;
+    let home_new_dev_before = snapshot(&home_new_dev)?;
+    let invalid_settings_before = if case.canonical == CanonicalFixture::Invalid {
+        Some(
+            fs::read(canonical.join("settings.json"))
+                .map_err(|error| format!("read invalid settings failed: {error}"))?,
+        )
+    } else {
+        None
+    };
+
+    run_child_a(case, mode, home, &binary, &cli_root)?;
+    let run_b = run_child_b(case, mode, home, &binary, &cli_root)?;
+
+    // Selection oracle: app.log exists (possibly 0 bytes), .gitignore exists
+    // and is non-empty, and neither was in the step-4 snapshot.
+    regular_file(
+        &canonical.join("app.log"),
+        &format!("{}: app.log", case.name),
+    )?;
+    regular_file_nonempty(
+        &canonical.join(".gitignore"),
+        &format!("{}: .gitignore", case.name),
+    )?;
+
+    // Preservation: legacy roots and executable-adjacent entries are
+    // byte-identical to their snapshots, or still absent when not seeded.
+    ensure_unchanged(case, &home_new, &home_new_before, "legacy HOME root")?;
+    ensure_unchanged(
+        case,
+        &home_new_dev,
+        &home_new_dev_before,
+        "legacy HOME root",
+    )?;
+    ensure_unchanged(
+        case,
+        &adjacent,
+        &adjacent_before,
+        "executable-adjacent root",
+    )?;
+
+    // No legacy payload, token or marker may appear under the canonical root.
+    scan_canonical_for_legacy(&canonical, case.name)?;
+
+    // Legacy session names must never reach child B's stdout.
+    for legacy in LEGACY_SESSIONS {
+        if run_b.stdout.contains(legacy) {
+            return Err(format!(
+                "{}: child B exposed legacy session {legacy}: {:?}",
+                case.name, run_b.stdout
+            ));
+        }
+    }
+
+    let settings_path = canonical.join("settings.30.instance.no-git.json");
+    check_fresh_settings(case, &settings_path)?;
+    check_canonical_outcome(
+        case,
+        &run_b,
+        &canonical,
+        &settings_path,
+        invalid_settings_before,
+    )?;
+
+    // Cleanup of this case's owned roots only, then prove the profile is empty
+    // again before the next case.
+    for root in &owned_home_roots {
+        if root.exists() {
+            fs::remove_dir_all(root).map_err(|error| {
+                format!("{}: remove {} failed: {error}", case.name, root.display())
+            })?;
+        }
+    }
+    for entry in PROFILE_ENTRIES {
+        profile_entry_absent(home, entry)?;
+    }
+    Ok(())
+}
+
+fn seed_legacy_roots(
+    case: &Case,
+    adjacent: &Path,
+    home_new: &Path,
+    home_new_dev: &Path,
+    cli_root: &Path,
+) -> Result<(), String> {
+    if case.adjacent_legacy {
+        write_legacy_root(
+            adjacent,
+            LEGACY_ADJACENT_TOKEN,
+            LEGACY_ADJACENT_SESSION,
+            cli_root,
+        )?;
+    }
+    if case.home_new {
+        write_legacy_root(home_new, LEGACY_NEW_TOKEN, LEGACY_NEW_SESSION, cli_root)?;
+    }
+    if case.home_new_dev {
+        write_legacy_root(
+            home_new_dev,
+            LEGACY_NEW_DEV_TOKEN,
+            LEGACY_NEW_DEV_SESSION,
+            cli_root,
+        )?;
+    }
+    Ok(())
+}
+
+fn seed_canonical_root(case: &Case, canonical: &Path, cli_root: &Path) -> Result<(), String> {
     match case.canonical {
         CanonicalFixture::Absent => {}
         CanonicalFixture::Valid => {
-            fs::create_dir(&canonical)
+            fs::create_dir(canonical)
                 .map_err(|error| format!("create {} failed: {error}", canonical.display()))?;
             let settings = serde_json::json!({
                 "defaultShell": "cmd",
@@ -600,14 +711,14 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
                 &serde_json::json!([session_row(
                     "canonical-session-id",
                     CANONICAL_SESSION,
-                    &cli_root
+                    cli_root
                 )]),
             )?;
             fs::write(canonical.join(CANONICAL_SENTINEL_NAME), CANONICAL_SENTINEL)
                 .map_err(|error| format!("write canonical sentinel failed: {error}"))?;
         }
         CanonicalFixture::Invalid => {
-            fs::create_dir(&canonical)
+            fs::create_dir(canonical)
                 .map_err(|error| format!("create {} failed: {error}", canonical.display()))?;
             fs::write(canonical.join("settings.json"), INVALID_SETTINGS)
                 .map_err(|error| format!("write invalid settings failed: {error}"))?;
@@ -628,19 +739,10 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             }
         }
     }
+    Ok(())
+}
 
-    // Roots this case created under the case HOME. The canonical root always
-    // joins the list: its absence was established above, so whatever ends up
-    // there is test-owned output.
-    let mut owned_home_roots: Vec<PathBuf> = Vec::new();
-    if case.home_new {
-        owned_home_roots.push(home_new.clone());
-    }
-    if case.home_new_dev {
-        owned_home_roots.push(home_new_dev.clone());
-    }
-    owned_home_roots.push(canonical.clone());
-
+fn print_case_fixtures(case: &Case, case_root: &Path, home: &Path) {
     println!(
         "ISSUE1850_CASE_FIXTURES case={} adjacent_legacy={} home_new={} home_new_dev={} \
          canonical={:?} case_root={} home={} canonical_pre_gitignore=absent \
@@ -661,31 +763,26 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
         case_root.display(),
         home.display()
     );
+}
 
-    // Step 4 snapshot.
-    let adjacent_before = snapshot(&adjacent)?;
-    let home_new_before = snapshot(&home_new)?;
-    let home_new_dev_before = snapshot(&home_new_dev)?;
-    let invalid_settings_before = if case.canonical == CanonicalFixture::Invalid {
-        Some(
-            fs::read(canonical.join("settings.json"))
-                .map_err(|error| format!("read invalid settings failed: {error}"))?,
-        )
-    } else {
-        None
-    };
-
-    // Child A: list-peers, real startup path (preflight + logger), cwd inside
-    // the case.
-    let mut child_a = Command::new(&binary);
+/// Child A: list-peers, real startup path (preflight + logger), cwd inside
+/// the case.
+fn run_child_a(
+    case: &Case,
+    mode: Mode,
+    home: &Path,
+    binary: &Path,
+    cli_root: &Path,
+) -> Result<(), String> {
+    let mut child_a = Command::new(binary);
     strip_inherited_config_env(&mut child_a);
     child_a
         .arg("list-peers")
         .arg("--token")
         .arg(TOKEN)
         .arg("--root")
-        .arg(&cli_root)
-        .current_dir(&cli_root);
+        .arg(cli_root)
+        .current_dir(cli_root);
     inject_injected_home(&mut child_a, mode, home);
     let run_a = run_child(&mut child_a, &format!("{} child A", case.name))?;
     print_retained(&format!("{} child A", case.name), &run_a);
@@ -727,11 +824,20 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             case.name, run_a.status, run_a.stderr
         ));
     }
+    Ok(())
+}
 
-    // Child B: list-sessions, reads <selected root>/sessions.json.
-    let mut child_b = Command::new(&binary);
+/// Child B: list-sessions, reads <selected root>/sessions.json.
+fn run_child_b(
+    case: &Case,
+    mode: Mode,
+    home: &Path,
+    binary: &Path,
+    cli_root: &Path,
+) -> Result<ChildRun, String> {
+    let mut child_b = Command::new(binary);
     strip_inherited_config_env(&mut child_b);
-    child_b.arg("list-sessions").current_dir(&cli_root);
+    child_b.arg("list-sessions").current_dir(cli_root);
     inject_injected_home(&mut child_b, mode, home);
     let run_b = run_child(&mut child_b, &format!("{} child B", case.name))?;
     print_retained(&format!("{} child B", case.name), &run_b);
@@ -749,61 +855,27 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             case.name, run_b.stdout
         ));
     }
+    Ok(run_b)
+}
 
-    // Selection oracle: app.log exists (possibly 0 bytes), .gitignore exists
-    // and is non-empty, and neither was in the step-4 snapshot.
-    regular_file(
-        &canonical.join("app.log"),
-        &format!("{}: app.log", case.name),
-    )?;
-    regular_file_nonempty(
-        &canonical.join(".gitignore"),
-        &format!("{}: .gitignore", case.name),
-    )?;
-
-    // Preservation: legacy roots and executable-adjacent entries are
-    // byte-identical to their snapshots, or still absent when not seeded.
-    if snapshot(&home_new)? != home_new_before {
-        return Err(format!(
-            "{}: legacy HOME root {} changed",
-            case.name,
-            home_new.display()
-        ));
+fn ensure_unchanged(
+    case: &Case,
+    root: &Path,
+    before: &Option<Vec<InventoryEntry>>,
+    what: &str,
+) -> Result<(), String> {
+    if snapshot(root)? != *before {
+        return Err(format!("{}: {what} {} changed", case.name, root.display()));
     }
-    if snapshot(&home_new_dev)? != home_new_dev_before {
-        return Err(format!(
-            "{}: legacy HOME root {} changed",
-            case.name,
-            home_new_dev.display()
-        ));
-    }
-    if snapshot(&adjacent)? != adjacent_before {
-        return Err(format!(
-            "{}: executable-adjacent root {} changed",
-            case.name,
-            adjacent.display()
-        ));
-    }
+    Ok(())
+}
 
-    // No legacy payload, token or marker may appear under the canonical root.
-    scan_canonical_for_legacy(&canonical, case.name)?;
-
-    // Legacy session names must never reach child B's stdout.
-    for legacy in LEGACY_SESSIONS {
-        if run_b.stdout.contains(legacy) {
-            return Err(format!(
-                "{}: child B exposed legacy session {legacy}: {:?}",
-                case.name, run_b.stdout
-            ));
-        }
-    }
-
-    let settings_path = canonical.join("settings.30.instance.no-git.json");
+fn check_fresh_settings(case: &Case, settings_path: &Path) -> Result<(), String> {
     if case.canonical != CanonicalFixture::Invalid {
         // Settings identity: whenever a settings file appeared, it parses.
         // The invalid fixture is the explicit exception, asserted below.
         if settings_path.exists() {
-            let settings = read_json(&settings_path, case.name)?;
+            let settings = read_json(settings_path, case.name)?;
             if case.canonical == CanonicalFixture::Absent {
                 if let Some(token) = settings.get("rootToken").and_then(|value| value.as_str()) {
                     if LEGACY_TOKENS.contains(&token) {
@@ -832,7 +904,16 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             }
         }
     }
+    Ok(())
+}
 
+fn check_canonical_outcome(
+    case: &Case,
+    run_b: &ChildRun,
+    canonical: &Path,
+    settings_path: &Path,
+    invalid_settings_before: Option<Vec<u8>>,
+) -> Result<(), String> {
     match case.canonical {
         CanonicalFixture::Absent => {}
         CanonicalFixture::Valid => {
@@ -842,7 +923,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
                     case.name, run_b.stdout
                 ));
             }
-            let settings = read_json(&settings_path, case.name)?;
+            let settings = read_json(settings_path, case.name)?;
             if settings.get("rootToken").and_then(|value| value.as_str()) != Some(CANONICAL_TOKEN) {
                 return Err(format!(
                     "{}: canonical settings lost rootToken: {settings}",
@@ -867,7 +948,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             }
         }
         CanonicalFixture::Invalid => {
-            let after = fs::read(&settings_path).map_err(|error| {
+            let after = fs::read(settings_path).map_err(|error| {
                 format!(
                     "{}: read invalid settings {} failed: {error}",
                     case.name,
@@ -882,19 +963,6 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
                 ));
             }
         }
-    }
-
-    // Cleanup of this case's owned roots only, then prove the profile is empty
-    // again before the next case.
-    for root in &owned_home_roots {
-        if root.exists() {
-            fs::remove_dir_all(root).map_err(|error| {
-                format!("{}: remove {} failed: {error}", case.name, root.display())
-            })?;
-        }
-    }
-    for entry in PROFILE_ENTRIES {
-        profile_entry_absent(home, entry)?;
     }
     Ok(())
 }
