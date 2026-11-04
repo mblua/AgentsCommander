@@ -39,8 +39,8 @@ pub(crate) fn start_response_close_polling<R: Runtime>(
         loop {
             tokio::select! {
                 biased;
-                _ = shutdown.token().cancelled() => break,
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                () = shutdown.token().cancelled() => break,
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
                     poll_response_close(&app).await;
                 }
             }
@@ -89,7 +89,7 @@ impl Drop for NativeLifecycleLease {
         let released = self
             .authority
             .take()
-            .is_some_and(|authority| authority.release());
+            .is_some_and(LifecycleEntryAuthority::release);
         self.release_receipt
             .store(if released { 1 } else { 2 }, Ordering::Release);
     }
