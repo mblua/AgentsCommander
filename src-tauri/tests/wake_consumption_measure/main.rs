@@ -14,32 +14,32 @@
 //! duplicate submission (F7/G4) directly as marker-count.
 //!
 //! CANDIDATE SIGNALS measured against that GT, per agent, on Windows/ConPTY:
-//!   1. bare `waiting_for_input` flip  (IdleDetector idle_set, via purge_readiness)
-//!   2. post-submit activity timestamp gate  (has_printable_activity_since, sec 14.1)
+//!   1. bare `waiting_for_input` flip  (`IdleDetector` `idle_set`, via `purge_readiness`)
+//!   2. post-submit activity timestamp gate  (`has_printable_activity_since`, sec 14.1)
 //!   3. screen-state: body no longer in the input box AND transcript grew
-//!      (vt100 screen via get_screen_snapshot, sec 16.1 candidate #3)
+//!      (vt100 screen via `get_screen_snapshot`, sec 16.1 candidate #3)
 //!
 //! For each: false-positive (signal=consumed, GT=not -> masks the bug) and
 //! false-negative (signal=not, GT=consumed -> needless redeliver, couples G4).
 //!
 //! AGENT-AGNOSTIC: the agent command is read from env so the SAME instrument
 //! runs whichever agent is installed, with ZERO code change (tech-lead guidance):
-//!   AC_WAKE_HARNESS_SHELL  (default "claude")
-//!   AC_WAKE_HARNESS_ARGS   (default "--dangerously-skip-permissions"; space split)
-//!   AC_WAKE_HARNESS_AGENT  (report label; default = shell)
-//!   AC_WAKE_HARNESS_TRIALS (default "5")
-//!   AC_WAKE_HARNESS_SIGNAL_WINDOW_MS (default "6000")
-//!   AC_WAKE_HARNESS_GT_TIMEOUT_MS    (default "60000")
-//!   AC_WAKE_HARNESS_INJECT_MODE
-//!     (ready | first_idle | immediate | pi_logical_clear; default ready)
-//!   AC_WAKE_HARNESS_REDELIVER_MODE   (immediate | settled; default immediate)
-//!   AC_WAKE_HARNESS_SETTLE_HOLD_MS   (sustained paste-ready hold; default "3500")
+//!   `AC_WAKE_HARNESS_SHELL`  (default "claude")
+//!   `AC_WAKE_HARNESS_ARGS`   (default "--dangerously-skip-permissions"; space split)
+//!   `AC_WAKE_HARNESS_AGENT`  (report label; default = shell)
+//!   `AC_WAKE_HARNESS_TRIALS` (default "5")
+//!   `AC_WAKE_HARNESS_SIGNAL_WINDOW_MS` (default "6000")
+//!   `AC_WAKE_HARNESS_GT_TIMEOUT_MS`    (default "60000")
+//!   `AC_WAKE_HARNESS_INJECT_MODE`
+//!     (ready | `first_idle` | immediate | `pi_logical_clear`; default ready)
+//!   `AC_WAKE_HARNESS_REDELIVER_MODE`   (immediate | settled; default immediate)
+//!   `AC_WAKE_HARNESS_SETTLE_HOLD_MS`   (sustained paste-ready hold; default "3500")
 //! Never fabricated: if the agent binary is absent, the harness prints a SKIP
 //! line and returns (it does not assert), so a run on a box without that agent
 //! is an honest no-op, not a fake pass.
 //!
 //! RUN (Windows, agent installed + authenticated):
-//!   cargo test --test wake_consumption_measure -- --ignored --nocapture
+//!   cargo test --test `wake_consumption_measure` -- --ignored --nocapture
 //! It prints a per-signal FP/FN table, the F7 lingering answer, and the
 //! live-path fresh-idle drop rate.
 
@@ -186,8 +186,8 @@ struct HarnessCtx {
     _temp: tempfile::TempDir,
 }
 
-/// Build a minimal but REAL app context (mirrors tests/pty_lifecycle_regression
-/// make_test_app) and START the idle watcher so the `waiting_for_input`/idle_set
+/// Build a minimal but REAL app context (mirrors `tests/pty_lifecycle_regression`
+/// `make_test_app`) and START the idle watcher so the `waiting_for_input`/`idle_set`
 /// transition (candidate signal 1) actually fires. We hold the `Arc<IdleDetector>`
 /// so signals 1 and 2 read the real detector directly.
 fn make_ctx(repo_root: &Path) -> HarnessCtx {
@@ -300,7 +300,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
 
 // ───────────────────────────── signals + GT ──────────────────────────────
 
-/// Signal 1: is the session currently in the idle set (waiting_for_input == true
+/// Signal 1: is the session currently in the idle set (`waiting_for_input` == true
 /// equivalent)? Read from the real detector, watcher-driven.
 fn watcher_idle(idle: &Arc<IdleDetector>, id: Uuid) -> bool {
     idle.purge_readiness(&[id])
@@ -429,7 +429,7 @@ impl SignalTally {
 /// (#1001 PR2 P2) Faithfully replicate B's live settle decision, so the post-fix
 /// number reflects the SHIPPED gate, not a proxy. Option-a first routes on
 /// `alive_age` (`live_wake_route`): a STARTING candidate takes the sustained-idle
-/// settle; an ESTABLISHED one runs `live_settle_action`'s activity_age loop (busy
+/// settle; an ESTABLISHED one runs `live_settle_action`'s `activity_age` loop (busy
 /// fast-path, long-idle inject, fresh-idle wait, resize wait, cap).
 async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
     // (#1001 PR2 P2 option-a) Mirror prod: classify starting vs established by
@@ -487,8 +487,8 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
 /// the agent and records `alive_age` at the instant it FIRST holds sustained
 /// paste-ready - `wait_for_settle`'s definition (watcher idle AND rendered
 /// content held for `settle_hold`), the same paste-ready notion B's live settle
-/// targets. `wait_for_settle` returns AFTER the hold, so first-ready alive_age =
-/// alive_age - settle_hold (up to a 200ms poll of slack). Prints per-trial and
+/// targets. `wait_for_settle` returns AFTER the hold, so first-ready `alive_age` =
+/// `alive_age` - `settle_hold` (up to a 200ms poll of slack). Prints per-trial and
 /// min/mean/max so the startup threshold is set to max + margin, not a guess. No
 /// production code path runs here; this only measures the boot timing that feeds
 /// the `STARTUP_SETTLE_THRESHOLD` constant.
@@ -580,10 +580,7 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
             rmean,
             rmax
         );
-        println!(
-            "suggested STARTUP_SETTLE_THRESHOLD >= max first-ready ({:?}) + margin",
-            fmax
-        );
+        println!("suggested STARTUP_SETTLE_THRESHOLD >= max first-ready ({fmax:?}) + margin");
     }
     println!("=== end ===\n");
 }
@@ -594,8 +591,8 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
 /// AGAIN in the `[idle_threshold, idle_threshold + guard]` window and measure the
 /// drop via the echo-immune GT. `AC_WAKE_HARNESS_LIVE_SETTLE`:
 ///  - "off": PRE-fix behaviour - fire wake #2 at fresh-idle, no settle.
-///  - "on":  POST-fix - apply the fix's settle (wait activity_age >=
-///    idle_threshold + guard) before wake #2.
+///  - "on":  POST-fix - apply the fix's settle (wait `activity_age` >=
+///    `idle_threshold` + guard) before wake #2.
 ///
 /// The live Inject path (`deliver_wake` is pub(crate), `settle_live_before_inject`
 /// is private) is unreachable from an integration test, so this replicates the
@@ -710,8 +707,8 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
         cfg.agent_label, cfg.live_settle
     );
     println!(
-        "fresh-idle live-path wake#2 drop rate: {}/{} ({:.0}%); warm-up-failed skipped: {}",
-        dropped, measured, pct, warmup_failed
+        "fresh-idle live-path wake#2 drop rate: {dropped}/{measured} ({pct:.0}%); \
+         warm-up-failed skipped: {warmup_failed}"
     );
     println!("=== end ===\n");
 }
