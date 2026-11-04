@@ -382,23 +382,13 @@ async fn submit_watchdog_kill(coordinator: &SelectionCoordinator, session_id: Uu
         // #1151 - the two conditions the old conflated line merged are now distinct, so a
         // log reader can tell an in-flight critical admission from a vanished session row.
         Ok(WatchdogKillOutcome::AlreadyInFlight) => {
-            log::debug!(
-                "[resource-watchdog] kill already in flight session={}",
-                session_id
-            );
+            log::debug!("[resource-watchdog] kill already in flight session={session_id}");
         }
         Ok(WatchdogKillOutcome::NoPublicSession) => {
-            log::debug!(
-                "[resource-watchdog] session no longer public session={}",
-                session_id
-            );
+            log::debug!("[resource-watchdog] session no longer public session={session_id}");
         }
         Err(error) => {
-            log::warn!(
-                "[resource-watchdog] coordinator kill failed session={}: {}",
-                session_id,
-                error
-            );
+            log::warn!("[resource-watchdog] coordinator kill failed session={session_id}: {error}");
         }
     }
 }

@@ -123,7 +123,7 @@ pub fn resolve_portable_reference(
     let mut warnings = Vec::new();
     let outcome = resolve_portable_reference_logged(settings, reference, &mut warnings);
     for warning in warnings {
-        log::warn!("[agent-match] {}", warning);
+        log::warn!("[agent-match] {warning}");
     }
     outcome
 }

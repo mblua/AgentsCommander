@@ -8,8 +8,8 @@ use uuid::Uuid;
 /// Minimal session data needed to restore a session on next app start.
 /// No UUID, just the "recipe" to re-create it.
 ///
-/// The optional runtime fields (id, waiting_for_input, communication,
-/// created_at) are populated during live snapshots so the CLI can read session
+/// The optional runtime fields (id, `waiting_for_input`, communication,
+/// `created_at`) are populated during live snapshots so the CLI can read session
 /// state from the file without requiring an HTTP request. They are ignored on
 /// restore.
 ///
@@ -74,7 +74,7 @@ pub struct PersistedSession {
 
     /// Last-known geometry of this session's detached window. `None` for sessions
     /// that were never detached, or detached without any drag/resize yet. Auto-GC'd
-    /// when the session is destroyed (field travels with the PersistedSession row).
+    /// when the session is destroyed (field travels with the `PersistedSession` row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_geometry: Option<WindowGeometry>,
 
@@ -126,7 +126,7 @@ pub struct PersistedSession {
     pub context_percent: Option<u8>,
 }
 
-/// Remove duplicate sessions by name AND working_directory.
+/// Remove duplicate sessions by name AND `working_directory`.
 /// When duplicates share the same key (name or CWD), keep the one with
 /// `was_active=true`; if none (or both) are active, keep the last occurrence.
 /// Note: callers are expected to filter out temp sessions before calling this.

@@ -6,6 +6,9 @@ publish = false
 license = "MIT"
 description = "Bounded terminal snapshot protocol and deterministic renderer"
 
+[lints]
+workspace = true
+
 [lib]
 doctest = false
 

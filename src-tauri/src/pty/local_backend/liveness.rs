@@ -10,14 +10,16 @@ use crate::pty::spawn_diagnostics::ChildLiveness;
 use super::PtyInstance;
 
 /// #942 - the body of `probe_child`, free over the map so #1032's liveness gate can be
-/// driven by a test against a real ConPTY child.
+/// driven by a test against a real `ConPTY` child.
 ///
 /// The guard is a local and `ChildLiveness` is owned, so the `ptys` lock is released at the
 /// return. That is what makes the gate below safe by construction rather than by care: the
 /// `match` scrutinee holds no borrow of the map, so no temporary-lifetime extension can
 /// carry the guard into an arm and nest `screen_parsers` inside `ptys`.
 pub(super) fn probe_child_in(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> ChildLiveness {
-    let mut ptys = ptys.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ptys = ptys
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(instance) = ptys.get_mut(&id) else {
         return ChildLiveness::Gone;
     };
@@ -39,7 +41,7 @@ pub(super) fn probe_child_in(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid)
 /// that can tell a live 42% from a dead one.
 ///
 /// Free over the map and the fanout, like `resize_instance` above, so the gate can be driven
-/// by a test against a real ConPTY child: `LocalProcessBackend` itself cannot be built in a
+/// by a test against a real `ConPTY` child: `LocalProcessBackend` itself cannot be built in a
 /// unit test (its `GitWatcher` needs a Tauri `AppHandle`), and none of that has anything to
 /// do with whether a child is alive.
 pub(crate) fn context_liveness_from_child_liveness(
@@ -109,11 +111,11 @@ pub(super) fn probe_child_liveness(
         return ChildLiveness::Unqueryable("child exposes no process handle".to_string());
     };
 
-    match unsafe { WaitForSingleObject(handle as _, 0) } {
+    match unsafe { WaitForSingleObject(handle.cast(), 0) } {
         WAIT_TIMEOUT => ChildLiveness::Alive,
         WAIT_OBJECT_0 => {
             let mut code: u32 = 0;
-            if unsafe { GetExitCodeProcess(handle as _, &mut code) } == 0 {
+            if unsafe { GetExitCodeProcess(handle.cast(), &mut code) } == 0 {
                 let os_error = unsafe { GetLastError() };
                 return ChildLiveness::Unqueryable(format!(
                     "GetExitCodeProcess failed (os error {os_error})"

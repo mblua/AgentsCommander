@@ -175,7 +175,7 @@ fn parsed_to_shortcut(parsed: &ParsedHotkey) -> Result<Shortcut, String> {
     Ok(Shortcut::new(Some(modifiers), code))
 }
 
-/// Map a normalized alphanumeric key char to a `Code` via its PascalCase name
+/// Map a normalized alphanumeric key char to a `Code` via its `PascalCase` name
 /// (`Key{A..Z}` / `Digit{0..9}`), the string form `keyboard_types::Code`
 /// round-trips through `FromStr`.
 fn key_char_to_code(c: char) -> Option<Code> {
@@ -519,7 +519,7 @@ fn resolve_live_capture_session(
 /// `begin_capture`; otherwise a second hotkey press during an in-flight capture
 /// whose active session has since been cleared/deleted or switched to an
 /// unresolvable CWD would return a visible `Err` from that resolution and raise
-/// AgentsCommander forward mid-capture instead of being a silent `Busy` no-op.
+/// `AgentsCommander` forward mid-capture instead of being a silent `Busy` no-op.
 /// Taking only `&ScreenshotCaptureState` (no `AppHandle`/`SessionManager`) keeps
 /// the before-resolution ordering structurally unit-testable.
 async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {

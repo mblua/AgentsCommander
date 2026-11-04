@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::config::coordinator_clocks::{ClockEntry, CoordinatorClocksState};
@@ -15,19 +14,33 @@ use crate::session::selection::{SelectionCoordinator, SelectionCoordinatorError}
 
 const TICK: Duration = Duration::from_secs(60);
 /// (#580) A just-woken session replays scrollback for ~1-2s; exclude its first
-/// REPAINT_GRACE of life from the idle-anchor advance so reopening an abandoned
+/// `REPAINT_GRACE` of life from the idle-anchor advance so reopening an abandoned
 /// team cannot reset its persisted idle. Feeds `member_post_repaint_silence`.
 const REPAINT_GRACE: Duration = Duration::from_secs(10);
-/// (#580) A session is not kill-eligible until alive past WAKE_GRACE, so a
+/// (#580) A session is not kill-eligible until alive past `WAKE_GRACE`, so a
 /// just-woken (or wake-on-restore) team is visible >=30s before any auto-close.
-/// MUST be > REPAINT_GRACE (a member protects its team via the anchor before it
+/// MUST be > `REPAINT_GRACE` (a member protects its team via the anchor before it
 /// can be killed) and is also the spawn-race guard (untracked -> not established).
 const WAKE_GRACE: Duration = Duration::from_secs(30);
 
-/// Spawn the auto-close watcher. Mirrors MailboxPoller/LoopScheduler::start
-/// (lib.rs): a tokio task with a `select!` on the shutdown token.
-pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
-    tauri::async_runtime::spawn(async move {
+pub(crate) trait AutoCloseServices: Send + Sync {
+    fn settings(&self) -> SettingsState;
+    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>>;
+    fn pty_manager(&self) -> Arc<Mutex<PtyManager>>;
+    fn idle_detector(&self) -> Arc<IdleDetector>;
+    fn selection_coordinator(&self) -> SelectionCoordinator;
+    fn coordinator_clocks(&self) -> Option<CoordinatorClocksState>;
+    fn idle_badge(&self, cwd: &str, at: DateTime<Utc>);
+    fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>);
+}
+
+pub(crate) struct AutoClose;
+
+impl AutoClose {
+    pub(crate) async fn run<S: AutoCloseServices>(
+        services: S,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) {
         // (#580) per-team last-emitted anchor (seconds) for the badge dedup;
         // task-local, self-bounded via `retain` in `tick`.
         let mut last_emitted: HashMap<String, i64> = HashMap::new();
@@ -36,24 +49,24 @@ pub fn start(app: AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
                 biased;
                 _ = shutdown.token().cancelled() => break,
                 _ = tokio::time::sleep(TICK) => {
-                    tick(&app, &mut last_emitted).await;
-                    flush_clocks(&app); // debounced disk flush for the badge store
+                    tick(&services, &mut last_emitted).await;
+                    flush_clocks(&services); // debounced disk flush for the badge store
                 }
             }
         }
-    });
+    }
 }
 
 /// (#580) Effective "post-repaint" silence for ONE live member, or None if the
 /// member must NOT advance the idle anchor this tick. None when:
-///   - untracked (alive_age or silence_age missing) -> spawn race, ignore;
-///   - alive <= REPAINT_GRACE (still inside the wake-repaint window);
+///   - untracked (`alive_age` or `silence_age` missing) -> spawn race, ignore;
+///   - alive <= `REPAINT_GRACE` (still inside the wake-repaint window);
 ///   - the member's LAST output landed inside its repaint window
-///     (silence_age >= alive_age - REPAINT_GRACE) -> that output was scrollback
+///     (`silence_age` >= `alive_age` - `REPAINT_GRACE`) -> that output was scrollback
 ///     replay (or nothing genuine has happened since), so it must not reset the
 ///     persisted idle of an abandoned-then-reopened team.
 ///
-/// Some(silence_age) ONLY when the last output is genuine post-repaint activity.
+/// `Some(silence_age)` ONLY when the last output is genuine post-repaint activity.
 /// Pure; this is the E1 fix and gets its own boundary-tested unit (§8.1).
 fn member_post_repaint_silence(
     alive_age: Option<Duration>,
@@ -92,7 +105,7 @@ fn team_min_silence(
 }
 
 /// (#580) Unified idle anchor as whole UNIX seconds: max(user-message, activity).
-/// i64::MIN for an absent component so the present one wins; both absent -> MIN
+/// `i64::MIN` for an absent component so the present one wins; both absent -> MIN
 /// (caller treats as "no badge"). Pure.
 fn team_idle_since_secs(
     last_user_message_at: Option<DateTime<Utc>>,
@@ -108,7 +121,7 @@ fn team_idle_since_secs(
 /// no persisted clock to key by the coordinator FQN). Falls back to the member's
 /// own in-memory silence (`now - silence_age`) so the orphan stays
 /// auto-close-eligible and is reaped on a later idle tick instead of reading
-/// `i64::MIN` and lingering until a manual close. `None` silence_age (a
+/// `i64::MIN` and lingering until a manual close. `None` `silence_age` (a
 /// just-spawned, untracked member) yields `i64::MIN` (not closeable this tick),
 /// matching the spawn-race conservatism elsewhere. Pure; unit-tested.
 fn orphan_anchor_secs(silence_age: Option<Duration>, now_secs: i64) -> i64 {
@@ -147,9 +160,9 @@ fn resolve_member_anchor(
 }
 
 /// (#580) KILL predicate for ONE team: closeable iff it has an ESTABLISHED
-/// member (alive past WAKE_GRACE, the visible-window + spawn-race gate) AND its
+/// member (alive past `WAKE_GRACE`, the visible-window + spawn-race gate) AND its
 /// unified anchor is idle past the timeout. `anchor_secs` is the output of
-/// `team_idle_since_secs`; i64::MIN (no anchor) is never closeable. Pure, so the
+/// `team_idle_since_secs`; `i64::MIN` (no anchor) is never closeable. Pure, so the
 /// kill rule is unit-tested directly (§8.1) instead of re-implemented in a test.
 fn team_is_closeable(
     established: bool,
@@ -185,16 +198,16 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
     coord_id_of_team == Some(destroyed_id)
 }
 
-async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<String, i64>) {
-    let settings = app.state::<SettingsState>();
+async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<String, i64>) {
+    let settings = services.settings();
     let close_settings = read_close_settings(&settings).await;
     // NOTE: the enabled/timeout gate moved DOWN: steps 1-2 (advance + badge
     // emit) run even when auto-close is OFF (the badge is informational). Only
     // step 3 (kill) is gated.
 
-    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-    let idle = app.state::<Arc<IdleDetector>>();
+    let session_mgr = services.session_manager();
+    let pty_mgr = services.pty_manager();
+    let idle = services.idle_detector();
 
     // Agent-owned sessions + their team key (read lock released here).
     let candidates = session_mgr.read().await.agent_team_members().await;
@@ -227,7 +240,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     let coord_ids = session_mgr.read().await.coordinator_ids_by_team().await;
 
     let now_secs = Utc::now().timestamp();
-    let Some(clocks) = app.try_state::<CoordinatorClocksState>() else {
+    let Some(clocks) = services.coordinator_clocks() else {
         return;
     };
 
@@ -236,14 +249,13 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
 
     // (2) BADGE: snapshot, RELEASE, then emit the unified anchor per team (deduped).
     let snap = {
-        let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let g = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         g.snapshot()
     };
     emit_idle_badges(&coord_refs, &snap, now_secs, last_emitted, |cwd, dt| {
-        let _ = app.emit(
-            "coordinator_clock_updated",
-            serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": dt.to_rfc3339() }),
-        );
+        services.idle_badge(cwd, dt);
     });
 
     // (3) KILL: gated on the setting; SAME anchor; established + timeout.
@@ -264,7 +276,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     if to_close.is_empty() {
         return;
     }
-    let coordinator = app.state::<SelectionCoordinator>();
+    let coordinator = services.selection_coordinator();
     let teams = AutoCloseTeams {
         id_to_team: &id_to_team,
         coord_refs: &coord_refs,
@@ -289,14 +301,9 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     // the persisted marker). mark_auto_closed is idempotent (emits once). The
     // dirty flag set here is persisted by flush_clocks at the end of this tick.
     if !coord_closed_teams.is_empty() {
-        if let Some(clocks) =
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-        {
+        if let Some(clocks) = services.coordinator_clocks() {
             mark_closed_badges(&clocks, &coord_closed_teams, &coord_refs, |cwd, now| {
-                let _ = app.emit(
-                    "coordinator_auto_close_changed",
-                    serde_json::json!({ "replicaPath": cwd, "autoClosedAt": now.to_rfc3339() }),
-                );
+                services.auto_closed_badge(cwd, now);
             });
         }
     }
@@ -338,7 +345,7 @@ fn mark_closed_badges(
         };
         let newly = clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_auto_closed(fqn, now);
         if newly {
             emit(cwd, now);
@@ -365,7 +372,9 @@ fn live_members(
     pty_mgr: &Mutex<PtyManager>,
     candidates: Vec<(Uuid, String)>,
 ) -> Vec<(Uuid, String)> {
-    let pm = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+    let pm = pty_mgr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     candidates
         .into_iter()
         .filter(|(id, _)| pm.has_session(*id))
@@ -512,7 +521,9 @@ fn advance_team_activity(
         member_post_repaint_silence(idle.alive_age(id), idle.silence_age(id), REPAINT_GRACE)
     });
     {
-        let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (team, (fqn, _)) in coord_refs {
             if let Some(sil) = team_sil.get(team) {
                 if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
@@ -606,7 +617,9 @@ async fn confirm_closeable_members(
         // member's first genuine byte only touches the in-memory silence clock,
         // never last_user_message_at, so the anchor re-read alone is blind to it.
         let fresh_anchor = {
-            let g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let g = clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match id_to_team.get(&id).and_then(|t| coord_refs.get(t)) {
                 Some((fqn, _)) => {
                     team_idle_since_secs(g.last_user_message_at(fqn), g.last_activity_at(fqn))
@@ -639,21 +652,21 @@ async fn confirm_closeable_members(
     confirmed
 }
 
-fn flush_clocks<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if let Some(clocks) =
-        app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-    {
+fn flush_clocks(services: &impl AutoCloseServices) {
+    if let Some(clocks) = services.coordinator_clocks() {
         // Snapshot under the lock, RELEASE, then do disk I/O (the same mutex is
         // on the keystroke path; never hold it across the ~260ms rename).
         let snapshot = {
-            let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !guard.take_dirty() {
                 return;
             }
             guard.snapshot()
         };
         if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-            log::warn!("[coordinator-clocks] save failed: {}", e);
+            log::warn!("[coordinator-clocks] save failed: {e}");
         }
     }
 }

@@ -50,7 +50,7 @@ pub enum SettingsOwnerError {
     Unavailable(SettingsAvailability),
     /// A try-acquisition found the state lock held.
     Busy,
-    /// Managed operations are not enabled on this owner (StagedCompatibility).
+    /// Managed operations are not enabled on this owner (`StagedCompatibility`).
     OperationsNotEnabled,
     /// The lifecycle lock is held by another owner past the wait deadline.
     LifecycleTimedOut,
@@ -345,7 +345,7 @@ impl SettingsOperationGuard<'_> {
 }
 
 impl SettingsOwner {
-    /// StagedCompatibility owner around already-loaded settings: the P40
+    /// `StagedCompatibility` owner around already-loaded settings: the P40
     /// constructor path. Ready, with managed operations disabled.
     pub(crate) fn staged(settings: AppSettings) -> Self {
         Self::with_stage(
@@ -422,13 +422,13 @@ impl SettingsOwner {
     pub(crate) fn control(&self) -> std::sync::MutexGuard<'_, SettingsOwnerControl> {
         self.control
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn lease_guard(&self) -> std::sync::MutexGuard<'_, Option<SettingsOwnerLease>> {
         self.lease
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn identity(&self) -> SettingsOwnerIdentity {
@@ -530,6 +530,10 @@ impl SettingsOwner {
             .try_read_owned()
             .map_err(|_| SettingsOwnerError::Busy)?;
         // The permit now owns the admission and releases it on drop.
+        #[expect(
+            clippy::mem_forget,
+            reason = "SettingsReadPermit takes over admission release"
+        )]
         std::mem::forget(admission);
         let permit = SettingsReadPermit {
             guard: Some(guard),
@@ -781,7 +785,7 @@ impl SettingsOwner {
             let (next, timeout) = self
                 .released
                 .wait_timeout(control, std::time::Duration::from_millis(50))
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             control = next;
             if timeout.timed_out() && !reported && started.elapsed() >= soft_deadline {
                 reported = true;

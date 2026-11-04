@@ -40,21 +40,21 @@ pub(super) fn allocate_disk_room(
     let wg_name = room_dir_name(wg_number, safe_team, room_number_pad_width());
     let wg_dir = base.join(&wg_name);
     if directories::room_directory_present(&wg_dir) {
-        return Err(format!("Room directory already exists: {}", wg_name));
+        return Err(format!("Room directory already exists: {wg_name}"));
     }
     directories::create_room_directory(&wg_dir)
-        .map_err(|e| format!("Failed to create room directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room directory: {e}"))?;
     directories::create_room_messaging_directory(
         &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
     )
-    .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
+    .map_err(|e| format!("Failed to create messaging directory: {e}"))?;
     // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
     // created with the same hard `?` they use. A half-created room must not be
     // reported as created.
     crate::config::shared_locations::create_room_shared_dir(&wg_dir)
-        .map_err(|e| format!("Failed to create room shared directory: {}", e))?;
+        .map_err(|e| format!("Failed to create room shared directory: {e}"))?;
     let task_content = build_task_content(task_title);
-    write_task(&wg_dir, &task_content).map_err(|e| format!("Failed to write TASK.md: {}", e))?;
+    write_task(&wg_dir, &task_content).map_err(|e| format!("Failed to write TASK.md: {e}"))?;
 
     Ok::<_, String>((wg_dir, wg_number))
 }
@@ -79,7 +79,7 @@ pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
 }
 
 // Compatibility entry point for callers without an existing operation.
-#[allow(dead_code)]
+#[allow(dead_code)] // test-only; cfg(test) kills Origin::OnDisk outside #3595
 pub(crate) async fn create_workgroup_on_disk(
     args: WorkgroupDiskCreateArgs,
 ) -> Result<WorkgroupCloneResult, String> {
@@ -110,10 +110,7 @@ pub(crate) async fn create_workgroup_on_disk_traced(
             operation.project(&base);
 
             if let Err(e) = crate::commands::ac_discovery::ensure_ac_root_gitignore(&base) {
-                log::warn!(
-                    "[create_workgroup] Failed to ensure Project AC Root .gitignore: {}",
-                    e
-                );
+                log::warn!("[create_workgroup] Failed to ensure Project AC Root .gitignore: {e}");
             }
 
             let team_config = if !args.agents.is_empty()
@@ -203,11 +200,11 @@ pub(crate) fn create_or_update_replica_on_disk(
     let agent_ref = resolve_agent_ref(&args.ac_root, &args.agent_path)?;
     let agent_name = agent_ref_bare_name(&agent_ref);
     validate_existing_name(&agent_name, "Agent")?;
-    let replica_dir = args.wg_dir.join(format!("__agent_{}", agent_name));
+    let replica_dir = args.wg_dir.join(format!("__agent_{agent_name}"));
 
     create_agent_replica_layout(&replica_dir).map_err(|(sub, e)| match sub {
-        "replica_dir" => format!("Failed to create replica dir for {}: {}", agent_name, e),
-        _ => format!("Failed to create {} for {}: {}", sub, agent_name, e),
+        "replica_dir" => format!("Failed to create replica dir for {agent_name}: {e}"),
+        _ => format!("Failed to create {sub} for {agent_name}: {e}"),
     })?;
 
     let assigned_repos: Vec<String> = args
@@ -216,7 +213,7 @@ pub(crate) fn create_or_update_replica_on_disk(
         .filter(|r| r.agents.iter().any(|a| agent_matches(a, &agent_name)))
         .map(|r| {
             let dir_name = format!("repo-{}", repo_dir_name_from_url(&r.url));
-            format!("../{}", dir_name)
+            format!("../{dir_name}")
         })
         .collect();
 
@@ -295,7 +292,7 @@ pub(super) fn initialize_replica_config_on_disk(
 /// and the on-disk path provably share the same guarded initializer instead of
 /// a second destructive writer.
 // Compatibility entry point for callers without creation diagnostics.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn initialize_workgroup_replicas_on_disk(
     ac_root: &Path,
     wg_dir: &Path,
@@ -324,19 +321,19 @@ pub(super) fn initialize_workgroup_replicas_on_disk_traced(
             let result = (|| {
                 let agent_ref = resolve_agent_ref(ac_root, agent_path)?;
                 let agent_name = agent_ref_bare_name(&agent_ref);
-                let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
+                let replica_dir = wg_dir.join(format!("__agent_{agent_name}"));
                 create_agent_replica_layout(&replica_dir).map_err(|(sub, error)| match sub {
                     "replica_dir" => {
-                        format!("Failed to create replica dir for {}: {}", agent_name, error)
+                        format!("Failed to create replica dir for {agent_name}: {error}")
                     }
-                    _ => format!("Failed to create {} for {}: {}", sub, agent_name, error),
+                    _ => format!("Failed to create {sub} for {agent_name}: {error}"),
                 })?;
                 let assigned_repos: Vec<String> = repos
                     .iter()
                     .filter(|repo| repo.agents.iter().any(|a| agent_matches(a, &agent_name)))
                     .map(|repo| {
                         let dir_name = format!("repo-{}", repo_dir_name_from_url(&repo.url));
-                        format!("../{}", dir_name)
+                        format!("../{dir_name}")
                     })
                     .collect();
                 initialize_replica_config_on_disk(&replica_dir, &assigned_repos)
@@ -417,8 +414,7 @@ pub(crate) fn acquire_lifecycle_project_gate(
             // the existing deletion behavior as untracked degradation.
             log::warn!(
                 "[entity_creation] #1063 lifecycle removal proceeding without seed-manifest gate \
-                 (untracked): {}",
-                other
+                 (untracked): {other}"
             );
             Ok(None)
         }
@@ -444,14 +440,10 @@ pub(super) fn prune_lifecycle_scope_if_activated(
                 let outcome = guard
                     .publication_permit()
                     .apply_lifecycle_filter(token, filter);
-                log::debug!(
-                    "[entity_creation] #1063 lifecycle prune outcome: {:?}",
-                    outcome
-                );
+                log::debug!("[entity_creation] #1063 lifecycle prune outcome: {outcome:?}");
             }
             Err(error) => log::warn!(
-                "[entity_creation] #1063 lifecycle filter rejected before prune: {}",
-                error
+                "[entity_creation] #1063 lifecycle filter rejected before prune: {error}"
             ),
         }
     }
@@ -467,7 +459,7 @@ pub(crate) fn prune_replica_config_scope(
 ) {
     let relative = Path::new(".ac")
         .join(workgroup)
-        .join(format!("__agent_{}", agent_name));
+        .join(format!("__agent_{agent_name}"));
     prune_lifecycle_scope_if_activated(gate, activation, move || {
         let identity =
             crate::config::seed_manifest::ManifestPathIdentity::from_relative_path(&relative)?;
@@ -515,7 +507,7 @@ pub(crate) fn prune_agent_component_scope(
     activation: Option<&ManifestActivationToken>,
     agent_name: &str,
 ) {
-    let component = format!("__agent_{}", agent_name);
+    let component = format!("__agent_{agent_name}");
     prune_lifecycle_scope_if_activated(gate, activation, move || {
         ManifestLifecycleFilter::replica_component(component)
     });

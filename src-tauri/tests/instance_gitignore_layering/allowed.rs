@@ -385,11 +385,10 @@ pub(crate) const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 93] = [
 /// Every `(file, child)` reference the constant's home is allowed to make under
 /// `crate::`, sorted.
 ///
-/// **Empty.** `src/config.rs` measures zero outgoing arcs over the record, and
-/// that measurement is the whole non-absorption argument of #1273: a module with
-/// no way out cannot reach a knot member, so it cannot share an SCC with one, so
-/// nothing that depends only on it can either.
-pub(crate) const ALLOWED_HOST_CRATE_REFERENCES: [(&str, &str); 0] = [];
+/// #3534 permits only the configuration write probe leaf under filesystem.
+/// The host spelling guard and leaf observation prevent an app return path.
+pub(crate) const ALLOWED_HOST_CRATE_REFERENCES: [(&str, &str); 1] =
+    [("src/config.rs", "filesystem")];
 
 /// Every `(file, child)` reference the constant's home is allowed to make under
 /// `super::`, sorted.

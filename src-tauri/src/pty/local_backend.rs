@@ -84,7 +84,7 @@ fn build_git_guard_env(sequence: &GitGuardTempSequence) -> Result<Option<GitGuar
     let mut path_entries: Vec<std::path::PathBuf> = vec![guard_dir];
     path_entries.extend(std::env::split_paths(&current_path));
     let path = std::env::join_paths(path_entries.iter())
-        .map_err(|e| AppError::Other(format!("Failed to join PATH for git guard: {}", e)))?
+        .map_err(|e| AppError::Other(format!("Failed to join PATH for git guard: {e}")))?
         .to_string_lossy()
         .to_string();
 
@@ -107,11 +107,7 @@ fn spawn_local_child(
     // #2413 - a child exists from here on; every later `Err` is fenced.
     launch_witness.mark();
     let child_pid = child.process_id();
-    log::info!(
-        "[pty] Spawned session {} with child pid {:?}",
-        id,
-        child_pid
-    );
+    log::info!("[pty] Spawned session {id} with child pid {child_pid:?}");
 
     Ok((child, child_pid))
 }
@@ -141,7 +137,9 @@ fn write_to_local_pty(
     data: &[u8],
 ) -> Result<(), AppError> {
     let writer = {
-        let ptys = ptys.lock().unwrap_or_else(|error| error.into_inner());
+        let ptys = ptys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let instance = ptys
             .get(&id)
             .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
@@ -150,7 +148,9 @@ fn write_to_local_pty(
 
     // The global PTY map is released before a potentially blocking pipe
     // write. Teardown can remove and terminate the child to unblock it.
-    let mut writer = writer.lock().unwrap_or_else(|error| error.into_inner());
+    let mut writer = writer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     writer
         .write_all(data)
         .map_err(|error| AppError::PtyError(error.to_string()))?;
@@ -161,7 +161,7 @@ fn write_to_local_pty(
 
 fn remove_local_pty(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid) -> Option<PtyInstance> {
     ptys.lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&id)
 }
 
@@ -283,11 +283,50 @@ impl LocalProcessBackend {
         let spawn_started = Instant::now();
         let (child, child_pid) =
             spawn_local_child(pair.slave.as_ref(), command, &launch_witness, id)?;
+        let spawned =
+            instance::prepare_spawn_instance(pair, child, &mut resource_registration, cols, rows)?;
+        self.finish_spawn(
+            id,
+            spawned,
+            (rows, cols),
+            idle_tuning,
+            output_target,
+            || {
+                let redact = spawn_redaction_values(&extra_env, &configured_env);
+                SpawnRecordInit {
+                    session_id: id,
+                    pid: child_pid,
+                    argv: exec_argv,
+                    cwd: spawn_cwd,
+                    cli: coding_agent,
+                    agent_profile_id: agent_id,
+                    codex_home,
+                    configured_env_count: configured_env.len(),
+                    removed_env_count: env_remove_keys.len(),
+                    redact,
+                    window: spawn_window,
+                    started: spawn_started,
+                    thresholds: diag_thresholds,
+                }
+            },
+        )
+    }
+
+    fn finish_spawn(
+        &self,
+        id: Uuid,
+        spawned: instance::SpawnedInstance,
+        dimensions: (u16, u16),
+        idle_tuning: crate::session::profile::IdleTuning,
+        output_target: crate::pty::output::PtyOutputTarget,
+        record_init: impl FnOnce() -> SpawnRecordInit,
+    ) -> Result<(), AppError> {
+        let (rows, cols) = dimensions;
         let instance::SpawnedInstance {
             instance,
             reader,
             rendered,
-        } = instance::prepare_spawn_instance(pair, child, &mut resource_registration, cols, rows)?;
+        } = spawned;
 
         #[cfg(windows)]
         let cursor_writer = Arc::downgrade(&instance.writer);
@@ -296,28 +335,9 @@ impl LocalProcessBackend {
 
         let output_token =
             self.register_spawn_output(id, instance, idle_tuning, rows, cols, output_target)?;
-        let redact = spawn_redaction_values(&extra_env, &configured_env);
-
         // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
         // concurrency).
-        let record = spawn_diagnostics::register(
-            SpawnRecordInit {
-                session_id: id,
-                pid: child_pid,
-                argv: exec_argv,
-                cwd: spawn_cwd,
-                cli: coding_agent,
-                agent_profile_id: agent_id,
-                codex_home,
-                configured_env_count: configured_env.len(),
-                removed_env_count: env_remove_keys.len(),
-                redact,
-                window: spawn_window,
-                started: spawn_started,
-                thresholds: diag_thresholds,
-            },
-            self.spawn.as_ref(),
-        );
+        let record = spawn_diagnostics::register(record_init(), self.spawn.as_ref());
 
         // #942 - the startup verdict at the deadline and exit attribution. The PTY
         // reader alone cannot carry either: ConPTY holds the pipe open past the death of
@@ -355,7 +375,7 @@ impl LocalProcessBackend {
     ) -> Result<crate::pty::output::PtyOutputRegistrationToken, AppError> {
         self.ptys
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, instance);
         let output_token =
             match self
@@ -420,6 +440,10 @@ impl LocalProcessBackend {
         })
     }
 
+    #[cfg_attr(
+        not(windows),
+        expect(clippy::unused_self, reason = "self holds the Windows git guard.")
+    )]
     fn prepare_spawn_command(
         &self,
         launch: &launch::PreparedLaunch,
@@ -496,9 +520,8 @@ impl LocalProcessBackend {
         {
             command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
             log::info!(
-                "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {}: {}",
-                spawn_cwd,
-                git_ceiling_dirs
+                "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {spawn_cwd}: \
+                 {git_ceiling_dirs}"
             );
 
             #[cfg(windows)]
@@ -506,10 +529,7 @@ impl LocalProcessBackend {
                 command.env("PATH", &git_guard_env.path);
                 command.env("PATHEXT", &git_guard_env.pathext);
                 command.env("AC_REAL_GIT", &git_guard_env.real_git);
-                log::info!(
-                    "[pty] Enabled git guard wrapper for session cwd {}",
-                    spawn_cwd
-                );
+                log::info!("[pty] Enabled git guard wrapper for session cwd {spawn_cwd}");
             }
         }
 
@@ -520,12 +540,15 @@ impl LocalProcessBackend {
         })
     }
 
-    /// #973 (B) - the child rendered. Hand the ConPTY the size the view has been waiting to
+    /// #973 (B) - the child rendered. Hand the `ConPTY` the size the view has been waiting to
     /// give it, and bring the vt100 screen with it. Called from the PTY read loop, once per
     /// session in practice. The decision itself is `hand_over_held_size`.
     fn open_startup_gate(&self, id: Uuid) {
         let applied = {
-            let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+            let ptys = self
+                .ptys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(instance) = ptys.get(&id) else {
                 return;
             };
@@ -594,7 +617,7 @@ impl PtyBackend for LocalProcessBackend {
     fn has_session(&self, id: Uuid) -> bool {
         self.ptys
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&id)
     }
 
@@ -608,7 +631,10 @@ impl PtyBackend for LocalProcessBackend {
         self.fanout.record_resize(id);
 
         let sent = {
-            let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+            let ptys = self
+                .ptys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let instance = ptys
                 .get(&id)
                 .ok_or_else(|| AppError::SessionNotFound(id.to_string()))?;
@@ -697,29 +723,16 @@ impl PtyBackend for LocalProcessBackend {
                     }
                     Ok(None) => {
                         if let Err(e) = child.kill() {
-                            log::warn!(
-                                "[pty] Failed to kill session {} child pid {:?}: {}",
-                                id,
-                                pid,
-                                e
-                            );
+                            log::warn!("[pty] Failed to kill session {id} child pid {pid:?}: {e}");
                         }
                         reap_child_in_background(id, pid, child, record);
                     }
                     Err(e) => {
-                        log::warn!(
-                            "[pty] Failed to poll session {} child pid {:?}: {}",
-                            id,
-                            pid,
-                            e
-                        );
+                        log::warn!("[pty] Failed to poll session {id} child pid {pid:?}: {e}");
                         if let Err(kill_err) = child.kill() {
                             log::warn!(
-                                "[pty] Failed to kill session {} child pid {:?} after poll error: \
-                                    {}",
-                                id,
-                                pid,
-                                kill_err
+                                "[pty] Failed to kill session {id} child pid {pid:?} after poll \
+                                 error: {kill_err}"
                             );
                         }
                         reap_child_in_background(id, pid, child, record);
@@ -757,7 +770,10 @@ impl PtyBackend for LocalProcessBackend {
             Some(child_at_stop),
             self.spawn.as_ref(),
         );
-        let ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+        let ptys = self
+            .ptys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match ptys.get(&id).and_then(|inst| inst.job.as_ref()) {
             Some(job) => {
                 job.terminate();
@@ -768,7 +784,10 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn kill_all_jobs(&self) -> (usize, usize) {
-        let mut ptys = self.ptys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ptys = self
+            .ptys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut terminated = 0;
         let mut jobless = 0;
         for (id, instance) in ptys.iter_mut() {
@@ -889,10 +908,8 @@ fn reap_child_in_background(
                     let cause = record.attribute_exit(record.stop_snapshot());
                     if !record.log_child_exit(cause, &liveness, "reaped-after-stop") {
                         log::debug!(
-                            "[pty] Reaped session {} child pid {:?}: {:?} (exit already reported)",
-                            session_id,
-                            pid,
-                            status
+                            "[pty] Reaped session {session_id} child pid {pid:?}: {status:?} \
+                             (exit already reported)"
                         );
                     }
                 }
@@ -907,12 +924,7 @@ fn reap_child_in_background(
             }
         }
         Err(e) => {
-            log::warn!(
-                "[pty] Failed to reap session {} child pid {:?}: {}",
-                session_id,
-                pid,
-                e
-            );
+            log::warn!("[pty] Failed to reap session {session_id} child pid {pid:?}: {e}");
         }
     });
 }

@@ -84,12 +84,20 @@ pub(crate) struct LocalRowWire {
     #[serde(rename = "baseCommand")]
     pub(crate) command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) instructions_filename: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) envs: Option<Vec<CodingAgentEnv>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) isolated_home: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) config_seed: Option<Option<ConfigSeedWire>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) removable: Option<bool>,
@@ -98,8 +106,16 @@ pub(crate) struct LocalRowWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) auto_update: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) idle_burst: Option<Option<IdleBurstConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) install_commands: Option<Option<InstallCommandsWire>>,
 }
 
@@ -118,12 +134,20 @@ pub(crate) struct HistoricalLocalRowWire<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) command: &'a Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) instructions_filename: &'a Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) envs: &'a Option<Vec<CodingAgentEnv>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) isolated_home: &'a Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) config_seed: &'a Option<Option<ConfigSeedWire>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) removable: &'a Option<bool>,
@@ -132,8 +156,16 @@ pub(crate) struct HistoricalLocalRowWire<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) auto_update: &'a Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) idle_burst: &'a Option<Option<IdleBurstConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "Absent inherits/omits; null clears; value replaces; keep patch/wire historic JSON"
+    )]
     pub(crate) install_commands: &'a Option<Option<InstallCommandsWire>>,
 }
 impl<'a> From<&'a LocalRowWire> for HistoricalLocalRowWire<'a> {
@@ -385,38 +417,7 @@ pub(crate) fn extract_legacy_local_mode(
         &CodingAgentDefinition,
         &serde_json::Map<String, serde_json::Value>,
     )> = Vec::with_capacity(rows.len());
-    let mut parsed: Vec<CodingAgentDefinition> = Vec::with_capacity(rows.len());
-    for (index, raw) in rows.iter().enumerate() {
-        let context = format!("legacy entry {index}");
-        let object = expect_json_object(raw, &context)?;
-        reject_unknown_json_fields(object, KNOWN_DEFINITION_FIELDS, &context)?;
-        if let Some(problem) =
-            raw_update_commands_problem(raw).or_else(|| raw_install_commands_problem(raw))
-        {
-            return Err(format!("{context} is ambiguous: {problem}"));
-        }
-        let definition: CodingAgentDefinition = serde_json::from_value(raw.clone())
-            .map_err(|_| format!("{context} does not match the coding-agent definition schema"))?;
-        if validate_definition(&definition).is_err() {
-            return Err(format!(
-                "{context} fails validation: {}",
-                definition_problem_reason(&definition)
-            ));
-        }
-        let mut nested = Vec::new();
-        if push_unknown_field_warnings(object, &definition.key, Path::new("legacy"), &mut nested) {
-            return Err(format!(
-                "{context} carries unknown nested field(s) that cannot be migrated safely"
-            ));
-        }
-        if !seen_keys.insert(definition.key.clone()) {
-            return Err(format!(
-                "duplicate legacy coding-agent key '{}'",
-                definition.key
-            ));
-        }
-        parsed.push(definition);
-    }
+    let parsed = parse_legacy_definitions(rows, &mut seen_keys)?;
     for (index, raw) in rows.iter().enumerate() {
         let object = raw
             .as_object()
@@ -466,6 +467,45 @@ pub(crate) fn extract_legacy_local_mode(
             Some(&value),
         ))
     }
+}
+
+fn parse_legacy_definitions(
+    rows: &[serde_json::Value],
+    seen_keys: &mut HashSet<String>,
+) -> Result<Vec<CodingAgentDefinition>, String> {
+    let mut parsed = Vec::with_capacity(rows.len());
+    for (index, raw) in rows.iter().enumerate() {
+        let context = format!("legacy entry {index}");
+        let object = expect_json_object(raw, &context)?;
+        reject_unknown_json_fields(object, KNOWN_DEFINITION_FIELDS, &context)?;
+        if let Some(problem) =
+            raw_update_commands_problem(raw).or_else(|| raw_install_commands_problem(raw))
+        {
+            return Err(format!("{context} is ambiguous: {problem}"));
+        }
+        let definition: CodingAgentDefinition = serde_json::from_value(raw.clone())
+            .map_err(|_| format!("{context} does not match the coding-agent definition schema"))?;
+        if validate_definition(&definition).is_err() {
+            return Err(format!(
+                "{context} fails validation: {}",
+                definition_problem_reason(&definition)
+            ));
+        }
+        let mut nested = Vec::new();
+        if push_unknown_field_warnings(object, &definition.key, Path::new("legacy"), &mut nested) {
+            return Err(format!(
+                "{context} carries unknown nested field(s) that cannot be migrated safely"
+            ));
+        }
+        if !seen_keys.insert(definition.key.clone()) {
+            return Err(format!(
+                "duplicate legacy coding-agent key '{}'",
+                definition.key
+            ));
+        }
+        parsed.push(definition);
+    }
+    Ok(parsed)
 }
 
 fn historical_local_layer_bytes(

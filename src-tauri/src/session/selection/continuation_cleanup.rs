@@ -1,3 +1,5 @@
+mod checkpoint;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,6 +25,10 @@ use super::replacement_fixture::{ReplacementFixtureAction, ReplacementFixtureCut
 
 impl OwnedReplacementContinuation {
     /// Some(None) is the explicit newer-B path, never a replacement baseline.
+    #[expect(
+        clippy::option_option,
+        reason = "None denies; Some(None): newer-B; Some(Some(capability)): finalized capability"
+    )]
     pub(super) fn finalized_carry_capability(
         &self,
         permit: &crate::session::manager::CarrierMutationPermit,
@@ -173,19 +179,9 @@ impl OwnedReplacementContinuation {
         project_paths: &[String],
         source: crate::config::sessions_persistence::PublishedCarrier,
     ) -> bool {
-        if !self.validate_source().await {
-            return false;
-        }
-        let Some((descriptor, binding, rename)) = self.checkpoint_publication() else {
+        let Some((descriptor, binding, rename)) = self.begin_checkpoint_publication().await else {
             return false;
         };
-        #[cfg(test)]
-        if !self
-            .fixture_reached(ReplacementFixtureCut::BeforePublication)
-            .await
-        {
-            return false;
-        }
         let mut prepared = match prepare_owned_replacement_publication(
             manager,
             &source,
@@ -219,11 +215,7 @@ impl OwnedReplacementContinuation {
                 return false;
             }
         }
-        if let Ok(mut state) = self.owner.state.lock() {
-            if let Some(progress) = state.replacement.as_mut() {
-                progress.pending_carrier = Some(prepared.destination_key());
-            }
-        } else {
+        if !self.record_pending_carrier(|| prepared.destination_key()) {
             return false;
         }
         let Some(readback) = self.start_effect(LifecycleEffectSlot::Readback) else {
@@ -525,44 +517,7 @@ impl OwnedReplacementContinuation {
             return false;
         }
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let captured = self.owner.state.lock().ok().and_then(|state| {
-            let progress = state.replacement.as_ref()?;
-            let launch = progress.launch.as_ref()?;
-            if state.executor_nonce != self.executor_nonce
-                || state.stage != ReplacementStage::FinalizedPublish
-                || !progress.work_transferred
-                || !progress.preparing_released
-                || !progress.reservations_released
-                || !progress.retired
-                || !progress.retirement_cleanup_completed
-                || !progress.activity_completed
-                || progress.initial_b.is_none()
-                || !matches!(
-                    progress.context_prerequisite,
-                    None | Some(OwnedEffectState::Completed { .. })
-                )
-                || progress.create_reservation.is_some()
-                || progress.work_reservation.is_some()
-                || !matches!(state.completion.as_ref(),
-                    Some(Ok(info)) if info.id == launch.binding.session_id().to_string())
-                || !state.effects.iter().all(|effect| {
-                    matches!(
-                        effect,
-                        OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
-                    )
-                })
-            {
-                return None;
-            }
-            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
-                return None;
-            };
-            Some((
-                progress.current_checkpoint.clone()?,
-                launch.clone(),
-                descriptor.previous.id,
-            ))
-        });
+        let captured = self.capture_transferred_work();
         let Some((carrier, launch, previous)) = captured else {
             return false;
         };
@@ -780,20 +735,11 @@ impl OwnedReplacementContinuation {
             return false;
         }
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let claimed = self.owner.state.lock().ok().is_some_and(|state| {
-            state.executor_nonce == self.executor_nonce
-                && state.replacement.as_ref().is_some_and(|progress| {
-                    progress.cleanup == ReplacementCleanupAuthority::Claimed(cleanup_nonce)
-                        && progress.committed.is_none()
-                })
-        });
+        let claimed = self.pending_cleanup_is_claimed(cleanup_nonce);
         if !claimed {
             return false;
         }
-        let runtime_absent = pty
-            .try_lock()
-            .ok()
-            .is_some_and(|pty| self.pending_cleanup_runtime_matches(binding, None, &pty));
+        let runtime_absent = self.pending_cleanup_runtime_absent(binding, pty);
         if !runtime_absent {
             effect.complete(Err(
                 "replacement pending runtime changed after cleanup".into()

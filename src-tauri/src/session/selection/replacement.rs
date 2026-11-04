@@ -364,7 +364,7 @@ pub(super) enum PendingCleanupEvidence<'a> {
     ObservedSourceStoppedOrReturnedFailure,
 }
 
-/// A transient handle to the same data-only owner retained by CoordinatorInner.
+/// A transient handle to the same data-only owner retained by `CoordinatorInner`.
 /// No app, backend, guard, task or future returns from that root.
 #[derive(Clone)]
 pub(crate) struct OwnedReplacementContinuation {
@@ -839,7 +839,7 @@ impl OwnedLifecycleEntry {
 impl Drop for OwnedLifecycleEntry {
     fn drop(&mut self) {
         // Release real target guards and tracker claim BEFORE observing release.
-        let released = self.authority.take().map(|authority| authority.release());
+        let released = self.authority.take().map(super::LifecycleLease::release);
         if let Ok(mut state) = self.owner.state.lock() {
             if state.executor_nonce == self.executor_nonce
                 && state.stage == ReplacementStage::Returned

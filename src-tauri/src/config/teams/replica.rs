@@ -130,14 +130,14 @@ pub fn resolve_wg_coordinator_replica(
     let team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
         .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
 
-    let team_dir = ac_root.join(format!("_team_{}", team));
+    let team_dir = ac_root.join(format!("_team_{team}"));
     let team_config: serde_json::Value =
         ac_discovery::read_team_discovery_config(&team_dir.join("config.json"))
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
     let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
-    if !ac_discovery::discovery_path_is_dir(&ac_root.join(format!("_agent_{}", coordinator_name))) {
+    if !ac_discovery::discovery_path_is_dir(&ac_root.join(format!("_agent_{coordinator_name}"))) {
         return None;
     }
 

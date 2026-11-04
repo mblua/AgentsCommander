@@ -49,5 +49,5 @@ pub(crate) fn create_agency_lock(path: &Path) -> io::Result<File> {
 }
 
 pub(crate) fn write_agency_lock(file: &mut File, serialized: &str) -> io::Result<()> {
-    writeln!(file, "{}", serialized)
+    writeln!(file, "{serialized}")
 }

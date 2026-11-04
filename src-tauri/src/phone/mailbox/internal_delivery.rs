@@ -73,19 +73,13 @@ impl MailboxPoller {
             carried_communication = exited_candidate.communication.clone();
             self.destroy_exited_wake_session(app, exited_id)
                 .await
-                .map_err(|error| {
-                    format!(
-                        "Failed to destroy stale orchestrator session {}: {}",
-                        exited_id, error
-                    )
-                })?;
+                .map_err(|error| Self::stale_internal_session_error(exited_id, error))?;
             spawn_with_resume = true;
         }
 
         let (resolved_command, cwd, resolved_spawn, resolved_agent_host_shell) = self
             .prepare_internal_background_spawn(app, &target, &guard)
             .await?;
-
         if cancellation.is_cancelled() {
             return Err("Context alert delivery was canceled before background spawn".to_string());
         }
@@ -134,6 +128,20 @@ impl MailboxPoller {
             }
         }
 
+        let settle = self.wait_for_spawned_wake_idle(app, session_id);
+        Self::settle_internal_spawn(settle, &cancellation).await?;
+        self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
+            .await
+    }
+
+    fn stale_internal_session_error(exited_id: Uuid, error: String) -> String {
+        format!("Failed to destroy stale orchestrator session {exited_id}: {error}")
+    }
+
+    async fn settle_internal_spawn(
+        settle: impl std::future::Future<Output = Result<SettleReadiness, String>>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
@@ -141,7 +149,7 @@ impl MailboxPoller {
                     "Context alert delivery was canceled during spawned-session settle".to_string(),
                 );
             }
-            result = self.wait_for_spawned_wake_idle(app, session_id) => {
+            result = settle => {
                 result?;
             }
         }
@@ -150,8 +158,7 @@ impl MailboxPoller {
                 "Context alert delivery was canceled before spawned-session injection".to_string(),
             );
         }
-        self.inject_internal_system_notice(app, session_id, &target, &notice, guard)
-            .await
+        Ok(())
     }
 
     async fn prepare_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
@@ -225,7 +232,7 @@ impl MailboxPoller {
             );
         }
         let exited_id = Uuid::parse_str(&exited_candidate.id)
-            .map_err(|e| format!("Invalid exited orchestrator session id: {}", e))?;
+            .map_err(|e| format!("Invalid exited orchestrator session id: {e}"))?;
         self.recheck_internal_exited_candidate(app, exited_id, target)
             .await?;
         Self::run_internal_guard(Arc::clone(guard)).await?;
@@ -344,10 +351,8 @@ impl MailboxPoller {
                         Ok(()) => return Ok(InternalLiveDelivery::Delivered),
                         Err(error) if err_is_pty_session_missing(&error) => {
                             log::warn!(
-                                "[context-alert] coordinator session {} vanished before injection: \
-                                {}",
-                                session_id,
-                                error
+                                "[context-alert] coordinator session {session_id} vanished \
+                                before injection: {error}"
                             );
                         }
                         Err(error) => return Err(error),
@@ -391,7 +396,7 @@ impl MailboxPoller {
             )
         })
         .await
-        .map_err(|error| format!("Internal profile resolution task failed: {}", error))??
+        .map_err(|error| format!("Internal profile resolution task failed: {error}"))??
         .ok_or_else(|| {
             format!(
                 "Configured coding-agent '{}' could not produce a trusted spawn for '{}'",
@@ -421,7 +426,7 @@ impl MailboxPoller {
     async fn run_internal_guard(guard: InternalNoticeGuard) -> Result<(), String> {
         tokio::task::spawn_blocking(move || guard())
             .await
-            .map_err(|error| format!("Internal notice guard task failed: {}", error))?
+            .map_err(|error| format!("Internal notice guard task failed: {error}"))?
     }
 
     async fn resolve_internal_agent_command<S: PtyAuthorityState + ?Sized>(
@@ -459,7 +464,7 @@ impl MailboxPoller {
             )
         })
         .await
-        .map_err(|error| format!("Internal command lookup task failed: {}", error))?
+        .map_err(|error| format!("Internal command lookup task failed: {error}"))?
     }
 
     async fn find_internal_system_candidates<S: PtyAuthorityState + ?Sized>(
@@ -496,7 +501,7 @@ impl MailboxPoller {
                 .collect::<Vec<_>>()
         })
         .await
-        .map_err(|error| format!("Orchestrator candidate path task failed: {}", error))?;
+        .map_err(|error| format!("Orchestrator candidate path task failed: {error}"))?;
         owned.sort_by_key(|session| {
             let temporary = session
                 .name
@@ -532,15 +537,14 @@ impl MailboxPoller {
             let manager = session_mgr.read().await.clone();
             manager.get_session(session_id).await
         }
-        .ok_or_else(|| format!("Exited orchestrator session {} disappeared", session_id))?;
+        .ok_or_else(|| format!("Exited orchestrator session {session_id} disappeared"))?;
         if !matches!(session.status, SessionStatus::Exited(_))
             || session.is_root_agent
             || session.agent_id.is_none()
             || !crate::pty::inject::needs_explicit_enter(&session.shell)
         {
             return Err(format!(
-                "Orchestrator session {} changed before exited-session destruction",
-                session_id
+                "Orchestrator session {session_id} changed before exited-session destruction"
             ));
         }
         let cwd = session.working_directory;
@@ -548,11 +552,10 @@ impl MailboxPoller {
         let owned =
             tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
                 .await
-                .map_err(|error| format!("Exited orchestrator path task failed: {}", error))??;
+                .map_err(|error| format!("Exited orchestrator path task failed: {error}"))??;
         if !owned {
             return Err(format!(
-                "Orchestrator session {} no longer belongs to target replica",
-                session_id
+                "Orchestrator session {session_id} no longer belongs to target replica"
             ));
         }
         Ok(())
@@ -570,7 +573,7 @@ impl MailboxPoller {
             let manager = session_mgr.read().await.clone();
             manager.get_session(session_id).await
         }
-        .ok_or_else(|| format!("Exited orchestrator session {} disappeared", session_id))?;
+        .ok_or_else(|| format!("Exited orchestrator session {session_id} disappeared"))?;
         if !matches!(session.status, SessionStatus::Exited(_))
             || session.is_root_agent
             || session.agent_id.is_none()
@@ -579,8 +582,8 @@ impl MailboxPoller {
             || !internal_target_fqn_prefilter_matches(&session.working_directory, target.fqn())
         {
             return Err(format!(
-                "Orchestrator session {} restarted or changed immediately before destruction",
-                session_id
+                "Orchestrator session {session_id} restarted or changed immediately \
+                 before destruction"
             ));
         }
         let cwd = session.working_directory;
@@ -589,15 +592,11 @@ impl MailboxPoller {
             tokio::task::spawn_blocking(move || canonical_cwd_owned_by_replica(&cwd, &replica))
                 .await
                 .map_err(|error| {
-                    format!(
-                        "Final exited orchestrator path task failed for {}: {}",
-                        session_id, error
-                    )
+                    format!("Final exited orchestrator path task failed for {session_id}: {error}")
                 })??;
         if !owned {
             return Err(format!(
-                "Orchestrator session {} escaped the canonical target before destruction",
-                session_id
+                "Orchestrator session {session_id} escaped the canonical target before destruction"
             ));
         }
         Ok(())
@@ -621,7 +620,7 @@ impl MailboxPoller {
                 let manager = session_mgr.read().await.clone();
                 manager.get_session(session_id).await
             }
-            .ok_or_else(|| format!("Session {} missing before test injection", session_id))?;
+            .ok_or_else(|| format!("Session {session_id} missing before test injection"))?;
             if session.is_root_agent
                 || matches!(session.status, SessionStatus::Exited(_))
                 || session.agent_id.is_none()
@@ -632,8 +631,7 @@ impl MailboxPoller {
                 )?
             {
                 return Err(format!(
-                    "Session {} failed supported-agent final validation",
-                    session_id
+                    "Session {session_id} failed supported-agent final validation"
                 ));
             }
             guard()?;
@@ -674,28 +672,8 @@ impl MailboxPoller {
                     mailbox_archive: false,
                 });
             return Ok(());
-        } else {
-            crate::pty::inject::inject_internal_notice_into_supported_agent_session(
-                app,
-                session_id,
-                &payload,
-                |session: &Session| {
-                    if !canonical_cwd_owned_by_replica(
-                        &session.working_directory,
-                        target.replica_dir(),
-                    )? {
-                        return Err(format!(
-                            "Orchestrator session {} escaped canonical target replica",
-                            session_id
-                        ));
-                    }
-                    guard()
-                },
-            )
-            .await?;
         }
 
-        #[cfg(not(test))]
         crate::pty::inject::inject_internal_notice_into_supported_agent_session(
             app,
             session_id,
@@ -706,8 +684,7 @@ impl MailboxPoller {
                     target.replica_dir(),
                 )? {
                     return Err(format!(
-                        "Orchestrator session {} escaped canonical target replica",
-                        session_id
+                        "Orchestrator session {session_id} escaped canonical target replica"
                     ));
                 }
                 guard()
@@ -875,6 +852,19 @@ impl MailboxPoller {
             }
             break result;
         };
+        Self::finish_wake_injection(msg, response, result, || {
+            if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+                idle.touch_silence(session_id);
+            }
+        })
+    }
+
+    fn finish_wake_injection(
+        msg: &OutboxMessage,
+        response: Option<&ResponseWakeWork>,
+        result: Result<(), String>,
+        touch_silence: impl FnOnce(),
+    ) -> Result<(), String> {
         if result.is_ok() {
             wake_receipt::mark_response_submitted(response, msg);
         }
@@ -885,11 +875,7 @@ impl MailboxPoller {
         // recipient's own response output would also reset silence via the read
         // loop; recording the delivery makes inter-agent traffic count at once.
         if result.is_ok() {
-            if let Some(idle) =
-                app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
-            {
-                idle.touch_silence(session_id);
-            }
+            touch_silence();
         }
         // (#1001 PR1 / G6) Route the successful-inject return through the
         // shared verdict_to_result so this production site runs the exact

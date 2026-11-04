@@ -153,6 +153,82 @@ test('3330 custom manifest spellings retain the production crate root', () => {
 });
 
 const packageHeader = '[package]\nname="repro"\nversion="0.1.0"\nedition="2021"\n';
+test('3509 lint metadata preserves inherited tests and production deltas', () => {
+  const central = '[workspace.lints.clippy]\nfn_params_excessive_bools="warn"\n';
+  const adoption = '[lints]\nworkspace=true\n';
+  const workspace = '[workspace]\nmembers=["src-tauri", "crates/x"]\n';
+  const original = {
+    'Cargo.toml': workspace,
+    'src-tauri/Cargo.toml': packageHeader,
+    'crates/x/Cargo.toml': packageHeader,
+    'crates/x/src/lib.rs': 'fn safe() {}',
+    [prefix + 'lib.rs']: '#[cfg(test)] mod harness; mod production;',
+    [prefix + 'harness.rs']: body + ' mod child;',
+    [prefix + 'harness/child.rs']: body,
+    [prefix + 'production.rs']: body,
+  };
+  for (const newline of ['\n', '\r\n']) {
+    for (const metadata of [central, adoption, central + adoption]) {
+      for (const location of ['Cargo.toml', 'src-tauri/Cargo.toml', 'crates/x/Cargo.toml',
+        'workspace-and-members']) {
+        const files = {...original};
+        if (location === 'workspace-and-members') {
+          files['Cargo.toml'] += central;
+          for (const member of ['src-tauri', 'crates/x'])
+            files[member + '/Cargo.toml'] += adoption;
+        } else files[location] += metadata;
+        for (const path of Object.keys(files))
+          files[path] = files[path].replaceAll('\n', newline);
+        const factory = scan(files);
+        for (const path of ['harness.rs', 'harness/child.rs']) {
+          const result = factory(prefix + path);
+          assert.equal(result.productionTokens.length, 0, location + metadata);
+          assert.ok(result.items.length > 0);
+          assert.ok(result.items.every(item => item.testOnly));
+          assert.equal(result.isTestOffset(0), true);
+        }
+        assert.ok(factory(prefix + 'production.rs').productionTokens.length > 0);
+        const unchanged = diskGate(trees(original, files));
+        assert.equal(unchanged.exit, 0);
+        assert.deepEqual(unchanged.totals.map(total => total.disk_files), [1, 1]);
+        const production = {...files, [prefix + 'lib.rs']: 'mod harness; mod production;'};
+        const delta = diskGate(trees(files, production));
+        assert.equal(delta.exit, 1);
+        assert.deepEqual(delta.totals.map(total => total.disk_files), [1, 3]);
+      }
+    }
+  }
+});
+
+test('3509 legal lint metadata keeps unsupported manifests and declarations conservative', () => {
+  const metadata = '[workspace.lints.clippy]\nfn_params_excessive_bools="warn"\n'
+    + '[lints]\nworkspace=true\n';
+  const original = {
+    'Cargo.toml': '[workspace]\nmembers=["src-tauri"]\n' + metadata,
+    'src-tauri/Cargo.toml': packageHeader + metadata,
+    [prefix + 'lib.rs']: '#[cfg(test)] mod harness; mod production;',
+    [prefix + 'harness.rs']: body + ' mod child;',
+    [prefix + 'harness/child.rs']: body,
+    [prefix + 'production.rs']: body,
+  };
+  for (const extra of ['[unknown]\nx=1\n', '[lints.extra]\nx=1\n',
+    '[lib]\npath="src/harness.rs"\n', '[package]\nbuild="custom.rs"\n',
+    '"quoted"=true\n', 'dotted.key=true\n', 'note="""unsupported"""\n']) {
+    const files = {...original, 'src-tauri/Cargo.toml': packageHeader + metadata + extra};
+    const result = diskGate(trees(files));
+    assert.equal(result.exit, 0, extra);
+    assert.deepEqual(result.totals.map(total => total.disk_files), [3, 3], extra);
+    assert.ok(scan(files)(prefix + 'harness/child.rs').productionTokens.length > 0, extra);
+  }
+  for (const extra of ['mod harness;', 'include!("generated.rs");']) {
+    const files = {...original, [prefix + 'lib.rs']: original[prefix + 'lib.rs'] + extra};
+    const result = diskGate(trees(files));
+    assert.equal(result.exit, 0, extra);
+    assert.deepEqual(result.totals.map(total => total.disk_files), [3, 3], extra);
+    assert.ok(scan(files)(prefix + 'harness/child.rs').productionTokens.length > 0, extra);
+  }
+});
+
 function manifestProof(cargo, retained) {
   const files = {[prefix + 'lib.rs']: '#[cfg(test)] mod h;',
     [prefix + 'h.rs']: body, 'src-tauri/Cargo.toml': cargo};

@@ -15,7 +15,7 @@ pub struct Thresholds {
     pub head_bytes: usize,
     pub concurrency_window: Duration,
     pub stop_attribution: Duration,
-    /// How long after a stop request ConPTY's teardown repaint can still arrive. Only
+    /// How long after a stop request `ConPTY`'s teardown repaint can still arrive. Only
     /// the startup TIMING stamps are suppressed during it; bytes keep counting, and the
     /// stall verdict is byte-based, so a stop that fails to kill the child cannot fake a
     /// stall on a session that is painting normally.

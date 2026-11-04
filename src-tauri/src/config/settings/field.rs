@@ -132,7 +132,7 @@ impl Default for TelegramNetworkPollErrorLogging {
 /// `load_settings_from_path` (`:1661-1664`) replaces any failure with
 /// `AppSettings::default()`, leaving one log line. A hand-written `"mode": "State"`,
 /// `"commands": "claude"` or `"dedupeWindowMs": "2000"` would therefore start
-/// AgentsCommander with NO AGENTS CONFIGURED, and every later save would be refused by the
+/// `AgentsCommander` with NO AGENTS CONFIGURED, and every later save would be refused by the
 /// #1077 write gate (`read_disk_object_for_write`, `:2565-2591`). With the wrapper the
 /// consequence is one skipped watcher.
 ///

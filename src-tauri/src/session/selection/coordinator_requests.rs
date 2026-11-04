@@ -550,7 +550,7 @@ impl SelectionCoordinator {
         self.inner
             .critical_keys
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&CriticalAdmissionKey { session_id, kind })
     }
 
@@ -659,10 +659,8 @@ impl SelectionCoordinator {
                         .unwrap_or_default();
                     log::error!(
                         "[selection] coordinator worker phase exhausted before shared deadline \
-                            budget={:?} finalizationReserve={:?} outstandingCriticalKeys={}",
-                        budget,
-                        finalization_reserve,
-                        critical_count
+                            budget={budget:?} finalizationReserve={finalization_reserve:?} \
+                            outstandingCriticalKeys={critical_count}"
                     );
                     handle.abort();
                     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -681,7 +679,7 @@ impl SelectionCoordinator {
                             self.inner
                                 .retained_workers
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner())
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .push(handle);
                         }
                     }

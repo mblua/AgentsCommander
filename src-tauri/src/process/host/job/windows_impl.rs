@@ -41,7 +41,7 @@ impl fmt::Display for ContainedSpawnError {
 impl std::error::Error for ContainedSpawnError {}
 
 /// Owns a Job Object handle. Dropping it closes the handle; because the job is
-/// created with KILL_ON_JOB_CLOSE and we hold the only handle, the OS kills the
+/// created with `KILL_ON_JOB_CLOSE` and we hold the only handle, the OS kills the
 /// whole assigned tree on drop too (the hard-exit / panic safety net).
 #[derive(Debug)]
 pub struct JobObject {
@@ -68,7 +68,7 @@ impl JobObject {
             if SetInformationJobObject(
                 handle,
                 JobObjectExtendedLimitInformation,
-                &info as *const _ as *const core::ffi::c_void,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<core::ffi::c_void>(),
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             ) == 0
             {
@@ -95,17 +95,17 @@ impl JobObject {
         }
     }
 
-    /// Create a job, set KILL_ON_JOB_CLOSE, and assign process `pid` to it.
+    /// Create a job, set `KILL_ON_JOB_CLOSE`, and assign process `pid` to it.
     /// Returns `None` (after a warn log) on ANY failure, so a job problem never
     /// blocks a spawn; the identity reaper remains the cleanup fallback.
     ///
-    /// `pid` is the process portable_pty spawned. For a non-`.exe` command the
+    /// `pid` is the process `portable_pty` spawned. For a non-`.exe` command the
     /// non-direct-exe branch of `PtyManager::spawn` wraps it as `cmd.exe /C <cmd>`,
     /// so `pid` is usually the cmd.exe wrapper and the real agent is a grandchild
-    /// cmd spawns AFTER assignment - that is ideal: KILL_ON_JOB_CLOSE plus
+    /// cmd spawns AFTER assignment - that is ideal: `KILL_ON_JOB_CLOSE` plus
     /// child-inheritance captures the whole wrapper -> agent -> descendants subtree.
     ///
-    /// portable_pty cannot spawn CREATE_SUSPENDED, so `pid` is already running.
+    /// `portable_pty` cannot spawn `CREATE_SUSPENDED`, so `pid` is already running.
     /// A grandchild spawned in the sub-ms window before assignment can escape
     /// the job; neither cmd.exe nor an agent CLI forks that fast. See the plan
     /// section 5 for the (accepted, race-bound) shutdown residual this leaves.
@@ -126,7 +126,7 @@ impl JobObject {
     }
 
     /// Request termination of every process in the job. Idempotent; safe on
-    /// an already-dead tree (TerminateJobObject just reports failure, which
+    /// an already-dead tree (`TerminateJobObject` just reports failure, which
     /// we log at debug). Callers that need definitive settlement must query
     /// `active_processes` until it returns zero.
     pub fn terminate(&self) {
@@ -154,7 +154,8 @@ impl JobObject {
             QueryInformationJobObject(
                 self.handle,
                 JobObjectBasicAccountingInformation,
-                &mut accounting as *mut _ as *mut core::ffi::c_void,
+                (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)
+                    .cast::<core::ffi::c_void>(),
                 std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
                 std::ptr::null_mut(),
             )

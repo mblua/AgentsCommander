@@ -436,46 +436,29 @@ fn classify_reports_bystander_when_a_probe_arrived_and_the_window_never_sent() {
     assert_eq!(classify(&late, Some(&m)), Verdict::Bystander);
 }
 
-#[test]
-fn issue_3260_marker_probe_shutdown_order() {
-    struct MarkerRestore {
-        path: std::path::PathBuf,
-        original: Option<Vec<u8>>,
-    }
-    impl Drop for MarkerRestore {
-        fn drop(&mut self) {
-            let result = match &self.original {
-                Some(bytes) => std::fs::write(&self.path, bytes),
-                None => match std::fs::remove_file(&self.path) {
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    result => result,
-                },
-            };
-            if let Err(err) = result {
-                eprintln!("failed to restore test marker: {err}");
-                if !std::thread::panicking() {
-                    panic!("failed to restore test marker: {err}");
-                }
+struct MarkerRestore {
+    path: std::path::PathBuf,
+    original: Option<Vec<u8>>,
+}
+impl Drop for MarkerRestore {
+    fn drop(&mut self) {
+        let result = match &self.original {
+            Some(bytes) => std::fs::write(&self.path, bytes),
+            None => match std::fs::remove_file(&self.path) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            },
+        };
+        if let Err(err) = result {
+            eprintln!("failed to restore test marker: {err}");
+            if !std::thread::panicking() {
+                panic!("failed to restore test marker: {err}");
             }
         }
     }
-    type ProbeObservation = (u32, u64, FreezeMarker, Option<FreezeMarker>);
+}
 
-    struct ProbeRecording {
-        observer: Arc<IpcObserver>,
-        observations: Mutex<Vec<ProbeObservation>>,
-    }
-    impl IpcProbeEvents for ProbeRecording {
-        fn probe(&self, seq: u32, backend_now_ms: u64) {
-            let disk = read_marker().expect("marker exists at probe time");
-            let open = self.observer.snapshot_for_tick(backend_now_ms).open_episode;
-            self.observations
-                .lock()
-                .unwrap()
-                .push((seq, backend_now_ms, disk, open));
-        }
-    }
-
+fn isolated_marker_restore() -> MarkerRestore {
     let executable = std::env::current_exe().unwrap();
     let executable_tree = executable.parent().unwrap().canonicalize().unwrap();
     assert_eq!(executable_tree.file_name().unwrap(), "deps");
@@ -499,6 +482,29 @@ fn issue_3260_marker_probe_shutdown_order() {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => panic!("cannot clear isolated marker: {err}"),
     }
+    restore
+}
+
+#[test]
+fn issue_3260_marker_probe_shutdown_order() {
+    type ProbeObservation = (u32, u64, FreezeMarker, Option<FreezeMarker>);
+
+    struct ProbeRecording {
+        observer: Arc<IpcObserver>,
+        observations: Mutex<Vec<ProbeObservation>>,
+    }
+    impl IpcProbeEvents for ProbeRecording {
+        fn probe(&self, seq: u32, backend_now_ms: u64) {
+            let disk = read_marker().expect("marker exists at probe time");
+            let open = self.observer.snapshot_for_tick(backend_now_ms).open_episode;
+            self.observations
+                .lock()
+                .unwrap()
+                .push((seq, backend_now_ms, disk, open));
+        }
+    }
+
+    let _restore = isolated_marker_restore();
     let observer = IpcObserver::new();
     observer.total_invokes.store(1, Ordering::Relaxed);
     observer.last_invoke_at_ms.store(1, Ordering::Relaxed);

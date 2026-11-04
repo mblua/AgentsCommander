@@ -48,7 +48,7 @@ pub(crate) const WAKE_CLAIM_EXTENSION: &str = "in-flight";
 pub(crate) fn wake_claim_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
-        .map(|name| name.to_os_string())
+        .map(std::ffi::OsStr::to_os_string)
         .unwrap_or_default();
     name.push(WAKE_CLAIM_SUFFIX);
     path.with_file_name(name)
@@ -82,15 +82,14 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(format!(
-                "could not inspect {} payload receipt {:?}: {}",
-                side, path, error
+                "could not inspect {side} payload receipt {path:?}: {error}"
             )),
         };
-    let delivered = outbox_dir.join("delivered").join(format!("{}.json", id));
+    let delivered = outbox_dir.join("delivered").join(format!("{id}.json"));
     if is_regular_receipt(&delivered, "delivered")? {
         return Ok(true);
     }
-    let rejected = outbox_dir.join("rejected").join(format!("{}.json", id));
+    let rejected = outbox_dir.join("rejected").join(format!("{id}.json"));
     is_regular_receipt(&rejected, "rejected")
 }
 
@@ -99,12 +98,7 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
 /// process restart retries general reclamation.
 pub(crate) fn release_wake_claim(claim: &Path, origin: &Path) {
     if let Err(error) = mailbox_disk::rename_mailbox_document(claim, origin) {
-        log::error!(
-            "[mailbox] #1399 failed to return claim {:?} to {:?}: {}",
-            claim,
-            origin,
-            error
-        );
+        log::error!("[mailbox] #1399 failed to return claim {claim:?} to {origin:?}: {error}");
     }
 }
 
@@ -163,10 +157,8 @@ pub(crate) fn dedup_outbox_dirs_by_object_id(outbox_dirs: &mut Vec<PathBuf>) {
         // successful reclamation check while a worker owns the canonical key.
         Err(error) => {
             log::warn!(
-                "[mailbox] #1399 skipping unverifiable outbox {:?} for this cycle: {}; scan and \
-                reclamation deferred",
-                dir,
-                error
+                "[mailbox] #1399 skipping unverifiable outbox {dir:?} for this cycle: {error}; \
+                scan and reclamation deferred"
             );
             false
         }
@@ -203,10 +195,8 @@ pub(crate) fn prune_retry_tracker(
                     Ok(claim_present) => claim_present,
                     Err(error) => {
                         log::warn!(
-                            "[mailbox] #1399 could not inspect retry claim {:?}: {}; retaining \
-                            retry state",
-                            claim,
-                            error
+                            "[mailbox] #1399 could not inspect retry claim {claim:?}: {error}; \
+                            retaining retry state"
                         );
                         true
                     }
@@ -215,9 +205,8 @@ pub(crate) fn prune_retry_tracker(
         }
         Err(error) => {
             log::warn!(
-                "[mailbox] #1399 could not inspect retry origin {:?}: {}; retaining retry state",
-                path,
-                error
+                "[mailbox] #1399 could not inspect retry origin {path:?}: {error}; \
+                retaining retry state"
             );
             true
         }
@@ -290,20 +279,20 @@ pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
 
 // The next three are consumed only by the `#[cfg(not(test))]` spawn in
 // `handle_self_clear`; test builds drive `run_self_clear_after_sustained_idle`
-// with explicit durations, so they are dead under `cfg(test)`.
-#[cfg_attr(test, allow(dead_code))]
+// with explicit durations, so they are compiled out under `cfg(test)`.
+#[cfg(not(test))]
 pub(crate) const SELF_CLEAR_SETTLE: std::time::Duration =
     std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
 
-#[cfg_attr(test, allow(dead_code))]
+#[cfg(not(test))]
 pub(crate) const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Safety cap so a never-idle session cannot leave a task polling forever.
 /// Generous: any normal agent hits a 30s-idle window well within it.
-#[cfg_attr(test, allow(dead_code))]
+#[cfg(not(test))]
 pub(crate) const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// #626 - the OutboxMessage `action` value for self-handoff-and-clear. Single-sourced so the CLI
+/// #626 - the `OutboxMessage` `action` value for self-handoff-and-clear. Single-sourced so the CLI
 /// emit, the early-dispatch match, and the response body cannot drift (a drift would make early
 /// dispatch silently not fire and the command would be lost with no agent-visible error).
 /// `pub(crate)` so
@@ -330,11 +319,9 @@ pub(crate) const ARCHIVE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
 /// missing-or-empty fallback clause.
 pub(crate) fn handoff_base_prompt(event_clause: &str, handoff_path: &str) -> String {
     format!(
-        "{event} To resume, read the file {p} relative to your own agent root (your current \
-         working directory) and continue the work described there. If {p} is missing or empty, \
-         wait for new instructions instead of guessing.",
-        event = event_clause,
-        p = handoff_path
+        "{event_clause} To resume, read the file {handoff_path} relative to your own \
+         agent root (your current working directory) and continue the work described there. \
+         If {handoff_path} is missing or empty, wait for new instructions instead of guessing."
     )
 }
 
@@ -345,10 +332,10 @@ pub(crate) fn self_clear_handoff_base_prompt(handoff_path: &str) -> String {
     )
 }
 
-/// #668 - the OutboxMessage `action` value for self-handoff-and-switch.
+/// #668 - the `OutboxMessage` `action` value for self-handoff-and-switch.
 pub(crate) const SELF_SWITCH_ACTION: &str = "self-handoff-and-switch";
 
-/// #1632 - the OutboxMessage `action` value for self-handoff-and-restart. Single-sourced like the
+/// #1632 - the `OutboxMessage` `action` value for self-handoff-and-restart. Single-sourced like the
 /// other two so the CLI emit, the early-dispatch match, and the response body cannot drift.
 pub(crate) const SELF_RESTART_ACTION: &str = "self-handoff-and-restart";
 
@@ -723,8 +710,7 @@ pub(crate) fn validate_self_switch_wg_replica(
         crate::config::coding_agent_profiles::validate_profile_selection_agent_path(settings, cwd)
             .map_err(|e| {
                 format!(
-                    "self-handoff-and-switch is only supported from a configured Room replica: {}",
-                    e
+                    "self-handoff-and-switch is only supported from a configured Room replica: {e}"
                 )
             })?;
     let validated_name = validated
@@ -790,9 +776,9 @@ pub(crate) fn anti_spoof_accept(msg_from: &str, expected_from: &str) -> bool {
 }
 
 /// §AR2-norm step (1): upgrade a legacy-unqualified `msg_from` to
-/// `expected_from` when expected_from is FQN. Returns true if the upgrade
-/// happened. No-op when msg_from is already qualified, expected_from is
-/// None, or expected_from itself is unqualified.
+/// `expected_from` when `expected_from` is FQN. Returns true if the upgrade
+/// happened. No-op when `msg_from` is already qualified, `expected_from` is
+/// None, or `expected_from` itself is unqualified.
 pub(crate) fn canonicalize_msg_from_in_place(
     msg_from: &mut String,
     expected_from: Option<&str>,
@@ -859,7 +845,7 @@ pub(crate) fn internal_wake_resumes(had_exited_record: bool, auto_closed: bool) 
 ///   path does NOT need a live PTY (it calls `destroy_session_inner` then
 ///   `create_session_inner`).
 /// - All other statuses (`Active`/`Running`/`Idle`) require `has_pty == true`.
-///   A SessionManager record with one of these statuses but no PtyManager
+///   A `SessionManager` record with one of these statuses but no `PtyManager`
 ///   entry is a desync phantom — the inject path is guaranteed to fail with
 ///   `AppError::SessionNotFound`, so the router must skip it (issue #223).
 ///
@@ -945,7 +931,7 @@ pub(crate) const FRESH_IDLE_GUARD: std::time::Duration = std::time::Duration::fr
 /// (#1001 PR2 / B) The action `settle_until_ready` takes on one tick.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SettleAction {
-    /// Inject now: busy fast-path, sustained idle reached, or the max_wait cap
+    /// Inject now: busy fast-path, sustained idle reached, or the `max_wait` cap
     /// (never drop a delivery).
     InjectNow,
     /// Keep waiting; sleep one poll and re-check.

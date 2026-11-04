@@ -1,18 +1,27 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Utc};
 
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::injected_messages::MessageWarnings;
+use crate::config::settings::SettingsState;
 use crate::phone::mailbox::{
     InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, MailboxPoller,
 };
 use crate::pty::context_scrape::ContextScraper;
+use crate::pty::idle_detector::IdleDetector;
+use crate::pty::manager::PtyManager;
+use crate::session::auto_close::{AutoClose, AutoCloseServices};
 use crate::session::context_alerts::{ContextAlertMonitor, ContextAlertServices};
 use crate::session::manager::SessionManager;
 use crate::session::purge_guard::PurgeGuard;
+use crate::session::selection::SelectionCoordinator;
 use crate::session::session::Session;
+use crate::shutdown::ShutdownSignal;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::session::warnings::{
@@ -27,8 +36,7 @@ impl<R: Runtime> SessionWarningEvents for AppHandle<R> {
                 Err(err) => {
                     log::warn!(
                         target: "agentscommander_lib::session::warnings",
-                        "[session-warning] warning buffer lock poisoned; live emit only: {}",
-                        err
+                        "[session-warning] warning buffer lock poisoned; live emit only: {err}"
                     );
                 }
             }
@@ -128,6 +136,67 @@ fn start_on<R: Runtime>(
         cancellation,
         tauri::async_runtime::handle().inner().clone(),
     )
+}
+
+fn auto_close_state<R: Runtime, T: Clone + Send + Sync + 'static>(app: &AppHandle<R>) -> T {
+    app.try_state::<T>()
+        .unwrap_or_else(|| {
+            panic!(
+                "state() called before manage() for {}",
+                std::any::type_name::<T>()
+            )
+        })
+        .inner()
+        .clone()
+}
+
+impl<R: Runtime> AutoCloseServices for AppHandle<R> {
+    fn settings(&self) -> SettingsState {
+        auto_close_state(self)
+    }
+
+    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>> {
+        auto_close_state(self)
+    }
+
+    fn pty_manager(&self) -> Arc<Mutex<PtyManager>> {
+        auto_close_state(self)
+    }
+
+    fn idle_detector(&self) -> Arc<IdleDetector> {
+        auto_close_state(self)
+    }
+
+    fn selection_coordinator(&self) -> SelectionCoordinator {
+        auto_close_state(self)
+    }
+
+    fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {
+        self.try_state::<CoordinatorClocksState>()
+            .map(|s| s.inner().clone())
+    }
+
+    fn idle_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        let _ = self.emit(
+            "coordinator_clock_updated",
+            serde_json::json!({ "replicaPath": cwd, "lastUserMessageAt": at.to_rfc3339() }),
+        );
+    }
+
+    fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        let _ = self.emit(
+            "coordinator_auto_close_changed",
+            serde_json::json!({ "replicaPath": cwd, "autoClosedAt": at.to_rfc3339() }),
+        );
+    }
+}
+
+impl AutoClose {
+    pub(crate) fn start(app: AppHandle, shutdown: ShutdownSignal) {
+        tauri::async_runtime::spawn(async move {
+            AutoClose::run(app, shutdown).await;
+        });
+    }
 }
 
 #[cfg(test)]

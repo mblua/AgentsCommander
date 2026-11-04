@@ -235,7 +235,7 @@ impl MailboxPoller {
             state = next;
 
             match action {
-                SelfClearGateAction::Wait => continue,
+                SelfClearGateAction::Wait => {}
                 SelfClearGateAction::InjectClear => {
                     // #1940: keep the turn through persist, restart and alias bookkeeping,
                     // releasing it before phase-2 settling and handoff injection.
@@ -256,7 +256,6 @@ impl MailboxPoller {
                     session_id = new_id;
                     current = Some(new_id);
                     continuation = true;
-                    continue;
                 }
                 SelfClearGateAction::InjectHandoff => {
                     let injected = phase::inject_handoff(
@@ -721,6 +720,11 @@ impl MailboxPoller {
 
     /// Check if sender can reach destination via team membership.
     /// Only agents in the same team can communicate — no parent directory fallback.
+    #[expect(
+        clippy::unused_self,
+        reason = "API de MailboxPoller existente: preservar método y delegación a teams; sin \
+            cambiar callers."
+    )]
     pub(crate) fn can_reach(
         &self,
         from: &str,

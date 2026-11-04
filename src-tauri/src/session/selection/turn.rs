@@ -98,8 +98,8 @@ pub(super) enum SelectionTurnMode {
 
 /// Either side of the turn, released on drop.
 pub(super) enum SelectionTurnGuard {
-    Read(#[allow(dead_code)] SelectionReadGuard),
-    Write(#[allow(dead_code)] SelectionOperationGuard),
+    Read { _guard: SelectionReadGuard },
+    Write { _guard: SelectionOperationGuard },
 }
 
 pub(super) async fn acquire_selection_turn(
@@ -108,10 +108,10 @@ pub(super) async fn acquire_selection_turn(
     match mode {
         SelectionTurnMode::Read => acquire_selection_read_turn()
             .await
-            .map(SelectionTurnGuard::Read),
+            .map(|_guard| SelectionTurnGuard::Read { _guard }),
         SelectionTurnMode::Write => acquire_selection_operation_turn()
             .await
-            .map(SelectionTurnGuard::Write),
+            .map(|_guard| SelectionTurnGuard::Write { _guard }),
     }
 }
 
@@ -200,7 +200,7 @@ pub(super) fn record_selection_timing(
     line: String,
     #[cfg(test)] sample: timing_probe::SelectionTimingSample,
 ) {
-    log::info!("{}", line);
+    log::info!("{line}");
     #[cfg(test)]
     timing_probe::deliver(command, &sample, &line);
     #[cfg(not(test))]

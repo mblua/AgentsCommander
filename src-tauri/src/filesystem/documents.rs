@@ -247,7 +247,7 @@ pub(crate) fn append_harness_audit(path: &Path, line: &str) -> io::Result<()> {
         .create(true)
         .append(true)
         .open(path)?;
-    writeln!(file, "{}", line)
+    writeln!(file, "{line}")
 }
 
 #[cfg(target_os = "windows")]

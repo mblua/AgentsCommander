@@ -230,12 +230,10 @@ pub(crate) fn discover_verified_terminal_snapshot_targets(
     discover_verified_terminal_snapshot_targets_counted(project_paths).map(|d| d.targets)
 }
 
-pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
-    project_paths: &[String],
-) -> Result<DiscoveredSnapshotTargets, String> {
-    const TARGET_CAP: usize = 4_096;
-    let mut skips = SnapshotDiscoverySkips::default();
-    let projects = enumerate_project_dirs_strict(project_paths, &mut skips.project_children)?;
+fn verify_unique_snapshot_projects(
+    projects: Vec<(String, std::path::PathBuf, ProjectOrigin)>,
+    skips: &mut SnapshotDiscoverySkips,
+) -> Result<Vec<(String, std::path::PathBuf, ProjectOrigin)>, String> {
     let mut project_names = std::collections::HashSet::new();
     let mut project_objects = std::collections::HashSet::new();
     let mut verified_projects = Vec::new();
@@ -259,7 +257,16 @@ pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
         }
         verified_projects.push((name, path, origin));
     }
-    let projects = verified_projects;
+    Ok(verified_projects)
+}
+
+pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
+    project_paths: &[String],
+) -> Result<DiscoveredSnapshotTargets, String> {
+    const TARGET_CAP: usize = 4_096;
+    let mut skips = SnapshotDiscoverySkips::default();
+    let projects = enumerate_project_dirs_strict(project_paths, &mut skips.project_children)?;
+    let projects = verify_unique_snapshot_projects(projects, &mut skips)?;
 
     let mut targets = Vec::new();
     let mut target_names = std::collections::HashSet::new();

@@ -51,7 +51,6 @@ use std::path::PathBuf;
 /// Validate the retained original packet with existing guarded PAIR verification.
 /// Pending is admissible here only after the primitive validates its reachable
 /// stage; it never licenses preparation of a replacement packet.
-#[allow(dead_code)]
 pub(crate) fn recover_source_target_packet(
     target: &SourceInventoryTarget,
     operation_id: &str,
@@ -106,7 +105,6 @@ pub(crate) fn recover_source_target_packet(
     Err(IdentityReferenceError::Conflict)
 }
 
-#[allow(dead_code)]
 pub(crate) fn verify_completed_source_target(
     target: &SourceInventoryTarget,
     commitment: &SourcePacketRecord,
@@ -140,7 +138,6 @@ pub(crate) fn verify_completed_source_target(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn source_inventory_target(
     root: PathBuf,
     decisions: PathBuf,
@@ -438,6 +435,11 @@ pub(crate) struct SourceInventoryCapture {
 }
 
 impl SourceInventoryCapture {
+    #[expect(
+        clippy::match_wildcard_for_single_variants,
+        reason = "E2992 postponed: conservar validación/ownership Settings \
+            sin rediseño; este match acepta Bytes y rechaza el otro estado"
+    )]
     pub(crate) fn capture(
         discovery: SourceDiscoveryWitness,
         mut discovered: Vec<SourceDiscoveredTargetEvidence>,

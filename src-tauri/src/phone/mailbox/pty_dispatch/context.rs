@@ -111,6 +111,23 @@ impl PtyDispatchGuards<'_> {
     }
 }
 
+fn sort_dispatch_candidates(matching: &mut [SessionInfo]) {
+    matching.sort_by(|left, right| {
+        fn rank(status: &SessionStatus) -> u8 {
+            match status {
+                SessionStatus::Active => 0,
+                SessionStatus::Running => 1,
+                SessionStatus::Idle => 2,
+                SessionStatus::Exited(_) => 3,
+            }
+        }
+        rank(&left.status)
+            .cmp(&rank(&right.status))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
 pub(super) async fn dispatch_selection_candidates<
     F: std::future::Future<Output = crate::config::settings::AppSettings>,
 >(
@@ -131,20 +148,7 @@ pub(super) async fn dispatch_selection_candidates<
                 == claimed.target_fqn
         })
         .collect();
-    matching.sort_by(|left, right| {
-        fn rank(status: &SessionStatus) -> u8 {
-            match status {
-                SessionStatus::Active => 0,
-                SessionStatus::Running => 1,
-                SessionStatus::Idle => 2,
-                SessionStatus::Exited(_) => 3,
-            }
-        }
-        rank(&left.status)
-            .cmp(&rank(&right.status))
-            .then_with(|| right.created_at.cmp(&left.created_at))
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    sort_dispatch_candidates(&mut matching);
 
     let pty_profile_settings = settings().await;
     let mut eligible = Vec::new();
@@ -170,7 +174,7 @@ pub(super) async fn dispatch_selection_candidates<
         let (live, route_backend, route_identities) = {
             let manager = pty_manager
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (
                 manager.has_session(id),
                 manager.backend_kind(id),
@@ -269,9 +273,8 @@ pub(crate) async fn prepare_dispatch_claim(
                 .is_err()
             {
                 log::warn!(
-                    "[pty-input] corrupt-expiry rejection failed id={} \
-                        code=terminal_store_failed",
-                    injection_id
+                    "[pty-input] corrupt-expiry rejection failed id={injection_id} \
+                        code=terminal_store_failed"
                 );
             }
             return None;

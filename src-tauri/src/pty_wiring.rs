@@ -332,8 +332,7 @@ impl ContextSampleSink for ScraperSamples {
                 if !self.saturated.swap(true, Ordering::Relaxed) {
                     log::warn!(
                         "[context-alert] sample queue saturated; advisory samples are being \
-                            dropped (dropped={})",
-                        dropped
+                            dropped (dropped={dropped})"
                     );
                 }
             }

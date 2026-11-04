@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
@@ -116,7 +116,11 @@ impl Cleanup {
 static UNWIND_CLEANUPS: Mutex<Vec<Cleanup>> = Mutex::new(Vec::new());
 
 pub(crate) fn take_unwind_cleanups() -> Vec<Cleanup> {
-    std::mem::take(&mut *UNWIND_CLEANUPS.lock().unwrap_or_else(|e| e.into_inner()))
+    std::mem::take(
+        &mut *UNWIND_CLEANUPS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    )
 }
 
 /// Owns the child from spawn to reap. While `child` is `Some`, terminating
@@ -240,7 +244,7 @@ impl Drop for ChildGuard {
             }
             UNWIND_CLEANUPS
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .push(c);
         }
     }
@@ -484,6 +488,10 @@ pub(crate) fn run_inner_with_fault(name: &str, fault: Fault) -> ChildRun {
 
     let mut out = String::new();
     if let Ok(mut f) = std::fs::File::open(&log.0) {
+        #[expect(
+            clippy::verbose_file_reads,
+            reason = "Retain partial child log output even when reading fails"
+        )]
         let _ = f.read_to_string(&mut out);
     }
     ChildRun {

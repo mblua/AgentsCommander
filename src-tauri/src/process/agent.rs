@@ -1,4 +1,4 @@
-//! Version-probe processes; install cache and scheduling policy live in agent_version.
+//! Version-probe processes; install cache and scheduling policy live in `agent_version`.
 
 mod owner;
 pub(crate) mod update;

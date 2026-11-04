@@ -395,7 +395,7 @@ fn save_workgroup_groups_in(
     // filesystem error is acceptable and the caller keeps its prior state.
     crate::config::local_config_io::update_config_json_object(&path, true, |obj| {
         let groups = serde_json::to_value(&config.groups)
-            .map_err(|e| format!("Failed to serialize project groups: {}", e))?;
+            .map_err(|e| format!("Failed to serialize project groups: {e}"))?;
         obj.insert("groups".to_string(), groups);
         obj.insert("showAll".to_string(), Value::Bool(config.show_all));
         obj.insert(

@@ -188,14 +188,14 @@ coding_agents_child!(
 // name at runtime from its destination (`managed_catalog_temp_name_for_destination`),
 // so no production code imports these file-name constants; they exist so the
 // registry can prove the table's policy patterns are the writer's real shapes.
-#[allow(dead_code)] // used by the registry's derivation test only
+#[cfg(test)] // used by the registry's derivation test only
 pub(crate) const CODING_AGENTS_BASE_TMP_GLOB: &str = ".agents.10.default.json.*.tmp";
-#[allow(dead_code)] // used by the registry's derivation test only
+#[cfg(test)] // used by the registry's derivation test only
 pub(crate) const CODING_AGENTS_LOCAL_TMP_GLOB: &str = ".agents.50.personal.no-git.json.*.tmp";
-#[allow(dead_code)] // used by the registry's derivation test only
+#[cfg(test)] // used by the registry's derivation test only
 pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_GLOB: &str =
     ".agents.migration-v1.backup.json.*.tmp";
-#[allow(dead_code)] // used by the registry's derivation test only
+#[cfg(test)] // used by the registry's derivation test only
 pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_GLOB: &str =
     "..agents.migration-v1.json.*.tmp";
 
@@ -213,21 +213,21 @@ pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT: &str =
 
 /// NN and owner are ONE token, never two: they are 1:1, and two spellings of one
 /// fact drift apart.
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const LAYER_DEFAULT: &str = "10.default";
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const LAYER_REMOTE: &str = "20.remote";
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const LAYER_INSTANCE: &str = "30.instance";
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const LAYER_PROJECT: &str = "40.project";
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const LAYER_PERSONAL: &str = "50.personal";
 /// Marks a file that must never be committed.
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const NO_GIT_MARKER: &str = "no-git";
 /// AC working memory; no competing layer, so no number.
-#[allow(dead_code)] // read by the layer-token test until Phase B
+#[cfg(test)] // read by the layer-token test until Phase B
 pub(crate) const STATE_MARKER: &str = "state";
 
 /// Composes a layered name at compile time, one arm per layer: a `const` cannot

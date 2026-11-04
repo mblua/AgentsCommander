@@ -346,6 +346,88 @@ fn cleanup_exit_resources(
     }
 }
 
+fn begin_exit<H: ExitHost, S>(
+    host: &H,
+    ctx: &ExitCtx<S>,
+    cleanup_budget_secs: u64,
+) -> phone::terminal_snapshot::SnapshotScannerDrainResult {
+    let ExitCtx {
+        tg_mgr_for_exit,
+        session_mgr_for_exit,
+        activity_for_exit,
+        shutdown_for_exit,
+        ..
+    } = ctx;
+    // Cancel all active Telegram bridges before general shutdown
+    let bridge_shutdowns = {
+        let mut tg = host.block_on(tg_mgr_for_exit.lock());
+        tg.cancel_all()
+    };
+    for shutdown in bridge_shutdowns {
+        shutdown.abort_now();
+    }
+
+    append_exit_activity(session_mgr_for_exit, activity_for_exit);
+
+    // #632 B1 - trigger background-task shutdown FIRST so the resource
+    // watchdog stops dispatching NEW ticks and the idle detectors stop.
+    // (An already-dispatched spawn_blocking kill_group still runs;
+    // safety there rests on B2b's bounded set + kill_group's
+    // Terminating/Terminated idempotency guard, not on trigger().)
+    let snapshot_scanner_shutdown =
+        phone::mailbox::MailboxPoller::active_terminal_snapshot_shutdown_owner();
+    if let Some(owner) = &snapshot_scanner_shutdown {
+        owner.seal();
+    }
+    log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
+    shutdown_for_exit.trigger();
+    let scanner_shutdown = match snapshot_scanner_shutdown {
+        Some(owner) => host.block_on(owner.seal_and_drain_until(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(cleanup_budget_secs),
+        )),
+        None => phone::terminal_snapshot::SnapshotScannerDrainResult {
+            terminal: true,
+            ..Default::default()
+        },
+    };
+    log::info!(
+        "[shutdown] terminal snapshot scanner drained joined={} aborted={} \
+            terminal={}",
+        scanner_shutdown.joined,
+        scanner_shutdown.aborted,
+        scanner_shutdown.terminal
+    );
+    scanner_shutdown
+}
+
+fn flush_exit_metadata<S>(ctx: &ExitCtx<S>) {
+    let ExitCtx {
+        coordinator_clocks_for_exit,
+        ui_automation_state_for_exit,
+        ..
+    } = ctx;
+    // #552 flush the coordinator badge / auto-closed store on clean
+    // exit (the 60s tick can leave up to one tick of recency
+    // unpersisted). Sync snapshot + save; best-effort on poison.
+    {
+        let snap = coordinator_clocks_for_exit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot();
+        if let Err(e) = crate::config::coordinator_clocks::save_map(&snap) {
+            log::warn!("[coordinator-clocks] exit flush failed: {}", e);
+        }
+    }
+
+    // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
+    // persist_current_state so a concurrent CLI invocation never
+    // observes NoPidFile while sessions.json is being rewritten.
+    // Still runs before process exit — subsequent CLI invocations
+    // see NoPidFile (not StalePidFile) once we return.
+    crate::config::daemon_pid::remove_pid_file();
+    ui_automation_state_for_exit.cleanup_session_file();
+}
+
 pub(crate) fn on_run_event<H, S, F, FF>(
     host: &H,
     event: RunExitEvent,
@@ -362,13 +444,9 @@ pub(crate) fn on_run_event<H, S, F, FF>(
         detached_set,
         spec_board_state,
         session_mgr_for_exit,
-        activity_for_exit,
-        coordinator_clocks_for_exit,
-        shutdown_for_exit,
         selection_coordinator_for_exit,
-        tg_mgr_for_exit,
         resource_monitor_for_exit,
-        ui_automation_state_for_exit,
+        ..
     } = ctx;
     match event {
         RunExitEvent::WindowDestroyed(label) => {
@@ -376,46 +454,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
         }
         RunExitEvent::Exit => {
             let cleanup_budget_secs = policy.cleanup_budget_secs;
-            // Cancel all active Telegram bridges before general shutdown
-            let bridge_shutdowns = {
-                let mut tg = host.block_on(tg_mgr_for_exit.lock());
-                tg.cancel_all()
-            };
-            for shutdown in bridge_shutdowns {
-                shutdown.abort_now();
-            }
-
-            append_exit_activity(session_mgr_for_exit, activity_for_exit);
-
-            // #632 B1 - trigger background-task shutdown FIRST so the resource
-            // watchdog stops dispatching NEW ticks and the idle detectors stop.
-            // (An already-dispatched spawn_blocking kill_group still runs;
-            // safety there rests on B2b's bounded set + kill_group's
-            // Terminating/Terminated idempotency guard, not on trigger().)
-            let snapshot_scanner_shutdown =
-                phone::mailbox::MailboxPoller::active_terminal_snapshot_shutdown_owner();
-            if let Some(owner) = &snapshot_scanner_shutdown {
-                owner.seal();
-            }
-            log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
-            shutdown_for_exit.trigger();
-            let scanner_shutdown = match snapshot_scanner_shutdown {
-                Some(owner) => host.block_on(owner.seal_and_drain_until(
-                    tokio::time::Instant::now()
-                        + std::time::Duration::from_secs(cleanup_budget_secs),
-                )),
-                None => phone::terminal_snapshot::SnapshotScannerDrainResult {
-                    terminal: true,
-                    ..Default::default()
-                },
-            };
-            log::info!(
-                "[shutdown] terminal snapshot scanner drained joined={} aborted={} \
-                    terminal={}",
-                scanner_shutdown.joined,
-                scanner_shutdown.aborted,
-                scanner_shutdown.terminal
-            );
+            let scanner_shutdown = begin_exit(host, ctx, cleanup_budget_secs);
 
             let context_alert_monitor = host.context_alert_monitor();
             if let Some(monitor) = context_alert_monitor.as_ref() {
@@ -470,26 +509,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
                 );
             }
 
-            // #552 flush the coordinator badge / auto-closed store on clean
-            // exit (the 60s tick can leave up to one tick of recency
-            // unpersisted). Sync snapshot + save; best-effort on poison.
-            {
-                let snap = coordinator_clocks_for_exit
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .snapshot();
-                if let Err(e) = crate::config::coordinator_clocks::save_map(&snap) {
-                    log::warn!("[coordinator-clocks] exit flush failed: {}", e);
-                }
-            }
-
-            // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
-            // persist_current_state so a concurrent CLI invocation never
-            // observes NoPidFile while sessions.json is being rewritten.
-            // Still runs before process exit — subsequent CLI invocations
-            // see NoPidFile (not StalePidFile) once we return.
-            crate::config::daemon_pid::remove_pid_file();
-            ui_automation_state_for_exit.cleanup_session_file();
+            flush_exit_metadata(ctx);
         }
     }
 }

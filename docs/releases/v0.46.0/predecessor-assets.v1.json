@@ -1,0 +1,130 @@
+{
+  "assetCount": 17,
+  "assets": [
+    {
+      "id": 651780874,
+      "name": "Agents.Commander-0.45.1-1.x86_64.rpm",
+      "sha256": "a92eeb875cc0fa70975cd60ed63762a36e61a6f0eb0e3ac2d115793b708a36ef",
+      "size": 29463259,
+      "state": "uploaded"
+    },
+    {
+      "id": 651784083,
+      "name": "Agents.Commander_0.45.1_aarch64.dmg",
+      "sha256": "51bfa517ade1c394d68e0c6fa30cca1e2cdfdebfb4ce48ce36a8c3475158b760",
+      "size": 29111494,
+      "state": "uploaded"
+    },
+    {
+      "id": 651781064,
+      "name": "Agents.Commander_0.45.1_amd64.AppImage",
+      "sha256": "da90c6432a24175d161f23bd42c7c9f63bf6af259256ca177fd70be53b1e922d",
+      "size": 106678776,
+      "state": "uploaded"
+    },
+    {
+      "id": 651781291,
+      "name": "Agents.Commander_0.45.1_amd64.deb",
+      "sha256": "4a402c5a5c396dc867ff5d8c01a5203c1c0a21afff254a2016bd2b896f518f36",
+      "size": 29455798,
+      "state": "uploaded"
+    },
+    {
+      "id": 651783762,
+      "name": "Agents.Commander_0.45.1_x64-setup.exe",
+      "sha256": "def1ae80ff1cd3fd45a37d4bd3dfcedade354ba89dfc6bb76791afa62607892a",
+      "size": 17741904,
+      "state": "uploaded"
+    },
+    {
+      "id": 651776017,
+      "name": "Agents.Commander_0.45.1_x64.dmg",
+      "sha256": "54c32a0ef737b78e1ea5098fb3f727590d60a33ab162d1d2a57b1596afcf66b7",
+      "size": 30004552,
+      "state": "uploaded"
+    },
+    {
+      "id": 651784344,
+      "name": "Agents.Commander_aarch64.app.tar.gz",
+      "sha256": "f394bbb08f49f688331dc00c24053af85501344bcb04806095fc2a64794ef2c8",
+      "size": 26817564,
+      "state": "uploaded"
+    },
+    {
+      "id": 651776261,
+      "name": "Agents.Commander_x64.app.tar.gz",
+      "sha256": "ba6d69d833c8958be6a09f375fca4d8f3d8d505c19cb677b4c5dff906d0a47f7",
+      "size": 27762513,
+      "state": "uploaded"
+    },
+    {
+      "id": 651787939,
+      "name": "SHASUMS256.txt",
+      "sha256": "93d0dbab1f741332b1a18dc79dbae9905d45903edb4f39e3335c276aa1a6bdcd",
+      "size": 1632,
+      "state": "uploaded"
+    },
+    {
+      "id": 651783898,
+      "name": "agentscommander-0.45.1-windows-x86_64-portable.zip",
+      "sha256": "a87550e3cf4c940b5cd5e95eea2f158192c7a08a10791ed2729442f1d2869e71",
+      "size": 25044965,
+      "state": "uploaded"
+    },
+    {
+      "id": 651781441,
+      "name": "agentscommander-linux-x86_64",
+      "sha256": "4712e3b1bb9eaef395f870e650bfc9713676c60906bc80ac931df39a9430204d",
+      "size": 85625440,
+      "state": "uploaded"
+    },
+    {
+      "id": 651784525,
+      "name": "agentscommander-mac-aarch64",
+      "sha256": "d21e7bef0dbedd07d45e479100c64d3976eee0963a6d70b7db2cdbd88b908dec",
+      "size": 66898576,
+      "state": "uploaded"
+    },
+    {
+      "id": 651784728,
+      "name": "agentscommander-mac-aarch64.app.tar.gz",
+      "sha256": "f394bbb08f49f688331dc00c24053af85501344bcb04806095fc2a64794ef2c8",
+      "size": 26817564,
+      "state": "uploaded"
+    },
+    {
+      "id": 651776437,
+      "name": "agentscommander-mac-x86_64",
+      "sha256": "62310758eeddc7484940891424e96216ced14f17a71b470ba5094f84bc1c2329",
+      "size": 69925168,
+      "state": "uploaded"
+    },
+    {
+      "id": 651776683,
+      "name": "agentscommander-mac-x86_64.app.tar.gz",
+      "sha256": "ba6d69d833c8958be6a09f375fca4d8f3d8d505c19cb677b4c5dff906d0a47f7",
+      "size": 27762513,
+      "state": "uploaded"
+    },
+    {
+      "id": 651784073,
+      "name": "agentscommander-testeable-windows-x86_64.exe",
+      "sha256": "0957a7d9fffd58cc0dda3ce0f4cb32bcbe1d70ce6125f67b4a12cc20b8942d04",
+      "size": 70390272,
+      "state": "uploaded"
+    },
+    {
+      "id": 651784274,
+      "name": "agentscommander-windows-x86_64.exe",
+      "sha256": "0957a7d9fffd58cc0dda3ce0f4cb32bcbe1d70ce6125f67b4a12cc20b8942d04",
+      "size": 70390272,
+      "state": "uploaded"
+    }
+  ],
+  "immutable": true,
+  "kind": "predecessor",
+  "releaseId": 416102038,
+  "repository": "mblua/AgentsCommander",
+  "schema": "prepare-agentscommander-release/asset-ledger/v1",
+  "tag": "v0.45.1"
+}

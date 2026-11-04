@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "issue": 3528,
+  "sourceReference": "d2b1089a636e5bce9bbc8e036f595e05f9f4077c",
+  "referenceTree": "4f385ba16a8b9e4f965c84d51231e87d21edb73a",
+  "sourceCommit": "51788bee730eb2b7a9b572a20272c0f2e11afb90",
+  "sourceTree": "1ceec88a7c257355ea1b88de150d9dd0d6e580fe",
+  "toolchain": "1.98.1",
+  "platforms": [
+    "linux",
+    "windows"
+  ],
+  "codes": [
+    "clippy::doc_markdown",
+    "clippy::implicit_clone",
+    "clippy::map_unwrap_or",
+    "clippy::match_same_arms",
+    "clippy::semicolon_if_nothing_returned",
+    "clippy::unnested_or_patterns",
+    "clippy::map_err_ignore"
+  ],
+  "policy": "lint-platform-total-v1",
+  "limits": {
+    "linux": {
+      "clippy::doc_markdown": 626,
+      "clippy::implicit_clone": 20,
+      "clippy::map_unwrap_or": 243,
+      "clippy::match_same_arms": 39,
+      "clippy::semicolon_if_nothing_returned": 109,
+      "clippy::unnested_or_patterns": 19,
+      "clippy::map_err_ignore": 865
+    },
+    "windows": {
+      "clippy::doc_markdown": 661,
+      "clippy::implicit_clone": 20,
+      "clippy::map_unwrap_or": 244,
+      "clippy::match_same_arms": 40,
+      "clippy::semicolon_if_nothing_returned": 110,
+      "clippy::unnested_or_patterns": 22,
+      "clippy::map_err_ignore": 855
+    }
+  }
+}

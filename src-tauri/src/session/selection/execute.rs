@@ -49,10 +49,8 @@ pub(super) async fn execute_transition<R: Runtime>(
                 if let Some(window) = transaction.app().get_webview_window(&label) {
                     if let Err(error) = window.set_focus() {
                         log::warn!(
-                            "[selection] failed to focus detached target session={} \
-                                source=userSwitch: {}",
-                            session_id,
-                            error
+                            "[selection] failed to focus detached target session={session_id} \
+                                source=userSwitch: {error}"
                         );
                     }
                 }
@@ -268,9 +266,7 @@ pub(super) async fn execute_finalize_create<R: Runtime>(
         Ok(committed) => committed,
         Err(error) => {
             log::warn!(
-                "[selection] create finalization commit rejected session={}: {}",
-                session_id,
-                error
+                "[selection] create finalization commit rejected session={session_id}: {error}"
             );
             execute_rollback_create(transaction, request.binding).await;
             return Err(error);
@@ -584,15 +580,14 @@ pub(super) async fn execute_route_loss<R: Runtime>(
             .app()
             .state::<DetachedSessionsState>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
         if let Some(window) = transaction.app().get_webview_window(&label) {
             if let Err(error) = window.destroy() {
                 log::warn!(
-                    "[selection] route-loss detached window close failed session={}: {}",
-                    session_id,
-                    error
+                    "[selection] route-loss detached window close failed \
+                        session={session_id}: {error}"
                 );
             }
         }

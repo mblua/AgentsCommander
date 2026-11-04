@@ -3,3 +3,4 @@
 # every diagnostic it reads carries 25 as its denominator.
 # See docs/quality/cognitive-complexity-gate.md.
 cognitive-complexity-threshold = 25
+too-many-lines-threshold = 100

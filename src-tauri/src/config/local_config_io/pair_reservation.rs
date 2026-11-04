@@ -15,7 +15,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 impl PairReservation {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn protected_revision_digests(&self) -> Result<[String; 2], PreparedPairError> {
         use sha2::{Digest, Sha256};
         let digest = |tuple: &[ProtectedRevision; 2]| -> Result<String, PreparedPairError> {
@@ -71,7 +70,7 @@ impl PairReservation {
                 .as_deref()
                 .map(|value| timestamp_cmp(value, floor))
                 .transpose()?
-                .is_none_or(|order| order.is_lt())
+                .is_none_or(std::cmp::Ordering::is_lt)
             {
                 return Err(PreparedPairError::Conflict);
             }
@@ -91,7 +90,7 @@ impl PairReservation {
                         .as_deref()
                         .map(|value| timestamp_cmp(value, &planned))
                         .transpose()?
-                        .is_none_or(|order| order.is_lt())
+                        .is_none_or(std::cmp::Ordering::is_lt)
                     {
                         continue;
                     }
@@ -242,7 +241,6 @@ pub(super) fn publish_pair_reservation(
     publish_pair_reservation_guarded(path, physical, packet, &PairTargetGuard::new(&|| Ok(())))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn publish_pair_reservation_guarded(
     path: &Path,
     physical: &mut PhysicalState,
@@ -262,7 +260,7 @@ pub(super) fn publish_pair_reservation_guarded(
 
 /// Source/C proofs and inventory are acquired by the caller before entry.
 /// Snapshot, planning and the one complete packet publication never unlock.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn prepare_and_reserve_config_pair<F>(
     decisions: &Path,
     state: &Path,
@@ -285,7 +283,6 @@ where
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn prepare_and_reserve_config_pair_guarded<F>(
     decisions: &Path,
     state: &Path,
@@ -413,7 +410,6 @@ pub(super) fn reconcile_pair_activity(
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn reconcile_pair_activity_guarded(
     decisions: &Path,
     state: &Path,
@@ -479,7 +475,7 @@ pub(super) fn land_pair_activity(
 }
 
 /// Execute pending stages of the original operation under current target authority.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn execute_reserved_config_pair(
     decisions: &Path,
     state: &Path,
@@ -496,7 +492,7 @@ pub(crate) fn execute_reserved_config_pair(
 }
 
 /// Verify the original target without applying stages or consolidating activity.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn verify_reserved_config_pair(
     decisions: &Path,
     state: &Path,
@@ -514,7 +510,6 @@ pub(crate) fn verify_reserved_config_pair(
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_reserved_config_pair_guarded(
     decisions: &Path,
     state: &Path,
@@ -553,6 +548,7 @@ pub(crate) fn verify_reserved_config_pair_guarded(
     Ok(current)
 }
 
+#[cfg(test)]
 pub(super) fn execute_reserved_config_pair_with_stage(
     decisions: &Path,
     state: &Path,
@@ -570,7 +566,6 @@ pub(super) fn execute_reserved_config_pair_with_stage(
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn execute_reserved_config_pair_with_validation(
     decisions: &Path,
     state: &Path,
@@ -665,7 +660,6 @@ pub(super) fn execute_reserved_config_pair_with_validation(
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn confirm_pair_activity_floor_guarded(
     state: &Path,
     reservation: &Path,
@@ -688,7 +682,6 @@ pub(super) fn confirm_pair_activity_floor_guarded(
 /// IO consumes a proof assembled above PAIR from an authenticated, validated
 /// local complete receipt under C. It never reads another config directory.
 #[derive(Clone, Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct PairCompleteProof {
     operation_id: String,
     source_physical_key: String,
@@ -696,7 +689,6 @@ pub(crate) struct PairCompleteProof {
     plan_digest: String,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl PairCompleteProof {
     pub(crate) fn from_single_editor_complete(
         projection: &Value,
@@ -766,7 +758,7 @@ impl PairCompleteProof {
 
 /// Complete receipt is necessary but insufficient: release also verifies the
 /// own final protected tuple and confirmed floor before removing this packet.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn release_reserved_config_pair(
     decisions: &Path,
     state: &Path,
@@ -776,7 +768,6 @@ pub(crate) fn release_reserved_config_pair(
     release_reserved_config_pair_guarded(decisions, state, reservation, proof, &|| Ok(()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn release_reserved_config_pair_guarded(
     decisions: &Path,
     state: &Path,

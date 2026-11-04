@@ -177,11 +177,7 @@ where
         type Value = Vec<SeedManifestRowWire>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(
-                formatter,
-                "at most {} seed-manifest rows",
-                MAX_MANIFEST_ROWS
-            )
+            write!(formatter, "at most {MAX_MANIFEST_ROWS} seed-manifest rows")
         }
 
         fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>

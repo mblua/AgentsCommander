@@ -130,6 +130,11 @@ impl AllocationEpoch {
         Self
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "Método del guard de tracking: conservar vida del guard al consultar contador \
+            global."
+    )]
     fn live_bytes(&self) -> usize {
         LIVE_BYTES.load(Ordering::SeqCst)
     }
@@ -141,6 +146,11 @@ impl AllocationEpoch {
         LARGEST_ALLOCATION.store(0, Ordering::SeqCst);
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "Método del guard de tracking: conservar vida del guard al consultar contador \
+            global."
+    )]
     fn peak_bytes(&self) -> usize {
         PEAK_BYTES.load(Ordering::SeqCst)
     }
@@ -154,6 +164,10 @@ impl AllocationEpoch {
             large_peak_bytes: LARGE_PEAK_BYTES.load(Ordering::SeqCst),
             largest_allocation: LARGEST_ALLOCATION.load(Ordering::SeqCst),
         };
+        #[expect(
+            clippy::mem_forget,
+            reason = "Finish disables tracking and suppresses the epoch Drop path"
+        )]
         std::mem::forget(self);
         stats
     }

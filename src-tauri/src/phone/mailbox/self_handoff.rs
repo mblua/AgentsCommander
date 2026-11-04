@@ -382,10 +382,7 @@ impl MailboxPoller {
         NoteFut: std::future::Future<Output = ()> + Send,
     {
         let Some(lease) = pending.legacy_lease(session_id) else {
-            log::warn!(
-                "[mailbox] clear driver missing legacy reservation for {}",
-                session_id
-            );
+            log::warn!("[mailbox] clear driver missing legacy reservation for {session_id}");
             return clear_self_handoff_outcome(
                 session_id,
                 root,
@@ -418,7 +415,7 @@ impl MailboxPoller {
             state = next; // adopt the advanced state (the Clear->Handoff reset is already applied)
 
             match action {
-                SelfClearGateAction::Wait => continue,
+                SelfClearGateAction::Wait => {}
                 SelfClearGateAction::InjectClear => {
                     if let Err(e) =
                         inject_self_clear_phase(session_id, clear_text, settle, &mut inject).await
@@ -429,7 +426,7 @@ impl MailboxPoller {
                     // can possibly drop (stamp-then-drop ordering).
                     note_boundary(session_id, SelfClearBoundary::Cleared).await;
                     continuation = true;
-                    continue; // state is already Phase 2 with reset clocks
+                    // state is already Phase 2 with reset clocks
                 }
                 SelfClearGateAction::InjectHandoff => {
                     let injected = inject_self_clear_handoff(
@@ -450,10 +447,8 @@ impl MailboxPoller {
                     // Greppable abandon line so a silently-dropped clear/handoff is diagnosable.
                     // The CLI already warned the caller it is best-effort.
                     log::warn!(
-                        "[mailbox] self-handoff-and-clear ABANDONED for session {}: {} (agent may \
-                        re-issue)",
-                        session_id,
-                        reason
+                        "[mailbox] self-handoff-and-clear ABANDONED for session {session_id}: \
+                        {reason} (agent may re-issue)"
                     );
                     break Some(reason.to_string());
                 }
@@ -679,26 +674,11 @@ impl MailboxPoller {
             ERR_SELF_HANDOFF_NOTICE_PENDING,
         )
         .await;
-        let (suffix, reason) = match status {
-            NoticeDelivery::Delivered => {
-                crate::commands::pty::note_post_boundary_content_to_session(app, target).await;
-                app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-                    .touch_silence(target);
-                return;
-            }
-            NoticeDelivery::Cancelled => (
-                "cancelled",
-                "notification cancelled: another self operation is pending".to_string(),
-            ),
-            NoticeDelivery::Unavailable(reason) => ("unavailable", reason),
-            NoticeDelivery::Failed(reason) => (
-                "failed",
-                format!("{reason}; submission may be partial; agent receipt is not confirmed"),
-            ),
-            NoticeDelivery::Exhausted => (
-                "exhausted",
-                "no further attempt will start after the 30-second retry window".to_string(),
-            ),
+        let Some((suffix, reason)) = self_handoff_notice_failure(status) else {
+            crate::commands::pty::note_post_boundary_content_to_session(app, target).await;
+            app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+                .touch_silence(target);
+            return;
         };
         warn(
             &format!("delivery:{suffix}"),
@@ -716,6 +696,26 @@ impl MailboxPoller {
             None => (false, false),
         }
     }
+}
+
+fn self_handoff_notice_failure(status: failure::NoticeDelivery) -> Option<(&'static str, String)> {
+    use failure::NoticeDelivery;
+    Some(match status {
+        NoticeDelivery::Delivered => return None,
+        NoticeDelivery::Cancelled => (
+            "cancelled",
+            "notification cancelled: another self operation is pending".to_string(),
+        ),
+        NoticeDelivery::Unavailable(reason) => ("unavailable", reason),
+        NoticeDelivery::Failed(reason) => (
+            "failed",
+            format!("{reason}; submission may be partial; agent receipt is not confirmed"),
+        ),
+        NoticeDelivery::Exhausted => (
+            "exhausted",
+            "no further attempt will start after the 30-second retry window".to_string(),
+        ),
+    })
 }
 
 async fn restart_communication(
@@ -781,11 +781,8 @@ where
     // The idle-to-final-Enter race matches the remote logical-clear path.
     if let Err(e) = inject(session_id, clear_text.to_string()).await {
         log::warn!(
-            "[mailbox] self-handoff-and-clear: {} injection failed for session {}: \
-            {}",
-            clear_text,
-            session_id,
-            e
+            "[mailbox] self-handoff-and-clear: {clear_text} injection failed for session \
+            {session_id}: {e}"
         );
         return Err(e); // clear may have been partially submitted
     }
@@ -959,11 +956,8 @@ fn archive_self_forget(root: &Path, session_id: Uuid, action: &str) -> Option<Fo
         ),
         Ok(None) => {}
         Err(e) => log::warn!(
-            "[mailbox] {}: SELF-FORGET.md archive failed for session \
-            {} (non-fatal): {}",
-            action,
-            session_id,
-            e
+            "[mailbox] {action}: SELF-FORGET.md archive failed for session \
+            {session_id} (non-fatal): {e}"
         ),
     }
     forgotten_summary

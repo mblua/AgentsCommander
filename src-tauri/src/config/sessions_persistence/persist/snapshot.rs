@@ -127,11 +127,9 @@ pub(in super::super) fn deduplicate_preserving_affected(
                 recipe.coding_agent_binding_origin = origins.get(binding).cloned();
                 result.push(sanitize_failed_recoverable(&recipe));
             }
-            Err(error) => log::error!(
-                "[sessions] invalid affected binding recipe {}: {}",
-                binding,
-                error
-            ),
+            Err(error) => {
+                log::error!("[sessions] invalid affected binding recipe {binding}: {error}");
+            }
         }
     }
     result
@@ -268,7 +266,7 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
         for arg in &mut result {
             let mut tokens: Vec<String> = arg
                 .split_whitespace()
-                .map(|token| token.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
             let mut changed = false;
 
@@ -379,7 +377,7 @@ fn strip_direct_injected_args(
     result
 }
 
-/// Pure: produce a sanitized copy of a failed-recoverable PersistedSession
+/// Pure: produce a sanitized copy of a failed-recoverable `PersistedSession`
 /// suitable for merging into a fresh snapshot. Drops runtime fields (`id`,
 /// `status`, `waiting_for_input`, `created_at`) since those describe the
 /// PRIOR run's state; the session is no longer live, and persisting them

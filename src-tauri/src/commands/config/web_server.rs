@@ -76,7 +76,7 @@ pub struct WebServerInterfaceInfo {
 }
 
 /// §1453: unica conversion error -> payload. Reemplaza los accesores
-/// bind()/port()/detail() de la ronda 1: la conversion vive donde vive el
+/// `bind()/port()/detail()` de la ronda 1: la conversion vive donde vive el
 /// payload. Emite el `bind` CRUDO en ambas variantes (contrato de D2).
 impl From<&crate::web::StartServerError> for WebServerBindFailure {
     fn from(err: &crate::web::StartServerError) -> Self {
@@ -133,7 +133,7 @@ pub(crate) fn ensure_web_remote_open_allowed(
 /// El guard de `listening` es la SEGUNDA guardia, independiente de la del
 /// frontend (`showBindAlert`, 5.7.2), que sigue siendo la primaria: ninguna
 /// de las dos es load-bearing sola porque los dos early-returns Ok(false) de
-/// start_web_server nunca graban fallo.
+/// `start_web_server` nunca graban fallo.
 pub(crate) fn select_current_bind_failure(
     recorded: Option<crate::web::StartServerError>,
     bind: &str,
@@ -216,7 +216,7 @@ pub async fn open_web_remote(ws_handle: State<'_, WebServerHandle>) -> Result<()
         return Err("Web server is not owned by this app process".into());
     }
 
-    open::that(&url).map_err(|e| format!("Failed to open browser: {}", e))?;
+    open::that(&url).map_err(|e| format!("Failed to open browser: {e}"))?;
     Ok(())
 }
 
@@ -396,7 +396,7 @@ pub(crate) fn validate_mint_api_client_root(
         settings,
         Path::new(root),
     )
-    .map_err(|_| format!("unknown or invalid root: {}", root))?
+    .map_err(|_| format!("unknown or invalid root: {root}"))?
     .launch_path;
 
     let is_replica = canonical
@@ -405,7 +405,7 @@ pub(crate) fn validate_mint_api_client_root(
         .map(|name| name.starts_with("__agent_"))
         .unwrap_or(false);
     if !is_replica {
-        return Err(format!("unknown or invalid root: {}", root));
+        return Err(format!("unknown or invalid root: {root}"));
     }
 
     let bound_root = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&canonical);
@@ -418,7 +418,7 @@ pub(crate) fn bounded_mint_api_client_expiry(
     issued_at: &str,
 ) -> Result<String, String> {
     let issued_at = chrono::DateTime::parse_from_rfc3339(issued_at)
-        .map_err(|e| format!("Invalid issuedAt timestamp: {}", e))?
+        .map_err(|e| format!("Invalid issuedAt timestamp: {e}"))?
         .with_timezone(&chrono::Utc);
     let max_expires_at = issued_at + chrono::Duration::days(MINT_API_CLIENT_MAX_TTL_DAYS);
 
@@ -426,15 +426,15 @@ pub(crate) fn bounded_mint_api_client_expiry(
         Some(raw) => {
             let trimmed = raw.trim();
             let parsed = chrono::DateTime::parse_from_rfc3339(trimmed)
-                .map_err(|e| format!("Invalid expires value; expected RFC3339: {}", e))?
+                .map_err(|e| format!("Invalid expires value; expected RFC3339: {e}"))?
                 .with_timezone(&chrono::Utc);
             if parsed <= issued_at {
                 return Err("expires must be after the issuedAt timestamp".to_string());
             }
             if parsed > max_expires_at {
                 return Err(format!(
-                    "expires exceeds maximum API client lifetime of {} days",
-                    MINT_API_CLIENT_MAX_TTL_DAYS
+                    "expires exceeds maximum API client lifetime of \
+                     {MINT_API_CLIENT_MAX_TTL_DAYS} days"
                 ));
             }
             parsed
@@ -479,7 +479,7 @@ pub(crate) fn begin_web_server_start(
                 Ok(addr) => addr,
                 Err(detail) => {
                     let error = crate::web::StartServerError::InvalidAddr { bind, port, detail };
-                    log::warn!("[web-server] start failed: {}", error);
+                    log::warn!("[web-server] start failed: {error}");
                     lifecycle.record_bind_failure(error);
                     return Ok(None);
                 }
@@ -515,7 +515,7 @@ pub(crate) fn begin_web_server_start(
                     Ok(Some(join_handle))
                 }
                 Err(error) => {
-                    log::warn!("[web-server] start failed: {}", error);
+                    log::warn!("[web-server] start failed: {error}");
                     lifecycle.record_bind_failure(error);
                     Ok(None)
                 }
@@ -624,7 +624,7 @@ pub(crate) fn classify_virtual_interface(name: &str) -> bool {
 /// (APIPA: exactamente la clase de bind fragil que este issue elimina) y
 /// unspecified; ordena fisicas primero y dedup exacto.
 ///
-/// NO BORRAR el filtro is_link_local() "por muerto": en Windows es un no-op
+/// NO BORRAR el filtro `is_link_local()` "por muerto": en Windows es un no-op
 /// porque el crate ya descarta 169.254.* antes de entregarlas, pero en
 /// Linux/macOS SI llegan y el filtro es el unico que las saca (D1).
 pub(crate) fn map_web_server_interfaces(
@@ -655,24 +655,24 @@ pub(crate) fn map_web_server_interfaces(
 }
 
 /// §1453: IPv4 actuales de la maquina con su adaptador, para el chooser de
-/// bind del popover. Solo registrado en el invoke_handler de escritorio; el
+/// bind del popover. Solo registrado en el `invoke_handler` de escritorio; el
 /// bridge WS del browser no rutea ningun comando de web server (D3).
 /// async no por consistencia (este archivo tiene comandos sync), sino para no
 /// ocupar el main thread: Tauri v2 corre los comandos sync ahi.
 /// Lista adaptadores caidos con IPv4 estatica: deliberado (D3/D6).
-/// get_if_addrs() puede entrar en panico si falla HeapAlloc (camino de OOM).
+/// `get_if_addrs()` puede entrar en panico si falla `HeapAlloc` (camino de OOM).
 #[tauri::command]
 pub async fn list_web_server_interfaces() -> Result<Vec<WebServerInterfaceInfo>, String> {
     let interfaces = if_addrs::get_if_addrs().map_err(|e| {
-        log::warn!("[web-server] interface enumeration failed: {}", e);
-        format!("Failed to enumerate network interfaces: {}", e)
+        log::warn!("[web-server] interface enumeration failed: {e}");
+        format!("Failed to enumerate network interfaces: {e}")
     })?;
     Ok(map_web_server_interfaces(
         interfaces
             .into_iter()
             .filter_map(|iface| match iface.addr {
                 if_addrs::IfAddr::V4(v4) => Some((iface.name, v4.ip)),
-                _ => None,
+                if_addrs::IfAddr::V6(_) => None,
             })
             .collect(),
     ))
@@ -689,7 +689,7 @@ pub(crate) fn api_server_probe_addr(bind: &str, port: u16) -> Result<SocketAddr,
 }
 
 pub(crate) fn web_server_probe_addr(bind: &str, port: u16) -> Result<SocketAddr, String> {
-    let configured = format!("{}:{}", bind, port)
+    let configured = format!("{bind}:{port}")
         .parse::<SocketAddr>()
         .map_err(|error| error.to_string())?;
     let probe_ip = match configured.ip() {

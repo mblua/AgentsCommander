@@ -10,7 +10,7 @@ pub(crate) fn derive_repo_name(path: &Path) -> Option<String> {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
     {
-        Some(parent) => format!("{}/{}", parent, file_name),
+        Some(parent) => format!("{parent}/{file_name}"),
         None => file_name.to_string(),
     };
     Some(name)
@@ -238,7 +238,7 @@ fn push_unique_spec_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 fn spec_path_compare_key(path: &Path) -> String {
     let mut s = path.to_string_lossy().replace('/', "\\");
     if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
-        s = format!(r"\\{}", stripped);
+        s = format!(r"\\{stripped}");
     } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
         s = stripped.to_string();
     }

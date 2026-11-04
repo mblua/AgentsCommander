@@ -61,6 +61,10 @@ fn output_child() {
         Ok("failure") => {
             println!("github stdout");
             eprintln!("github stderr");
+            #[expect(
+                clippy::exit,
+                reason = "Child fixture supplies the tested nonzero process status"
+            )]
             std::process::exit(7);
         }
         _ => {}

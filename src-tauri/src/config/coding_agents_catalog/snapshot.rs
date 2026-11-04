@@ -508,44 +508,40 @@ pub(crate) fn resolve_catalog_snapshot(
                 "the persisted catalog carries an unrecognized managed ownership marker; this \
                     build neither refreshes nor migrates it",
             ));
-            if let Some(project) = &snapshot.project {
-                describe_local_presence(
-                    project,
-                    &project_catalog_path(ac_dir),
-                    &mut resolved.warnings,
-                    LayerDescription::Project,
-                );
-            }
-            describe_local_presence(
-                &snapshot.local,
-                &local_path,
-                &mut resolved.warnings,
-                LayerDescription::Local,
-            );
+            describe_snapshot_layers(ac_dir, &snapshot, &local_path, &mut resolved.warnings);
             resolved.catalog =
                 apply_support_gate(analysis.entries, &base_path, &mut resolved.warnings);
         }
         CatalogBaseKind::Legacy => {
-            if let Some(project) = &snapshot.project {
-                describe_local_presence(
-                    project,
-                    &project_catalog_path(ac_dir),
-                    &mut resolved.warnings,
-                    LayerDescription::Project,
-                );
-            }
-            describe_local_presence(
-                &snapshot.local,
-                &local_path,
-                &mut resolved.warnings,
-                LayerDescription::Local,
-            );
+            describe_snapshot_layers(ac_dir, &snapshot, &local_path, &mut resolved.warnings);
             resolved.catalog =
                 apply_support_gate(analysis.entries, &base_path, &mut resolved.warnings);
         }
     }
 
     resolved
+}
+
+fn describe_snapshot_layers(
+    ac_dir: &Path,
+    snapshot: &CatalogSnapshot,
+    local_path: &Path,
+    warnings: &mut Vec<CatalogDiagnostic>,
+) {
+    if let Some(project) = &snapshot.project {
+        describe_local_presence(
+            project,
+            &project_catalog_path(ac_dir),
+            warnings,
+            LayerDescription::Project,
+        );
+    }
+    describe_local_presence(
+        &snapshot.local,
+        local_path,
+        warnings,
+        LayerDescription::Local,
+    );
 }
 
 fn resolve_missing_base(

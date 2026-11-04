@@ -110,7 +110,7 @@ pub(super) async fn dispatch_coding_agent_command(
 
         "set_replica_selection_default" => set_replica_selection_default_command(state, args).await,
 
-        _ => Err(format!("Unknown command: {}", cmd)),
+        _ => Err(format!("Unknown command: {cmd}")),
     }
 }
 

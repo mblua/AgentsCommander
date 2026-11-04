@@ -1,4 +1,4 @@
-//! Filesystem locations that AgentsCommander creates and shares between agents:
+//! Filesystem locations that `AgentsCommander` creates and shares between agents:
 //! four project-level directories under a project's `.ac` root, and one room-level
 //! directory under a room root. #1795.
 //!

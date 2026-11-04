@@ -37,7 +37,7 @@ fn main() {
                             Ok(placement) => placement,
                             Err(e) => {
                                 agentscommander_lib::cli::attach_parent_console();
-                                eprintln!("Error: {}", e);
+                                eprintln!("Error: {e}");
                                 agentscommander_lib::cli::flush_outputs();
                                 std::process::exit(1);
                             }
@@ -49,7 +49,7 @@ fn main() {
                                 Ok(enabled) => enabled,
                                 Err(e) => {
                                     agentscommander_lib::cli::attach_parent_console();
-                                    eprintln!("{}", e);
+                                    eprintln!("{e}");
                                     agentscommander_lib::cli::flush_outputs();
                                     std::process::exit(1);
                                 }
@@ -143,6 +143,7 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
             agentscommander_lib::preflight_config_startup(owners.startup_summary.as_ref())
         {
             agentscommander_lib::cli::present_fatal_startup_message(&error.to_string());
+            #[expect(clippy::exit, reason = "Fatal CLI startup exits with status 1")]
             std::process::exit(1);
         }
         // Install the same logger backend the GUI uses so
@@ -169,7 +170,7 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
             use std::io::IsTerminal;
             if std::io::stderr().is_terminal() && std::env::var_os("AC_MACHINE_OUTPUT").is_none() {
                 if let Some(notice) = agentscommander_lib::update_check::read_cached_notice() {
-                    eprintln!("{}", notice);
+                    eprintln!("{notice}");
                 }
             }
         }
@@ -180,6 +181,10 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
         owners.messages.as_ref(),
         owners.snapshot_stage.as_ref(),
     );
+    #[expect(
+        clippy::exit,
+        reason = "CLI dispatch preserves its process exit status"
+    )]
     std::process::exit(code);
 }
 

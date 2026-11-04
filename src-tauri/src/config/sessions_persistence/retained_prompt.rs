@@ -155,7 +155,7 @@ pub(crate) async fn block_duplicate_restore_prompt_domains(
     .await;
 }
 
-/// A Windows comparison spelling has lost its canonical case, so NotFound on
+/// A Windows comparison spelling has lost its canonical case, so `NotFound` on
 /// that spelling cannot prove deletion under per-directory case sensitivity.
 pub(super) fn prompt_directory_gc_confirmed(
     windows: bool,
@@ -164,7 +164,7 @@ pub(super) fn prompt_directory_gc_confirmed(
     !windows && metadata == Err(std::io::ErrorKind::NotFound)
 }
 
-/// Called only after sessions_save_lock; always reads the current manager.
+/// Called only after `sessions_save_lock`; always reads the current manager.
 pub(super) async fn flush_retained_prompts_locked(
     mgr: &SessionManager,
     dir: &Path,

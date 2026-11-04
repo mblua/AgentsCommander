@@ -60,7 +60,7 @@ impl std::fmt::Debug for TerminalScreenRead {
 
 /// #973 - the terminal size a session's PTY is opened at.
 ///
-/// AC used to open every ConPTY at a hardcoded 120x30 and let the frontend correct it a few
+/// AC used to open every `ConPTY` at a hardcoded 120x30 and let the frontend correct it a few
 /// hundred milliseconds later. That correction lands in the middle of a coding agent's TUI
 /// startup, and a resize there makes Codex redraw its still-empty viewport and lose the
 /// wakeup for the content that becomes ready right after: the terminal stays blank, alive,
@@ -88,9 +88,9 @@ impl PtyViewport {
     /// The smallest viewport that could plausibly be a terminal a human is looking at.
     ///
     /// A `> 0` check is not enough. xterm does not hand back a zero for a degenerate box - it
-    /// clamps to its own MINIMUM_COLS = 2 / MINIMUM_ROWS = 1 (`@xterm/addon-fit`) - so a
+    /// clamps to its own `MINIMUM_COLS` = 2 / `MINIMUM_ROWS` = 1 (`@xterm/addon-fit`) - so a
     /// container that is laid out but collapsed yields a perfectly well-formed **2x1**, which
-    /// sails straight through a zero check and opens the ConPTY at 2x1. That is not a wedge: it
+    /// sails straight through a zero check and opens the `ConPTY` at 2x1. That is not a wedge: it
     /// drifts, the view corrects it, and the drift is now warned about. But it is not a size any
     /// real view asked for, and a TUI that comes up believing it has two columns lays itself out
     /// around that before anyone can tell it otherwise.

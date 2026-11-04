@@ -35,15 +35,13 @@ pub(crate) fn collect_agent_team_mutations_raw(
                 let raw = String::from_utf8_lossy(&before_json);
                 if raw_text_mentions_agent_token(&raw, agent_name, agent_ref) {
                     return Err(format!(
-                        "Cannot delete agent '{}': cannot verify team '{}' references because \
-                         config.json is invalid: {}",
-                        agent_name, team_name, e
+                        "Cannot delete agent '{agent_name}': cannot verify team '{team_name}' \
+                         references because config.json is invalid: {e}"
                     ));
                 }
                 log::warn!(
-                    "[entity_creation] Skipping unrelated malformed team config for '{}': {}",
-                    team_name,
-                    e
+                    "[entity_creation] Skipping unrelated malformed team config \
+                        for '{team_name}': {e}"
                 );
                 continue;
             }
@@ -94,27 +92,13 @@ pub(crate) fn collect_agent_team_mutations_raw(
         }
 
         if changed {
-            let object = value.as_object_mut().ok_or_else(|| {
-                format!(
-                    "Cannot delete agent '{}': team '{}' config.json must be an object",
-                    agent_name, team_name
-                )
-            })?;
-            normalize_raw_context_alert_percentages(object).map_err(|e| {
-                format!(
-                    "Cannot delete agent '{}': team '{}' has invalid contextAlertPercentages: {}",
-                    agent_name, team_name, e
-                )
-            })?;
-            let mut after_json = serde_json::to_vec_pretty(&value)
-                .map_err(|e| format!("Cannot serialize team '{}' config.json: {}", team_name, e))?;
-            after_json.push(b'\n');
-            mutations.push(AgentTeamMutation {
-                team_name: team_name.to_string(),
+            mutations.push(prepare_team_mutation(
+                team_name,
+                agent_name,
                 config_path,
                 before_json,
-                after_json,
-            });
+                value,
+            )?);
         }
     }
 
@@ -131,15 +115,41 @@ pub(crate) fn collect_agent_team_mutations_raw(
     Ok(mutations)
 }
 
+fn prepare_team_mutation(
+    team_name: &str,
+    agent_name: &str,
+    config_path: PathBuf,
+    before_json: Vec<u8>,
+    mut value: serde_json::Value,
+) -> Result<AgentTeamMutation, String> {
+    let object = value.as_object_mut().ok_or_else(|| {
+        format!(
+            "Cannot delete agent '{agent_name}': team '{team_name}' config.json must be an object"
+        )
+    })?;
+    normalize_raw_context_alert_percentages(object).map_err(|e| {
+        format!(
+            "Cannot delete agent '{agent_name}': team '{team_name}' has invalid \
+                contextAlertPercentages: {e}"
+        )
+    })?;
+    let mut after_json = serde_json::to_vec_pretty(&value)
+        .map_err(|e| format!("Cannot serialize team '{team_name}' config.json: {e}"))?;
+    after_json.push(b'\n');
+    Ok(AgentTeamMutation {
+        team_name: team_name.to_string(),
+        config_path,
+        before_json,
+        after_json,
+    })
+}
+
 fn normalize_raw_context_alert_percentages(
     object: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
     let values = match object.get("contextAlertPercentages") {
         Some(value) => serde_json::from_value::<Vec<u8>>(value.clone()).map_err(|e| {
-            format!(
-                "expected an array of integer percentages representable as u8: {}",
-                e
-            )
+            format!("expected an array of integer percentages representable as u8: {e}")
         })?,
         None => Vec::new(),
     };
@@ -147,7 +157,7 @@ fn normalize_raw_context_alert_percentages(
     object.insert(
         "contextAlertPercentages".to_string(),
         serde_json::to_value(normalized)
-            .map_err(|e| format!("failed to serialize canonical percentages: {}", e))?,
+            .map_err(|e| format!("failed to serialize canonical percentages: {e}"))?,
     );
     Ok(())
 }

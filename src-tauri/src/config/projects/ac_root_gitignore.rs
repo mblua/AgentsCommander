@@ -254,8 +254,7 @@ fn custom_instructions_patterns(configured: &[String]) -> Vec<String> {
         if !crate::config::agent_command::is_safe_instructions_filename(name) {
             log::warn!(
                 target: "agentscommander_lib::commands::ac_discovery::gitignore",
-                "[ac-gitignore] dropping unsafe instructions filename {:?}",
-                name
+                "[ac-gitignore] dropping unsafe instructions filename {name:?}"
             );
             continue;
         }
@@ -278,7 +277,7 @@ fn write_required_gitignore(
 ) -> Result<(), String> {
     if discovery::ac_root_gitignore_exists(gitignore_path) {
         let content = discovery::read_ac_root_gitignore(gitignore_path)
-            .map_err(|e| format!("Failed to read Project AC Root .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to read Project AC Root .gitignore: {e}"))?;
         let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
         // #2715 - the append-only writer never removes a row, so the catalog
         // rows the naming migration renamed are retired here.
@@ -303,7 +302,7 @@ fn write_required_gitignore(
                 }
             });
             if !is_present {
-                additions.push_str(&format!("\n{}\n{}\n", comment, pattern));
+                additions.push_str(&format!("\n{comment}\n{pattern}\n"));
             }
         }
         if !SEED_MANIFEST_COORDINATION_PATTERNS
@@ -325,20 +324,20 @@ fn write_required_gitignore(
             let separator = if content.ends_with('\n') { "" } else { "\n" };
             discovery::write_ac_root_gitignore(
                 gitignore_path,
-                &format!("{}{}{}", content, separator, additions),
+                &format!("{content}{separator}{additions}"),
             )
-            .map_err(|e| format!("Failed to update Project AC Root .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to update Project AC Root .gitignore: {e}"))?;
         }
     } else {
         let mut content = String::new();
         for (pattern, comment) in required_entries {
-            content.push_str(&format!("{}\n{}\n\n", comment, pattern));
+            content.push_str(&format!("{comment}\n{pattern}\n\n"));
         }
         content.push_str(SEED_MANIFEST_COORDINATION_BLOCK);
         content.push('\n');
         content.push_str(SEED_MANIFEST_MANIFEST_BLOCK);
         discovery::write_ac_root_gitignore(gitignore_path, &content)
-            .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to create Project AC Root .gitignore: {e}"))?;
     }
 
     Ok(())

@@ -49,7 +49,8 @@ fn configure_embedded_dist(profile: &str) -> bool {
     }
 
     println!(
-        "cargo:warning=../dist/index.html missing; embedded web UI disabled for this dev/check build"
+        "cargo:warning=../dist/index.html missing; embedded web UI disabled for \
+        this dev/check build"
     );
     false
 }
@@ -63,7 +64,8 @@ fn omit_missing_dist_resource_for_dev_check() {
     }
 
     println!(
-        "cargo:warning=overriding Tauri bundle resources for this dev/check build because ../dist is missing"
+        "cargo:warning=overriding Tauri bundle resources for this dev/check \
+        build because ../dist is missing"
     );
     std::env::set_var("TAURI_CONFIG", r#"{"bundle":{"resources":[]}}"#);
 }
@@ -90,6 +92,8 @@ fn embed_windows_test_manifest() {
     }
 
     println!(
-        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' \
+        name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+        processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
     );
 }

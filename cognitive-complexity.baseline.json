@@ -7,20 +7,6 @@
   "capturedAt": "2026-09-22T08:35:09.139Z",
   "entries": [
     {
-      "id": "rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle",
-      "sites": {
-        "windows": [
-          "a3d53f9cd47b"
-        ],
-        "linux": [
-          "a3d53f9cd47b"
-        ],
-        "macos": [
-          "a3d53f9cd47b"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/agent_update.rs::mod:tests::agent_update_result_contract",
       "sites": {
         "windows": [
@@ -31,62 +17,6 @@
         ],
         "macos": [
           "75668b3ada4d"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/agent_version.rs::impl:ProbeProcessOwner::settle",
-      "sites": {
-        "windows": [
-          "059ee76b179f"
-        ],
-        "linux": [
-          "059ee76b179f"
-        ],
-        "macos": [
-          "059ee76b179f"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/cli/send.rs::execute",
-      "sites": {
-        "windows": [
-          "59138f0839a8"
-        ],
-        "linux": [
-          "59138f0839a8"
-        ],
-        "macos": [
-          "59138f0839a8"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/ac_discovery.rs::discover_ac_agents",
-      "sites": {
-        "windows": [
-          "6ebd70a2edba"
-        ],
-        "linux": [
-          "6ebd70a2edba"
-        ],
-        "macos": [
-          "6ebd70a2edba"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/ac_discovery.rs::discover_project_inner",
-      "sites": {
-        "windows": [
-          "b5d5eb92c7cf"
-        ],
-        "linux": [
-          "b5d5eb92c7cf"
-        ],
-        "macos": [
-          "b5d5eb92c7cf"
         ]
       }
     },
@@ -164,90 +94,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/loops/delivery.rs::deliver_loop_prompt",
-      "sites": {
-        "windows": [
-          "dde9f0bac0a2"
-        ],
-        "linux": [
-          "dde9f0bac0a2"
-        ],
-        "macos": [
-          "dde9f0bac0a2"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/internal_delivery.rs::impl:MailboxPoller::deliver_internal_system_wake",
-      "sites": {
-        "windows": [
-          "bb794053ede9"
-        ],
-        "linux": [
-          "bb794053ede9"
-        ],
-        "macos": [
-          "bb794053ede9"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_artifact.rs::impl:MailboxPoller::process_pty_input_file",
-      "sites": {
-        "windows": [
-          "34a3d771ff0c"
-        ],
-        "linux": [
-          "34a3d771ff0c"
-        ],
-        "macos": [
-          "34a3d771ff0c"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/pty_authority.rs::impl:MailboxPoller::spawn_pty_input_target",
-      "sites": {
-        "windows": [
-          "0e2097deada7"
-        ],
-        "linux": [
-          "0e2097deada7"
-        ],
-        "macos": [
-          "0e2097deada7"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::impl:MailboxPoller::handle_close_session",
-      "sites": {
-        "windows": [
-          "1d959a229655"
-        ],
-        "linux": [
-          "1d959a229655"
-        ],
-        "macos": [
-          "1d959a229655"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/session_request.rs::impl:MailboxPoller::handle_purge_wg",
-      "sites": {
-        "windows": [
-          "40cfe953061c"
-        ],
-        "linux": [
-          "40cfe953061c"
-        ],
-        "macos": [
-          "40cfe953061c"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/wake_workers.rs::impl:MailboxPoller::poll",
       "sites": {
         "windows": [
@@ -258,20 +104,6 @@
         ],
         "macos": [
           "dff40736a7a2"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/container_backend.rs::impl:ContainerTransportBackend::stop_all_started_containers_blocking",
-      "sites": {
-        "windows": [
-          "a5be566e0b77"
-        ],
-        "linux": [
-          "a5be566e0b77"
-        ],
-        "macos": [
-          "a5be566e0b77"
         ]
       }
     },
@@ -304,20 +136,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/pty/remote_watcher.rs::impl:RemoteSweeper::run_round",
-      "sites": {
-        "windows": [
-          "1592dfac14cb"
-        ],
-        "linux": [
-          "1592dfac14cb"
-        ],
-        "macos": [
-          "1592dfac14cb"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs::run_composed_scanner_shutdown_phase",
       "sites": {
         "windows": [
@@ -346,48 +164,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/resource_monitor/registry.rs::impl:ResourceMonitorState::kill_group_inner",
-      "sites": {
-        "windows": [
-          "2b38f536fd94"
-        ],
-        "linux": [
-          "2b38f536fd94"
-        ],
-        "macos": [
-          "2b38f536fd94"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/auto_close.rs::tick",
-      "sites": {
-        "windows": [
-          "75fe61f787ea"
-        ],
-        "linux": [
-          "75fe61f787ea"
-        ],
-        "macos": [
-          "75fe61f787ea"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/context_alerts.rs::run_context_alert_actor",
-      "sites": {
-        "windows": [
-          "3e40c43d5adf"
-        ],
-        "linux": [
-          "3e40c43d5adf"
-        ],
-        "macos": [
-          "3e40c43d5adf"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/session/profile.rs::mod:tests::muse_serde_profile_detection_and_submission_boundary_are_stable",
       "sites": {
         "windows": [
@@ -398,34 +174,6 @@
         ],
         "macos": [
           "db5b2c3aa862"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection.rs::drain_after_shutdown",
-      "sites": {
-        "windows": [
-          "7318d4f04c6b"
-        ],
-        "linux": [
-          "7318d4f04c6b"
-        ],
-        "macos": [
-          "7318d4f04c6b"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection.rs::execute_envelope",
-      "sites": {
-        "windows": [
-          "4643d8506375"
-        ],
-        "linux": [
-          "4643d8506375"
-        ],
-        "macos": [
-          "4643d8506375"
         ]
       }
     },
@@ -458,44 +206,30 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/telegram/bridge.rs::poll_task",
+      "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::drain_after_shutdown",
       "sites": {
         "windows": [
-          "eb863678ef0e"
+          "40c91cf940c1"
         ],
         "linux": [
-          "eb863678ef0e"
+          "40c91cf940c1"
         ],
         "macos": [
-          "eb863678ef0e"
+          "40c91cf940c1"
         ]
       }
     },
     {
-      "id": "rust:src-tauri/src/telegram/codex_watcher.rs::watch_loop",
+      "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::execute_envelope",
       "sites": {
         "windows": [
-          "7ddd274890a3"
+          "185e15600ecd"
         ],
         "linux": [
-          "7ddd274890a3"
+          "185e15600ecd"
         ],
         "macos": [
-          "7ddd274890a3"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/web/commands.rs::dispatch_inner",
-      "sites": {
-        "windows": [
-          "b6351f6c625d"
-        ],
-        "linux": [
-          "b6351f6c625d"
-        ],
-        "macos": [
-          "b6351f6c625d"
+          "185e15600ecd"
         ]
       }
     },

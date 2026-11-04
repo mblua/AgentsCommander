@@ -464,8 +464,9 @@ fn snapshot_handle_identity(
         return Err(std::io::Error::other("unexpected filesystem object"));
     }
     let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-    let ok =
-        unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr()) };
+    let ok = unsafe {
+        GetFileInformationByHandle(file.as_raw_handle().cast(), information.as_mut_ptr())
+    };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }

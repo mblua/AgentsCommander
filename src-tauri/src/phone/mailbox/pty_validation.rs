@@ -7,8 +7,27 @@ use crate::pty::backend::SessionBackendKind;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use uuid::Uuid;
+
+fn verify_host_pty_outbox(
+    working_directory: &str,
+    path: &Path,
+) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+    use crate::phone::types::PtyInputReasonCode as C;
+    let expected_outbox = Path::new(working_directory)
+        .join(crate::config::agent_local_dir_name())
+        .join("outbox");
+    let actual_parent = path.parent().ok_or(C::UnsafePath)?;
+    let expected_identity =
+        crate::path_identity::verify_directory(&expected_outbox).map_err(|_| C::UnsafePath)?;
+    let actual_identity =
+        crate::path_identity::verify_directory(actual_parent).map_err(|_| C::UnsafePath)?;
+    if expected_identity.object_id != actual_identity.object_id {
+        return Err(C::UnsafePath);
+    }
+    Ok(())
+}
 
 impl MailboxPoller {
     pub(crate) async fn validate_and_enqueue_host_pty_input<S: PtyAuthorityState + ?Sized>(
@@ -47,7 +66,7 @@ impl MailboxPoller {
         let pty = app.pty_routes();
         if pty
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .backend_kind(session_id)
             != Some(SessionBackendKind::LocalProcess)
         {
@@ -74,17 +93,7 @@ impl MailboxPoller {
         if envelope.from != route.sender.canonical_fqn {
             return Err(C::SenderIdentityInvalid);
         }
-        let expected_outbox = Path::new(&session.working_directory)
-            .join(crate::config::agent_local_dir_name())
-            .join("outbox");
-        let actual_parent = path.parent().ok_or(C::UnsafePath)?;
-        let expected_identity =
-            crate::path_identity::verify_directory(&expected_outbox).map_err(|_| C::UnsafePath)?;
-        let actual_identity =
-            crate::path_identity::verify_directory(actual_parent).map_err(|_| C::UnsafePath)?;
-        if expected_identity.object_id != actual_identity.object_id {
-            return Err(C::UnsafePath);
-        }
+        verify_host_pty_outbox(&session.working_directory, path)?;
         let confirmation_tag =
             pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
         let nonce_sha256 = sha256_hex(payload.nonce.as_bytes());
@@ -185,7 +194,7 @@ impl MailboxPoller {
         let current_cwd =
             crate::path_identity::verify_directory(Path::new(&authority.working_directory)).ok()?;
         let pty = app.pty_routes();
-        let manager = pty.lock().unwrap_or_else(|error| error.into_inner());
+        let manager = pty.lock().unwrap_or_else(PoisonError::into_inner);
         if !manager.has_session(authority_id)
             || manager.backend_kind(authority_id) != Some(SessionBackendKind::LocalProcess)
         {
@@ -269,7 +278,7 @@ impl MailboxPoller {
             crate::path_identity::verify_directory(Path::new(&session.working_directory)).ok()?;
         let route_valid = {
             let manager = app.pty_routes();
-            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            let manager = manager.lock().unwrap_or_else(PoisonError::into_inner);
             manager.has_session(session_id)
                 && manager.backend_kind(session_id) == Some(expected_backend)
                 && manager

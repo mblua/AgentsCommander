@@ -106,7 +106,7 @@ unsafe fn physical_window_rect(hwnd: HWND) -> Option<RECT> {
     let dwm_ok = DwmGetWindowAttribute(
         hwnd,
         DWMWA_EXTENDED_FRAME_BOUNDS as u32,
-        &mut raw_rect as *mut RECT as *mut _,
+        (&mut raw_rect as *mut RECT).cast(),
         std::mem::size_of::<RECT>() as u32,
     ) == 0;
     if dwm_ok {

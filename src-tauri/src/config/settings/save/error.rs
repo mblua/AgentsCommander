@@ -493,7 +493,7 @@ pub(crate) fn report_settings_save_error(
     let payload = render_settings_save_diagnostic(&error.safe_diagnostic(surface));
     #[cfg(test)]
     capture_settings_save_diagnostic(&payload);
-    log::error!("{}", payload);
+    log::error!("{payload}");
     surface.into_outward_string(error)
 }
 

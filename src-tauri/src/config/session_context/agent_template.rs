@@ -174,9 +174,8 @@ pub(crate) fn render_agent_context_template_inner(
             && coarse_section_dedup_safe(placeholder, is_root_agent, &signals)
         {
             log::debug!(
-                "Global context template lacks placeholder {} but its section is present inline \
-                    and safe to dedup; skipping fallback append to avoid duplication",
-                placeholder
+                "Global context template lacks placeholder {placeholder} but its section is \
+                    present inline and safe to dedup; skipping fallback append to avoid duplication"
             );
             continue;
         }
@@ -184,8 +183,8 @@ pub(crate) fn render_agent_context_template_inner(
         // (Root Golden Rule / baked legacy / dynamic list): append the fallback
         // so the agent receives this mandatory governance with current content.
         log::warn!(
-            "Global context template is missing mandatory placeholder {}; appending fallback block",
-            placeholder
+            "Global context template is missing mandatory placeholder {placeholder}; \
+                appending fallback block"
         );
         template.push_str("\n\n");
         template.push_str(placeholder);
@@ -316,9 +315,8 @@ pub(crate) fn resolve_agent_context_with_activation(
     // cache-writer branch tests both basenames, so the two guards cannot disagree.
     if super::super::root_agent::is_root_agent_dir_name(agent_root) {
         return Err(format!(
-            "Root agent directory {} must not resolve the global context template; use the \
-                dedicated Root builder",
-            agent_root
+            "Root agent directory {agent_root} must not resolve the global context template; \
+                use the dedicated Root builder"
         ));
     }
 
@@ -355,7 +353,7 @@ pub(crate) fn resolve_agent_context_with_activation(
                 );
             }
             if let Err(error) = &execution.completion {
-                log::warn!("#664 self-heal: {}", error);
+                log::warn!("#664 self-heal: {error}");
             }
             Ok(render_default_agent_context(
                 agent_root,

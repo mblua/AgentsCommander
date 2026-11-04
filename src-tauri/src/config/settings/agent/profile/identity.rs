@@ -47,7 +47,7 @@ pub(crate) fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> 
     let no_labels = profiles
         .profile_labels_by_agent
         .get(id)
-        .is_none_or(|labels| labels.is_empty());
+        .is_none_or(std::collections::BTreeMap::is_empty);
     let no_cells = match profiles.profiles_by_agent.get(id) {
         None => true,
         Some(cells) => {

@@ -198,7 +198,7 @@ pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
     ("muse", false),
 ];
 
-/// #2736 - how thoroughly AgentsCommander has tested each SUPPORTED built-in.
+/// #2736 - how thoroughly `AgentsCommander` has tested each SUPPORTED built-in.
 /// CODE ONLY: never read from, and never patchable through, any catalog file.
 /// One row per ENABLED row of `BUILTIN_AGENT_SUPPORT`, in the same order (a test
 /// pins both). A key absent here (every user-authored key) has NO level.
@@ -220,7 +220,7 @@ static SEED_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The table in force: the shipped const, or the test override on this thread.
 fn active_builtin_agent_support() -> &'static [(&'static str, bool)] {
     #[cfg(test)]
-    if let Some(table) = BUILTIN_AGENT_SUPPORT_OVERRIDE.with(|cell| cell.get()) {
+    if let Some(table) = BUILTIN_AGENT_SUPPORT_OVERRIDE.with(std::cell::Cell::get) {
         return table;
     }
     BUILTIN_AGENT_SUPPORT
@@ -260,7 +260,7 @@ thread_local! {
 
 fn catalog_lock_timeout() -> Duration {
     #[cfg(test)]
-    if let Some(timeout) = CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.get()) {
+    if let Some(timeout) = CATALOG_LOCK_TIMEOUT_OVERRIDE.with(std::cell::Cell::get) {
         return timeout;
     }
     CATALOG_LOCK_TIMEOUT
@@ -276,7 +276,7 @@ thread_local! {
 
 #[cfg(test)]
 fn inject_catalog_failure(point: &str) -> Result<(), String> {
-    if CATALOG_FAILURE_POINT.with(|cell| cell.get()) == Some(point) {
+    if CATALOG_FAILURE_POINT.with(std::cell::Cell::get) == Some(point) {
         CATALOG_FAILURE_POINT.with(|cell| cell.set(None));
         return Err(format!("injected catalog failure at {point}"));
     }

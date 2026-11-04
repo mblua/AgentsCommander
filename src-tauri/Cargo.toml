@@ -1,9 +1,12 @@
 [package]
 name = "agentscommander"
-version = "0.45.1"
+version = "0.46.0"
 edition = "2021"
 authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
+
+[lints]
+workspace = true
 
 [dependencies]
 tauri = { version = "2.12.1", features = ["image-png"] }

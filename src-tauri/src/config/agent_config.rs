@@ -41,14 +41,14 @@ impl AgentIdentity {
 }
 
 // ── Agent Tooling ──────────────────────────────────────────────────────────
-/// Entry tracking a coding app (Claude Code, Codex, OpenCode, etc.) used in this repo.
+/// Entry tracking a coding app (Claude Code, Codex, `OpenCode`, etc.) used in this repo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingAgentEntry {
-    /// Human-readable app name (e.g. "Claude Code", "Codex", "OpenCode")
+    /// Human-readable app name (e.g. "Claude Code", "Codex", "`OpenCode`")
     #[serde(default)]
     pub app: String,
-    /// AgentsCommander session ID (to check if session is still alive)
+    /// `AgentsCommander` session ID (to check if session is still alive)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ac_session_id: Option<String>,
     /// ISO 8601 timestamp of last use
@@ -175,7 +175,7 @@ pub fn set_last_coding_agent(
     let now = chrono::Utc::now().to_rfc3339();
     let entry = CodingAgentEntry {
         app: app_label.to_string(),
-        ac_session_id: ac_session_id.map(|s| s.to_string()),
+        ac_session_id: ac_session_id.map(ToString::to_string),
         last_used: now,
         command: descriptor
             .map(|(command, _)| command.to_string())
@@ -190,7 +190,7 @@ pub fn set_last_coding_agent(
     let local_dir_name = crate::config::agent_local_dir_name();
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
     config_locations::ensure_shared_directories(&instance_dir)
-        .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
+        .map_err(|e| format!("Failed to create {local_dir_name} dir: {e}"))?;
     upsert_config(
         &instance_dir.join("config.json"),
         agent_id,
@@ -227,17 +227,12 @@ pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bo
     let local_dir_name = crate::config::agent_local_dir_name();
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
     config_locations::ensure_shared_directories(&instance_dir)
-        .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
+        .map_err(|e| format!("Failed to create {local_dir_name} dir: {e}"))?;
     let path = instance_dir.join("config.json");
 
     let inserted = activity_only_update(&path, at_rfc3339)?;
 
-    log::debug!(
-        "lastAgentMessageAt for {}: {} (inserted: {})",
-        repo_path,
-        at_rfc3339,
-        inserted
-    );
+    log::debug!("lastAgentMessageAt for {repo_path}: {at_rfc3339} (inserted: {inserted})");
     Ok(inserted)
 }
 
@@ -675,7 +670,7 @@ where
 /// Pure source-reference PAIR preparation using the same cleanup and split
 /// policy as the ordinary writer. No ignores, journal, locks or files are
 /// changed here; the coordinator owns authorization and durable plan storage.
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+#[cfg_attr(not(test), allow(dead_code))] // P10 until P11; local_config_io imports (#3580)
 pub(crate) fn prepare_identity_reference_pair<F>(
     before: [crate::config::local_config_io::PhysicalState; 2],
     mutate: F,
@@ -698,7 +693,7 @@ where
 
 /// Internal only until P11. Executes original images, never re-runs policy or
 /// a mutation callback during recovery. The caller supplies authorized targets.
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+#[cfg_attr(not(test), allow(dead_code))] // P10 until P11; local_config_io imports (#3580)
 pub(crate) fn execute_identity_reference_pair(
     decisions: &Path,
     plan: &crate::config::local_config_io::PreparedConfigPairPlan,
@@ -716,7 +711,7 @@ pub(crate) fn execute_identity_reference_pair(
 
 /// Inventory/C/source authorization precedes this boundary. Pure cleanup and
 /// caller preparation run inside the same PAIR segment as packet publication.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn prepare_and_reserve_identity_reference_pair<F>(
     decisions: &Path,
     request: &crate::config::local_config_io::PairReservationRequest,
@@ -731,7 +726,6 @@ where
     prepare_and_reserve_identity_reference_pair_guarded(decisions, request, mutate, &|| Ok(()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn prepare_and_reserve_identity_reference_pair_guarded<F>(
     decisions: &Path,
     request: &crate::config::local_config_io::PairReservationRequest,
@@ -913,19 +907,15 @@ fn ensure_object<'a>(
 ) -> &'a mut serde_json::Map<String, serde_json::Value> {
     let val = map.entry(key).or_insert_with(|| serde_json::json!({}));
     if !val.is_object() {
-        log::warn!(
-            "upsert_config: '{}' was not an object at {:?}, resetting",
-            key,
-            context
-        );
+        log::warn!("upsert_config: '{key}' was not an object at {context:?}, resetting");
         *val = serde_json::json!({});
     }
     val.as_object_mut().expect("just set to object")
 }
 
 /// Read-modify-write a single config.json: upsert tooling fields while preserving all others.
-/// Uses serde_json::Value to avoid dropping unknown top-level fields (e.g. `identity`, `repos`)
-/// that aren't part of the AgentLocalConfig struct.
+/// Uses `serde_json::Value` to avoid dropping unknown top-level fields (e.g. `identity`, `repos`)
+/// that aren't part of the `AgentLocalConfig` struct.
 fn upsert_config(
     config_path: &Path,
     agent_id: &str,
@@ -953,7 +943,7 @@ fn upsert_config(
 
         let coding_agents = ensure_object(tooling, "codingAgents", config_path);
         let serde_json::Value::Object(mut new_fields) =
-            serde_json::to_value(entry).map_err(|e| format!("Failed to serialize entry: {}", e))?
+            serde_json::to_value(entry).map_err(|e| format!("Failed to serialize entry: {e}"))?
         else {
             return Err("CodingAgentEntry did not serialize to an object".to_string());
         };

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 pub(crate) const ARM_VAR: &str = "AC2786_LOAD_PROBE";
 
@@ -22,14 +22,19 @@ impl Observation {
             "#2786 C1: Observation::open in an unarmed process; run this test \
              through the dedicated-process harness"
         );
-        let slot = OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
-        *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+        let slot = OBSERVER.lock().unwrap_or_else(PoisonError::into_inner);
+        *ENTRIES.lock().unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
         Observation { _slot: slot }
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "El receptor conserva el guard Observation/slot mientras lee el registro \
+            global; no ofrecer lectura desacoplada del guard."
+    )]
     pub(crate) fn loads(&self) -> Vec<PathBuf> {
         ENTRIES
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .unwrap_or_default()
     }
@@ -71,15 +76,15 @@ impl NoObservation {
             armed(),
             "#2786 C1: NoObservation::open in an unarmed process"
         );
-        let slot = OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
-        *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let slot = OBSERVER.lock().unwrap_or_else(PoisonError::into_inner);
+        *ENTRIES.lock().unwrap_or_else(PoisonError::into_inner) = None;
         NoObservation { _slot: slot }
     }
 }
 
 impl Drop for Observation {
     fn drop(&mut self) {
-        *ENTRIES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *ENTRIES.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 }
 
@@ -87,7 +92,7 @@ pub(crate) fn record_load(dir: &Path) {
     if !armed() {
         return;
     }
-    let mut g = ENTRIES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = ENTRIES.lock().unwrap_or_else(PoisonError::into_inner);
     match g.as_mut() {
         Some(v) => v.push(dir.to_path_buf()),
         None => panic!("#2786 C1: wrapper load with no open Observation: {dir:?}"),

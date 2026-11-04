@@ -87,7 +87,7 @@ The effective outbox is --outbox if supplied; otherwise a master token uses the 
 when available, falling back to <root>/<local-dir>/outbox. Session tokens use \
 <root>/<local-dir>/outbox. local-dir is configured per instance.")]
 pub struct SendArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION
     /// MODEL.
     #[arg(long)]
@@ -228,22 +228,19 @@ fn delivered_receipt_line(
     to_for_ack: &str,
     delivered: Option<&OutboxMessage>,
 ) -> String {
-    let mut line = format!(
-        "Delivered: {} (mode={}, to={})",
-        msg_id, mode_for_ack, to_for_ack
-    );
+    let mut line = format!("Delivered: {msg_id} (mode={mode_for_ack}, to={to_for_ack})");
     if let Some(msg) = delivered {
         if let Some(agent) = msg.effective_agent_id.as_deref() {
-            line.push_str(&format!(" agent={}", agent));
+            line.push_str(&format!(" agent={agent}"));
         }
         if let Some(profile) = msg.effective_profile.as_deref() {
-            line.push_str(&format!(" profile={}", profile));
+            line.push_str(&format!(" profile={profile}"));
         }
         if msg.profile_fallback_applied {
             line.push_str(" fallbackApplied");
         }
         if let Some(reason) = msg.dispatch_not_applied.as_deref() {
-            line.push_str(&format!(" flagsNotApplied={}", reason));
+            line.push_str(&format!(" flagsNotApplied={reason}"));
         }
     }
     line
@@ -257,12 +254,10 @@ fn wait_for_delivery_confirmation(
     confirm_timeout: std::time::Duration,
     confirm_poll: std::time::Duration,
 ) -> Result<(), String> {
-    let delivered_path = outbox_dir
-        .join("delivered")
-        .join(format!("{}.json", msg_id));
+    let delivered_path = outbox_dir.join("delivered").join(format!("{msg_id}.json"));
     let rejected_reason_path = outbox_dir
         .join("rejected")
-        .join(format!("{}.reason.txt", msg_id));
+        .join(format!("{msg_id}.reason.txt"));
     let start = std::time::Instant::now();
 
     loop {
@@ -311,7 +306,7 @@ fn wait_for_response(
     loop {
         if crate::filesystem::directories::cli_outbox_artifact_exists(response_path) {
             return crate::filesystem::documents::read_cli_outbox_text(response_path)
-                .map_err(|e| format!("failed to read response file: {}", e));
+                .map_err(|e| format!("failed to read response file: {e}"));
         }
         if resp_start.elapsed() >= timeout {
             return Err(format!(
@@ -341,7 +336,10 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
         return Ok(None);
     };
     match crate::config::ac_root::wg_replica_layout_from_agent_dir(&canon)? {
-        Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
+        Some(layout) => Ok(layout
+            .project_dir
+            .to_str()
+            .map(std::string::ToString::to_string)),
         None => Ok(None),
     }
 }
@@ -454,13 +452,13 @@ fn queued_receipt_line(
     requested_profile: &Option<String>,
 ) -> String {
     if agent_for_ack != "auto" || requested_profile.is_some() {
-        let mut extra = format!("agent={}", agent_for_ack);
+        let mut extra = format!("agent={agent_for_ack}");
         if let Some(letter) = requested_profile.as_deref() {
-            extra.push_str(&format!(", profile={}", letter));
+            extra.push_str(&format!(", profile={letter}"));
         }
-        format!("Queued: {} ({})", msg_id, extra)
+        format!("Queued: {msg_id} ({extra})")
     } else {
-        format!("Queued: {}", msg_id)
+        format!("Queued: {msg_id}")
     }
 }
 
@@ -487,7 +485,7 @@ pub fn execute(args: SendArgs) -> i32 {
     if let Err(reason) =
         validate_root_agent_delivery_kind(root_is_root_agent, args.command.as_deref())
     {
-        eprintln!("Error: {}", reason);
+        eprintln!("Error: {reason}");
         return 1;
     }
 
@@ -495,7 +493,7 @@ pub fn execute(args: SendArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -579,7 +577,7 @@ fn resolve_send_target(
     let settings = match crate::config::settings::load_settings_for_cli_strict() {
         Ok(settings) => settings,
         Err(error) => {
-            eprintln!("Error: {}", error);
+            eprintln!("Error: {error}");
             return Err(1);
         }
     };
@@ -592,7 +590,7 @@ fn resolve_send_target(
     let root_project = match derive_root_project_dir(root) {
         Ok(root_project) => root_project,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return Err(1);
         }
     };
@@ -628,7 +626,7 @@ fn resolve_send_target(
         match crate::config::teams::resolve_agent_target(&args.to, &effective_project_paths) {
             Ok(fqn) => fqn,
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 return Err(1);
             }
         };
@@ -638,10 +636,9 @@ fn resolve_send_target(
     if root_is_root_agent {
         if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
             eprintln!(
-                "Error: root-agent routing rejected — '{}' is not a verified Room orchestrator \
-                    replica. Use list-peers-lean from the Root Agent and pass one of its name \
-                    values.",
-                resolved_to
+                "Error: root-agent routing rejected — '{resolved_to}' is not a \
+                    verified Room orchestrator replica. Use list-peers-lean from the Root Agent \
+                    and pass one of its name values."
             );
             return Err(1);
         }
@@ -667,9 +664,8 @@ fn resolve_send_target(
         let discovered = teams::discover_teams_from_project_paths(&settings.project_paths);
         if !teams::can_communicate(sender, &resolved_to, &discovered) {
             eprintln!(
-                "Error: routing rejected — '{}' cannot reach '{}'. \
-                 Check team membership and orchestrator rules.",
-                sender, resolved_to
+                "Error: routing rejected — '{sender}' cannot reach '{resolved_to}'. \
+                 Check team membership and orchestrator rules."
             );
             return Err(1);
         }
@@ -688,7 +684,7 @@ fn send_message_body(
 ) -> Result<String, i32> {
     let message_body = if let Some(filename) = filename {
         if let Err(e) = validate_send_filename(filename, root_is_root_agent) {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return Err(1);
         }
         let agent_root_path = std::path::Path::new(root);
@@ -696,7 +692,7 @@ fn send_message_body(
             match crate::phone::messaging::root_messaging_dir(agent_root_path) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("Error: failed to resolve root messaging dir: {}", e);
+                    eprintln!("Error: failed to resolve root messaging dir: {e}");
                     return Err(1);
                 }
             }
@@ -706,8 +702,7 @@ fn send_message_body(
                 Err(e) => {
                     eprintln!(
                         "Error: --send requires --root under a `room-*` or legacy `wg-*` Room \
-                            directory unless --root is the canonical Root Agent directory; {}",
-                        e
+                            directory unless --root is the canonical Root Agent directory; {e}"
                     );
                     return Err(1);
                 }
@@ -715,13 +710,13 @@ fn send_message_body(
             if let Err(e) =
                 crate::phone::messaging::ensure_workgroup_root_is_authoritative(&wg_root)
             {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 return Err(1);
             }
             match crate::phone::messaging::messaging_dir(&wg_root) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("Error: failed to resolve messaging dir: {}", e);
+                    eprintln!("Error: failed to resolve messaging dir: {e}");
                     return Err(1);
                 }
             }
@@ -729,7 +724,7 @@ fn send_message_body(
         let abs = match crate::phone::messaging::resolve_existing_message(&msg_dir, filename) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 return Err(1);
             }
         };
@@ -902,11 +897,11 @@ fn publish_outbox_message(
         ac_dir.join("outbox")
     };
     if let Err(reason) = reject_comanaged_queue_outbox(&outbox_dir) {
-        eprintln!("Error: {}", reason);
+        eprintln!("Error: {reason}");
         return Err(1);
     }
     if let Err(e) = crate::filesystem::directories::ensure_cli_outbox(&outbox_dir) {
-        eprintln!("Error: failed to create outbox directory: {}", e);
+        eprintln!("Error: failed to create outbox directory: {e}");
         return Err(1);
     }
 
@@ -914,7 +909,7 @@ fn publish_outbox_message(
     let json = match serde_json::to_string_pretty(message) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("Error: failed to serialize message: {}", e);
+            eprintln!("Error: failed to serialize message: {e}");
             return Err(1);
         }
     };
@@ -922,7 +917,7 @@ fn publish_outbox_message(
     if let Err(e) =
         crate::filesystem::documents::write_cli_outbox_message(&outbox_path, json.as_bytes())
     {
-        eprintln!("Error: failed to write outbox file: {}", e);
+        eprintln!("Error: failed to write outbox file: {e}");
         return Err(1);
     }
     Ok(outbox_dir)
@@ -946,15 +941,15 @@ fn finish_delivery(
         confirm_timeout,
         std::time::Duration::from_millis(250),
     ) {
-        log::warn!("[send] {}", e);
-        eprintln!("Error: {}", e);
+        log::warn!("[send] {e}");
+        eprintln!("Error: {e}");
         return 1;
     }
 
     // ── If --get-output, wait for response after confirmed delivery ───────
     if let Some(rid) = &message.request_id {
         let responses_dir = ac_dir.join("responses");
-        let response_path = responses_dir.join(format!("{}.json", rid));
+        let response_path = responses_dir.join(format!("{rid}.json"));
         let timeout = std::time::Duration::from_secs(timeout_secs);
         let poll_interval = std::time::Duration::from_secs(2);
 
@@ -966,7 +961,7 @@ fn finish_delivery(
                 return 0;
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 return 1;
             }
         }

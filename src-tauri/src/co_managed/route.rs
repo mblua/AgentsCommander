@@ -1,7 +1,7 @@
 //! Co-managed routing, effect commit and trigger handling.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::config::settings::SettingsState;
@@ -194,7 +194,7 @@ pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
     let no_pending_user_input =
         match app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
             Some(state) => {
-                let tracker = state.lock().unwrap_or_else(|e| e.into_inner());
+                let tracker = state.lock().unwrap_or_else(PoisonError::into_inner);
                 !tracker.pending_within(
                     session_id,
                     crate::pty::input_activity::USER_WRITE_STAMP_WINDOW,
@@ -302,7 +302,7 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
                 return CoManagedCommit::Committed(committed);
             }
             Err(capture::state::AbstainReason::PreconditionsStale)
-            | Err(capture::state::AbstainReason::LockBusy) => continue,
+            | Err(capture::state::AbstainReason::LockBusy) => {}
             Err(error) => return CoManagedCommit::Rejected(error),
         }
     }

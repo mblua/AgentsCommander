@@ -154,11 +154,8 @@ pub(crate) fn render_with_template(
     let (expanded, unknown) = expand_tokens(template, values);
     for token in unknown {
         warn_once(
-            format!("token:{}", token),
-            &format!(
-                "[injected-messages] unknown placeholder {} left as literal text",
-                token
-            ),
+            format!("token:{token}"),
+            &format!("[injected-messages] unknown placeholder {token} left as literal text"),
             warnings,
         );
     }
@@ -193,11 +190,10 @@ pub(super) fn render_resolved(
     if from_registry {
         if let Some(spec) = spec_for(id) {
             warn_once(
-                format!("empty:{}", id),
+                format!("empty:{id}"),
                 &format!(
-                    "[injected-messages] the `{}` template renders to nothing after sanitization; \
-                     the built-in default is used instead",
-                    id
+                    "[injected-messages] the `{id}` template renders to nothing after \
+                     sanitization; the built-in default is used instead"
                 ),
                 warnings,
             );

@@ -216,7 +216,7 @@ impl IdleTuning {
     };
 
     /// #2156 - tuning for a recognised coding agent: `DEFAULT` plus the #2124
-    /// burst filter ON by default. Values mirror the IDLE_BURST_DEFAULT_*
+    /// burst filter ON by default. Values mirror the `IDLE_BURST_DEFAULT_*`
     /// constants (a test pins the two in sync).
     pub const AGENT_DEFAULT: IdleTuning = IdleTuning {
         burst_max_bytes: IDLE_BURST_DEFAULT_MAX_BYTES, // 1024
@@ -234,7 +234,7 @@ pub struct ContainerCredentialSource {
     /// Default host config dir, relative to the user's home dir, e.g. ".claude".
     pub host_dir: &'static str,
     /// Optional env var whose value (an absolute path) overrides `host_dir` on
-    /// the host, e.g. "CLAUDE_CONFIG_DIR" for Claude. Only the AgentsCommander
+    /// the host, e.g. `CLAUDE_CONFIG_DIR` for Claude. Only the `AgentsCommander`
     /// process environment is consulted (NOT wrapper-script parsing).
     pub host_dir_env: Option<&'static str>,
     /// Credential filename within the config dir, e.g. ".credentials.json".

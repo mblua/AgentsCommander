@@ -80,10 +80,9 @@ pub(super) fn build_start_request_with_settings(
         crate::pty::container_paths::container_mount_source_rejection(std::path::Path::new(cwd))
     {
         let message = match selected_cwd {
-            Some(selected) if selected != cwd => format!(
-                "{} (selected path '{}', canonical path '{}')",
-                reason, selected, cwd
-            ),
+            Some(selected) if selected != cwd => {
+                format!("{reason} (selected path '{selected}', canonical path '{cwd}')")
+            }
             _ => reason,
         };
         return Err(AppError::Other(message));
@@ -92,15 +91,11 @@ pub(super) fn build_start_request_with_settings(
     let child_env = sanitized_child_env(configured_env, env_remove_keys);
     match selected_cwd {
         Some(selected) if selected != cwd => log::info!(
-            "[container-transport] mount source selected '{}' canonical '{}' -> '{}'",
-            selected,
-            cwd,
-            DEFAULT_CONTAINER_WORKDIR
+            "[container-transport] mount source selected '{selected}' \
+             canonical '{cwd}' -> '{DEFAULT_CONTAINER_WORKDIR}'"
         ),
         _ => log::info!(
-            "[container-transport] mount source '{}' -> '{}'",
-            cwd,
-            DEFAULT_CONTAINER_WORKDIR
+            "[container-transport] mount source '{cwd}' -> '{DEFAULT_CONTAINER_WORKDIR}'"
         ),
     }
     for mount in &repo_mounts {

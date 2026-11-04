@@ -22,7 +22,7 @@ pub fn write_pid_file() {
             let _ = pid_io::ensure_pid_parent(parent);
         }
         if let Err(e) = pid_io::write_pid_document(&path, std::process::id().to_string()) {
-            log::warn!("[daemon-pid] Failed to write pid file at {:?}: {}", path, e);
+            log::warn!("[daemon-pid] Failed to write pid file at {path:?}: {e}");
         } else {
             log::info!(
                 "[daemon-pid] Wrote pid {} to {:?}",

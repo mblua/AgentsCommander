@@ -8,7 +8,7 @@
 //! engine's worst-case disk write is zero - a property worth keeping.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use uuid::Uuid;
 
@@ -113,10 +113,10 @@ impl WatcherHistory {
     /// destroyed moments earlier.
     pub fn publish(&self, id: Uuid, status: SessionStatus) {
         let entry = {
-            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
             Arc::clone(sessions.entry(id).or_default())
         };
-        let mut history = entry.lock().unwrap_or_else(|e| e.into_inner());
+        let mut history = entry.lock().unwrap_or_else(PoisonError::into_inner);
         history.status = status;
     }
 
@@ -128,13 +128,13 @@ impl WatcherHistory {
         let Some(entry) = self
             .sessions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&id)
             .map(Arc::clone)
         else {
             return;
         };
-        let mut history = entry.lock().unwrap_or_else(|e| e.into_inner());
+        let mut history = entry.lock().unwrap_or_else(PoisonError::into_inner);
         for payload in matches {
             history.last_seq = history.last_seq.max(payload.seq);
             history.matches.push_back(payload.clone());
@@ -155,13 +155,13 @@ impl WatcherHistory {
         let Some(entry) = self
             .sessions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&id)
             .map(Arc::clone)
         else {
             return WatcherActivitySnapshot::empty();
         };
-        let history = entry.lock().unwrap_or_else(|e| e.into_inner());
+        let history = entry.lock().unwrap_or_else(PoisonError::into_inner);
 
         let matches: Vec<WatcherMatchPayload> = match limit {
             // Trimmed from the NEW end and still ordered oldest to newest, so the window can
@@ -190,7 +190,7 @@ impl WatcherHistory {
     pub fn purge(&self, id: Uuid) {
         self.sessions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&id);
     }
 
@@ -198,7 +198,7 @@ impl WatcherHistory {
     pub(crate) fn tracked_sessions(&self) -> usize {
         self.sessions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .len()
     }
 }

@@ -340,7 +340,7 @@ fn collect_profile_env(
     env: &BTreeMap<String, String>,
     placeholder_context: Option<&PlaceholderContext>,
 ) -> Result<BTreeMap<String, String>, String> {
-    let context = format!("Profile '{}:{}' env settings", agent_id, profile);
+    let context = format!("Profile '{agent_id}:{profile}' env settings");
     let mut out = BTreeMap::new();
     let mut seen = BTreeMap::new();
     for (key, value) in env {
@@ -348,8 +348,7 @@ fn collect_profile_env(
         let normalized = normalize_env_key_for_platform(key);
         if let Some(previous) = seen.insert(normalized, key.clone()) {
             return Err(format!(
-                "{}: duplicate env keys '{}' and '{}'",
-                context, previous, key
+                "{context}: duplicate env keys '{previous}' and '{key}'"
             ));
         }
         let strict_path = is_codex_home_key(key);
@@ -499,10 +498,7 @@ fn compute_codex_home(
                 })
             }
             Err(e) => {
-                log::warn!(
-                    "[codex-home] {}. Removing inherited CODEX_HOME for child.",
-                    e
-                );
+                log::warn!("[codex-home] {e}. Removing inherited CODEX_HOME for child.");
                 env_remove_keys.push("CODEX_HOME".to_string());
             }
         }
@@ -529,7 +525,7 @@ enum OpencodeConfigDirOutcome {
     Failed,
 }
 
-/// Executable file_name forms that count as opencode when found among the
+/// Executable `file_name` forms that count as opencode when found among the
 /// command ARGS. The bare `opencode` covers the `cmd /c opencode` wrapper; the
 /// `.exe`/`.cmd`/`.bat` forms cover a direct path or an npm-style shim.
 const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"];
@@ -610,8 +606,7 @@ fn ensure_opencode_config_dir(
     let path = PathBuf::from(value);
     if !path.is_absolute() {
         log::debug!(
-            "[opencode] OPENCODE_CONFIG_DIR '{}' is not an absolute path; not creating it.",
-            value
+            "[opencode] OPENCODE_CONFIG_DIR '{value}' is not an absolute path; not creating it."
         );
         return OpencodeConfigDirOutcome::Skipped;
     }
@@ -766,7 +761,7 @@ pub(crate) fn resolve_agent_spawn_command(
         .agents
         .iter()
         .find(|agent| agent.id == agent_id)
-        .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
+        .ok_or_else(|| format!("Agent '{agent_id}' is not configured"))?;
     let profile_resolution = resolve_profile(
         settings,
         ProfileResolutionRequest {
@@ -778,7 +773,7 @@ pub(crate) fn resolve_agent_spawn_command(
         },
     );
     for warning in &profile_resolution.warnings {
-        log::warn!("[profiles] {}", warning);
+        log::warn!("[profiles] {warning}");
     }
 
     // #598 - active config-folder seed for this agent (resolved below).
@@ -877,7 +872,7 @@ pub(crate) fn resolve_agent_spawn_command(
 }
 
 /// Perform the filesystem preparation carried by a read-only spawn resolution.
-/// Isolated CODEX_HOME creation is required; OpenCode configuration-directory
+/// Isolated `CODEX_HOME` creation is required; `OpenCode` configuration-directory
 /// creation preserves its existing best-effort policy.
 pub(crate) fn prepare_agent_spawn_command(command: &AgentSpawnCommand) -> Result<(), String> {
     if let Some(home) = command.isolated_codex_home_to_prepare.as_ref() {

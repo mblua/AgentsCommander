@@ -51,7 +51,7 @@ impl ContainerSpawnCancellationGuard<'_> {
         if let Some(handle) = self
             .late_handle
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             if let Some(runtime) = self.backend.runtime.clone() {
@@ -139,8 +139,7 @@ impl ContainerTransportBackend {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.contains_key(&id) {
             return Err(AppError::PtyError(format!(
-                "container transport session {} already exists",
-                id
+                "container transport session {id} already exists"
             )));
         }
         sessions.insert(id, ContainerSessionState::Pending(pending));
@@ -151,10 +150,7 @@ impl ContainerTransportBackend {
             .unwrap()
             .insert(id, ticket.clone());
 
-        log::info!(
-            "[container-transport] issued one-time attach ticket for session {}",
-            id
-        );
+        log::info!("[container-transport] issued one-time attach ticket for session {id}");
         Ok(ticket)
     }
 
@@ -166,7 +162,7 @@ impl ContainerTransportBackend {
         let mut sessions = self
             .sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = sessions
             .get_mut(&session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
@@ -227,11 +223,11 @@ impl ContainerTransportBackend {
                 // here would suppress the login wizard on a container with no
                 // credential. With no token, that wizard is the correct UX.
                 Ok(CopyOutcome::SkippedReparse) => log::warn!(
-                    "[container-cred] copy-in skipped for session {}; not stamping first-run state",
-                    id
+                    "[container-cred] copy-in skipped for session {id}; \
+                        not stamping first-run state"
                 ),
                 // Best-effort, mirror config-seed: never abort the spawn.
-                Err(e) => log::warn!("[container-cred] copy-in failed for session {}: {}", id, e),
+                Err(e) => log::warn!("[container-cred] copy-in failed for session {id}: {e}"),
             }
             // F1 - if a concurrent teardown removed the session while we were
             // copying, its remove_copied ran before the file existed (no-op). The
@@ -302,14 +298,34 @@ impl ContainerTransportBackend {
         Ok(token)
     }
 
+    fn required_runtime(&self) -> Result<Arc<dyn ContainerRuntime>, AppError> {
+        self.runtime
+            .clone()
+            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))
+    }
+
+    fn spawn_cancellation_guard(
+        &self,
+        id: Uuid,
+        shutdown_producer: ContainerShutdownProducer,
+    ) -> ContainerSpawnCancellationGuard<'_> {
+        let canceled = Arc::new(AtomicBool::new(false));
+        let late_handle = Arc::new(Mutex::new(None));
+        ContainerSpawnCancellationGuard {
+            backend: self,
+            session_id: id,
+            canceled: Arc::clone(&canceled),
+            late_handle: Arc::clone(&late_handle),
+            shutdown_producer: Some(shutdown_producer),
+            armed: true,
+        }
+    }
+
     pub(super) async fn spawn_runtime_backed(
         &self,
         spec: BackendSpawnSpec,
     ) -> Result<(), AppError> {
-        let runtime = self
-            .runtime
-            .clone()
-            .ok_or_else(|| AppError::Other("container runtime is not configured".to_string()))?;
+        let runtime = self.required_runtime()?;
         let token_manager = self.token_manager.clone().ok_or_else(|| {
             AppError::Other("container API token manager is not configured".to_string())
         })?;
@@ -354,16 +370,7 @@ impl ContainerTransportBackend {
             Some(attach_notify.clone()),
             container_credential.as_ref().map(|p| p.dest.clone()),
         )?;
-        let canceled = Arc::new(AtomicBool::new(false));
-        let late_handle = Arc::new(Mutex::new(None));
-        let mut cancellation_guard = ContainerSpawnCancellationGuard {
-            backend: self,
-            session_id: id,
-            canceled: Arc::clone(&canceled),
-            late_handle: Arc::clone(&late_handle),
-            shutdown_producer: Some(shutdown_producer),
-            armed: true,
-        };
+        let mut cancellation_guard = self.spawn_cancellation_guard(id, shutdown_producer);
 
         self.copy_spawn_credentials(id, container_credential.as_ref());
 
@@ -421,19 +428,14 @@ impl ContainerTransportBackend {
         .await
     }
 
-    async fn start_runtime_and_attach(
+    fn spawn_runtime_start(
         &self,
-        context: RuntimeStartContext<'_>,
-        cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
-    ) -> Result<(), AppError> {
-        let RuntimeStartContext {
-            id,
-            runtime,
-            request,
-            token,
-            launch_witness,
-            attach_notify,
-        } = context;
+        id: Uuid,
+        runtime: Arc<dyn ContainerRuntime>,
+        request: crate::pty::container_runtime::ContainerStartRequest,
+        launch_witness: &crate::pty::backend::LaunchWitness,
+        cancellation_guard: &ContainerSpawnCancellationGuard<'_>,
+    ) -> Result<oneshot::Receiver<Result<(), AppError>>, AppError> {
         let canceled = &cancellation_guard.canceled;
         let late_handle = &cancellation_guard.late_handle;
         let Some(start_producer) = cancellation_guard.shutdown_producer.as_ref() else {
@@ -455,7 +457,7 @@ impl ContainerTransportBackend {
                 let canceled_handle = {
                     let mut slot = late_handle_for_start
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *slot = Some(handle);
                     if canceled_for_start.load(Ordering::Acquire) || control.shutdown_requested() {
                         slot.take()
@@ -487,11 +489,30 @@ impl ContainerTransportBackend {
                 );
             }
         });
+        Ok(start_result_receiver)
+    }
+
+    async fn start_runtime_and_attach(
+        &self,
+        context: RuntimeStartContext<'_>,
+        cancellation_guard: &mut ContainerSpawnCancellationGuard<'_>,
+    ) -> Result<(), AppError> {
+        let RuntimeStartContext {
+            id,
+            runtime,
+            request,
+            token,
+            launch_witness,
+            attach_notify,
+        } = context;
+        let start_result_receiver =
+            self.spawn_runtime_start(id, runtime, request, launch_witness, cancellation_guard)?;
+        let late_handle = &cancellation_guard.late_handle;
         let start_result = start_result_receiver.await;
         let handle = match start_result {
             Ok(Ok(())) => late_handle
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
                 .ok_or_else(|| {
                     AppError::Other("container runtime start was canceled".to_string())

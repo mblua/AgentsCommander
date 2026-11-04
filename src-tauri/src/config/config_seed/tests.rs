@@ -258,7 +258,9 @@ fn fallback_is_byte_identical() {
     assert_eq!(source_with_os, source_without);
     let names = |p: &ConfigSeedPublication| match &p.files {
         CollectedSeedFiles::Exact(v) => v.clone(),
-        other => panic!("expected exact files, got {other:?}"),
+        other @ CollectedSeedFiles::OverBound { .. } => {
+            panic!("expected exact files, got {other:?}")
+        }
     };
     assert_eq!(names(&with_os), names(&without));
 }
@@ -463,7 +465,9 @@ fn bench_end_to_end_config_staging_1k_10k_100k() {
 
         let count = match &publication.files {
             CollectedSeedFiles::Exact(files) => files.len(),
-            other => panic!("expected exact collected files, got {other:?}"),
+            other @ CollectedSeedFiles::OverBound { .. } => {
+                panic!("expected exact collected files, got {other:?}")
+            }
         };
         assert_eq!(
             count, n,

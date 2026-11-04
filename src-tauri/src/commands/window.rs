@@ -186,12 +186,12 @@ fn monitor_work_area_for_window<R: tauri::Runtime>(
 /// loop (plan §A2.2.G1 + §A3.2.3). Ordering invariants, in order:
 ///
 /// 1. Focus-existing short-circuit (if the window already exists for this UUID).
-/// 2. Build the WebviewWindow. Any build failure returns Err without mutating state.
+/// 2. Build the `WebviewWindow`. Any build failure returns Err without mutating state.
 /// 3. Post-build session-existence recheck (G.7 race). If the session was destroyed
 ///    between the caller's check and window build, destroy the just-built window and
 ///    bail with Err — no stale UUID inserted into `DetachedSessionsState`.
 /// 4. Insert UUID into `DetachedSessionsState`.
-/// 5. Set `Session::was_detached = true` via SessionManager (Fix A — A3.2.3).
+/// 5. Set `Session::was_detached = true` via `SessionManager` (Fix A — A3.2.3).
 ///    This is the authoritative source-of-truth for persistence under plan §A3.2.
 /// 6. Emit `terminal_detached` for frontend sync.
 /// 7. Sibling-switch: if `skip_switch == false`, find the next non-detached session
@@ -226,7 +226,6 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
     suppress_selection: bool,
 ) -> Result<String, String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-
     let snapshot = transaction.aggregate_snapshot().await;
     let record = snapshot
         .sessions
@@ -244,7 +243,6 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         existing.set_focus().map_err(|error| error.to_string())?;
         return Ok(label);
     }
-
     let url = format!("index.html?window=detached&sessionId={session_id_string}");
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .map_err(|error| format!("Failed to load app icon: {error}"))?;
@@ -266,12 +264,11 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         }
         builder.build().map_err(|error| error.to_string())?
     };
-
     transaction
         .app()
         .state::<DetachedSessionsState>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(session_id);
     let window_still_present = transaction.app().get_webview_window(&label).is_some();
     let session_still_present = transaction
@@ -285,11 +282,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
     if !still_valid {
         let destroy_result = window.destroy();
         if let Err(error) = &destroy_result {
-            log::warn!(
-                "[detach] compensating window destroy failed session={}: {}",
-                session_id,
-                error
-            );
+            log::warn!("[detach] compensating window destroy failed session={session_id}: {error}");
         }
         #[cfg(test)]
         if destroy_result.is_ok() {
@@ -301,7 +294,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
             .app()
             .state::<DetachedSessionsState>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         if session_still_present && !runtime_still_live {
             transaction
@@ -310,7 +303,23 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         }
         return Err("Session lost liveness during detach".to_string());
     }
+    finalize_detach_transaction(
+        transaction,
+        session_id,
+        suppress_selection,
+        session_id_string,
+        label,
+    )
+    .await
+}
 
+async fn finalize_detach_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+    suppress_selection: bool,
+    session_id_string: String,
+    label: String,
+) -> Result<String, String> {
     let final_snapshot = transaction.aggregate_snapshot().await;
     let decision = if final_snapshot.selection.id() != Some(session_id) {
         CommitDecision::Keep
@@ -345,11 +354,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
             "windowLabel": label,
         }),
     ) {
-        log::warn!(
-            "[detach] terminal_detached publication failed session={}: {}",
-            session_id,
-            error
-        );
+        log::warn!("[detach] terminal_detached publication failed session={session_id}: {error}");
     }
     if let Some(selection) = committed.selection.as_ref() {
         transaction.publish_selection(selection);
@@ -430,15 +435,13 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
             .app()
             .state::<DetachedSessionsState>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
         if let Some(window) = transaction.app().get_webview_window(&label) {
             if let Err(error) = window.destroy() {
                 log::warn!(
-                    "[attach] stale detached window cleanup failed session={}: {}",
-                    session_id,
-                    error
+                    "[attach] stale detached window cleanup failed session={session_id}: {error}"
                 );
             }
         }
@@ -448,10 +451,7 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
     let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
     if let Some(window) = transaction.app().get_webview_window(&label) {
         window.destroy().map_err(|error| {
-            format!(
-                "Failed to destroy detached window {} during attach: {}",
-                label, error
-            )
+            format!("Failed to destroy detached window {label} during attach: {error}")
         })?;
         #[cfg(test)]
         if let Some(audit) = transaction.app().try_state::<WindowDestroyAudit>() {
@@ -462,7 +462,7 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
         .app()
         .state::<DetachedSessionsState>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&session_id);
 
     let runtime = transaction.runtime_snapshot(session_id);
@@ -506,16 +506,7 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
             transaction.publish_communication_cleared(*cleared);
         }
     }
-    if let Err(error) = transaction.app().emit(
-        "terminal_attached",
-        serde_json::json!({ "sessionId": session_id.to_string() }),
-    ) {
-        log::warn!(
-            "[attach] terminal_attached publication failed session={}: {}",
-            session_id,
-            error
-        );
-    }
+    publish_terminal_attached(transaction, session_id);
     if let Some(selection) = committed.selection.as_ref() {
         transaction.publish_selection(selection);
     }
@@ -526,12 +517,24 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
     }
 }
 
+fn publish_terminal_attached<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+) {
+    if let Err(error) = transaction.app().emit(
+        "terminal_attached",
+        serde_json::json!({ "sessionId": session_id.to_string() }),
+    ) {
+        log::warn!("[attach] terminal_attached publication failed session={session_id}: {error}");
+    }
+}
+
 /// Return the list of session IDs currently in `DetachedSessionsState`. Used by
 /// the sidebar frontend to hydrate its `detachedIds` store on mount (plan §A2.3.G8).
 #[tauri::command]
 pub fn list_detached_sessions(detached: State<'_, DetachedSessionsState>) -> Vec<String> {
     let set = detached.lock().unwrap();
-    set.iter().map(|u| u.to_string()).collect()
+    set.iter().map(std::string::ToString::to_string).collect()
 }
 
 /// Record the geometry of a detached window. Called by the frontend on drag/resize
@@ -626,7 +629,7 @@ async fn set_main_window_placement_inner_with_saver(
 #[tauri::command]
 pub fn open_in_explorer(path: String) -> Result<(), String> {
     let canonical = crate::window::validate_explorer_target(&path)?;
-    open::that_detached(canonical).map_err(|e| format!("Failed to open explorer: {}", e))
+    open::that_detached(canonical).map_err(|e| format!("Failed to open explorer: {e}"))
 }
 
 /// Open an http/https URL in the user's default browser.
@@ -638,9 +641,9 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     let trimmed = url.trim();
     let lower = trimmed.to_ascii_lowercase();
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
-        return Err(format!("Refusing to open non-http(s) URL: {}", url));
+        return Err(format!("Refusing to open non-http(s) URL: {url}"));
     }
-    open::that_detached(trimmed).map_err(|e| format!("Failed to open URL: {}", e))
+    open::that_detached(trimmed).map_err(|e| format!("Failed to open URL: {e}"))
 }
 
 /// Ensure the unified main window exists and is focused. In 0.8.0 the main window
@@ -882,7 +885,7 @@ pub async fn get_watchers_scope(
     scope: State<'_, WatchersScopeState>,
 ) -> Result<Option<String>, String> {
     let scope = scope.scope.lock().await;
-    Ok(scope.as_ref().map(|id| id.to_string()))
+    Ok(scope.as_ref().map(std::string::ToString::to_string))
 }
 
 /// #1171 - open the singleton watcher activity window, or focus it and re-scope it to
@@ -929,7 +932,7 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
         // A focus that fails must not swallow the re-scope, which is the substantive half of
         // this call and the only one the user can see go wrong.
         if let Err(error) = existing.set_focus() {
-            log::warn!("[watchers] focusing the activity window failed: {}", error);
+            log::warn!("[watchers] focusing the activity window failed: {error}");
         }
         app.emit_to(
             WATCHERS_WINDOW_LABEL,
@@ -951,7 +954,7 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
     let mut builder = WebviewWindowBuilder::new(
         &app,
         WATCHERS_WINDOW_LABEL,
-        WebviewUrl::App(format!("index.html?window=watchers&sessionId={}", session_id).into()),
+        WebviewUrl::App(format!("index.html?window=watchers&sessionId={session_id}").into()),
     )
     .title(format!(
         "Watcher Activity - {}",

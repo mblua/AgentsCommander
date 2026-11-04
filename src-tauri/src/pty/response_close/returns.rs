@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 impl ResponseCloseState {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn reserve_policy_candidate(
         &self,
         member: ResponseRouteIdentity,
@@ -76,7 +75,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn mark_request_submitted(
         &self,
         context: &ResponseDeliveryContext,
@@ -100,7 +98,6 @@ impl ResponseCloseState {
         });
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn register_request(
         &self,
         proof: ResponseDeliveryProof,
@@ -143,7 +140,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn admit_return(
         &self,
         member: &ResponseRouteIdentity,
@@ -228,7 +224,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn observe_return_success(
         &self,
         proof: ReturnDeliveryProof,
@@ -237,7 +232,6 @@ impl ResponseCloseState {
         self.settle_return(&proof.context, true, now)
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn settle_return_terminal(
         &self,
         context: &ReturnObservationContext,
@@ -246,7 +240,6 @@ impl ResponseCloseState {
         self.settle_return(context, false, now)
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) fn settle_return(
         &self,
         context: &ReturnObservationContext,
@@ -302,7 +295,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) fn safe(
         inner: &ResponseCloseInner,
         route: &ResponseCloseRoute,
@@ -354,7 +346,6 @@ impl ResponseCloseState {
             ) >= std::time::Duration::from_secs(u64::from(inner.seconds))
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn select_ticket(
         &self,
         id: Uuid,
@@ -387,7 +378,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) fn try_commit_response_close(
         &self,
         ticket: &ResponseCloseTicket,
@@ -447,7 +437,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn finish_response_close(
         &self,
         ticket: &ResponseCloseTicket,

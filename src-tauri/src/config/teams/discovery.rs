@@ -8,7 +8,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 /// Discover all teams from all known project paths.
-/// Scans settings.project_paths (and immediate children) for Project AC Root `_team_*/config.json`.
+/// Scans `settings.project_paths` (and immediate children) for Project AC Root
+/// `_team_*/config.json`.
 pub fn discover_teams() -> Vec<DiscoveredTeam> {
     let settings = crate::config::settings::load_settings();
     discover_teams_from_project_paths(&settings.project_paths)
@@ -31,15 +32,12 @@ pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec
     let mut teams = Vec::new();
 
     for repo_path in project_paths {
-        log::trace!(
-            "[teams] discover_teams: scanning project_path='{}'",
-            repo_path
-        );
+        log::trace!("[teams] discover_teams: scanning project_path='{repo_path}'");
         let base = Path::new(repo_path);
         if !crate::filesystem::projects::project_path_is_dir(base) {
             log::trace!(
-                "[teams] discover_teams: project_path skipped (not a directory) — path='{}'",
-                repo_path
+                "[teams] discover_teams: project_path skipped (not a directory) — \
+                 path='{repo_path}'"
             );
             continue;
         }

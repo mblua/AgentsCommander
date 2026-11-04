@@ -180,7 +180,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         if parent_is_wg_root && name_has_repo_prefix && is_dir && not_rejected {
             // Safe: `name_has_repo_prefix` implies `canonical_name` is `Some`.
             let name = canonical_name.unwrap_or_default().to_string();
-            let container_path = format!("{}/{}", CONTAINER_REPOS_ROOT, name);
+            let container_path = format!("{CONTAINER_REPOS_ROOT}/{name}");
             entries.push(ResolvedRepo {
                 config_entry: entry,
                 outcome: RepoOutcome::Mounted {
@@ -217,10 +217,10 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         let mut seen = std::collections::HashSet::new();
         for entry in &entries {
             if let RepoOutcome::Mounted { container_path, .. } = &entry.outcome {
+                let inserted = seen.insert(container_path.clone());
                 debug_assert!(
-                    seen.insert(container_path.clone()),
-                    "duplicate container mount target {}",
-                    container_path
+                    inserted,
+                    "duplicate container mount target {container_path}"
                 );
             }
         }

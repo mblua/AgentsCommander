@@ -107,8 +107,7 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
             return LoopDeliveryReport {
                 kind: LoopAuditKind::SkippedBusy,
                 message: format!(
-                    "purge-room in progress for '{}'; loop delivery skipped",
-                    target_fqn
+                    "purge-room in progress for '{target_fqn}'; loop delivery skipped"
                 ),
                 target: Some(target_fqn),
                 session_id: None,
@@ -136,9 +135,8 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
             for stale_id in lookup.stale_session_ids {
                 if let Err(e) = app.background_destroy(stale_id).await {
                     log::warn!(
-                        "[loops] Failed to clear stale coordinator session {} before wake: {}",
-                        stale_id,
-                        e
+                        "[loops] Failed to clear stale coordinator session {stale_id} \
+                         before wake: {e}"
                     );
                 }
             }
@@ -275,11 +273,7 @@ async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
     // pending fresh intent (record + mirror).
     app.note_post_boundary(session_id).await;
     if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
-        log::warn!(
-            "[loops] Failed to update last_prompt after Loop delivery to {}: {}",
-            session_id,
-            e
-        );
+        log::warn!("[loops] Failed to update last_prompt after Loop delivery to {session_id}: {e}");
     }
     LoopDeliveryReport {
         kind: LoopAuditKind::Delivered,
@@ -288,6 +282,18 @@ async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
         session_id: Some(session_id),
         error: None,
         prompt_snapshot: Some(prompt),
+        completed_at: Some(Utc::now()),
+    }
+}
+
+fn skipped_busy_report(target_fqn: String, session_id: Uuid) -> LoopDeliveryReport {
+    LoopDeliveryReport {
+        kind: LoopAuditKind::SkippedBusy,
+        message: "Orchestrator is busy; delivery skipped".to_string(),
+        target: Some(target_fqn),
+        session_id: Some(session_id),
+        error: None,
+        prompt_snapshot: None,
         completed_at: Some(Utc::now()),
     }
 }
@@ -330,15 +336,7 @@ async fn restart_delivery_session<H: LoopDeliveryHost + ?Sized>(
             }));
         }
         PreRestartDecision::Skip => {
-            return Err(Box::new(LoopDeliveryReport {
-                kind: LoopAuditKind::SkippedBusy,
-                message: "Orchestrator is busy; delivery skipped".to_string(),
-                target: Some(target_fqn),
-                session_id: Some(session_id),
-                error: None,
-                prompt_snapshot: None,
-                completed_at: Some(Utc::now()),
-            }));
+            return Err(Box::new(skipped_busy_report(target_fqn, session_id)));
         }
     }
 
@@ -385,15 +383,7 @@ async fn restart_delivery_session<H: LoopDeliveryHost + ?Sized>(
     match post_restart_decision(post_restart_idle, policy) {
         PostRestartDecision::Inject => {}
         PostRestartDecision::Skip => {
-            return Err(Box::new(LoopDeliveryReport {
-                kind: LoopAuditKind::SkippedBusy,
-                message: "Orchestrator is busy; delivery skipped".to_string(),
-                target: Some(target_fqn),
-                session_id: Some(post_restart_id),
-                error: None,
-                prompt_snapshot: None,
-                completed_at: Some(Utc::now()),
-            }));
+            return Err(Box::new(skipped_busy_report(target_fqn, post_restart_id)));
         }
         PostRestartDecision::Failed => {
             return Err(Box::new(failed_report(
@@ -458,7 +448,7 @@ fn stale_delivery_report(
         "Loop config changed before prompt injection; skipped stale delivery for {}",
         loop_storage_dir.display()
     );
-    log::warn!("[loops] {}", message);
+    log::warn!("[loops] {message}");
     LoopDeliveryReport {
         kind: LoopAuditKind::DeliveryFailed,
         message: message.clone(),
@@ -569,10 +559,7 @@ async fn find_coordinator_session<H: LoopDeliveryHost + ?Sized>(
         }
         if loop_candidate_should_respawn(&session.status, has_pty) {
             if !matches!(session.status, SessionStatus::Exited(_)) {
-                log::warn!(
-                    "[loops] Skipping desync coordinator session {} with no PTY",
-                    id
-                );
+                log::warn!("[loops] Skipping desync coordinator session {id} with no PTY");
             }
             stale_session_ids.push(id);
         }
@@ -673,7 +660,7 @@ async fn spawn_coordinator_session<H: LoopDeliveryHost + ?Sized>(
         })
         .await?;
     let session_id = Uuid::parse_str(&info.id)
-        .map_err(|e| format!("Failed to parse spawned session id: {}", e))?;
+        .map_err(|e| format!("Failed to parse spawned session id: {e}"))?;
     wait_for_session_idle(app, session_id).await?;
     let session_mgr = app.sessions();
     let mgr = session_mgr.read().await;
@@ -770,8 +757,8 @@ async fn wait_for_session_idle<H: LoopDeliveryHost + ?Sized>(
     loop {
         if start.elapsed() >= max_wait {
             log::warn!(
-                "[loops] Timeout waiting for spawned coordinator session {} to become idle",
-                session_id
+                "[loops] Timeout waiting for spawned coordinator session {session_id} \
+                 to become idle"
             );
             return Ok(());
         }
@@ -795,7 +782,7 @@ async fn final_busy_check<H: LoopDeliveryHost + ?Sized>(
         .await
         .into_iter()
         .find(|session| session.id == session_id.to_string())
-        .ok_or_else(|| format!("Session {} was destroyed before Loop delivery", session_id))?;
+        .ok_or_else(|| format!("Session {session_id} was destroyed before Loop delivery"))?;
     Ok(session.waiting_for_input)
 }
 
@@ -871,11 +858,10 @@ fn resolve_loop_agent_command_from_settings(
         // persisted `agentId`. That pin wins over `lastCodingAgent`, so a
         // deleted agent fails closed here and rank 3 is never consulted.
         let message = format!(
-            "[loops] Replica '{}' is pinned to coding agent '{}', which is not configured; \
-             refusing to wake with a different agent",
-            replica_dir_string, selected_id
+            "[loops] Replica '{replica_dir_string}' is pinned to coding agent \
+             '{selected_id}', which is not configured; refusing to wake with a different agent"
         );
-        log::warn!("{}", message);
+        log::warn!("{message}");
         return Err(message);
     }
 
@@ -888,19 +874,15 @@ fn resolve_loop_agent_command_from_settings(
         )? {
             return Ok(command);
         }
-        log::warn!(
-            "[loops] lastCodingAgent '{}' is no longer configured; falling back",
-            agent_id
-        );
+        log::warn!("[loops] lastCodingAgent '{agent_id}' is no longer configured; falling back");
     }
 
     let message = format!(
-        "[loops] No pinned coding agent for '{}': tooling.currentCodingAgent, \
+        "[loops] No pinned coding agent for '{replica_dir_string}': tooling.currentCodingAgent, \
          the persisted session agentId and tooling.lastCodingAgent are all absent \
-         or not configured",
-        replica_dir_string
+         or not configured"
     );
-    log::warn!("{}", message);
+    log::warn!("{message}");
     Err(message)
 }
 

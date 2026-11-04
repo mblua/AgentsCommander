@@ -54,6 +54,10 @@ pub(crate) fn should_wake_working_agent_on_restore(
     resume_agents_on && !is_coord && persisted_working
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "Preserve restore policy inputs and existing callers; coordinator arms stay disjoint"
+)]
 pub(crate) fn restore_session_should_wake(
     archived_session: bool,
     setting_on: bool,
@@ -217,7 +221,7 @@ impl RestoreCompletionGuard {
             barrier.finish();
         }
         if let Err(e) = self.observer.mark_restore_complete() {
-            log::error!("[restore] observer barrier completion failed: {}", e);
+            log::error!("[restore] observer barrier completion failed: {e}");
         }
         self.completed = true;
     }
@@ -286,8 +290,7 @@ pub(crate) fn spawn_restore_startup<J: RestoreStartupTask>(
         });
         if let Err(panic) = caught_body.catch_unwind().await {
             log::error!(
-                "[restore] restore task panicked (partial restore; retried next boot): {:?}",
-                panic
+                "[restore] restore task panicked (partial restore; retried next boot): {panic:?}"
             );
         }
         drop(restore_guard);
@@ -296,8 +299,7 @@ pub(crate) fn spawn_restore_startup<J: RestoreStartupTask>(
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
                 "[restore] post-restore startup panicked (services after the panic point not \
-                    started): {:?}",
-                panic
+                    started): {panic:?}"
             );
         }
     }))

@@ -151,7 +151,7 @@ impl UiAutomationState {
 
         if let Err(e) = self.initialize_files() {
             self.mark_unavailable();
-            log::error!("[ui-automation] failed to initialize files: {}", e);
+            log::error!("[ui-automation] failed to initialize files: {e}");
             return;
         }
         self.inner.available.store(true, Ordering::SeqCst);
@@ -203,7 +203,7 @@ impl UiAutomationState {
                 .inner
                 .window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             labels.insert(caller_label.to_string());
         }
         {
@@ -211,7 +211,7 @@ impl UiAutomationState {
                 .inner
                 .ready_window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ready.insert(caller_label.to_string());
         }
         self.write_session_snapshot().map_err(|e| e.to_string())
@@ -223,7 +223,11 @@ impl UiAutomationState {
         }
 
         let pending = {
-            let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             pending.remove(&result.request_id)
         };
         let Some(pending) = pending else {
@@ -266,14 +270,14 @@ impl UiAutomationState {
                 .inner
                 .window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         let ready_window_labels = sorted_labels(
             &self
                 .inner
                 .ready_window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         let session = UiAutomationSession {
             pid: std::process::id(),
@@ -289,7 +293,7 @@ impl UiAutomationState {
 
     fn poll_once<H: UiAutomationHost>(&self, app: &H) {
         if let Err(e) = self.poll_once_inner(app) {
-            log::warn!("[ui-automation] poll failed: {}", e);
+            log::warn!("[ui-automation] poll failed: {e}");
         }
     }
 
@@ -324,7 +328,7 @@ impl UiAutomationState {
                 .inner
                 .window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *labels != live_labels {
                 *labels = live_labels.clone();
                 changed = true;
@@ -336,7 +340,7 @@ impl UiAutomationState {
                 .inner
                 .ready_window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let before_len = ready.len();
             ready.retain(|label| live_labels.contains(label));
             if ready.len() != before_len {
@@ -353,7 +357,11 @@ impl UiAutomationState {
     fn expire_pending_requests(&self) {
         let now = now_unix_ms();
         let expired = {
-            let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending_map = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let expired_ids: Vec<String> = pending_map
                 .iter()
                 .filter(|(_, pending)| request_expired(&pending.request, now))
@@ -493,13 +501,21 @@ impl UiAutomationState {
             inflight_path,
         };
         {
-            let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending_map = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             pending_map.insert(request.request_id.clone(), pending);
         }
 
         if let Err(e) = app.automation_request(&request.window, &request) {
             let pending = {
-                let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+                let mut pending_map = self
+                    .inner
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 pending_map.remove(&request.request_id)
             };
             if let Some(pending) = pending {
@@ -544,7 +560,7 @@ impl UiAutomationState {
         self.inner
             .pending
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(request.request_id.clone(), pending);
 
         let state = self.clone();
@@ -556,7 +572,7 @@ impl UiAutomationState {
                 .inner
                 .pending
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&request.request_id);
             let Some(pending) = pending else {
                 return;
@@ -576,7 +592,7 @@ impl UiAutomationState {
         self.inner
             .pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(request_id)
     }
 
@@ -584,7 +600,7 @@ impl UiAutomationState {
         self.inner
             .ready_window_labels
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(window)
     }
 

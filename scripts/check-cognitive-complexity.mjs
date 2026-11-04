@@ -59,7 +59,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ALLOWLIST_FILE, parseAllowlist } from './sanitizing_baseline.mjs';
+import { ALLOWLIST_FILE, parseAllowlist, isMain } from './sanitizing_baseline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_DIRS = new Set(['target', 'node_modules', 'dist', '.git']);
@@ -487,10 +487,15 @@ function validateRootClippyToml(text) {
   }
   const lines = text.slice(0, -1).split('\n');
   let assignments = 0;
+  let lengthAssignments = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (line.trim() === '') continue;
     if (line.trimStart().startsWith('#')) continue;
+    if (line === 'too-many-lines-threshold = 100' && lengthAssignments === 0) {
+      lengthAssignments += 1;
+      continue;
+    }
     if (line === PINNED_THRESHOLD_LINE) {
       assignments += 1;
       continue;
@@ -2115,6 +2120,138 @@ function historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
   }
 }
 
+// #3527 delegated historical cleanup: frozen identities and Git blobs, never growth.
+const HISTORICAL_3527_SITES = [
+  ["rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle", 'a3d53f9cd47b'],
+  ["rust:src-tauri/src/agent_version.rs::impl:ProbeProcessOwner::settle", '059ee76b179f'],
+  ["rust:src-tauri/src/cli/send.rs::execute", '59138f0839a8'],
+  ["rust:src-tauri/src/commands/ac_discovery.rs::discover_ac_agents", '6ebd70a2edba'],
+  ["rust:src-tauri/src/commands/ac_discovery.rs::discover_project_inner", 'b5d5eb92c7cf'],
+  ["rust:src-tauri/src/loops/delivery.rs::deliver_loop_prompt", 'dde9f0bac0a2'],
+  ["rust:src-tauri/src/phone/mailbox/internal_delivery.rs::impl:MailboxPoller::d"
+    + "eliver_internal_system_wake", 'bb794053ede9'],
+  ["rust:src-tauri/src/phone/mailbox/pty_artifact.rs::impl:MailboxPoller::proces"
+    + "s_pty_input_file", '34a3d771ff0c'],
+  ["rust:src-tauri/src/phone/mailbox/pty_authority.rs::impl:MailboxPoller::spawn"
+    + "_pty_input_target", '0e2097deada7'],
+  ["rust:src-tauri/src/phone/mailbox/session_lookup.rs::impl:MailboxPoller::hand"
+    + "le_close_session", '1d959a229655'],
+  ["rust:src-tauri/src/pty/container_backend.rs::impl:ContainerTransportBackend:"
+    + ":stop_all_started_containers_blocking", 'a5be566e0b77'],
+  ["rust:src-tauri/src/pty/remote_watcher.rs::impl:RemoteSweeper::run_round", '1592dfac14cb'],
+  ["rust:src-tauri/src/resource_monitor/registry.rs::impl:ResourceMonitorState::"
+    + "kill_group_inner", '2b38f536fd94'],
+  ["rust:src-tauri/src/session/auto_close.rs::tick", '75fe61f787ea'],
+  ["rust:src-tauri/src/session/context_alerts.rs::run_context_alert_actor", '3e40c43d5adf'],
+  ["rust:src-tauri/src/telegram/bridge.rs::poll_task", 'eb863678ef0e'],
+  ["rust:src-tauri/src/telegram/codex_watcher.rs::watch_loop", '7ddd274890a3'],
+  ["rust:src-tauri/src/web/commands.rs::dispatch_inner", 'b6351f6c625d'],
+];
+const HISTORICAL_3527_PINS = [
+  ['src-tauri/src/agent_update.rs',
+    'bb51f026782c13e7145db93431dac9900497e4e2'],
+  ['src-tauri/src/agent_version.rs',
+    '9ec0ce4ec0ce1be9a666a5004837e6ff154b0a18'],
+  ['src-tauri/src/cli/send.rs',
+    '2f3807b01640ec5dfeadd683b0ed59be26c4d517'],
+  ['src-tauri/src/commands/ac_discovery.rs',
+    'fce11c7dc6d70f66ac4b6bf3ca8bcbae65404b6a'],
+  ['src-tauri/src/loops/delivery.rs',
+    'e31ea40640201b2ead5b94d3fb62ed55dc998e4e'],
+  ['src-tauri/src/phone/mailbox/internal_delivery.rs',
+    '8b816cbe3ba4eed6b526a2cc438ca395005e5723'],
+  ['src-tauri/src/phone/mailbox/pty_artifact.rs',
+    '4fd9ef31a12ae62d136e62a2a9c8cc9be94fadcb'],
+  ['src-tauri/src/phone/mailbox/pty_authority.rs',
+    'b948e10325b9835eee2c6854148fb8b24fb4c2c5'],
+  ['src-tauri/src/phone/mailbox/session_lookup.rs',
+    'dd99352c886301996d255defca61084555d0dd8d'],
+  ['src-tauri/src/pty/container_backend.rs',
+    'c249c904c709ff9943d85ba9924e79f979d9ce95'],
+  ['src-tauri/src/pty/remote_watcher.rs',
+    '2dd99c0c520c21f6f4125980108ed8a89ee2de51'],
+  ['src-tauri/src/resource_monitor/registry.rs',
+    '56882685cc2e471dfb7082c38ac068336ecfedf2'],
+  ['src-tauri/src/session/auto_close.rs',
+    '708f8eaf97cf871ab9e631a5b918b5691c5e247f'],
+  ['src-tauri/src/session/context_alerts.rs',
+    '6af89b72446263f44de859b9941c2c33462a07ba'],
+  ['src-tauri/src/telegram/bridge.rs',
+    '73c16c1266c54ae6af29e67bc5b9b2ca9099d20e'],
+  ['src-tauri/src/telegram/codex_watcher.rs',
+    '17c455ebe6104696dd18c9e28deed06fb951df87'],
+  ['src-tauri/src/web/commands.rs',
+    'c503a550eb73e6e93d9b90c46497ac1cfa273e22'],
+];
+const HISTORICAL_3527_BASELINE = '775da4366730fe0e1e5a3d3262e1e038a0441ac5';
+
+function historical3527Equal(left, right) {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== 'object'
+      || typeof right !== 'object' || Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    return left.length === right.length
+      && left.every((value, index) => historical3527Equal(value, right[index]));
+  }
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) =>
+    Object.hasOwn(right, key) && historical3527Equal(left[key], right[key]));
+}
+
+function historical3527Without(value, key) {
+  return Object.fromEntries(Object.entries(value).filter(([name]) => name !== key));
+}
+
+function historical3527Tuples() {
+  return HISTORICAL_3527_SITES.flatMap(([id, anchor]) =>
+    ['windows', 'linux', 'macos'].map((platform) => ({ id, anchor, platform })));
+}
+
+function historical3527TupleKey({ id, anchor, platform }) {
+  return JSON.stringify([id, platform, anchor]);
+}
+
+function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
+  additions, removals, runGit, readWorkspace, existsWorkspace }) {
+  if (additions.length !== 0 || baseDocument.toolchain !== '1.98.1'
+      || headDocument.toolchain !== '1.98.1') return false;
+  const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
+  const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
+  const exactSites = HISTORICAL_3527_SITES.every(([id, anchor]) => {
+    const entry = baseById.get(id);
+    return entry !== undefined && !headById.has(id)
+      && Object.keys(entry.sites).length === 3
+      && ['windows', 'linux', 'macos'].every((platform) =>
+        entry.sites[platform]?.length === 1 && entry.sites[platform][0] === anchor);
+  });
+  if (!exactSites) return false; // #3527 condition-2
+  const actual = removals.map(historical3527TupleKey).sort();
+  const expected = historical3527Tuples().map(historical3527TupleKey)
+    .sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  if (!historical3527Equal(actual, expected)) return false; // #3527 condition-3
+  const selected = new Set(HISTORICAL_3527_SITES.map(([id]) => id));
+  const equalMetadata = historical3527Equal(historical3527Without(baseDocument, 'entries'),
+    historical3527Without(headDocument, 'entries'));
+  const equalEntries = baseDocument.entries.every((entry) => selected.has(entry.id)
+    || !headById.has(entry.id)
+    || historical3527Equal(historical3527Without(entry, 'sites'),
+      historical3527Without(headById.get(entry.id), 'sites')));
+  if (!equalMetadata || !equalEntries) return false; // #3527 equality
+  try {
+    if (runGit(['rev-parse', baseRef + ':' + BASELINE_FILE]).trim()
+        !== HISTORICAL_3527_BASELINE) return false; // #3527 baseline-pin
+    return HISTORICAL_3527_PINS.every(([file, pin]) => {
+      if (diffSet.has(file) || !existsWorkspace(file)) return false;
+      readWorkspace(file);
+      return runGit(['rev-parse', baseRef + ':' + file]).trim() === pin
+        && runGit(['rev-parse', 'HEAD:' + file]).trim() === pin
+        && runGit(['hash-object', '--path=' + file, file]).trim() === pin;
+    });
+  } catch {
+    return false;
+  }
+}
+
 /** The `--baseline-diff` mode, in the order of phase 4 section 3. */
 export function runBaselineDiff(options, io = {}) {
   const baseRef = options.baseRef;
@@ -2223,14 +2360,19 @@ export function runBaselineDiff(options, io = {}) {
   // 6. Ordinary removals need touched/gone proof; #3319 has exact historical pins.
   const historical = historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
     additions, removals, runGit, readWorkspace, existsWorkspace });
+  const historical3527 = historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
+    additions, removals, runGit, readWorkspace, existsWorkspace });
+  const historical3527Keys = new Set(historical3527Tuples().map(historical3527TupleKey));
   const blocked = removals.filter((removal) => {
+    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) return false;
     if (historical && removal.id === HISTORICAL_3319_ID) return false;
     const file = filePathOfId(removal.id);
     return !diffSet.has(file) && existsWorkspace(file);
   });
   if (blocked.length > 0) {
     for (const removal of blocked) {
-      stderr(`Baseline entry removed without touching its file: ${removal.id}`);
+      stderr(`Baseline entry removed without touching its file: ${removal.id}`
+        + `#${removal.anchor} (${removal.platform})`);
     }
     stderr(REMOVE_REMEDIAL);
     return 1;
@@ -2238,6 +2380,10 @@ export function runBaselineDiff(options, io = {}) {
 
   // 7. Every accepted shrink is printed for the record.
   for (const removal of removals) {
+    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) {
+      stdout('historical-cleanup#3527: '
+        + `${removal.id}#${removal.anchor} (${removal.platform})`);
+    }
     if (historical && removal.id === HISTORICAL_3319_ID) {
       stdout(`historical-cleanup#3319: ${removal.id}#${removal.anchor} (${removal.platform})`);
     }
@@ -2778,11 +2924,22 @@ function baselineDiffFixture({
   showFailure = null,
   workingFiles = [],
   historical = null,
+  historical3527 = null,
 } = {}) {
   const stdoutLines = [];
   const stderrLines = [];
   const working = new Set(workingFiles);
   const runGit = (args) => {
+    if (historical3527 !== null && (args[0] === 'rev-parse' || args[0] === 'hash-object')) {
+      const position = args[0] === 'hash-object' ? 'workspace' :
+        args[1].startsWith('HEAD:') ? 'head' : 'base';
+      const file = args[0] === 'hash-object' ? args[2] : args[1].slice(args[1].indexOf(':') + 1);
+      if (historical3527.gitFailure === file + ':' + position) throw new GitError('failure', false);
+      const override = historical3527.blobs?.[file + ':' + position];
+      if (override !== undefined) return override;
+      if (file === BASELINE_FILE) return HISTORICAL_3527_BASELINE;
+      return HISTORICAL_3527_PINS.find(([name]) => name === file)?.[1] ?? '';
+    }
     if (args[0] === 'rev-parse' || args[0] === 'hash-object') {
       if (historical === null) throw new Error('unexpected historical Git invocation');
       if (historical.gitError) throw new GitError('historical Git failure', false);
@@ -2808,6 +2965,10 @@ function baselineDiffFixture({
     runGit,
     readWorkspace: (file) => {
       if (file === BASELINE_FILE && head !== null) return head;
+      if (historical3527 !== null && HISTORICAL_3527_PINS.some(([name]) => name === file)) {
+        if (historical3527.readFailure === file) throw new Error('source unreadable');
+        return 'unchanged historical source';
+      }
       if (file === HISTORICAL_3319_FILE && historical !== null) {
         if (historical.readError) throw new Error('historical source read failure');
         return 'unchanged historical source';
@@ -4073,6 +4234,186 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         throw new Error(`expected the addition message, got ${stderrText(fixture)}`);
       }
     }],
+    ['case 3527: exact historical inventory and independent guards', () => {
+      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const entries = HISTORICAL_3527_SITES.map(([id, anchor]) => ({ id, sites: {
+        windows: [anchor], linux: [anchor], macos: [anchor],
+      } }));
+      const extra = { id: 'rust:src/3527-other.rs::old', note: { a: [1, 2] },
+        sites: { windows: [A12] } };
+      const document = (values) => JSON.parse(baselineJson(values));
+      const base = document([...entries, extra].sort((a, b) => a.id.localeCompare(b.id)));
+      // Use the same lexical ordering required by the parser, independent of locale.
+      base.entries.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      base.toolchain = '1.98.1';
+      const head = clone(base);
+      head.entries = [clone(extra)];
+      const paths = HISTORICAL_3527_PINS.map(([file]) => file);
+      const tupleText = ({ id, anchor, platform }) => `${id}#${anchor} (${platform})`;
+      const removed = (before, after) => before.entries.flatMap((entry) =>
+        Object.entries(entry.sites).flatMap(([platform, anchors]) => {
+          const remaining = [...(after.entries.find((e) => e.id === entry.id)
+            ?.sites[platform] ?? [])];
+          return [...new Set(anchors)].flatMap((anchor) => {
+            const index = remaining.indexOf(anchor);
+            if (index !== -1) { remaining.splice(index, 1); return []; }
+            return [{ id: entry.id, anchor, platform }];
+          });
+        }));
+      const sameLines = (actual, expected, label) => expectEqual(
+        JSON.stringify([...actual].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)),
+        JSON.stringify([...expected].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)), label);
+      const run = (name, { before = base, after = head, diff = [], working = paths,
+        proof = {}, kind = 'blocked', exit = 1 } = {}) => {
+        const fixture = baselineDiffFixture({ base: JSON.stringify(before),
+          head: JSON.stringify(after), diffPaths: diff, workingFiles: working,
+          historical3527: proof });
+        const result = fixture.run();
+        const historical = fixture.state.stdout.filter((line) =>
+          line.startsWith('historical-cleanup#3527: '));
+        const removals = removed(before, after);
+        if (kind === 'positive') {
+          expectEqual(result, 0, name);
+          sameLines(historical.map((line) => line.slice('historical-cleanup#3527: '.length)),
+            removals.map(tupleText), name + ' historical tuples');
+          expectEqual(historical.length, 54, name + ' multiplicity');
+          return;
+        }
+        expectEqual(result, exit, name);
+        expectEqual(historical.length, 0, name + ' historical denial');
+        if (kind === 'ordinary') {
+          const prefix = 'baseline removal accepted: ';
+          sameLines(fixture.state.stdout.filter((line) => line.startsWith(prefix))
+            .map((line) => line.slice(prefix.length)), removals.map(tupleText),
+          name + ' ordinary attribution');
+        }
+        if (kind === 'config') {
+          if (!stderrText(fixture).includes('CONFIG')) throw new Error(name + ' missing CONFIG');
+        } else if (kind === 'growth') {
+          if (!stderrText(fixture).includes('Baseline grew')) throw new Error(name + ' growth');
+        } else if (kind === 'blocked') {
+          const prefix = 'Baseline entry removed without touching its file: ';
+          const blocked = fixture.state.stderr.filter((line) => line.startsWith(prefix))
+            .map((line) => line.slice(prefix.length));
+          sameLines(blocked, removals.filter(({ id }) => {
+            const file = filePathOfId(id);
+            return working.includes(file) && !diff.includes(file);
+          }).map(tupleText), name + ' blocked tuples');
+        }
+      };
+      run('3527 exact S', { kind: 'positive' });
+      for (let index = 0; index < entries.length; index += 1) {
+        const id = entries[index].id;
+        const change = (mutate) => { const value = clone(base);
+          mutate(value.entries.find((e) => e.id === id)); return value; };
+        const file = filePathOfId(id);
+        run('3527 id ' + index, { before: change((e) => { e.id += '_other'; }),
+          working: [...paths, file] });
+        for (const platform of ['windows', 'linux', 'macos']) {
+          run('3527 anchor ' + index + platform, { before: change((e) => {
+            e.sites[platform] = [otherAnchor(e.sites[platform][0])];
+          }) });
+          run('3527 duplicate ' + index + platform, { before: change((e) => {
+            e.sites[platform].push(e.sites[platform][0]);
+          }) });
+          run('3527 missing site ' + index + platform, { before: change((e) => {
+            delete e.sites[platform];
+          }) });
+          run('3527 partial ' + index + platform, { after: { ...clone(head),
+            entries: [...clone(head.entries), { id,
+              sites: { [platform]: entries[index].sites[platform] } }]
+              .sort((a, b) => a.id < b.id ? -1 : 1) } });
+        }
+        run('3527 platform substitution ' + index, { before: change((e) => {
+          delete e.sites.macos;
+        }) });
+        run('3527 bad platform ' + index, { kind: 'config', before: change((e) => {
+          e.sites.other = [A12];
+        }) });
+        const missing = clone(base);
+        missing.entries = missing.entries.filter((e) => e.id !== id);
+        run('3527 missing identity ' + index, { before: missing });
+        const retained = clone(head);
+        retained.entries.push(clone(entries[index]));
+        retained.entries.sort((a, b) => a.id < b.id ? -1 : 1);
+        run('3527 retained identity ' + index, { after: retained });
+      }
+      const c2Base = clone(base);
+      const first = c2Base.entries.find((e) => e.id === entries[0].id);
+      const extraAnchor = otherAnchor(first.sites.windows[0]);
+      first.sites.windows.push(extraAnchor);
+      first.sites.windows.sort();
+      const c2Head = clone(head);
+      c2Head.entries.push({ id: first.id, sites: { windows: [extraAnchor] } });
+      c2Head.entries.sort((a, b) => a.id < b.id ? -1 : 1);
+      run('3527 C2-retained-extra-site', { before: c2Base, after: c2Head });
+      const deletedExtra = clone(head);
+      deletedExtra.entries = [];
+      run('3527 extra untouched', { after: deletedExtra,
+        working: [...paths, 'src/3527-other.rs'] });
+      run('3527 C3-extra-ordinary', { after: deletedExtra, diff: ['src/3527-other.rs'] });
+      for (const level of ['metadata', 'nonselected']) {
+        for (const operation of ['changed', 'deleted', 'added']) {
+          const before = clone(base);
+          const after = clone(head);
+          const left = level === 'metadata' ? before
+            : before.entries.find((e) => e.id === extra.id);
+          const right = level === 'metadata' ? after : after.entries[0];
+          left.optional = { nested: [1, 2] };
+          right.optional = { nested: [1, 2] };
+          if (operation === 'changed') right.optional.nested.reverse();
+          if (operation === 'deleted') delete right.optional;
+          if (operation === 'added') delete left.optional;
+          run('3527 equality ' + level + ' ' + operation, { before, after });
+        }
+      }
+      const reorder = (value) => Array.isArray(value) ? value.map(reorder)
+        : value !== null && typeof value === 'object'
+          ? Object.fromEntries(Object.entries(value).reverse().map(([key, v]) => [key, reorder(v)]))
+          : value;
+      run('3527 key-order-only', { after: reorder(head), kind: 'positive' });
+      const metadataChanged = clone(head);
+      metadataChanged.capturedAt = '3527-changed';
+      run('3527 Metadata-changed', { after: metadataChanged });
+      const nonselectedChanged = clone(head);
+      nonselectedChanged.entries[0].note.a = [2, 1];
+      run('3527 Nonselected-changed', { after: nonselectedChanged });
+      run('3527 baseline pin', { proof: { blobs: { [BASELINE_FILE + ':base']: 'bad' } } });
+      for (const file of paths) {
+        for (const position of ['base', 'head', 'workspace']) {
+          run('3527 pin ' + file + position,
+            { proof: { blobs: { [file + ':' + position]: 'bad' } } });
+          run('3527 Git failure ' + file + position,
+            { proof: { gitFailure: file + ':' + position } });
+        }
+        run('3527 unreadable ' + file, { proof: { readFailure: file } });
+        run('3527 missing ' + file, { working: paths.filter((p) => p !== file) });
+        run('3527 touched ' + file, { diff: [file] });
+        // Isolate ordinary attribution when no other untouched tuple blocks step 7.
+        run('3527 ordinary touched ' + file, { diff: paths, kind: 'ordinary', exit: 0 });
+      }
+      run('3527 ordinary gone', { working: [], kind: 'ordinary', exit: 0 });
+      for (const [beforeVersion, afterVersion, kind, exit] of [
+        ['1.99.0', '1.98.1', 'blocked', 1], ['1.98.1', '1.98.0', 'blocked', 1],
+        ['1.98.1', '1.99.0', 'refresh', 0],
+      ]) {
+        run('3527 toolchain ' + beforeVersion + afterVersion, {
+          before: { ...base, toolchain: beforeVersion },
+          after: { ...head, toolchain: afterVersion },
+          kind, exit,
+        });
+      }
+      const growth = clone(head);
+      growth.entries.push(clone(entries[0]));
+      growth.entries.sort((a, b) => a.id < b.id ? -1 : 1);
+      growth.entries.find((e) => e.id === entries[0].id).sites.windows = [extraAnchor];
+      run('3527 equal-size swap', { after: growth, kind: 'growth' });
+      growth.entries.find((e) => e.id === entries[0].id).sites.windows =
+        [entries[0].sites.windows[0], extraAnchor].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+      run('3527 returned extra anchor', { after: growth, kind: 'growth' });
+      run('3527 growth', { before: head, after: base, kind: 'growth' });
+      run('3527 dormant', { before: head, kind: 'ordinary', exit: 0 });
+    }],
     ['case 3319: only the pinned three-platform historical cleanup passes', () => {
       const entry = { id: HISTORICAL_3319_ID, sites: {
         windows: [HISTORICAL_3319_ANCHOR], linux: [HISTORICAL_3319_ANCHOR],
@@ -4454,4 +4795,4 @@ function selfTest({ stdout, stderr }) {
   return 0;
 }
 
-process.exitCode = main(process.argv.slice(2));
+if (isMain(import.meta.url)) process.exitCode = main(process.argv.slice(2));

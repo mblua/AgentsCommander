@@ -44,7 +44,7 @@ fn run_process(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("spawn failed for {} {:?}: {}", program, args, e))?;
+        .map_err(|e| format!("spawn failed for {program} {args:?}: {e}"))?;
 
     let mut stdout = child
         .stdout
@@ -70,7 +70,7 @@ fn run_process(
     let status = loop {
         if let Some(status) = child
             .try_wait()
-            .map_err(|e| format!("wait failed for {} {:?}: {}", program, args, e))?
+            .map_err(|e| format!("wait failed for {program} {args:?}: {e}"))?
         {
             break status;
         }

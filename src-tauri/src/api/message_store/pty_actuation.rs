@@ -72,7 +72,7 @@ impl MessageStore {
                 let mut faults = self
                     .test_faults
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 std::mem::take(&mut faults.actuation_commit_ambiguous)
             };
             if inject_ambiguous {

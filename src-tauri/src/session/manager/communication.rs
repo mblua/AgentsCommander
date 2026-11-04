@@ -89,7 +89,6 @@ impl SessionManager {
 
     #[allow(clippy::too_many_arguments)]
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) async fn rollback_raise_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

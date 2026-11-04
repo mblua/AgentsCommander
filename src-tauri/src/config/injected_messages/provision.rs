@@ -42,14 +42,14 @@ pub(super) fn read_source(path: &Path) -> Result<Option<String>, String> {
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("it cannot be inspected: {}", e)),
+        Err(e) => return Err(format!("it cannot be inspected: {e}")),
     }
 
     let bytes = injected_documents::read_source_bytes(path)
-        .map_err(|e| format!("it cannot be read: {}", e))?;
+        .map_err(|e| format!("it cannot be read: {e}"))?;
     match String::from_utf8(bytes) {
         Ok(source) => Ok(Some(source)),
-        Err(e) => Err(format!("it is not valid UTF-8: {}", e)),
+        Err(e) => Err(format!("it is not valid UTF-8: {e}")),
     }
 }
 
@@ -223,7 +223,7 @@ fn save_state(path: &Path, state: &InjectedMessagesState) {
     let mut json = match serde_json::to_string_pretty(state) {
         Ok(json) => json,
         Err(e) => {
-            log::warn!("[injected-messages] failed to serialize local state: {}", e);
+            log::warn!("[injected-messages] failed to serialize local state: {e}");
             return;
         }
     };
@@ -471,23 +471,22 @@ fn publish_edits(
 
     if !refresh.is_empty() {
         let doc: WriteDoc = toml::from_str(source)
-            .map_err(|e| format!("its structure cannot be located for a write ({})", e))?;
+            .map_err(|e| format!("its structure cannot be located for a write ({e})"))?;
 
         let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for (id, spec) in refresh {
             let Some(entry) = doc.messages.get(id) else {
-                return Err(format!("`{}` could not be located for a write", id));
+                return Err(format!("`{id}` could not be located for a write"));
             };
             let Some(spanned) = &entry.template else {
-                return Err(format!("`{}` has no `template` value to rewrite", id));
+                return Err(format!("`{id}` has no `template` value to rewrite"));
             };
             if !spanned.get_ref().is_str() {
-                return Err(format!("`{}` has a non-string `template`", id));
+                return Err(format!("`{id}` has a non-string `template`"));
             }
             if !is_literal_quotable(spec.default_template) {
                 return Err(format!(
-                    "the built-in default for `{}` cannot be written as a TOML literal",
-                    id
+                    "the built-in default for `{id}` cannot be written as a TOML literal"
                 ));
             }
             edits.push((spanned.span(), quote_literal(spec.default_template, crlf)));
@@ -549,17 +548,17 @@ pub(super) fn verify_candidate(
 ) -> Result<(), String> {
     let model = analyze_source(candidate);
     if let Some(reason) = model.strict_invalid {
-        return Err(format!("the result would be invalid ({})", reason));
+        return Err(format!("the result would be invalid ({reason})"));
     }
     for id in previous_ids {
         if !model.entries.contains_key(id) {
-            return Err(format!("the result would lose `{}`", id));
+            return Err(format!("the result would lose `{id}`"));
         }
     }
     for (id, expected) in intended {
         match model.entries.get(id) {
             Some(EntryValue::Template(template)) if template == expected => {}
-            _ => return Err(format!("the result would not carry `{}` as intended", id)),
+            _ => return Err(format!("the result would not carry `{id}` as intended")),
         }
     }
     Ok(())
@@ -571,7 +570,7 @@ fn take_backup(path: &Path, source: &str) {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| INJECTED_MESSAGES_FILENAME.to_string());
-    name.push_str(&format!(".bak-{}", stamp));
+    name.push_str(&format!(".bak-{stamp}"));
     let backup: PathBuf = path.with_file_name(name);
     if let Err(e) = publish(&backup, source.as_bytes()) {
         log::warn!(

@@ -61,20 +61,15 @@ impl CarrierMutationPermit {
 
 #[derive(Clone)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) struct CarrierSnapshot {
     pub rows: Vec<Session>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub versions: HashMap<Uuid, u64>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub pending_ids: HashSet<Uuid>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub order: Vec<Uuid>,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub selection: SessionSelection,
 }
 
@@ -145,35 +140,27 @@ pub(crate) enum CarrierDisposition {
     Protected,
     Foreign,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     Unknown,
 }
 
 pub(crate) struct RaiseMutationReceipt {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(super) uuid: Uuid,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(super) nonce: Uuid,
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(super) version: u64,
 }
 
 pub(crate) enum RaiseCarrierOutcome {
     // Dormant until P05 integration; remove with real callers.
-    Changed(
-        SessionCommunication,
-        #[allow(dead_code)] RaiseMutationReceipt,
-    ),
+    Changed(SessionCommunication, RaiseMutationReceipt),
     AlreadyVisible(SessionCommunication),
     NotRaisable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Dormant until P05 integration; remove with real callers.
-#[allow(dead_code)]
 pub(crate) enum RaiseRollbackOutcome {
     Reverted,
     Superseded,
@@ -419,7 +406,6 @@ impl SessionManager {
     }
 
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) async fn with_current_carrier_snapshot<R>(
         &self,
         permit: &CarrierMutationPermit,
@@ -438,7 +424,6 @@ impl SessionManager {
     }
 
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) async fn with_response_close_facts<R>(
         &self,
         f: impl FnOnce(&CarrierSnapshot) -> R,
@@ -455,7 +440,11 @@ impl SessionManager {
     }
 
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
+    #[expect(
+        clippy::unused_self,
+        reason = "Método de CarrierManager existente, dormant allow(dead_code): no activar, \
+            remover ni rediseñar binding por un lint."
+    )]
     pub(crate) fn reserve_carrier_create_binding(&self) -> PendingCreateBinding {
         PendingCreateBinding::new(Uuid::new_v4(), Uuid::new_v4())
     }

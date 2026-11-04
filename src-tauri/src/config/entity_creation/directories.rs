@@ -31,20 +31,12 @@ pub(crate) fn strict_team_candidates(root: &Path) -> Result<Vec<PathBuf>, String
 pub(crate) fn strict_teams_from_observations(
     entries: io::Result<impl IntoIterator<Item = io::Result<PathBuf>>>,
 ) -> Result<Vec<PathBuf>, String> {
-    let entries = entries.map_err(|e| {
-        format!(
-            "Cannot read Project AC Root directory for agent delete: {}",
-            e
-        )
-    })?;
+    let entries = entries
+        .map_err(|e| format!("Cannot read Project AC Root directory for agent delete: {e}"))?;
     let mut paths = Vec::new();
     for entry in entries {
-        let path = entry.map_err(|e| {
-            format!(
-                "Cannot read directory entry during agent delete scan: {}",
-                e
-            )
-        })?;
+        let path = entry
+            .map_err(|e| format!("Cannot read directory entry during agent delete scan: {e}"))?;
         if path
             .file_name()
             .and_then(|name| name.to_str())
@@ -99,7 +91,7 @@ fn team_rooms_from_observations(
     entries: impl IntoIterator<Item = io::Result<PathBuf>>,
     team_name: &str,
 ) -> Vec<PathBuf> {
-    let suffix = format!("-{}", team_name);
+    let suffix = format!("-{team_name}");
     entries
         .into_iter()
         .flatten()
@@ -157,15 +149,15 @@ fn workgroups_from_observations(
 
 pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<String, String> {
     let rest = crate::config::entity_prefix::strip_entity_prefix(workgroup_name)
-        .ok_or_else(|| format!("Invalid room name '{}'", workgroup_name))?;
+        .ok_or_else(|| format!("Invalid room name '{workgroup_name}'"))?;
     let Some((number, team)) = rest.split_once('-') else {
-        return Err(format!("Invalid room name '{}'", workgroup_name));
+        return Err(format!("Invalid room name '{workgroup_name}'"));
     };
     let parsed = number
         .parse::<u32>()
-        .map_err(|_| format!("Invalid room number in '{}'", workgroup_name))?;
+        .map_err(|_| format!("Invalid room number in '{workgroup_name}'"))?;
     if parsed == 0 || team.is_empty() {
-        return Err(format!("Invalid room name '{}'", workgroup_name));
+        return Err(format!("Invalid room name '{workgroup_name}'"));
     }
     validate_existing_name(team, "Team")?;
     Ok(team.to_string())

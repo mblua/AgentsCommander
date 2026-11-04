@@ -58,7 +58,7 @@ pub(crate) async fn spec_repo_link_state(path: &Path) -> Result<bool, String> {
         Ok(false)
     })
     .await
-    .map_err(|e| format!("Failed to inspect path link state: {}", e))?
+    .map_err(|e| format!("Failed to inspect path link state: {e}"))?
 }
 
 pub(crate) struct SpecRepoChildren(tokio::fs::ReadDir);

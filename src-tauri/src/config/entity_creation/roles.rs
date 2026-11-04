@@ -48,12 +48,12 @@ pub(crate) fn build_role_content(
         None => String::new(),
     };
     format!(
-        "---\nname: '{name}'\ndescription: '{desc_yaml}'\ntype: agent\n---\n\n\
-         # {name}\n\n\
+        "---\nname: '{safe_name}'\ndescription: '{desc_yaml}'\ntype: agent\n---\n\n\
+         # {safe_name}\n\n\
          {description}\n\
          {profile}\n\
          ## Source of Truth\n\n\
-         This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{name}/\n\
+         This role is defined in Role.md of your Agent Matrix at: .ac/_agent_{safe_name}/\n\
          If you are running as a replica, this file was generated from that source; the \
          Agent Matrix is canonical.\n\n\
          ## Agent Memory Rule\n\n\
@@ -61,10 +61,6 @@ pub(crate) fn build_role_content(
          of persistent knowledge. Use your replica folder only for replica-local scratch, \
          inbox/outbox, and session artifacts. NEVER use external memory systems from the \
          coding agent (e.g., ~/.claude/projects/memory/).\n",
-        name = safe_name,
-        desc_yaml = desc_yaml,
-        description = description,
-        profile = profile,
     )
 }
 

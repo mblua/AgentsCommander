@@ -123,7 +123,7 @@ impl BridgeLogger {
             };
             let _ = write_telegram_log(
                 f,
-                format_args!("[{}] {} sid={} | {}\n", now, direction, session_id, preview),
+                format_args!("[{now}] {direction} sid={session_id} | {preview}\n"),
             );
             let _ = flush_telegram_log(f);
         }
@@ -170,8 +170,8 @@ impl DiagLogger {
             // containing a Telegram URL, or any future call site that
             // bypassed api.rs) cannot land in the diag log.
             let text = crate::telegram::redact::redact(text);
-            let _ = write_telegram_log(f, format_args!("--- [{}] ---\n", now));
-            let _ = write_telegram_log(f, format_args!("{}\n", text));
+            let _ = write_telegram_log(f, format_args!("--- [{now}] ---\n"));
+            let _ = write_telegram_log(f, format_args!("{text}\n"));
             let _ = flush_telegram_log(f);
         }
     }
@@ -183,8 +183,8 @@ impl DiagLogger {
             // #280 G-MED-3 — same scrub as log_raw; diag-sent.log bypasses
             // env_logger.
             let text = crate::telegram::redact::redact(text);
-            let _ = write_telegram_log(f, format_args!("--- [{}] ---\n", now));
-            let _ = write_telegram_log(f, format_args!("{}\n", text));
+            let _ = write_telegram_log(f, format_args!("--- [{now}] ---\n"));
+            let _ = write_telegram_log(f, format_args!("{text}\n"));
             let _ = flush_telegram_log(f);
         }
     }

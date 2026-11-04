@@ -3,9 +3,9 @@
 //! Three scans:
 //!   1. AC-internal sessions whose `working_directory` lives inside the workgroup tree.
 //!   2. External processes holding handles on files inside the workgroup tree, via the
-//!      Windows Restart Manager API (RmStartSession / RmRegisterResources / RmGetList).
+//!      Windows Restart Manager API (`RmStartSession` / `RmRegisterResources` / `RmGetList`).
 //!   3. External Windows processes whose current working directory is under the
-//!      workgroup tree, via a direct PEB ProcessParameters read.
+//!      workgroup tree, via a direct PEB `ProcessParameters` read.
 //!
 //! Pure helpers — no Tauri commands. Invoked from `entity_creation::delete_workgroup`.
 
@@ -97,7 +97,7 @@ pub struct BlockerProcess {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Sample of paths inside the workgroup that this process holds.
-    /// Capped at MAX_FILES_PER_PROCESS.
+    /// Capped at `MAX_FILES_PER_PROCESS`.
     pub files: Vec<String>,
 }
 
@@ -138,7 +138,7 @@ fn win32_meaning(code: u32) -> &'static str {
 fn win32_error(context: &str, code: u32) -> DiagnosticError {
     let meaning = win32_meaning(code);
     DiagnosticError {
-        message: format!("{}: WIN32_ERROR={} ({})", context, code, meaning),
+        message: format!("{context}: WIN32_ERROR={code} ({meaning})"),
         code: Some(code),
         meaning: Some(meaning.to_string()),
     }
@@ -161,10 +161,7 @@ pub async fn diagnose_delete_root_blockers(
     raw_os_error: &str,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> BlockerReport {
-    log::info!(
-        "[wg_delete_diagnostic] starting blocker scan for delete root '{}'",
-        display_name
-    );
+    log::info!("[wg_delete_diagnostic] starting blocker scan for delete root '{display_name}'");
     let canonical_root = canonicalize_for_compare(root_dir);
 
     let ac_scan = scan_ac_sessions(&canonical_root, session_mgr).await;
@@ -183,16 +180,12 @@ pub async fn diagnose_delete_root_blockers(
         {
             Ok(scan) => scan,
             Err(join_err) => {
-                log::warn!(
-                    "[wg_delete_diagnostic] external process scan join failed: {}",
-                    join_err
-                );
+                log::warn!("[wg_delete_diagnostic] external process scan join failed: {join_err}");
                 ExternalProcessScan {
                     processes: Vec::new(),
                     restart_manager_available: false,
                     restart_manager_error: Some(diagnostic_error(format!(
-                        "external process scan join failed: {}",
-                        join_err
+                        "external process scan join failed: {join_err}"
                     ))),
                     cwd_scan_error: None,
                 }
@@ -306,11 +299,11 @@ fn detect_platform() -> Platform {
 /// `\\?\C:\Users\…` becomes `C:\Users\…`.
 fn strip_long_prefix_str(s: &str) -> String {
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = s.strip_prefix(r"\\?\") {
         rest.to_string()
     } else if let Some(rest) = s.strip_prefix(r"\??\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = s.strip_prefix(r"\??\") {
         rest.to_string()
     } else {
@@ -318,7 +311,7 @@ fn strip_long_prefix_str(s: &str) -> String {
     }
 }
 
-/// Return wg_dir canonicalised, with the Windows extended-length prefixes stripped
+/// Return `wg_dir` canonicalised, with the Windows extended-length prefixes stripped
 /// for shape parity with `entity_creation.rs:903`.
 fn canonicalize_for_compare(p: &Path) -> PathBuf {
     let canon =
@@ -338,11 +331,11 @@ fn path_is_under_windows(candidate: &Path, root: &Path) -> bool {
 
     let candidate = normalize(candidate);
     let root = normalize(root);
-    candidate == root || candidate.starts_with(&format!(r"{}\", root))
+    candidate == root || candidate.starts_with(&format!(r"{root}\"))
 }
 
-/// Walk the workgroup tree breadth-first and collect up to MAX_FILES_TO_PROBE absolute
-/// resource paths to feed RmRegisterResources.
+/// Walk the workgroup tree breadth-first and collect up to `MAX_FILES_TO_PROBE` absolute
+/// resource paths to feed `RmRegisterResources`.
 ///
 /// Priority order in the output:
 ///   1. **Directories** — WG root, top-level `repo-*` and `__agent_*` subdirs,
@@ -360,7 +353,7 @@ fn collect_files_to_probe(wg_dir: &Path) -> Vec<PathBuf> {
     crate::filesystem::room_diagnostics::collect_room_lock_resources(wg_dir, MAX_FILES_TO_PROBE)
 }
 
-/// Scan SessionManager for sessions whose working_directory lives under wg_dir.
+/// Scan `SessionManager` for sessions whose `working_directory` lives under `wg_dir`.
 async fn scan_ac_sessions(
     canonical_wg: &Path,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,

@@ -71,7 +71,7 @@ pub(crate) async fn probe_spawn_refusal<H: ArchiveGateHost + ?Sized>(
     let cwd_owned = cwd.to_string();
     let root = tokio::task::spawn_blocking(move || archived_root_for_cwd(&cwd_owned, &archived))
         .await
-        .map_err(|e| format!("archive gate probe task failed: {}", e))?;
+        .map_err(|e| format!("archive gate probe task failed: {e}"))?;
     let Some(root) = root else {
         return Ok(());
     };
@@ -113,7 +113,7 @@ where
     let cwd_owned = cwd.to_string();
     let root = tokio::task::spawn_blocking(move || archived_root_for_cwd(&cwd_owned, &archived))
         .await
-        .map_err(|e| format!("archive gate task failed: {}", e))?;
+        .map_err(|e| format!("archive gate task failed: {e}"))?;
     let Some(root) = root else {
         return Ok(());
     };
@@ -146,11 +146,11 @@ where
             .await
             .map_err(|_| {
                 format!(
-                "archive gate: timed out taking the settings write lock while un-archiving '{}'. \
+                    "archive gate: timed out taking the settings write lock while \
+                 un-archiving '{root}'. \
                  A caller of create_session_inner is holding a SettingsState guard. That is a \
-                 bug, not a slow disk.",
-                root
-            )
+                 bug, not a slow disk."
+                )
             })?;
         let path = crate::config::config_dir()
             .ok_or("Could not determine settings directory")?
@@ -210,11 +210,7 @@ where
     };
     drop(s);
 
-    log::warn!(
-        "[archive] auto-unarchived '{}': session '{}' activated inside it",
-        root,
-        session_label
-    );
+    log::warn!("[archive] auto-unarchived '{root}': session '{session_label}' activated inside it");
     app.auto_unarchived(&reg.path, session_label);
     Ok(())
 }

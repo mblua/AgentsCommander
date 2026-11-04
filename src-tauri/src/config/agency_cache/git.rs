@@ -16,7 +16,7 @@ fn run_git_with_timeout(
     timeout: Duration,
 ) -> Result<Output, String> {
     crate::process::git::cache::run_agency_git(current_dir, args, timeout)
-        .map_err(|e| format!("Failed to run git {:?}: {}", args, e))
+        .map_err(|e| format!("Failed to run git {args:?}: {e}"))
 }
 
 #[cfg(test)]
@@ -39,8 +39,7 @@ pub(super) fn resolve_commit_with_git(repo: &str, reference: &str) -> Result<Str
     let output = run_git_with_timeout(None, &["ls-remote", repo, reference], GIT_LS_REMOTE_TIMEOUT)
         .map_err(|e| {
             format!(
-                "Failed to run git. Install git or use an environment where git is on PATH: {}",
-                e
+                "Failed to run git. Install git or use an environment where git is on PATH: {e}"
             )
         })?;
     if !output.status.success() {

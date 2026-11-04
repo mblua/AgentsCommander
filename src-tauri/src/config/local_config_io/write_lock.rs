@@ -22,7 +22,7 @@ pub(super) fn local_config_write_lock() -> &'static Mutex<()> {
 pub(super) fn lock_local_config_writes() -> MutexGuard<'static, ()> {
     local_config_write_lock()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 thread_local! {
@@ -43,9 +43,8 @@ impl ConfigWriterActive {
     pub(super) fn enter(entry_point: &str) -> Result<Self, String> {
         if CONFIG_WRITER_ACTIVE.with(|active| active.replace(true)) {
             return Err(format!(
-                "Nested config write: {} was called while a config writer \
-                 is already active on this thread",
-                entry_point
+                "Nested config write: {entry_point} was called while a config writer \
+                 is already active on this thread"
             ));
         }
         Ok(Self)
@@ -61,7 +60,7 @@ impl Drop for ConfigWriterActive {
 /// #1938 - cooperative cross-process serialization for local config writes.
 ///
 /// The config file itself is replaced by every publish (rename on Unix,
-/// ReplaceFileW on Windows), so locking it would guard an inode that is about
+/// `ReplaceFileW` on Windows), so locking it would guard an inode that is about
 /// to disappear. The lock lives on a stable sidecar instead, `.<name>.lock`
 /// next to the config file: created once, never deleted - including on error
 /// paths - so every process locks the same file. Closing the handle (normal

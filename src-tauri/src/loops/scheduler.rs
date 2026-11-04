@@ -241,22 +241,22 @@ impl LoopScheduler {
             let _io = self.io_lock.lock().await;
             let _loop_lock = acquire_loop_lock_for_dir(&dir, LOOP_LOCK_TIMEOUT)?;
             if !dir.is_dir() {
-                return Err(format!("Loop '{}' not found", loop_id));
+                return Err(format!("Loop '{loop_id}' not found"));
             }
             let Some(config) = read_loop_config_if_present(&dir)? else {
-                return Err(format!("Loop '{}' not found", loop_id));
+                return Err(format!("Loop '{loop_id}' not found"));
             };
             let (state, raw) = read_state_snapshot(&dir)?;
             (config, state, raw, self.loop_generation(&dir))
         };
         if !config.loop_def.enabled {
-            return Err(format!("Loop '{}' is disabled", loop_id));
+            return Err(format!("Loop '{loop_id}' is disabled"));
         }
         let run_id = Uuid::new_v4();
         let due_at = Utc::now();
         let started_at = Utc::now();
         if !loop_is_current_for_delivery(&dir, &config)? {
-            return Err(format!("Loop '{}' changed before delivery", loop_id));
+            return Err(format!("Loop '{loop_id}' changed before delivery"));
         }
         let report = self
             .deliver(&context, &project_dir, &config, run_id, due_at)
@@ -490,6 +490,24 @@ impl LoopScheduler {
         Ok(false)
     }
 
+    async fn ready_scan_snapshot(
+        &self,
+        context: &SchedulerContext,
+        project_dir: &Path,
+        dir: &Path,
+    ) -> Result<Option<LoopScanSnapshot>, String> {
+        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+            return Ok(None);
+        };
+        if self
+            .finish_scan_entry(context, project_dir, dir, &snapshot)
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(Some(snapshot))
+    }
+
     async fn scan_loop(
         &self,
         context: &SchedulerContext,
@@ -498,15 +516,9 @@ impl LoopScheduler {
         startup: bool,
         pending_only: bool,
     ) -> Result<(), String> {
-        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+        let Some(snapshot) = self.ready_scan_snapshot(context, project_dir, dir).await? else {
             return Ok(());
         };
-        if self
-            .finish_scan_entry(context, project_dir, dir, &snapshot)
-            .await?
-        {
-            return Ok(());
-        }
         let LoopScanSnapshot {
             config,
             mut state,

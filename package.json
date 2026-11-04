@@ -1,6 +1,6 @@
 {
   "name": "agentscommander",
-  "version": "0.45.1",
+  "version": "0.46.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -37,6 +37,8 @@
     "write:cycles-baseline": "node scripts/check-module-cycles.mjs --write-baseline",
     "check:served-paths": "node scripts/check-served-paths.mjs",
     "check:served-paths:self": "node scripts/check-served-paths.mjs --self-test",
+    "tml:self": "node scripts/check-too-many-lines.mjs --self-test",
+    "tml:baseline": "node scripts/check-too-many-lines.mjs --baseline-diff",
     "cog:self": "node scripts/check-cognitive-complexity.mjs --self-test",
     "cog:scan": "node scripts/check-cognitive-complexity.mjs --scan-sources",
     "cog:baseline": "node scripts/check-cognitive-complexity.mjs --baseline-diff",
@@ -57,7 +59,9 @@
     "sanitizing:disk_access": "node scripts/sanitizing_disk_access.mjs",
     "sanitizing:process_env": "node scripts/sanitizing_process_env.mjs",
     "sanitizing:self": "node --test scripts/sanitizing_tests.mjs",
-    "sanitizing:containers": "node scripts/sanitizing_containers.mjs"
+    "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
+    "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
+    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

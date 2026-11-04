@@ -147,7 +147,7 @@ async fn probe_version_nonzero_exit_fails_with_code() {
         ProbeOutcome::Failed(detail) => {
             assert!(detail.starts_with("exit code 3"), "unexpected: {detail}")
         }
-        other => panic!("unexpected: {other:?}"),
+        other @ ProbeOutcome::Version(_) => panic!("unexpected: {other:?}"),
     }
 }
 
@@ -164,7 +164,7 @@ async fn probe_version_no_token_fails() {
             detail.starts_with("no version in output: hello"),
             "unexpected: {detail}"
         ),
-        other => panic!("unexpected: {other:?}"),
+        other @ ProbeOutcome::Version(_) => panic!("unexpected: {other:?}"),
     }
 }
 
@@ -181,7 +181,7 @@ async fn probe_version_timeout_kills_tree() {
         ProbeOutcome::Failed(detail) => {
             assert!(detail.contains("timed out"), "unexpected: {detail}")
         }
-        other => panic!("unexpected: {other:?}"),
+        other @ ProbeOutcome::Version(_) => panic!("unexpected: {other:?}"),
     }
     assert!(
         started.elapsed() < Duration::from_secs(10),

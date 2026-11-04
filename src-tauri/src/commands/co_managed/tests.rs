@@ -53,7 +53,9 @@ async fn classify_dry_run_without_a_catalog_issues_no_request() {
         ClassifyOutcome::Abstained { reason } => {
             assert!(reason.contains("NoCatalogFile"), "{reason}")
         }
-        other => panic!("a missing catalog must be inert, got {other:?}"),
+        other @ ClassifyOutcome::Classified { .. } => {
+            panic!("a missing catalog must be inert, got {other:?}")
+        }
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
@@ -88,7 +90,9 @@ async fn classify_dry_run_with_a_seeded_secret_creates_no_file_and_issues_no_req
                 );
                 assert!(!reason.contains('/'), "the reason must not carry a path");
             }
-            other => panic!("a seeded secret must abstain, got {other:?}"),
+            other @ ClassifyOutcome::Classified { .. } => {
+                panic!("a seeded secret must abstain, got {other:?}")
+            }
         }
         let entries: Vec<_> = std::fs::read_dir(scratch.path())
             .unwrap()

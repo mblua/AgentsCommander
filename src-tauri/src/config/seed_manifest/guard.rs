@@ -358,9 +358,9 @@ impl ProjectSeedManifestGuard {
     /// edit between the re-read and the write fails the raw-conflict check.
     ///
     /// Only a `ReadOnly { reason: InvalidCanonical, canonical: Some(..) }`
-    /// snapshot is migratable; every other degraded reason (ResourceBound,
-    /// FutureSchema, ExternalEdit, ReadOnlyCanonical, UnsafePath,
-    /// PersistenceFailure) is preserved as-is. Detection keys ONLY on the wire
+    /// snapshot is migratable; every other degraded reason (`ResourceBound`,
+    /// `FutureSchema`, `ExternalEdit`, `ReadOnlyCanonical`, `UnsafePath`,
+    /// `PersistenceFailure`) is preserved as-is. Detection keys ONLY on the wire
     /// pre-parse, never on the sanitized message string.
     pub(crate) fn try_upgrade_v1_to_v2(&mut self) {
         let snapshot = std::mem::replace(
@@ -497,7 +497,7 @@ impl ProjectSeedManifestGuard {
             },
         ) {
             CanonicalSnapshot::Writable { canonical, .. } => canonical,
-            other => {
+            other @ CanonicalSnapshot::ReadOnly { .. } => {
                 // Unreachable: write_canonical leaves the snapshot untouched
                 // on error, so it is still the Writable we just installed.
                 self.snapshot = other;
@@ -832,6 +832,11 @@ impl ProjectSeedManifestGuard {
         ))
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "API del guard existente para cleanup con ownership; conservar interfaz y \
+            flujo/diagnósticos sin rediseñar."
+    )]
     pub(crate) fn cleanup_owned_temp(
         &self,
         temp: &OpenedRegularFile,

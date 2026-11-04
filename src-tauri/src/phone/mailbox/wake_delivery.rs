@@ -23,6 +23,61 @@ use std::sync::Mutex;
 use tauri::Manager;
 use uuid::Uuid;
 
+fn owned_replacement_work(
+    msg: &OutboxMessage,
+) -> Result<crate::session::selection::OwnedReplacementWork, String> {
+    let payload = serde_json::to_value(msg).map_err(|error| error.to_string())?;
+    let work = crate::session::selection::OwnedReplacementWork::OrdinaryOwned {
+        message_id: msg.id.clone(),
+        body: msg.body.clone(),
+        payload: payload.clone(),
+        recipient: msg.to.clone(),
+        request: payload,
+    };
+    Ok(work)
+}
+
+fn owned_replacement_directories(
+    request: &crate::commands::session::OwnedReplacementCreateRequest,
+) -> Result<
+    (
+        crate::path_identity::VerifiedPathIdentity,
+        crate::path_identity::VerifiedPathIdentity,
+    ),
+    String,
+> {
+    let physical = crate::path_identity::verify_directory(Path::new(&request.cwd))
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let replica = teams::strict_wg_replica_anchor_from_cwd(Path::new(&request.cwd))
+        .ok()
+        .flatten()
+        .and_then(|root| crate::path_identity::verify_directory(&root).ok())
+        .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+    Ok((physical, replica))
+}
+
+fn owned_replacement_request(
+    plan: super::notice::ResolvedWakeSpawnPlan,
+    skip_tooling_save: bool,
+) -> (
+    crate::commands::session::OwnedReplacementCreateRequest,
+    super::notice::ResolvedWakeAgentCommand,
+) {
+    let request = crate::commands::session::OwnedReplacementCreateRequest {
+        shell: plan.spawn_shell,
+        shell_args: plan.spawn_args,
+        cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
+        name: Some(plan.session_name),
+        agent_id: plan.resolved_command.agent_id.clone(),
+        agent_label: plan.spawn_label,
+        skip_tooling_save,
+        git_repos: Vec::new(),
+        resolved_spawn: plan.configured_spawn,
+        host_shell: plan.resolved_agent_host_shell,
+    };
+    (request, plan.resolved_command)
+}
+
 async fn owned_snapshot(
     manager: &SessionManager,
     directory: &Path,
@@ -122,7 +177,7 @@ impl MailboxPoller {
                 }
                 _ => {
                     return Ok(std::ops::ControlFlow::Break(
-                        self.reject_message(path, msg, &format!("Unknown action '{}'", action))
+                        self.reject_message(path, msg, &format!("Unknown action '{action}'"))
                             .await,
                     ));
                 }
@@ -142,7 +197,7 @@ impl MailboxPoller {
                 self.reject_message(
                     path,
                     msg,
-                    &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
+                    &format!("Unsupported delivery mode '{mode}'. Valid: wake"),
                 )
                 .await,
             ));
@@ -596,9 +651,7 @@ impl MailboxPoller {
                 return Ok(None);
             }
         }
-        use crate::session::selection::{
-            OwnedReplacementWork, ReplacementAdmissionStep, ResolvedReplacement,
-        };
+        use crate::session::selection::{ReplacementAdmissionStep, ResolvedReplacement};
         let coordinator = app.state::<crate::session::selection::SelectionCoordinator>();
         let manager = app
             .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -612,21 +665,8 @@ impl MailboxPoller {
             .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
         let directory =
             crate::config::config_dir().ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-        let physical = crate::path_identity::verify_directory(Path::new(&request.cwd))
-            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-        let replica = teams::strict_wg_replica_anchor_from_cwd(Path::new(&request.cwd))
-            .ok()
-            .flatten()
-            .and_then(|root| crate::path_identity::verify_directory(&root).ok())
-            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-        let payload = serde_json::to_value(msg).map_err(|error| error.to_string())?;
-        let work = OwnedReplacementWork::OrdinaryOwned {
-            message_id: msg.id.clone(),
-            body: msg.body.clone(),
-            payload: payload.clone(),
-            recipient: msg.to.clone(),
-            request: payload,
-        };
+        let (physical, replica) = owned_replacement_directories(request)?;
+        let work = owned_replacement_work(msg)?;
         let mut prepared = None;
         loop {
             coordinator.wait_for_restore_release().await?;
@@ -718,18 +758,7 @@ impl MailboxPoller {
         }) {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        let request = crate::commands::session::OwnedReplacementCreateRequest {
-            shell: plan.spawn_shell,
-            shell_args: plan.spawn_args,
-            cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
-            name: Some(plan.session_name),
-            agent_id: plan.resolved_command.agent_id.clone(),
-            agent_label: plan.spawn_label,
-            skip_tooling_save: dispatch.1,
-            git_repos: Vec::new(),
-            resolved_spawn: plan.configured_spawn,
-            host_shell: plan.resolved_agent_host_shell,
-        };
+        let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
         let Some(target) = self
             .admit_owned_peer_replacement(app, msg, &request, previous)
             .await?
@@ -777,7 +806,7 @@ impl MailboxPoller {
             response: response.cloned(),
             flags_present: dispatch.1,
             request,
-            resolved_command: plan.resolved_command,
+            resolved_command,
             continuation,
             gate: target.gate,
             exact: Some(target.exact),

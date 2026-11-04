@@ -67,7 +67,7 @@ where
         let temp_path = next_temp_path(path);
         match agent_files::create_root_agent_stage(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
                 return Err(format!(
                     "Failed to create temporary root agent skill file {}: {}",

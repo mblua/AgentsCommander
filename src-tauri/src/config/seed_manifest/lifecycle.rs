@@ -78,6 +78,11 @@ impl ManifestActivationToken {
         Self { _private: () }
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "Presencia del token/capability autoriza la operación aunque no lea campos; \
+            no hacerlo estático."
+    )]
     pub(crate) fn authorize(&self) {}
 }
 
@@ -610,8 +615,6 @@ impl ProjectSeedManifestGuard {
 pub(crate) fn log_record_failure(scope: &str, error: &SeedManifestError) {
     log::warn!(
         "[seed_manifest] target or lifecycle action succeeded but manifest persistence did not \
-            scope={} error={}",
-        scope,
-        error
+            scope={scope} error={error}"
     );
 }

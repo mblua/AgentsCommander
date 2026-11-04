@@ -36,7 +36,7 @@ Coordinators may reply by sending to `agentscommander://root-agent`; their repli
 /// `old_generated` array. Rule R forces the first to change and Rule P3
 /// forces the second not to, so the two are split and the RECOGNIZER reads
 /// this frozen half. Never edit.
-/// Provenance: the d7008b34 blob, root_agent.rs lines 292-306; declaration
+/// Provenance: the d7008b34 blob, `root_agent.rs` lines 292-306; declaration
 /// 956 bytes sha256 17D7303A...E517 (plan 3.12 Table A), value 897 bytes
 /// sha256 FC2164A2...F207 (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.

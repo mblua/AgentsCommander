@@ -37,5 +37,9 @@ pub(crate) fn seek_activity_tail(file: &mut File, position: SeekFrom) -> io::Res
 }
 
 pub(crate) fn read_activity_tail(file: &mut File, bytes: &mut Vec<u8>) -> io::Result<usize> {
+    #[expect(
+        clippy::verbose_file_reads,
+        reason = "Read caller handle at its current cursor and append to buffer"
+    )]
     file.read_to_end(bytes)
 }
