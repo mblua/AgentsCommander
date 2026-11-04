@@ -179,12 +179,8 @@ fn claim_retained_preboundary_input(
     crate::api::message_store::PreparationHeartbeatGuard,
 ) {
     use crate::phone::types::PtyInputSourcePlane as Plane;
-    let injection = enqueue_shared_pty_engine_operation(
-        &store,
-        route,
-        sender,
-        b"preboundary-rejection",
-    );
+    let injection =
+        enqueue_shared_pty_engine_operation(&store, route, sender, b"preboundary-rejection");
     let initial = store
         .query_pty_input_by_injection(&injection)
         .unwrap()
@@ -212,7 +208,10 @@ fn retained_replacement_request(
     original_settings: &AppSettings,
     route: &crate::config::teams::VerifiedPtyInputRoute,
     claimed: &crate::api::message_store::ClaimedPtyInputOperation,
-) -> (String, crate::commands::session::OwnedReplacementCreateRequest) {
+) -> (
+    String,
+    crate::commands::session::OwnedReplacementCreateRequest,
+) {
     let cwd = crate::path_utils::normalize_windows_verbatim_path(
         &route.target.replica_root.to_string_lossy(),
     );
@@ -267,15 +266,9 @@ fn retained_pty_work(
         attempt: claimed.attempt,
         authority_session_id: claimed.authority_session_id.clone(),
         authority_client_id: claimed.authority_client_id.clone(),
-        authority_client_generation: claimed
-            .authority_client_generation
-            .clone(),
-        sender_identity_fingerprint: claimed
-            .sender_identity_fingerprint
-            .clone(),
-        target_identity_fingerprint: claimed
-            .target_identity_fingerprint
-            .clone(),
+        authority_client_generation: claimed.authority_client_generation.clone(),
+        sender_identity_fingerprint: claimed.sender_identity_fingerprint.clone(),
+        target_identity_fingerprint: claimed.target_identity_fingerprint.clone(),
         requested_agent_id: claimed.requested_agent_id.clone(),
     }
 }
@@ -481,8 +474,12 @@ async fn assert_retained_preboundary_outcome(
         injection,
         claimed,
     } = *outcome;
-    let (app, fixture, manager, store) =
-        (env.fixture.app.handle(), env.fixture, &env.manager, &env.store);
+    let (app, fixture, manager, store) = (
+        env.fixture.app.handle(),
+        env.fixture,
+        &env.manager,
+        &env.store,
+    );
     let (directory, publication, backend) = (&env.directory, &env.publication, env.mock());
     let (route, previous, kills, hooks) = (env.route, env.previous, env.kills, &env.hooks);
     let RetainedSnapshot {
@@ -503,13 +500,16 @@ async fn assert_retained_preboundary_outcome(
     );
     assert_eq!(result.reason.map(|reason| reason.code), Some(expected));
     let connection =
-        rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
-            .unwrap();
-    let counts: (i64, i64, i64) = connection.query_row(
-        "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
+        rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3")).unwrap();
+    let counts: (i64, i64, i64) = connection
+        .query_row(
+            "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
         status='retry'),(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
         status='rejected') FROM pty_input_operations WHERE injection_id=?1",
-        [&injection], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            [&injection],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(counts, (claimed.attempt, 0, 1));
     assert_eq!(coordinator.fixture_root_count(), Some(0));
     let mut after_ids: Vec<_> = manager

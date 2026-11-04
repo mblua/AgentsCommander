@@ -365,11 +365,10 @@ type SelfSwitchEvents = Arc<Mutex<Vec<&'static str>>>;
 
 async fn self_switch_idle_turn_free(events: SelfSwitchEvents) -> (bool, bool) {
     use crate::session::selection::acquire_selection_operation_turn;
-    let guard =
-        tokio::time::timeout(Duration::from_secs(5), acquire_selection_operation_turn())
-            .await
-            .expect("the sustained-idle wait must not hold the selection operation turn")
-            .expect("acquire the turn during the idle wait");
+    let guard = tokio::time::timeout(Duration::from_secs(5), acquire_selection_operation_turn())
+        .await
+        .expect("the sustained-idle wait must not hold the selection operation turn")
+        .expect("acquire the turn during the idle wait");
     drop(guard);
     events.lock().unwrap().push("idle:turn-free");
     (true, true)

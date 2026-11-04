@@ -284,11 +284,7 @@ async fn assert_panic_worker_phase1(
     preservation_snapshot
 }
 
-fn probe_panic_worker_sensitivity(
-    refs: &PanicRefs<'_>,
-    scenario_target: &str,
-    sensitivity: u64,
-) {
+fn probe_panic_worker_sensitivity(refs: &PanicRefs<'_>, scenario_target: &str, sensitivity: u64) {
     use crate::pty::manager::ResponseDeliveryProof;
     let PanicRefs {
         tracker,
@@ -375,8 +371,7 @@ fn assert_panic_probe_return(refs: &PanicRefs<'_>, probe_at: std::time::Instant,
     tracker
         .observe_return_success(ReturnDeliveryProof { context }, probe_at)
         .unwrap();
-    let ticket =
-        tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+    let ticket = tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
     if sensitivity == 1 {
         assert!(
             ticket.is_err(),
