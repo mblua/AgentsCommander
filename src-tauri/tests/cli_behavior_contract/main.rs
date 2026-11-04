@@ -675,7 +675,7 @@ fn task_status_invalid_inputs_and_encoded_size_do_not_mutate() {
     let f = TaskStatusFixture::new("room-1-dev-team");
     let id = uuid::Uuid::new_v4().to_string();
     for text in [
-        "".to_owned(),
+        String::new(),
         " \t\n".to_owned(),
         "bad\u{7}".to_owned(),
         "界".repeat(16 * 1024 + 1),

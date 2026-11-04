@@ -381,8 +381,8 @@ pub(crate) fn run(
             let ctx = exit::ExitCtx {
                 detached_set,
                 spec_board_state,
-                session_mgr_for_exit,
                 activity_for_exit,
+                session_mgr_for_exit,
                 coordinator_clocks_for_exit,
                 shutdown_for_exit,
                 selection_coordinator_for_exit,
