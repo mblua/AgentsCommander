@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[test]
 fn both_features_disabled_does_not_spawn_the_thread() {
@@ -55,7 +56,7 @@ async fn disabled_axis_is_skipped_in_the_round() {
     tick(&mut now, &mut wall, 300);
     harness.round(now, wall).await;
 
-    let gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+    let gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
     assert_eq!(gh.count("/actions/runs?"), 0);
     assert!(gh.count("/compare/") > 0, "staleness still runs");
 }
@@ -168,7 +169,10 @@ async fn payload_vectors_are_the_same_length_and_sorted_by_path() {
 
     harness.round(Instant::now(), Local::now()).await;
 
-    let emitted = harness.emitted.lock().unwrap_or_else(|e| e.into_inner());
+    let emitted = harness
+        .emitted
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let payload = emitted.last().expect("payload");
     assert_eq!(payload.repo_paths, vec![first, second]);
     assert_eq!(payload.repo_paths.len(), payload.ci_states.len());
@@ -183,7 +187,7 @@ async fn event_is_gated_on_whole_payload_equality() {
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.ci
             .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
@@ -215,7 +219,7 @@ async fn transition_channel_full_drops_and_keeps_publishing() {
     let second = harness.repo("repo-b");
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci
             .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
@@ -252,7 +256,7 @@ async fn transition_channel_closed_drops_and_keeps_publishing() {
     harness.set_work(std::slice::from_ref(&repo));
     harness.close_transitions();
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.ci
             .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
@@ -292,7 +296,7 @@ async fn ci_transitions_carry_an_empty_base_branch() {
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.ci
             .push_back(Ok(ok_output(&ci_body(&sha_of('a'), &["in_progress"]))));
@@ -340,7 +344,7 @@ async fn ci_transitions_carry_an_empty_base_branch() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .count_repo_info(),
         1,
         "the label is resolved once per nwo: CI needs it to decide suppression"
@@ -365,7 +369,7 @@ async fn base_branch_resolution_walks_the_three_step_chain() {
         );
         harness.set_work(&[repo]);
         {
-            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
             gh.repo_info
                 .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
             gh.compare
@@ -390,7 +394,7 @@ async fn base_branch_resolution_walks_the_three_step_chain() {
         let repo = harness.repo("repo-a");
         harness.set_work(&[repo]);
         {
-            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
             gh.compare
                 .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.compare
@@ -399,7 +403,7 @@ async fn base_branch_resolution_walks_the_three_step_chain() {
         harness
             .git
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .symbolic_ref
             .push_back(Ok("origin/develop".to_string()));
         let mut now = Instant::now();
@@ -419,7 +423,7 @@ async fn base_branch_resolution_walks_the_three_step_chain() {
         let repo = harness.repo("repo-a");
         harness.set_work(&[repo]);
         {
-            let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+            let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
             gh.compare
                 .push_back(Ok(ok_output(&compare_body("identical", 0, 0))));
             gh.compare
@@ -445,14 +449,14 @@ async fn base_branch_is_resolved_once_per_nwo_and_cached() {
     let second = harness.repo("repo-b");
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         for _ in 0..10 {
             gh.compare
                 .push_back(Ok(ok_output(&compare_body("behind", 2, 1))));
         }
     }
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_origin(&first, "git@github.com:mblua/AgentsCommander.git");
         git.set_origin(&second, "https://github.com/mblua/other.git");
     }
@@ -468,7 +472,7 @@ async fn base_branch_is_resolved_once_per_nwo_and_cached() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .count_repo_info(),
         2,
         "exactly one repos/<nwo> call per distinct nwo, for the process lifetime"
@@ -521,7 +525,7 @@ async fn every_round_process_goes_through_the_spawner_seam() {
     let second = harness.repo("repo-b");
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.compare
@@ -534,7 +538,7 @@ async fn every_round_process_goes_through_the_spawner_seam() {
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
     }
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_head_sha(&first, 'a');
         git.set_head_sha(&second, 'b');
         git.set_origin(&first, "git@github.com:mblua/AgentsCommander.git");
@@ -548,13 +552,13 @@ async fn every_round_process_goes_through_the_spawner_seam() {
     let gh_calls = harness
         .gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .calls
         .len();
     let git_calls = harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .calls
         .len();
     assert_eq!(gh_calls, 6, "2 CI + 2 compare + 2 base labels");

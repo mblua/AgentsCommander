@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 /// #2141: a branch with no commits of its own has nothing that a stale base
 /// could invalidate, so the notice is suppressed while the chip still turns.
@@ -10,7 +11,7 @@ async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -54,7 +55,7 @@ async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -78,7 +79,7 @@ async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'b');
     tick(&mut now, &mut wall, 300);
     harness.round(now, wall).await;
@@ -111,7 +112,7 @@ async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -127,7 +128,7 @@ async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'b');
     tick(&mut now, &mut wall, 300);
     harness.round(now, wall).await;
@@ -152,7 +153,7 @@ async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         // `ahead 0/1`, not `identical 0/1`: GitHub answers `ahead` for an
@@ -180,7 +181,7 @@ async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'b');
     tick(&mut now, &mut wall, 300);
     harness.round(now, wall).await;
@@ -203,7 +204,7 @@ async fn carry_over_leaves_the_ci_axis_unknown_on_a_new_sha() {
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -227,11 +228,11 @@ async fn carry_over_leaves_the_ci_axis_unknown_on_a_new_sha() {
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'b');
     tick(&mut now, &mut wall, 300);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.compare
             .push_back(Ok(ok_output(&compare_body("behind", 2, 0))));
         gh.ci.push_back(Err(FailureKind::Other));
@@ -278,14 +279,14 @@ async fn two_live_keys_on_one_branch_never_seed_each_other() {
     publish_branch(&second, "fix/2141", harness.git_state.as_ref());
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_head_sha(&first, 'a');
         git.set_head_sha(&second, 'b');
     }
     let sha_a = sha_of('a');
     let sha_b = sha_of('b');
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         // Round 1: A answers and records `Current`. B's compare fails, so B
@@ -306,7 +307,7 @@ async fn two_live_keys_on_one_branch_never_seed_each_other() {
     drain(&harness);
 
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         // Round 2: A unchanged, B behind with work of its own. B's own history
         // is `None`, so `None -> Stale` is not an edge and B stays quiet —
         // unless it was wrongly seeded with A's `Current`.
@@ -341,7 +342,7 @@ async fn stale_with_a_missing_ahead_by_still_sends_the_notice() {
     harness.set_work(std::slice::from_ref(&repo));
     let no_ahead_by = serde_json::json!({ "status": "behind", "behind_by": 4 }).to_string();
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -376,7 +377,7 @@ async fn stale_on_a_feature_branch_still_sends_the_notice() {
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.compare
@@ -424,7 +425,7 @@ async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
     );
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         // No repo_info and no symbolic-ref answer is queued, so the default
         // branch stays unresolved and the sentinel is the base label; the
         // published branch equals that sentinel, so the sentinel guard is the
@@ -467,7 +468,7 @@ async fn two_rooms_on_one_default_commit_are_one_call_and_no_ci_transition() {
     let second = harness.repo("repo-b");
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.ci
@@ -481,7 +482,7 @@ async fn two_rooms_on_one_default_commit_are_one_call_and_no_ci_transition() {
     let first_round_calls = harness
         .gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .count("/actions/runs?");
     assert_eq!(first_round_calls, 1, "one call for one commit");
 
@@ -496,7 +497,7 @@ async fn two_rooms_on_one_default_commit_are_one_call_and_no_ci_transition() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .count("/actions/runs?"),
         2,
         "one call per round for the shared key"
@@ -524,7 +525,7 @@ async fn backoff_is_per_key_and_per_axis() {
     let second = harness.repo("repo-b");
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         for _ in 0..4 {
             gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         }
@@ -542,7 +543,7 @@ async fn backoff_is_per_key_and_per_axis() {
         );
     }
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_origin(&first, "git@github.com:mblua/failing.git");
         git.set_origin(&second, "git@github.com:mblua/healthy.git");
     }
@@ -557,7 +558,11 @@ async fn backoff_is_per_key_and_per_axis() {
     harness.round(now, wall).await;
     eprintln!(
         "DEBUG calls: {:?}",
-        harness.gh.lock().unwrap_or_else(|e| e.into_inner()).calls
+        harness
+            .gh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
     );
     assert_eq!(
         ci_count(&harness),
@@ -607,7 +612,7 @@ async fn rate_limit_jumps_straight_to_the_cap() {
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.ci.push_back(Ok(ok_output(&ci_body(&sha_of('a'), &[]))));
         gh.ci.push_back(Ok(GhCallOutput {
             stdout: String::new(),
