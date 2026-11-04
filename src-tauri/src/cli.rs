@@ -524,7 +524,7 @@ pub fn flush_outputs() {
 
 /// Builds the outbox request for a plain self-clear.
 fn plain_clear_message(
-    token: String,
+    token: Option<String>,
     sender: &str,
     msg_id: &str,
     request_id: &str,
