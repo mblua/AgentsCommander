@@ -429,7 +429,7 @@ fn split_publication_failure_cuts(path: &std::path::Path, sidecar: &std::path::P
                     directional_sidecar.to_path_buf()
                 },
                 SettingsSaveStage::TempCreate,
-            ))
+            ));
         });
         let result = save_settings_to_path_preserving_project_paths(&candidate, directional_path);
         PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);

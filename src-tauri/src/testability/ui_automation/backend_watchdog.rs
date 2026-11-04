@@ -240,7 +240,7 @@ async fn apply_watchdog_kills<H: BackendWatchdogHost>(
                     kill_results.push(json!({
                         "ok": true,
                         "result": result,
-                    }))
+                    }));
                 }
                 // #1151 - `alreadyPending` keeps its value and type byte-identical so every
                 // existing automation assertion still passes; `reason` is the additive

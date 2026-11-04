@@ -178,7 +178,7 @@ fn p03_loader_reader_first_holds_lock_until_capture_and_decode() {
             *hook.borrow_mut() = Some(Box::new(move |_| {
                 captured_tx.send(()).unwrap();
                 release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-            }))
+            }));
         });
         let result = super::super::load_settings_for_cli_strict_from_path(Some(&reader_path));
         super::super::PROJECT_SOURCE_CAPTURE_HOOK.with(|hook| *hook.borrow_mut() = None);
