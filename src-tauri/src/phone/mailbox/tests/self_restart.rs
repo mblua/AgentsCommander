@@ -706,7 +706,7 @@ async fn self_restart_driver_inject_failure_renames_handoff_back() {
     );
     let leftovers = std::fs::read_dir(temp.path().join("self-clear"))
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
+            rd.filter_map(std::result::Result::ok)
                 .filter(|e| {
                     e.file_name()
                         .to_string_lossy()

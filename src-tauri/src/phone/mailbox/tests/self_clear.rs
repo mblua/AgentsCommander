@@ -526,7 +526,7 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
     let leftover_archives = std::fs::read_dir(temp.path().join("self-clear"))
         .map(|entries| {
             entries
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter(|e| {
                     e.file_name()
                         .to_string_lossy()

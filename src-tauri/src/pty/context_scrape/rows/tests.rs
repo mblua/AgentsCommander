@@ -20,7 +20,7 @@ const TRUNCATED_100: &str = "  Context ████ 10…";
 
 fn extract_with(pattern: &str, rows: &[&str]) -> Option<u8> {
     let compiled = compile(pattern).expect("pattern compiles");
-    let owned: Vec<String> = rows.iter().map(|r| r.to_string()).collect();
+    let owned: Vec<String> = rows.iter().map(std::string::ToString::to_string).collect();
     extract(&compiled, &owned)
 }
 
