@@ -142,8 +142,8 @@ where
         let _reservation = reservation;
         tokio::select! {
             biased;
-            _ = worker_shutdown.cancelled() => {}
-            _ = worker => {}
+            () = worker_shutdown.cancelled() => {}
+            () = worker => {}
         }
     });
     true
@@ -178,7 +178,7 @@ pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
     let pty_targets = Arc::new(PtyWorkerTargets::default());
     loop {
         tokio::select! {
-            _ = shutdown.cancelled() => {
+            () = shutdown.cancelled() => {
                 log::info!("[api-dispatcher] shutdown signal received, stopping");
                 stop_pty_workers(&mut pty_workers, PTY_WORKER_SHUTDOWN_GRACE).await;
                 break;
@@ -314,7 +314,7 @@ where
         };
 
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 store
                     .mark_delivered_offloaded(row.message_id.clone(), chrono::Utc::now())
                     .await?;

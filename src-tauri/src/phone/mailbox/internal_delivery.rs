@@ -144,7 +144,7 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         tokio::select! {
             biased;
-            _ = cancellation.cancelled() => {
+            () = cancellation.cancelled() => {
                 return Err(
                     "Context alert delivery was canceled during spawned-session settle".to_string(),
                 );
@@ -288,7 +288,7 @@ impl MailboxPoller {
                     })?;
                     let blocked = tokio::select! {
                         biased;
-                        _ = cancellation.cancelled() => {
+                        () = cancellation.cancelled() => {
                             return Err(
                                 "Context alert delivery was canceled before live injection"
                                     .to_string(),
@@ -325,13 +325,13 @@ impl MailboxPoller {
                     };
                     tokio::select! {
                         biased;
-                        _ = cancellation.cancelled() => {
+                        () = cancellation.cancelled() => {
                             return Err(
                                 "Context alert delivery was canceled during live settle"
                                     .to_string(),
                             );
                         }
-                        _ = settle => {}
+                        () = settle => {}
                     }
                     if cancellation.is_cancelled() {
                         return Err(
