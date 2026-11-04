@@ -194,17 +194,9 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
     let temp = tempfile::tempdir().expect("tempdir");
     let current = temp.path().join("current");
     std::fs::create_dir_all(&current).expect("create current");
-    let other = temp.path().join("other");
-    let dormant_cwd = other
-        .join("wg-1")
-        .join("__agent_dormant")
-        .to_string_lossy()
-        .to_string();
-    let live_cwd = other
-        .join("wg-1")
-        .join("__agent_live")
-        .to_string_lossy()
-        .to_string();
+    let wg = temp.path().join("other").join("wg-1");
+    let dormant_cwd = wg.join("__agent_dormant").to_string_lossy().to_string();
+    let live_cwd = wg.join("__agent_live").to_string_lossy().to_string();
     let mgr = SessionManager::new();
     let dormant = mgr
         .create_session(
