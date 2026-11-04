@@ -347,7 +347,7 @@ impl RemoteSweeper {
             staleness_dial,
         };
         for (key, outcome) in outcomes {
-            let indices = groups.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+            let indices = groups.get(&key).map_or(&[][..], Vec::as_slice);
             let staleness = outcome.staleness;
             self.apply_ci(&key, outcome, indices, &ctx);
             self.apply_staleness(&key, staleness, indices, &ctx);
