@@ -272,7 +272,7 @@ impl ResponseCloseState {
                 inner
                     .create_owners
                     .get(&policy.member.target)
-                    .map_or(0, |owners| owners.len())
+                    .map_or(0, std::collections::HashMap::len)
             }),
             policy.registered_at.map(|at| now.saturating_duration_since(at).as_millis()),
             policy.success_at.map(|at| now.saturating_duration_since(at).as_millis()),

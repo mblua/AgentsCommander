@@ -124,7 +124,7 @@ pub(super) fn marker_only_block(marker: &FreezeMarker) -> Vec<String> {
 pub(super) fn summary_line(entries: &[(String, &'static str)]) -> String {
     let body = entries
         .iter()
-        .map(|(label, tag)| format!("{}={}", label, tag))
+        .map(|(label, tag)| format!("{label}={tag}"))
         .collect::<Vec<_>>()
         .join(" ");
     format!(

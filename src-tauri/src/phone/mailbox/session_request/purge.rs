@@ -28,7 +28,7 @@ pub(crate) fn peer_fqns(wg_dir: &Path, agent_name: &str, project: &str, room: &s
             if !mailbox_disk::mailbox_path_is_dir(&path) {
                 continue;
             }
-            peer_fqns.push(format!("{}:{}/{}", project, room, agent));
+            peer_fqns.push(format!("{project}:{room}/{agent}"));
         }
     }
     peer_fqns.sort();

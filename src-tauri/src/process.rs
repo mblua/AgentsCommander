@@ -12,7 +12,7 @@ pub(crate) fn is_running(pid: u32) -> bool {
     if pid == process::id() {
         return true;
     }
-    let filter = format!("PID eq {}", pid);
+    let filter = format!("PID eq {pid}");
     // #992 - reachable from the GUI process (Tauri get_agency_templates_status /
     // update_agency_templates -> CacheLock::acquire -> recover_stale_lock_if_possible),
     // which owns no console: without the flag Windows pops a Windows Terminal tab for

@@ -128,7 +128,7 @@ pub(crate) fn parse_settings_with_startup(
         log::warn!("{reason}");
     }
     let value: Value = serde_json::from_str(contents)
-        .map_err(|e| format!("Failed to parse settings file: {}", e))?;
+        .map_err(|e| format!("Failed to parse settings file: {e}"))?;
     // One read of the agents file serves both the physical-group census and the
     // layer-30 merge; the merge label is the settings path, as before.
     let agents = io_path.map(|io| {
@@ -577,8 +577,8 @@ pub(crate) fn settings_path() -> Option<PathBuf> {
     super::super::config_dir().map(|d| d.join(SETTINGS_FILE_NAME))
 }
 
-/// Load settings from the app config directory (see config_dir()), falling back to defaults.
-/// Auto-generates a root_token if missing and persists it.
+/// Load settings from the app config directory (see `config_dir()`), falling back to defaults.
+/// Auto-generates a `root_token` if missing and persists it.
 pub fn load_settings() -> AppSettings {
     let path = match settings_path() {
         Some(p) => p,
@@ -809,8 +809,7 @@ pub(crate) fn persist_loaded_settings_migrations(
                 Err(e) => {
                     log::error!(
                         "Failed to persist settings v2 migration backup; leaving settings.json \
-                            untouched: {}",
-                        e
+                            untouched: {e}"
                     );
                     false
                 }
