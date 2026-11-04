@@ -32,7 +32,7 @@ pub(super) fn resolve_ac_root(project_path: &Path) -> Result<PathBuf, Vec<CliErr
     documents::canonical_experiment_role(&ac_root).map_err(|e| {
         vec![err(
             "workspace_not_found",
-            format!("Failed to canonicalize Project AC Root: {}", e),
+            format!("Failed to canonicalize Project AC Root: {e}"),
             None,
         )]
     })
@@ -65,7 +65,7 @@ pub(super) fn load_variant_metadata(
     let path = loaded
         .experiment_dir
         .join("variants")
-        .join(format!("{}.json", variant));
+        .join(format!("{variant}.json"));
     reject_link_or_reparse(&path, "variant_metadata_link_or_reparse", Some(variant)).map_err(
         |errors| {
             errors
@@ -386,7 +386,7 @@ pub(super) fn create_run_workgroup_dirs(
     let sanitized_experiment = sanitize_name(experiment).map_err(|e| {
         vec![err(
             "experiment_name_invalid",
-            format!("Experiment name cannot be used for room: {}", e),
+            format!("Experiment name cannot be used for room: {e}"),
             None,
         )]
     })?;
@@ -408,17 +408,13 @@ pub(super) fn create_run_workgroup_dirs(
     directories::create_experiment_directory(&path.join("messaging")).map_err(|e| {
         vec![err_at_path(
             "run_artifact_write_failed",
-            format!("Failed to create messaging dir: {}", e),
+            format!("Failed to create messaging dir: {e}"),
             &path.join("messaging"),
         )]
     })?;
     atomic_write_bytes(
         &path.join("TASK.md"),
-        format!(
-            "# Role Experiment Run\n\nExperiment: {}\nRun: {}\n",
-            experiment, run_id
-        )
-        .as_bytes(),
+        format!("# Role Experiment Run\n\nExperiment: {experiment}\nRun: {run_id}\n").as_bytes(),
     )?;
     for variant in variants {
         let replica = path.join(format!("__agent_{}", variant.agent_name));
@@ -438,7 +434,7 @@ pub(super) fn create_run_workgroup_dirs(
             directories::create_experiment_directory(&replica.join(child)).map_err(|e| {
                 vec![err_at_path(
                     "run_artifact_write_failed",
-                    format!("Failed to create replica {}: {}", child, e),
+                    format!("Failed to create replica {child}: {e}"),
                     &replica.join(child),
                 )]
             })?;
@@ -489,14 +485,14 @@ fn next_workgroup_number(ac_root: &Path) -> Result<u32, Vec<CliError>> {
             Err(e) => {
                 return std::ops::ControlFlow::Break(vec![err(
                     "workspace_not_found",
-                    format!("Failed to read Project AC Root entry: {}", e),
+                    format!("Failed to read Project AC Root entry: {e}"),
                     None,
                 )])
             }
         };
         let name = name.to_string_lossy().to_string();
         if let Some(rest) = crate::config::entity_prefix::strip_entity_prefix(&name) {
-            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
             if let Ok(n) = digits.parse::<u32>() {
                 max = max.max(n);
             }
@@ -523,7 +519,7 @@ pub(super) fn validate_workgroup_under_ac_root(
     let ac_root = documents::canonical_experiment_role(ac_root).map_err(|e| {
         vec![err_at_path(
             "workspace_not_found",
-            format!("Failed to canonicalize Project AC Root: {}", e),
+            format!("Failed to canonicalize Project AC Root: {e}"),
             ac_root,
         )]
     })?;
@@ -532,7 +528,7 @@ pub(super) fn validate_workgroup_under_ac_root(
     let canonical = documents::canonical_experiment_role(&path).map_err(|e| {
         vec![err_at_path(
             "run_artifact_mismatch",
-            format!("Failed to canonicalize room: {}", e),
+            format!("Failed to canonicalize room: {e}"),
             &path,
         )]
     })?;

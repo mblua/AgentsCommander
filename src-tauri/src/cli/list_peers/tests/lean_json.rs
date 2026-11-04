@@ -4,11 +4,10 @@ use super::*;
 fn list_peers_lean_subcommand_is_registered() {
     use clap::CommandFactory;
     let cmd = crate::cli::Cli::command();
-    let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+    let names: Vec<&str> = cmd.get_subcommands().map(clap::Command::get_name).collect();
     assert!(
         names.contains(&"list-peers-lean"),
-        "list-peers-lean should be a registered subcommand; got: {:?}",
-        names
+        "list-peers-lean should be a registered subcommand; got: {names:?}"
     );
 }
 
@@ -45,12 +44,7 @@ fn lean_json_keeps_essential_fields() {
         "\"teams\":",
         "\"roleSummary\":",
     ] {
-        assert!(
-            json.contains(kept),
-            "lean JSON missing {} — got {}",
-            kept,
-            json
-        );
+        assert!(json.contains(kept), "lean JSON missing {kept} — got {json}");
     }
 }
 
@@ -70,9 +64,7 @@ fn lean_json_omits_verbose_fields() {
     ] {
         assert!(
             !json.contains(forbidden),
-            "lean JSON must not contain {} — got {}",
-            forbidden,
-            json
+            "lean JSON must not contain {forbidden} — got {json}"
         );
     }
 }

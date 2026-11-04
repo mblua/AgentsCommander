@@ -52,7 +52,7 @@ fn run_child(name: &str, case: &str, root_absent: bool) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x0800_0000);
     }
     let mut owner = RootChild {
         process: command.spawn().unwrap(),

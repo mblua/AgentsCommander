@@ -96,8 +96,7 @@ fn role_summary_is_omitted_from_json_when_empty() {
     let json = serde_json::to_string(&lean).unwrap();
     assert!(
         !json.contains("\"roleSummary\":"),
-        "roleSummary must be omitted when empty — got {}",
-        json
+        "roleSummary must be omitted when empty — got {json}"
     );
 }
 

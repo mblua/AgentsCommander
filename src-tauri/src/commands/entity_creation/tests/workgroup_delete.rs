@@ -29,12 +29,15 @@ fn try_atomic_delete_wg_removes_clean_directory() {
     assert!(
         orphans.is_empty(),
         "no .deleting-* orphan should remain after a clean delete; found {:?}",
-        orphans.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        orphans
+            .iter()
+            .map(std::fs::DirEntry::file_name)
+            .collect::<Vec<_>>()
     );
 }
 
 /// Other-error path: deleting a nonexistent WG dir surfaces as
-/// `WgDeleteOutcome::Other` (NotFound), NOT as `Blocked`.
+/// `WgDeleteOutcome::Other` (`NotFound`), NOT as `Blocked`.
 #[test]
 fn try_atomic_delete_wg_classifies_missing_dir_as_other() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -82,8 +85,8 @@ fn try_atomic_delete_wg_reports_partial_orphan_when_remove_fails() {
             assert!(error.to_string().contains("forced remove failure"));
         }
         WgDeleteOutcome::Deleted => panic!("remove failure cannot be Deleted"),
-        WgDeleteOutcome::Blocked(e) => panic!("remove failure cannot be Blocked: {}", e),
-        WgDeleteOutcome::Other(e) => panic!("remove failure cannot be Other: {}", e),
+        WgDeleteOutcome::Blocked(e) => panic!("remove failure cannot be Blocked: {e}"),
+        WgDeleteOutcome::Other(e) => panic!("remove failure cannot be Other: {e}"),
     }
 }
 
@@ -229,7 +232,7 @@ async fn delete_workgroup_dir_backend_returns_blockers_json() {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        const FILE_SHARE_READ: u32 = 0x00000001;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let wg_dir = tmp.path().join("wg-1-test");
@@ -248,7 +251,7 @@ async fn delete_workgroup_dir_backend_returns_blockers_json() {
             .expect_err("blocked delete should return blockers json");
         let json = err
             .strip_prefix("BLOCKERS:")
-            .unwrap_or_else(|| panic!("expected BLOCKERS prefix, got {}", err));
+            .unwrap_or_else(|| panic!("expected BLOCKERS prefix, got {err}"));
         let report: serde_json::Value = serde_json::from_str(json).expect("blockers json");
         assert_eq!(report["workgroup"], "wg-1-test");
         assert!(!report["rawDeleteError"]
@@ -268,7 +271,7 @@ async fn delete_workgroup_dir_backend_returns_blockers_json() {
 fn try_atomic_delete_wg_blocked_with_restrictive_share_mode() {
     use std::os::windows::fs::OpenOptionsExt;
     // FILE_SHARE_READ only — explicitly NO FILE_SHARE_DELETE.
-    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let wg_dir = tmp.path().join("wg-1-test");
@@ -333,7 +336,7 @@ fn temp_name_format_dodges_workgroup_filter() {
 }
 
 /// `is_rename_blocked_by_handle` matches `ERROR_ACCESS_DENIED` (5).
-/// MoveFileEx returns 5 — not 32 — when an open handle on a descendant
+/// `MoveFileEx` returns 5 — not 32 — when an open handle on a descendant
 /// lacks `FILE_SHARE_DELETE`. Empirical, verified by the
 /// `try_atomic_delete_wg_blocked_with_restrictive_share_mode` test below.
 #[cfg(windows)]
@@ -355,13 +358,12 @@ fn is_rename_blocked_by_handle_matches_file_in_use_codes() {
         let e = std::io::Error::from_raw_os_error(code);
         assert!(
             is_rename_blocked_by_handle(&e),
-            "os error {} must classify as a rename blocker",
-            code
+            "os error {code} must classify as a rename blocker"
         );
     }
 }
 
-/// `is_rename_blocked_by_handle` does NOT match unrelated errors. NotFound
+/// `is_rename_blocked_by_handle` does NOT match unrelated errors. `NotFound`
 /// (2) is the canonical legitimate non-blocker error path.
 #[cfg(windows)]
 #[test]
