@@ -161,7 +161,7 @@ pub(crate) fn initialize_catalog_under_lock(
                     if scope == InitScope::Project {
                         match migrate_legacy(paths, MIGRATION_SOURCE_PROJECT, &paths.base, &bytes) {
                             Ok(published_at) => {
-                                outcome.published_at = published_at.or(outcome.published_at)
+                                outcome.published_at = published_at.or(outcome.published_at);
                             }
                             Err(reason) => outcome.warnings.push(catalog_diagnostic(
                                 REPORT_CODE_MIGRATION_CONFLICT,

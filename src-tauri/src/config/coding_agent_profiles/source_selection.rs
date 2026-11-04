@@ -116,7 +116,7 @@ fn discover_authoritative_source_roots(
     for candidate in candidates {
         match profile_path_symlink_metadata(&candidate) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                witness.slots.push((candidate, false))
+                witness.slots.push((candidate, false));
             }
             Err(error) => return Err(fail(error)),
             Ok(metadata) => {
