@@ -557,7 +557,7 @@ async fn typed_target_registration_preserves_fresh_disk_projects_over_stale_stat
 
 #[cfg(windows)]
 #[tokio::test]
-async fn new_project_compensation_failure_reports_error_without_publishing_candidate() {
+async fn new_project_compensation_failure_reports_error_and_keeps_last_written_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings_path = temp.path().join("settings.json");
     let sidecar = settings_path.with_file_name("project-paths.json");
@@ -590,9 +590,10 @@ async fn new_project_compensation_failure_reports_error_without_publishing_candi
     assert!(error.contains("retry the operation"));
     assert!(error.contains("failed to roll back project registration settings:"));
     let live = state.read().await;
-    assert!(
-        live.project_paths.is_empty(),
-        "candidate must stay unpublished"
+    assert_eq!(live.project_paths.len(), 1);
+    assert_eq!(
+        crate::config::projects::normalize_for_compare(&live.project_paths[0]),
+        crate::config::projects::normalize_for_compare(&project.to_string_lossy())
     );
     let persistence_error = live.project_paths_persistence_error.as_ref().unwrap();
     assert!(error.contains(persistence_error));
