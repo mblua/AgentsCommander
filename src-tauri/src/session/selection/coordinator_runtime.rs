@@ -25,7 +25,7 @@ use super::transaction::SelectionTransaction;
 use super::turn::IN_SELECTION_WORKER;
 use super::{
     ConditionalResponseClose, CoordinatorInner, CoordinatorJob, LifecycleAdmission,
-    LifecycleExecutor, RestartJobRequest, RootJobRequest, SelectionCoordinator,
+    LifecycleExecutor, LifecycleLease, RestartJobRequest, RootJobRequest, SelectionCoordinator,
 };
 
 impl SelectionCoordinator {
@@ -303,50 +303,25 @@ impl SelectionCoordinator {
                 return (Err(error), true);
             }
         }
-        let mut root_directory = Self::completed_root_directory(&owner);
+        let root_directory = Self::completed_root_directory(&owner);
         let (requested, root_request) = match &owner.descriptor {
             OwnedReplacementDescriptor::EntryRestart(request) => (Some(request.session_id), false),
             OwnedReplacementDescriptor::EntryRoot(_) => (None, true),
             OwnedReplacementDescriptor::Replacement(_) => return std::future::pending().await,
         };
-        let authority = loop {
-            if let Err(error) = self.wait_for_restore_release().await {
-                return (Err(error), true);
-            }
-            if self.inner.shutdown.is_cancelled() {
-                return (
-                    Err(SelectionCoordinatorError::Unavailable.to_string()),
-                    true,
-                );
-            }
-            let admission = tokio::select! {
-                biased;
-                () = self.inner.shutdown.cancelled() => {
-                    return (Err(SelectionCoordinatorError::Unavailable.to_string()), true);
-                }
-                admission = executor.prepare(
-                    &transaction, owner.operation, requested, root_request,
-                    root_directory.as_deref(),
-                ) => admission,
-            };
-            match admission {
-                Ok(LifecycleAdmission::Ready(authority)) => break authority,
-                Ok(LifecycleAdmission::Waiting) => {
-                    // Every failed probe has dropped its own stripe/exact/claim.
-                    tokio::task::yield_now().await;
-                }
-                Ok(LifecycleAdmission::NeedsRootDirectory) => {
-                    let effect = Self::pending_root_directory_effect(&owner, executor_nonce);
-                    let Some(effect) = effect else {
-                        return std::future::pending().await;
-                    };
-                    match executor.ensure_root_directory(effect) {
-                        Ok(path) => root_directory = Some(path),
-                        Err(error) => return (Err(error), true),
-                    }
-                }
-                Err(error) => return (Err(error), true),
-            }
+        let authority = match self
+            .admit_lifecycle_entry(
+                &transaction,
+                &owner,
+                executor_nonce,
+                &executor,
+                (requested, root_request),
+                root_directory,
+            )
+            .await
+        {
+            Ok(authority) => authority,
+            Err(error) => return (Err(error), true),
         };
         if let Ok(mut state) = owner.state.lock() {
             state.claim_reached = executor.has_claim(&authority);
@@ -395,6 +370,48 @@ impl SelectionCoordinator {
                 // Lost internal outcome has no public fabricated result or retry.
                 Self::retain_ambiguous_entry(&owner);
                 std::future::pending().await
+            }
+        }
+    }
+
+    async fn admit_lifecycle_entry<T>(
+        &self,
+        transaction: &T,
+        owner: &Arc<ReplacementOwner>,
+        executor_nonce: Uuid,
+        executor: &Arc<dyn LifecycleExecutor<T>>,
+        (requested, root_request): (Option<Uuid>, bool),
+        mut root_directory: Option<String>,
+    ) -> Result<LifecycleLease, String> {
+        loop {
+            self.wait_for_restore_release().await?;
+            if self.inner.shutdown.is_cancelled() {
+                return Err(SelectionCoordinatorError::Unavailable.to_string());
+            }
+            let admission = tokio::select! {
+                biased;
+                () = self.inner.shutdown.cancelled() => {
+                    return Err(SelectionCoordinatorError::Unavailable.to_string());
+                }
+                admission = executor.prepare(
+                    transaction, owner.operation, requested, root_request,
+                    root_directory.as_deref(),
+                ) => admission,
+            };
+            match admission {
+                Ok(LifecycleAdmission::Ready(authority)) => return Ok(authority),
+                Ok(LifecycleAdmission::Waiting) => {
+                    // Every failed probe has dropped its own stripe/exact/claim.
+                    tokio::task::yield_now().await;
+                }
+                Ok(LifecycleAdmission::NeedsRootDirectory) => {
+                    let effect = Self::pending_root_directory_effect(owner, executor_nonce);
+                    let Some(effect) = effect else {
+                        return std::future::pending().await;
+                    };
+                    root_directory = Some(executor.ensure_root_directory(effect)?);
+                }
+                Err(error) => return Err(error),
             }
         }
     }
