@@ -120,6 +120,11 @@ impl WebOperations for tauri::AppHandle {
             .inner()
     }
 
+    fn preflight_state(&self) -> Option<Arc<crate::commands::session::PreflightState>> {
+        self.try_state::<Arc<crate::commands::session::PreflightState>>()
+            .map(|state| state.inner().clone())
+    }
+
     fn restore(&self) -> Option<&Arc<crate::app_state::RestoreInProgress>> {
         self.try_state::<Arc<crate::app_state::RestoreInProgress>>()
             .map(|state| state.inner())

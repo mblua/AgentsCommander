@@ -45,6 +45,11 @@ import TrashIcon from "./TrashIcon";
 import { reorderedIds } from "./settings/agentReorderDnd";
 import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { GripIcon } from "./settings/GripIcon";
+import { PreflightFields } from "./settings/PreflightFields";
+import { PreflightTestPanel } from "./settings/PreflightTestPanel";
+import {
+  TIMEOUT_SAVE_ERROR, isTimeoutKeyOfAgent, parseTimeoutInput, timeoutKey,
+} from "./settings/preflightModel";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import AgentHelpTipsModal from "./AgentHelpTipsModal";
@@ -921,6 +926,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
+  // #3516 - invalid preflight timeout text by timeoutKey(); a present key blocks Save.
+  const [preflightTimeoutDrafts, setPreflightTimeoutDrafts] =
+    createStore<Record<string, string>>({});
+  const [preflightTest, setPreflightTest] = createSignal<
+    { agentId: string; letter: string | null; opener: HTMLElement } | null
+  >(null);
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
 
   const apiServerChecked = () =>
@@ -1320,6 +1331,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         setSettings("data", nextSettings);
         setModalSeed(cloneSettings(appSettingsOnly(loaded)));
       }
+      dropPreflightTimeoutDrafts(() => true);
     }
     const resultingAgents = settings.data?.agents ?? [];
     if (previousActiveId !== null) {
@@ -1590,6 +1602,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const nextSettings = cloneSettings(appSettingsOnly(loaded));
       if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
       setSettings("data", nextSettings);
+      dropPreflightTimeoutDrafts(() => true);
       const loadedSeed = cloneSettings(appSettingsOnly(loaded));
       setModalSeed(loadedSeed);
       setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
@@ -1812,6 +1825,77 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }, WATCHER_PREVIEW_DEBOUNCE_MS);
     onCleanup(() => clearTimeout(timer));
   });
+
+  // #3516 - preflight writers. Each marks the draft dirty first, so a settings
+  // refetch keeps the edit; an empty command or timeout removes the key.
+  const dropPreflightTimeoutDrafts = (match: (key: string) => boolean) =>
+    setPreflightTimeoutDrafts(produce((drafts) => {
+      for (const key of Object.keys(drafts)) if (match(key)) delete drafts[key];
+    }));
+  const writePreflightTimeout = (
+    key: string,
+    text: string,
+    write: (value: number | undefined) => void,
+  ) => {
+    setDraftDirty(true);
+    const parsed = parseTimeoutInput(text);
+    if (!parsed.ok) {
+      setPreflightTimeoutDrafts(key, text);
+      return;
+    }
+    dropPreflightTimeoutDrafts((candidate) => candidate === key);
+    write(parsed.value);
+  };
+  const writeAgentField = (agentId: string, edit: (agent: AgentConfig) => void) => {
+    const index = settings.data?.agents.findIndex((agent) => agent.id === agentId) ?? -1;
+    if (index >= 0) setSettings("data", "agents", index, produce(edit));
+  };
+  const writeCellField = (
+    agentId: string,
+    letter: string,
+    edit: (cell: ProfileCellConfig) => void,
+  ) => {
+    const cell = { ...(profileCell(agentId, letter) ?? emptyProfileCell()) };
+    edit(cell);
+    setProfileCell(agentId, letter, cell);
+  };
+  const assignPreflight = (target: AgentConfig | ProfileCellConfig, text: string) => {
+    if (text.trim() === "") delete target.preflight;
+    else target.preflight = text;
+  };
+  const assignPreflightTimeout = (
+    target: AgentConfig | ProfileCellConfig,
+    value: number | undefined,
+  ) => {
+    if (value === undefined) delete target.preflightTimeoutSeconds;
+    else target.preflightTimeoutSeconds = value;
+  };
+  const setAgentPreflight = (agentId: string, text: string) => {
+    setDraftDirty(true);
+    writeAgentField(agentId, (agent) => assignPreflight(agent, text));
+  };
+  const setAgentPreflightTimeout = (agentId: string, text: string) =>
+    writePreflightTimeout(timeoutKey(agentId, null), text, (value) =>
+      writeAgentField(agentId, (agent) => assignPreflightTimeout(agent, value)));
+  const setCellPreflight = (agentId: string, letter: string, text: string) => {
+    setDraftDirty(true);
+    writeCellField(agentId, letter, (cell) => assignPreflight(cell, text));
+  };
+  const setCellPreflightTimeout = (agentId: string, letter: string, text: string) =>
+    writePreflightTimeout(timeoutKey(agentId, letter), text, (value) =>
+      writeCellField(agentId, letter, (cell) => assignPreflightTimeout(cell, value)));
+  // A tracked read: hasOwnProperty on a store proxy does not subscribe.
+  const hasPreflightTimeoutDraft = (key: string) => preflightTimeoutDrafts[key] !== undefined;
+  const preflightTimeoutText = (key: string, saved: number | undefined): string => {
+    if (hasPreflightTimeoutDraft(key)) return preflightTimeoutDrafts[key] ?? "";
+    return saved === undefined ? "" : String(saved);
+  };
+  const closePreflightTest = () => {
+    const opener = preflightTest()?.opener;
+    setPreflightTest(null);
+    const fallback = document.querySelector<HTMLElement>('[data-ac-testid="settings.cancel"]');
+    (opener?.isConnected ? opener : fallback)?.focus();
+  };
 
   const updateAgent = (
     index: number,
@@ -2076,6 +2160,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setProfileCellEnvRows(produce((draft) => {
       for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
     }));
+    dropPreflightTimeoutDrafts((key) => key.startsWith("cell:") && key.endsWith(suffix));
   };
 
   // #2057 (D5) - empties this one agent's cell and label for `letter` so the
@@ -2104,6 +2189,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setProfileCellEnvRows(produce((draft) => {
       delete draft[key];
     }));
+    const timeout = timeoutKey(agentId, letter);
+    dropPreflightTimeoutDrafts((candidate) => candidate === timeout);
   };
 
   const updateProfileCellCommand = (agentId: string, letter: string, text: string) => {
@@ -2218,6 +2305,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const removed = settings.data.agents[index];
     setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
     if (removed) {
+      dropPreflightTimeoutDrafts((key) => isTimeoutKeyOfAgent(key, removed.id));
       pendingQuotaSeed.delete(removed.id);
       if (activeAgentId() === removed.id) setActiveAgentId(null);
       if (leftRailId() === removed.id) setLeftRailId(null);
@@ -2401,6 +2489,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     for (const [key, error] of Object.entries(profileCellErrors)) {
       if (error) return `Profile cell ${key}: ${error}`;
     }
+    if (Object.keys(preflightTimeoutDrafts).length > 0) return TIMEOUT_SAVE_ERROR;
     return validateProfileCells(settings.data.codingAgentProfiles.profilesByAgent);
   };
 
@@ -2643,6 +2732,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // #3516 - the open preflight test panel owns Escape (second guard).
+    if (preflightTest()) return;
     if (e.key === "Escape") closeSettings();
   };
 
@@ -4087,6 +4178,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             >
               Applies to every Coding Agent using this command.
             </div>
+            <PreflightFields
+              level="agent"
+              command={agent.preflight}
+              timeoutText={preflightTimeoutText(
+                timeoutKey(agent.id, null), agent.preflightTimeoutSeconds)}
+              timeoutInvalid={hasPreflightTimeoutDraft(timeoutKey(agent.id, null))}
+              onCommand={(value) => setAgentPreflight(agent.id, value)}
+              onTimeoutText={(text) => setAgentPreflightTimeout(agent.id, text)}
+              onTimeoutReset={() => setAgentPreflightTimeout(agent.id, "")}
+              onTest={(opener) => setPreflightTest({ agentId: agent.id, letter: null, opener })}
+              testid={`settings.agentRow.${i()}.preflight`}
+            />
             <Show when={containerOptionsEnabled()}>
               <label class="settings-field">
                 <span class="settings-label">Runtime</span>
@@ -4890,6 +4993,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               launch; the backend validates the result.
             </div>
           </Show>
+          <PreflightFields
+            level="profile"
+            command={profileCell(agent.id, letter)?.preflight}
+            timeoutText={preflightTimeoutText(timeoutKey(agent.id, letter),
+              profileCell(agent.id, letter)?.preflightTimeoutSeconds)}
+            timeoutInvalid={hasPreflightTimeoutDraft(timeoutKey(agent.id, letter))}
+            onCommand={(value) => setCellPreflight(agent.id, letter, value)}
+            onTimeoutText={(text) => setCellPreflightTimeout(agent.id, letter, text)}
+            onTimeoutReset={() => setCellPreflightTimeout(agent.id, letter, "")}
+            onTest={(opener) => setPreflightTest({ agentId: agent.id, letter, opener })}
+            testid={`${cardId}.preflight`}
+          />
 
           <div
             class="settings-profile-env"
@@ -5613,6 +5728,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <Show when={activeTab() === "watchers"}>{renderWatchersTab()}</Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
+            </Show>
+            <Show when={preflightTest()} keyed>
+              {(test) => (
+                <PreflightTestPanel
+                  agentId={test.agentId}
+                  letter={test.letter}
+                  draft={settings.data!}
+                  timeoutDraftPending={Object.keys(preflightTimeoutDrafts)
+                    .some((key) => isTimeoutKeyOfAgent(key, test.agentId))}
+                  onClose={closePreflightTest}
+                />
+              )}
             </Show>
           </div>
         </Show>

@@ -13,7 +13,7 @@ use portable_pty::{native_pty_system, PtySize};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::backend::{BackendSpawnSpec, PreflightLaunch, PreflightLaunchRequest, PtyBackend};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
@@ -30,6 +30,7 @@ mod git_guard;
 mod instance;
 mod launch;
 mod liveness;
+mod preflight;
 mod reader;
 
 use blocking_spawn::spawn_blocking_cancel_safe;
@@ -574,6 +575,13 @@ impl LocalProcessBackend {
 impl PtyBackend for LocalProcessBackend {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn prepare_preflight_launch(
+        &self,
+        r: PreflightLaunchRequest,
+    ) -> Result<PreflightLaunch, AppError> {
+        preflight::prepare_preflight_launch(self, r)
     }
 
     fn spawn(

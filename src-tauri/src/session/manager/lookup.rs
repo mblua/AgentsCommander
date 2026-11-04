@@ -335,6 +335,19 @@ impl SessionManager {
             .collect()
     }
 
+    /// #3516 - preflight-test exclusion only: the working directory of every non-`Exited`
+    /// row in `order`, pending creates included (a launch pre-creates its row as pending).
+    pub async fn working_dirs_including_pending(&self) -> Vec<String> {
+        let state = self.state.read().await;
+        state
+            .order
+            .iter()
+            .filter_map(|id| state.sessions.get(id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .map(|session| session.working_directory.clone())
+            .collect()
+    }
+
     /// Find a session by its display name. Returns its UUID if found.
     pub async fn find_by_name(&self, name: &str) -> Option<Uuid> {
         let state = self.state.read().await;

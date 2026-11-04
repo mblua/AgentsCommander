@@ -49,11 +49,19 @@ pub fn raw_merged_profile_env(
 
 /// #2431 - the identity of one profile cell: the single definition of what a
 /// cell's digest is over. The spawn path and later producers/matchers call this.
+/// #3516 - a configured preflight chain appends its frame; an empty chain keeps
+/// the legacy `profile_content_hash` bytes.
 pub fn cell_identity(agent: &AgentConfig, cell: &ProfileCellConfig) -> String {
-    profile_content_hash(
-        &compose_effective_command(&agent.command, &cell.command),
-        &raw_merged_profile_env(agent, &cell.env),
-    )
+    let command = compose_effective_command(&agent.command, &cell.command);
+    let env = raw_merged_profile_env(agent, &cell.env);
+    match super::preflight::preflight_identity_frame(agent, cell) {
+        None => profile_content_hash(&command, &env),
+        Some(frame) => {
+            let mut buf = profile_hash_preimage(&command, &env);
+            buf.push_str(&frame);
+            hex16(&buf)
+        }
+    }
 }
 
 /// #2431 - the canonical command TEXT: executable reduced by
@@ -167,7 +175,11 @@ pub(crate) fn profile_hash_preimage(command: &str, env: &BTreeMap<String, String
 /// #2431 - canonicalized inside `profile_hash_preimage` (portable across OSes and
 /// path shapes); tag `v2`.
 pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> String {
-    let buf = profile_hash_preimage(command, env);
+    hex16(&profile_hash_preimage(command, env))
+}
+
+/// First 16 hex chars of SHA-256: the single digest rule for cell identities.
+fn hex16(buf: &str) -> String {
     let digest = format!("{:x}", Sha256::digest(buf.as_bytes()));
     // Hex is ASCII single-byte; slicing the first 16 chars is char-boundary safe.
     digest[..16].to_string()

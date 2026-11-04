@@ -299,17 +299,27 @@ impl MasterToken {
 
 pub use session::maintenance::PendingSelfClear;
 
-/// (#1652) Pins the type of the closure `generate_handler!` produces. The
-/// macro's closure parameter is UNANNOTATED and rustc type-checks the body at
-/// the `let` that binds it. A bare binding is therefore
-/// `error[E0282]: type annotations needed`, and annotating the OUTER closure's
-/// parameter does not reach it. This identity function supplies the expected
-/// type on the binding itself. Preferred over
-/// `let generated: Box<dyn Fn(..) -> bool + Send + Sync> = ...` because
-/// `pty_write` is the highest-frequency command and boxing adds an indirection
-/// to every invoke.
-fn pin_handler<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static>(f: F) -> F {
-    f
+impl crate::loops::ipc_observer::IpcObserver {
+    /// (#1652) Pins the type of the closure `generate_handler!` produces. The
+    /// macro's closure parameter is UNANNOTATED and rustc type-checks the body at
+    /// the binding that receives it. A bare binding is therefore
+    /// `error[E0282]: type annotations needed`, and annotating the OUTER closure's
+    /// parameter does not reach it. This method's bound supplies the expected
+    /// type on the argument itself. Preferred over
+    /// `let generated: Box<dyn Fn(..) -> bool + Send + Sync> = ...` because
+    /// `pty_write` is the highest-frequency command and boxing adds an indirection
+    /// to every invoke.
+    /// #3516 - also stamps every invoke for the observer, so `invoke_handler`
+    /// keeps its Length-gate ceiling.
+    fn observe_invokes<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static>(
+        self: Arc<Self>,
+        generated: F,
+    ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+        move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            self.note_invoke(invoke.message.command());
+            generated(invoke)
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -358,7 +368,7 @@ pub(crate) fn remote_sweeper_seams() -> crate::pty::remote_watcher::RemoteSweepe
 fn invoke_handler(
     observer: Arc<crate::loops::ipc_observer::IpcObserver>,
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
-    let generated = pin_handler(tauri::generate_handler![
+    observer.observe_invokes(tauri::generate_handler![
         commands::session::create_session,
         commands::session::destroy_session,
         commands::session::close_coordinator,
@@ -439,6 +449,10 @@ fn invoke_handler(
         commands::config::get_agent_update_status,
         commands::config::agent_update_answer,
         commands::config::agent_update_cancel,
+        commands::session::describe_preflight_target,
+        commands::session::start_preflight_test,
+        commands::session::get_preflight_test,
+        commands::session::cancel_preflight_test,
         commands::config::agent_updates_cancel_all,
         commands::config::get_agent_update_overview,
         commands::co_managed::co_managed_get,
@@ -548,11 +562,7 @@ fn invoke_handler(
         commands::screenshot::screenshot_cancel_capture,
         commands::screenshot::screenshot_get_hotkey_status,
         commands::screenshot::screenshot_reload_hotkey,
-    ]);
-    move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
-        observer.note_invoke(invoke.message.command());
-        generated(invoke)
-    }
+    ])
 }
 
 impl loops::scheduler::SchedulerHost for tauri::AppHandle {

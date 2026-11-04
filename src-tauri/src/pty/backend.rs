@@ -138,6 +138,28 @@ pub struct ResolvedAgentHostShell {
     pub args: Vec<String>,
 }
 
+/// #3516 - one stage argv plus the CLI env inputs, turned into a preflight launch.
+#[derive(Debug, Clone)]
+pub struct PreflightLaunchRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub configured_env: Vec<(String, String)>,
+    pub env_remove_keys: Vec<String>,
+    pub extra_env: Vec<(String, String)>,
+    pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+}
+
+/// #3516 - the exact program, args, Windows command line, cwd and full env the CLI gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightLaunch {
+    pub program: String,
+    pub args: Vec<String>,
+    pub windows_raw_args: Option<String>,
+    pub cwd: String,
+    pub env: Vec<(String, String)>,
+}
+
 pub(crate) struct BackendSpawnSpec {
     pub id: Uuid,
     /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
@@ -314,6 +336,16 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     fn shutdown_terminal_output(&self) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
+
+    /// #3516 - preflights run only on the local backend; every other backend refuses.
+    fn prepare_preflight_launch(
+        &self,
+        _request: PreflightLaunchRequest,
+    ) -> Result<PreflightLaunch, AppError> {
+        Err(AppError::Other(
+            "Preflights run only for local agents.".to_string(),
+        ))
+    }
 }
 struct BackendRawWriter {
     backend: Arc<dyn PtyBackend>,

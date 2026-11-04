@@ -12,8 +12,15 @@ use crate::commands::session::create::effects::start_create_effect;
 use crate::commands::session::create::effects::CreateEffectStart;
 use crate::commands::session::create::launch::resolve_launch_idle_tuning;
 use crate::commands::session::create::publication::rollback_pre_created_session;
+use crate::commands::session::preflight::{
+    chain_passed, launch_failure_message, refusal_message, resolution_failure_message,
+    run_chain_if_current, seed_gate, GatedChain, LaunchShare, PreflightChainEnv,
+    PreflightStageStatus, PreflightState, CONTAINER_REFUSAL, GATE_UNAVAILABLE,
+};
 #[cfg(test)]
 use crate::commands::session::seed_race_barriers;
+use crate::config::agent_command::PreflightStage;
+use crate::config::config_seed::ConfigSeedReport;
 use crate::config::settings::SettingsState;
 use crate::events::pty::output_target;
 use crate::pty::backend::BackendSpawnSpec;
@@ -75,6 +82,13 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         }
     }
     pending.session.effective_shell_args = Some(effective);
+    // #3516 - the folder share lives to the end of `spawn`, so a preflight test never
+    // overlaps this launch.
+    let (_share, stages) = share_and_stages(ctx, &pending, &spawn_cwd);
+    let stages = match stages {
+        Ok(stages) => stages,
+        Err(message) => return fail_launch(ctx, pending, message).await,
+    };
 
     let environment = prepare_environment(
         ctx,
@@ -96,15 +110,21 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     // other variants, delivery / mailbox / web wakes); prevalidation never hits
     // it because it discards the spawn. Per Q2 this runs on EVERY spawn,
     // including loop/scheduler resume-wakes (overwrite every spawn).
-    match prepare_config_seed_stage(ctx, &mut pending).await? {
+    let seed_report = match prepare_config_seed_stage(ctx, &mut pending).await? {
         None => return Ok(CreateCompletion::Retained),
-        Some(Ok(())) => {}
+        Some(Ok(report)) => report,
         Some(Err(error)) => {
             release_resource_launch_permit(&pending.resource_monitor, &mut pending.resource_permit);
             drop(pending.mgr);
             rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
             return Err(error);
         }
+    };
+    let seed = seed_report.as_ref();
+    match gate_launch(ctx, &mut pending, stages, &spawn_cwd, &environment, seed).await? {
+        LaunchGate::Passed => {}
+        LaunchGate::Superseded => return Ok(CreateCompletion::Retained),
+        LaunchGate::Refused(message) => return fail_launch(ctx, pending, message).await,
     }
 
     // #2124 - the idle tuning this launch hands the detector: the agent kind
@@ -115,15 +135,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         let settings_state = app.state::<SettingsState>();
         match load_launch_idle_tuning(settings_state.inner(), &pending).await {
             Ok(tuning) => tuning,
-            Err(error) => {
-                release_resource_launch_permit(
-                    &pending.resource_monitor,
-                    &mut pending.resource_permit,
-                );
-                drop(pending.mgr);
-                rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
-                return Err(error);
-            }
+            Err(error) => return fail_launch(ctx, pending, error).await,
         }
     };
     let launch_witness = LaunchWitness::default();
@@ -145,6 +157,130 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     let (input, spawn_mark) =
         publication_input(pending, effective_continuation, session_env_warnings);
     spawn_backend(ctx, input, spawn_spec, launch_witness, spawn_mark).await
+}
+
+/// #3516 - shares the launch folder (local only) and resolves the preflight stages.
+/// The share is returned even on refusal so it is held across `fail_launch`.
+fn share_and_stages<'c, R: tauri::Runtime>(
+    ctx: &'c CreateBodyContext<'_, R>,
+    pending: &PendingLaunch,
+    spawn_cwd: &str,
+) -> (Option<LaunchShare>, Result<&'c [PreflightStage], String>) {
+    let preflight_state = ctx
+        .app
+        .try_state::<std::sync::Arc<PreflightState>>()
+        .map(|state| state.inner().clone());
+    let local = pending.session.backend_kind != SessionBackendKind::ContainerTransport;
+    let share = match preflight_state.as_ref().filter(|_| local) {
+        None => None,
+        Some(state) => match state.try_share(spawn_cwd) {
+            Ok(share) => Some(share),
+            Err(refusal) => return (None, Err(refusal_message(refusal).to_string())),
+        },
+    };
+    let empty: &[PreflightStage] = &[];
+    let stages = match ctx.resolved_spawn.map(|spawn| &spawn.preflight_stages) {
+        None => Ok(empty),
+        Some(Err(error)) => Err(resolution_failure_message(error)),
+        Some(Ok(stages)) => Ok(stages.as_slice()),
+    };
+    let stages = match stages {
+        Ok(stages) if !stages.is_empty() && !local => Err(CONTAINER_REFUSAL.to_string()),
+        Ok(stages) if !stages.is_empty() && preflight_state.is_none() => {
+            Err(GATE_UNAVAILABLE.to_string())
+        }
+        other => other,
+    };
+    (share, stages)
+}
+
+enum LaunchGate {
+    Passed,
+    Superseded,
+    Refused(String),
+}
+
+/// #3516 - strict seed, then the same revalidation pair as `spawn_backend` inside
+/// `run_chain_if_current`, so a superseded restart runs zero preflights.
+async fn gate_launch<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    pending: &mut PendingLaunch,
+    stages: &[PreflightStage],
+    spawn_cwd: &str,
+    environment: &SpawnEnvironment,
+    seed_report: Option<&ConfigSeedReport>,
+) -> Result<LaunchGate, String> {
+    if stages.is_empty() {
+        return Ok(LaunchGate::Passed);
+    }
+    let &CreateBodyContext {
+        pty_mgr,
+        owned_replacement,
+        create_owner,
+        ..
+    } = ctx;
+    let id = pending.session.id;
+    if let Err(message) = seed_gate(seed_report) {
+        return Ok(LaunchGate::Refused(message));
+    }
+    let chain_env = PreflightChainEnv {
+        backend_kind: pending.session.backend_kind,
+        cwd: spawn_cwd.to_string(),
+        configured_env: environment.configured_env.clone(),
+        env_remove_keys: environment.env_remove_keys.clone(),
+        extra_env: environment.extra_env.clone(),
+        resolved_agent_host_shell: ctx.resolved_agent_host_shell.cloned(),
+    };
+    let revalidate = async {
+        let Some(continuation) = owned_replacement else {
+            return Ok(true);
+        };
+        if !continuation.validate_source().await {
+            return Ok(false);
+        }
+        revalidate_owned_create_effect(
+            create_owner,
+            &mut pending.resource_permit,
+            &pending.resource_monitor,
+            &pending.mgr,
+            pty_mgr,
+        )
+        .await?;
+        Ok(true)
+    };
+    let outcome = match run_chain_if_current(revalidate, pty_mgr, stages, &chain_env).await? {
+        GatedChain::Superseded => {
+            release_resource_launch_permit(&pending.resource_monitor, &mut pending.resource_permit);
+            return Ok(LaunchGate::Superseded);
+        }
+        GatedChain::Ran(outcome) => outcome,
+    };
+    if !chain_passed(&outcome) {
+        let message = outcome
+            .reports
+            .iter()
+            .find(|report| {
+                report.status != PreflightStageStatus::Passed || report.cleanup_defect.is_some()
+            })
+            .map(launch_failure_message)
+            .unwrap_or_else(|| GATE_UNAVAILABLE.to_string());
+        return Ok(LaunchGate::Refused(message));
+    }
+    log::info!("[preflight] session {id} passed {} stage(s)", stages.len());
+    Ok(LaunchGate::Passed)
+}
+
+/// Fails a launch before any CLI process exists: the idle-tuning rollback template.
+async fn fail_launch<R: tauri::Runtime>(
+    ctx: &CreateBodyContext<'_, R>,
+    mut pending: PendingLaunch,
+    message: String,
+) -> Result<CreateCompletion, String> {
+    release_resource_launch_permit(&pending.resource_monitor, &mut pending.resource_permit);
+    drop(pending.mgr);
+    let id = pending.session.id;
+    rollback_pre_created_session(ctx.app, ctx.session_mgr, ctx.pty_mgr, id, &message).await;
+    Err(message)
 }
 
 async fn spawn_backend<R: tauri::Runtime>(
@@ -405,11 +541,12 @@ async fn load_launch_idle_tuning(
 async fn prepare_config_seed_stage<'a: 'b, 'b, R: tauri::Runtime>(
     ctx: &'b CreateBodyContext<'a, R>,
     pending: &mut PendingLaunch,
-) -> Result<Option<Result<(), String>>, String> {
+) -> Result<Option<Result<Option<ConfigSeedReport>, String>>, String> {
     let resource_permit = &mut pending.resource_permit;
     let resource_monitor = &pending.resource_monitor;
     let mgr = &pending.mgr;
     let id = pending.session.id;
+    let mut seed_report = None;
     if let Some(seed) = ctx.resolved_spawn.and_then(|s| s.seed.as_ref()) {
         // grinch HIGH-1: serialize the seed swap for ALL dests (not just
         // `.claude`). Two same-replica spawns can run concurrently (e.g. a
@@ -457,6 +594,7 @@ async fn prepare_config_seed_stage<'a: 'b, 'b, R: tauri::Runtime>(
         match seed_result {
             Ok(report) => {
                 log::debug!("[config-seed] session {id} outcome: {report:?}");
+                seed_report = Some(report);
             }
             Err(error) => {
                 let error = format!("config seed blocking preparation failed: {error}");
@@ -473,7 +611,7 @@ async fn prepare_config_seed_stage<'a: 'b, 'b, R: tauri::Runtime>(
     {
         seed_race_barriers::hit_after_seed_before_pty(ctx.cwd).await;
     }
-    Ok(Some(Ok(())))
+    Ok(Some(Ok(seed_report)))
 }
 
 #[cfg(test)]

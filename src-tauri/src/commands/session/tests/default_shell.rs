@@ -1,4 +1,8 @@
 use super::*;
+use crate::commands::session::preflight::{
+    refusal_message, resolution_failure_message, seed_gate, HoldRefusal, PreflightState,
+    CONTAINER_REFUSAL,
+};
 
 // --- #1271 configured default-shell propagation --------------------------
 
@@ -13,6 +17,14 @@ pub(super) struct CapturingSpawnBackend {
     pub(super) live: Mutex<HashSet<Uuid>>,
     /// #1873 - every id the manager asked this backend to tear down.
     pub(super) killed: Mutex<Vec<Uuid>>,
+    /// #3516 - when true, preflight requests run as given with the inherited env.
+    pub(super) preflight_runs: bool,
+    pub(super) preflight_requests: Mutex<Vec<crate::pty::backend::PreflightLaunchRequest>>,
+    /// #3516 - the hold state and cwd whose launch count `spawn` records.
+    pub(super) share_probe: Mutex<Option<(Arc<PreflightState>, String)>>,
+    pub(super) share_counts: Mutex<Vec<usize>>,
+    /// #3516 - `try_test` on the probed folder, taken inside `spawn`.
+    pub(super) test_probes: Mutex<Vec<Result<(), HoldRefusal>>>,
 }
 
 impl PtyBackend for CapturingSpawnBackend {
@@ -25,6 +37,14 @@ impl PtyBackend for CapturingSpawnBackend {
         spec: crate::pty::backend::BackendSpawnSpec,
     ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
         Box::pin(async move {
+            if let Some((state, cwd)) = self.share_probe.lock().unwrap().as_ref() {
+                self.share_counts
+                    .lock()
+                    .unwrap()
+                    .push(state.launch_count(cwd));
+                let probe = state.try_test(cwd).map(drop);
+                self.test_probes.lock().unwrap().push(probe);
+            }
             self.live.lock().unwrap().insert(spec.id);
             self.specs.lock().unwrap().push(spec);
             Ok(())
@@ -80,6 +100,26 @@ impl PtyBackend for CapturingSpawnBackend {
 
     fn kill_all_jobs(&self) -> (usize, usize) {
         (0, 0)
+    }
+
+    fn prepare_preflight_launch(
+        &self,
+        request: crate::pty::backend::PreflightLaunchRequest,
+    ) -> Result<crate::pty::backend::PreflightLaunch, crate::errors::AppError> {
+        if !self.preflight_runs {
+            return Err(crate::errors::AppError::Other("no preflight".to_string()));
+        }
+        self.preflight_requests
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        Ok(crate::pty::backend::PreflightLaunch {
+            program: request.program,
+            args: request.args,
+            windows_raw_args: None,
+            cwd: request.cwd,
+            env: std::env::vars().collect(),
+        })
     }
 }
 
@@ -457,4 +497,302 @@ async fn test_resolve_blocking_menu_command() {
     );
 
     close_test_coordinator(&app).await;
+}
+
+// --- #3516 launch gate on the create path ---------------------------------
+
+fn preflight_text(code: u8) -> String {
+    if cfg!(windows) {
+        format!("cmd.exe /D /C \"exit {code}\"")
+    } else {
+        format!("sh -c \"exit {code}\"")
+    }
+}
+
+struct GateRun {
+    result: Result<crate::session::session::SessionInfo, String>,
+    backend: Arc<CapturingSpawnBackend>,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    state: Option<Arc<PreflightState>>,
+    cwd: String,
+    _temp: tempfile::TempDir,
+}
+
+/// Mirrors `configured_default_shell_snapshot_reaches_backend_for_resolved_agent`
+/// with a configured Coding Agent preflight and, when `manage`, the hold state.
+async fn gate_create(
+    preflight: Option<String>,
+    container: bool,
+    manage: bool,
+    before: impl FnOnce(&Arc<PreflightState>, &str),
+) -> GateRun {
+    gate_create_with(preflight, container, manage, before, |_, _| {}).await
+}
+
+async fn gate_create_with(
+    preflight: Option<String>,
+    container: bool,
+    manage: bool,
+    before: impl FnOnce(&Arc<PreflightState>, &str),
+    edit_spawn: impl FnOnce(&mut crate::config::agent_command::AgentSpawnCommand, &std::path::Path),
+) -> GateRun {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_string_lossy().to_string();
+    let mut settings = test_settings();
+    settings.agents[0].preflight = preflight;
+    if container {
+        settings.agents[0].backend = crate::config::settings::AgentBackendConfig {
+            kind: SessionBackendKind::ContainerTransport,
+            image: Some("ghcr.io/example/claude:test".to_string()),
+        };
+    }
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let state = manage.then(|| Arc::new(PreflightState::default()));
+    let backend = Arc::new(CapturingSpawnBackend {
+        preflight_runs: true,
+        share_probe: Mutex::new(state.as_ref().map(|s| (Arc::clone(s), cwd.clone()))),
+        ..Default::default()
+    });
+    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        backend.clone(),
+    )));
+    let app = session_test_app(
+        settings.clone(),
+        Arc::clone(&session_mgr),
+        Arc::clone(&pty_mgr),
+    );
+    let seed_lock: crate::app_state::ConfigSeedLockState = Default::default();
+    app.manage(seed_lock);
+    if let Some(state) = &state {
+        app.manage(Arc::clone(state));
+        before(state, &cwd);
+    }
+    let mut spawn =
+        super::super::build_configured_agent_spawn_for_cwd(&settings, "claude", &cwd, None)
+            .expect("resolve claude")
+            .expect("claude is configured");
+    edit_spawn(&mut spawn, temp.path());
+    let result = super::super::create_session_inner(
+        app.handle(),
+        &session_mgr,
+        &pty_mgr,
+        spawn.shell.clone(),
+        spawn.shell_args.clone(),
+        cwd.clone(),
+        Some("3516 gate".to_string()),
+        Some(spawn.trusted_agent_id.clone()),
+        Some(spawn.trusted_agent_label.clone()),
+        false,
+        Vec::new(),
+        true,
+        Some(spawn),
+        None,
+        None,
+        CreateSelectionIntent::User,
+    )
+    .await;
+    close_test_coordinator(&app).await;
+    GateRun {
+        result,
+        backend,
+        session_mgr,
+        state,
+        cwd,
+        _temp: temp,
+    }
+}
+
+const GATE_TEXT: &str = "The CLI will not start because the gate failed.";
+
+#[tokio::test]
+async fn failing_preflight_blocks_backend_spawn() {
+    let run = gate_create(Some(preflight_text(1)), false, true, |_, _| {}).await;
+    let error = run
+        .result
+        .expect_err("a failing preflight blocks the launch");
+    assert!(error.contains("failed with exit code 1"), "{error}");
+    assert!(error.ends_with(GATE_TEXT), "{error}");
+    assert!(run.backend.specs.lock().unwrap().is_empty());
+    assert_eq!(run.backend.preflight_requests.lock().unwrap().len(), 1);
+    assert!(run
+        .session_mgr
+        .read()
+        .await
+        .list_sessions()
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn passing_preflight_reaches_backend_with_cli_env() {
+    let run = gate_create(Some(preflight_text(0)), false, true, |_, _| {}).await;
+    run.result.expect("a passing preflight launches");
+    let specs = run.backend.specs.lock().unwrap();
+    assert_eq!(specs.len(), 1);
+    let requests = run.backend.preflight_requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let (spec, request) = (&specs[0], &requests[0]);
+    assert_eq!(request.cwd, spec.cwd);
+    assert_eq!(request.configured_env, spec.configured_env);
+    assert_eq!(request.env_remove_keys, spec.env_remove_keys);
+    assert_eq!(request.extra_env, spec.extra_env);
+}
+
+#[tokio::test]
+async fn empty_chain_unmanaged_is_unchanged() {
+    let run = gate_create(None, false, false, |_, _| {}).await;
+    run.result
+        .expect("an empty chain launches without the hold state");
+    assert_eq!(run.backend.specs.lock().unwrap().len(), 1);
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn container_agent_with_chain_is_refused() {
+    let run = gate_create(Some(preflight_text(0)), true, true, |_, _| {}).await;
+    assert_eq!(
+        run.result.expect_err("container refused"),
+        CONTAINER_REFUSAL
+    );
+    assert!(run.backend.specs.lock().unwrap().is_empty());
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+
+    let run = gate_create(None, true, true, |_, _| {}).await;
+    if let Err(error) = run.result {
+        assert_ne!(error, CONTAINER_REFUSAL);
+    }
+}
+
+#[tokio::test]
+async fn share_released_after_failed_launch() {
+    let run = gate_create(Some(preflight_text(1)), false, true, |_, _| {}).await;
+    run.result.expect_err("failing preflight");
+    let state = run.state.expect("managed");
+    assert_eq!(state.launch_count(&run.cwd), 0);
+
+    let run = gate_create(Some(preflight_text(0)), false, true, |_, _| {}).await;
+    run.result.expect("passing preflight");
+    assert_eq!(*run.backend.share_counts.lock().unwrap(), vec![1]);
+}
+
+#[tokio::test]
+async fn concurrent_launches_share() {
+    let held = Mutex::new(None);
+    let run = gate_create(Some(preflight_text(0)), false, true, |state, cwd| {
+        *held.lock().unwrap() = Some(state.try_share(cwd).expect("held share"));
+    })
+    .await;
+    run.result.expect("a held share does not block a launch");
+    assert_eq!(*run.backend.share_counts.lock().unwrap(), vec![2]);
+    drop(held);
+}
+
+#[tokio::test]
+async fn share_spans_pty_spawn() {
+    for preflight in [None, Some(preflight_text(0))] {
+        let run = gate_create(preflight, false, true, |_, _| {}).await;
+        run.result.expect("launch");
+        assert_eq!(*run.backend.share_counts.lock().unwrap(), vec![1]);
+        assert_eq!(run.state.expect("managed").launch_count(&run.cwd), 0);
+    }
+}
+
+#[tokio::test]
+async fn invalid_preflight_fails_only_the_launch() {
+    let run = gate_create(Some("pre \"unclosed".to_string()), false, true, |_, _| {}).await;
+    let error = run.result.expect_err("invalid preflight");
+    assert!(
+        error.starts_with("Invalid Coding Agent preflight command: "),
+        "{error}"
+    );
+    let cause = error
+        .strip_suffix(&format!(". {GATE_TEXT}"))
+        .expect("gate suffix");
+    assert_eq!(error, resolution_failure_message(cause));
+    assert!(run.backend.specs.lock().unwrap().is_empty());
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+/// A real seed resolved for a temp replica, then pointed at a missing replica
+/// root, so the seed reports `StaleReplica`.
+fn stale_seed(spawn: &mut crate::config::agent_command::AgentSpawnCommand, temp: &std::path::Path) {
+    let replica = temp
+        .join(".ac")
+        .join("wg-7-dev-team")
+        .join("__agent_dev-rust");
+    std::fs::create_dir_all(&replica).unwrap();
+    let mut settings = test_settings();
+    settings.agents[0].config_seed = Some(crate::config::settings::ConfigSeedConfig {
+        enabled: true,
+        dest: ".claude".to_string(),
+    });
+    let replica = replica.to_string_lossy().to_string();
+    let mut seed =
+        super::super::build_configured_agent_spawn_for_cwd(&settings, "claude", &replica, None)
+            .expect("resolve claude")
+            .expect("claude is configured")
+            .seed
+            .expect("a replica resolves a seed");
+    let missing = temp.join("missing-replica");
+    seed.dest = missing.join(".claude");
+    seed.context.replica_root = missing;
+    spawn.seed = Some(seed);
+}
+
+#[tokio::test]
+async fn stale_seed_without_chain_still_launches() {
+    let run = gate_create_with(None, false, true, |_, _| {}, stale_seed).await;
+    run.result
+        .expect("an empty chain keeps the seed best-effort");
+    assert_eq!(run.backend.specs.lock().unwrap().len(), 1);
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stale_seed_with_chain_blocks_launch() {
+    let run = gate_create_with(Some(preflight_text(0)), false, true, |_, _| {}, stale_seed).await;
+    let stale = crate::config::config_seed::ConfigSeedReport::Skipped(
+        crate::config::config_seed::ConfigSeedSkipReason::StaleReplica {
+            replica_root: Default::default(),
+            reason: String::new(),
+        },
+    );
+    let expected = seed_gate(Some(&stale)).expect_err("a stale seed fails the gate");
+    assert_eq!(run.result.expect_err("strict seed"), expected);
+    assert!(run.backend.specs.lock().unwrap().is_empty());
+    assert!(run.backend.preflight_requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_hold_blocks_any_launch() {
+    for preflight in [Some(preflight_text(0)), None] {
+        let held = Mutex::new(None);
+        let run = gate_create(preflight.clone(), false, true, |state, cwd| {
+            *held.lock().unwrap() = Some(state.try_test(cwd).expect("test hold"));
+        })
+        .await;
+        let error = run.result.expect_err("a test hold blocks the launch");
+        assert_eq!(error, refusal_message(HoldRefusal::Test));
+        assert!(run.backend.specs.lock().unwrap().is_empty());
+        drop(held);
+
+        let run = gate_create(preflight, false, true, |state, cwd| {
+            drop(state.try_test(cwd).expect("test hold"));
+        })
+        .await;
+        run.result.expect("a dropped test hold no longer blocks");
+        assert_eq!(run.backend.specs.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn test_refused_inside_launch_spawn() {
+    let run = gate_create(Some(preflight_text(0)), false, true, |_, _| {}).await;
+    run.result.expect("launch");
+    assert_eq!(
+        *run.backend.test_probes.lock().unwrap(),
+        vec![Err(HoldRefusal::Launching)]
+    );
+    let state = run.state.expect("managed");
+    assert!(state.try_test(&run.cwd).is_ok());
 }

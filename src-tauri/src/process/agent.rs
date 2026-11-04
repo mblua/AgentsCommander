@@ -9,6 +9,7 @@ pub use owner::{
     DETAIL_MAX_CHARS, PROBE_OUTPUT_CAP, PROBE_TIMEOUT,
 };
 pub(crate) use owner::{probe_version_cancellable_retained, RetainedProbeOwner};
+pub(crate) use owner::{run_contained, ContainedRunEnd, ContainedRunSpec};
 #[cfg(test)]
 pub(crate) use owner::{
     strip_ansi_and_controls, with_probe_settlement_hook, with_probe_settlement_hook_after_spawns,

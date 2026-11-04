@@ -15,6 +15,10 @@ use crate::commands::ac_discovery::AcDiscoveryResult;
 use crate::commands::config::{
     ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult,
 };
+use crate::commands::session::{
+    cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
+    start_preflight_test_inner, PreflightState, PreflightTestDeps, PreflightTestSnapshot,
+};
 use crate::config::projects::ProjectRegistration;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
@@ -97,6 +101,10 @@ pub(crate) trait WebOperations: AgentUpdateOperations + Send + Sync {
     fn response_close(&self) -> Option<&crate::pty::manager::ResponseCloseState>;
     fn detached(&self) -> &crate::app_state::DetachedSessionsState;
     fn restore(&self) -> Option<&Arc<crate::app_state::RestoreInProgress>>;
+    /// #3516 - the preflight-test state; `None` when this host has none.
+    fn preflight_state(&self) -> Option<Arc<crate::commands::session::PreflightState>> {
+        None
+    }
     fn emit_agent_file_save_events(&self, reply: &crate::config::settings::AgentFileSaveReply);
     fn create_session<'a>(
         &'a self,
@@ -358,8 +366,66 @@ async fn dispatch_configuration_command(
             Some(coding_agent_dispatch::dispatch_coding_agent_command(state, cmd, args).await)
         }
 
+        "describe_preflight_target" => Some(describe_preflight(state, args).await),
+        "start_preflight_test" => Some(start_preflight(state, args).await),
+        "get_preflight_test" => Some(preflight_run(state, args, get_preflight_test_inner)),
+        "cancel_preflight_test" => Some(preflight_run(state, args, cancel_preflight_test_inner)),
+
         _ => None,
     }
+}
+
+fn preflight_deps(state: &WsState) -> Result<PreflightTestDeps, String> {
+    Ok(PreflightTestDeps {
+        settings: state.settings.clone(),
+        session_mgr: state.session_mgr.clone(),
+        pty_mgr: state.pty_mgr.clone(),
+        state: state
+            .operations
+            .preflight_state()
+            .ok_or_else(|| "Preflight tests are unavailable.".to_string())?,
+    })
+}
+
+fn profile_letter(args: &Value) -> Option<String> {
+    args.get("profileLetter")
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
+async fn describe_preflight(state: &WsState, args: &Value) -> Result<Value, String> {
+    let deps = preflight_deps(state)?;
+    let (agent_id, replica_path) = (
+        require_str(args, "agentId")?,
+        require_str(args, "replicaPath")?,
+    );
+    let description =
+        describe_preflight_target_inner(&deps, agent_id, profile_letter(args), replica_path)
+            .await?;
+    serde_json::to_value(description).map_err(|e| e.to_string())
+}
+
+async fn start_preflight(state: &WsState, args: &Value) -> Result<Value, String> {
+    let deps = preflight_deps(state)?;
+    let (agent_id, replica_path) = (
+        require_str(args, "agentId")?,
+        require_str(args, "replicaPath")?,
+    );
+    let revision = require_str(args, "settingsRevision")?;
+    let run_id =
+        start_preflight_test_inner(deps, agent_id, profile_letter(args), replica_path, revision)
+            .await?;
+    serde_json::to_value(run_id).map_err(|e| e.to_string())
+}
+
+fn preflight_run(
+    state: &WsState,
+    args: &Value,
+    read: fn(&PreflightState, &str) -> Result<PreflightTestSnapshot, String>,
+) -> Result<Value, String> {
+    let preflight = preflight_deps(state)?.state;
+    let snapshot = read(&preflight, &require_str(args, "runId")?)?;
+    serde_json::to_value(snapshot).map_err(|e| e.to_string())
 }
 
 async fn pty_write_command(state: &WsState, args: &Value) -> Result<Value, String> {
