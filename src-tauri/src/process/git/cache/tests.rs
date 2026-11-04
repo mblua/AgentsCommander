@@ -16,8 +16,8 @@ fn success_joins_both_readers_and_keeps_complete_output() {
     let script = "head -c 131072 /dev/zero | tr '\0' o; head -c 131072 /dev/zero | tr '\0' e >&2";
     let output = shell(script, Duration::from_secs(30)).unwrap();
     assert!(output.status.success());
-    assert_eq!(output.stdout, vec![b'o'; 131072]);
-    assert_eq!(output.stderr, vec![b'e'; 131072]);
+    assert_eq!(output.stdout, vec![b'o'; 131_072]);
+    assert_eq!(output.stderr, vec![b'e'; 131_072]);
 }
 
 #[test]
