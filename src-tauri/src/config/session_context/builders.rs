@@ -200,11 +200,9 @@ pub(crate) fn build_replica_context_from_config(
 pub(crate) fn root_context_candidate(root: &str) -> bool {
     super::super::root_agent::is_root_agent_dir_name(root)
         || super::super::root_agent::is_root_agent_path(root)
-        || crate::filesystem::session_context::canonical_context_source(root)
-            .ok()
-            .is_some_and(|path| {
-                super::super::root_agent::is_root_agent_dir_name(&display_path(&path))
-            })
+        || crate::filesystem::session_context::canonical_context_source(root).is_ok_and(|path| {
+            super::super::root_agent::is_root_agent_dir_name(&display_path(&path))
+        })
 }
 
 pub(crate) fn root_context_config_dir() -> Result<PathBuf, String> {

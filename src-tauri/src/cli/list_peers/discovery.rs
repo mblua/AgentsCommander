@@ -81,7 +81,7 @@ pub(super) fn read_wg_role(replica_dir: &Path) -> String {
     }
 }
 
-/// Build a PeerInfo for a WG replica directory. Also bootstraps IPC dirs.
+/// Build a `PeerInfo` for a WG replica directory. Also bootstraps IPC dirs.
 /// `project` is the project folder name (dir containing the Project AC Root) and forms
 /// the LHS of the canonical FQN.
 pub(super) fn build_wg_peer(

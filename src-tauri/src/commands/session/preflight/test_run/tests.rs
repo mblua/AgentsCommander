@@ -119,7 +119,7 @@ fn cell(preflight: Option<String>) -> ProfileCellConfig {
     }
 }
 
-/// One plain agent `fake` running `fake-cli` (never Codex or OpenCode).
+/// One plain agent `fake` running `fake-cli` (never Codex or `OpenCode`).
 fn settings(ca: Option<String>, profile: Option<String>) -> AppSettings {
     let mut cfg = test_settings();
     cfg.agents.truncate(1);

@@ -390,7 +390,7 @@ pub(crate) fn is_generated_context_filename(name: &str) -> bool {
 pub(crate) fn simple_hash(s: &str) -> u64 {
     let mut hash: u64 = 5381;
     for byte in s.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
+        hash = hash.wrapping_mul(33).wrapping_add(u64::from(byte));
     }
     hash
 }

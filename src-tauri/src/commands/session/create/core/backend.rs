@@ -262,8 +262,7 @@ async fn gate_launch<R: tauri::Runtime>(
             .find(|report| {
                 report.status != PreflightStageStatus::Passed || report.cleanup_defect.is_some()
             })
-            .map(launch_failure_message)
-            .unwrap_or_else(|| GATE_UNAVAILABLE.to_string());
+            .map_or_else(|| GATE_UNAVAILABLE.to_string(), launch_failure_message);
         return Ok(LaunchGate::Refused(message));
     }
     log::info!("[preflight] session {id} passed {} stage(s)", stages.len());
