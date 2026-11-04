@@ -24,19 +24,16 @@ fn default_context_matrix_section_lists_skills() {
     );
     assert!(
         out.contains("- `skills/`"),
-        "expected `skills/` bullet in matrix Allowed-there list, got:\n{}",
-        out
+        "expected `skills/` bullet in matrix Allowed-there list, got:\n{out}"
     );
     assert!(
         out.contains("- `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`"),
         "expected entry-3 canonical-state list (the grant's single carrier since #1005 S3), \
-            got:\n{}",
-        out
+            got:\n{out}"
     );
     assert!(
         out.contains("Do NOT store canonical memory, plans, or skills here."),
-        "expected replica usage warning to include skills, got:\n{}",
-        out
+        "expected replica usage warning to include skills, got:\n{out}"
     );
 }
 
@@ -49,8 +46,7 @@ fn default_context_matrix_does_not_grant_full_matrix_write() {
     );
     assert!(
         out.contains("any other files inside the Agent Matrix"),
-        "forbidden scope must still keep the rest of the Agent Matrix read-only, got:\n{}",
-        out
+        "forbidden scope must still keep the rest of the Agent Matrix read-only, got:\n{out}"
     );
 }
 
@@ -97,19 +93,16 @@ fn default_context_replica_under_room_renders_messaging_entry_four() {
     );
     assert!(
         out.contains("4. **Messaging access:**"),
-        "expected messaging entry four, got:\n{}",
-        out
+        "expected messaging entry four, got:\n{out}"
     );
     assert!(
         out.replace('\\', "/")
             .contains("C:/fake/room-7-dev-team/messaging"),
-        "expected Room messaging path, got:\n{}",
-        out
+        "expected Room messaging path, got:\n{out}"
     );
     assert!(
         out.contains("YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md"),
-        "expected Room filename pattern, got:\n{}",
-        out
+        "expected Room filename pattern, got:\n{out}"
     );
     assert!(!out.contains("Narrow exception — room messaging directory"));
 }
@@ -192,8 +185,7 @@ fn default_context_non_workgroup_omits_messaging_exception() {
     let out = default_context("C:/fake/plain/agent", None, &no_skill_section());
     assert!(
         !out.contains("Narrow exception — room messaging directory"),
-        "expected no messaging exception header for non-WG agent, got:\n{}",
-        out
+        "expected no messaging exception header for non-WG agent, got:\n{out}"
     );
     // #923 D3: a `None`-mode agent is never told to walk up to a workgroup root it
     // does not have, and it gets exactly one read grant: the message file whose
@@ -212,8 +204,7 @@ fn default_context_non_workgroup_omits_messaging_exception() {
     ));
     assert!(
         !out.contains("- **Allowed (narrow)**:"),
-        "expected no narrow-allowed bullet for non-WG agent, got:\n{}",
-        out
+        "expected no narrow-allowed bullet for non-WG agent, got:\n{out}"
     );
 }
 
@@ -223,8 +214,7 @@ fn default_context_root_agent_renders_root_messaging_exception() {
 
     assert!(
         out.contains("Narrow exception — Root Agent messaging directory"),
-        "expected root messaging exception, got:\n{}",
-        out
+        "expected root messaging exception, got:\n{out}"
     );
     assert!(out
         .replace('\\', "/")
@@ -335,13 +325,11 @@ fn default_context_marks_every_memory_directory_private() {
     );
     assert!(
         out.contains("Other agents' memory* directories"),
-        "expected the peer-privacy clause to cover the memory* glob, got:\n{}",
-        out
+        "expected the peer-privacy clause to cover the memory* glob, got:\n{out}"
     );
     assert!(
         out.contains("live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/"),
-        "expected rotated archives named explicitly, got:\n{}",
-        out
+        "expected rotated archives named explicitly, got:\n{out}"
     );
     assert!(
         out.contains(
@@ -349,8 +337,7 @@ fn default_context_marks_every_memory_directory_private() {
             memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
             read/list/search/summarize, even if asked; message the owner."
         ),
-        "expected privacy to hold for both live and rotated memory, got:\n{}",
-        out
+        "expected privacy to hold for both live and rotated memory, got:\n{out}"
     );
 }
 
@@ -363,8 +350,7 @@ fn root_context_still_omits_the_peer_memory_privacy_clause() {
     assert!(!out.contains("Other agents' memory* directories"));
     assert!(
         !out.contains("memory is private"),
-        "the Root Agent branch must stay free of the peer-privacy clause, got:\n{}",
-        out
+        "the Root Agent branch must stay free of the peer-privacy clause, got:\n{out}"
     );
 }
 
@@ -393,8 +379,7 @@ fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
             .expect("entry 3 carries the canonical-state list");
     assert!(
         grant > entry_3 && grant < role_md,
-        "the read-only archive clause must sit inside entry 3, above its list, got:\n{}",
-        wg
+        "the read-only archive clause must sit inside entry 3, above its list, got:\n{wg}"
     );
 
     // O1: no origin matrix, so no entry 3, so no grant - but the peer-privacy
@@ -402,16 +387,14 @@ fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
     let none = default_context("C:/fake/plain/agent", None, &no_skill_section());
     assert!(
         !none.contains("Read-only there"),
-        "an agent with no origin matrix must not be promised an archive grant, got:\n{}",
-        none
+        "an agent with no origin matrix must not be promised an archive grant, got:\n{none}"
     );
     assert!(
         none.contains("the live `memory/`, `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`")
     );
     assert!(
         none.contains("`memory*` directories"),
-        "the peer-privacy half renders for every non-root agent, got:\n{}",
-        none
+        "the peer-privacy half renders for every non-root agent, got:\n{none}"
     );
 
     assert!(!none.contains(GRANT));
@@ -420,8 +403,7 @@ fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
     assert!(!root.contains(GRANT));
     assert!(
         !root.contains("Read-only there"),
-        "the Root Agent has no origin matrix and no entry 3, got:\n{}",
-        root
+        "the Root Agent has no origin matrix and no entry 3, got:\n{root}"
     );
 }
 
@@ -447,8 +429,7 @@ fn read_bullet_matches_messaging_mode_access_model() {
                 Matrix files"
         ),
         "workgroup read bullet missing the entries-1-4 prefix, got:
-{}",
-        wg
+{wg}"
     );
     assert!(!wg.contains("other than the narrow messaging exception above"));
     assert!(wg.contains(

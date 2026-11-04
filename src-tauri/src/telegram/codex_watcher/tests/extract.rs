@@ -51,7 +51,7 @@ fn extract_assistant_final_rejects_task_and_tool_records() {
         ("function_call", tool_call),
         ("function_call_output", tool_output),
     ] {
-        assert_eq!(extract_assistant_final(&line), None, "{}", label);
+        assert_eq!(extract_assistant_final(&line), None, "{label}");
     }
 }
 
@@ -134,7 +134,7 @@ fn extract_assistant_final_returns_none_for_malformed_json() {
         "[1,2,3]",
         "{ this is not JSON }",
     ] {
-        assert_eq!(extract_assistant_final(line), None, "line={:?}", line);
+        assert_eq!(extract_assistant_final(line), None, "line={line:?}");
     }
 }
 
@@ -151,7 +151,7 @@ fn extract_assistant_final_rejects_every_other_type_role_and_phase() {
         "Response_Item",
     ] {
         let line = serde_json::json!({"type": kind, "payload": valid_final_payload()}).to_string();
-        assert_eq!(extract_assistant_final(&line), None, "type={}", kind);
+        assert_eq!(extract_assistant_final(&line), None, "type={kind}");
     }
 
     // Payload types other than `message`.
@@ -170,12 +170,7 @@ fn extract_assistant_final_rejects_every_other_type_role_and_phase() {
                         "content": [{"type": "output_text", "text": "body"}]}
         })
         .to_string();
-        assert_eq!(
-            extract_assistant_final(&line),
-            None,
-            "payload.type={}",
-            ptype
-        );
+        assert_eq!(extract_assistant_final(&line), None, "payload.type={ptype}");
     }
 
     // Roles other than `assistant`.
@@ -183,7 +178,7 @@ fn extract_assistant_final_rejects_every_other_type_role_and_phase() {
         let mut payload = valid_final_payload();
         payload["role"] = serde_json::json!(role);
         let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
-        assert_eq!(extract_assistant_final(&line), None, "role={}", role);
+        assert_eq!(extract_assistant_final(&line), None, "role={role}");
     }
 
     // Phases other than `final_answer`.
@@ -198,7 +193,7 @@ fn extract_assistant_final_rejects_every_other_type_role_and_phase() {
         let mut payload = valid_final_payload();
         payload["phase"] = serde_json::json!(phase);
         let line = serde_json::json!({"type": "response_item", "payload": payload}).to_string();
-        assert_eq!(extract_assistant_final(&line), None, "phase={}", phase);
+        assert_eq!(extract_assistant_final(&line), None, "phase={phase}");
     }
     // Missing phase entirely.
     let mut payload = valid_final_payload();
@@ -245,8 +240,7 @@ fn extract_assistant_final_rejects_absent_or_non_string_fields() {
         assert_eq!(
             extract_assistant_final(&line),
             None,
-            "payload.{} absent",
-            field
+            "payload.{field} absent"
         );
     }
 
@@ -258,8 +252,7 @@ fn extract_assistant_final_rejects_absent_or_non_string_fields() {
         assert_eq!(
             extract_assistant_final(&line),
             None,
-            "payload.{} non-string",
-            field
+            "payload.{field} non-string"
         );
     }
 
@@ -287,12 +280,7 @@ fn extract_assistant_final_rejects_legacy_event_msg_records() {
             "payload": {"type": "agent_message", "message": "  legacy prose  ", "phase": phase}
         })
         .to_string();
-        assert_eq!(
-            extract_assistant_final(&line),
-            None,
-            "legacy phase={}",
-            phase
-        );
+        assert_eq!(extract_assistant_final(&line), None, "legacy phase={phase}");
     }
     // Legacy envelope carrying response-shaped payload fields.
     let line = serde_json::json!({
@@ -321,8 +309,7 @@ fn extraction_is_independent_of_session_metadata_variants() {
         assert_eq!(
             extract_assistant_final(&line),
             Some("stable body".to_string()),
-            "line={}",
-            line
+            "line={line}"
         );
     }
 }

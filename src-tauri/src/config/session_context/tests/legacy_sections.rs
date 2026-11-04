@@ -75,7 +75,7 @@ fn assert_defaults_index_and_render_cleanly(root: &Path) {
             .skills
             .iter()
             .find(|s| s.folder_name == dir_name)
-            .unwrap_or_else(|| panic!("default skill `{}` missing from the index", dir_name));
+            .unwrap_or_else(|| panic!("default skill `{dir_name}` missing from the index"));
 
         // Assert the whole `full_entry` line, not just the name. Two reasons a name-only check
         // is weaker than it looks: `render_skills_section` prints `skill.name`, the YAML `name:`
@@ -87,13 +87,11 @@ fn assert_defaults_index_and_render_cleanly(root: &Path) {
         let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
         assert!(
             !trigger.trim().is_empty(),
-            "{} rendered an empty trigger",
-            dir_name
+            "{dir_name} rendered an empty trigger"
         );
         assert!(
-            rendered.contains(&format!("- `{}` - {}", name, trigger)),
-            "default skill `{}` did not reach the rendered section with its metadata intact",
-            dir_name
+            rendered.contains(&format!("- `{name}` - {trigger}")),
+            "default skill `{dir_name}` did not reach the rendered section with its metadata intact"
         );
     }
 }
@@ -121,7 +119,7 @@ fn broken_agency_skill_install_is_repaired_and_reaches_the_context() {
     assert_defaults_index_and_render_cleanly(&root);
 }
 
-/// The constant check, not the gate. A fresh tempdir exercises only the NotFound arm, so this
+/// The constant check, not the gate. A fresh tempdir exercises only the `NotFound` arm, so this
 /// proves `DEFAULT_ROOT_SKILLS[..].content` parses. It cannot prove a real install recovers.
 #[test]
 fn shipped_default_root_skills_parse_through_the_real_indexer() {
@@ -159,7 +157,7 @@ fn legacy_generated_skills_section_intro_is_byte_exact() {
 
 /// #1005 S1 / plan 6.6: a REAL old-generation legacy rendered default whose
 /// embedded skills section carries the pre-rewrite intro still classifies
-/// StaleGenerated and heals on disk. The embedded section is the frozen OLD
+/// `StaleGenerated` and heals on disk. The embedded section is the frozen OLD
 /// intro (independently byte-pinned against 08897ef) plus the current
 /// non-intro tail, which equals the old renderer's output byte-for-byte
 /// because every non-intro literal in `render_skills_section` is frozen for
@@ -205,7 +203,7 @@ fn legacy_intro_skills_section_still_classifies_stale_generated_and_heals() {
         current_render.contains("### Skill Discovery Warnings"),
         "fixture must exercise the warnings subsection"
     );
-    let old_skills_section = format!("{}{}", LEGACY_GENERATED_SKILLS_SECTION_INTRO, tail);
+    let old_skills_section = format!("{LEGACY_GENERATED_SKILLS_SECTION_INTRO}{tail}");
 
     let legacy = legacy_rendered_default_context_for_compat(
         &path_string(&old_replica),
@@ -245,7 +243,7 @@ fn legacy_intro_skills_section_still_classifies_stale_generated_and_heals() {
 
 /// Negative control for the two-sided compare: one mutated byte inside the
 /// embedded OLD intro means the section is no longer provably generated, so
-/// the file is preserved as custom (NotLegacy), never healed.
+/// the file is preserved as custom (`NotLegacy`), never healed.
 #[test]
 fn edited_legacy_intro_skills_section_is_preserved_not_healed() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -263,7 +261,7 @@ fn edited_legacy_intro_skills_section_is_preserved_not_healed() {
     let edited_intro =
         LEGACY_GENERATED_SKILLS_SECTION_INTRO.replace("indexes skills", "indexes skillz");
     assert_ne!(edited_intro, LEGACY_GENERATED_SKILLS_SECTION_INTRO);
-    let edited_section = format!("{}{}", edited_intro, tail);
+    let edited_section = format!("{edited_intro}{tail}");
 
     let legacy = legacy_rendered_default_context_for_compat(
         &path_string(&old_replica),
@@ -366,8 +364,8 @@ fn skills_section_replica_line_split_is_correct() {
 /// `legacy_intro_skills_section_still_classifies_stale_generated_and_heals`.
 ///
 /// A `Context.AgentsCommander.md` whose EMBEDDED skills section carries the
-/// pre-rename replica line must still classify StaleGenerated and heal after
-/// the whole change. Without D8f's swap this file would flip to NotLegacy
+/// pre-rename replica line must still classify `StaleGenerated` and heal after
+/// the whole change. Without D8f's swap this file would flip to `NotLegacy`
 /// permanently -- and that is every replica that has a `skills/` directory,
 /// which is the common case.
 #[test]
@@ -455,7 +453,7 @@ fn pre_room_rename_skills_section_still_classifies_stale_generated_and_heals() {
 /// #1614 AC7.15's negative control, modelled on
 /// `edited_legacy_intro_skills_section_is_preserved_not_healed`. One mutated
 /// byte inside the frozen pre-rename line means the section is no longer
-/// provably generated, so the file classifies NotLegacy and is preserved
+/// provably generated, so the file classifies `NotLegacy` and is preserved
 /// byte for byte, never healed. Without this the swap could be made
 /// vacuously true by a substring match and nothing would notice.
 #[test]
@@ -514,7 +512,7 @@ fn edited_pre_room_rename_skills_line_is_preserved_not_healed() {
 /// `legacy_rendered_default_context_for_compat` over the same inputs the
 /// classifier is given returns `Current`, not `StaleGenerated`: there is
 /// nothing stale about it, so it is returned as-is and left on disk
-/// unmodified. Round 2 asserted StaleGenerated over exactly this fixture,
+/// unmodified. Round 2 asserted `StaleGenerated` over exactly this fixture,
 /// which the classifier cannot produce for it.
 #[test]
 fn current_generation_legacy_context_classifies_current() {
