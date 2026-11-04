@@ -81,7 +81,8 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
-    bin.parent().expect("bin parent").join(format!(".{stem}"))
+    // Keep this expression in sync with issue_1867_isolation_source_contract.
+    bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
