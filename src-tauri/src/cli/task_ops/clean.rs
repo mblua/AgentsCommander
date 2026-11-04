@@ -398,25 +398,11 @@ pub(super) fn clean_pair_locked(
     let cleaned = apply_clean(&parsed);
     // Corrupt logs are intentionally archivable; only inspect for NoOp when
     // the description already matches the canonical reset.
-    if cleaned.frontmatter == parsed.frontmatter && cleaned.body == parsed.body {
-        if let Ok(tail) = read_latest_status_locked(root) {
-            if tail.partial.is_empty()
-                && (tail.len == 0
-                    || tail
-                        .record
-                        .as_ref()
-                        .is_some_and(|r| r.kind == "topic_started")
-                        && tail.complete_len == tail.bytes_read as u64
-                        && tail.bytes_read <= STATUS_LIMIT
-                        && {
-                            let bytes = read_task_artifact(&root.join(STATUS_NAME))
-                                .map_err(write_failed)?;
-                            bytes.iter().filter(|b| **b == b'\n').count() == 1
-                        })
-            {
-                return Ok(EditOutcome::NoOp {});
-            }
-        }
+    if cleaned.frontmatter == parsed.frontmatter
+        && cleaned.body == parsed.body
+        && clean_status_is_reset(root)?
+    {
+        return Ok(EditOutcome::NoOp {});
     }
     let task_path = root.join(TASK_FILE_NAME);
     let status_path = root.join(STATUS_NAME);
@@ -473,7 +459,42 @@ pub(super) fn clean_pair_locked(
     {
         return Err(clean_conflict("source changed before journal"));
     }
-    let journal_bytes = serde_json::to_vec(&journal).map_err(|e| clean_conflict(e.to_string()))?;
+    let journal_bytes = publish_clean_journal(root, &journal, &tx)?;
+    finish_clean_locked(root, &journal, &journal_bytes)?;
+    Ok(EditOutcome::Wrote {
+        backup: journal.task.backup.map(|p| root.join(p)),
+        #[cfg(test)]
+        content: new_content,
+    })
+}
+
+/// True when the status log already holds only the canonical reset record.
+fn clean_status_is_reset(root: &Path) -> Result<bool, TaskOpError> {
+    let Ok(tail) = read_latest_status_locked(root) else {
+        return Ok(false);
+    };
+    Ok(tail.partial.is_empty()
+        && (tail.len == 0
+            || tail
+                .record
+                .as_ref()
+                .is_some_and(|r| r.kind == "topic_started")
+                && tail.complete_len == tail.bytes_read as u64
+                && tail.bytes_read <= STATUS_LIMIT
+                && {
+                    let bytes =
+                        read_task_artifact(&root.join(STATUS_NAME)).map_err(write_failed)?;
+                    bytes.iter().filter(|b| **b == b'\n').count() == 1
+                }))
+}
+
+/// Stages, syncs and publishes the clean journal; returns its bytes.
+fn publish_clean_journal(
+    root: &Path,
+    journal: &CleanJournal,
+    tx: &str,
+) -> Result<Vec<u8>, TaskOpError> {
+    let journal_bytes = serde_json::to_vec(journal).map_err(|e| clean_conflict(e.to_string()))?;
     let tmp = root.join(format!("{JOURNAL_NAME}.tmp.{tx}"));
     io_boundary("journal_create").map_err(write_failed)?;
     let mut journal_file = create_task_artifact(&tmp).map_err(write_failed)?;
@@ -494,12 +515,7 @@ pub(super) fn clean_pair_locked(
     let published = open_task_sync(&root.join(JOURNAL_NAME)).map_err(clean_pending)?;
     published.sync_at("journal_sync").map_err(clean_pending)?;
     drop(published);
-    finish_clean_locked(root, &journal, &journal_bytes)?;
-    Ok(EditOutcome::Wrote {
-        backup: journal.task.backup.map(|p| root.join(p)),
-        #[cfg(test)]
-        content: new_content,
-    })
+    Ok(journal_bytes)
 }
 
 // ── Core flow (clock-injection seam, §G.1) ─────────────────────────────────

@@ -288,6 +288,82 @@ fn validate_resume_artifact_presence(
     Ok(())
 }
 
+/// Checks one attempt-state file: name, owning attempt and ownership record.
+/// Mismatches go to `errors`; read failures of the entry abort the walk.
+fn validate_attempt_state_entry(
+    path: &Path,
+    attempt_ids: &HashSet<&str>,
+    attempts_by_id: &BTreeMap<&str, &AttemptArtifact>,
+    workgroup: &RunWorkgroupArtifact,
+    errors: &mut Vec<CliError>,
+) -> Result<(), Vec<CliError>> {
+    reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+    if !directories::experiment_path_is_file(path) {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!("Attempt-state entry is not a file: {}", path.display()),
+            path,
+        ));
+        return Ok(());
+    }
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!("Attempt-state entry has invalid name: {}", path.display()),
+            path,
+        ));
+        return Ok(());
+    };
+    let attempt_id = file_name
+        .strip_suffix(".running.json")
+        .or_else(|| file_name.strip_suffix(".done.json"));
+    let Some(attempt_id) = attempt_id else {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!(
+                "Attempt-state entry has unsupported name: {}",
+                path.display()
+            ),
+            path,
+        ));
+        return Ok(());
+    };
+    if !attempt_ids.contains(attempt_id) {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!(
+                "Attempt-state entry does not match a run attempt: {}",
+                path.display()
+            ),
+            path,
+        ));
+        return Ok(());
+    }
+    let ownership: AttemptOwnershipArtifact = match read_json(path) {
+        Ok(ownership) => ownership,
+        Err(e) => {
+            errors.push(err_at_path("run_artifact_unparseable", e, path));
+            return Ok(());
+        }
+    };
+    if ownership.schema_version != 1 {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            "Attempt ownership schemaVersion must be 1",
+            path,
+        ));
+        return Ok(());
+    }
+    if let Some(attempt) = attempts_by_id.get(attempt_id) {
+        if let Err(mut ownership_errors) =
+            validate_ownership_matches_attempt(&ownership, attempt, workgroup)
+        {
+            errors.append(&mut ownership_errors);
+        }
+    }
+    Ok(())
+}
+
 fn validate_attempt_state_contract(
     state_dir: &Path,
     attempts: &[AttemptArtifact],
@@ -311,71 +387,13 @@ fn validate_attempt_state_contract(
                     state_dir,
                 )]
             })?;
-            reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
-            if !directories::experiment_path_is_file(&path) {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!("Attempt-state entry is not a file: {}", path.display()),
-                    &path,
-                ));
-                return Ok(());
-            }
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!("Attempt-state entry has invalid name: {}", path.display()),
-                    &path,
-                ));
-                return Ok(());
-            };
-            let attempt_id = file_name
-                .strip_suffix(".running.json")
-                .or_else(|| file_name.strip_suffix(".done.json"));
-            let Some(attempt_id) = attempt_id else {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!(
-                        "Attempt-state entry has unsupported name: {}",
-                        path.display()
-                    ),
-                    &path,
-                ));
-                return Ok(());
-            };
-            if !attempt_ids.contains(attempt_id) {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!(
-                        "Attempt-state entry does not match a run attempt: {}",
-                        path.display()
-                    ),
-                    &path,
-                ));
-                return Ok(());
-            }
-            let ownership: AttemptOwnershipArtifact = match read_json(&path) {
-                Ok(ownership) => ownership,
-                Err(e) => {
-                    errors.push(err_at_path("run_artifact_unparseable", e, &path));
-                    return Ok(());
-                }
-            };
-            if ownership.schema_version != 1 {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    "Attempt ownership schemaVersion must be 1",
-                    &path,
-                ));
-                return Ok(());
-            }
-            if let Some(attempt) = attempts_by_id.get(attempt_id) {
-                if let Err(mut ownership_errors) =
-                    validate_ownership_matches_attempt(&ownership, attempt, workgroup)
-                {
-                    errors.append(&mut ownership_errors);
-                }
-            }
-            Ok(())
+            validate_attempt_state_entry(
+                &path,
+                &attempt_ids,
+                &attempts_by_id,
+                workgroup,
+                &mut errors,
+            )
         })();
         match result {
             Ok(()) => std::ops::ControlFlow::Continue(()),
