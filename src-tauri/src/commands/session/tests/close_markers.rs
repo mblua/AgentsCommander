@@ -558,7 +558,7 @@ async fn create_session_inner_keeps_markers_cleared_when_cancelled_after_spawn()
         .mark_auto_closed(&f.fqn, marker_ts(0)));
     let mut create = Box::pin(f.create());
     tokio::select! {
-        _ = backend.entered.notified() => {}
+        () = backend.entered.notified() => {}
         _ = &mut create => panic!("create must stay parked in spawn"),
     }
     drop(create);
@@ -629,7 +629,7 @@ async fn foreign_common_create_second_progresses_while_first_core_retained_after
     );
     let mut first = Box::pin(fixture.create());
     tokio::select! {
-        _ = backend.entered.notified() => {},
+        () = backend.entered.notified() => {},
         _ = &mut first => panic!("first real core must be parked in backend spawn"),
     }
     drop(first);

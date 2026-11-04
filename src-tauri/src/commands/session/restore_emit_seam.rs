@@ -10,7 +10,7 @@ static SEAMS: Mutex<Option<HashMap<String, Seam>>> = Mutex::new(None);
 pub(crate) fn install(fqn: &str, reached: Sender<()>, release: Receiver<()>) {
     SEAMS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert_with(HashMap::new)
         .insert(fqn.to_string(), (reached, release));
 }
@@ -18,7 +18,7 @@ pub(crate) fn install(fqn: &str, reached: Sender<()>, release: Receiver<()>) {
 pub(crate) fn hit(fqn: &str) {
     let seam = SEAMS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
         .and_then(|map| map.remove(fqn));
     if let Some((reached, release)) = seam {

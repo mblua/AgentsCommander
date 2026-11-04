@@ -96,7 +96,7 @@ impl CreateCompletion {
 }
 
 /// Core session creation logic shared by the Tauri command and the restore path.
-/// Creates a session record, spawns a PTY, and emits the session_created event.
+/// Creates a session record, spawns a PTY, and emits the `session_created` event.
 /// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
 /// resume flags (Claude/Pi/Antigravity `--continue`, Codex `resume --last`, and for a
 /// trusted empty-argv local macOS/Linux Muse recipe `resume --last`, #1873)
@@ -106,7 +106,7 @@ impl CreateCompletion {
 /// `skip_auto_resume` controls provider auto-resume injection:
 /// - `true` — suppress all provider auto-resume. Use this for any "fresh
 ///   create" call site (UI/CLI/root-agent create, mailbox wake-from-cold
-///   meaning no SessionManager record at this CWD, `restart_session` with
+///   meaning no `SessionManager` record at this CWD, `restart_session` with
 ///   default semantics from `effective_restart_skip_auto_resume`).
 /// - `false` — allow provider auto-resume. Use this only for paths restoring
 ///   a session AC already knows about (the startup-restore loop in `lib.rs`,

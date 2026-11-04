@@ -409,8 +409,7 @@ fn reject_comanaged_queue_outbox(outbox_dir: &Path) -> Result<(), String> {
     // A real path that canonicalizes onto the queue (a symlink or an existing
     // alias) is rejected even when its lexical shape differs.
     let aliased = crate::filesystem::directories::canonical_cli_discovery_path(outbox_dir)
-        .ok()
-        .is_some_and(|canonical| resolved_queue_shape(&canonical) == Some(true));
+        .is_ok_and(|canonical| resolved_queue_shape(&canonical) == Some(true));
     if resolved_queue_shape(outbox_dir) != Some(false) || aliased {
         return Err(format!(
             "--outbox may not target the Co-managed provenance queue ({}); only the Co-managed \

@@ -315,7 +315,7 @@ fn issue_2837_clean_external_change_before_journal_keeps_pair() {
             "before_source_recheck".into(),
             root.join(STATUS_NAME),
             b"external history".to_vec(),
-        ))
+        ));
     });
     assert!(matches!(
         issue_2837_clean(root),
@@ -339,7 +339,7 @@ fn issue_2837_clean_external_change_immediately_before_rename() {
             "task_rename".into(),
             root.join("TASK.md"),
             b"external task".to_vec(),
-        ))
+        ));
     });
     assert!(matches!(
         issue_2837_clean(root),
