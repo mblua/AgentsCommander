@@ -342,8 +342,7 @@ pub(crate) fn extract_group(
             absolute: RawStringField::string(abs),
             relative: companion_list
                 .as_ref()
-                .map(|c| c[i].clone())
-                .unwrap_or_else(RawStringField::absent),
+                .map_or_else(RawStringField::absent, |c| c[i].clone()),
         })
         .collect();
 
@@ -489,8 +488,7 @@ pub(crate) fn apply_project_decode_to_value(
             state
                 .selected_head
                 .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
         );
         root.insert(
             FIELD_PROJECT_PATHS.to_string(),

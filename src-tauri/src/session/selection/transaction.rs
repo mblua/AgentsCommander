@@ -275,7 +275,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         let manager = self.manager().await;
         let activity_owner = manager.activity_owner();
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let authorized = owner.state.lock().ok().is_some_and(|state| {
+        let authorized = owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == *nonce
                 && state.stage == ReplacementStage::Executing
                 && state.entry_create.as_ref().is_some_and(|create| {
@@ -378,7 +378,7 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) fn has_accepted_lifecycle_core(&self) -> bool {
         self.lifecycle_entry.as_ref().is_some_and(|(owner, nonce)| {
-            owner.state.lock().ok().is_some_and(|state| {
+            owner.state.lock().is_ok_and(|state| {
                 state.executor_nonce == *nonce && state.stage == ReplacementStage::Executing
             })
         })
