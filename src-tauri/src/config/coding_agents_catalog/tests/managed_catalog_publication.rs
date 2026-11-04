@@ -84,7 +84,7 @@ fn managed_catalog_stale_revision_with_a_valid_pin_survives_repeated_reads() {
     );
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"PINNED"}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"PINNED"}]}"#,
     );
     let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
     let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
@@ -148,7 +148,7 @@ fn managed_catalog_stale_revision_with_an_invalid_local_reports_both() {
     );
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"broken"}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"broken"}]}"#,
     );
     let report = load_catalog_report(dir.path());
     assert!(report.unavailable.is_none());
@@ -267,7 +267,7 @@ fn managed_catalog_local_symlink_and_dangling_link_are_preserved_as_invalid() {
     let dir = seed_dir();
     ensure_seeded(dir.path(), None);
     let target = dir.path().join("user-local-target.json");
-    let target_bytes = br##"{"schemaVersion":1,"agents":[{"key":"claude","label":"LINKED"}]}"##;
+    let target_bytes = br#"{"schemaVersion":1,"agents":[{"key":"claude","label":"LINKED"}]}"#;
     std::fs::write(&target, target_bytes).unwrap();
     let local = local_catalog_path(dir.path());
     std::fs::remove_file(&local).unwrap();

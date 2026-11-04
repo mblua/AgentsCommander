@@ -74,16 +74,14 @@ pub(crate) fn resolved_paths_include_path(
 pub(crate) fn has_agent_matrix_dir_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("_agent_"))
-        .unwrap_or(false)
+        .is_some_and(|name| name.starts_with("_agent_"))
 }
 
 pub(crate) fn path_parent_is_ac_root(path: &Path) -> bool {
     path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        .map(crate::config::ac_root::is_ac_root_name)
-        .unwrap_or(false)
+        .is_some_and(crate::config::ac_root::is_ac_root_name)
 }
 
 /// True only for an ORIGIN Agent Matrix: a real (non-symlink) `_agent_*`
@@ -236,9 +234,10 @@ pub(crate) fn render_agent_repos_string(
 
         let resolved = cwd_path.join(rel);
         // Canonicalize to get a clean absolute path (strip \\?\ on Windows)
-        let abs_path = directories::canonical_context_repo(&resolved)
-            .map(|p| display_path(&p))
-            .unwrap_or_else(|_| resolved.to_string_lossy().to_string());
+        let abs_path = directories::canonical_context_repo(&resolved).map_or_else(
+            |_| resolved.to_string_lossy().to_string(),
+            |p| display_path(&p),
+        );
 
         let repo_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
 
