@@ -93,9 +93,7 @@ pub(crate) fn is_exact_temp_name(name: &str) -> bool {
     else {
         return false;
     };
-    Uuid::parse_str(uuid_text)
-        .map(|uuid| uuid.hyphenated().to_string() == uuid_text)
-        .unwrap_or(false)
+    Uuid::parse_str(uuid_text).is_ok_and(|uuid| uuid.hyphenated().to_string() == uuid_text)
 }
 
 #[cfg(unix)]
