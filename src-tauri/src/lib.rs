@@ -268,8 +268,8 @@ pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoar
 const SHUTDOWN_CLEANUP_BUDGET_SECS: u64 = 5;
 
 /// Master token generated at app startup. Allows bypassing team validation (`can_reach`).
-/// Persisted to `master-token.txt` in `config_dir` for CLI use. Regenerated on each app startup. See
-/// #34.
+/// Persisted to `master-token.txt` in `config_dir` for CLI use. Regenerated on each app startup.
+/// See #34.
 /// Field is private — use `matches()` for constant-time comparison.
 pub struct MasterToken(String);
 
