@@ -623,9 +623,7 @@ impl ClaudeReader {
         // it, rotation follows the newest mtime exactly as before.
         let mut pinned_attach = false;
         let latest =
-            if !runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
-                newest
-            } else {
+            if runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
                 let pinned = self
                     .pin_id
                     .as_deref()
@@ -672,6 +670,8 @@ impl ClaudeReader {
                     }
                     AttachDecision::Wait | AttachDecision::Nothing => None,
                 }
+            } else {
+                newest
             };
         (latest, pinned_attach)
     }

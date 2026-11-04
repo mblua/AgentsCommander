@@ -54,7 +54,7 @@ impl RowTracker {
 
             let idx = row_idx as usize;
             if idx < self.rows.len() && self.rows[idx].content != cleaned {
-                self.rows[idx].content = cleaned.to_string();
+                self.rows[idx].content = cleaned.clone();
                 self.rows[idx].last_changed = now;
                 self.rows[idx].emitted = false;
             }

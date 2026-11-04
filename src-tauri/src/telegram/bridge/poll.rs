@@ -414,7 +414,7 @@ async fn deliver_text(
     logger: &mut BridgeLogger,
 ) {
     if let Err(e) = runtime.inject_text(session_id, text).await {
-        logger.log("PTY_ERR", session_id_str, &e.to_string());
+        logger.log("PTY_ERR", session_id_str, &e.clone());
         log::error!("Failed to write Telegram input to PTY: {e}");
     }
 
