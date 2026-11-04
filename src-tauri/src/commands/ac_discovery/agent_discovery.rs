@@ -97,7 +97,7 @@ pub async fn discover_ac_agents(
         crate::config::coordinator_clocks::ClockEntry,
     > = coordinator_clocks
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot();
     // Discovery-wide team snapshot — used per-replica for is_coordinator
     // and at the end for refresh_coordinator_flags. Computed once so a
@@ -309,11 +309,7 @@ fn discover_agent_matrix(
 
     let preferred_agent_id = read_preferred_agent_id(path, cfg);
 
-    log::info!(
-        "[ac-discovery] agent: dir={:?}, preferred_agent_id={:?}",
-        dir_name,
-        preferred_agent_id
-    );
+    log::info!("[ac-discovery] agent: dir={dir_name:?}, preferred_agent_id={preferred_agent_id:?}");
 
     AcAgentMatrix {
         name: display_name,

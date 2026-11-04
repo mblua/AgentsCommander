@@ -35,7 +35,8 @@ use crate::web::broadcast::WsBroadcaster;
 #[cfg(test)]
 use crate::DetachedSessionsState;
 
-/// Selection's lifecycle operations; transport remains on SelectionTransaction until later phases.
+/// Selection's lifecycle operations; transport remains on `SelectionTransaction`
+/// until later phases.
 pub(crate) trait LifecycleExecutor<T>: Send + Sync {
     fn prepare<'a>(
         &'a self,
@@ -208,8 +209,8 @@ impl LifecycleLease {
     }
 }
 
-/// Core session destruction logic shared by the Tauri command and the MailboxPoller.
-/// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
+/// Core session destruction logic shared by the Tauri command and the `MailboxPoller`.
+/// Kills PTY, detaches Telegram bridge, removes from `SessionManager`, persists, and emits events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DestructionSource {
     ManualClose,
@@ -265,8 +266,7 @@ impl DestroyOutcome {
             .failed
             .into_iter()
             .find(|(failed_id, _)| *failed_id == id)
-            .map(|(_, message)| message)
-            .unwrap_or_else(|| "Session not found".to_string());
+            .map_or_else(|| "Session not found".to_string(), |(_, message)| message);
         Err(message)
     }
 }
@@ -571,28 +571,17 @@ fn publish_lifecycle_event<R: Runtime, T: Serialize>(
     let value = match serde_json::to_value(payload) {
         Ok(value) => value,
         Err(error) => {
-            log::error!(
-                "[selection] failed to serialize event={} payload: {}",
-                event,
-                error
-            );
+            log::error!("[selection] failed to serialize event={event} payload: {error}");
             return;
         }
     };
     if let Err(error) = app.emit(event, value.clone()) {
-        log::error!(
-            "[selection] Tauri publication failed event={}: {}",
-            event,
-            error
-        );
+        log::error!("[selection] Tauri publication failed event={event}: {error}");
     }
     if let Some(broadcaster) = app.try_state::<WsBroadcaster>() {
         broadcaster.broadcast_event(event, &value);
     } else {
-        log::debug!(
-            "[selection] WebSocket broadcaster unavailable event={}",
-            event
-        );
+        log::debug!("[selection] WebSocket broadcaster unavailable event={event}");
     }
 }
 

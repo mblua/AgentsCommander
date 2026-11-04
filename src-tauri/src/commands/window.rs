@@ -771,16 +771,16 @@ pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> 
     .icon(icon)
     .map_err(|e| e.to_string())?
     .inner_size(
-        placement.width as f64 / scale_factor,
-        placement.height as f64 / scale_factor,
+        f64::from(placement.width) / scale_factor,
+        f64::from(placement.height) / scale_factor,
     )
     .position(
-        placement.x as f64 / scale_factor,
-        placement.y as f64 / scale_factor,
+        f64::from(placement.x) / scale_factor,
+        f64::from(placement.y) / scale_factor,
     )
     .min_inner_size(
-        RESOURCE_MONITOR_MIN_WIDTH as f64,
-        RESOURCE_MONITOR_MIN_HEIGHT as f64,
+        f64::from(RESOURCE_MONITOR_MIN_WIDTH),
+        f64::from(RESOURCE_MONITOR_MIN_HEIGHT),
     )
     .decorations(false)
     .zoom_hotkeys_enabled(false)

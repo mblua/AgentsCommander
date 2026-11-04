@@ -245,7 +245,7 @@ impl crate::pty::container_runtime::ContainerRuntime for GatedStopRuntime {
         if let Some(started) = self
             .stop_started
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             let _ = started.send(());
@@ -278,7 +278,7 @@ impl crate::pty::container_runtime::ContainerRuntime for GatedStartStopRuntime {
         if let Some(started) = self
             .start_started
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             let _ = started.send(());
@@ -301,7 +301,7 @@ impl crate::pty::container_runtime::ContainerRuntime for GatedStartStopRuntime {
         if let Some(started) = self
             .stop_started
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             let _ = started.send(());
@@ -314,7 +314,7 @@ impl crate::pty::container_runtime::ContainerRuntime for GatedStartStopRuntime {
         match self
             .stop_outcomes
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front()
             .unwrap_or(CanceledStartStopOutcome::Success)
         {

@@ -514,9 +514,9 @@ async fn issue_3189_retry_callback_pending_cancels() {
         let report = MailboxPoller::report_self_handoff_failure(app, issue_3189_failure(id));
         tokio::pin!(report);
         tokio::select! {
-            _ = signal.notified() => {}
-            _ = &mut report => panic!("report must wait for held input permit"),
-            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("injector not reached"),
+            () = signal.notified() => {}
+            () = &mut report => panic!("report must wait for held input permit"),
+            () = tokio::time::sleep(Duration::from_secs(2)) => panic!("injector not reached"),
         }
         // Poll with a dedicated waker until blocked. The permit release must wake it;
         // this proves it registered at acquire, rather than merely reaching the signal.
@@ -577,9 +577,9 @@ async fn issue_3189_retry_callback_waiting_defers() {
         let report = MailboxPoller::report_self_handoff_failure(app, issue_3189_failure(id));
         tokio::pin!(report);
         tokio::select! {
-            _ = signal.notified() => {}
-            _ = &mut report => panic!("report must wait for held input permit"),
-            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("injector not reached"),
+            () = signal.notified() => {}
+            () = &mut report => panic!("report must wait for held input permit"),
+            () = tokio::time::sleep(Duration::from_secs(2)) => panic!("injector not reached"),
         }
         // Poll with a dedicated waker until blocked. The permit release must wake it;
         // this proves it registered at acquire, rather than merely reaching the signal.
@@ -693,7 +693,7 @@ async fn issue_3189_retry_near_deadline_completes() {
         );
         tokio::pin!(delivery);
         tokio::select! {
-            _ = signal.notified() => {}
+            () = signal.notified() => {}
             _ = &mut delivery => panic!("delivery completed before Enters"),
         }
         // Deadline passage is the subject here; synchronization above proves start first.
