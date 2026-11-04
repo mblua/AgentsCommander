@@ -324,7 +324,7 @@ impl SessionManager {
         name: String,
     ) -> Result<(), AppError> {
         self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
-            session.name = name
+            session.name = name;
         })
         .await
     }
