@@ -51,7 +51,7 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
             .app()
             .state::<Arc<Mutex<PtyManager>>>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .response_close_state();
         let permit = acquire_carrier_mutation_permit().await;
         tracker.invalidate_manager_row(session_id, std::time::Instant::now());
@@ -101,7 +101,7 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
         let detached = transaction.app().state::<DetachedSessionsState>();
         detached
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
     }
 
@@ -125,10 +125,7 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
             serde_json::json!({ "sessionId": session_id.to_string() }),
         ) {
             log::warn!(
-                "[session] telegram detach publication failed session={} source={:?}: {}",
-                session_id,
-                source,
-                error
+                "[session] telegram detach publication failed session={session_id} source={source:?}: {error}"
             );
         }
         shutdown.spawn_wait_or_abort();
@@ -143,7 +140,7 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
         {
             let pty = transaction.app().state::<Arc<Mutex<PtyManager>>>();
             pty.lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .publish_stop_witness(session_id, "session-destroy");
         }
         let monitor = Arc::clone(&resource_monitor);
@@ -166,16 +163,10 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
                 }
             }
             Ok(Err(error)) => log::warn!(
-                "[session] resource cleanup failed session={} source={:?}: {}",
-                session_id,
-                source,
-                error
+                "[session] resource cleanup failed session={session_id} source={source:?}: {error}"
             ),
             Err(error) => log::warn!(
-                "[session] resource cleanup task failed session={} source={:?}: {}",
-                session_id,
-                source,
-                error
+                "[session] resource cleanup task failed session={session_id} source={source:?}: {error}"
             ),
         }
     }
@@ -189,7 +180,7 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
         .app()
         .state::<Arc<Mutex<PtyManager>>>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .kill(session_id);
     let still_has_pty = transaction.runtime_snapshot(session_id).has_pty;
     if let Err(error) = kill_result {
@@ -197,10 +188,7 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
             return Err(error.to_string());
         }
         log::warn!(
-            "[session] teardown reported an error after PTY loss session={} source={:?}: {}",
-            session_id,
-            source,
-            error
+            "[session] teardown reported an error after PTY loss session={session_id} source={source:?}: {error}"
         );
     }
     Ok(())
@@ -386,12 +374,12 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
 pub struct CoordinatorCloseOutcome {
     /// true if the close was performed; false if confirmation is required first.
     pub closed: bool,
-    /// number of live, working (not waiting_for_input) team members; only
+    /// number of live, working (not `waiting_for_input`) team members; only
     /// meaningful when `closed == false`.
     pub working_count: usize,
 }
 
-/// #588 Count LIVE team members that are working (not waiting_for_input). Pure so
+/// #588 Count LIVE team members that are working (not `waiting_for_input`). Pure so
 /// the working-gate rule is unit-testable without a live app, mirroring how
 /// `auto_close.rs` extracts `team_is_closeable`. A member counts only when it is
 /// both live (PTY-backed) and not waiting for input.

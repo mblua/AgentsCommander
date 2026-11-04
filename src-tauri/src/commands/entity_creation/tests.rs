@@ -266,18 +266,18 @@ fn test_base(tmp: &tempfile::TempDir) -> PathBuf {
 }
 
 fn create_test_agent(base: &Path, name: &str, role_display: &str) -> PathBuf {
-    let agent_dir = base.join(format!("_agent_{}", name));
+    let agent_dir = base.join(format!("_agent_{name}"));
     std::fs::create_dir_all(&agent_dir).expect("create agent");
     std::fs::write(
         agent_dir.join("Role.md"),
-        format!("---\nname: '{}'\n---\n", role_display),
+        format!("---\nname: '{role_display}'\n---\n"),
     )
     .expect("write role");
     agent_dir
 }
 
 fn write_team_value(base: &Path, team_name: &str, value: serde_json::Value) -> (PathBuf, Vec<u8>) {
-    let team_dir = base.join(format!("_team_{}", team_name));
+    let team_dir = base.join(format!("_team_{team_name}"));
     std::fs::create_dir_all(&team_dir).expect("create team");
     let config_path = team_dir.join("config.json");
     let mut bytes = serde_json::to_vec_pretty(&value).expect("serialize team");
@@ -403,7 +403,7 @@ async fn run_agent_delete_for_test_with(
             Ok(metadata)
         }
         AgentDeleteTransactionOutcome::Blocked { raw_error, .. } => {
-            Err(format!("BLOCKERS:{}", raw_error))
+            Err(format!("BLOCKERS:{raw_error}"))
         }
         AgentDeleteTransactionOutcome::Aborted { error } => Err(error),
     }
@@ -411,7 +411,7 @@ async fn run_agent_delete_for_test_with(
 
 /// Helper: create an empty directory at `<root>/<name>` for the test.
 fn touch_dir(root: &Path, name: &str) {
-    std::fs::create_dir(root.join(name)).unwrap_or_else(|e| panic!("create_dir {}: {}", name, e));
+    std::fs::create_dir(root.join(name)).unwrap_or_else(|e| panic!("create_dir {name}: {e}"));
 }
 
 /// C4 (#2470): the seeded state file of every row that seeds one. All four

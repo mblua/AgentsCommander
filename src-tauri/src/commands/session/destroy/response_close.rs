@@ -343,7 +343,7 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
     let owner = Arc::new(ResponseEffectOwner::new(ticket, registration, backend));
     if !response_effect_owners(transaction.app())
         .insert_if_absent(binding.member.session_id, owner.clone())
-        .map_err(|_| "response_effect_owner_poisoned".to_owned())?
+        .map_err(|()| "response_effect_owner_poisoned".to_owned())?
     {
         return Ok(ResponseCloseDisposition::ReconcilePending);
     }
@@ -351,7 +351,7 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
     if !commit_response_close(transaction.app(), &manager, &owner).await {
         response_effect_owners(transaction.app())
             .remove(binding.member.session_id)
-            .map_err(|_| "response_effect_owner_poisoned".to_owned())?;
+            .map_err(|()| "response_effect_owner_poisoned".to_owned())?;
         return Ok(ResponseCloseDisposition::Rejected);
     }
     let monitor = transaction
@@ -455,9 +455,7 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let bridge_result = detach_response_close_telegram(transaction.app(), id).await;
     if let Err(error) = &bridge_result {
         log::warn!(
-            "[session] telegram detach publication failed session={} source=ResponseClose: {}",
-            id,
-            error
+            "[session] telegram detach publication failed session={id} source=ResponseClose: {error}"
         );
     }
     if owner.complete(bridge, bridge_result).is_none() {
@@ -515,9 +513,7 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
         });
     if let Err(error) = &closed {
         log::warn!(
-            "[session] detached window destroy failed session={} source=ResponseClose: {}",
-            id,
-            error
+            "[session] detached window destroy failed session={id} source=ResponseClose: {error}"
         );
     }
     if owner.complete(window, closed).is_none() {
@@ -776,7 +772,7 @@ fn cleanup_settled_response_close<R: tauri::Runtime>(
     let binding = owner.ticket().committed_binding();
     response_effect_owners(app)
         .remove(binding.member.session_id)
-        .map_err(|_| {
+        .map_err(|()| {
             log_postfinish_cleanup(owner, disposition, "owner_remove_unreadable");
             SettlementRejection::PostfinishCleanup
         })?;
