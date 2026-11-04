@@ -609,7 +609,7 @@ pub async fn run_remote_agent_help_startup<H: UpdateCheckHost>(app: H) {
     .await;
     match outcome {
         RemoteAgentHelpCheck::Accepted => {
-            log::info!("[agent-help] downloaded the remote help; it applies at the next start")
+            log::info!("[agent-help] downloaded the remote help; it applies at the next start");
         }
         outcome => log::debug!("[agent-help] {outcome:?}"),
     }
