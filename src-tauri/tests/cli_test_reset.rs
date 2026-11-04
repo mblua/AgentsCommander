@@ -34,8 +34,7 @@ impl Tmp {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
         Self(path)
@@ -144,7 +143,7 @@ fn create_junction(junction: &Path, target: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn open_without_delete_share(path: &Path) -> std::fs::File {
     use std::os::windows::fs::OpenOptionsExt;
-    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
 
     std::fs::OpenOptions::new()
         .read(true)

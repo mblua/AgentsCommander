@@ -41,8 +41,7 @@ impl Tmp {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
         Self(path)
@@ -565,8 +564,7 @@ fn ui_terminal_invalid_session_and_operation_create_no_request_file() {
 
         let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
         let request_count = std::fs::read_dir(&requests_dir)
-            .map(|entries| entries.filter_map(Result::ok).count())
-            .unwrap_or(0);
+            .map_or(0, |entries| entries.filter_map(Result::ok).count());
         assert_eq!(request_count, 0, "invalid {label} created a request file");
     }
 }

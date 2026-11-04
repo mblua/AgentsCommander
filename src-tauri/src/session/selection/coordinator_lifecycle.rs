@@ -117,7 +117,7 @@ impl SelectionCoordinator {
     }
 
     pub(super) fn check_external_submission(&self) -> Result<(), SelectionCoordinatorError> {
-        if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission);
         }
         match CoordinatorPhase::from_u8(self.inner.phase.load(Ordering::Acquire)) {
@@ -753,12 +753,10 @@ impl SelectionCoordinator {
                     || state.entry_terminal_is_verified(operation)
             });
             if !safe {
-                let detail = owner
-                    .state
-                    .try_lock()
-                    .ok()
-                    .map(|state| state.retained_effect_diagnostic())
-                    .unwrap_or_else(|| "detail=owner-state-unreadable".into());
+                let detail = owner.state.try_lock().ok().map_or_else(
+                    || "detail=owner-state-unreadable".into(),
+                    |state| state.retained_effect_diagnostic(),
+                );
                 retained.push(format!(
                     "reason=retained-lifecycle-entry operation={operation} state=unsafe {detail}"
                 ));

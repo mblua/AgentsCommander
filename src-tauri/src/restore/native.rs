@@ -478,8 +478,8 @@ impl RestoreObservers {
             tauri::async_runtime::spawn(async move {
                 tokio::select! {
                     biased;
-                    _ = resume_shutdown.token().cancelled() => {}
-                    _ = commands::session::run_restart_resume(
+                    () = resume_shutdown.token().cancelled() => {}
+                    () = commands::session::run_restart_resume(
                         &resume_app,
                         restart_resume_batch,
                     ) => {}
