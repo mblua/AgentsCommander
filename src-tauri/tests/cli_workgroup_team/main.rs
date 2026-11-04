@@ -340,8 +340,7 @@ fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
         .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|out| out.status.success())
 }
 
 fn create_dirty_repo(repo_dir: &Path) {
@@ -405,7 +404,7 @@ fn create_junction(junction: &Path, target: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn open_without_delete_share(path: &Path) -> std::fs::File {
     use std::os::windows::fs::OpenOptionsExt;
-    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
 
     std::fs::OpenOptions::new()
         .read(true)
