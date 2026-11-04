@@ -15,7 +15,7 @@ impl SessionManager {
     pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_agent_kind_with_carrier_permit(&carrier_permit, id, kind)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -56,7 +56,7 @@ impl SessionManager {
         kind: Option<CodingAgentKind>,
     ) -> Result<(), AppError> {
         self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
-            session.agent_kind = kind
+            session.agent_kind = kind;
         })
         .await
     }
@@ -118,7 +118,7 @@ impl SessionManager {
             effective_codex_home,
             profile_content_hash,
         )
-        .await
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -217,7 +217,7 @@ impl SessionManager {
     pub async fn set_resolved_claude_projects_dir(&self, id: Uuid, path: Option<PathBuf>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_resolved_claude_projects_dir_with_carrier_permit(&carrier_permit, id, path)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -314,7 +314,7 @@ impl SessionManager {
     pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_telegram_bot_id_with_carrier_permit(&carrier_permit, id, bot_id)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -351,7 +351,7 @@ impl SessionManager {
     pub async fn set_was_detached(&self, id: Uuid, detached: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_was_detached_with_carrier_permit(&carrier_permit, id, detached)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -391,7 +391,7 @@ impl SessionManager {
     pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_effective_shell_args_with_carrier_permit(&carrier_permit, id, args)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -442,7 +442,7 @@ impl SessionManager {
     pub async fn set_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_git_repos_with_carrier_permit(&carrier_permit, id, repos)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -512,7 +512,7 @@ impl SessionManager {
     pub async fn set_is_coordinator(&self, id: Uuid, is_coordinator: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_is_coordinator_with_carrier_permit(&carrier_permit, id, is_coordinator)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

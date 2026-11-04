@@ -237,9 +237,10 @@ pub(crate) fn sync_one_template(
                 && (spec.id != "rootAgent" || snapshot.bytes == current_default.as_bytes())
             {
                 loaded.mark_seeded(spec, &current_default_sha256);
-                let target_outcome = carried_publication
-                    .map(TemplatePublication::Published)
-                    .unwrap_or(TemplatePublication::AlreadyCurrent);
+                let target_outcome = carried_publication.map_or(
+                    TemplatePublication::AlreadyCurrent,
+                    TemplatePublication::Published,
+                );
                 return ContextTemplateExecution::from_parts(
                     Ok(TemplateSyncOutcome {
                         pending_update: None,
@@ -253,11 +254,10 @@ pub(crate) fn sync_one_template(
     }
 
     let Some(snapshot) = snapshot else {
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::Skipped(
-                ContextTemplateSkipReason::MissingAfterCreate,
-            ));
+        let target_outcome = carried_publication.map_or(
+            TemplatePublication::Skipped(ContextTemplateSkipReason::MissingAfterCreate),
+            TemplatePublication::Published,
+        );
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
@@ -272,9 +272,10 @@ pub(crate) fn sync_one_template(
         && (spec.id != "rootAgent" || snapshot.bytes == current_default.as_bytes())
     {
         loaded.mark_seeded(spec, &current_default_sha256);
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::AlreadyCurrent);
+        let target_outcome = carried_publication.map_or(
+            TemplatePublication::AlreadyCurrent,
+            TemplatePublication::Published,
+        );
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
@@ -331,11 +332,10 @@ fn repair_distribution_template(
     if !repair {
         // D2: no reporting channel on this path, so the repair is deferred to
         // the scan rather than replacing operator bytes with no notification.
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::Skipped(
-                ContextTemplateSkipReason::DistributionRepairDeferred,
-            ));
+        let target_outcome = carried_publication.map_or(
+            TemplatePublication::Skipped(ContextTemplateSkipReason::DistributionRepairDeferred),
+            TemplatePublication::Published,
+        );
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
@@ -528,9 +528,10 @@ fn skipped_customized_template(
     carried_publication: Option<ContextPublication>,
     reason: ContextTemplateSkipReason,
 ) -> ContextTemplateExecution<TemplateSyncOutcome> {
-    let target_outcome = carried_publication
-        .map(TemplatePublication::Published)
-        .unwrap_or(TemplatePublication::Skipped(reason));
+    let target_outcome = carried_publication.map_or(
+        TemplatePublication::Skipped(reason),
+        TemplatePublication::Published,
+    );
     ContextTemplateExecution::from_parts(
         Ok(TemplateSyncOutcome {
             pending_update: None,
@@ -585,9 +586,10 @@ fn observe_customized_template(
         );
         None
     };
-    let target_outcome = carried_publication
-        .map(TemplatePublication::Published)
-        .unwrap_or(TemplatePublication::Observed);
+    let target_outcome = carried_publication.map_or(
+        TemplatePublication::Observed,
+        TemplatePublication::Published,
+    );
     ContextTemplateExecution::from_parts(
         Ok(TemplateSyncOutcome {
             pending_update,

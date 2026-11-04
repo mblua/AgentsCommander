@@ -152,7 +152,7 @@ fn idle_burst_serde_and_local_layer() {
     write_managed_base(dir.path(), &shipped_def_json(&["claude"]), &revision, true);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":2048}}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":2048}}]}"#,
     );
     let report = load_catalog_report(dir.path());
     assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
@@ -170,7 +170,7 @@ fn idle_burst_serde_and_local_layer() {
     // Local `null` clears the whole object (filter off).
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":null}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":null}]}"#,
     );
     let report = load_catalog_report(dir.path());
     assert!(report.catalog[0].idle_burst.is_none());
@@ -178,10 +178,10 @@ fn idle_burst_serde_and_local_layer() {
     // Unknown subfields and invalid value shapes disable the whole local
     // layer; the base entry stays intact.
     for local in [
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"foo":1}}]}"##,
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":-1}}]}"##,
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":"3"}}]}"##,
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":-1}}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"foo":1}}]}"#,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":-1}}]}"#,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":"3"}}]}"#,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxSecs":-1}}]}"#,
     ] {
         write_local(dir.path(), local);
         let report = load_catalog_report(dir.path());

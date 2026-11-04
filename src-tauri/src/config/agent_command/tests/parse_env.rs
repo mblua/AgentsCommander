@@ -70,11 +70,11 @@ fn stringifies_tokens_with_frontend_msvc_quoting_cases() {
         (vec!["codex", "--config", ""], "codex --config \"\""),
         (
             vec!["codex", r#"C:\tmp\"quoted"#],
-            r##"codex "C:\tmp\\\"quoted""##,
+            r#"codex "C:\tmp\\\"quoted""#,
         ),
         (
-            vec!["codex", r#"C:\Program Files\Codex\codex.exe"#],
-            r##"codex "C:\Program Files\Codex\codex.exe""##,
+            vec!["codex", r"C:\Program Files\Codex\codex.exe"],
+            r#"codex "C:\Program Files\Codex\codex.exe""#,
         ),
     ];
 
@@ -92,7 +92,7 @@ fn stringifies_tokens_with_frontend_msvc_quoting_cases() {
 #[test]
 fn parses_quoted_backslashes_like_frontend_argv_parser() {
     let normalized = normalize_legacy_agent_command(
-        r##"codex "C:\Program Files\Codex\codex.exe" "C:\tmp\\\"quoted""##,
+        r#"codex "C:\Program Files\Codex\codex.exe" "C:\tmp\\\"quoted""#,
     )
     .unwrap();
 
@@ -100,7 +100,7 @@ fn parses_quoted_backslashes_like_frontend_argv_parser() {
     assert_eq!(
         normalized.shell_args,
         vec![
-            r#"C:\Program Files\Codex\codex.exe"#.to_string(),
+            r"C:\Program Files\Codex\codex.exe".to_string(),
             r#"C:\tmp\"quoted"#.to_string(),
         ]
     );

@@ -54,8 +54,9 @@ fn next_actor_deadline(
     }
     state
         .earliest_due()
-        .map(|(deadline, _)| deadline.min(maintenance_deadline))
-        .unwrap_or(maintenance_deadline)
+        .map_or(maintenance_deadline, |(deadline, _)| {
+            deadline.min(maintenance_deadline)
+        })
 }
 
 pub(super) async fn run_context_alert_actor(
@@ -77,7 +78,7 @@ pub(super) async fn run_context_alert_actor(
 
         tokio::select! {
             biased;
-            _ = shutdown.cancelled() => {
+            () = shutdown.cancelled() => {
                 finish_in_flight_shutdown(&mut in_flight, &mut completion_rx).await;
                 state.sessions.clear();
                 state.batches.clear();
@@ -110,7 +111,7 @@ pub(super) async fn run_context_alert_actor(
                     ).await;
                 }
             }
-            _ = &mut sleep => {
+            () = &mut sleep => {
                 handle_actor_deadline(
                     &runtime,
                     &clock,
@@ -198,7 +199,7 @@ pub(super) async fn process_sample(
         ContextSample::Unavailable { session_id } => {
             let live = tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => return,
+                () = shutdown.cancelled() => return,
                 live = runtime.check_session_live(session_id) => live,
             };
             if !live {
@@ -219,7 +220,7 @@ pub(super) async fn process_sample(
             }
             let resolution = tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => return,
+                () = shutdown.cancelled() => return,
                 resolution = runtime.resolve_member_policy(session_id) => resolution,
             };
             apply_numeric_resolution(
@@ -622,7 +623,7 @@ pub(super) async fn dispatch_due_batch(
     let attempt_cancellation = shutdown.child_token();
     let preparation = tokio::select! {
         biased;
-        _ = shutdown.cancelled() => return ResolutionRecovery::default(),
+        () = shutdown.cancelled() => return ResolutionRecovery::default(),
         preparation = runtime.prepare_attempt(snapshot, attempt_cancellation.clone()) =>
             preparation,
     };
@@ -774,7 +775,7 @@ pub(super) async fn run_maintenance(
     for session_id in ids {
         let live = tokio::select! {
             biased;
-            _ = shutdown.cancelled() => return,
+            () = shutdown.cancelled() => return,
             live = runtime.check_session_live(session_id) => live,
         };
         if !live {

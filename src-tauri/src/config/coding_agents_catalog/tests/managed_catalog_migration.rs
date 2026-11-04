@@ -85,7 +85,7 @@ fn managed_catalog_migration_refuses_an_existing_local() {
         r##""command":"mytool","envs":[],"isolatedHome":false,"removable":true}]"##,
     ));
     write_legacy_base(dir.path(), &legacy);
-    let user_local = r##"{"schemaVersion":1,"agents":[]}"##;
+    let user_local = r#"{"schemaVersion":1,"agents":[]}"#;
     write_local(dir.path(), user_local);
 
     assert!(ensure_seeded(dir.path(), None).is_none());
@@ -110,7 +110,7 @@ fn managed_catalog_migration_refuses_ambiguous_legacy_sources() {
     let cases = [
         (
             "unknown root field",
-            r##"{"schemaVersion":1,"agents":[],"future":1}"##,
+            r#"{"schemaVersion":1,"agents":[],"future":1}"#,
         ),
         (
             "unknown row field",
@@ -134,7 +134,7 @@ fn managed_catalog_migration_refuses_ambiguous_legacy_sources() {
                 r##""description":"d","color":"#111","command":"claude"}]}"##,
             ),
         ),
-        ("unsupported schema", r##"{"schemaVersion":2,"agents":[]}"##),
+        ("unsupported schema", r#"{"schemaVersion":2,"agents":[]}"#),
     ];
     for (label, legacy) in cases {
         let dir = seed_dir();
@@ -164,7 +164,7 @@ fn managed_catalog_migration_refuses_ambiguous_legacy_sources() {
 #[test]
 fn managed_catalog_migration_of_an_empty_catalog_tombstones_every_shipped_key() {
     let dir = seed_dir();
-    write_legacy_base(dir.path(), r##"{"schemaVersion":1,"agents":[]}"##);
+    write_legacy_base(dir.path(), r#"{"schemaVersion":1,"agents":[]}"#);
     assert!(ensure_seeded(dir.path(), None).is_some());
     let local = local_json(dir.path());
     let rows = local["agents"].as_array().unwrap();
@@ -464,7 +464,7 @@ fn managed_catalog_interrupt_with_a_local_edit_blocks_recovery() {
     ));
     write_legacy_base(dir.path(), &legacy);
     let _ = with_failure_at("after_local", || ensure_seeded(dir.path(), None));
-    let edited = r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"EDITED BETWEEN RUNS"}]}"##;
+    let edited = r#"{"schemaVersion":1,"agents":[{"key":"mine","label":"EDITED BETWEEN RUNS"}]}"#;
     write_local(dir.path(), edited);
     let entries_before = dir_entries(&catalog_dir(dir.path()));
 
@@ -520,7 +520,7 @@ fn managed_catalog_reads_never_write_in_any_state() {
     ensure_seeded(dir.path(), None);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"Mine"}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"Mine"}]}"#,
     );
     assert_reads_leave_state_unchanged(dir.path());
 
