@@ -16,7 +16,7 @@ fn main() {
     });
 
     // Make BUILD_PROFILE available via env!("BUILD_PROFILE") in Rust code.
-    println!("cargo:rustc-env=BUILD_PROFILE={}", profile);
+    println!("cargo:rustc-env=BUILD_PROFILE={profile}");
     println!("cargo:rerun-if-env-changed=BUILD_PROFILE");
 
     let has_dist = configure_embedded_dist(&profile);
@@ -43,8 +43,8 @@ fn configure_embedded_dist(profile: &str) -> bool {
 
     if profile != "dev" {
         panic!(
-            "missing ../dist/index.html for {} build; run npm run build before compiling src-tauri",
-            profile
+            "missing ../dist/index.html for {profile} build; run npm run build before compiling \
+            src-tauri"
         );
     }
 

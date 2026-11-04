@@ -166,9 +166,9 @@ pub fn web_server_port() -> u16 {
         Some("dev") => 9876,
         Some("stage") => 9878,
         Some(suffix) => {
-            let hash = suffix
-                .bytes()
-                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash = suffix.bytes().fold(0u32, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u32::from(b))
+            });
             9880 + (hash % 20) as u16
         }
         None => match BUILD_PROFILE {
@@ -188,9 +188,9 @@ pub fn api_server_port() -> u16 {
         Some("dev") => 9886,
         Some("stage") => 9888,
         Some(suffix) => {
-            let hash = suffix
-                .bytes()
-                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash = suffix.bytes().fold(0u32, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u32::from(b))
+            });
             9900 + (hash % 20) as u16
         }
         None => match BUILD_PROFILE {
