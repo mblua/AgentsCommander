@@ -62,10 +62,10 @@ fn physical_aliases(dir: &Path) -> Vec<PathBuf> {
     }
     let leaf = dir.file_name().unwrap().to_string_lossy().into_owned();
     let upper = leaf.to_ascii_uppercase();
-    let flipped = if upper != leaf {
-        upper
-    } else {
+    let flipped = if upper == leaf {
         leaf.to_ascii_lowercase()
+    } else {
+        upper
     };
     let variant = dir.with_file_name(flipped);
     let same = std::fs::canonicalize(&variant).is_ok_and(|resolved| resolved == canonical);

@@ -383,13 +383,13 @@ pub(crate) fn source_snapshot_from_original(
             } else {
                 None
             };
-            let catalog_gate = if source.kind != SourceKind::RegisteredInstance {
+            let catalog_gate = if source.kind == SourceKind::RegisteredInstance {
+                None
+            } else {
                 crate::config::coding_agents_catalog::parse_strict_json(bytes)
                     .and_then(|value| decode_physical_catalog(&value))
                     .err()
                     .map(|reason| format!("{}: {reason}", path.display()))
-            } else {
-                None
             };
             let invalid = ambiguity.or(registered_gate).or(catalog_gate);
             if let Some(reason) = invalid {

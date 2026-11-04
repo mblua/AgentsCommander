@@ -108,7 +108,7 @@ pub(crate) fn replace_file_with_retry(src: &Path, dst: &Path) -> std::io::Result
 pub(crate) fn is_transient_replace_error(e: &std::io::Error) -> bool {
     // ERROR_ACCESS_DENIED (what a held destination produces) and
     // ERROR_SHARING_VIOLATION.
-    matches!(e.raw_os_error(), Some(5) | Some(32))
+    matches!(e.raw_os_error(), Some(5 | 32))
 }
 
 #[cfg(not(windows))]

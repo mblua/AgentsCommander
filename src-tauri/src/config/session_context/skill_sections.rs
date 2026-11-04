@@ -501,9 +501,7 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
     let scope_label = skill_scope_label(index);
 
     if !index.skills.is_empty() {
-        if !push_with_budget(&mut output, "\n### Available Skills\n\n") {
-            omitted_skills += index.skills.len();
-        } else {
+        if push_with_budget(&mut output, "\n### Available Skills\n\n") {
             for skill in &index.skills {
                 let name = sanitize_skill_metadata_for_context(&skill.name);
                 let entrypoint = sanitize_skill_metadata_for_context(&skill.entrypoint_path);
@@ -529,6 +527,8 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
                     );
                 }
             }
+        } else {
+            omitted_skills += index.skills.len();
         }
     }
 

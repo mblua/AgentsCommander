@@ -401,7 +401,7 @@ impl fmt::Debug for ProjectPublicationPermit<'_> {
     }
 }
 
-impl<'a> ProjectPublicationPermit<'a> {
+impl ProjectPublicationPermit<'_> {
     pub(crate) fn degraded_without_guard(reason: ManifestDegradedReason) -> Self {
         Self {
             state: ProjectPublicationPermitState::DegradedUntracked {

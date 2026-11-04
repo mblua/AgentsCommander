@@ -219,14 +219,14 @@ fn p02_startup_context_binds_raw_owner_and_original_sidecar_absence() {
         let context = context.unwrap();
         assert_eq!(context.raw, raw);
         assert_eq!(context.sidecar_absent, !present_without_agents);
-        if !present_without_agents {
-            assert!(export_agents_to_instance_file(&mut settings, &path));
-        } else {
+        if present_without_agents {
             std::fs::write(
                 agents_instance_path(&path),
                 serde_json::to_vec(&json!({"agents":raw})).unwrap(),
             )
             .unwrap();
+        } else {
+            assert!(export_agents_to_instance_file(&mut settings, &path));
         }
         let result = save_settings_value_with_startup(
             &settings,

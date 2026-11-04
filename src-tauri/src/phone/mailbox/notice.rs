@@ -688,11 +688,7 @@ pub(crate) fn canonical_project_refresh_path(path: &str) -> String {
 }
 
 pub(crate) fn project_refresh_priority(reason: &str) -> u8 {
-    if reason == "projectRegistered" {
-        0
-    } else {
-        1
-    }
+    u8::from(reason != "projectRegistered")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

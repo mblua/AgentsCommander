@@ -144,7 +144,7 @@ pub(crate) fn rename_task_artifact_with_retry(source: &Path, target: &Path) -> s
             Err(e)
                 if attempt < 2
                     && (e.kind() == std::io::ErrorKind::PermissionDenied
-                        || matches!(e.raw_os_error(), Some(5) | Some(32))) =>
+                        || matches!(e.raw_os_error(), Some(5 | 32))) =>
             {
                 std::thread::sleep(Duration::from_millis(100));
             }

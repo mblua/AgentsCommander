@@ -340,10 +340,10 @@ pub(crate) fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
         || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
-        if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
-            Some(MINIMAL_ROOT_ROLE_MD.to_string())
-        } else {
+        if existing_normalized == normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
             None
+        } else {
+            Some(MINIMAL_ROOT_ROLE_MD.to_string())
         }
     } else if existing.contains(OLD_DEFERRED_MESSAGING_PARAGRAPH) {
         Some(existing.replace(

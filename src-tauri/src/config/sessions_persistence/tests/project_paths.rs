@@ -132,7 +132,7 @@ fn normalize_project_roots_drops_blank_entries_and_normalizes_each() {
     std::fs::create_dir_all(&project).expect("create project");
     let root_with_dot = project.join(".");
     let roots = normalize_project_roots(&[
-        "".to_string(),
+        String::new(),
         "  ".to_string(),
         root_with_dot.to_string_lossy().to_string(),
     ]);

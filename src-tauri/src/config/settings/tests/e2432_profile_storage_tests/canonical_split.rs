@@ -435,9 +435,7 @@ fn split_publication_failure_cuts(path: &std::path::Path, sidecar: &std::path::P
         PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
         assert!(result.is_err());
         assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
-        if !fail_main {
-            assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
-        } else {
+        if fail_main {
             let published: Value =
                 serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
             let hash =
@@ -452,6 +450,8 @@ fn split_publication_failure_cuts(path: &std::path::Path, sidecar: &std::path::P
             );
             let restarted = load_settings_from_path(directional_path);
             assert_ne!(restarted.agents[0].command, candidate.agents[0].command);
+        } else {
+            assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
         }
     }
 }

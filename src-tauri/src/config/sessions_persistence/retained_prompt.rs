@@ -44,7 +44,7 @@ pub(crate) fn prompt_key(
     let agent_id = agent_id.filter(|value| !value.is_empty())?;
     let effective_profile = effective_profile.filter(|value| !value.is_empty())?;
     let canonical = crate::filesystem::directories::retained_prompt_cwd(Path::new(cwd))?;
-    let mut canonical_cwd = strip_long_prefix_str(canonical.to_str()?).to_string();
+    let mut canonical_cwd = strip_long_prefix_str(canonical.to_str()?).clone();
     if cfg!(windows) {
         canonical_cwd.make_ascii_lowercase();
     }

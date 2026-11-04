@@ -99,7 +99,7 @@ fn main() {
             agentscommander_lib::cli::attach_parent_console();
             let _ = e.print();
             agentscommander_lib::cli::flush_outputs();
-            std::process::exit(if e.use_stderr() { 1 } else { 0 });
+            std::process::exit(i32::from(e.use_stderr()));
         }
     }
 }
