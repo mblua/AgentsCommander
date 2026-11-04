@@ -131,7 +131,7 @@ impl SpecBoardManager {
         self.docs
             .get(doc_id)
             .map(|s| s.document.clone())
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))
     }
 
     fn close(&mut self, doc_id: &str) {
@@ -337,7 +337,7 @@ pub async fn spec_board_update_content(
         let doc = mgr
             .docs
             .get_mut(&doc_id)
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?;
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
         if doc.document.content == content {
             return Ok(doc.document.clone());
         }
@@ -363,7 +363,7 @@ pub async fn spec_board_list_snapshots(
         mgr.docs
             .get(&doc_id)
             .map(|s| s.snapshot_dir.clone())
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?
     };
     list_snapshots_from_dir(&snapshot_dir).await
 }
@@ -379,20 +379,20 @@ pub async fn spec_board_checkout_snapshot(
         mgr.docs
             .get(&doc_id)
             .map(|s| s.snapshot_dir.clone())
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?
     };
     let snapshots = read_snapshot_files(&snapshot_dir).await?;
     let snapshot = snapshots
         .into_iter()
         .find(|s| s.id == snapshot_id)
-        .ok_or_else(|| format!("Snapshot not found: {}", snapshot_id))?;
+        .ok_or_else(|| format!("Snapshot not found: {snapshot_id}"))?;
 
     {
         let mut mgr = state.write().await;
         let doc = mgr
             .docs
             .get_mut(&doc_id)
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?;
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
         doc.document.content = snapshot.content;
         doc.document.diagram_source = snapshot.diagram_source;
         doc.document.dirty = doc
@@ -423,7 +423,7 @@ pub async fn spec_board_apply_external(
         let doc = mgr
             .docs
             .get_mut(&doc_id)
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?;
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
         let conflict = doc
             .document
             .conflict
@@ -451,7 +451,7 @@ pub async fn spec_board_keep_mine(
     let doc = mgr
         .docs
         .get_mut(&doc_id)
-        .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?;
+        .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
     doc.document.conflict = None;
     doc.document.updated_at_ms = now_ms();
     Ok(doc.document.clone())
@@ -521,8 +521,7 @@ async fn save_to_path(
     let diagram_source = extract_diagram_source(&content, file_kind)?;
     if content.len() as u64 > MAX_FILE_BYTES {
         return Err(format!(
-            "Spec content is too large. Maximum size is {} bytes.",
-            MAX_FILE_BYTES
+            "Spec content is too large. Maximum size is {MAX_FILE_BYTES} bytes."
         ));
     }
     save_spec_content(&validated.path, &content).await?;
@@ -534,7 +533,7 @@ async fn save_to_path(
         let doc = mgr
             .docs
             .get_mut(&doc_id)
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?;
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
         doc.document.repo_root = path_to_string(&validated.repo_root);
         doc.document.path = Some(path_to_string(&validated.path));
         doc.document.file_kind = file_kind;
@@ -617,7 +616,7 @@ async fn start_watch_task(state: SpecBoardState, app: AppHandle, doc_id: String)
                     let _ = app.emit("spec_board_conflict", payload);
                 }
                 Ok(None) => {}
-                Err(e) => log::warn!("[spec-board] watcher update failed: {}", e),
+                Err(e) => log::warn!("[spec-board] watcher update failed: {e}"),
             }
         }
     });
@@ -719,7 +718,7 @@ async fn schedule_edit_snapshot(state: SpecBoardState, doc_id: String, content_h
             )
             .await
             {
-                log::warn!("[spec-board] edit snapshot failed: {}", e);
+                log::warn!("[spec-board] edit snapshot failed: {e}");
             } else {
                 let mut mgr = state_for_task.write().await;
                 if let Some(doc) = mgr.docs.get_mut(&doc_id_for_task) {
@@ -741,7 +740,7 @@ fn file_kind_for_path(path: &Path) -> Result<SpecBoardFileKind, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase());
+        .map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("mmd" | "mermaid") => Ok(SpecBoardFileKind::Mermaid),
         Some("md") => Ok(SpecBoardFileKind::Markdown),

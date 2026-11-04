@@ -272,7 +272,9 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
     #[cfg(test)]
     let is_root_agent = is_root_agent || coordinator_create_seam::forced_root(cwd);
     if is_coordinator {
-        *marker_ticket.lock().unwrap_or_else(|e| e.into_inner()) =
+        *marker_ticket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             note_coordinator_create_on_app(app, cwd);
     }
     let (skip_auto_resume, fresh_forced_by_mirror) =
@@ -371,7 +373,9 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
         None => return Ok(CreateCompletion::Retained),
     };
     let spawn_mark = {
-        let pty = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         pty.mark_spawning(cwd, &input.session_label)
     };
     let pending_result = mgr
@@ -753,7 +757,7 @@ fn note_inline_pending<R: tauri::Runtime>(
     if ctx.inline_transaction.is_some() {
         *ctx.inline_pending_for_body
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(pending_binding);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending_binding);
     }
 }
 
