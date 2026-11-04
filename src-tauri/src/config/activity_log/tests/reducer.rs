@@ -58,7 +58,7 @@ fn reduce(stream: &str) -> ReducerReport {
                     && field(&value, "event").is_some()
                     && moment(&value).is_some() =>
             {
-                records.push(value)
+                records.push(value);
             }
             _ => report.unparseable_lines += 1,
         }

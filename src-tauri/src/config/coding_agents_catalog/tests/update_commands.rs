@@ -139,7 +139,7 @@ fn embedded_default_ships_update_commands_for_all_but_cursor_and_muse() {
             "pi" => assert_eq!(def.update_commands, vec!["pi update".to_string()]),
             "codex" => assert_eq!(def.update_commands, vec!["codex update".to_string()]),
             "hermes" => {
-                assert_eq!(def.update_commands, vec!["hermes update --yes".to_string()])
+                assert_eq!(def.update_commands, vec!["hermes update --yes".to_string()]);
             }
             "opencode" => assert_eq!(def.update_commands, vec!["opencode upgrade".to_string()]),
             "antigravity" => assert_eq!(def.update_commands, vec!["agy update".to_string()]),
