@@ -368,7 +368,7 @@ fn e2432_p02_registered_atomic_failure_retains_actual_revision_and_owner() {
     let report = owner
         .with_operation_blocking("p02-registered-atomic-failure", |current, guard| {
             PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
-                *slot.borrow_mut() = Some((target.clone(), SettingsSaveStage::TempCreate))
+                *slot.borrow_mut() = Some((target.clone(), SettingsSaveStage::TempCreate));
             });
             let result = save_agent_file_locked(
                 current,

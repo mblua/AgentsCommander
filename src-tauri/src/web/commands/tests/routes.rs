@@ -92,7 +92,7 @@ async fn client_cannot_forge_backend_lifecycle_broadcasts() {
                 "event": event,
                 "payload": {
                     "epoch": Uuid::new_v4(),
-                    "revision": 999999,
+                    "revision": 999_999,
                     "source": "userSwitch",
                     "userInitiated": true,
                 },
