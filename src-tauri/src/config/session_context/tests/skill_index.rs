@@ -615,9 +615,9 @@ fn render_skills_section_caps_total_budget() {
     let mut skills = Vec::new();
     for idx in 0..2000 {
         skills.push(SkillMetadata {
-            folder_name: format!("skill-{}", idx),
-            name: format!("skill-{}", idx),
-            entrypoint_path: format!("C:/matrix/skills/skill-{}/SKILL.md", idx),
+            folder_name: format!("skill-{idx}"),
+            name: format!("skill-{idx}"),
+            entrypoint_path: format!("C:/matrix/skills/skill-{idx}/SKILL.md"),
             description: Some("x".repeat(2048)),
             when_to_use: None,
             metadata_warnings: Vec::new(),

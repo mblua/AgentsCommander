@@ -13,7 +13,7 @@ fn seam_observations(session_id: Uuid) -> Vec<String> {
 /// The wake render shape of `phone::messaging::format_pty_wrap`, restated so
 /// this test module adds no `pty::inject` -> `phone::messaging` reference.
 fn wake_wrap(from: &str, body: &str) -> String {
-    format!("\n[Message from {}] {}\n\r", from, body)
+    format!("\n[Message from {from}] {body}\n\r")
 }
 
 const SEAM_FROM: &str = "proj:room-1/tech-lead";
@@ -37,7 +37,7 @@ async fn seam_run(
     (result, recorded_writes(&backend, id), seam_observations(id))
 }
 
-/// T1 - send_enter: the wrap's final `\n\r` is removed, then two Enters.
+/// T1 - `send_enter`: the wrap's final `\n\r` is removed, then two Enters.
 #[tokio::test]
 async fn seam_send_enter_strips_the_wrap_suffix_then_two_enters() {
     let payload = wake_wrap(SEAM_FROM, "please review the plan");
@@ -164,7 +164,7 @@ async fn seam_unavailable_rows_never_fail_the_injection() {
 }
 
 fn rows(values: &[&str]) -> Vec<String> {
-    values.iter().map(|value| value.to_string()).collect()
+    values.iter().map(ToString::to_string).collect()
 }
 
 fn observe(body: &str, screen: &[String]) -> String {

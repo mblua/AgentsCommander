@@ -1,7 +1,7 @@
 use super::*;
 
 /// #1571 T2, failing-first migration proof for the fifth recognizer arm: the
-/// assert_ne fails while the live template still equals the frozen v4 bytes
+/// `assert_ne` fails while the live template still equals the frozen v4 bytes
 /// (pre-rewrite), and the sync half proves a pristine v4 file on disk
 /// auto-upgrades to the current default.
 ///
@@ -67,7 +67,7 @@ fn global_pre_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S6 failing-first proof for the v2 rewrite (assert_ne), the #979
+/// #1005 S6 failing-first proof for the v2 rewrite (`assert_ne`), the #979
 /// standalone recognizer and the version bump, retargeted by #1748 at the scan:
 /// the distribution repair, not the read path, is what lands the current
 /// default on an old pristine file.
@@ -651,7 +651,7 @@ fn scan_replaces_the_compact_fine_token_global_in_both_state_shapes() {
     }
 }
 
-/// #1605 failing-first proof for the v5 placeholder insertion (assert_ne), the
+/// #1605 failing-first proof for the v5 placeholder insertion (`assert_ne`), the
 /// #979 standalone recognizer and the version bump, retargeted by #1748 at the
 /// scan.
 #[test]
