@@ -585,8 +585,8 @@ fn the_published_2292_entry_blocks_the_captured_notice_and_ignores_its_neighbour
         "the captured row must match"
     );
     for gutter in [
-        format!("\u{25CF} {}", CAPTURED_2292_NOTICE),
-        format!("\u{2502} {}", CAPTURED_2292_NOTICE),
+        format!("\u{25CF} {CAPTURED_2292_NOTICE}"),
+        format!("\u{2502} {CAPTURED_2292_NOTICE}"),
     ] {
         assert!(
             regex.is_match(&gutter),

@@ -29,7 +29,7 @@ fn spawn_spec(
         agent_id: None,
         coding_agent: None,
         cmd: cmd.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(std::string::ToString::to_string).collect(),
         resolved_agent_host_shell: host_shell,
         cwd: std::env::temp_dir().to_string_lossy().to_string(),
         selected_cwd: None,
@@ -53,7 +53,7 @@ fn spawn_spec(
 fn host(program: &str, args: &[&str]) -> ResolvedAgentHostShell {
     ResolvedAgentHostShell {
         program: program.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 

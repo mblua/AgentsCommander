@@ -80,7 +80,7 @@ fn is_under_normalized_archived_roots_short_circuits_before_canonicalizing_path(
     ));
 
     assert_eq!(
-        NORMALIZE_CALLS.with(|calls| calls.get()),
+        NORMALIZE_CALLS.with(std::cell::Cell::get),
         0,
         "empty archived roots must not canonicalize path"
     );
@@ -91,7 +91,7 @@ fn is_under_normalized_archived_roots_short_circuits_before_canonicalizing_path(
         &["z:/somewhere".to_string()]
     ));
     assert_eq!(
-        NORMALIZE_CALLS.with(|calls| calls.get()),
+        NORMALIZE_CALLS.with(std::cell::Cell::get),
         1,
         "non-empty roots must canonicalize path exactly once"
     );
