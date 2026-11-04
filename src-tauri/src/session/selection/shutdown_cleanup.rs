@@ -272,8 +272,7 @@ pub(super) async fn seal_and_drain_container_shutdown_work_after_join(
         Ok(backend) => backend.as_ref().and_then(Weak::upgrade),
         Err(error) => {
             log::error!(
-                "[selection] container backend ownership lock unavailable before bounded drain: {}",
-                error
+                "[selection] container backend ownership lock unavailable before bounded drain: {error}"
             );
             retained.push("reason=container-drain-owner state=retained".to_string());
             return retained;

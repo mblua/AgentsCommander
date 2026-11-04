@@ -148,8 +148,7 @@ fn ensure_cli_automation_directories(automation_dir: &Path) -> Result<(), Value>
 
 pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, String> {
     let env_enabled = crate::config::environment::ui_automation_enable(ENV_ENABLE)
-        .ok()
-        .is_some_and(|value| value == "1");
+        .is_ok_and(|value| value == "1");
     let requested = ui_automation || env_enabled;
     if !requested {
         return Ok(false);

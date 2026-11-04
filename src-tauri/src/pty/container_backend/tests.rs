@@ -151,7 +151,7 @@ impl ContainerRuntime for SequencedStopRuntime {
         match self
             .outcomes
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front()
             .unwrap_or(Ok(()))
         {

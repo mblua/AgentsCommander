@@ -65,7 +65,7 @@ impl BurstFixture {
         self.detector
             .burst
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&self.id)
     }
 }
