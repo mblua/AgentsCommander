@@ -1,8 +1,8 @@
 /// Every `(file, child)` reference the guarded module is allowed to make under
 /// `crate::`, sorted.
 ///
-/// #3327 permits only instance_gitignore -> filesystem for physical ignore IO.
-/// The instance_ignore leaf uses std/OS bindings with no app path back.
+/// #3327 permits only `instance_gitignore` -> filesystem for physical ignore IO.
+/// The `instance_ignore` leaf uses std/OS bindings with no app path back.
 /// Equality still rejects every other crate reference.
 pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 1] =
     [("src/config/instance_gitignore.rs", "filesystem")];
