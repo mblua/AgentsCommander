@@ -167,7 +167,8 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
                     return Ok(result);
                 }
                 log::warn!(
-                    "[resource-monitor] PTY teardown failed after verified kill session={session_id}: {error}"
+                    "[resource-monitor] PTY teardown failed after verified kill \
+                    session={session_id}: {error}"
                 );
             }
         }
@@ -343,18 +344,21 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
         };
         if route_gone {
             log::info!(
-                "[resource-monitor] bounded deferred PTY teardown succeeded session={session_id} attempt={attempt}"
+                "[resource-monitor] bounded deferred PTY teardown succeeded session={session_id} \
+                attempt={attempt}"
             );
             return finalize_verified_dead_session(transaction, session_id, intent).await;
         }
         log::warn!(
-            "[resource-monitor] bounded deferred PTY teardown attempt {attempt}/{PTY_ROUTE_RETRY_ATTEMPTS} still live session={session_id}"
+            "[resource-monitor] bounded deferred PTY teardown attempt \
+            {attempt}/{PTY_ROUTE_RETRY_ATTEMPTS} still live session={session_id}"
         );
         #[cfg(test)]
         retry_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     log::error!(
-        "[resource-monitor] bounded deferred PTY teardown exhausted {PTY_ROUTE_RETRY_ATTEMPTS} attempts session={session_id}; \
+        "[resource-monitor] bounded deferred PTY teardown exhausted {PTY_ROUTE_RETRY_ATTEMPTS} \
+        attempts session={session_id}; \
         escalating to best-effort force-close"
     );
     {

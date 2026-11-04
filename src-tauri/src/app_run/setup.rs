@@ -743,7 +743,8 @@ fn log_restore_inventory(
     // is a real failure mode; without this line the user sees coords stay
     // dormant with no log clue. Emits exactly once per launch.
     log::info!(
-        "[restore] {team_count} teams discovered across {project_path_count} project paths; setting_on={setting_on}; \
+        "[restore] {team_count} teams discovered across {project_path_count} project paths; \
+        setting_on={setting_on}; \
             evaluating {persisted_count} persisted sessions"
     );
 }

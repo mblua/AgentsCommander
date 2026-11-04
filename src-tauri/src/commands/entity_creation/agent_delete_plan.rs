@@ -388,14 +388,15 @@ pub(super) fn format_agent_delete_metadata_failure(
 ) -> String {
     match (restore_result, dir_rollback_result) {
         (Ok(()), Ok(())) => persist_error,
-        (Err(restore), Ok(())) => format!(
-            "{persist_error}. Metadata snapshot restore also failed: {restore}"
-        ),
-        (Ok(()), Err(rollback)) => format!(
-            "{persist_error}. Directory rollback also failed: {rollback}"
-        ),
+        (Err(restore), Ok(())) => {
+            format!("{persist_error}. Metadata snapshot restore also failed: {restore}")
+        }
+        (Ok(()), Err(rollback)) => {
+            format!("{persist_error}. Directory rollback also failed: {rollback}")
+        }
         (Err(restore), Err(rollback)) => format!(
-            "{persist_error}. Metadata snapshot restore also failed: {restore}. Directory rollback also failed: {rollback}"
+            "{persist_error}. Metadata snapshot restore also failed: {restore}. Directory \
+            rollback also failed: {rollback}"
         ),
     }
 }

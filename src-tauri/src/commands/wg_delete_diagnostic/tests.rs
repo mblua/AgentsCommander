@@ -580,7 +580,8 @@ fn collect_files_to_probe_orders_dirs_before_files() {
     match (first_file_idx, last_dir_idx) {
         (Some(file_i), Some(dir_i)) => assert!(
             dir_i < file_i,
-            "all dirs must precede all files in output; got dirs ending at {dir_i} but a file at {file_i}; \
+            "all dirs must precede all files in output; got dirs ending at {dir_i} but a file at \
+            {file_i}; \
             result={result:?}"
         ),
         // If there are no files (empty WG) or no dirs (would be a bug),
