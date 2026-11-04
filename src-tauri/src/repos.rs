@@ -32,8 +32,7 @@ pub(crate) fn strip_userinfo(remote: &str) -> String {
     let authority_start = scheme_end + 3;
     let authority_end = remote[authority_start..]
         .find('/')
-        .map(|i| authority_start + i)
-        .unwrap_or(remote.len());
+        .map_or(remote.len(), |i| authority_start + i);
     let authority = &remote[authority_start..authority_end];
     match authority.rfind('@') {
         Some(at) => format!(

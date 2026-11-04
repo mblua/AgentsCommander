@@ -551,7 +551,7 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
             state.retained_reason = Some("entry pending manager rollback failed".into());
         }
     }
-    effect.complete(result.map(|_| None));
+    effect.complete(result.map(|()| None));
     drop(permit);
 }
 
