@@ -134,14 +134,12 @@ impl DiscoveryBranchWatcher {
         let has_workspace = has_ac_root(Path::new(project_dir));
         debug_assert!(
             has_workspace,
-            "update_replicas_for_project: {} does not contain a Project AC Root",
-            project_dir
+            "update_replicas_for_project: {project_dir} does not contain a Project AC Root"
         );
         if !has_workspace {
             log::warn!(
-                "[DiscoveryBranchWatcher] update_replicas_for_project called with {} which has no \
-                    Project AC Root, ignoring",
-                project_dir
+                "[DiscoveryBranchWatcher] update_replicas_for_project called with {project_dir} which has no \
+                    Project AC Root, ignoring"
             );
             return;
         }
@@ -152,9 +150,10 @@ impl DiscoveryBranchWatcher {
         // end up with two entries (e.g. from `discover_ac_agents` reading `read_dir`
         // output vs `discover_project` receiving a user-typed path) and emit doubled.
         let canonical_key =
-            crate::config::projects::canonical_watch_project(Path::new(project_dir))
-                .map(|p| projected_path_string(&p))
-                .unwrap_or_else(|| projected_path_string(Path::new(project_dir)));
+            crate::config::projects::canonical_watch_project(Path::new(project_dir)).map_or_else(
+                || projected_path_string(Path::new(project_dir)),
+                |p| projected_path_string(&p),
+            );
 
         // Invariant: git_repos order = replica.repo_paths order (which follows config.json
         // `repos`).
@@ -253,14 +252,14 @@ impl DiscoveryBranchWatcher {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => {
+                        () = shutdown.token().cancelled() => {
                             log::info!("[DiscoveryBranchWatcher] Shutdown signal received, \
                                 stopping");
                             break;
                         }
-                        _ = tokio::time::sleep(BRANCH_POLL_INTERVAL) => {
+                        () = tokio::time::sleep(BRANCH_POLL_INTERVAL) => {
                             if let Err(e) = watcher.poll().await {
-                                log::warn!("[DiscoveryBranchWatcher] poll failed: {}", e);
+                                log::warn!("[DiscoveryBranchWatcher] poll failed: {e}");
                             }
                         }
                     }
@@ -465,7 +464,7 @@ impl DiscoveryBranchWatcher {
                 crate::phone::mailbox::retain_unarchived_session_dirs(sessions, &roots)
             })
             .await
-            .map_err(|e| format!("archived task-session filter task failed: {}", e))?
+            .map_err(|e| format!("archived task-session filter task failed: {e}"))?
         };
         for (id, cwd) in sessions {
             if let Some(task_path) = crate::session::session::find_workgroup_task_path_for_cwd(&cwd)

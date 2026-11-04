@@ -27,7 +27,7 @@ Frontmatter is never modified by this verb.\n\n\
 TEXT INPUT: --text accepts multi-line content. Newline (\\n), carriage return (\\r), \
 and tab (\\t) are permitted. NUL and other control characters are rejected.")]
 pub struct TaskAppendBodyArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
     /// See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
@@ -64,9 +64,8 @@ pub(crate) fn task_edit_room(
         let teams = crate::config::teams::discover_teams_for_cli();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(sender, &teams) {
             eprintln!(
-                "Error: authorization denied — '{}' is not an orchestrator of any team. \
-                 Only orchestrators can edit TASK.md.",
-                sender
+                "Error: authorization denied — '{sender}' is not an orchestrator of any team. \
+                 Only orchestrators can edit TASK.md."
             );
             return Err(1);
         }
@@ -96,7 +95,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -166,7 +165,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -191,7 +190,7 @@ INVARIANTS: Preserves the title (including USER:), topic, revision and status. A
         Frontmatter delimiters/line endings may be normalized by the existing renderer."
 )]
 pub struct TaskSetBodyArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN (existing trusted-session model)
+    /// Session token from `AGENTSCOMMANDER_TOKEN` (existing trusted-session model)
     #[arg(long)]
     pub token: Option<String>,
     /// Agent root directory (required)
@@ -214,7 +213,7 @@ pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -294,7 +293,7 @@ pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }

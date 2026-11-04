@@ -62,10 +62,8 @@ pub async fn transcribe_audio(
     // transport failure, so `?key=<API_KEY>` would leak into error strings
     // that flow to logs, the Telegram chat (bridge.rs:862), and the
     // frontend. Google's REST API accepts the key via x-goog-api-key.
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-        model
-    );
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
     let resp = client
         .post(&url)
@@ -98,25 +96,21 @@ pub async fn transcribe_audio(
         } else if status.as_u16() == 403 {
             "Invalid API key or access denied".to_string()
         } else {
-            format!("Gemini API error ({}): {}", status, error_body)
+            format!("Gemini API error ({status}): {error_body}")
         };
-        log::warn!("Gemini API {} - {}", status, error_body);
+        log::warn!("Gemini API {status} - {error_body}");
         return Err(msg);
     }
 
     let text_body = resp
         .text()
         .await
-        .map_err(|e| format!("Failed to read Gemini response body: {}", e))?;
-    log::debug!("Gemini raw response: {}", text_body);
+        .map_err(|e| format!("Failed to read Gemini response body: {e}"))?;
+    log::debug!("Gemini raw response: {text_body}");
 
     let gemini_resp: GeminiResponse = serde_json::from_str(&text_body).map_err(|e| {
-        log::error!(
-            "Failed to parse Gemini response: {}. Raw body: {}",
-            e,
-            text_body
-        );
-        format!("Failed to parse Gemini response: {}", e)
+        log::error!("Failed to parse Gemini response: {e}. Raw body: {text_body}");
+        format!("Failed to parse Gemini response: {e}")
     })?;
 
     let text = gemini_resp
