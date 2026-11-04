@@ -422,15 +422,14 @@ fn decide(
             let score = results
                 .iter()
                 .find(|result| result.id == *id)
-                .map(|result| result.noul)
-                .unwrap_or(0.0);
+                .map_or(0.0, |result| result.noul);
             (*id, score)
         })
         .collect();
     ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
     // The catalog check above guarantees at least one askable question.
     let (winner_id, winner_score) = ranked[0];
-    let runner_up = ranked.get(1).map(|(_, score)| *score).unwrap_or(0.0);
+    let runner_up = ranked.get(1).map_or(0.0, |(_, score)| *score);
 
     if winner_score < settings.threshold {
         return ClassifyOutcome::abstained(format!(

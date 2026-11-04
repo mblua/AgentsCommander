@@ -253,8 +253,8 @@ where
         .map_err(|_| PtyInputPreBoundaryStop::Expired)?;
     tokio::select! {
         biased;
-        _ = shutdown.cancelled() => Err(PtyInputPreBoundaryStop::Shutdown),
-        _ = tokio::time::sleep(remaining) => Err(PtyInputPreBoundaryStop::Expired),
+        () = shutdown.cancelled() => Err(PtyInputPreBoundaryStop::Shutdown),
+        () = tokio::time::sleep(remaining) => Err(PtyInputPreBoundaryStop::Expired),
         output = future => Ok(output),
     }
 }
@@ -886,7 +886,7 @@ impl Drop for ResponseCandidateDisposal {
             }
             Err(_) => {
                 response_diag_local!("candidate_disposal", "candidate_lock_failure", None::<Uuid>);
-                self.0.state.fail_closed()
+                self.0.state.fail_closed();
             }
         }
     }
