@@ -364,7 +364,7 @@ fn gate_advance_max_defer_abandons_with_phase_specific_reason() {
     let (_n, a) = self_clear_gate_advance(clear, true, true, now, settle, max);
     match a {
         SelfClearGateAction::Abandon(r) => {
-            assert!(r.contains("clear leg"), "clear-leg reason, got: {r}")
+            assert!(r.contains("clear leg"), "clear-leg reason, got: {r}");
         }
         other => panic!("expected Abandon, got {other:?}"),
     }
@@ -376,7 +376,7 @@ fn gate_advance_max_defer_abandons_with_phase_specific_reason() {
     let (_n, a) = self_clear_gate_advance(handoff, true, true, now, settle, max);
     match a {
         SelfClearGateAction::Abandon(r) => {
-            assert!(r.contains("handoff leg"), "handoff-leg reason, got: {r}")
+            assert!(r.contains("handoff leg"), "handoff-leg reason, got: {r}");
         }
         other => panic!("expected Abandon, got {other:?}"),
     }

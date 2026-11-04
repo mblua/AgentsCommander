@@ -200,7 +200,7 @@ pub fn scrub_host_paths(detail: &str) -> String {
             && matches!(bytes.get(i + 2), Some(&b'\\') | Some(&b'/'))
             // Must be at a token boundary so `https://` (no drive letter) and
             // mid-word colons are not misread. Preceding char is start-or-space.
-            && (i == 0 || bytes.get(i - 1).map(u8::is_ascii_whitespace).unwrap_or(false));
+            && (i == 0 || bytes.get(i - 1).is_some_and(u8::is_ascii_whitespace));
         if is_drive_start {
             out.push_str("<path>");
             // Consume until whitespace.
