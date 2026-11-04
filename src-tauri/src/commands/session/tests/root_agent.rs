@@ -54,7 +54,7 @@ fn resolve_root_agent_command_rejects_default_shell_without_agents() {
 fn write_current_coding_agent(dir: &std::path::Path, agent_id: &str) {
     std::fs::write(
         dir.join("config.json"),
-        format!(r#"{{"tooling":{{"currentCodingAgent":"{}"}}}}"#, agent_id),
+        format!(r#"{{"tooling":{{"currentCodingAgent":"{agent_id}"}}}}"#),
     )
     .unwrap();
 }

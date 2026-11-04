@@ -176,9 +176,7 @@ pub(crate) fn compute_profile_outdated(settings: &AppSettings, info: &SessionInf
 /// every shipped frontend call site passes an explicit registered cwd.
 pub(crate) fn resolve_create_session_cwd(cwd: Option<String>) -> String {
     let cwd = cwd.unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "C:\\".to_string())
+        dirs::home_dir().map_or_else(|| "C:\\".to_string(), |p| p.to_string_lossy().to_string())
     });
     crate::path_utils::normalize_windows_verbatim_path(&cwd)
 }

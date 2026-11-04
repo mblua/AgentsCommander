@@ -28,8 +28,8 @@ pub(crate) fn resolve_restart_selection(
         MatchedSelection::NoAgent => (None, None),
         MatchedSelection::Unresolved { reference } => {
             return Err(format!(
-                "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
-                reference
+                "unresolved_coding_agent_reference: '{reference}' matches \
+                 no configured coding agent"
             ));
         }
         MatchedSelection::Agent {

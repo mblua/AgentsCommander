@@ -295,7 +295,7 @@ async fn restore_wake_gate_exceptions() {
 /// Test 16 (S5/N4): the Tauri `create_session` command with `cwd: None`
 /// resolves to the home dir and (in the test build, where the gate defaults
 /// to Skip) creates Ok. The production refusal of that default is covered by
-/// the pure-function predicate tests in sessions_persistence.
+/// the pure-function predicate tests in `sessions_persistence`.
 #[tokio::test]
 async fn create_session_command_without_cwd_falls_back_to_home() {
     // §1295 S5: the command resolves cwd:None to the home dir (gate Skip in
