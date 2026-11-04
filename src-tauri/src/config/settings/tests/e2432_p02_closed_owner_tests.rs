@@ -433,7 +433,7 @@ fn e2432_p02_captured_validation_has_no_participant_reread() {
             {
                 panic!("unexpected participant read");
             }
-        }))
+        }));
     });
     let reply = f
         .owner
@@ -485,7 +485,7 @@ fn e2432_p02_catalog_prepublication_authority_and_source_races_reject() {
                 if stage == "catalog_pre_recheck" {
                     std::fs::write(&path, &bytes).unwrap();
                 }
-            }))
+            }));
         });
         let rejected = save(&f);
         AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
@@ -515,7 +515,7 @@ fn e2432_p02_catalog_postpossible_panic_and_reread_failure_are_uncertain() {
                     std::fs::remove_file(&target).unwrap();
                     std::fs::create_dir(&target).unwrap();
                 }
-            }))
+            }));
         });
         let uncertain = save(&f);
         AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
@@ -609,7 +609,7 @@ fn e2432_p02_preference_failed_adoption_never_becomes_successful_owner_reply() {
             if stage == "preference_published" {
                 std::fs::write(&registered, b"{").unwrap();
             }
-        }))
+        }));
     });
     let report = f
         .owner
@@ -654,7 +654,7 @@ fn e2432_p02_catalog_waiting_lock_rechecks_captured_authority() {
                 if stage == "catalog_authorized" {
                     authorized_tx.send(()).unwrap();
                 }
-            }))
+            }));
         });
         let reply = owner.save_catalog_source_blocking(
             source,
@@ -689,7 +689,7 @@ fn e2432_p02_drain_retains_admitted_diagnostic_until_worker_releases() {
                     captured_tx.send(()).unwrap();
                     release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
                 }
-            }))
+            }));
         });
         let result = owner.read_agent_files_blocking(AgentFileReadRequest::List);
         AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);

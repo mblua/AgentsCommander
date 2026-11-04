@@ -206,8 +206,8 @@ impl TargetProcessOwner {
         let child = self.child.as_mut().expect("target process owner");
         tokio::select! {
             result = child.wait() => TargetWait::Exited(result),
-            _ = tokio::time::sleep(timeout) => TargetWait::TimedOut,
-            _ = wait_for_target_cancellation(cancel) => TargetWait::Cancelled,
+            () = tokio::time::sleep(timeout) => TargetWait::TimedOut,
+            () = wait_for_target_cancellation(cancel) => TargetWait::Cancelled,
         }
     }
 
@@ -245,16 +245,12 @@ impl TargetProcessOwner {
 
         #[cfg(test)]
         {
-            let (ready, mut release) = self
-                .settlement_hook
-                .as_mut()
-                .map(|hook| {
-                    (
-                        hook.before_native_proof.take(),
-                        hook.release_native_proof.take(),
-                    )
-                })
-                .unwrap_or((None, None));
+            let (ready, mut release) = self.settlement_hook.as_mut().map_or((None, None), |hook| {
+                (
+                    hook.before_native_proof.take(),
+                    hook.release_native_proof.take(),
+                )
+            });
             if let Some(ready) = ready {
                 let _ = ready.send(());
             }
@@ -524,7 +520,7 @@ impl TargetProcessOwner {
         tokio::pin!(settlement);
         tokio::select! {
             biased;
-            _ = wait_for_target_cancellation(cancel) => {
+            () = wait_for_target_cancellation(cancel) => {
                 observed();
                 settlement.await
             }
