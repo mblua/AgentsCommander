@@ -533,7 +533,7 @@ fn legacy_audit_row_still_deduplicates_an_append() {
     );
     assert!(!legacy.contains("sessionStart"));
     let audit_path = dir.join(LOOP_AUDIT_FILE);
-    std::fs::write(&audit_path, format!("{}\n", legacy)).expect("write legacy audit line");
+    std::fs::write(&audit_path, format!("{legacy}\n")).expect("write legacy audit line");
 
     let mut value: serde_json::Value = serde_json::from_str(&legacy).expect("legacy line as value");
     value
@@ -550,5 +550,5 @@ fn legacy_audit_row_still_deduplicates_an_append() {
         1,
         "the legacy row must be seen by the dedupe, so nothing is appended"
     );
-    assert_eq!(content, format!("{}\n", legacy), "no row may be rewritten");
+    assert_eq!(content, format!("{legacy}\n"), "no row may be rewritten");
 }

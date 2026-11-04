@@ -69,13 +69,13 @@ fn validate_session_creation_cwd_rejects_unregistered_and_missing() {
         .parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap();
-    let outside = format!("{}/elsewhere", parent);
+    let outside = format!("{parent}/elsewhere");
     let err = validate_session_creation_cwd(&outside, &retained, &[]).unwrap_err();
     assert!(err.starts_with("sessionCreateBlocked:"), "{err}");
     assert!(err.contains("outside all registered projects"), "{err}");
 
     // Registered (root) but the cwd does not exist on disk.
-    let missing = format!("{}/gone/deeper", root);
+    let missing = format!("{root}/gone/deeper");
     let err = validate_session_creation_cwd(&missing, &retained, &[]).unwrap_err();
     assert!(err.starts_with("sessionCreateBlocked:"), "{err}");
     assert!(err.contains("does not exist on disk"), "{err}");
