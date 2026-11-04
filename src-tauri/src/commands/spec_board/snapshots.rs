@@ -18,7 +18,7 @@ pub(super) async fn create_snapshot_for_doc(
         let doc = mgr
             .docs
             .get_mut(doc_id)
-            .ok_or_else(|| format!("Spec board document not found: {}", doc_id))?;
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
         if doc.document.content.len() > MAX_SNAPSHOT_CONTENT_BYTES {
             log::warn!(
                 "[spec-board] skipping oversized snapshot for {}",

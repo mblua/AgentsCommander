@@ -458,9 +458,7 @@ fn apply_set_title(parsed: &ParsedTask, title: &str) -> ParsedTask {
         Some(idx) => {
             // Replace, preserving the existing leading whitespace (so an indented
             // `  title: x` becomes `  title: 'NewTitle'`).
-            let leading = title_line(&new_fm[idx])
-                .map(|title| title.leading)
-                .unwrap_or("");
+            let leading = title_line(&new_fm[idx]).map_or("", |title| title.leading);
             new_fm[idx] = format!("{leading}{new_title_line}");
         }
         None => {
