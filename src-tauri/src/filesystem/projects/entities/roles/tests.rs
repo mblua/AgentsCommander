@@ -78,7 +78,7 @@ fn write_fails_without_creating_missing_matrix() {
 
     assert_eq!(
         write_created_role(&matrix, b"role").unwrap_err(),
-        format!("Failed to write Role.md: {}", expected)
+        format!("Failed to write Role.md: {expected}")
     );
     assert!(!matrix.exists());
 }

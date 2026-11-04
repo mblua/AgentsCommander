@@ -36,6 +36,6 @@ async fn missing_directory_preserves_write_error_without_creating_it() {
     let actual = save_debug_logs(Some(missing.clone()), "logs")
         .await
         .unwrap_err();
-    assert_eq!(actual, format!("Failed to write logs: {}", expected));
+    assert_eq!(actual, format!("Failed to write logs: {expected}"));
     assert!(!missing.exists());
 }

@@ -160,7 +160,7 @@ fn deterministic_jitter_ms(attempt: u32, cap_ms: u64, salt: u64) -> u64 {
     }
     let jitter_cap = (cap_ms / 4).max(1);
     let mixed = salt
-        ^ (attempt as u64)
+        ^ u64::from(attempt)
             .wrapping_mul(1_103_515_245)
             .wrapping_add(12_345);
     mixed % jitter_cap

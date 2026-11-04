@@ -95,8 +95,7 @@ fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
     let bare = {
         if !dir_name
             .get(.."_agent_".len())
-            .map(|prefix| prefix.eq_ignore_ascii_case("_agent_"))
-            .unwrap_or(false)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("_agent_"))
         {
             return Err(format!(
                 "Room replica identity '{identity}' must end in '_agent_<name>'"
