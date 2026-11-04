@@ -55,7 +55,7 @@ fn physical_cwd_child_or_parent(wrapper: &str) -> bool {
         .env("TEMP", &temporary)
         .env("TMP", &temporary)
         .env("TMPDIR", &temporary)
-        .creation_flags(0x08000000)
+        .creation_flags(0x0800_0000)
         .spawn()
         .expect("spawn exact physical cwd child");
     let mut owner = RetainedSourceChild {

@@ -129,7 +129,7 @@ async fn retained_exited_respawn_host(pty: bool, inline: bool, wrapper: &str) {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
+            command.creation_flags(0x0800_0000);
         }
         let child = command.spawn().expect("spawn exact fixture child");
         let mut owner = RetainedSourceChild {
