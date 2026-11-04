@@ -119,27 +119,62 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         prepared.restart_start_fresh,
     )
     .await?;
+    publish_restart(
+        transaction,
+        RestartPublication {
+            uuid,
+            new_uuid,
+            old_lost,
+            restart_start_fresh: prepared.restart_start_fresh,
+            telegram_bot_id: next.telegram_bot_id.as_deref(),
+            cwd: &prepared.cwd,
+        },
+        session_info,
+        deferred,
+        committed,
+    )
+    .await
+}
+
+struct RestartPublication<'a> {
+    uuid: uuid::Uuid,
+    new_uuid: uuid::Uuid,
+    old_lost: bool,
+    restart_start_fresh: bool,
+    telegram_bot_id: Option<&'a str>,
+    cwd: &'a str,
+}
+
+/// Parameters drop in reverse order (`committed` before the rest of
+/// `deferred`), matching the caller's former local drop order.
+async fn publish_restart<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    target: RestartPublication<'_>,
+    session_info: SessionInfo,
+    deferred: crate::commands::session::create::DeferredCreateOutput,
+    committed: crate::session::manager::CommitResult,
+) -> Result<SessionInfo, String> {
     let publication = publish_restart_before_warnings(
         transaction,
-        uuid,
-        new_uuid,
+        target.uuid,
+        target.new_uuid,
         deferred.binding,
         &committed,
         &session_info,
-        old_lost,
+        target.old_lost,
     )
     .await?;
     for warning in deferred.warnings {
-        emit_session_warning(app, warning);
+        emit_session_warning(transaction.app(), warning);
     }
 
     publish_restart_after_warnings(
         transaction,
-        new_uuid,
+        target.new_uuid,
         session_info,
-        prepared.restart_start_fresh,
-        next.telegram_bot_id.as_deref(),
-        &prepared.cwd,
+        target.restart_start_fresh,
+        target.telegram_bot_id,
+        target.cwd,
         publication,
     )
     .await

@@ -353,8 +353,22 @@ impl RemoteSweeper {
             self.apply_staleness(&key, staleness, indices, &ctx);
         }
 
-        // One gate per round, never shortened: a limit is an account-wide
-        // signal, so every key waits, not just the ones that discovered it.
+        self.gate_round_backoff(now, secondary_limited, primary_limited);
+
+        self.publish_round(&paths, &facts, now).await;
+
+        log::log!(
+            ROUND_LOG_LEVEL,
+            "[RemoteSweeper] round: {} path(s), {} key(s){}",
+            paths.len(),
+            groups.len(),
+            if throttled { ", throttled" } else { "" }
+        );
+    }
+
+    /// One gate per round, never shortened: a limit is an account-wide
+    /// signal, so every key waits, not just the ones that discovered it.
+    fn gate_round_backoff(&self, now: Instant, secondary_limited: bool, primary_limited: bool) {
         if secondary_limited || primary_limited {
             let base = if primary_limited {
                 BACKOFF_CAP
@@ -368,16 +382,6 @@ impl RemoteSweeper {
                 _ => candidate,
             });
         }
-
-        self.publish_round(&paths, &facts, now).await;
-
-        log::log!(
-            ROUND_LOG_LEVEL,
-            "[RemoteSweeper] round: {} path(s), {} key(s){}",
-            paths.len(),
-            groups.len(),
-            if throttled { ", throttled" } else { "" }
-        );
     }
 
     async fn read_round_facts(

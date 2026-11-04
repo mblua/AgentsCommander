@@ -13,6 +13,7 @@ use crate::commands::session::create::publication::register_session_samplers;
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::commands::session::resume_probe::build_title_prompt_appendage;
 use crate::config::settings::SettingsState;
+use crate::pty::container_paths::ContainerEnvWarning;
 use crate::session::manager::SessionManager;
 use crate::session::selection::SelectionCause;
 use crate::session::selection::SelectionCoordinator;
@@ -75,17 +76,7 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
 
     maybe_spawn_coordinator_title(app, cwd, id, agent_id.is_some(), is_coordinator);
 
-    let finalization_warnings = session_env_warnings
-        .iter()
-        .map(|warning| {
-            SessionWarning::new(
-                id,
-                warning.key.clone(),
-                warning.kind,
-                warning.message.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let finalization_warnings = session_env_finalization_warnings(id, &session_env_warnings);
 
     // 0.8.0: removed the "Show the terminal window when a session is created" branch.
     // Under the unified-window model the main window is created up-front and stays
@@ -141,6 +132,23 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
         id,
     )
     .await
+}
+
+fn session_env_finalization_warnings(
+    id: uuid::Uuid,
+    session_env_warnings: &[ContainerEnvWarning],
+) -> Vec<SessionWarning> {
+    session_env_warnings
+        .iter()
+        .map(|warning| {
+            SessionWarning::new(
+                id,
+                warning.key.clone(),
+                warning.kind,
+                warning.message.clone(),
+            )
+        })
+        .collect::<Vec<_>>()
 }
 
 async fn finalize<R: tauri::Runtime>(

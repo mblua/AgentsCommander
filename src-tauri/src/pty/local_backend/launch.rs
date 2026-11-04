@@ -267,34 +267,7 @@ pub(super) fn validate_powershell_arguments(
             mark_seen(&mut seen, &option, host_program, token)?;
             continue;
         }
-        if token == "--" || token == "--%" {
-            return Err(adapter_error(
-                host_program,
-                token,
-                "a conflicting/terminal configured option",
-            ));
-        }
-        if !token.starts_with('-') && !token.starts_with('/') {
-            return Err(adapter_error(
-                host_program,
-                token,
-                "an unknown or ambiguous token",
-            ));
-        }
-        let body = &token[1..];
-        // Conflicting/terminal spellings are matched against the FULL body before
-        // any operand split: `-E:O` is not the `-e` spelling, so an attached
-        // operand can never turn an unknown token into a terminal one.
-        if POWERSHELL_CONFLICTING_OPTIONS
-            .iter()
-            .any(|option| option.eq_ignore_ascii_case(body))
-        {
-            return Err(adapter_error(
-                host_program,
-                token,
-                "a conflicting/terminal configured option",
-            ));
-        }
+        let body = powershell_option_body(host_program, token)?;
         let (name, attached) = match body.find([':', '=']) {
             Some(idx) => (&body[..idx], Some(&body[idx + 1..])),
             None => (body, None),
@@ -352,6 +325,40 @@ pub(super) fn validate_powershell_arguments(
         ));
     }
     validate_powershell_pending_operand(host_program, pending_operand)
+}
+
+/// Rejects terminal and non-option tokens, returning the option body after its
+/// leading `-` or `/`.
+fn powershell_option_body<'t>(host_program: &str, token: &'t str) -> Result<&'t str, AppError> {
+    if token == "--" || token == "--%" {
+        return Err(adapter_error(
+            host_program,
+            token,
+            "a conflicting/terminal configured option",
+        ));
+    }
+    if !token.starts_with('-') && !token.starts_with('/') {
+        return Err(adapter_error(
+            host_program,
+            token,
+            "an unknown or ambiguous token",
+        ));
+    }
+    let body = &token[1..];
+    // Conflicting/terminal spellings are matched against the FULL body before
+    // any operand split: `-E:O` is not the `-e` spelling, so an attached
+    // operand can never turn an unknown token into a terminal one.
+    if POWERSHELL_CONFLICTING_OPTIONS
+        .iter()
+        .any(|option| option.eq_ignore_ascii_case(body))
+    {
+        return Err(adapter_error(
+            host_program,
+            token,
+            "a conflicting/terminal configured option",
+        ));
+    }
+    Ok(body)
 }
 
 // --- Section 4.3.3 - cmd(.exe) ---------------------------------------------
