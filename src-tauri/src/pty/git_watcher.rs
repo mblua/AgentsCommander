@@ -476,11 +476,11 @@ impl GitWatcher {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => {
+                        () = shutdown.token().cancelled() => {
                             log::info!("[GitWatcher] Shutdown signal received, stopping");
                             break;
                         }
-                        _ = tokio::time::sleep(POLL_INTERVAL) => {
+                        () = tokio::time::sleep(POLL_INTERVAL) => {
                             watcher.poll().await;
                         }
                     }
@@ -751,14 +751,14 @@ impl GitSweeper {
                     let started = std::time::Instant::now();
                     let floor = tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
+                        () = shutdown.token().cancelled() => break,
                         floor = sweeper.round() => floor,
                     };
                     let remaining = floor.saturating_sub(started.elapsed());
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = tokio::time::sleep(remaining) => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = tokio::time::sleep(remaining) => {}
                     }
                 }
                 log::info!("[GitSweeper] Shutdown signal received, stopping");
@@ -841,7 +841,7 @@ impl GitSweeper {
             );
         }))
         .buffer_unordered(concurrency)
-        .for_each(|_| async {})
+        .for_each(|()| async {})
         .await;
 
         // Defence in depth, and the distinction matters: the tempting justification

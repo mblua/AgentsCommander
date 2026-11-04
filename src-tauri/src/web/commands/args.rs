@@ -58,17 +58,16 @@ where
 pub(super) fn str_or(args: &Value, key: &str, default: &str) -> String {
     args.get(key)
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| default.to_string())
+        .map_or_else(|| default.to_string(), String::from)
 }
 
 pub(super) fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
-    args.get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
+    args.get(key).and_then(|v| v.as_array()).map_or_else(
+        || default.to_vec(),
+        |arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        })
-        .unwrap_or_else(|| default.to_vec())
+        },
+    )
 }
