@@ -455,7 +455,8 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let bridge_result = detach_response_close_telegram(transaction.app(), id).await;
     if let Err(error) = &bridge_result {
         log::warn!(
-            "[session] telegram detach publication failed session={id} source=ResponseClose: {error}"
+            "[session] telegram detach publication failed session={id} \
+             source=ResponseClose: {error}"
         );
     }
     if owner.complete(bridge, bridge_result).is_none() {

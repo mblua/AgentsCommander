@@ -756,7 +756,8 @@ pub(super) fn format_stage_rollback_failed(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Agent delete staging failed and rollback also failed. Hidden cleanup dirs remain: {hidden_paths}. \
+        "Agent delete staging failed and rollback also failed. \
+         Hidden cleanup dirs remain: {hidden_paths}. \
          Original error: {original_error}. Rollback error: {rollback_error}"
     )
 }

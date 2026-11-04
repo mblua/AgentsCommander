@@ -125,7 +125,8 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
             serde_json::json!({ "sessionId": session_id.to_string() }),
         ) {
             log::warn!(
-                "[session] telegram detach publication failed session={session_id} source={source:?}: {error}"
+                "[session] telegram detach publication failed session={session_id} \
+                 source={source:?}: {error}"
             );
         }
         shutdown.spawn_wait_or_abort();
@@ -166,7 +167,8 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
                 "[session] resource cleanup failed session={session_id} source={source:?}: {error}"
             ),
             Err(error) => log::warn!(
-                "[session] resource cleanup task failed session={session_id} source={source:?}: {error}"
+                "[session] resource cleanup task failed session={session_id} \
+                 source={source:?}: {error}"
             ),
         }
     }
@@ -188,7 +190,8 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
             return Err(error.to_string());
         }
         log::warn!(
-            "[session] teardown reported an error after PTY loss session={session_id} source={source:?}: {error}"
+            "[session] teardown reported an error after PTY loss session={session_id} \
+             source={source:?}: {error}"
         );
     }
     Ok(())
