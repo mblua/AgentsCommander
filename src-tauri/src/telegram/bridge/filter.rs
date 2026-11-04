@@ -262,8 +262,7 @@ fn is_box_drawing_line(non_space: &str) -> bool {
 fn starts_with_braille(s: &str) -> bool {
     s.chars()
         .next()
-        .map(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
-        .unwrap_or(false)
+        .is_some_and(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
 }
 
 /// Shared decoration check: low alphanumeric+space ratio (< 0.30, len > 5)
@@ -353,8 +352,7 @@ impl AgentFilter for AgyFilter {
         if trimmed
             .chars()
             .next()
-            .map(|c| ('\u{2580}'..='\u{259F}').contains(&c))
-            .unwrap_or(false)
+            .is_some_and(|c| ('\u{2580}'..='\u{259F}').contains(&c))
         {
             return false;
         }
@@ -419,11 +417,7 @@ fn is_thinking_line(s: &str) -> bool {
     if check.ends_with('\u{2026}') || check.ends_with("...") {
         let word_part = check.trim_end_matches('\u{2026}').trim_end_matches("...");
         if !word_part.is_empty()
-            && word_part
-                .chars()
-                .next()
-                .map(char::is_uppercase)
-                .unwrap_or(false)
+            && word_part.chars().next().is_some_and(char::is_uppercase)
             && word_part.chars().all(char::is_alphabetic)
         {
             return true;

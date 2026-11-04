@@ -198,8 +198,8 @@ impl RemoteSweeper {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = tokio::time::sleep(ROUND_INTERVAL) => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = tokio::time::sleep(ROUND_INTERVAL) => {}
                     }
                     sweeper
                         .run_round(std::time::Instant::now(), chrono::Local::now())

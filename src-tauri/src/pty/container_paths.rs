@@ -114,12 +114,10 @@ impl ContainerPathMap {
     }
 
     pub fn is_container_path(&self, value: &str) -> bool {
-        normalize_container_path(value)
-            .map(|normalized| {
-                normalized == self.container_root
-                    || normalized.starts_with(&format!("{}/", self.container_root))
-            })
-            .unwrap_or(false)
+        normalize_container_path(value).is_some_and(|normalized| {
+            normalized == self.container_root
+                || normalized.starts_with(&format!("{}/", self.container_root))
+        })
     }
 
     pub fn host_root(&self) -> &str {
@@ -292,8 +290,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
     if cwd
         .file_name()
         .and_then(|name| name.to_str())
-        .map(crate::config::ac_root::is_ac_root_name)
-        .unwrap_or(false)
+        .is_some_and(crate::config::ac_root::is_ac_root_name)
     {
         return Some(format!(
             "container transport refuses to bind-mount AC workspace root '{}'",
@@ -312,8 +309,7 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
     let is_wg_dir = cwd
         .file_name()
         .and_then(|name| name.to_str())
-        .map(crate::config::entity_prefix::has_entity_prefix)
-        .unwrap_or(false);
+        .is_some_and(crate::config::entity_prefix::has_entity_prefix);
     if is_wg_dir && crate::config::ac_root::find_ac_root_ancestor(cwd).is_some() {
         return Some(format!(
             "container transport refuses to bind-mount room root '{}'",
