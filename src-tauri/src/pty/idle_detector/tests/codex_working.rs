@@ -85,7 +85,7 @@ fn i2879_feature_frozen() {
     for after in [
         threshold + Duration::from_millis(1),
         threshold * 4,
-        Duration::from_secs(10 * 60 * 60),
+        Duration::from_hours(10),
     ] {
         assert!(detector.evaluate_tick(Some(t0 + after), false).is_none());
         // An Unchanged frame or a validation delivers nothing new and keeps the evidence.
@@ -167,11 +167,7 @@ fn i2879_feature_suppressed_output() {
             ..IdleTuning::AGENT_DEFAULT
         },
     );
-    detector.set_auto_close_ages_for_test(
-        id,
-        Duration::from_secs(30 * 60),
-        Duration::from_secs(31 * 60),
-    );
+    detector.set_auto_close_ages_for_test(id, Duration::from_mins(30), Duration::from_mins(31));
     detector.set_pty_input_ready_for_test(id);
     let stamp = i2879_stamp(&detector, id);
     let silence = *detector.silence.lock().unwrap().get(&id).unwrap();

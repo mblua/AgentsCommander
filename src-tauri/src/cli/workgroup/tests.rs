@@ -224,7 +224,7 @@ fn u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message() {
         ),
         (
             WorkgroupActivityArgs {
-                rooms: Some("".into()),
+                rooms: Some(String::new()),
                 ..filter_args()
             },
             rooms(""),
@@ -252,7 +252,7 @@ fn u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message() {
         ),
         (
             WorkgroupActivityArgs {
-                team: Some("".into()),
+                team: Some(String::new()),
                 ..filter_args()
             },
             "Invalid --team '': expected a team name".to_string(),

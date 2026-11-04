@@ -252,8 +252,7 @@ pub(super) fn run_agent_delete_transaction(
             drop(project_gate);
             return AgentDeleteTransactionOutcome::Blocked { target, raw_error };
         }
-        Err(AgentDeleteStageError::Other(error))
-        | Err(AgentDeleteStageError::RollbackFailed(error)) => {
+        Err(AgentDeleteStageError::Other(error) | AgentDeleteStageError::RollbackFailed(error)) => {
             drop(project_gate);
             return AgentDeleteTransactionOutcome::Aborted { error };
         }
@@ -602,9 +601,7 @@ pub(super) async fn stage_agent_delete_targets(
             })?;
             Err(format!("BLOCKERS:{json}"))
         }
-        Err(AgentDeleteStageError::Other(e)) | Err(AgentDeleteStageError::RollbackFailed(e)) => {
-            Err(e)
-        }
+        Err(AgentDeleteStageError::Other(e) | AgentDeleteStageError::RollbackFailed(e)) => Err(e),
     }
 }
 

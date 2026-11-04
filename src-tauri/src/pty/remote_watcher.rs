@@ -86,7 +86,7 @@ const INTERVAL_CEILING_SECS: u64 = 3600;
 /// Bound on one `gh` call and one local git call. Hanging is not an answer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ceiling on a failing key's interval. 15 minutes.
-const BACKOFF_CAP: Duration = Duration::from_secs(900);
+const BACKOFF_CAP: Duration = Duration::from_mins(15);
 /// These are calls to one host; more parallelism buys 429s, not freshness.
 const QUERY_CONCURRENCY: usize = 2;
 /// Matches `CONTEXT_SAMPLE_QUEUE_CAPACITY`: a stuck consumer must never slow a round.

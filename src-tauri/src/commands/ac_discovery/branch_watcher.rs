@@ -356,11 +356,11 @@ impl DiscoveryBranchWatcher {
                 // changed branch compares None against None and never re-emits.
                 let discovery_changed = {
                     let mut cache = self.discovery_cache.lock().unwrap();
-                    if cache.get(&entry.replica_path) != Some(&payload) {
+                    if cache.get(&entry.replica_path) == Some(&payload) {
+                        false
+                    } else {
                         cache.insert(entry.replica_path.clone(), payload.clone());
                         true
-                    } else {
-                        false
                     }
                 };
                 if discovery_changed {
@@ -373,11 +373,11 @@ impl DiscoveryBranchWatcher {
                 let repos_changed = {
                     let mut cache = self.repos_cache.lock().unwrap();
                     let prev = cache.get(&entry.replica_path);
-                    if prev != Some(&refreshed) {
+                    if prev == Some(&refreshed) {
+                        false
+                    } else {
                         cache.insert(entry.replica_path.clone(), refreshed.clone());
                         true
-                    } else {
-                        false
                     }
                 };
                 if repos_changed {

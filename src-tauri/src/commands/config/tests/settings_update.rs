@@ -522,8 +522,8 @@ async fn update_settings_still_takes_disk_archived_list_when_key_present() {
     );
 
     let mut current = settings_with_single_agent();
-    current.project_paths = vec![live_project.to_string()];
-    current.project_path = Some(live_project.to_string());
+    current.project_paths = vec![live_project.clone()];
+    current.project_path = Some(live_project.clone());
     current.archived_project_paths = vec![live_archived.to_string()];
     let state = state_for(current.clone());
     let mut payload = settings_payload_without_keys(&current, &[]);
@@ -538,17 +538,14 @@ async fn update_settings_still_takes_disk_archived_list_when_key_present() {
     .await
     .unwrap();
 
-    assert_eq!(
-        saved.archived_project_paths,
-        vec![disk_archived.to_string()]
-    );
+    assert_eq!(saved.archived_project_paths, vec![disk_archived.clone()]);
     {
         let live = state.read().await;
-        assert_eq!(live.archived_project_paths, vec![disk_archived.to_string()]);
+        assert_eq!(live.archived_project_paths, vec![disk_archived.clone()]);
     }
     let disk: AppSettings =
         crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
-    assert_eq!(disk.archived_project_paths, vec![disk_archived.to_string()]);
+    assert_eq!(disk.archived_project_paths, vec![disk_archived.clone()]);
 }
 
 #[tokio::test]

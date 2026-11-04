@@ -243,24 +243,24 @@ impl<R: Runtime> crate::reader_demand::ReaderDemandHost for AppHandle<R> {
             .map(|state| state.inner())
     }
 
-    fn holds_room_reader_demand<'a>(
-        &'a self,
+    fn holds_room_reader_demand(
+        &self,
         session_id: Uuid,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+    ) -> impl std::future::Future<Output = bool> + Send + '_ {
         crate::commands::telegram::holds_room_reader_demand(self, session_id)
     }
 
-    fn raise_room_reader_demand<'a>(
-        &'a self,
+    fn raise_room_reader_demand(
+        &self,
         session_id: Uuid,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+    ) -> impl std::future::Future<Output = bool> + Send + '_ {
         crate::commands::session::raise_room_reader_demand(self, session_id)
     }
 
-    fn release_room_reader_demand<'a>(
-        &'a self,
+    fn release_room_reader_demand(
+        &self,
         session_id: Uuid,
-    ) -> impl std::future::Future<Output = ()> + Send + 'a {
+    ) -> impl std::future::Future<Output = ()> + Send + '_ {
         crate::commands::session::co_managed::release_room_reader_demand(self, session_id)
     }
 

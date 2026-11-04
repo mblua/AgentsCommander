@@ -28,7 +28,7 @@ fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
     // Seed cache: a stale file for the removed wg's replica + a fresh sibling.
     let cache = tmp.path().join("context-cache");
     std::fs::create_dir_all(&cache).unwrap();
-    let old = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
+    let old = SystemTime::now() - Duration::from_hours(960);
     let stale = cache.join("replica-context-aaa.md");
     std::fs::write(&stale, "x").unwrap();
     std::fs::File::options()
@@ -46,11 +46,7 @@ fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
         WgDeleteOutcome::Deleted
     ));
     assert_eq!(clocks.remove_workgroup("Proj", "wg-1-team"), 1);
-    let swept = sweep_context_cache_dir(
-        &cache,
-        SystemTime::now(),
-        Duration::from_secs(30 * 24 * 60 * 60),
-    );
+    let swept = sweep_context_cache_dir(&cache, SystemTime::now(), Duration::from_hours(720));
 
     assert!(!wg1.exists() && wg2.exists(), "only wg-1 dir removed");
     assert_eq!(clocks.last_user_message_at("Proj:wg-1-team/coord"), None);

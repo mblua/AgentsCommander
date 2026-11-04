@@ -303,7 +303,7 @@ fn mint_api_client_command_helper_returns_token_and_stores_hash_only_with_defaul
         fixture.root.clone(),
         vec![
             " send ".to_string(),
-            "".to_string(),
+            String::new(),
             "list-peers-lean".to_string(),
         ],
         Some("gui mint".to_string()),
@@ -561,11 +561,11 @@ impl crate::api::dispatcher::DispatcherDelivery for ApiRuntimeProbe {
         crate::api::dispatcher::DispatcherDelivery::restoring(&self.native)
     }
 
-    fn deliver_wake<'a>(
-        &'a self,
+    fn deliver_wake(
+        &self,
         msg: crate::phone::types::OutboxMessage,
         messages: Arc<crate::config::injected_messages::MessageWarnings>,
-    ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+    ) -> futures::future::BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
             self.owner("wake-capture", &messages);
             let result = crate::api::dispatcher::DispatcherDelivery::deliver_wake(
