@@ -97,7 +97,7 @@ fn e2432_n1_absent_main_real_owned_edits_refuse_before_publishers() {
                     .unwrap()
                     .get_mut("A")
                     .unwrap()
-                    .command = "changed-owned-profile".into()
+                    .command = "changed-owned-profile".into();
             }
             _ => {
                 draft
@@ -510,11 +510,11 @@ fn e2432_round7_complete_collision_matrix_leaves_every_id_and_publisher_untouche
         match difference {
             "label" => {
                 source["codingAgentProfiles"]["profileLabelsByAgent"]["beta"]["A"] =
-                    serde_json::json!("different")
+                    serde_json::json!("different");
             }
             "letter" => {
                 source["codingAgentProfiles"]["profilesByAgent"]["beta"]["B"] =
-                    serde_json::json!({})
+                    serde_json::json!({});
             }
             "destination" => {
                 let hash = super::super::configuration_identity("claude", &[]);

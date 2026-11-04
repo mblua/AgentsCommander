@@ -216,13 +216,13 @@ fn settings_lock_debug_child() {
             settings_lock_debug_receipt(&timeout);
         }
         "owner" | "runtime" | "filter-on" => {
-            settings_lock_debug_owner_scenario(&mode, &path, &processed, &log)
+            settings_lock_debug_owner_scenario(&mode, &path, &processed, &log);
         }
         "suppress" => {
-            settings_lock_debug_suppress_scenario(&path, &processed, &gated, &resume, &log)
+            settings_lock_debug_suppress_scenario(&path, &processed, &gated, &resume, &log);
         }
         "saturated" => {
-            settings_lock_debug_saturated_scenario(&path, &processed, &gated, &resume, &log)
+            settings_lock_debug_saturated_scenario(&path, &processed, &gated, &resume, &log);
         }
         "failures" => settings_lock_debug_failure_scenarios(&path, &processed),
         _ => panic!("unknown child mode {mode}"),

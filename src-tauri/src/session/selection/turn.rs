@@ -71,7 +71,7 @@ pub(crate) struct SelectionReadGuard {
 /// held by an operation that is itself waiting for that same worker.
 pub(crate) async fn acquire_selection_operation_turn(
 ) -> Result<SelectionOperationGuard, SelectionCoordinatorError> {
-    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+    if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission);
     }
     let turn = current_selection_turn().write_owned().await;
@@ -82,7 +82,7 @@ pub(crate) async fn acquire_selection_operation_turn(
 /// `RecursiveSubmission` rejection BEFORE waiting as the write side.
 pub(crate) async fn acquire_selection_read_turn(
 ) -> Result<SelectionReadGuard, SelectionCoordinatorError> {
-    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+    if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission);
     }
     let turn = current_selection_turn().read_owned().await;
@@ -217,7 +217,7 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
-    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+    if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
     }
     let submitted = std::time::Instant::now();
