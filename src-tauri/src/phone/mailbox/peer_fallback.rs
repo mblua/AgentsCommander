@@ -285,18 +285,12 @@ impl MailboxPoller {
         pty: &Arc<Mutex<PtyManager>>,
     ) -> Option<crate::session::selection::LifecycleEffectGuard> {
         use crate::session::selection::LifecycleEffectSlot;
-        let Some(info) = continuation.refresh_completion_info(manager, pty).await else {
-            return None;
-        };
+        let info = continuation.refresh_completion_info(manager, pty).await?;
         let id = continuation.binding().map(PendingCreateBinding::session_id);
-        let Some(id) = id else {
-            return None;
-        };
+        let id = id?;
         // Start the work receipt only after its initial current-B checks. A
         // failed preflight has reached no bridge, settle or input effect.
-        let Some(effect) = continuation.start_effect(LifecycleEffectSlot::WorkTransfer) else {
-            return None;
-        };
+        let effect = continuation.start_effect(LifecycleEffectSlot::WorkTransfer)?;
         if info.telegram_bot_id.is_some() {
             self.attach_persisted_telegram_for_wake(app, id, info.telegram_bot_id.as_deref())
                 .await;
