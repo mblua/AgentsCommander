@@ -43,7 +43,7 @@ fn seed_coalescer(
 ) -> Option<(Instant, DateTime<Utc>)> {
     let mut guard = coalescer(c)
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.insert(id, (stamped, wall));
     guard.get(&id).copied()
 }
@@ -51,7 +51,7 @@ fn seed_coalescer(
 fn coalescer_entry(id: Uuid, c: &ActivityCoalescer) -> Option<(Instant, DateTime<Utc>)> {
     coalescer(c)
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&id)
         .copied()
 }
@@ -525,7 +525,7 @@ fn a_poisoned_coalescer_mutex_does_not_panic_a_later_build() {
             .spawn(|| {
                 let _guard = coalescer(&c)
                     .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 panic!("poison the coalescer mutex on purpose");
             })
             .join()

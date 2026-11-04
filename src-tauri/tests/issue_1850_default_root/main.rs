@@ -57,7 +57,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 const CANONICAL: &str = ".agentscommander";
@@ -822,7 +822,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
                 }
                 if settings
                     .get("onboardingDismissed")
-                    .and_then(|value| value.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     == Some(true)
                 {
                     return Err(format!(
@@ -852,7 +852,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             }
             if settings
                 .get("onboardingDismissed")
-                .and_then(|value| value.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 != Some(true)
             {
                 return Err(format!(

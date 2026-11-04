@@ -241,7 +241,7 @@ impl QuarantineWatchdogBackend {
         self.gone.lock().unwrap().insert(pid);
     }
 
-    /// (observe_tree, observe_identity, terminate_verified) call counts.
+    /// (`observe_tree`, `observe_identity`, `terminate_verified`) call counts.
     fn call_counts(&self) -> (usize, usize, usize) {
         (
             self.observe_tree_calls.load(Ordering::SeqCst),
@@ -354,7 +354,7 @@ fn register_agent_group(
 /// #1151 - the coordinator must be at `Running` or `watchdog_resource_kill` answers
 /// `Err(Busy)` at its phase gate, before the absent-session check. `SelectionCoordinator::new`
 /// starts at `Bootstrapping` and `CoordinatorPhase` is private, so the supported route
-/// is `submit_restore_first`, which needs a started worker and therefore an AppHandle.
+/// is `submit_restore_first`, which needs a started worker and therefore an `AppHandle`.
 async fn running_coordinator(
     manager: Arc<tokio::sync::RwLock<SessionManager>>,
     monitor: Arc<ResourceMonitorState>,

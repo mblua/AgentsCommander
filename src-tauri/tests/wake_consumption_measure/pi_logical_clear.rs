@@ -213,7 +213,7 @@ fn start_capture_epoch(ctx: &HarnessCtx, session_id: Uuid) -> Result<CaptureEpoc
             }
             let mut retained = bytes_for_collector
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if retained.len().saturating_add(chunk.len()) > PI_CAPTURE_MAX_BYTES {
                 overflow_for_collector.store(true, Ordering::SeqCst);
                 continue;
@@ -232,7 +232,10 @@ fn start_capture_epoch(ctx: &HarnessCtx, session_id: Uuid) -> Result<CaptureEpoc
 
 impl CaptureEpoch {
     fn contains(&self, marker: &str) -> bool {
-        let bytes = self.bytes.lock().unwrap_or_else(|error| error.into_inner());
+        let bytes = self
+            .bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         String::from_utf8_lossy(&bytes).contains(marker)
     }
 
@@ -253,7 +256,7 @@ impl CaptureEpoch {
         let bytes = self
             .bytes
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Ok(CaptureSnapshot {
             bytes,
@@ -279,8 +282,7 @@ async fn wait_for_capture_marker(
     while Instant::now() < deadline {
         if capture.overflowed.load(Ordering::SeqCst) {
             return Err(format!(
-                "capture exceeded the {} byte cap",
-                PI_CAPTURE_MAX_BYTES
+                "capture exceeded the {PI_CAPTURE_MAX_BYTES} byte cap"
             ));
         }
         if capture.contains(forbidden) {

@@ -460,7 +460,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
             container_id: format!("container-{session_id}"),
         });
     pty.lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_route(session_id, SessionBackendKind::ContainerTransport);
 
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
@@ -488,7 +488,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
         match catch_unwind(AssertUnwindSafe(|| {
             kill_pty
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .kill(session_id)
         })) {
             Ok(result) => result.map_err(|error| error.to_string()),
@@ -531,7 +531,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
     assert!(!container_backend.contains_transport_state_for_test(session_id));
     assert!(!pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .has_session(session_id));
     await_state_eq(
         "installed-handle cleanup drains shutdown work",
@@ -547,7 +547,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
     );
     assert_eq!(container_backend.shutdown_worker_count_for_test(), 0);
     pty.lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stop_all_started_containers_blocking(Duration::from_secs(1));
     assert_eq!(
         runtime.stop_calls.load(Ordering::SeqCst),
