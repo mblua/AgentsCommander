@@ -129,8 +129,7 @@ pub(crate) async fn run_contained(
             }
             ProbeWait::Exited(Ok(status)) => status
                 .code()
-                .map(ContainedRunEnd::Exited)
-                .unwrap_or(ContainedRunEnd::Signaled),
+                .map_or(ContainedRunEnd::Signaled, ContainedRunEnd::Exited),
         }
     };
     let cleanup_defect = (!settlement.defects.is_empty()).then(|| settlement.defects.join("; "));

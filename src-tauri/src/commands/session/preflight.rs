@@ -55,7 +55,9 @@ pub(crate) struct TestHold {
 
 impl PreflightState {
     fn holds(&self) -> std::sync::MutexGuard<'_, HashMap<String, Hold>> {
-        self.holds.lock().unwrap_or_else(|e| e.into_inner())
+        self.holds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn try_share(self: &Arc<Self>, cwd: &str) -> Result<LaunchShare, HoldRefusal> {
@@ -233,7 +235,7 @@ async fn run_stage(
 ) {
     let backend = pty_mgr
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .backend_for_kind(env.backend_kind);
     let launch = match backend.prepare_preflight_launch(launch_request(stage, env)) {
         Ok(launch) => launch,

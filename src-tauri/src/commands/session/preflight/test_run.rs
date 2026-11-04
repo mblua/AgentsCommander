@@ -145,7 +145,9 @@ impl PreflightRuns {
 
 impl PreflightState {
     fn runs(&self) -> std::sync::MutexGuard<'_, PreflightRuns> {
-        self.runs.lock().unwrap_or_else(|e| e.into_inner())
+        self.runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn update_run(&self, run_id: &str, edit: impl FnOnce(&mut PreflightTestSnapshot)) {

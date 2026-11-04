@@ -183,7 +183,8 @@ fn collect_fireable(map: &mut HashMap<String, Episode>, now: Instant) -> Vec<Non
         let Some(since) = ep.disparity_since else {
             continue;
         };
-        if now.duration_since(since) >= Duration::from_secs(ep.report.tolerance_seconds as u64) {
+        if now.duration_since(since) >= Duration::from_secs(u64::from(ep.report.tolerance_seconds))
+        {
             ep.fired = true;
             out.push(ep.report.clone());
         }

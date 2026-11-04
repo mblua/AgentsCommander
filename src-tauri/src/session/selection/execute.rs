@@ -471,7 +471,7 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     let pending = manager.get_pending_session(binding).await;
     let cleanup_nonce = Uuid::new_v4();
-    let claimed = owner.state.lock().ok().is_some_and(|mut state| {
+    let claimed = owner.state.lock().is_ok_and(|mut state| {
         if state.executor_nonce != *executor
             || state.stage != ReplacementStage::Executing
             || state.effects.iter().any(|effect| {
@@ -521,7 +521,7 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
         return;
     }
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    let still_claimed = owner.state.lock().ok().is_some_and(|state| {
+    let still_claimed = owner.state.lock().is_ok_and(|state| {
         state.executor_nonce == *executor
             && state.entry_create.as_ref().is_some_and(|create| {
                 create.binding == binding
