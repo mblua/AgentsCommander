@@ -272,10 +272,10 @@ impl MessageStoreState {
         let store = MessageStore::at_config_dir()
             .map(Arc::new)
             .map_err(|_| "store_unavailable".to_string());
-        let target_locks = target_gate
-            .as_ref()
-            .map(|gate| Arc::clone(&gate.exact_locks))
-            .unwrap_or_else(|_| Arc::new(PtyInputTargetLocks::default()));
+        let target_locks = target_gate.as_ref().map_or_else(
+            |_| Arc::new(PtyInputTargetLocks::default()),
+            |gate| Arc::clone(&gate.exact_locks),
+        );
         Self {
             store,
             active_operations: Arc::new(PtyInputActiveOperations::default()),
@@ -300,10 +300,10 @@ impl MessageStoreState {
         store: Result<Arc<MessageStore>, String>,
         target_gate: Result<Arc<PtyInputTargetGate>, String>,
     ) -> Self {
-        let target_locks = target_gate
-            .as_ref()
-            .map(|gate| Arc::clone(&gate.exact_locks))
-            .unwrap_or_else(|_| Arc::new(PtyInputTargetLocks::default()));
+        let target_locks = target_gate.as_ref().map_or_else(
+            |_| Arc::new(PtyInputTargetLocks::default()),
+            |gate| Arc::clone(&gate.exact_locks),
+        );
         Self {
             store,
             active_operations: Arc::new(PtyInputActiveOperations::default()),
@@ -380,8 +380,8 @@ impl PreparationHeartbeatGuard {
             loop {
                 tokio::select! {
                     biased;
-                    _ = task_cancellation.cancelled() => break,
-                    _ = &mut expiry => {
+                    () = task_cancellation.cancelled() => break,
+                    () = &mut expiry => {
                         task_failed.store(true, std::sync::atomic::Ordering::SeqCst);
                         break;
                     }
