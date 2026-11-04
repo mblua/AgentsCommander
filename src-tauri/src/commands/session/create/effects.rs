@@ -22,7 +22,8 @@ pub(crate) fn start_create_effect<R: tauri::Runtime>(
     let effect = inline_transaction
         .and_then(|transaction| transaction.start_lifecycle_effect(slot))
         .or_else(|| owned_replacement.and_then(|continuation| continuation.start_effect(slot)));
-    if (inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry())
+    if (inline_transaction
+        .is_some_and(crate::session::selection::SelectionTransaction::has_lifecycle_entry)
         || owned_replacement.is_some())
         && effect.is_none()
     {

@@ -52,7 +52,7 @@ pub enum WebBrowserAction {
 
 #[derive(Args)]
 pub struct SessionArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN
+    /// Session token from `AGENTSCOMMANDER_TOKEN`
     #[arg(long)]
     pub token: Option<String>,
     /// Agent root directory (required). Your working directory.

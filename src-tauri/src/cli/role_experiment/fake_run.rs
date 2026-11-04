@@ -510,7 +510,7 @@ pub(super) fn collect_experiment_validation(loaded: &LoadedExperiment) -> Experi
         if !seen.insert(variant.clone()) {
             errors.push(err(
                 "variant_name_duplicate",
-                format!("Duplicate variant '{}'", variant),
+                format!("Duplicate variant '{variant}'"),
                 Some(variant.as_str()),
             ));
         }

@@ -105,7 +105,7 @@ fn confirm_delivery_watcher(outbox: std::path::PathBuf) -> std::thread::JoinHand
                             .to_string();
                         let delivered = outbox.join("delivered");
                         let _ = std::fs::create_dir_all(&delivered);
-                        let _ = std::fs::write(delivered.join(format!("{}.json", id)), "{}");
+                        let _ = std::fs::write(delivered.join(format!("{id}.json")), "{}");
                         return;
                     }
                 }

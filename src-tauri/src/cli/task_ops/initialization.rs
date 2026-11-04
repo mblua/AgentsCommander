@@ -21,7 +21,7 @@ pub(crate) fn build_task_content(task_title: &str) -> String {
     // a Clean resets the task. `user_owned_title` trims and avoids double-prefix.
     let title = super::user_owned_title(task_title);
     let escaped = title.replace('\'', "''");
-    format!("---\ntitle: '{}'\n---\n", escaped)
+    format!("---\ntitle: '{escaped}'\n---\n")
 }
 
 /// Validate and prepare the initial task before the GUI creates any files.
