@@ -2,23 +2,325 @@ use super::*;
 use crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest;
 
 #[cfg(target_os = "windows")]
+type ScreenshotRoute = axum::routing::MethodRouter<crate::api::ApiState>;
+
+#[cfg(target_os = "windows")]
+type RecordedCalls = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+#[cfg(target_os = "windows")]
+struct ServerGuard(tokio::task::JoinHandle<()>);
+
+#[cfg(target_os = "windows")]
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+enum Outcome {
+    NotFound,
+    TooLarge,
+    Unavailable,
+}
+
+#[cfg(target_os = "windows")]
+async fn new_window_screenshot_fixture() -> AcceptanceFixture {
+    let temporary = match tempfile::Builder::new()
+        .prefix("window-screenshot-fixture-")
+        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+    {
+        Ok(temporary) => temporary,
+        Err(error) => panic!("fixture temporary directory must be created: {error}"),
+    };
+    AcceptanceFixture::new(temporary).await
+}
+
+#[cfg(target_os = "windows")]
+fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn serve_window_screenshot_route(
+    state: crate::api::ApiState,
+    route: ScreenshotRoute,
+) -> (std::net::SocketAddr, ServerGuard) {
+    let router = axum::Router::new()
+        .route(
+            crate::api::handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
+            route,
+        )
+        .with_state(state);
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        Ok(listener) => listener,
+        Err(error) => panic!("test API listener must bind: {error}"),
+    };
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => panic!("test API listener must expose its address: {error}"),
+    };
+    let server = ServerGuard(tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    }));
+    (address, server)
+}
+
+#[cfg(target_os = "windows")]
+fn result_mapping_route(calls: &RecordedCalls, outcome: Outcome) -> ScreenshotRoute {
+    let capture_factory = std::sync::Arc::new({
+        let calls = std::sync::Arc::clone(calls);
+        move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
+            let calls = std::sync::Arc::clone(&calls);
+            Box::pin(async move {
+                let mut calls = lock_unpoisoned(&calls);
+                calls.push(window_id);
+                match outcome {
+                    Outcome::NotFound => {
+                        Err(crate::screenshot::WindowScreenshotCaptureError::NotFound)
+                    }
+                    Outcome::TooLarge => {
+                        Err(crate::screenshot::WindowScreenshotCaptureError::TooLarge)
+                    }
+                    Outcome::Unavailable => {
+                        Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable)
+                    }
+                }
+            })
+        }
+    });
+    crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(capture_factory)
+}
+
+#[cfg(target_os = "windows")]
+fn bearer_headers(token: &str) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    let authorization = match axum::http::HeaderValue::from_str(&format!("Bearer {token}")) {
+        Ok(authorization) => authorization,
+        Err(error) => panic!("valid screenshot authorization header must build: {error}"),
+    };
+    headers.insert(axum::http::header::AUTHORIZATION, authorization);
+    headers
+}
+
+#[cfg(target_os = "windows")]
+fn test_client_address() -> std::net::SocketAddr {
+    match "127.0.0.1:49152".parse() {
+        Ok(address) => address,
+        Err(error) => panic!("test client address must parse: {error}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn raw_request(address: std::net::SocketAddr, token: &str, path: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = match tokio::net::TcpStream::connect(address).await {
+        Ok(stream) => stream,
+        Err(error) => panic!("raw screenshot test client must connect: {error}"),
+    };
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
+            {token}\r\nConnection: close\r\n\r\n"
+    );
+    if let Err(error) = stream.write_all(request.as_bytes()).await {
+        panic!("raw screenshot test request must write: {error}");
+    }
+    let mut response = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut response).await {
+        panic!("raw screenshot test response must read: {error}");
+    }
+    match String::from_utf8(response) {
+        Ok(response) => response,
+        Err(error) => panic!("raw screenshot response must be UTF-8 JSON: {error}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn unreached_capture_route(calls: &RecordedCalls) -> ScreenshotRoute {
+    let capture_factory = std::sync::Arc::new({
+        let calls = std::sync::Arc::clone(calls);
+        move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
+            let calls = std::sync::Arc::clone(&calls);
+            Box::pin(async move {
+                let mut calls = lock_unpoisoned(&calls);
+                calls.push(window_id);
+                Ok(b"not reached".to_vec())
+            })
+        }
+    });
+    crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(capture_factory)
+}
+
+#[cfg(target_os = "windows")]
+async fn send_gated_window_request(
+    client: reqwest::Client,
+    address: std::net::SocketAddr,
+    token: String,
+    window_id: &'static str,
+) -> reqwest::Response {
+    match client
+        .get(format!(
+            "http://{address}/api/v1/windows/{window_id}/screenshot"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("gated screenshot request must complete: {error}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn gated_queue_route(
+    calls: &RecordedCalls,
+    active_started: &std::sync::Arc<tokio::sync::Notify>,
+    release_active: &std::sync::Arc<tokio::sync::Notify>,
+) -> ScreenshotRoute {
+    let capture_factory = std::sync::Arc::new({
+        let calls = std::sync::Arc::clone(calls);
+        let active_started = std::sync::Arc::clone(active_started);
+        let release_active = std::sync::Arc::clone(release_active);
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
+            let calls = std::sync::Arc::clone(&calls);
+            let active_started = std::sync::Arc::clone(&active_started);
+            let release_active = std::sync::Arc::clone(&release_active);
+            Box::pin(async move {
+                let is_first = {
+                    let mut calls = lock_unpoisoned(&calls);
+                    let is_first = window_id == "1";
+                    calls.push(window_id);
+                    is_first
+                };
+
+                if is_first {
+                    let worker = tokio::spawn(async move {
+                        let _lease = lease;
+                        active_started.notify_one();
+                        release_active.notified().await;
+                        Ok::<Vec<u8>, crate::screenshot::WindowScreenshotCaptureError>(
+                            b"\x89PNG\r\n\x1a\ngated".to_vec(),
+                        )
+                    });
+                    match worker.await {
+                        Ok(result) => result,
+                        Err(_) => Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable),
+                    }
+                } else {
+                    drop(lease);
+                    Ok(b"\x89PNG\r\n\x1a\nqueued".to_vec())
+                }
+            })
+        }
+    });
+    crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(capture_factory)
+}
+
+#[cfg(target_os = "windows")]
+async fn send_fresh_window_request(
+    client: reqwest::Client,
+    address: std::net::SocketAddr,
+    token: String,
+) -> reqwest::Response {
+    match client
+        .get(format!("http://{address}/api/v1/windows/1/screenshot"))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => panic!("fresh-result screenshot request must complete: {error}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn open_detached_request(
+    address: std::net::SocketAddr,
+    token: &str,
+) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stream = match tokio::net::TcpStream::connect(address).await {
+        Ok(stream) => stream,
+        Err(error) => panic!("detached fresh-result client must connect: {error}"),
+    };
+    let request = format!(
+        "GET /api/v1/windows/1/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
+            {token}\r\nConnection: close\r\n\r\n"
+    );
+    if let Err(error) = stream.write_all(request.as_bytes()).await {
+        panic!("detached fresh-result request must write: {error}");
+    }
+    if let Err(error) = stream.flush().await {
+        panic!("detached fresh-result request must flush: {error}");
+    }
+    stream
+}
+
+#[cfg(target_os = "windows")]
+struct FreshResultGates {
+    second_started: std::sync::Arc<tokio::sync::Notify>,
+    release_second: std::sync::Arc<tokio::sync::Notify>,
+    second_done: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(target_os = "windows")]
+fn fresh_result_route(
+    calls: &RecordedCalls,
+    gates: &FreshResultGates,
+    factory_result_vectors: [Vec<u8>; 3],
+) -> ScreenshotRoute {
+    let capture_factory = std::sync::Arc::new({
+        let calls = std::sync::Arc::clone(calls);
+        let second_started = std::sync::Arc::clone(&gates.second_started);
+        let release_second = std::sync::Arc::clone(&gates.release_second);
+        let second_done = std::sync::Arc::clone(&gates.second_done);
+        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
+            let calls = std::sync::Arc::clone(&calls);
+            let second_started = std::sync::Arc::clone(&second_started);
+            let release_second = std::sync::Arc::clone(&release_second);
+            let second_done = std::sync::Arc::clone(&second_done);
+            let call_index = {
+                let mut calls = lock_unpoisoned(&calls);
+                calls.push(window_id);
+                calls.len() - 1
+            };
+            let vector = factory_result_vectors[call_index].clone();
+            Box::pin(async move {
+                if call_index == 1 {
+                    let worker = tokio::spawn(async move {
+                        let _lease = lease;
+                        second_started.notify_one();
+                        release_second.notified().await;
+                        second_done.notify_one();
+                        Ok::<Vec<u8>, crate::screenshot::WindowScreenshotCaptureError>(vector)
+                    });
+                    match worker.await {
+                        Ok(result) => result,
+                        Err(_) => Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable),
+                    }
+                } else {
+                    drop(lease);
+                    Ok(vector)
+                }
+            })
+        }
+    });
+    crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(capture_factory)
+}
+
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn window_screenshot_route_local_factory_result_mappings_are_audited_and_released() {
-    #[derive(Clone, Copy)]
-    enum Outcome {
-        NotFound,
-        TooLarge,
-        Unavailable,
-    }
-
-    struct ServerGuard(tokio::task::JoinHandle<()>);
-
-    impl Drop for ServerGuard {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
     let _audit_lock = crate::api::audit::lock_window_screenshot_audits_for_test();
     let cases = [
         (
@@ -42,64 +344,12 @@ async fn window_screenshot_route_local_factory_result_mappings_are_audited_and_r
     ];
 
     for (outcome, expected_status, expected_code, expected_audit) in cases {
-        let temporary = match tempfile::Builder::new()
-            .prefix("window-screenshot-fixture-")
-            .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-        {
-            Ok(temporary) => temporary,
-            Err(error) => panic!("fixture temporary directory must be created: {error}"),
-        };
-        let fixture = AcceptanceFixture::new(temporary).await;
+        let fixture = new_window_screenshot_fixture().await;
         let token = fixture.api_coordinator_token.secret.clone();
         let state = direct_api_state(&fixture);
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let capture_factory = std::sync::Arc::new({
-            let calls = std::sync::Arc::clone(&calls);
-            move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
-                let calls = std::sync::Arc::clone(&calls);
-                Box::pin(async move {
-                    let mut calls = match calls.lock() {
-                        Ok(calls) => calls,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    calls.push(window_id);
-                    match outcome {
-                        Outcome::NotFound => {
-                            Err(crate::screenshot::WindowScreenshotCaptureError::NotFound)
-                        }
-                        Outcome::TooLarge => {
-                            Err(crate::screenshot::WindowScreenshotCaptureError::TooLarge)
-                        }
-                        Outcome::Unavailable => {
-                            Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable)
-                        }
-                    }
-                })
-            }
-        });
-        let router = axum::Router::new()
-            .route(
-                crate::api::handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
-                crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(
-                    capture_factory,
-                ),
-            )
-            .with_state(state.clone());
-        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-            Ok(listener) => listener,
-            Err(error) => panic!("test API listener must bind: {error}"),
-        };
-        let address = match listener.local_addr() {
-            Ok(address) => address,
-            Err(error) => panic!("test API listener must expose its address: {error}"),
-        };
-        let _server = ServerGuard(tokio::spawn(async move {
-            let _ = axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await;
-        }));
+        let route = result_mapping_route(&calls, outcome);
+        let (address, _server) = serve_window_screenshot_route(state.clone(), route).await;
 
         let _ = crate::api::audit::take_window_screenshot_audits_for_test();
         let response = match reqwest::Client::new()
@@ -123,10 +373,7 @@ async fn window_screenshot_route_local_factory_result_mappings_are_audited_and_r
             vec![expected_audit]
         );
         {
-            let calls = match calls.lock() {
-                Ok(calls) => calls,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let calls = lock_unpoisoned(&calls);
             assert_eq!(calls.as_slice(), ["1"]);
         }
 
@@ -150,14 +397,7 @@ async fn window_screenshot_full_flow_authenticated_raw_path_validation_is_uncapt
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let temporary = match tempfile::Builder::new()
-        .prefix("window-screenshot-fixture-")
-        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    {
-        Ok(temporary) => temporary,
-        Err(error) => panic!("fixture temporary directory must be created: {error}"),
-    };
-    let fixture = AcceptanceFixture::new(temporary).await;
+    let fixture = new_window_screenshot_fixture().await;
     let token = fixture.api_coordinator_token.secret.clone();
     let state = direct_api_state(&fixture);
     let factory_calls = std::sync::Arc::new(AtomicUsize::new(0));
@@ -189,12 +429,7 @@ async fn window_screenshot_full_flow_authenticated_raw_path_validation_is_uncapt
             "/api/v1/windows/18446744073709551616/screenshot",
         ),
     ] {
-        let mut headers = axum::http::HeaderMap::new();
-        let authorization = match axum::http::HeaderValue::from_str(&format!("Bearer {token}")) {
-            Ok(authorization) => authorization,
-            Err(error) => panic!("valid screenshot authorization header must build: {error}"),
-        };
-        headers.insert(axum::http::header::AUTHORIZATION, authorization);
+        let headers = bearer_headers(&token);
         let uri = match axum::http::Uri::from_str(raw_path) {
             Ok(uri) => uri,
             Err(error) => panic!("{case} raw screenshot URI must parse: {error}"),
@@ -203,10 +438,7 @@ async fn window_screenshot_full_flow_authenticated_raw_path_validation_is_uncapt
         let response = match crate::api::handlers::window_screenshot::get_with_capture_for_test(
             state.clone(),
             headers,
-            match "127.0.0.1:49152".parse() {
-                Ok(address) => address,
-                Err(error) => panic!("test client address must parse: {error}"),
-            },
+            test_client_address(),
             axum::extract::OriginalUri(uri),
             move |_window_id, _lease| {
                 factory_calls_for_case.fetch_add(1, Ordering::SeqCst);
@@ -260,86 +492,12 @@ async fn window_screenshot_full_flow_authenticated_raw_path_validation_is_uncapt
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn window_screenshot_route_local_factory_auth_and_raw_path_order_is_audited() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    struct ServerGuard(tokio::task::JoinHandle<()>);
-
-    impl Drop for ServerGuard {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
-    async fn raw_request(address: std::net::SocketAddr, token: &str, path: &str) -> String {
-        let mut stream = match tokio::net::TcpStream::connect(address).await {
-            Ok(stream) => stream,
-            Err(error) => panic!("raw screenshot test client must connect: {error}"),
-        };
-        let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
-                {token}\r\nConnection: close\r\n\r\n"
-        );
-        if let Err(error) = stream.write_all(request.as_bytes()).await {
-            panic!("raw screenshot test request must write: {error}");
-        }
-        let mut response = Vec::new();
-        if let Err(error) = stream.read_to_end(&mut response).await {
-            panic!("raw screenshot test response must read: {error}");
-        }
-        match String::from_utf8(response) {
-            Ok(response) => response,
-            Err(error) => panic!("raw screenshot response must be UTF-8 JSON: {error}"),
-        }
-    }
-
-    let temporary = match tempfile::Builder::new()
-        .prefix("window-screenshot-fixture-")
-        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    {
-        Ok(temporary) => temporary,
-        Err(error) => panic!("fixture temporary directory must be created: {error}"),
-    };
-    let fixture = AcceptanceFixture::new(temporary).await;
+    let fixture = new_window_screenshot_fixture().await;
     let token = fixture.api_coordinator_token.secret.clone();
     let state = direct_api_state(&fixture);
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let capture_factory = std::sync::Arc::new({
-        let calls = std::sync::Arc::clone(&calls);
-        move |window_id, _lease| -> WindowScreenshotCaptureFutureForTest {
-            let calls = std::sync::Arc::clone(&calls);
-            Box::pin(async move {
-                let mut calls = match calls.lock() {
-                    Ok(calls) => calls,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                calls.push(window_id);
-                Ok(b"not reached".to_vec())
-            })
-        }
-    });
-    let router = axum::Router::new()
-        .route(
-            crate::api::handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
-            crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(
-                capture_factory,
-            ),
-        )
-        .with_state(state.clone());
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-        Ok(listener) => listener,
-        Err(error) => panic!("test API listener must bind: {error}"),
-    };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => panic!("test API listener must expose its address: {error}"),
-    };
-    let _server = ServerGuard(tokio::spawn(async move {
-        let _ = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await;
-    }));
+    let route = unreached_capture_route(&calls);
+    let (address, _server) = serve_window_screenshot_route(state.clone(), route).await;
 
     let _audit_lock = crate::api::audit::lock_window_screenshot_audits_for_test();
     let _ = crate::api::audit::take_window_screenshot_audits_for_test();
@@ -368,10 +526,7 @@ async fn window_screenshot_route_local_factory_auth_and_raw_path_order_is_audite
     let structural_miss = raw_request(address, &token, "/api/v1/windows/1/screenshot/extra").await;
     assert!(structural_miss.starts_with("HTTP/1.1 404"));
     assert!(crate::api::audit::take_window_screenshot_audits_for_test().is_empty());
-    let calls = match calls.lock() {
-        Ok(calls) => calls,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    let calls = lock_unpoisoned(&calls);
     assert!(calls.is_empty());
     drop(calls);
 
@@ -397,125 +552,31 @@ async fn window_screenshot_route_local_factory_auth_and_raw_path_order_is_audite
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_retains_lease() {
-    struct ServerGuard(tokio::task::JoinHandle<()>);
-
-    impl Drop for ServerGuard {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
-    async fn send_window_request(
-        client: reqwest::Client,
-        address: std::net::SocketAddr,
-        token: String,
-        window_id: &'static str,
-    ) -> reqwest::Response {
-        match client
-            .get(format!(
-                "http://{address}/api/v1/windows/{window_id}/screenshot"
-            ))
-            .bearer_auth(token)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => panic!("gated screenshot request must complete: {error}"),
-        }
-    }
-
-    let temporary = match tempfile::Builder::new()
-        .prefix("window-screenshot-fixture-")
-        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    {
-        Ok(temporary) => temporary,
-        Err(error) => panic!("fixture temporary directory must be created: {error}"),
-    };
-    let fixture = AcceptanceFixture::new(temporary).await;
+    let fixture = new_window_screenshot_fixture().await;
     let token = fixture.api_coordinator_token.secret.clone();
     let state = direct_api_state(&fixture);
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let active_started = std::sync::Arc::new(tokio::sync::Notify::new());
     let release_active = std::sync::Arc::new(tokio::sync::Notify::new());
-    let capture_factory = std::sync::Arc::new({
-        let calls = std::sync::Arc::clone(&calls);
-        let active_started = std::sync::Arc::clone(&active_started);
-        let release_active = std::sync::Arc::clone(&release_active);
-        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
-            let calls = std::sync::Arc::clone(&calls);
-            let active_started = std::sync::Arc::clone(&active_started);
-            let release_active = std::sync::Arc::clone(&release_active);
-            Box::pin(async move {
-                let is_first = {
-                    let mut calls = match calls.lock() {
-                        Ok(calls) => calls,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    let is_first = window_id == "1";
-                    calls.push(window_id);
-                    is_first
-                };
-
-                if is_first {
-                    let worker = tokio::spawn(async move {
-                        let _lease = lease;
-                        active_started.notify_one();
-                        release_active.notified().await;
-                        Ok::<Vec<u8>, crate::screenshot::WindowScreenshotCaptureError>(
-                            b"\x89PNG\r\n\x1a\ngated".to_vec(),
-                        )
-                    });
-                    match worker.await {
-                        Ok(result) => result,
-                        Err(_) => Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable),
-                    }
-                } else {
-                    drop(lease);
-                    Ok(b"\x89PNG\r\n\x1a\nqueued".to_vec())
-                }
-            })
-        }
-    });
-    let router = axum::Router::new()
-        .route(
-            crate::api::handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
-            crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(
-                capture_factory,
-            ),
-        )
-        .with_state(state.clone());
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-        Ok(listener) => listener,
-        Err(error) => panic!("test API listener must bind: {error}"),
-    };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => panic!("test API listener must expose its address: {error}"),
-    };
-    let _server = ServerGuard(tokio::spawn(async move {
-        let _ = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await;
-    }));
+    let route = gated_queue_route(&calls, &active_started, &release_active);
+    let (address, _server) = serve_window_screenshot_route(state.clone(), route).await;
 
     let _audit_lock = crate::api::audit::lock_window_screenshot_audits_for_test();
     let _ = crate::api::audit::take_window_screenshot_audits_for_test();
-    let active_request = tokio::spawn(send_window_request(
+    let active_request = tokio::spawn(send_gated_window_request(
         reqwest::Client::new(),
         address,
         token.clone(),
         "1",
     ));
     active_started.notified().await;
-    let queued_one = tokio::spawn(send_window_request(
+    let queued_one = tokio::spawn(send_gated_window_request(
         reqwest::Client::new(),
         address,
         token.clone(),
         "2",
     ));
-    let queued_two = tokio::spawn(send_window_request(
+    let queued_two = tokio::spawn(send_gated_window_request(
         reqwest::Client::new(),
         address,
         token.clone(),
@@ -538,7 +599,8 @@ async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_r
         "two requests must retain queued admission permits"
     );
 
-    let fourth = send_window_request(reqwest::Client::new(), address, token.clone(), "4").await;
+    let fourth =
+        send_gated_window_request(reqwest::Client::new(), address, token.clone(), "4").await;
     assert_eq!(fourth.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
         crate::api::audit::take_window_screenshot_audits_for_test(),
@@ -548,7 +610,8 @@ async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_r
     let _ = active_request.await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let still_busy = send_window_request(reqwest::Client::new(), address, token.clone(), "5").await;
+    let still_busy =
+        send_gated_window_request(reqwest::Client::new(), address, token.clone(), "5").await;
     assert_eq!(
         still_busy.status(),
         axum::http::StatusCode::TOO_MANY_REQUESTS
@@ -570,12 +633,10 @@ async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_r
     assert_eq!(queued_one.status(), axum::http::StatusCode::OK);
     assert_eq!(queued_two.status(), axum::http::StatusCode::OK);
 
-    let after_release = send_window_request(reqwest::Client::new(), address, token, "6").await;
+    let after_release =
+        send_gated_window_request(reqwest::Client::new(), address, token, "6").await;
     assert_eq!(after_release.status(), axum::http::StatusCode::OK);
-    let calls = match calls.lock() {
-        Ok(calls) => calls,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    let calls = lock_unpoisoned(&calls);
     assert_eq!(calls.len(), 4);
     assert_eq!(calls.first().map(String::as_str), Some("1"));
     assert_eq!(calls.last().map(String::as_str), Some("6"));
@@ -587,61 +648,7 @@ async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_r
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn window_screenshot_each_request_uses_a_fresh_local_result() {
-    struct ServerGuard(tokio::task::JoinHandle<()>);
-
-    impl Drop for ServerGuard {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
-    async fn send_window_request(
-        client: reqwest::Client,
-        address: std::net::SocketAddr,
-        token: String,
-    ) -> reqwest::Response {
-        match client
-            .get(format!("http://{address}/api/v1/windows/1/screenshot"))
-            .bearer_auth(token)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => panic!("fresh-result screenshot request must complete: {error}"),
-        }
-    }
-
-    async fn open_detached_request(
-        address: std::net::SocketAddr,
-        token: &str,
-    ) -> tokio::net::TcpStream {
-        use tokio::io::AsyncWriteExt;
-
-        let mut stream = match tokio::net::TcpStream::connect(address).await {
-            Ok(stream) => stream,
-            Err(error) => panic!("detached fresh-result client must connect: {error}"),
-        };
-        let request = format!(
-            "GET /api/v1/windows/1/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
-                {token}\r\nConnection: close\r\n\r\n"
-        );
-        if let Err(error) = stream.write_all(request.as_bytes()).await {
-            panic!("detached fresh-result request must write: {error}");
-        }
-        if let Err(error) = stream.flush().await {
-            panic!("detached fresh-result request must flush: {error}");
-        }
-        stream
-    }
-
-    let temporary = match tempfile::Builder::new()
-        .prefix("window-screenshot-fixture-")
-        .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    {
-        Ok(temporary) => temporary,
-        Err(error) => panic!("fixture temporary directory must be created: {error}"),
-    };
-    let fixture = AcceptanceFixture::new(temporary).await;
+    let fixture = new_window_screenshot_fixture().await;
     let token = fixture.api_coordinator_token.secret.clone();
     let state = direct_api_state(&fixture);
     let result_vectors = [
@@ -651,75 +658,18 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
     ];
     let factory_result_vectors = result_vectors.clone();
     let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let second_started = std::sync::Arc::new(tokio::sync::Notify::new());
-    let release_second = std::sync::Arc::new(tokio::sync::Notify::new());
-    let second_done = std::sync::Arc::new(tokio::sync::Notify::new());
-    let capture_factory = std::sync::Arc::new({
-        let calls = std::sync::Arc::clone(&calls);
-        let second_started = std::sync::Arc::clone(&second_started);
-        let release_second = std::sync::Arc::clone(&release_second);
-        let second_done = std::sync::Arc::clone(&second_done);
-        move |window_id, lease| -> WindowScreenshotCaptureFutureForTest {
-            let calls = std::sync::Arc::clone(&calls);
-            let second_started = std::sync::Arc::clone(&second_started);
-            let release_second = std::sync::Arc::clone(&release_second);
-            let second_done = std::sync::Arc::clone(&second_done);
-            let call_index = {
-                let mut calls = match calls.lock() {
-                    Ok(calls) => calls,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                calls.push(window_id);
-                calls.len() - 1
-            };
-            let vector = factory_result_vectors[call_index].clone();
-            Box::pin(async move {
-                if call_index == 1 {
-                    let worker = tokio::spawn(async move {
-                        let _lease = lease;
-                        second_started.notify_one();
-                        release_second.notified().await;
-                        second_done.notify_one();
-                        Ok::<Vec<u8>, crate::screenshot::WindowScreenshotCaptureError>(vector)
-                    });
-                    match worker.await {
-                        Ok(result) => result,
-                        Err(_) => Err(crate::screenshot::WindowScreenshotCaptureError::Unavailable),
-                    }
-                } else {
-                    drop(lease);
-                    Ok(vector)
-                }
-            })
-        }
-    });
-    let router = axum::Router::new()
-        .route(
-            crate::api::handlers::window_screenshot::WINDOW_SCREENSHOT_ROUTE,
-            crate::api::handlers::window_screenshot::mount_window_screenshot_route_for_test(
-                capture_factory,
-            ),
-        )
-        .with_state(state.clone());
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-        Ok(listener) => listener,
-        Err(error) => panic!("test API listener must bind: {error}"),
+    let gates = FreshResultGates {
+        second_started: std::sync::Arc::new(tokio::sync::Notify::new()),
+        release_second: std::sync::Arc::new(tokio::sync::Notify::new()),
+        second_done: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => panic!("test API listener must expose its address: {error}"),
-    };
-    let _server = ServerGuard(tokio::spawn(async move {
-        let _ = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await;
-    }));
+    let route = fresh_result_route(&calls, &gates, factory_result_vectors);
+    let (address, _server) = serve_window_screenshot_route(state.clone(), route).await;
 
     let _audit_lock = crate::api::audit::lock_window_screenshot_audits_for_test();
     let _ = crate::api::audit::take_window_screenshot_audits_for_test();
-    let first_response = send_window_request(reqwest::Client::new(), address, token.clone()).await;
+    let first_response =
+        send_fresh_window_request(reqwest::Client::new(), address, token.clone()).await;
     assert_eq!(first_response.status(), axum::http::StatusCode::OK);
     let first_png = match first_response.bytes().await {
         Ok(png) => png,
@@ -732,7 +682,7 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
     );
 
     let mut detached_client = open_detached_request(address, &token).await;
-    second_started.notified().await;
+    gates.second_started.notified().await;
     let mut delivered_byte = [0_u8; 1];
     let delivered_before_disconnect = match detached_client.try_read(&mut delivered_byte) {
         Ok(bytes) => bytes,
@@ -751,10 +701,10 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
         }
     }
     drop(detached_client);
-    release_second.notify_one();
-    second_done.notified().await;
+    gates.release_second.notify_one();
+    gates.second_done.notified().await;
 
-    let third_response = send_window_request(reqwest::Client::new(), address, token).await;
+    let third_response = send_fresh_window_request(reqwest::Client::new(), address, token).await;
     assert_eq!(third_response.status(), axum::http::StatusCode::OK);
     let third_png = match third_response.bytes().await {
         Ok(png) => png,
@@ -766,10 +716,7 @@ async fn window_screenshot_each_request_uses_a_fresh_local_result() {
         "the third request must receive the third fresh local result, not a retained earlier result"
     );
 
-    let calls = match calls.lock() {
-        Ok(calls) => calls,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    let calls = lock_unpoisoned(&calls);
     assert_eq!(
         calls.len(),
         3,
