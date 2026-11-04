@@ -118,10 +118,10 @@ async fn validate_hello_protocol_mismatch_names_image_remedy() {
     assert_eq!(
         err.message(),
         format!(
-            "container transport protocol mismatch: host expects protocol {} but container \
-            image reported protocol {}. Rebuild or re-pull the AgentsCommander container image \
-            so it contains the current session-bridge.",
-            TRANSPORT_PROTOCOL_VERSION, reported_version
+            "container transport protocol mismatch: host expects protocol \
+            {TRANSPORT_PROTOCOL_VERSION} but container image reported protocol {reported_version}. \
+            Rebuild or re-pull the AgentsCommander container image so it contains the current \
+            session-bridge."
         )
     );
 }

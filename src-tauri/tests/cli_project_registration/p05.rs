@@ -34,7 +34,7 @@ fn p05_real_peer_discovery_uses_registered_remote_without_managed_writes() {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .all(|team| team.is_string()));
+                    .all(serde_json::Value::is_string));
             }
         }
     }

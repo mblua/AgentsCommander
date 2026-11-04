@@ -226,11 +226,7 @@ fn nested_rotation_refuses_parent_and_destination_junctions() {
             .arg(&target)
             .output()
             .expect("invoke mklink");
-        assert!(
-            output.status.success(),
-            "junction setup failed: {:?}",
-            output
-        );
+        assert!(output.status.success(), "junction setup failed: {output:?}");
         let err = rotate_memory_dir(matrix, "20260102_030405").unwrap_err();
         assert_eq!(
             err.kind(),
