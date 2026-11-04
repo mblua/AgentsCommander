@@ -350,7 +350,7 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
                 nm::rename_step(&dir, rename, "instance-families", Some(&dir), &held);
             }
             nm::update_journal(Some(&dir), |journal| {
-                journal.set_status("instance-families", nm::ScopeStatus::Complete)
+                journal.set_status("instance-families", nm::ScopeStatus::Complete);
             })
             .unwrap();
             drop(held);

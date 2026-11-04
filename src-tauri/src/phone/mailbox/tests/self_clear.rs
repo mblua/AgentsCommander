@@ -523,8 +523,8 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
         "resume notes",
         "a failed prompt inject must rename the archived handoff back to the root"
     );
-    let leftover_archives = std::fs::read_dir(temp.path().join("self-clear"))
-        .map(|entries| {
+    let leftover_archives =
+        std::fs::read_dir(temp.path().join("self-clear")).map_or(0, |entries| {
             entries
                 .filter_map(std::result::Result::ok)
                 .filter(|e| {
@@ -533,8 +533,7 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
                         .ends_with("_SELF-HANDOFF.md")
                 })
                 .count()
-        })
-        .unwrap_or(0);
+        });
     assert_eq!(leftover_archives, 0, "no orphaned handoff archive remains");
     assert!(pending.is_empty());
 }

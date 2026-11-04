@@ -139,7 +139,7 @@ async fn p02_host_poll_progress_marker_and_late_terminal() {
         tokio::pin!(observation);
         tokio::select! {
             result = &mut observation => panic!("P02 poll returned before core: {result:?}"),
-            _ = p02_until(|| control.accepted_core_entered.load(Ordering::Acquire)) => {}
+            () = p02_until(|| control.accepted_core_entered.load(Ordering::Acquire)) => {}
         }
         resume.send(()).unwrap();
         timeout(Duration::from_secs(7), observation)
