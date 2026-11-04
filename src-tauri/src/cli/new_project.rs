@@ -41,7 +41,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
     let mut settings = match load_settings_for_cli_strict() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };
@@ -60,13 +60,13 @@ pub fn execute(args: NewProjectArgs) -> i32 {
     // filesystem effect) so a stored-but-missing project the strict decode
     // filters out is preserved in place by the resync rather than dropped.
     if let Err(e) = refresh_project_paths_from_disk(&mut settings) {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         return 1;
     }
     let result = match register_new_project(&mut settings, &args.path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };

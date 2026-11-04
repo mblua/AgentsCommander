@@ -46,7 +46,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
     let mut settings = match load_settings_for_cli_strict() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };
@@ -73,7 +73,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
     let result = match register_existing_project(&mut settings, &args.path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             // Append CLI-specific guidance when the user pointed at a folder
             // without a Project AC Root. The bare error string is GUI-friendly
             // (Round-1 G8); only the CLI knows about `new-project`.
@@ -90,7 +90,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         // records) instead of dropping the append.
         resync_project_state_from_runtime(&mut settings);
         if let Err(e) = transaction.commit_project_groups(&settings, true, true) {
-            eprintln!("Error: failed to persist settings: {}", e);
+            eprintln!("Error: failed to persist settings: {e}");
             return 1;
         }
         drop(transaction);

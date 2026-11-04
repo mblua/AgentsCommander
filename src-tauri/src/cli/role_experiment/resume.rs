@@ -307,7 +307,7 @@ fn validate_attempt_state_contract(
             let (path, _) = entry.map_err(|e| {
                 vec![err_at_path(
                     "run_artifact_unparseable",
-                    format!("Failed to read attempt-state entry: {}", e),
+                    format!("Failed to read attempt-state entry: {e}"),
                     state_dir,
                 )]
             })?;
@@ -414,14 +414,14 @@ pub(super) fn replica_root_for_attempt(
         documents::canonical_experiment_role(&workgroup_path).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_mismatch",
-                format!("Failed to canonicalize room: {}", e),
+                format!("Failed to canonicalize room: {e}"),
                 &workgroup_path,
             )]
         })?;
     let canonical_replica = documents::canonical_experiment_role(&replica).map_err(|e| {
         vec![err_at_path(
             "run_artifact_mismatch",
-            format!("Failed to canonicalize replica: {}", e),
+            format!("Failed to canonicalize replica: {e}"),
             &replica,
         )]
     })?;
