@@ -289,7 +289,7 @@ fn ui_automation_action_wire_names_match_typescript_union() {
         .split('"')
         .skip(1)
         .step_by(2)
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     assert!(

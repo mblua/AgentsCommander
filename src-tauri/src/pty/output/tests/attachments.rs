@@ -469,7 +469,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
     assert_eq!(emitted[1].2, Some(2));
 }
 
-/// #1439. A parser grid that diverged from the grid the ConPTY last took must never seed
+/// #1439. A parser grid that diverged from the grid the `ConPTY` last took must never seed
 /// an attach: the attach returns no snapshot, converges the parser onto the RECORDED
 /// grid, and the next attach seeds cleanly at that grid with the current sequence.
 ///

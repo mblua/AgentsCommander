@@ -462,7 +462,7 @@ async fn identity_fixture_named(project: &str, workgroup_name: &str) -> Identity
     let member_matrix = ac_root.join("_agent_member");
     let coordinator_matrix = ac_root.join("_agent_coordinator");
     let team = parse_team_from_workgroup_name(workgroup_name).unwrap();
-    let team_dir = ac_root.join(format!("_team_{}", team));
+    let team_dir = ac_root.join(format!("_team_{team}"));
     for path in [
         &nested,
         &coordinator_replica,

@@ -16,7 +16,7 @@ fn selection_timing_line_separates_queue_wait_and_work() {
 
 use crate::session::selection::timing_probe::{timing_field_ms, TimingSinkRegistration};
 
-/// #2475 - queue_wait and work are bounded by synchronized events, not by
+/// #2475 - `queue_wait` and work are bounded by synchronized events, not by
 /// sleep lengths: the submission provably happens before the release, and
 /// the operation's entry and finish are explicit handshakes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -974,7 +974,7 @@ async fn forced_read_error_preserves_session_text_and_absent_kind() {
         .expect("reader joins");
     let expected = (
         "read-error-claude".to_owned(),
-        format!("JSONL read error: {}", expected_error),
+        format!("JSONL read error: {expected_error}"),
         None,
     );
     assert!(observed
