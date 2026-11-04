@@ -168,7 +168,7 @@ pub(crate) fn coding_agent_identity_with_physical_overlay(
 ) -> Value {
     let unmerged = value.clone();
     let base_profiles = value.get("codingAgentProfiles").cloned();
-    let overlay = LocalSettingsOverlay::load_and_merge_paired(
+    let overlay = crate::config::settings::overlay::load_settings_overlay(
         path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,

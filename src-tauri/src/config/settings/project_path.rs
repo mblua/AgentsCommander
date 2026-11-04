@@ -223,7 +223,7 @@ pub(crate) fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value>
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| Value::Object(Map::new()));
-    let _ = LocalSettingsOverlay::load_and_merge_paired(
+    let _ = crate::config::settings::overlay::load_settings_overlay(
         path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,

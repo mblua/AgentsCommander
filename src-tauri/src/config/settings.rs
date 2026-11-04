@@ -3,6 +3,7 @@ mod app_defaults;
 mod field;
 mod instance;
 mod load;
+mod overlay;
 mod owner;
 pub(crate) mod project_path;
 mod save;

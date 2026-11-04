@@ -143,7 +143,7 @@ pub(crate) fn parse_settings_with_startup(
         projection,
         agents,
         |value| match io_path {
-            Some(p) => LocalSettingsOverlay::load_and_merge_paired(
+            Some(p) => crate::config::settings::overlay::load_settings_overlay(
                 p,
                 value,
                 OVERLAY_INELIGIBLE_DISK_KEYS,
@@ -476,7 +476,7 @@ pub(crate) fn default_settings_with_overlay_captured(
     let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
         return AppSettings::default();
     };
-    let overlay = LocalSettingsOverlay::load_and_merge_paired(
+    let overlay = crate::config::settings::overlay::load_settings_overlay(
         settings_path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,
