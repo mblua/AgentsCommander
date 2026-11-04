@@ -22,7 +22,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
                   --snapshot-targets"
 )]
 pub struct TerminalSnapshotArgs {
-    /// Live session token from AGENTSCOMMANDER_TOKEN
+    /// Live session token from `AGENTSCOMMANDER_TOKEN`
     #[arg(long)]
     pub token: String,
 
@@ -503,7 +503,7 @@ fn publish_request(
         ".{request_id}.{nonce}.terminal-snapshot-request-tmp"
     ));
     crate::filesystem::publish_terminal_snapshot_request(temporary, destination, bytes, |stage| {
-        enter_stage(stage, history)
+        enter_stage(stage, history);
     })
 }
 
@@ -756,8 +756,8 @@ fn write_stdout_line(bytes: &[u8], deadline: Instant) -> Result<(), String> {
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(bytes)
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
+        .and_then(|()| stdout.write_all(b"\n"))
+        .and_then(|()| stdout.flush())
         .map_err(|_| "output_failed".to_string())
 }
 

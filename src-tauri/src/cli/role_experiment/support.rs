@@ -6,11 +6,11 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub(super) fn source_matrix_path(ac_root: &Path, source_agent: &str) -> PathBuf {
-    ac_root.join(format!("_agent_{}", source_agent))
+    ac_root.join(format!("_agent_{source_agent}"))
 }
 
 pub(super) fn variant_agent_name(source_agent: &str, variant: &str) -> String {
-    format!("{}-{}", source_agent, variant)
+    format!("{source_agent}-{variant}")
 }
 
 pub(super) fn variant_matrix_path(ac_root: &Path, source_agent: &str, variant: &str) -> PathBuf {
@@ -96,7 +96,7 @@ pub(super) fn line_diff(
     let right_lines: Vec<&str> = right.lines().collect();
     if left == right {
         return (
-            format!("--- {}\n+++ {}\n", left_name, right_name),
+            format!("--- {left_name}\n+++ {right_name}\n"),
             DiffStats {
                 added_lines: 0,
                 removed_lines: 0,
@@ -108,7 +108,7 @@ pub(super) fn line_diff(
     let max = left_lines.len().max(right_lines.len());
     let mut added = 0;
     let mut removed = 0;
-    let mut diff = format!("--- {}\n+++ {}\n", left_name, right_name);
+    let mut diff = format!("--- {left_name}\n+++ {right_name}\n");
     for i in 0..max {
         match (left_lines.get(i), right_lines.get(i)) {
             (Some(a), Some(b)) if a == b => {

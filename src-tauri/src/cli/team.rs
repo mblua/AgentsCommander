@@ -152,7 +152,7 @@ pub fn execute(args: TeamArgs) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -285,7 +285,7 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
         team_repos: config.repos.clone(),
     })?;
     let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("Failed to create async runtime: {}", e))?;
+        .map_err(|e| format!("Failed to create async runtime: {e}"))?;
     let clone_errors = runtime.block_on(clone_missing_for_config(&wg_dir, &config.repos));
     write_refresh(
         &project_path,
@@ -340,7 +340,7 @@ fn remove_member_hooked(
     let team = parse_team_from_workgroup_name(&args.workgroup)?;
     let agent_ref = resolve_agent_ref(&ac_root, &args.agent)?;
     let agent_name = agent_ref_bare_name(&agent_ref);
-    let replica_dir = wg_dir.join(format!("__agent_{}", agent_name));
+    let replica_dir = wg_dir.join(format!("__agent_{agent_name}"));
     crate::cli::session_safety::ensure_no_live_sessions_under(&replica_dir)?;
 
     // Blocking commit: project gate first, then the #1056 team-config guard.
@@ -392,7 +392,7 @@ fn remove_member_hooked(
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize JSON output: {}", e))?;
+        .map_err(|e| format!("Failed to serialize JSON output: {e}"))?;
     crate::cli_println!("{}", json);
     Ok(())
 }

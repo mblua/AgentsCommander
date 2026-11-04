@@ -15,7 +15,7 @@
 //!   - GUI not running: a strict load (refuses to modify a present-but-unparseable
 //!     settings.json rather than silently defaulting) then apply then save.
 //!
-//! Known limitation (documented for scripts): a SettingsModal already open with
+//! Known limitation (documented for scripts): a `SettingsModal` already open with
 //! an unsaved draft can, on its next Save, revert a concurrent CLI mutation. The
 //! CLI does not clobber the GUI, but the reverse remains. Run `--launch` (or
 //! re-`show`) right after `add` so consumption happens before a Modal Save.
@@ -121,7 +121,7 @@ pub struct AddArgs {
     /// Env row KEY=VALUE (repeatable). All CLI envs are source=user, enabled=true.
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
-    /// Provide an isolated CODEX_HOME at spawn (Codex)
+    /// Provide an isolated `CODEX_HOME` at spawn (Codex)
     #[arg(long = "isolated-home", value_name = "true|false", action = clap::ArgAction::Set)]
     pub isolated_home: Option<bool>,
     /// Bare .md filename AC writes into the agent root at launch
@@ -217,7 +217,7 @@ fn run(args: CodingAgentArgs, gui_running: bool) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -716,8 +716,7 @@ fn parse_env_flags(raw: &[String]) -> Result<Vec<CodingAgentEnv>, String> {
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[cfg(test)]

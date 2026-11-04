@@ -61,7 +61,7 @@ fn stored_stamp(cwd: &std::path::Path) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
     parsed["tooling"]["lastAgentMessageAt"]
         .as_str()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// #1682 - one session with the `agent_id` and `working_directory` the caller
@@ -275,7 +275,7 @@ async fn record_agent_turn_completed_gate_2_skips_only_recent_input() {
     // (a) A half-typed line that just arrived suppresses the stamp.
     tracker
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .feed(id, b"hel");
     super::super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, id, None)
         .await;
@@ -293,7 +293,7 @@ async fn record_agent_turn_completed_gate_2_skips_only_recent_input() {
     // This is the leg that goes red if gate 2 is written unaged.
     tracker
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .backdate_pending_for_test(id, USER_WRITE_STAMP_WINDOW + Duration::from_secs(1));
     super::super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, id, None)
         .await;
@@ -312,7 +312,9 @@ async fn record_agent_turn_completed_gate_2_skips_only_recent_input() {
     )
     .await;
     {
-        let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.feed(submitted, b"hel");
         guard.feed(submitted, b"\r");
     }

@@ -82,7 +82,7 @@ fn cli_member_lock_order_inversion_child() {
         agent: "member".to_string(),
     };
     let result = remove_member_hooked(args, None, |_ac_root: &std::path::Path| {
-        ctx.report_and_wait()
+        ctx.report_and_wait();
     });
     println!(
         "STAGE_D_LOCK_ORDER_DONE {} member ok={}",
