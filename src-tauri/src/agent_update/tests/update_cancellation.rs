@@ -1,5 +1,114 @@
 use super::*;
 
+fn contained_blocking_command(hold_before_native_proof: bool) -> tokio::process::Command {
+    let mut command = if cfg!(windows) {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.arg("/C").arg("cmd /C ping -n 30 127.0.0.1 >NUL");
+        command
+    } else {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("sh -c 'sleep 30' & wait");
+        command
+    };
+    command.stdin(Stdio::null());
+    if hold_before_native_proof {
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+    } else {
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+    }
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
+fn install_contained_proof_hook(
+    owner: &mut TargetProcessOwner,
+    hold_before_native_proof: bool,
+) -> (
+    Option<tokio::sync::oneshot::Receiver<()>>,
+    Option<tokio::sync::oneshot::Sender<()>>,
+) {
+    if hold_before_native_proof {
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        owner.settlement_hook = Some(TargetSettlementHook {
+            before_native_proof: Some(ready_tx),
+            release_native_proof: Some(release_rx),
+            settlement_window: None,
+            native_observations: std::collections::VecDeque::new(),
+            panic_after_native_proof_release: false,
+            panic_after_native_query_defect: false,
+            stdout_reader: None,
+        });
+        (Some(ready_rx), Some(release_tx))
+    } else {
+        (None, None)
+    }
+}
+
+#[cfg(any(windows, unix))]
+fn exit_zero_updater_command(dir: &std::path::Path) -> tokio::process::Command {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.arg("/D").arg("/C").arg("exit 0");
+        command
+    };
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("exit 0");
+        command.process_group(0);
+        command
+    };
+    command.current_dir(dir);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.kill_on_drop(true);
+    command
+}
+
+async fn release_held_native_proof<T>(
+    proof_ready: Option<tokio::sync::oneshot::Receiver<()>>,
+    release_proof: Option<tokio::sync::oneshot::Sender<()>>,
+    owner_task: &tokio::task::JoinHandle<T>,
+    gate: &AgentUpdateGate,
+) {
+    if let Some(proof_ready) = proof_ready {
+        proof_ready
+            .await
+            .expect("owner reached the native settlement proof");
+        assert!(
+            !owner_task.is_finished(),
+            "terminal publication must remain behind native settlement proof"
+        );
+        assert!(
+            gate.snapshot().results.is_empty(),
+            "no terminal result is visible before native settlement proof"
+        );
+        release_proof
+            .expect("proof release sender")
+            .send(())
+            .expect("release native settlement proof");
+    }
+}
+
+async fn finalize_started_pass(handle: tauri::AppHandle, gate: &Arc<AgentUpdateGate>) {
+    PassSupervisor {
+        app: handle,
+        gate: Arc::clone(gate),
+    }
+    .finalize(PassRuntime {
+        started: true,
+        ..PassRuntime::default()
+    })
+    .await;
+}
+
 #[expect(
     clippy::match_wild_err_arm,
     reason = "Preserve cancellation fixture failure; outcome has no formatting contract"
@@ -33,46 +142,13 @@ async fn exercise_contained_update_cancellation(
         panic!("step admission");
     };
 
-    let mut command = if cfg!(windows) {
-        let mut command = tokio::process::Command::new("cmd.exe");
-        command.arg("/C").arg("cmd /C ping -n 30 127.0.0.1 >NUL");
-        command
-    } else {
-        let mut command = tokio::process::Command::new("sh");
-        command.arg("-c").arg("sh -c 'sleep 30' & wait");
-        command
-    };
-    command.stdin(Stdio::null());
-    if hold_before_native_proof {
-        command.stdout(Stdio::null());
-        command.stderr(Stdio::null());
-    } else {
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-    }
-    command.kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
+    let mut command = contained_blocking_command(hold_before_native_proof);
     let mut owner = match TargetProcessOwner::spawn(&mut command).await {
         Ok(owner) => owner,
         Err(_) => panic!("contained owner spawn"),
     };
-    let (proof_ready, release_proof) = if hold_before_native_proof {
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        owner.settlement_hook = Some(TargetSettlementHook {
-            before_native_proof: Some(ready_tx),
-            release_native_proof: Some(release_rx),
-            settlement_window: None,
-            native_observations: std::collections::VecDeque::new(),
-            panic_after_native_proof_release: false,
-            panic_after_native_query_defect: false,
-            stdout_reader: None,
-        });
-        (Some(ready_rx), Some(release_tx))
-    } else {
-        (None, None)
-    };
+    let (proof_ready, release_proof) =
+        install_contained_proof_hook(&mut owner, hold_before_native_proof);
     gate.owner_installed(&target.command, work, epoch);
     if work == TargetWork::PostProbe {
         emit_all(
@@ -109,102 +185,28 @@ async fn exercise_contained_update_cancellation(
         response.disposition,
         AgentUpdateCancelDisposition::Requested
     );
-    if let Some(proof_ready) = proof_ready {
-        proof_ready
-            .await
-            .expect("owner reached the native settlement proof");
-        assert!(
-            !owner_task.is_finished(),
-            "terminal publication must remain behind native settlement proof"
-        );
-        assert!(
-            gate.snapshot().results.is_empty(),
-            "no terminal result is visible before native settlement proof"
-        );
-        release_proof
-            .expect("proof release sender")
-            .send(())
-            .expect("release native settlement proof");
-    }
+    release_held_native_proof(proof_ready, release_proof, &owner_task, &gate).await;
     let result = tokio::time::timeout(Duration::from_secs(15), owner_task)
         .await
         .expect("owner settles")
         .expect("owner task");
     assert_eq!(result.outcome, AgentUpdateOutcome::Cancelled);
-    PassSupervisor {
-        app: handle,
-        gate: Arc::clone(&gate),
-    }
-    .finalize(PassRuntime {
-        started: true,
-        ..PassRuntime::default()
-    })
-    .await;
+    finalize_started_pass(handle, &gate).await;
     drain_frames(&mut frames)
 }
 
 #[cfg(any(windows, unix))]
-async fn updater_settlement_cancellation_case(
-    settlement_window: Option<Duration>,
-    native_observations: std::collections::VecDeque<TargetNativeObservation>,
-    hold_native_proof: bool,
-) -> (AgentUpdateResult, Vec<String>, Vec<Value>) {
-    let (app, mut frames) = app_with_broadcaster();
-    let handle = app.handle().clone();
-    let gate = Arc::new(AgentUpdateGate::new());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let target = UpdateTarget {
-        command: "settling-update".to_string(),
-        label: "Settling update".to_string(),
-        commands: vec!["exit 0".to_string()],
-        cwd: dir.path().to_path_buf(),
-    };
-    seed_retained_target(&gate, &target.command, &target.label);
-    let (epoch, _) = gate
-        .begin_step(&target.command, TargetWork::UpdaterStep(0))
-        .expect("updater begin");
-    let StepAdmission::Committed { epoch, mut cancel } =
-        gate.commit_step(&target.command, TargetWork::UpdaterStep(0), epoch)
-    else {
-        panic!("updater commit");
-    };
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = tokio::process::Command::new("cmd.exe");
-        command.arg("/D").arg("/C").arg("exit 0");
-        command
-    };
-    #[cfg(unix)]
-    let mut command = {
-        let mut command = tokio::process::Command::new("sh");
-        command.arg("-c").arg("exit 0");
-        command.process_group(0);
-        command
-    };
-    command.current_dir(dir.path());
-    command.stdin(Stdio::null());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    command.kill_on_drop(true);
-    let Ok(mut owner) = TargetProcessOwner::spawn(&mut command).await else {
-        panic!("real contained updater owner");
-    };
-    let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
-    let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
-    owner.settlement_hook = Some(TargetSettlementHook {
-        before_native_proof: Some(proof_ready_tx),
-        release_native_proof: hold_native_proof.then_some(release_proof_rx),
-        settlement_window,
-        native_observations,
-        panic_after_native_proof_release: false,
-        panic_after_native_query_defect: false,
-        stdout_reader: None,
-    });
-    gate.owner_installed(&target.command, TargetWork::UpdaterStep(0), epoch);
-    let waited = owner.wait(Duration::from_secs(10), &mut cancel).await;
-    assert!(matches!(waited, TargetWait::Exited(Ok(_))));
-    let owner_task = tokio::spawn({
-        let gate = Arc::clone(&gate);
+fn spawn_updater_settlement_owner(
+    handle: &tauri::AppHandle,
+    gate: &Arc<AgentUpdateGate>,
+    target: &UpdateTarget,
+    mut owner: TargetProcessOwner,
+    waited: TargetWait,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    epoch: u64,
+) -> tokio::task::JoinHandle<(AgentUpdateResult, Vec<String>)> {
+    tokio::spawn({
+        let gate = Arc::clone(gate);
         let target = target.clone();
         let handle = handle.clone();
         async move {
@@ -234,7 +236,54 @@ async fn updater_settlement_cancellation_case(
                 .await;
             (result, defects)
         }
+    })
+}
+
+#[cfg(any(windows, unix))]
+async fn updater_settlement_cancellation_case(
+    settlement_window: Option<Duration>,
+    native_observations: std::collections::VecDeque<TargetNativeObservation>,
+    hold_native_proof: bool,
+) -> (AgentUpdateResult, Vec<String>, Vec<Value>) {
+    let (app, mut frames) = app_with_broadcaster();
+    let handle = app.handle().clone();
+    let gate = Arc::new(AgentUpdateGate::new());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = UpdateTarget {
+        command: "settling-update".to_string(),
+        label: "Settling update".to_string(),
+        commands: vec!["exit 0".to_string()],
+        cwd: dir.path().to_path_buf(),
+    };
+    seed_retained_target(&gate, &target.command, &target.label);
+    let (epoch, _) = gate
+        .begin_step(&target.command, TargetWork::UpdaterStep(0))
+        .expect("updater begin");
+    let StepAdmission::Committed { epoch, mut cancel } =
+        gate.commit_step(&target.command, TargetWork::UpdaterStep(0), epoch)
+    else {
+        panic!("updater commit");
+    };
+    let mut command = exit_zero_updater_command(dir.path());
+    let Ok(mut owner) = TargetProcessOwner::spawn(&mut command).await else {
+        panic!("real contained updater owner");
+    };
+    let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+    let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+    owner.settlement_hook = Some(TargetSettlementHook {
+        before_native_proof: Some(proof_ready_tx),
+        release_native_proof: hold_native_proof.then_some(release_proof_rx),
+        settlement_window,
+        native_observations,
+        panic_after_native_proof_release: false,
+        panic_after_native_query_defect: false,
+        stdout_reader: None,
     });
+    gate.owner_installed(&target.command, TargetWork::UpdaterStep(0), epoch);
+    let waited = owner.wait(Duration::from_secs(10), &mut cancel).await;
+    assert!(matches!(waited, TargetWait::Exited(Ok(_))));
+    let owner_task =
+        spawn_updater_settlement_owner(&handle, &gate, &target, owner, waited, cancel, epoch);
     tokio::time::timeout(Duration::from_secs(5), proof_ready_rx)
         .await
         .expect("updater reached native proof")
@@ -264,46 +313,24 @@ async fn updater_settlement_cancellation_case(
         .await
         .expect("settling owner completed after native proof")
         .expect("settling owner task");
-    PassSupervisor {
-        app: handle,
-        gate: Arc::clone(&gate),
-    }
-    .finalize(PassRuntime {
-        started: true,
-        ..PassRuntime::default()
-    })
-    .await;
+    finalize_started_pass(handle, &gate).await;
     let mut events = vec![changed];
     events.extend(drain_frames(&mut frames));
     (result, defects, events)
 }
 
-#[tokio::test]
-async fn cancel_during_verifying_kills_probe_tree_and_terminalizes_cancelled() {
-    let (app, mut frames) = app_with_broadcaster();
-    let handle = app.handle().clone();
-    let gate = Arc::new(AgentUpdateGate::new());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let target = UpdateTarget {
-        command: if cfg!(windows) {
-            "cmd.exe".to_string()
-        } else {
-            "sh".to_string()
-        },
-        label: "Verification probe".to_string(),
-        commands: vec!["exit 0".to_string()],
-        cwd: dir.path().to_path_buf(),
-    };
-    seed_retained_target(&gate, &target.command, &target.label);
-    let install_before = InstallState::missing("pre-probe state".to_string());
-    let mut terminalizer =
-        TargetTerminalizer::new(handle.clone(), Arc::clone(&gate), target.clone());
-    terminalizer.store_install_before(install_before.clone());
-    let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
-    let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
-    let probe_task = tokio::spawn({
+fn spawn_cancelled_verification_probe(
+    handle: &tauri::AppHandle,
+    gate: &Arc<AgentUpdateGate>,
+    target: &UpdateTarget,
+    terminalizer: TargetTerminalizer<tauri::AppHandle>,
+    install_before: InstallState,
+    proof_ready_tx: tokio::sync::oneshot::Sender<()>,
+    release_proof_rx: tokio::sync::oneshot::Receiver<()>,
+) -> tokio::task::JoinHandle<AgentUpdateResult> {
+    tokio::spawn({
         let handle = handle.clone();
-        let gate = Arc::clone(&gate);
+        let gate = Arc::clone(gate);
         let target = target.clone();
         async move {
             let stem = if cfg!(windows) { "cmd" } else { "sh" };
@@ -338,7 +365,41 @@ async fn cancel_during_verifying_kills_probe_tree_and_terminalizes_cancelled() {
                 .publish(cancelled_update_result(&target, Some(install_before)))
                 .await
         }
-    });
+    })
+}
+
+#[tokio::test]
+async fn cancel_during_verifying_kills_probe_tree_and_terminalizes_cancelled() {
+    let (app, mut frames) = app_with_broadcaster();
+    let handle = app.handle().clone();
+    let gate = Arc::new(AgentUpdateGate::new());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = UpdateTarget {
+        command: if cfg!(windows) {
+            "cmd.exe".to_string()
+        } else {
+            "sh".to_string()
+        },
+        label: "Verification probe".to_string(),
+        commands: vec!["exit 0".to_string()],
+        cwd: dir.path().to_path_buf(),
+    };
+    seed_retained_target(&gate, &target.command, &target.label);
+    let install_before = InstallState::missing("pre-probe state".to_string());
+    let mut terminalizer =
+        TargetTerminalizer::new(handle.clone(), Arc::clone(&gate), target.clone());
+    terminalizer.store_install_before(install_before.clone());
+    let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
+    let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
+    let probe_task = spawn_cancelled_verification_probe(
+        &handle,
+        &gate,
+        &target,
+        terminalizer,
+        install_before,
+        proof_ready_tx,
+        release_proof_rx,
+    );
 
     let verifying = next_frame(&mut frames).await;
     assert_eq!(verifying["event"], "agent_update_command_verifying");
@@ -373,15 +434,7 @@ async fn cancel_during_verifying_kills_probe_tree_and_terminalizes_cancelled() {
         .expect("release probe native proof");
     let result = probe_task.await.expect("real verification probe task");
     assert_eq!(result.outcome, AgentUpdateOutcome::Cancelled);
-    PassSupervisor {
-        app: handle,
-        gate: Arc::clone(&gate),
-    }
-    .finalize(PassRuntime {
-        started: true,
-        ..PassRuntime::default()
-    })
-    .await;
+    finalize_started_pass(handle, &gate).await;
     let mut events = vec![verifying, changed];
     events.extend(drain_frames(&mut frames));
     let names: Vec<&str> = events
