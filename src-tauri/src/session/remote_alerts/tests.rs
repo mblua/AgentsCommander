@@ -183,7 +183,10 @@ impl RecordingPorts {
     }
 
     fn set_dials(&self, dials: RemoteNotifyDials) {
-        *self.dials.lock().unwrap_or_else(|error| error.into_inner()) = dials;
+        *self
+            .dials
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = dials;
     }
 
     fn resolutions(&self) -> usize {
@@ -193,7 +196,7 @@ impl RecordingPorts {
     fn deliveries(&self) -> Vec<Delivery> {
         self.deliveries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -207,7 +210,7 @@ impl RemoteAlertPorts for RecordingPorts {
         let target = self
             .target
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Box::pin(async move { target })
     }
@@ -219,7 +222,7 @@ impl RemoteAlertPorts for RecordingPorts {
     ) -> BoxFuture<'static, Result<(), String>> {
         self.deliveries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(delivery_of(&target, &notice));
         self.originals.lock().unwrap().push((target, notice));
         let (result, gate) = self
@@ -243,7 +246,10 @@ impl RemoteAlertPorts for RecordingPorts {
 
     fn notify_dials(&self) -> BoxFuture<'static, RemoteNotifyDials> {
         self.dial_reads.fetch_add(1, Ordering::SeqCst);
-        let dials = *self.dials.lock().unwrap_or_else(|error| error.into_inner());
+        let dials = *self
+            .dials
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Box::pin(async move { dials })
     }
 }
@@ -259,7 +265,7 @@ impl ResolvingPorts {
     fn deliveries(&self) -> Vec<Delivery> {
         self.deliveries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -286,7 +292,7 @@ impl RemoteAlertPorts for ResolvingPorts {
     ) -> BoxFuture<'static, Result<(), String>> {
         self.deliveries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(delivery_of(&target, &notice));
         Box::pin(async move { Ok(()) })
     }

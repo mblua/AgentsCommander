@@ -51,7 +51,7 @@ pub(super) fn make_project_fixture(
             let wg_dir = ac_root.join(wg_name);
             std::fs::create_dir_all(&wg_dir).unwrap();
             for agent in *agents {
-                let replica = wg_dir.join(format!("__agent_{}", agent));
+                let replica = wg_dir.join(format!("__agent_{agent}"));
                 std::fs::create_dir_all(&replica).unwrap();
             }
         }
@@ -98,7 +98,7 @@ pub(super) fn make_coordinator_fixture(
     };
     std::fs::write(
         tech_lead_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        format!(r#"{{"identity":"{tech_lead_identity}"}}"#),
     )
     .unwrap();
     std::fs::write(
@@ -487,14 +487,14 @@ pub(super) fn make_portable_coordinator_fixture(
     .replace('\\', "/");
     std::fs::write(
         tech_lead_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        format!(r#"{{"identity":"{tech_lead_identity}"}}"#),
     )
     .unwrap();
 
     let dev_rust_identity = origin_dev_rust.to_string_lossy().replace('\\', "/");
     std::fs::write(
         dev_rust_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, dev_rust_identity),
+        format!(r#"{{"identity":"{dev_rust_identity}"}}"#),
     )
     .unwrap();
 
@@ -588,7 +588,7 @@ fn make_stale_coordinator_fixture(
     // Team config: coordinator points to the stale absolute path.
     std::fs::write(
         team_dir.join("config.json"),
-        format!(r#"{{"coordinator":"{}"}}"#, stale_coord_str),
+        format!(r#"{{"coordinator":"{stale_coord_str}"}}"#),
     )
     .unwrap();
 
@@ -606,7 +606,7 @@ fn make_stale_coordinator_fixture(
     };
     std::fs::write(
         alpha_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, alpha_identity),
+        format!(r#"{{"identity":"{alpha_identity}"}}"#),
     )
     .unwrap();
 
@@ -621,7 +621,7 @@ fn make_stale_coordinator_fixture(
         .replace('\\', "/");
     std::fs::write(
         beta_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, beta_identity),
+        format!(r#"{{"identity":"{beta_identity}"}}"#),
     )
     .unwrap();
 
@@ -688,7 +688,7 @@ fn resolve_wg_coordinator_replica_repairs_stale_relative_identity() {
     let stale_abs_str = stale_abs.to_string_lossy().replace('\\', "/");
     std::fs::write(
         team_dir.join("config.json"),
-        format!(r#"{{"coordinator":"{}"}}"#, stale_abs_str),
+        format!(r#"{{"coordinator":"{stale_abs_str}"}}"#),
     )
     .unwrap();
 
