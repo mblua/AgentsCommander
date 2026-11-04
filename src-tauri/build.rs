@@ -25,7 +25,7 @@ fn main() {
     }
     embed_windows_test_manifest();
 
-    tauri_build::build()
+    tauri_build::build();
 }
 
 fn configure_embedded_dist(profile: &str) -> bool {

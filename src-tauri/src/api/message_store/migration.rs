@@ -13,12 +13,12 @@ impl MessageStore {
         conn.pragma_update(None, "foreign_keys", "OFF")?;
         let tx = conn.transaction()?;
         tx.execute_batch(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS api_message_schema(
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL
             );
-            "#,
+            ",
         )?;
         let current: Option<i64> =
             tx.query_row("SELECT MAX(version) FROM api_message_schema", [], |row| {
