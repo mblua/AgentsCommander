@@ -181,7 +181,7 @@ fn default_main_geometry(app: SetupApp<'_>) -> config::settings::WindowGeometry 
     // Convert to logical pixels (physical / scale) since WebviewWindowBuilder
     // ::inner_size() and ::position() expect logical coordinates.
     let primary = app.primary_monitor().ok().flatten();
-    let primary_scale = primary.as_ref().map_or(1.0, tauri::Monitor::scale_factor);
+    let primary_scale = primary.as_ref().map_or(1.0, |m| m.scale_factor());
     let (screen_w, screen_h) = primary.as_ref().map_or((1920.0, 1080.0), |m| {
         let s = m.size();
         (
