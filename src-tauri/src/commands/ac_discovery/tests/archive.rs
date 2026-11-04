@@ -36,7 +36,7 @@ async fn archive_relative_path_matches_across_short_name_temp() {
         &session_mgr,
         &pty_mgr,
         ".",
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("archive relative project on a short-name temp");
@@ -250,7 +250,7 @@ async fn open_project_inner_broadcasts_only_when_archived_list_changes() {
         &app_handle,
         &state,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("open archived project");
@@ -265,7 +265,7 @@ async fn open_project_inner_broadcasts_only_when_archived_list_changes() {
         &app_handle,
         &state,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("open already active project");
@@ -295,7 +295,7 @@ async fn new_project_inner_broadcasts_only_when_archived_list_changes() {
         &app_handle,
         &state,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("new archived project");
@@ -310,7 +310,7 @@ async fn new_project_inner_broadcasts_only_when_archived_list_changes() {
         &app_handle,
         &state,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("new already active project");
@@ -352,7 +352,7 @@ async fn archive_project_inner_absolutizes_relative_path_and_emits_archive_event
         &session_mgr,
         &pty_mgr,
         ".",
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("archive relative project");
@@ -386,7 +386,7 @@ async fn archive_project_inner_archives_vanished_registered_project() {
         &session_mgr,
         &pty_mgr,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("archive vanished project");
@@ -438,7 +438,7 @@ async fn archive_project_inner_allows_active_record_without_pty() {
         &session_mgr,
         &pty_mgr,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect("active record without PTY must not block archive");
@@ -481,7 +481,7 @@ async fn archive_project_inner_pending_spawn_mark_blocks_precheck() {
         &session_mgr,
         &pty_mgr,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect_err("pending spawn should block archive before settings write");
@@ -542,7 +542,7 @@ async fn archive_project_inner_rolls_back_with_unarchive_event_when_liveness_app
         &session_mgr,
         &pty_mgr,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect_err("late spawn should roll back archive");
@@ -606,7 +606,7 @@ async fn archive_project_inner_rolls_back_vanished_project_without_validation() 
         &session_mgr,
         &pty_mgr,
         &path,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
     )
     .await
     .expect_err("late liveness should roll back vanished project");

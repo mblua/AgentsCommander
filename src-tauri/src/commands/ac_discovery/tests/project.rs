@@ -282,9 +282,13 @@ async fn missing_sources_discard_stale_live_lists_and_sidecar_survives_absent_se
             .collect()
     };
 
-    remove_project_inner_with_settings_path(&state, &a, Some(&settings_path))
-        .await
-        .expect("remove");
+    remove_project_inner_with_settings_path(
+        &state,
+        &a,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await
+    .expect("remove");
     let memory = state.read().await.project_paths.clone();
     assert_eq!(
         base(&memory),
@@ -297,9 +301,13 @@ async fn missing_sources_discard_stale_live_lists_and_sidecar_survives_absent_se
         "Absent sources begin empty"
     );
 
-    open_project_inner_with_settings_path(&state, &c, Some(&settings_path))
-        .await
-        .expect("open");
+    open_project_inner_with_settings_path(
+        &state,
+        &c,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await
+    .expect("open");
     let memory = state.read().await.project_paths.clone();
     assert_eq!(base(&memory), vec!["proj-c"]);
     assert_eq!(base(&disk()), vec!["proj-c"]);
@@ -307,9 +315,13 @@ async fn missing_sources_discard_stale_live_lists_and_sidecar_survives_absent_se
     assert!(!settings_path.exists());
     let d_path = temp.path().join("proj-d");
     let d = d_path.to_string_lossy().to_string();
-    new_project_inner_with_settings_path(&state, &d, Some(&settings_path))
-        .await
-        .expect("new project");
+    new_project_inner_with_settings_path(
+        &state,
+        &d,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await
+    .expect("new project");
     assert!(d_path.join(".ac").is_dir());
     let memory = state.read().await.project_paths.clone();
     assert_eq!(base(&memory), vec!["proj-c", "proj-d"]);
@@ -335,7 +347,7 @@ async fn new_project_settings_save_failure_keeps_live_state_and_valid_root() {
     let error = new_project_inner_with_settings_path_and_hooks(
         &state,
         &project_text,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
         hooks,
     )
     .await
@@ -376,7 +388,7 @@ async fn new_project_replacement_after_save_rolls_back_registration_and_is_retry
     let error = new_project_inner_with_settings_path_and_hooks(
         &state,
         &project_text,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
         hooks,
     )
     .await
@@ -420,7 +432,7 @@ async fn new_project_lock_replacement_after_save_rolls_back_registration_and_is_
     let error = new_project_inner_with_settings_path_and_hooks(
         &state,
         &project_text,
-        Some(&settings_path),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
         hooks,
     )
     .await
@@ -460,9 +472,13 @@ async fn mutate_save_failure_does_not_publish_unsaved_candidate() {
     };
     let state: SettingsState = crate::config::settings::new_settings_state(settings);
 
-    let err = open_project_inner_with_settings_path(&state, &y, Some(&settings_path))
-        .await
-        .expect_err("save into a file-blocked directory must fail");
+    let err = open_project_inner_with_settings_path(
+        &state,
+        &y,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await
+    .expect_err("save into a file-blocked directory must fail");
     assert!(!err.is_empty());
 
     let live = state.read().await;
@@ -500,4 +516,85 @@ async fn keep_custom_context_template_rejects_workspace_path() {
     .expect_err("workspace path must not be accepted as project path");
 
     assert!(err.contains("Project AC Root not found"));
+}
+
+#[tokio::test]
+async fn typed_target_registration_preserves_fresh_disk_projects_over_stale_state() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings_path = temp.path().join("legacy-instance.json");
+    let existing = temp.path().join("existing");
+    let added = temp.path().join("added");
+    for project in [&existing, &added] {
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
+    }
+    let existing = existing.to_string_lossy().replace(char::from(92), "/");
+    let added = added.to_string_lossy().replace(char::from(92), "/");
+    let disk = serde_json::json!({"projectPaths": [existing], "projectPath": existing});
+    std::fs::write(&settings_path, disk.to_string()).unwrap();
+    let state = crate::config::settings::new_settings_state(AppSettings::default());
+
+    open_project_inner_with_settings_path(
+        &state,
+        &added,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await
+    .expect("registration refreshes disk projects");
+
+    assert_eq!(
+        state.read().await.project_paths,
+        vec![existing.clone(), added.clone()]
+    );
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(settings_path.with_file_name("project-paths.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        persisted["projectPaths"],
+        serde_json::json!([existing, added])
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn new_project_compensation_failure_reports_error_without_publishing_candidate() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings_path = temp.path().join("settings.json");
+    let sidecar = settings_path.with_file_name("project-paths.json");
+    let hook_sidecar = sidecar.clone();
+    let project = temp.path().join("project");
+    let state = crate::config::settings::new_settings_state(AppSettings::default());
+    let hooks = NewProjectTransactionHooks {
+        before_final_revalidation: Some(std::sync::Arc::new(move |ac_root| {
+            let lock = ac_root.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
+            std::fs::rename(
+                &lock,
+                ac_root.join(".seed-manifest.lock-detached-after-save"),
+            )
+            .expect("detach held lock identity");
+            std::fs::write(&lock, b"").expect("replace held lock identity");
+            std::fs::write(&hook_sidecar, b"{broken").expect("block compensation read");
+        })),
+        ..NewProjectTransactionHooks::default()
+    };
+
+    let error = new_project_inner_with_settings_path_and_hooks(
+        &state,
+        &project.to_string_lossy(),
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+        hooks,
+    )
+    .await
+    .expect_err("failed compensation must surface");
+
+    assert!(error.contains("retry the operation"));
+    assert!(error.contains("failed to roll back project registration settings:"));
+    let live = state.read().await;
+    assert!(
+        live.project_paths.is_empty(),
+        "candidate must stay unpublished"
+    );
+    let persistence_error = live.project_paths_persistence_error.as_ref().unwrap();
+    assert!(error.contains(persistence_error));
+    assert_eq!(std::fs::read(&sidecar).unwrap(), b"{broken");
 }
