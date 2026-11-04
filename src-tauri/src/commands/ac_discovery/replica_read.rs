@@ -17,7 +17,7 @@ pub(crate) fn read_preferred_agent_id(
     let mut warnings = Vec::new();
     let preferred = read_preferred_agent_id_logged(dir, settings, &mut warnings);
     for warning in warnings {
-        log::warn!("[discovery] {}", warning);
+        log::warn!("[discovery] {warning}");
     }
     preferred
 }
@@ -148,17 +148,17 @@ pub(crate) fn origin_project_for_replica_identity(
 }
 
 /// Derive agent display name from its path.
-/// Format: "{project_folder}/{agent_name}" where:
-/// - project_folder = directory containing the Project AC Root
-/// - agent_name = folder name with "_agent_" prefix stripped
+/// Format: "{`project_folder}/{agent_name`}" where:
+/// - `project_folder` = directory containing the Project AC Root
+/// - `agent_name` = folder name with "_agent_" prefix stripped
 pub(crate) fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
     let agent_name = dir_name.strip_prefix("_agent_").unwrap_or(dir_name);
-    format!("{}/{}", project_folder, agent_name)
+    format!("{project_folder}/{agent_name}")
 }
 
 /// Resolve an agent ref to a display name. Handles both relative refs
 /// (e.g. "../_agent_tech-lead") and absolute paths.
-/// For relative refs, uses project_folder as origin. For absolute paths,
+/// For relative refs, uses `project_folder` as origin. For absolute paths,
 /// extracts the origin project from the folder before the Project AC Root marker.
 pub(crate) fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
     let normalized = agent_ref.replace('\\', "/");

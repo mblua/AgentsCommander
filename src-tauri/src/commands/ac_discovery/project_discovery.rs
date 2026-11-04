@@ -15,7 +15,7 @@ use tauri::Emitter;
 use tauri::{AppHandle, State};
 
 /// Discover AC agents/workgroups from a single project path.
-/// Unlike discover_ac_agents which scans project_paths from settings,
+/// Unlike `discover_ac_agents` which scans `project_paths` from settings,
 /// this targets a specific folder.
 #[tauri::command]
 pub async fn discover_project(
@@ -47,7 +47,7 @@ pub(crate) async fn discover_project_inner(
 ) -> Result<AcDiscoveryResult, String> {
     let base = Path::new(path);
     if !crate::config::projects::configured_project_is_dir(base) {
-        return Err(format!("Path is not a directory: {}", path));
+        return Err(format!("Path is not a directory: {path}"));
     }
 
     let cfg = settings.read().await.clone();
@@ -57,7 +57,7 @@ pub(crate) async fn discover_project_inner(
         crate::config::coordinator_clocks::ClockEntry,
     > = coordinator_clocks
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot();
 
     let Some(ac_root) = existing_ac_root(base) else {
