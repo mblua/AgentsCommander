@@ -280,9 +280,7 @@ pub(crate) fn run(
         .manage(settings)
         .manage(idle_detector_for_state) // #552 managed type: Arc<IdleDetector>
         .manage(coordinator_clocks) // #552 managed type: CoordinatorClocksState
-        .manage(std::sync::Arc::new(
-            crate::session::purge_guard::PurgeGuard::default(),
-        )) // #885
+        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
         .manage(detached_sessions.clone())
         .manage(spec_board_state.clone())
         .manage(loop_scheduler.clone())
@@ -295,9 +293,7 @@ pub(crate) fn run(
         .manage(message_store_state)
         .manage(pty_target_gate_state)
         .manage(config_seed_lock)
-        .manage(std::sync::Arc::new(
-            crate::commands::session::PreflightState::default(),
-        ))
+        .manage(Arc::new(commands::session::PreflightState::default()))
         .manage(update_check_state)
         .manage(agent_update_gate)
         .manage(agent_install_cache)

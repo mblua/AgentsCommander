@@ -372,7 +372,7 @@ fn revision_scope() {
             c.agents[0].config_seed = Some(ConfigSeedConfig {
                 enabled: true,
                 dest: ".cfg".to_string(),
-            })
+            });
         },
     ];
     for (index, edit) in moves.iter().enumerate() {

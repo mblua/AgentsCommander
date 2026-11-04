@@ -94,8 +94,9 @@ pub(crate) async fn run_contained(
         Ok(owner) => owner,
         Err(outcome) => {
             let (end, defect, detail) = match outcome {
-                CancellableProbeOutcome::Completed(ProbeOutcome::Failed(detail))
-                | CancellableProbeOutcome::Completed(ProbeOutcome::Version(detail)) => {
+                CancellableProbeOutcome::Completed(
+                    ProbeOutcome::Failed(detail) | ProbeOutcome::Version(detail),
+                ) => {
                     let text = preflight_text(detail);
                     (ContainedRunEnd::SpawnFailed(text.clone()), None, text)
                 }
