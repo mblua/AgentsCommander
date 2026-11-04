@@ -3,10 +3,7 @@ use super::*;
 
 type OperationSnapshot = (String, String, String, String, Option<Vec<u8>>, String);
 
-fn query_operation_snapshot(
-    conn: &rusqlite::Connection,
-    injection_id: &String,
-) -> OperationSnapshot {
+fn query_operation_snapshot(conn: &rusqlite::Connection, injection_id: &str) -> OperationSnapshot {
     conn.query_row(
         "SELECT \
     sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM \
@@ -200,7 +197,7 @@ fn one_poll_diagnostic_probe(
     tracker: &crate::pty::manager::ResponseCloseState,
     member: &crate::pty::manager::ResponseRouteIdentity,
     coordinator: &crate::pty::manager::ResponseRouteIdentity,
-    scenario_target: &String,
+    scenario_target: &str,
     sensitivity: u64,
 ) {
     use crate::pty::manager::{ResponseDeliveryProof, ReturnDeliveryProof};

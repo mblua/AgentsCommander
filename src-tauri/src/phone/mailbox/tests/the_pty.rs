@@ -570,6 +570,33 @@ fn enqueue_rejected_host_artifact_operation(
         .unwrap();
 }
 
+fn host_artifact_setup(
+    fixture: &MailboxFixture,
+    database_root: &Path,
+) -> (
+    PathBuf,
+    crate::config::teams::VerifiedPtyInputRoute,
+    crate::api::message_store::MessageStore,
+) {
+    let outbox = fixture
+        .sender_cwd
+        .join(crate::config::agent_local_dir_name())
+        .join("outbox");
+    std::fs::create_dir_all(&outbox).unwrap();
+    let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
+    let route = crate::config::teams::verify_pty_input_route(
+        &fixture.sender_cwd,
+        false,
+        CANONICAL_WAKE_TO,
+        &paths,
+    )
+    .unwrap();
+    let store =
+        crate::api::message_store::MessageStore::open(database_root.join("host-artifact.sqlite3"))
+            .unwrap();
+    (outbox, route, store)
+}
+
 fn write_host_marker(
     poller: &MailboxPoller,
     marker_path: &Path,
@@ -611,22 +638,7 @@ async fn assert_host_terminal_artifact_repair(
     database_root: &Path,
     expect_long_path: bool,
 ) {
-    let outbox = fixture
-        .sender_cwd
-        .join(crate::config::agent_local_dir_name())
-        .join("outbox");
-    std::fs::create_dir_all(&outbox).unwrap();
-    let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
-    let route = crate::config::teams::verify_pty_input_route(
-        &fixture.sender_cwd,
-        false,
-        CANONICAL_WAKE_TO,
-        &paths,
-    )
-    .unwrap();
-    let store =
-        crate::api::message_store::MessageStore::open(database_root.join("host-artifact.sqlite3"))
-            .unwrap();
+    let (outbox, route, store) = host_artifact_setup(fixture, database_root);
     let injection_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
     let request_fingerprint = "a".repeat(64);

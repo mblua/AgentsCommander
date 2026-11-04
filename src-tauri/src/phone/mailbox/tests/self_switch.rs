@@ -8,6 +8,56 @@ type SelfSwitchDrive = (
     Vec<(Uuid, SelfClearBoundary)>,
 );
 
+async fn observe_self_switch_state(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    state_ids: Arc<Mutex<Vec<Uuid>>>,
+    session_id: Uuid,
+) -> (bool, bool) {
+    state_ids.lock().unwrap().push(session_id);
+    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let mgr = state.read().await;
+    match mgr.get_session(session_id).await {
+        Some(session) => (true, session.waiting_for_input),
+        None => (false, false),
+    }
+}
+
+async fn restart_reseed_self_switch(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    replica: PathBuf,
+    restarted_id: Arc<Mutex<Option<Uuid>>>,
+    (source_id, expected_agent): (Uuid, &'static str),
+    session_id: Uuid,
+    agent: String,
+    profile: String,
+) -> Result<String, String> {
+    assert_eq!(session_id, source_id);
+    assert_eq!(agent, expected_agent);
+    assert_eq!(profile, "A");
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.destroy_session(session_id).await.unwrap();
+    }
+    let (new_id, _token) = seed_self_switch_session(
+        &app,
+        &replica,
+        expected_agent,
+        Some(expected_agent),
+        Some(&profile),
+        Some(&profile),
+    )
+    .await;
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.mark_idle(new_id).await;
+    }
+    register_mock_pty_route(&app, new_id);
+    *restarted_id.lock().unwrap() = Some(new_id);
+    Ok(new_id.to_string())
+}
+
 /// Drives the real sustained-idle self-switch through app-backed seams whose
 /// restart reseeds the replica as `expected_agent` with profile `A`.
 async fn drive_self_switch_restart(
@@ -29,15 +79,7 @@ async fn drive_self_switch_restart(
     let session_state = move |session_id: Uuid| {
         let app = app_for_state.clone();
         let state_ids = Arc::clone(&state_ids_seen);
-        async move {
-            state_ids.lock().unwrap().push(session_id);
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
+        observe_self_switch_state(app, state_ids, session_id)
     };
 
     let app_for_persist = app.clone();
@@ -60,33 +102,16 @@ async fn drive_self_switch_restart(
         let app = app_for_restart.clone();
         let replica = replica_for_restart.clone();
         let restarted_id = Arc::clone(&restarted_id_seen);
-        async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!(agent, expected_agent);
-            assert_eq!(profile, "A");
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.destroy_session(session_id).await.unwrap();
-            }
-            let (new_id, _token) = seed_self_switch_session(
-                &app,
-                &replica,
-                expected_agent,
-                Some(expected_agent),
-                Some(&profile),
-                Some(&profile),
-            )
-            .await;
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.mark_idle(new_id).await;
-            }
-            register_mock_pty_route(&app, new_id);
-            *restarted_id.lock().unwrap() = Some(new_id);
-            Ok(new_id.to_string())
-        }
+        let expected = (source_id, expected_agent);
+        restart_reseed_self_switch(
+            app,
+            replica,
+            restarted_id,
+            expected,
+            session_id,
+            agent,
+            profile,
+        )
     };
 
     let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));

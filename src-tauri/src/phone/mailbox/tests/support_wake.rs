@@ -72,6 +72,61 @@ async fn queued_actual_delivery(
     }
 }
 
+async fn queued_select_housekeeping(
+    actual_delivery: impl std::future::Future<Output = ()>,
+    outer_finished: tokio::sync::oneshot::Receiver<()>,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+) {
+    let housekeeping = async {
+        if outer_finished.await.is_ok() {
+            return;
+        }
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        () = actual_delivery => {},
+        () = housekeeping => assert!(second.observe_owner(coordinator)
+            .is_some_and(|owner| owner.source_stopped),
+            "drop only the outer waiter after real accepted-core unwind"),
+    }
+}
+
+async fn queued_wait_submitted(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    inline: bool,
+) -> (
+    crate::session::manager::PendingCreateBinding,
+    SessionManager,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let queued = retained_source_wait_cut(
+        second,
+        if inline {
+            Cut::Submitted
+        } else {
+            Cut::TicketSubmitted
+        },
+    )
+    .await;
+    let binding = queued.binding.unwrap();
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    if !inline {
+        assert!(
+            manager.get_pending_session(binding).await.is_some(),
+            "original ticket queued only after actual pending creation/native effects"
+        );
+    }
+    assert!(!second.received.load(Ordering::Acquire));
+    assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+    (binding, manager)
+}
+
 async fn queued_arm_first(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
     first: &crate::session::selection::ReplacementFixtureControl,
@@ -199,7 +254,7 @@ fn assert_queued_cell_outcome(
 }
 
 pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool, scenario: &str) {
-    use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
+    use crate::session::selection::ReplacementFixtureControl;
     let fixture = make_mailbox_fixture();
     // Both actors belong to one unchanged authority history, before restore.
     let (replica, target) = provision_retained_fixture_member(&fixture, "queued-member");
@@ -239,45 +294,12 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
             injection.as_deref(),
             &second_message,
         );
-        let housekeeping = async {
-            if outer_finished.await.is_ok() {
-                return;
-            }
-            std::future::pending::<()>().await;
-        };
-        tokio::select! {
-            () = actual_delivery => {},
-            () = housekeeping => assert!(second.observe_owner(&coordinator)
-                .is_some_and(|owner| owner.source_stopped),
-                "drop only the outer waiter after real accepted-core unwind"),
-        }
+        queued_select_housekeeping(actual_delivery, outer_finished, &second, &coordinator).await;
     };
     let controller = async {
         queued_arm_first(app, &first, &first_hooks).await;
         start_second.send(()).unwrap();
-        let queued = retained_source_wait_cut(
-            &second,
-            if inline {
-                Cut::Submitted
-            } else {
-                Cut::TicketSubmitted
-            },
-        )
-        .await;
-        let binding = queued.binding.unwrap();
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        if !inline {
-            assert!(
-                manager.get_pending_session(binding).await.is_some(),
-                "original ticket queued only after actual pending creation/native effects"
-            );
-        }
-        assert!(!second.received.load(Ordering::Acquire));
-        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+        let (binding, manager) = queued_wait_submitted(app, &second, inline).await;
         if race {
             let gates = race_senders;
             queued_cleanup_race(
