@@ -40,7 +40,8 @@ fn token_predicate_requires_only_the_persisted_root_string() {
     assert!(!persisted_instance_token_matches(temp.path(), "fallback"));
     std::fs::write(temp.path().join("master-token.txt"), "fallback").unwrap();
     std::fs::write(
-        temp.path().join("settings.local-overrides.json"),
+        temp.path()
+            .join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
         br#"{"rootToken":"overlay"}"#,
     )
     .unwrap();
