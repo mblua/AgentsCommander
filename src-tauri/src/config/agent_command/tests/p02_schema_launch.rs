@@ -31,7 +31,7 @@ fn p02_canonical_and_legacy_preserve_literal_argv_and_identity_inputs() {
     let combined = compose_effective_command(&canonical.command, &new_cell.command);
     assert_eq!(combined, format!("{base} {suffix}"));
     let parsed = normalize_legacy_agent_command(&combined).unwrap();
-    assert_eq!(parsed.shell, r#"C:\Program Files\tool.exe"#);
+    assert_eq!(parsed.shell, r"C:\Program Files\tool.exe");
     assert_eq!(parsed.shell_args, ["--fixed", "a b", "--model", "x y"]);
     assert_eq!(
         cell_identity(&legacy, &old_cell),

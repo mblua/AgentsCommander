@@ -47,7 +47,7 @@ fn response_close_ordinary_ack_requires_full_interval_and_raw_output_revokes_tic
                     .work
                     .get_mut(&member.target)
                     .unwrap()
-                    .dispatch = usize::MAX
+                    .dispatch = usize::MAX;
             }
             _ => {}
         }

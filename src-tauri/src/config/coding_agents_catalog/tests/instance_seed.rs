@@ -273,7 +273,7 @@ fn ensure_seeded_instance_keeps_an_existing_local_with_an_absent_base() {
     let instance = seed_dir();
     write_local(
         instance.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"pi","label":"PINNED PI"}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"pi","label":"PINNED PI"}]}"#,
     );
     let local_before = std::fs::read(local_catalog_path(instance.path())).unwrap();
 

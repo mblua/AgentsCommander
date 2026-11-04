@@ -512,7 +512,7 @@ fn gh_command_spec_pins_the_child_environment_and_creation_flags() {
     );
 
     #[cfg(windows)]
-    assert_eq!(spec.creation_flags, 0x08000000);
+    assert_eq!(spec.creation_flags, 0x0800_0000);
     #[cfg(not(windows))]
     assert_eq!(spec.creation_flags, 0);
 }

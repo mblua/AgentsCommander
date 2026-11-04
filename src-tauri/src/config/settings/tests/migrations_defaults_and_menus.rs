@@ -408,12 +408,12 @@ fn profile_labels_override_survives_serde_round_trip() {
 fn profile_labels_default_to_empty_and_always_serialize() {
     // A pre-#548 v2 codingAgentProfiles object with NO profileLabelsByAgent key
     // must load as an empty map (proves #[serde(default)]).
-    let json = r##"{
+    let json = r#"{
             "schemaVersion": 2,
             "profileSlots": { "A": { "label": "" } },
             "defaultProfileByAgent": {},
             "profilesByAgent": {}
-        }"##;
+        }"#;
 
     let profiles: super::super::CodingAgentProfilesConfig = serde_json::from_str(json).unwrap();
     assert!(profiles.profile_labels_by_agent.is_empty());
