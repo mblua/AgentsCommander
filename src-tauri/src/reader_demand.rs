@@ -22,18 +22,18 @@ pub(crate) trait ReaderDemandHost: Sync {
     fn reader_sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
     fn reader_registry(&self) -> Option<&Arc<capture::registry::CaptureRegistry>>;
 
-    fn holds_room_reader_demand<'a>(
-        &'a self,
+    fn holds_room_reader_demand(
+        &self,
         session_id: uuid::Uuid,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a;
-    fn raise_room_reader_demand<'a>(
-        &'a self,
+    ) -> impl std::future::Future<Output = bool> + Send + '_;
+    fn raise_room_reader_demand(
+        &self,
         session_id: uuid::Uuid,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a;
-    fn release_room_reader_demand<'a>(
-        &'a self,
+    ) -> impl std::future::Future<Output = bool> + Send + '_;
+    fn release_room_reader_demand(
+        &self,
         session_id: uuid::Uuid,
-    ) -> impl std::future::Future<Output = ()> + Send + 'a;
+    ) -> impl std::future::Future<Output = ()> + Send + '_;
     fn co_managed_capturable_for_session<'a>(
         &'a self,
         room_root: &'a Path,

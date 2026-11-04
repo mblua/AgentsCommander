@@ -164,15 +164,13 @@ pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
         for byte in &read_buffer[..read] {
             current_line.push(*byte);
 
-            if !saw_opening {
-                if current_line.len() > 1024 {
-                    return Err("missing opening frontmatter delimiter".to_string());
-                }
-            } else {
+            if saw_opening {
                 let remaining = SKILL_FRONTMATTER_MAX_BYTES.saturating_sub(frontmatter.len());
                 if current_line.len() > remaining.saturating_add(8) {
                     return Err(frontmatter_limit_error());
                 }
+            } else if current_line.len() > 1024 {
+                return Err("missing opening frontmatter delimiter".to_string());
             }
 
             if *byte != b'\n' {
@@ -422,8 +420,8 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
     }
 
     candidates.sort_by(|(left_name, _), (right_name, _)| {
-        (left_name.to_ascii_lowercase(), left_name.to_string())
-            .cmp(&(right_name.to_ascii_lowercase(), right_name.to_string()))
+        (left_name.to_ascii_lowercase(), left_name.clone())
+            .cmp(&(right_name.to_ascii_lowercase(), right_name.clone()))
     });
 
     append_skill_metadata(&mut index, candidates);

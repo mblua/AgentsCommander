@@ -134,17 +134,13 @@ fn t12_handle_output_applies_the_burst_filter() {
     let token = fanout
         .register_session(id, tuning, 30, 120, PtyOutputTarget::noop())
         .expect("register burst session");
-    detector.set_auto_close_ages_for_test(
-        id,
-        Duration::from_secs(30 * 60),
-        Duration::from_secs(31 * 60),
-    );
+    detector.set_auto_close_ages_for_test(id, Duration::from_mins(30), Duration::from_mins(31));
     detector.set_pty_input_ready_for_test(id);
 
     fanout.handle_output(&token, &id.to_string(), vec![b'a'; 64]);
     assert_eq!(busy_calls.load(Ordering::SeqCst), 0);
     assert!(
-        detector.silence_age(id).unwrap() >= Duration::from_secs(30 * 60),
+        detector.silence_age(id).unwrap() >= Duration::from_mins(30),
         "the short chunk must not reset the auto-close clock"
     );
 
@@ -156,8 +152,8 @@ fn t12_handle_output_applies_the_burst_filter() {
         .expect("register control session");
     detector.set_auto_close_ages_for_test(
         control_id,
-        Duration::from_secs(30 * 60),
-        Duration::from_secs(31 * 60),
+        Duration::from_mins(30),
+        Duration::from_mins(31),
     );
     detector.set_pty_input_ready_for_test(control_id);
     fanout.handle_output(&control_token, &control_id.to_string(), vec![b'a'; 1024]);

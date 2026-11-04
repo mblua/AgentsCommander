@@ -662,7 +662,7 @@ fn failure_interval_never_drops_below_base() {
         failure_interval(
             FailureKind::Timeout,
             one_hour,
-            Some(Duration::from_secs(900))
+            Some(Duration::from_mins(15))
         ),
         one_hour
     );
@@ -675,15 +675,15 @@ fn failure_interval_never_drops_below_base() {
     let thirty = Duration::from_secs(30);
     assert_eq!(
         failure_interval(FailureKind::RateLimited, thirty, None),
-        Duration::from_secs(900)
+        Duration::from_mins(15)
     );
     assert_eq!(
         failure_interval(FailureKind::Timeout, thirty, None),
         Duration::from_secs(60)
     );
     assert_eq!(
-        failure_interval(FailureKind::Timeout, thirty, Some(Duration::from_secs(900))),
-        Duration::from_secs(900),
+        failure_interval(FailureKind::Timeout, thirty, Some(Duration::from_mins(15))),
+        Duration::from_mins(15),
         "the cap holds"
     );
 }

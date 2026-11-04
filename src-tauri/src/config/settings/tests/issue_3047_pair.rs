@@ -137,7 +137,7 @@ fn issue_3047_pair_table_and_independent_preimages() {
         .get_mut("A")
         .unwrap();
     cell.command = "Σ İ\u{a0}oo".into();
-    cell.env = BTreeMap::from([("Z".into(), "Last".into()), ("A".into(), "".into())]);
+    cell.env = BTreeMap::from([("Z".into(), "Last".into()), ("A".into(), String::new())]);
     cell.id_hash_debug = Some(vec!["forged-pair".into()]);
     super::super::refresh_agent_id_hashes(&mut agents);
     let leaves = vec!["İΣΣ\u{2003} oo --", " K ", "İ", "", "", " K ", "İ"];
@@ -205,7 +205,7 @@ fn issue_3047_pair_equivalence_exclusions_empty_orphan_and_first_match() {
     );
     assert_eq!(
         profiles.profiles_by_agent["a"]["B"].id_hash_debug,
-        Some(vec!["İ A\u{2003}b".into(), "".into()])
+        Some(vec!["İ A\u{2003}b".into(), String::new()])
     );
     agents[0].label = "Renamed".into();
     agents[0].command = "b aİ".into();
@@ -258,7 +258,7 @@ fn assert_issue_3047_pair_adoption_view(
     let cells = &settings.coding_agent_profiles.profiles_by_agent["alpha"];
     let mut expected_a = super::super::empty_profile_cell();
     expected_a.id_hash = Some(super::super::configuration_identity("claude", &[]));
-    expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
+    expected_a.id_hash_debug = Some(vec!["claude".into(), String::new()]);
     assert_eq!(cells["A"], expected_a, "{sidecar}/{orphan}");
     assert_eq!(cells.len(), 1, "quarantine never supplies active cells");
     assert!(!settings

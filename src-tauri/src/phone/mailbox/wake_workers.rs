@@ -127,7 +127,7 @@ impl MailboxPoller {
                 .filter(std::fs::Metadata::is_file)
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(|modified| modified.elapsed().ok())
-                .is_some_and(|age| age >= std::time::Duration::from_secs(10 * 60));
+                .is_some_and(|age| age >= std::time::Duration::from_mins(10));
             if !old_enough || crate::path_identity::verify_regular_file(&path).is_err() {
                 continue;
             }
@@ -843,7 +843,14 @@ impl MailboxPoller {
                         });
                     state.attempt_count += 1;
 
-                    if !state.logged {
+                    if state.logged {
+                        log::debug!(
+                            "Retry {} for outbox message {:?}: {}",
+                            state.attempt_count,
+                            path,
+                            e
+                        );
+                    } else {
                         log::warn!(
                             "Failed to process outbox message {:?} (attempt {}): {}",
                             path,
@@ -851,13 +858,6 @@ impl MailboxPoller {
                             e
                         );
                         state.logged = true;
-                    } else {
-                        log::debug!(
-                            "Retry {} for outbox message {:?}: {}",
-                            state.attempt_count,
-                            path,
-                            e
-                        );
                     }
 
                     state.attempt_count >= MAX_DELIVERY_ATTEMPTS

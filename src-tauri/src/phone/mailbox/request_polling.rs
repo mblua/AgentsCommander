@@ -60,7 +60,7 @@ fn sweep_stale_session_results(requests_dir: &Path) {
                 .ok()
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(|modified| modified.elapsed().ok())
-                .is_some_and(|age| age >= std::time::Duration::from_secs(5 * 60));
+                .is_some_and(|age| age >= std::time::Duration::from_mins(5));
             if stale {
                 let _ = mailbox_disk::remove_mailbox_artifact(&path);
             }
@@ -151,7 +151,7 @@ fn complete_session_request(
             id: request.id.clone(),
             status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
             session_id: None,
-            error: Some(e.to_string()),
+            error: Some(e.clone()),
         },
     };
     write_session_result(result);
@@ -376,7 +376,7 @@ impl MailboxPoller {
                             id: request.id.clone(),
                             status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
                             session_id: None,
-                            error: Some(e.to_string()),
+                            error: Some(e.clone()),
                         });
                         let _ = mailbox_disk::remove_mailbox_artifact(&path);
                         continue;
