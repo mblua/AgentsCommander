@@ -316,11 +316,10 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
-        Ok(StrictValue(
-            serde_json::Number::from_f64(value)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-        ))
+        Ok(StrictValue(serde_json::Number::from_f64(value).map_or(
+            serde_json::Value::Null,
+            serde_json::Value::Number,
+        )))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {

@@ -217,9 +217,9 @@ fn reject_transport_auth(
     if state.lockout.record_failure(ip).is_err() {
         log::warn!("[container-transport] lockout failure update failed code=auth_state_failed");
     }
-    let (client_id, bound_fqn) = client
-        .map(|client| (client.client_id.as_str(), client.bound_fqn.as_str()))
-        .unwrap_or(("-", "-"));
+    let (client_id, bound_fqn) = client.map_or(("-", "-"), |client| {
+        (client.client_id.as_str(), client.bound_fqn.as_str())
+    });
     crate::api::audit::record(client_id, bound_fqn, SCOPE_SESSION_TRANSPORT, outcome);
     uniform_transport_auth_failure()
 }

@@ -13,9 +13,7 @@ use super::{
 };
 
 pub(super) fn is_readable_dir(path: &Path) -> bool {
-    seed_disk::inspect_seed_source(path)
-        .map(|m| m.is_dir())
-        .unwrap_or(false)
+    seed_disk::inspect_seed_source(path).is_ok_and(|m| m.is_dir())
 }
 
 pub(super) fn manifest_source_for_tier(tier: ConfigSeedTier) -> ManifestSource {

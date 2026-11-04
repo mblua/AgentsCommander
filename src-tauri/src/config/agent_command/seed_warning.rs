@@ -52,8 +52,7 @@ pub fn compute_config_dir_warning(
         Some(value) => {
             let matches = final_segment(&value)
                 .as_deref()
-                .map(|seg| segments_eq(seg, dest_seg))
-                .unwrap_or(false);
+                .is_some_and(|seg| segments_eq(seg, dest_seg));
             if matches {
                 // L1 case 2: seed overwrites the tool's ACTIVE config dir.
                 Some(format!(
