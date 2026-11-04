@@ -728,19 +728,17 @@ wait for the reply.
     };
 }
 
-enum LegacyMessagingContextMode {
-    None,
-    Workgroup(String),
-    Root(String),
-}
-
 fn legacy_rendered_default_context_for_generation(
     agent_root: &str,
     matrix_root: Option<&str>,
     skills_section: &str,
     git_scope_generation: LegacyGitScopeGeneration,
 ) -> String {
-    use LegacyMessagingContextMode as MessagingContextMode;
+    enum MessagingContextMode {
+        None,
+        Workgroup(String),
+        Root(String),
+    }
 
     let allowed_places = "the entries listed below";
     let replica_usage =
@@ -776,60 +774,7 @@ fn legacy_rendered_default_context_for_generation(
             Err(_) => MessagingContextMode::None,
         }
     };
-    let (messaging_exception, messaging_allowed) = legacy_messaging_grants(&messaging_mode);
-    let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
-    let ac_root_phrase = if has_messaging_exception {
-        "the workspace root (other than the narrow messaging exception above)"
-    } else {
-        "the workspace root"
-    };
-    let forbidden_scope = if matrix_root.is_some() {
-        format!(
-            "the entries listed above — including other agents' replica directories, any other \
-                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
-                arbitrary paths on disk",
-            ws = ac_root_phrase,
-        )
-    } else {
-        format!(
-            "the entries listed above — including other agents' replica directories, {ws}, \
-                parent project dirs, user home files, or arbitrary paths on disk",
-            ws = ac_root_phrase,
-        )
-    };
-    let git_scope = match (git_scope_generation, matrix_root.is_some()) {
-        (LegacyGitScopeGeneration::Current, true) => WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME,
-        (LegacyGitScopeGeneration::Current, false) => DIRECT_MATRIX_GIT_SCOPE,
-        (LegacyGitScopeGeneration::Before1072, true) => LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
-        (LegacyGitScopeGeneration::Before1072, false) => {
-            LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072
-        }
-    };
-    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
-    let peer_name_format = legacy_peer_name_format(&messaging_mode);
-    let send_message_instructions = legacy_send_message_instructions(&messaging_mode);
-    format!(
-        legacy_default_context_prose!(),
-        agent_root = agent_root,
-        allowed_places = allowed_places,
-        replica_usage = replica_usage,
-        matrix_section = matrix_section,
-        matrix_allowed = matrix_allowed,
-        messaging_exception = messaging_exception,
-        messaging_allowed = messaging_allowed,
-        forbidden_scope = forbidden_scope,
-        git_scope = git_scope,
-        agency_cache_guidance = agency_cache_guidance,
-        skills_section = skills_section,
-        peer_name_format = peer_name_format,
-        send_message_instructions = send_message_instructions,
-    )
-}
-
-fn legacy_messaging_grants(messaging_mode: &LegacyMessagingContextMode) -> (String, String) {
-    use LegacyMessagingContextMode as MessagingContextMode;
-
-    let messaging_exception = match messaging_mode {
+    let messaging_exception = match &messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
             "**Narrow exception — workgroup messaging directory:**\n\n\
              You MAY create message files inside this directory:\n\n\
@@ -860,7 +805,7 @@ fn legacy_messaging_grants(messaging_mode: &LegacyMessagingContextMode) -> (Stri
         ),
         MessagingContextMode::None => String::new(),
     };
-    let messaging_allowed = match messaging_mode {
+    let messaging_allowed = match &messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
             "- **Allowed (narrow)**: Create canonical inter-agent message files in your \
                 workgroup messaging directory ({path}). No other writes there.\n",
@@ -873,13 +818,36 @@ fn legacy_messaging_grants(messaging_mode: &LegacyMessagingContextMode) -> (Stri
         ),
         MessagingContextMode::None => String::new(),
     };
-    (messaging_exception, messaging_allowed)
-}
-
-fn legacy_peer_name_format(messaging_mode: &LegacyMessagingContextMode) -> String {
-    use LegacyMessagingContextMode as MessagingContextMode;
-
-    match messaging_mode {
+    let has_messaging_exception = !matches!(messaging_mode, MessagingContextMode::None);
+    let ac_root_phrase = if has_messaging_exception {
+        "the workspace root (other than the narrow messaging exception above)"
+    } else {
+        "the workspace root"
+    };
+    let forbidden_scope = if matrix_root.is_some() {
+        format!(
+            "the entries listed above — including other agents' replica directories, any other \
+                files inside the Agent Matrix, {ws}, parent project dirs, user home files, or \
+                arbitrary paths on disk",
+            ws = ac_root_phrase,
+        )
+    } else {
+        format!(
+            "the entries listed above — including other agents' replica directories, {ws}, \
+                parent project dirs, user home files, or arbitrary paths on disk",
+            ws = ac_root_phrase,
+        )
+    };
+    let git_scope = match (git_scope_generation, matrix_root.is_some()) {
+        (LegacyGitScopeGeneration::Current, true) => WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME,
+        (LegacyGitScopeGeneration::Current, false) => DIRECT_MATRIX_GIT_SCOPE,
+        (LegacyGitScopeGeneration::Before1072, true) => LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072,
+        (LegacyGitScopeGeneration::Before1072, false) => {
+            LEGACY_GIT_SCOPE_WITHOUT_MATRIX_BEFORE_1072
+        }
+    };
+    let agency_cache_guidance = root_agency_cache_guidance(agent_root);
+    let peer_name_format = match &messaging_mode {
         MessagingContextMode::Root(_) => "- **Root Agent sessions**: verified WG coordinator \
             replicas only, shaped `<project>:<workgroup>/<agent>` — e.g. \
             `agentscommander:wg-15-dev-team/tech-lead`.\n\nOrigin coordinators and \
@@ -889,13 +857,8 @@ fn legacy_peer_name_format(messaging_mode: &LegacyMessagingContextMode) -> Strin
             `agentscommander:wg-15-dev-team/dev-rust`.\n- **Origin agents**: \
             `<project>/<agent>` — e.g. `agentscommander/architect`."
             .to_string(),
-    }
-}
-
-fn legacy_send_message_instructions(messaging_mode: &LegacyMessagingContextMode) -> String {
-    use LegacyMessagingContextMode as MessagingContextMode;
-
-    match messaging_mode {
+    };
+    let send_message_instructions = match &messaging_mode {
         MessagingContextMode::Root(path) => format!(
             "Before sending, run `list-peers-lean`; in Root Agent sessions it returns verified \
                 WG coordinator replicas only. Use only the JSON `name` values returned by \
@@ -938,7 +901,23 @@ fn legacy_send_message_instructions(messaging_mode: &LegacyMessagingContextMode)
                  automatically. Passing a path triggers `filename '...' contains path \
                  separators or traversal`.\n"
             .to_string(),
-    }
+    };
+    format!(
+        legacy_default_context_prose!(),
+        agent_root = agent_root,
+        allowed_places = allowed_places,
+        replica_usage = replica_usage,
+        matrix_section = matrix_section,
+        matrix_allowed = matrix_allowed,
+        messaging_exception = messaging_exception,
+        messaging_allowed = messaging_allowed,
+        forbidden_scope = forbidden_scope,
+        git_scope = git_scope,
+        agency_cache_guidance = agency_cache_guidance,
+        skills_section = skills_section,
+        peer_name_format = peer_name_format,
+        send_message_instructions = send_message_instructions,
+    )
 }
 
 pub(crate) fn is_replica_agent_dir(cwd: &str) -> bool {
