@@ -101,6 +101,53 @@ fn bootstrap_pty_status_fixture(store: &MessageStore, status: &str) -> (String, 
     )
 }
 
+fn bind_all_publishers(tracker: &ResponseCloseState) {
+    for publisher in [
+        crate::pty::manager::ResponseClosePublisher::Manager,
+        crate::pty::manager::ResponseClosePublisher::Pty,
+        crate::pty::manager::ResponseClosePublisher::RawOutput,
+        crate::pty::manager::ResponseClosePublisher::Detector,
+        crate::pty::manager::ResponseClosePublisher::Menu,
+        crate::pty::manager::ResponseClosePublisher::Hold,
+    ] {
+        tracker.bind_publisher(publisher);
+    }
+}
+
+fn reserve_route_candidate(
+    tracker: &ResponseCloseState,
+    target: &str,
+    key: String,
+    digest: String,
+) -> Result<crate::pty::manager::ResponseDeliveryContext, crate::pty::manager::ResponseCloseError> {
+    let now = std::time::Instant::now();
+    let member = crate::pty::manager::ResponseRouteIdentity {
+        target: target.into(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 1,
+        carrier_version: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+    };
+    let coordinator = crate::pty::manager::ResponseRouteIdentity {
+        target: "proj:wg-1/coordinator".into(),
+        session_id: Uuid::new_v4(),
+        ..member.clone()
+    };
+    tracker.register_route(member.session_id, member.generation, now);
+    tracker.publish_manager_row(
+        member.session_id,
+        member.token,
+        member.generation,
+        member.carrier_version,
+        true,
+        false,
+        now,
+    );
+    tracker.publish_manager_facts(member.clone(), true, false, now);
+    tracker.reserve_policy_candidate(member, coordinator, key, digest, now)
+}
+
 #[test]
 fn migration_creates_schema_and_enqueue_writes_row() {
     let store = store();
@@ -150,16 +197,7 @@ fn migration_creates_schema_and_enqueue_writes_row() {
         ));
     }
     let tracker = ResponseCloseState::default();
-    for publisher in [
-        crate::pty::manager::ResponseClosePublisher::Manager,
-        crate::pty::manager::ResponseClosePublisher::Pty,
-        crate::pty::manager::ResponseClosePublisher::RawOutput,
-        crate::pty::manager::ResponseClosePublisher::Detector,
-        crate::pty::manager::ResponseClosePublisher::Menu,
-        crate::pty::manager::ResponseClosePublisher::Hold,
-    ] {
-        tracker.bind_publisher(publisher);
-    }
+    bind_all_publishers(&tracker);
     tracker.apply_settings(true, 30, std::time::Instant::now());
     assert_eq!(
         tracker.try_enable_readiness(),
@@ -170,37 +208,11 @@ fn migration_creates_schema_and_enqueue_writes_row() {
     store.bind_response_close(tracker.clone());
     assert_eq!(tracker.try_enable_readiness(), Ok(()));
     for (plane, sender, target, op, digest, pending) in seeds {
-        let now = std::time::Instant::now();
-        let member = crate::pty::manager::ResponseRouteIdentity {
-            target: target.into(),
-            session_id: Uuid::new_v4(),
-            token: Uuid::new_v4(),
-            generation: 1,
-            carrier_version: 1,
-            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-        };
-        let coordinator = crate::pty::manager::ResponseRouteIdentity {
-            target: "proj:wg-1/coordinator".into(),
-            session_id: Uuid::new_v4(),
-            ..member.clone()
-        };
-        tracker.register_route(member.session_id, 1, now);
-        tracker.publish_manager_row(
-            member.session_id,
-            member.token,
-            member.generation,
-            member.carrier_version,
-            true,
-            false,
-            now,
-        );
-        tracker.publish_manager_facts(member.clone(), true, false, now);
-        let result = tracker.reserve_policy_candidate(
-            member,
-            coordinator,
+        let result = reserve_route_candidate(
+            &tracker,
+            target,
             response_work_key(plane, sender, &op),
             digest,
-            now,
         );
         if pending {
             assert!(result.is_ok(), "{plane}/{op}");
@@ -232,16 +244,7 @@ fn migration_creates_schema_and_enqueue_writes_row() {
         .execute_batch("DROP TABLE pty_input_operations;")
         .unwrap();
     let broken_tracker = ResponseCloseState::default();
-    for publisher in [
-        crate::pty::manager::ResponseClosePublisher::Manager,
-        crate::pty::manager::ResponseClosePublisher::Pty,
-        crate::pty::manager::ResponseClosePublisher::RawOutput,
-        crate::pty::manager::ResponseClosePublisher::Detector,
-        crate::pty::manager::ResponseClosePublisher::Menu,
-        crate::pty::manager::ResponseClosePublisher::Hold,
-    ] {
-        broken_tracker.bind_publisher(publisher);
-    }
+    bind_all_publishers(&broken_tracker);
     broken.bind_response_close(broken_tracker.clone());
     assert_eq!(
         broken_tracker.try_enable_readiness(),
@@ -338,46 +341,12 @@ fn duplicate_sender_op_id_returns_existing_row() {
 fn lease_due_hides_active_lease_until_expiry_then_redelivers() {
     let store = store();
     let tracker = ResponseCloseState::default();
-    for publisher in [
-        crate::pty::manager::ResponseClosePublisher::Manager,
-        crate::pty::manager::ResponseClosePublisher::Pty,
-        crate::pty::manager::ResponseClosePublisher::RawOutput,
-        crate::pty::manager::ResponseClosePublisher::Detector,
-        crate::pty::manager::ResponseClosePublisher::Menu,
-        crate::pty::manager::ResponseClosePublisher::Hold,
-    ] {
-        tracker.bind_publisher(publisher);
-    }
+    bind_all_publishers(&tracker);
     tracker.apply_settings(true, 30, std::time::Instant::now());
     store.bind_response_close(tracker.clone());
     assert_eq!(tracker.try_enable_readiness(), Ok(()));
     let probe = |target: &str, key: &str, digest: &str| {
-        let now = std::time::Instant::now();
-        let member = crate::pty::manager::ResponseRouteIdentity {
-            target: target.into(),
-            session_id: Uuid::new_v4(),
-            token: Uuid::new_v4(),
-            generation: 1,
-            carrier_version: 1,
-            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-        };
-        let coordinator = crate::pty::manager::ResponseRouteIdentity {
-            target: "proj:wg-1/coordinator".into(),
-            session_id: Uuid::new_v4(),
-            ..member.clone()
-        };
-        tracker.register_route(member.session_id, member.generation, now);
-        tracker.publish_manager_row(
-            member.session_id,
-            member.token,
-            member.generation,
-            member.carrier_version,
-            true,
-            false,
-            now,
-        );
-        tracker.publish_manager_facts(member.clone(), true, false, now);
-        tracker.reserve_policy_candidate(member, coordinator, key.into(), digest.into(), now)
+        reserve_route_candidate(&tracker, target, key.into(), digest.into())
     };
 
     let first = store.enqueue(request("op1", "hello")).unwrap();

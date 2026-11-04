@@ -475,6 +475,26 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
     assert_eq!(runtime.active_reader_count(), 2);
     assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
 
+    assert_combined_with_selection_fixtures(expected, &report.retained);
+
+    retry_release
+        .send(())
+        .expect("release the deterministic in-flight retry gate");
+    wait_for_docker_owner_retained(&runtime);
+    assert_eq!(runtime.active_reader_count(), 2);
+    readers.release();
+    let retry_control = ContainerRuntimeControl::default();
+    retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
+    runtime.retry_retained_cleanups(&retry_control);
+    assert!(runtime.retained_cleanup_contexts().is_empty());
+    assert_eq!(runtime.active_reader_count(), 0);
+
+    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
+    assert!(terminal.terminal, "retained={:?}", terminal.retained);
+    assert!(terminal.retained.is_empty());
+}
+
+fn assert_combined_with_selection_fixtures(expected: &str, report_retained: &[String]) {
     let mut selection_retained = (0..300)
         .map(|index| {
             format!(
@@ -489,7 +509,7 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
         .map(|context| {
             crate::pty::container_runtime::normalize_retained_owner_diagnostic("selection", context)
         })
-        .chain(report.retained.iter().map(|context| {
+        .chain(report_retained.iter().map(|context| {
             crate::pty::container_runtime::normalize_retained_owner_diagnostic(
                 "containerShutdown",
                 context,
@@ -499,7 +519,7 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
     uncapped.sort();
     uncapped.dedup();
     let combined =
-        crate::combined_shutdown_retained_diagnostics(selection_retained, report.retained.clone());
+        crate::combined_shutdown_retained_diagnostics(selection_retained, report_retained.to_vec());
     let expected_omitted = uncapped.len() - (RETAINED_OWNER_REPORT_CAPACITY - 1);
     assert_eq!(combined.len(), RETAINED_OWNER_REPORT_CAPACITY);
     assert_eq!(
@@ -518,10 +538,9 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
                 omittedCount={expected_omitted}"
         )
     );
+}
 
-    retry_release
-        .send(())
-        .expect("release the deterministic in-flight retry gate");
+fn wait_for_docker_owner_retained(runtime: &crate::pty::docker_runtime::DockerRuntime) {
     let transition_deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let contexts = runtime.retained_cleanup_contexts();
@@ -538,25 +557,10 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
         );
         std::thread::yield_now();
     }
-    assert_eq!(runtime.active_reader_count(), 2);
-    readers.release();
-    let retry_control = ContainerRuntimeControl::default();
-    retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
-    runtime.retry_retained_cleanups(&retry_control);
-    assert!(runtime.retained_cleanup_contexts().is_empty());
-    assert_eq!(runtime.active_reader_count(), 0);
-
-    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
-    assert!(terminal.terminal, "retained={:?}", terminal.retained);
-    assert!(terminal.retained.is_empty());
 }
 
-#[test]
-fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
-    const INSTALLED_ENTRIES: usize = 180;
-    const RUNTIME_ENTRIES: usize = 180;
-
-    let runtime_contexts = (0..RUNTIME_ENTRIES)
+fn high_cardinality_runtime_contexts(runtime_entries: usize) -> Vec<RetainedContainerOwnerContext> {
+    (0..runtime_entries)
         .map(|index| {
             if index % 2 == 0 {
                 RetainedContainerOwnerContext {
@@ -582,7 +586,15 @@ fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
                 }
             }
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
+    const INSTALLED_ENTRIES: usize = 180;
+    const RUNTIME_ENTRIES: usize = 180;
+
+    let runtime_contexts = high_cardinality_runtime_contexts(RUNTIME_ENTRIES);
     let runtime = Arc::new(RetainedContextRuntime {
         contexts: runtime_contexts,
     });

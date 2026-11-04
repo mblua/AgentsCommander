@@ -131,6 +131,24 @@ pub(crate) fn prepare_pi_logical_clear_mode(
         }
     }
 
+    let version_text = probe_pi_version(cfg)?;
+
+    std::fs::create_dir(&config_dir).map_err(|error| {
+        format!(
+            "failed to create harness-owned PI_CODING_AGENT_DIR '{}': {error}",
+            config_dir.display()
+        )
+    })?;
+    Ok((
+        PiConfigDirGuard {
+            path: config_dir,
+            owned: true,
+        },
+        version_text,
+    ))
+}
+
+fn probe_pi_version(cfg: &HarnessConfig) -> Result<String, String> {
     let version_output = std::process::Command::new("cmd.exe")
         .args(["/D", "/S", "/C", cfg.shell.as_str(), "--version"])
         .output()
@@ -159,20 +177,7 @@ pub(crate) fn prepare_pi_logical_clear_mode(
         ));
     }
     println!("Pi version: {version_text}");
-
-    std::fs::create_dir(&config_dir).map_err(|error| {
-        format!(
-            "failed to create harness-owned PI_CODING_AGENT_DIR '{}': {error}",
-            config_dir.display()
-        )
-    })?;
-    Ok((
-        PiConfigDirGuard {
-            path: config_dir,
-            owned: true,
-        },
-        version_text,
-    ))
+    Ok(version_text)
 }
 
 struct CaptureEpoch {
@@ -386,7 +391,15 @@ async fn run_pi_trial_body(
             new_capture.overflowed
         ));
     }
+    run_pi_hotkeys_phase(cfg, ctx, session_id, capture).await
+}
 
+async fn run_pi_hotkeys_phase(
+    cfg: &HarnessConfig,
+    ctx: &HarnessCtx,
+    session_id: Uuid,
+    capture: &mut Option<CaptureEpoch>,
+) -> Result<(), String> {
     *capture = Some(start_capture_epoch(ctx, session_id)?);
     let (hotkeys_baseline_sequence, hotkeys_baseline) =
         stable_screen_snapshot(&ctx.app, session_id)?;
