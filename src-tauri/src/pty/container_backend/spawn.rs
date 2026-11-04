@@ -216,7 +216,7 @@ impl ContainerTransportBackend {
                     crate::pty::container_credentials::ensure_first_run_state(
                         plan,
                         DEFAULT_CONTAINER_WORKDIR,
-                    )
+                    );
                 }
                 // grinch Finding 1 - an F2 skip is NOT a copy: the dest dir or
                 // leaf is a symlink/junction, so no token was written. Stamping
@@ -594,7 +594,7 @@ impl ContainerTransportBackend {
             return Ok(());
         }
         match tokio::time::timeout(self.tuning.handshake_timeout, attach_notify.notified()).await {
-            Ok(_) if self.has_session(id) => {
+            Ok(()) if self.has_session(id) => {
                 cancellation_guard.disarm();
                 Ok(())
             }
