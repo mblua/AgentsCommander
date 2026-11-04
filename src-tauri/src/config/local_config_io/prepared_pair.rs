@@ -427,7 +427,7 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
         Ok(())
     })();
     drop(file);
-    let result = result.and_then(|_| {
+    let result = result.and_then(|()| {
         guard.check()?;
         if read_config_pair_physical(path)? != *before {
             return Err(PreparedPairError::Conflict);

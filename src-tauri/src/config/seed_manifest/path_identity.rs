@@ -197,8 +197,7 @@ impl ManifestPathIdentity {
             }
             DecodedPathComponents::WindowsUtf16(components) => components
                 .get(index)
-                .map(|actual| actual.iter().copied().eq(expected.encode_utf16()))
-                .unwrap_or(false),
+                .is_some_and(|actual| actual.iter().copied().eq(expected.encode_utf16())),
         }
     }
 }

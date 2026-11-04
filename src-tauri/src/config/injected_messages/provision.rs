@@ -566,10 +566,10 @@ pub(super) fn verify_candidate(
 
 fn take_backup(path: &Path, source: &str) {
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let mut name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| INJECTED_MESSAGES_FILENAME.to_string());
+    let mut name = path.file_name().map_or_else(
+        || INJECTED_MESSAGES_FILENAME.to_string(),
+        |name| name.to_string_lossy().to_string(),
+    );
     name.push_str(&format!(".bak-{stamp}"));
     let backup: PathBuf = path.with_file_name(name);
     if let Err(e) = publish(&backup, source.as_bytes()) {

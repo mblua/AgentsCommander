@@ -369,7 +369,7 @@ pub fn sweep_context_cache_dir(context_dir: &Path, now: SystemTime, retention: D
                         "[context-cache] failed to remove stale {}: {}",
                         path.display(),
                         e
-                    )
+                    );
                 }
             }
         }
