@@ -66,7 +66,7 @@ fn tmp_files_in(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Opens `path` with the default (fully shared) OpenOptions and keeps the
+/// Opens `path` with the default (fully shared) `OpenOptions` and keeps the
 /// handle for `hold`, from another thread.
 #[cfg(windows)]
 fn hold_open_for(path: &Path, hold: std::time::Duration) -> std::thread::JoinHandle<()> {
