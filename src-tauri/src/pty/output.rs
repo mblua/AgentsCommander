@@ -356,8 +356,7 @@ impl ReaderOperationGate {
     fn is_open(&self) -> bool {
         self.state
             .lock()
-            .map(|state| !state.lifecycle_closing)
-            .unwrap_or(false)
+            .is_ok_and(|state| !state.lifecycle_closing)
     }
 
     fn wait_for_drain(&self) {

@@ -226,17 +226,12 @@ impl RetainedContainerCleanupRegistry {
                         let attempt = error.into_inner();
                         (
                             attempt.in_flight,
-                            Some(
-                                attempt
-                                    .last_error
-                                    .as_deref()
-                                    .map(|last_error| {
-                                        format!("{last_error}; cleanup attempt state lock poisoned")
-                                    })
-                                    .unwrap_or_else(|| {
-                                        "cleanup attempt state lock poisoned".to_string()
-                                    }),
-                            ),
+                            Some(attempt.last_error.as_deref().map_or_else(
+                                || "cleanup attempt state lock poisoned".to_string(),
+                                |last_error| {
+                                    format!("{last_error}; cleanup attempt state lock poisoned")
+                                },
+                            )),
                         )
                     }
                     Err(TryLockError::WouldBlock) => (

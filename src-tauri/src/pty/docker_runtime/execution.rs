@@ -45,8 +45,7 @@ impl DockerRuntime {
             started_at + DOCKER_COMMAND_TIMEOUT + DOCKER_COMMAND_FINALIZATION_RESERVE;
         let hard_deadline = control
             .shutdown_deadline()
-            .map(|deadline| deadline.min(default_deadline))
-            .unwrap_or(default_deadline);
+            .map_or(default_deadline, |deadline| deadline.min(default_deadline));
         self.run_command_output_with_context(
             spec,
             control,
