@@ -49,7 +49,7 @@ fn abs(p: &str) -> String {
     if cfg!(windows) {
         format!(r"C:\opt\{}", p.replace('/', "\\"))
     } else {
-        format!("/opt/{}", p)
+        format!("/opt/{p}")
     }
 }
 

@@ -315,7 +315,7 @@ fn resolve_local_templates_dir_variants() {
     };
     match resolve_local_templates_dir(&rel, config) {
         LocalTemplatesDir::Custom(p) => assert_eq!(p, config.join("rel-templates")),
-        other => panic!("expected Custom, got {:?}", other),
+        other => panic!("expected Custom, got {other:?}"),
     }
 
     // absolute existing dir ⇒ Custom
