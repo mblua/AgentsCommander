@@ -82,11 +82,14 @@ fn apply_agent_row_edits(
             rows.remove(index.ok_or("unknownEntryHint")?);
             continue;
         }
-        let mut row = index.map(|i| rows[i].clone()).unwrap_or_else(|| {
-            let mut row = Map::new();
-            row.insert(key.into(), Value::String(edit.entry_hint.clone()));
-            Value::Object(row)
-        });
+        let mut row = index.map_or_else(
+            || {
+                let mut row = Map::new();
+                row.insert(key.into(), Value::String(edit.entry_hint.clone()));
+                Value::Object(row)
+            },
+            |i| rows[i].clone(),
+        );
         let object = row.as_object_mut().ok_or("invalidAgentRow")?;
         for (field, value) in &edit.patch {
             apply_agent_row_field(object, field, value, registered)?;

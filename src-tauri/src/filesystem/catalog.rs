@@ -31,7 +31,7 @@ pub(crate) fn open_catalog_lock(path: &Path) -> io::Result<File> {
 }
 
 pub(crate) fn catalog_lock_is_regular(file: &File) -> bool {
-    file.metadata().map(|meta| meta.is_file()).unwrap_or(false)
+    file.metadata().is_ok_and(|meta| meta.is_file())
 }
 
 pub(crate) fn try_catalog_lock(file: &File) -> Result<(), TryLockError> {
