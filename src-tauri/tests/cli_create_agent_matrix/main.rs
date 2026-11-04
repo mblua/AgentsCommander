@@ -22,7 +22,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -82,6 +82,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
+    // issue_1867 source contract: keep `format!(".{}", stem)`; do not inline.
     bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
@@ -261,7 +262,7 @@ fn create_agent_matrix_success_prints_json_and_writes_layout() {
     assert!(agent_dir.join("Role.md").is_file());
     assert!(agent_dir.join("config.json").is_file());
     for dir in ["memory", "plans", "skills", "inbox", "outbox"] {
-        assert!(agent_dir.join(dir).is_dir(), "missing {}", dir);
+        assert!(agent_dir.join(dir).is_dir(), "missing {dir}");
     }
 }
 
@@ -814,8 +815,7 @@ fn create_agent_matrix_invalid_template_exits_1_without_target_dir() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("Unknown Agency role template") || stderr.contains("missing"),
-        "stderr: {}",
-        stderr
+        "stderr: {stderr}"
     );
     assert!(!project.join(".ac").join("_agent_architect").exists());
     assert!(

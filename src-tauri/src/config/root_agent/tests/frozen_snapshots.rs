@@ -80,7 +80,7 @@ fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
     ensure_root_agent_dir_at(&root).expect("ensure root");
 
     for sub in ["memory", "plans", "skills", "inbox", "outbox", "messaging"] {
-        assert!(root.join(sub).is_dir(), "missing {}", sub);
+        assert!(root.join(sub).is_dir(), "missing {sub}");
     }
     assert!(root.join("Role.md").is_file());
     assert!(ROOT_ROLE_MD.contains("You are the AgentsCommander Root Agent"));
@@ -248,7 +248,7 @@ fn ensure_root_agent_dir_at_still_provisions_when_retirement_fails() {
     ensure_root_agent_dir_at(&root).expect("provisioning must still succeed");
 
     for sub in ["memory", "plans", "skills", "inbox", "outbox", "messaging"] {
-        assert!(root.join(sub).is_dir(), "missing {}", sub);
+        assert!(root.join(sub).is_dir(), "missing {sub}");
     }
     assert!(root.join("Role.md").is_file());
     assert!(root.join("config.json").is_file());
@@ -443,9 +443,9 @@ fn root_context_before_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S5 failing-first proof for ALL of: the v5 rewrite (assert_ne), the
+/// #1005 S5 failing-first proof for ALL of: the v5 rewrite (`assert_ne`), the
 /// recognizer list (E5.4 path 1), the `migrate_root_role` pristine list
-/// (E5.4 path 2), and the root_spec version bump. ONE fixture (the frozen v4
+/// (E5.4 path 2), and the `root_spec` version bump. ONE fixture (the frozen v4
 /// bytes) drives both migration paths so a missed list cannot pass silently:
 /// a pristine v4 Role.md must reduce to MINIMAL, and a pristine v4
 /// Context.root-agent.md must auto-upgrade to the current default.
@@ -541,7 +541,7 @@ fn root_context_before_reporting_scope_snapshot_is_byte_exact() {
 }
 
 /// #1370 C7 / AC-6: failing-first proof for the recognizer list, the
-/// `migrate_root_role` pristine list and the root_spec version bump. ONE
+/// `migrate_root_role` pristine list and the `root_spec` version bump. ONE
 /// fixture (the frozen v5 bytes) drives both migration paths so a list edited
 /// in only one place cannot pass silently: a pristine v5 Role.md must reduce
 /// to MINIMAL, and a pristine v5 Context.root-agent.md must auto-upgrade to

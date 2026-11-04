@@ -17,7 +17,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -72,6 +72,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
+    // issue_1867 source contract: keep `format!(".{}", stem)`; do not inline.
     bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
@@ -93,9 +94,9 @@ fn run_git(repo: &Path, args: &[&str]) {
 fn file_url(path: &Path) -> String {
     let path = path.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
-        format!("file:///{}", path)
+        format!("file:///{path}")
     } else {
-        format!("file://{}", path)
+        format!("file://{path}")
     }
 }
 
@@ -171,8 +172,7 @@ fn agency_templates_unknown_subcommand_exits_one_with_usage() {
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(
         stderr.contains("Usage:") || stderr.contains("unrecognized subcommand"),
-        "unexpected stderr:\n{}",
-        stderr
+        "unexpected stderr:\n{stderr}"
     );
 }
 
