@@ -52,8 +52,7 @@ fn root_prologue_renders_every_mandatory_block_exactly_once() {
         assert_eq!(
             out.matches(heading).count(),
             1,
-            "mandatory Root block {} must appear exactly once",
-            heading
+            "mandatory Root block {heading} must appear exactly once"
         );
     }
 
