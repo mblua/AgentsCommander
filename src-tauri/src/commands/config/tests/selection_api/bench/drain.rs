@@ -1,7 +1,7 @@
 use super::*;
 
-/// The batch test. Without AC_SELECTION_BENCH it asserts one batch's
-/// collection and correlation; with AC_SELECTION_BENCH=1 (run it with
+/// The batch test. Without `AC_SELECTION_BENCH` it asserts one batch's
+/// collection and correlation; with `AC_SELECTION_BENCH=1` (run it with
 /// --test-threads=1) it also runs 10 repetitions of both fixtures and
 /// prints the baseline. Rep 1 is cold, reps 2..10 are warm.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -18,9 +18,7 @@ async fn issue_2475_bench_samples_carry_invocation_scope_and_submit_instant() {
         "[bench] synthetic numbers from a temporary directory, not the real app; \
          mix 6 preview_selection_lock_removal + 6 preview_coding_agent_profile_selection \
          (2 per scope) + 1 get_replica_selection_default; available_parallelism={}",
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(0)
+        std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get)
     );
     for (r, m) in [(8usize, 1usize), (40, 3)] {
         let bench = bench_fixture(r, m);
@@ -289,7 +287,7 @@ async fn issue_2475_bench_draining_batch_does_not_hand_over_serialization() {
     let reached_drain = tokio::time::timeout(std::time::Duration::from_secs(60), async {
         tokio::select! {
             _ = &mut batch => false,
-            _ = expired.notified() => true,
+            () = expired.notified() => true,
         }
     })
     .await
@@ -628,7 +626,7 @@ async fn issue_2475_bench_one_budget_is_shared_between_acquisition_and_work() {
 }
 
 /// p3 test 8: the p1 batch of 13 on both fixtures, through the read side.
-/// Without AC_SELECTION_BENCH it asserts collection and correlation; the
+/// Without `AC_SELECTION_BENCH` it asserts collection and correlation; the
 /// latency gates are computed over 5 interleaved serial runs per side
 /// (p3 measurement protocol), from the lines printed under the variable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

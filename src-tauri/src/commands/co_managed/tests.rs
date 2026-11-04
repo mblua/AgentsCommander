@@ -51,7 +51,7 @@ async fn classify_dry_run_without_a_catalog_issues_no_request() {
     .expect("a missing catalog is an abstention, not an error");
     match outcome {
         ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("NoCatalogFile"), "{reason}")
+            assert!(reason.contains("NoCatalogFile"), "{reason}");
         }
         other @ ClassifyOutcome::Classified { .. } => {
             panic!("a missing catalog must be inert, got {other:?}")

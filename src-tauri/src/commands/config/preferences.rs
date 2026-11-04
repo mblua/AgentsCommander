@@ -107,7 +107,7 @@ pub async fn set_theme_light(
 
 /// Narrow setter for `main_resource_monitor_attached` (#587). Same
 /// candidate-save-publish pattern as `set_theme_light`; lets the central-view
-/// toggle persist without a get+update round-trip racing SettingsModal.
+/// toggle persist without a get+update round-trip racing `SettingsModal`.
 #[tauri::command]
 pub async fn set_main_resource_monitor_attached(
     settings: State<'_, SettingsState>,
@@ -308,9 +308,9 @@ pub(crate) fn move_coding_agent_event_payload(id: &str) -> serde_json::Value {
     serde_json::json!({ "op": "move", "agentId": id })
 }
 
-/// #612 apply the runtime log level (no-op under RUST_LOG) and broadcast so
+/// #612 apply the runtime log level (no-op under `RUST_LOG`) and broadcast so
 /// every webview re-applies its own console gate. Single point that both the
-/// dedicated `set_log_level` command and the SettingsModal Save path reuse.
+/// dedicated `set_log_level` command and the `SettingsModal` Save path reuse.
 pub(crate) fn apply_and_broadcast_log_level(app: &AppHandle, level: &str) {
     // set_runtime_log_level returns false when the gate is not installed
     // (RUST_LOG dev-override active): the backend stays frozen and only the
@@ -327,7 +327,7 @@ pub(crate) fn apply_and_broadcast_log_level(app: &AppHandle, level: &str) {
 
 /// #612 canonical command to change ONLY the log level: validates, persists
 /// `logLevel`, applies live, broadcasts. Used by programmatic callers / future
-/// quick-switch; the SettingsModal uses the form Save path (`save_settings_draft`).
+/// quick-switch; the `SettingsModal` uses the form Save path (`save_settings_draft`).
 #[tauri::command]
 pub async fn set_log_level(
     app: AppHandle,

@@ -70,8 +70,7 @@ async fn canonical_room_root<R: tauri::Runtime>(
             .path
             .join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
         canonical_project_path(&candidate_ac)
-            .map(|path| crate::path_identity::paths_equivalent(&path, ac_root))
-            .unwrap_or(false)
+            .is_ok_and(|path| crate::path_identity::paths_equivalent(&path, ac_root))
     });
     if !registered {
         return Err(format!(
@@ -190,8 +189,8 @@ pub async fn co_managed_effective_state<R: tauri::Runtime>(
 /// is written, nothing is enqueued and no request is issued (plan section 7);
 /// the outcome carries only the detector's reason and the candidate length.
 ///
-/// #2232 phase 6: NOT a #[tauri::command]. This phase's tests call it. The phase-7
-/// supervisor calls capture::jev directly, never commands::co_managed. Registering it
+/// #2232 phase 6: NOT a `#[tauri::command]`. This phase's tests call it. The phase-7
+/// supervisor calls `capture::jev` directly, never `commands::co_managed`. Registering it
 /// would add `lib.rs` to this phase and
 /// would put a network-calling entry point on the IPC surface with no UI asking for it.
 #[allow(dead_code)] // Test-only helper; --all-targets also compiles the lib without cfg(test).
