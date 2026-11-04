@@ -1,5 +1,5 @@
 use super::super::{agent_help_overlay_payload, AgentHelpOverlayPayload};
-use crate::config::settings::shipped_agent_help;
+use crate::config::settings::{shipped_agent_help, SettingsFileTarget};
 use serde_json::json;
 
 fn payload_with_local(contents: Option<&str>) -> AgentHelpOverlayPayload {
@@ -8,14 +8,16 @@ fn payload_with_local(contents: Option<&str>) -> AgentHelpOverlayPayload {
     if let Some(contents) = contents {
         std::fs::write(dir.path().join("agent-help.local.json"), contents).unwrap();
     }
-    agent_help_overlay_payload(Some(settings_path))
+    agent_help_overlay_payload(Some(SettingsFileTarget::for_test_path(&settings_path)))
 }
 
 #[test]
 fn agent_help_with_no_local_file_returns_nulls() {
     let dir = tempfile::tempdir().unwrap();
     assert!(!dir.path().join("agent-help.local.json").exists());
-    let payload = agent_help_overlay_payload(Some(dir.path().join("settings.json")));
+    let payload = agent_help_overlay_payload(Some(SettingsFileTarget::for_test_path(
+        &dir.path().join("settings.json"),
+    )));
     assert!(payload.local.is_none());
     assert!(payload.remote.is_none());
     assert!(payload.local_error.is_none());
@@ -66,7 +68,9 @@ fn payload_with_layers(local: Option<&str>, remote: Option<&str>) -> AgentHelpOv
     if let Some(remote) = remote {
         std::fs::write(dir.path().join("agent-help.remote.json"), remote).unwrap();
     }
-    agent_help_overlay_payload(Some(dir.path().join("settings.json")))
+    agent_help_overlay_payload(Some(SettingsFileTarget::for_test_path(
+        &dir.path().join("settings.json"),
+    )))
 }
 
 #[test]

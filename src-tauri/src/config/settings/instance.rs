@@ -3,10 +3,8 @@
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use std::path::PathBuf;
 
-#[cfg(test)]
 use super::{AgentHelpFile, BlockingMenusFile};
 use super::{AppSettings, ProjectPathsRepairStage, ProjectPathsWriteTransaction};
-#[cfg(test)]
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use std::path::Path;
@@ -68,57 +66,50 @@ impl SettingsFileTarget {
         super::repair_fresh_project_paths_at_path(current, &self.path)
     }
 
-    #[cfg(test)]
     pub(crate) fn read_agent_help_layers(&self) -> (AgentHelpFile, Option<String>, AgentHelpFile) {
-        let (local, error) = super::load_local_agent_help_file(&self.path);
-        let remote = super::load_remote_agent_help_file(&self.path);
+        let (local, error) = super::agent::load_local_agent_help_file(&self.path);
+        let remote = super::agent::load_remote_agent_help_file(&self.path);
         (local, error, remote)
     }
 
-    #[cfg(test)]
     pub(crate) fn read_remote_agent_help_check_stamp(&self) -> Option<DateTime<Utc>> {
-        super::read_remote_agent_help_check_stamp(&self.path)
+        super::agent::read_remote_agent_help_check_stamp(&self.path)
     }
 
-    #[cfg(test)]
     pub(crate) fn read_remote_blocking_menus_check_stamp(&self) -> Option<DateTime<Utc>> {
-        super::read_remote_blocking_menus_check_stamp(&self.path)
+        super::agent::read_remote_blocking_menus_check_stamp(&self.path)
     }
 
-    #[cfg(test)]
     pub(crate) fn write_remote_agent_help_check_stamp(
         &self,
         at: DateTime<Utc>,
     ) -> Result<(), String> {
-        super::write_remote_agent_help_check_stamp(&self.path, at)
+        super::agent::write_remote_agent_help_check_stamp(&self.path, at)
     }
 
-    #[cfg(test)]
     pub(crate) fn write_remote_blocking_menus_check_stamp(
         &self,
         at: DateTime<Utc>,
     ) -> Result<(), String> {
-        super::write_remote_blocking_menus_check_stamp(&self.path, at)
+        super::agent::write_remote_blocking_menus_check_stamp(&self.path, at)
     }
 
-    #[cfg(test)]
     pub(crate) fn write_remote_agent_help_cache(
         &self,
         file: AgentHelpFile,
         source_url: &str,
         fetched_at: DateTime<Utc>,
     ) -> Result<(), String> {
-        super::write_remote_agent_help_cache(&self.path, file, source_url, fetched_at)
+        super::agent::write_remote_agent_help_cache(&self.path, file, source_url, fetched_at)
     }
 
-    #[cfg(test)]
     pub(crate) fn write_remote_blocking_menus_cache(
         &self,
         file: BlockingMenusFile,
         source_url: &str,
         fetched_at: DateTime<Utc>,
     ) -> Result<(), String> {
-        super::write_remote_blocking_menus_cache(&self.path, file, source_url, fetched_at)
+        super::agent::write_remote_blocking_menus_cache(&self.path, file, source_url, fetched_at)
     }
 
     #[cfg(test)]
