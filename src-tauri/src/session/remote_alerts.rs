@@ -34,7 +34,7 @@ use crate::pty::remote_watcher::{base_branch_display, RemoteTransition, Transiti
 /// re-run loop, not a mechanism: the first twelve are instant, and nothing is
 /// delayed to make room for them.
 const NOTICE_CAP: usize = 12;
-const NOTICE_WINDOW: Duration = Duration::from_secs(60 * 60);
+const NOTICE_WINDOW: Duration = Duration::from_hours(1);
 const PENDING_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 type NowSource = Arc<dyn Fn() -> Instant + Send + Sync>;
 type RetryWait = Arc<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;

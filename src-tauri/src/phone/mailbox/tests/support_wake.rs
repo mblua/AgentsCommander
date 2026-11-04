@@ -196,10 +196,10 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
     })
     .await
     .expect("genuine earlier inline actor and queued source drain");
-    if scenario != "cleanup-unknown-veto" {
-        assert!(!second.observe_owner(&coordinator).unwrap().transferred);
-    } else {
+    if scenario == "cleanup-unknown-veto" {
         assert!(second.observe_owner(&coordinator).is_none());
+    } else {
+        assert!(!second.observe_owner(&coordinator).unwrap().transferred);
     }
     assert!(shared_engine_writes(app, binding.session_id()).is_empty());
     if let Some(injection) = injection {

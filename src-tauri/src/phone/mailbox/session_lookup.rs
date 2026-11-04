@@ -149,15 +149,15 @@ impl MailboxPoller {
         let mut viable = Vec::new();
         for (id, status, name) in candidates {
             let has_pty = self.has_pty_session_for_wake(app, id).await;
-            if !is_viable_wake_candidate(&status, has_pty) {
+            if is_viable_wake_candidate(&status, has_pty) {
+                viable.push((id, status));
+            } else {
                 // Phantom skip — observable in prod logs to scope the AC3
                 // follow-up. (dev-rust R1.B4.)
                 log::warn!(
                     "[mailbox] skipping desync phantom: id={id} status={status:?} \
                      has_pty={has_pty} name='{name}'"
                 );
-            } else {
-                viable.push((id, status));
             }
         }
 

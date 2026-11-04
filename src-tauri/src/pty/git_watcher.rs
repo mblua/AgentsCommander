@@ -717,9 +717,9 @@ impl GitSweeper {
         git_state: Arc<GitState>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            git_state,
             session_manager,
             settings,
-            git_state,
         })
     }
 

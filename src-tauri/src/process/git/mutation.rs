@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Output;
 use std::time::Duration;
 
-const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_mins(10);
 const GIT_RESET_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]

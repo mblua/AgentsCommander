@@ -641,5 +641,5 @@ async fn rate_limit_jumps_straight_to_the_cap() {
         .ci
         .next_due
         .expect("due time");
-    assert_eq!(due_at, now + Duration::from_secs(900));
+    assert_eq!(due_at, now + Duration::from_mins(15));
 }

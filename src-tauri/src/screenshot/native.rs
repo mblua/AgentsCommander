@@ -253,7 +253,7 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
                 // configured shortcut as NOT registered so the UI surfaces the
                 // conflict (Grinch #714 LOW): `status.registered` describes the
                 // configured shortcut, not the internal fallback.
-                let msg = e.to_string();
+                let msg = e.clone();
                 runtime.status = hotkey_status_after_attempt(configured, Err(msg.as_str()));
                 Err(msg)
             }

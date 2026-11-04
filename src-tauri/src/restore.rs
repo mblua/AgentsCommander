@@ -179,9 +179,11 @@ pub(crate) fn should_wake_root_agent_on_restore(
 ) -> bool {
     match persisted_status {
         Some(crate::session::session::SessionStatus::Exited(_)) => false,
-        Some(crate::session::session::SessionStatus::Active)
-        | Some(crate::session::session::SessionStatus::Running)
-        | Some(crate::session::session::SessionStatus::Idle)
+        Some(
+            crate::session::session::SessionStatus::Active
+            | crate::session::session::SessionStatus::Running
+            | crate::session::session::SessionStatus::Idle,
+        )
         | None => true,
     }
 }

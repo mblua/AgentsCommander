@@ -169,7 +169,7 @@ async fn stale_result_sidecars_are_swept() {
         .unwrap();
     file.set_times(
         std::fs::FileTimes::new()
-            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(6 * 60)),
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_mins(6)),
     )
     .unwrap();
 

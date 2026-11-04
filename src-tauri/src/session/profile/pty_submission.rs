@@ -45,8 +45,7 @@ impl PtySubmissionAgent {
             (Self::Claude, Some(CodingAgentKind::Claude))
                 | (Self::Codex, Some(CodingAgentKind::Codex))
                 | (Self::Antigravity, Some(CodingAgentKind::Antigravity))
-                | (Self::CursorAgent, None)
-                | (_, None)
+                | (Self::CursorAgent | _, None)
         )
     }
 }

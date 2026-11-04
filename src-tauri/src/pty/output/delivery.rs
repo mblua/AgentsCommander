@@ -217,7 +217,9 @@ impl SessionIoFanout {
         let mut history_unaligned: Option<(usize, usize)> = None;
         let snapshot = if state.parser_availability == ParserAvailability::Available {
             let (parser_rows, parser_cols) = state.parser.screen().size();
-            if (parser_rows, parser_cols) != state.conpty_size {
+            if (parser_rows, parser_cols) == state.conpty_size {
+                copy_attach_snapshot(state, id, include_history, &mut history_unaligned)
+            } else {
                 // #1439: the parser grid diverged from the grid the ConPTY took
                 // (a skipped follow, or any path that resized one without the
                 // other). A seed rendered off this parser adopts the stale grid
@@ -239,8 +241,6 @@ impl SessionIoFanout {
                     reconcile_fault = true;
                 }
                 None
-            } else {
-                copy_attach_snapshot(state, id, include_history, &mut history_unaligned)
             }
         } else {
             None
