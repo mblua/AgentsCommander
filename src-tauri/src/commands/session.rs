@@ -451,7 +451,10 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         if let Some(window) = transaction.app().get_webview_window(&label) {
             if let Err(error) = window.destroy() {
                 log::warn!(
-                    "[session] detached window destroy failed session={session_id} source={source:?}: {error}"
+                    "[session] detached window destroy failed session={} source={:?}: {}",
+                    session_id,
+                    source,
+                    error
                 );
             }
         }
