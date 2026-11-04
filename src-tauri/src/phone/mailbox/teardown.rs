@@ -286,7 +286,7 @@ pub(crate) async fn run_purge_batch<A, F>(
 {
     let lease = tokio::select! {
         biased;
-        _ = progress.stop.cancelled() => return,
+        () = progress.stop.cancelled() => return,
         lease = guard.acquire(targets.session_ids, targets.fqns) => lease,
     };
     {
@@ -314,8 +314,8 @@ pub(crate) async fn run_purge_batch<A, F>(
         }
         tokio::select! {
             biased;
-            _ = progress.stop.cancelled() => return,
-            _ = notified => {}
+            () = progress.stop.cancelled() => return,
+            () = notified => {}
         }
     }
     for sid in targets.ids {
@@ -401,8 +401,8 @@ pub(crate) fn observe_purge(
                 return Ok(snapshot);
             }
             tokio::select! {
-                _ = changed => {},
-                _ = tokio::time::sleep_until(snapshot.deadline) => {},
+                () = changed => {},
+                () = tokio::time::sleep_until(snapshot.deadline) => {},
                 result = &mut worker => {
                     let state = progress.snapshot()?;
                     if result.is_ok() && state.phase == PurgePhase::Stopped {

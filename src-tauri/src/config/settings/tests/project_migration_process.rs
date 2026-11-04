@@ -467,7 +467,7 @@ fn project_migration_process_timeout_retry_preserve_reconcile_cas() {
             "Reconcile" => {
                 assert!(
                     super::super::begin_project_paths_transaction_at_path(&current, &path).is_err()
-                )
+                );
             }
             "CAS" => assert!(
                 super::super::compare_and_set_terminal_snapshots_enabled_at_path(

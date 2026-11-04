@@ -149,12 +149,7 @@ fn seeded_manifest_leaves_no_temp_residue() {
     let residue: Vec<_> = std::fs::read_dir(&catalog)
         .unwrap()
         .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .map(|n| n.contains(".tmp"))
-                .unwrap_or(false)
-        })
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.contains(".tmp")))
         .collect();
     assert!(residue.is_empty(), "no leftover temp files after seed");
 }

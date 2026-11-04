@@ -247,7 +247,7 @@ fn issue_2832_state_persistence_failure_keeps_published_v9_and_backup() {
 /// #1614 AC7.9 and AC7.11. #1748 retired the PROJECT global recognizer, so
 /// this constant's only recognizer is now the #979 standalone classifier; the
 /// snapshot must still be accepted by it and be != the current default -- the
-/// assert_ne is what proves the rename actually moved the default rather than
+/// `assert_ne` is what proves the rename actually moved the default rather than
 /// freezing a copy of something unchanged.
 #[test]
 fn frozen_pre_room_rename_global_template_is_recognized() {
@@ -333,7 +333,7 @@ fn frozen_pre_room_rename_coordinator_template_is_recognized() {
 }
 
 /// #1614 AC7.11 at the SPEC layer. The persisted-state layer is asserted by
-/// the read_sync tests, so the bump is pinned on both sides.
+/// the `read_sync` tests, so the bump is pinned on both sides.
 #[test]
 fn seeded_template_versions_were_bumped() {
     let [global, coordinator, ..] = project_specs();

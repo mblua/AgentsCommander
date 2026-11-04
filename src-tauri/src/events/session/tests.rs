@@ -103,7 +103,9 @@ fn poisoned_buffer_still_emits_without_buffering_or_panicking() {
     emit_session_warning(app.handle(), expected.clone());
 
     assert_event(&receiver, &expected);
-    let mut buffer = state.lock().unwrap_or_else(|err| err.into_inner());
+    let mut buffer = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(buffer.drain(None).is_empty());
 }
 

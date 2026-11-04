@@ -181,14 +181,14 @@ fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
 
     let mut live: HashSet<String> = git_status_snapshot(&owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .keys()
         .cloned()
         .collect();
     live.extend(
         last_dirty_map(&owner)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned(),
     );

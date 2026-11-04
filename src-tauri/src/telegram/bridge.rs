@@ -126,13 +126,10 @@ impl PollNetworkErrorState {
 
         let sustained = now.saturating_duration_since(first)
             >= Duration::from_secs(policy.sustained_after_seconds);
-        let repeat_ready = self
-            .last_emit_at
-            .map(|last| {
-                now.saturating_duration_since(last)
-                    >= Duration::from_secs(policy.sustained_repeat_seconds)
-            })
-            .unwrap_or(true);
+        let repeat_ready = self.last_emit_at.is_none_or(|last| {
+            now.saturating_duration_since(last)
+                >= Duration::from_secs(policy.sustained_repeat_seconds)
+        });
 
         if sustained && repeat_ready {
             let suppressed = self.suppressed_since_last_emit;
@@ -325,7 +322,7 @@ fn spawn_capture_pump(
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 next = rx.recv() => {
                     let Some(record) = next else { break };
                     if let Ok(mut guard) = frontier.lock() {
@@ -552,7 +549,7 @@ async fn output_task(
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
 
             // Periodic tick: harvest stabilized rows, flush buffer if ready
             _ = tick.tick() => {

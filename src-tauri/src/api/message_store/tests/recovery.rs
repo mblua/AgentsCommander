@@ -63,10 +63,10 @@ fn startup_recovery_marks_expired_actuating_indeterminate() {
         .lock()
         .unwrap()
         .execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                SET issued_at=?1,expires_at=?2,queued_at=?3,preparing_at=?4,
                    actuating_at=?5,next_attempt_at=?3,updated_at=?5
-               WHERE injection_id=?6"#,
+               WHERE injection_id=?6",
             params![issued, expires, queued, preparing, actuating, id],
         )
         .unwrap();

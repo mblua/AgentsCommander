@@ -797,7 +797,7 @@ pub(super) struct OwnedLifecycleEntry {
 impl OwnedLifecycleEntry {
     pub(super) async fn release_lease<T>(&mut self, executor: &dyn super::LifecycleExecutor<T>) {
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let current = self.owner.state.lock().ok().is_some_and(|state| {
+        let current = self.owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == self.executor_nonce && state.stage == ReplacementStage::Returned
         });
         let authority = self.authority.take();

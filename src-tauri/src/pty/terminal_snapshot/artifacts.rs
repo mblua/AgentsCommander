@@ -20,14 +20,14 @@ impl TerminalSnapshotState {
             loop {
                 tokio::select! {
                     biased;
-                    _ = state.shutdown.token().cancelled() => {
+                    () = state.shutdown.token().cancelled() => {
                         let cleanup = Arc::clone(&state);
                         let _ =
                             tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(true))
                                 .await;
                         break;
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    () = tokio::time::sleep(Duration::from_secs(5)) => {
                         let cleanup = Arc::clone(&state);
                         let _ =
                             tokio::task::spawn_blocking(move || cleanup.sweep_artifacts(false))

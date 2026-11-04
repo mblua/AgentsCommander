@@ -155,7 +155,7 @@ pub struct ContextTemplateOverwriteResult {
     pub current_default_sha256: String,
 }
 
-/// #1748: everything a caller needs to tell the user that AgentsCommander replaced
+/// #1748: everything a caller needs to tell the user that `AgentsCommander` replaced
 /// the bytes they had on disk. Produced ONLY when the replaced bytes were not ours.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -232,7 +232,7 @@ fn ensure_project_context_templates_with_clock(
 /// render time for an already-known project. Mirrors
 /// `ensure_project_context_templates_with_clock` but ONLY for `platform_specs()`
 /// (global/coordinator are never touched here; their read-sync stays the
-/// managed-filename path in session_context).
+/// managed-filename path in `session_context`).
 pub fn ensure_platform_context_templates(context_dir: &Path) -> Result<(), String> {
     let mut on_publication = |_: &'static str, _: ContextPublication| {};
     ensure_platform_context_templates_with_publications(context_dir, &mut on_publication)

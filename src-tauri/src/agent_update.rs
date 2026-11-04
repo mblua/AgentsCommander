@@ -261,7 +261,7 @@ pub struct AgentUpdateCommandRef {
     pub label: String,
 }
 
-/// #1551 - one agent of this boot's pass in pass order; install_before is the
+/// #1551 - one agent of this boot's pass in pass order; `install_before` is the
 /// pre-update probe result once it ran (never cached, seq 0).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

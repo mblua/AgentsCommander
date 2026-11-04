@@ -20,7 +20,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -161,7 +161,7 @@ fn find_refresh_request<'a>(
     requests
         .iter()
         .find(|request| request["reason"] == reason)
-        .unwrap_or_else(|| panic!("missing refresh request reason {}", reason))
+        .unwrap_or_else(|| panic!("missing refresh request reason {reason}"))
 }
 
 fn has_refresh_reason(config_dir: &Path, reason: &str) -> bool {
@@ -193,9 +193,9 @@ fn project_with_agents(tmp: &Path, agents: &[&str]) -> PathBuf {
     let ac_root = project.join(".ac");
     std::fs::create_dir_all(&ac_root).expect("create .ac");
     for agent in agents {
-        let dir = ac_root.join(format!("_agent_{}", agent));
+        let dir = ac_root.join(format!("_agent_{agent}"));
         std::fs::create_dir_all(dir.join("memory")).expect("agent memory");
-        std::fs::write(dir.join("Role.md"), format!("# {}\n", agent)).expect("role");
+        std::fs::write(dir.join("Role.md"), format!("# {agent}\n")).expect("role");
     }
     project
 }
@@ -340,8 +340,7 @@ fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
         .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|out| out.status.success())
 }
 
 fn create_dirty_repo(repo_dir: &Path) {
@@ -405,7 +404,7 @@ fn create_junction(junction: &Path, target: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn open_without_delete_share(path: &Path) -> std::fs::File {
     use std::os::windows::fs::OpenOptionsExt;
-    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
 
     std::fs::OpenOptions::new()
         .read(true)

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[test]
 fn p1_parse_ci_response_collects_ids_and_prs_only_from_running_kept_rows() {
@@ -268,7 +269,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'a');
     harness.set_work(std::slice::from_ref(&repo));
     let marker = format!(
@@ -279,7 +280,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .route(&marker, result);
     };
 
@@ -301,7 +302,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .count("/compare/"),
         0,
         "no identity compare without a resolved default branch"
@@ -315,7 +316,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .count("/actions/runs?"),
         1,
         "the CI axis was not due (calls before: {calls})"
@@ -420,13 +421,13 @@ async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_
     let default = harness.repo("repo-b");
     publish_branch(&feature, "feature-a", harness.git_state.as_ref());
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_head_sha(&feature, 'a');
         git.set_head_sha(&default, 'b');
     }
     harness.set_work(&[feature.clone(), default.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.route(
@@ -472,7 +473,7 @@ async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_
 
     // e. identical to the default branch: suppressed, detail cleared.
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.route(
             &format!(
                 "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",

@@ -59,7 +59,7 @@ fn note_missing_team_config(project: &str, team_dir: &str) -> bool {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
     let m = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     g.insert((project.to_string(), team_dir.to_string()))
 }
 
@@ -71,7 +71,7 @@ pub struct DiscoveredTeam {
     /// the left-hand side of the canonical FQN for WG replicas matched to this
     /// team, and gates cross-project leakage in WG-aware membership checks.
     pub project: String,
-    /// Agent display names in "project/agent" format (from resolve_agent_ref).
+    /// Agent display names in "project/agent" format (from `resolve_agent_ref`).
     /// Index-aligned with `agent_paths` — both vecs always have the same length.
     pub agent_names: Vec<String>,
     /// Absolute paths to agent directories (resolved from team config refs).
@@ -94,7 +94,7 @@ pub fn agent_name_from_path(path: &str) -> String {
             .strip_prefix("__agent_")
             .or_else(|| last.strip_prefix("_agent_"))
             .unwrap_or(last);
-        format!("{}/{}", parent, stripped)
+        format!("{parent}/{stripped}")
     } else {
         normalized
     }
@@ -134,7 +134,7 @@ pub fn agent_fqn_from_path(path: &str) -> String {
                 && agent_dir.starts_with("__agent_")
             {
                 let agent = agent_dir.strip_prefix("__agent_").unwrap_or(agent_dir);
-                return format!("{}:{}/{}", project, wg, agent);
+                return format!("{project}:{wg}/{agent}");
             }
         }
     }
@@ -240,11 +240,8 @@ pub enum ResolutionError {
 /// an optional `proj:` prefix — catches `__agent_x`, `proj/__agent_x`,
 /// `wg-1-team/__agent_x`, and `proj:wg-1-team/__agent_x` alike.
 fn agent_segment_is_filesystem_dir(target: &str) -> bool {
-    let after_colon = target.split_once(':').map(|(_, l)| l).unwrap_or(target);
-    let agent = after_colon
-        .rsplit_once('/')
-        .map(|(_, a)| a)
-        .unwrap_or(after_colon);
+    let after_colon = target.split_once(':').map_or(target, |(_, l)| l);
+    let agent = after_colon.rsplit_once('/').map_or(after_colon, |(_, a)| a);
     agent.starts_with("__agent_") || agent.starts_with("_agent_")
 }
 

@@ -600,9 +600,9 @@ fn an_interrupted_move_leaves_the_value_in_both_files() {
     );
 
     let tracked = p.tracked()["tooling"]["lastCodingAgent"].clone();
-    let state = bytes_of(&p.state())
-        .map(|_| p.stored_state()["tooling"]["lastCodingAgent"].clone())
-        .unwrap_or(Value::Null);
+    let state = bytes_of(&p.state()).map_or(Value::Null, |_| {
+        p.stored_state()["tooling"]["lastCodingAgent"].clone()
+    });
     assert_eq!(
         (&tracked, &state),
         (&json!("claude"), &json!("claude")),

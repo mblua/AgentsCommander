@@ -88,7 +88,7 @@ fn assert_the_shared_gate_rejects(r: &load_probe_harness::ChildRun, needle: &str
     let err = caught.expect_err("the shared gate must reject this run");
     let msg = err.downcast_ref::<String>().cloned().unwrap_or_else(|| {
         err.downcast_ref::<&str>()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .unwrap_or_default()
     });
     assert!(

@@ -89,7 +89,7 @@ impl MenuGuard {
             loop {
                 tokio::select! {
                     biased;
-                    _ = shutdown.token().cancelled() => break,
+                    () = shutdown.token().cancelled() => break,
                     _ = interval.tick() => {
                         this.scan_tick(&app).await;
                     }

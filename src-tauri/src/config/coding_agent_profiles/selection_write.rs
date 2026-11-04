@@ -238,7 +238,7 @@ pub(super) fn write_replica_selection_prepared(
         });
 
     match written {
-        Ok(_) => Ok(SelectionWriteOutcome {
+        Ok(()) => Ok(SelectionWriteOutcome {
             changed: true,
             published: true,
             lock_transition: transition.get(),
@@ -376,7 +376,7 @@ pub(super) fn clear_replica_selection_lock_with_publish(
     );
 
     match written {
-        Ok(_) => Ok(SelectionWriteOutcome {
+        Ok(()) => Ok(SelectionWriteOutcome {
             changed: true,
             published: true,
             lock_transition: Some(SelectionLockTransition::LockedToUnlocked),

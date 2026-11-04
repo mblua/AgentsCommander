@@ -169,7 +169,7 @@ fn install_commands_2736_local_null_clears_the_object() {
     managed_claude_base_2736(dir.path());
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":null}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":null}]}"#,
     );
     let report = load_catalog_report(dir.path());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
@@ -188,7 +188,7 @@ fn install_commands_2736_local_null_on_one_os_key_clears_only_that_key() {
     write_managed_base(dir.path(), &[claude], "stale-revision", true);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":{"windows":null}}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":{"windows":null}}]}"#,
     );
     let report = load_catalog_report(dir.path());
     assert!(

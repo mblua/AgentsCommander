@@ -24,7 +24,7 @@ fn watch_and_answer_session_request(
             panic!("watcher timed out waiting for a session request");
         }
         let request_path = std::fs::read_dir(&requests_dir).ok().and_then(|rd| {
-            rd.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+            rd.filter_map(Result::ok).map(|e| e.path()).find(|p| {
                 p.extension().and_then(|s| s.to_str()) == Some("json")
                     && !p
                         .file_stem()

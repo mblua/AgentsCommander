@@ -31,7 +31,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -65,8 +65,7 @@ impl Tmp {
             prefix,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
@@ -100,7 +99,7 @@ fn build_fixture(tmp: &Path, agent: &str) -> Fixture {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
-    let cfg_dir = tmp.join(format!(".{}", stem));
+    let cfg_dir = tmp.join(format!(".{stem}"));
     std::fs::create_dir_all(&cfg_dir).expect("create config dir");
 
     let master = "test-master-token-224".to_string();
@@ -122,7 +121,7 @@ fn build_fixture(tmp: &Path, agent: &str) -> Fixture {
         .join("proj")
         .join(".ac")
         .join("wg-1-test")
-        .join(format!("__agent_{}", agent));
+        .join(format!("__agent_{agent}"));
     std::fs::create_dir_all(&agent_root).expect("create agent dir");
 
     Fixture {
@@ -315,7 +314,7 @@ impl SimulatorHandle {
             SimulatorHandle::Process(child) => {
                 let out = child
                     .wait_with_output()
-                    .map_err(|e| format!("wait for simulator process: {}", e))?;
+                    .map_err(|e| format!("wait for simulator process: {e}"))?;
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
                 if !out.status.success() {
@@ -344,7 +343,7 @@ impl SimulatorHandle {
 }
 
 /// §1440: `mode` is "respond" (write delivered/ + responses/) or "reject"
-/// (write rejected/<msg_id>.reason.txt, no contract validation, no response),
+/// (write rejected/<`msg_id>.reason.txt`, no contract validation, no response),
 /// mirroring the daemon's two terminal outcomes. "respond-staged" is
 /// "respond" with the response left torn for 600ms first (§1440 F1).
 fn spawn_daemon_simulator(
@@ -592,7 +591,7 @@ fn run_close_session_with_simulator(
 }
 
 /// §1440: same run, but the simulator rejects the message instead of
-/// responding; `reason` is written to rejected/<msg_id>.reason.txt.
+/// responding; `reason` is written to rejected/<`msg_id>.reason.txt`.
 fn run_close_session_expecting_rejection(
     tmp: &Path,
     fix: &Fixture,
@@ -612,7 +611,7 @@ fn run_close_session_in_mode(
     mode: &str,
 ) -> (Option<i32>, String, String, String, String) {
     let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
-    let ac_dir = fix.agent_root.join(format!(".{}", stem));
+    let ac_dir = fix.agent_root.join(format!(".{stem}"));
     let outbox_dir = ac_dir.join("outbox");
     let responses_dir = ac_dir.join("responses");
     std::fs::create_dir_all(&outbox_dir).unwrap();
@@ -689,21 +688,16 @@ fn close_session_no_match_exits_zero_with_prose() {
     assert_eq!(
         code,
         Some(0),
-        "no_match must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
-        stdout,
-        stderr,
-        sim_stdout,
-        sim_stderr
+        "no_match must exit 0.\nstdout: {stdout}\nstderr: {stderr}\n\
+         sim stdout: {sim_stdout}\nsim stderr: {sim_stderr}"
     );
     assert!(
         stdout.contains("\"status\": \"no_match\"") || stdout.contains("\"status\":\"no_match\""),
-        "stdout must contain the no_match JSON response; got: {}",
-        stdout
+        "stdout must contain the no_match JSON response; got: {stdout}"
     );
     assert!(
         stdout.contains("No sessions matched") && stdout.contains("nothing to close"),
-        "stdout must contain no_match prose; got: {}",
-        stdout
+        "stdout must contain no_match prose; got: {stdout}"
     );
 }
 
@@ -724,21 +718,16 @@ fn close_session_restore_in_progress_exits_zero_with_retry_prose() {
     assert_eq!(
         code,
         Some(0),
-        "restore_in_progress must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
-        stdout,
-        stderr,
-        sim_stdout,
-        sim_stderr
+        "restore_in_progress must exit 0.\nstdout: {stdout}\nstderr: {stderr}\n\
+         sim stdout: {sim_stdout}\nsim stderr: {sim_stderr}"
     );
     assert!(
         stdout.contains("Daemon is still restoring sessions"),
-        "stdout must contain the restore-in-progress retry prose; got: {}",
-        stdout
+        "stdout must contain the restore-in-progress retry prose; got: {stdout}"
     );
     assert!(
         stdout.contains("Retry in a few seconds"),
-        "stdout must hint at retry; got: {}",
-        stdout
+        "stdout must hint at retry; got: {stdout}"
     );
 }
 
@@ -759,16 +748,12 @@ fn close_session_already_closed_exits_zero_with_prose() {
     assert_eq!(
         code,
         Some(0),
-        "already_closed must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
-        stdout,
-        stderr,
-        sim_stdout,
-        sim_stderr
+        "already_closed must exit 0.\nstdout: {stdout}\nstderr: {stderr}\n\
+         sim stdout: {sim_stdout}\nsim stderr: {sim_stderr}"
     );
     assert!(
         stdout.contains("already closed"),
-        "stdout must contain already_closed prose; got: {}",
-        stdout
+        "stdout must contain already_closed prose; got: {stdout}"
     );
 }
 
@@ -794,21 +779,16 @@ fn close_session_closed_exits_zero_silent_prose() {
     assert_eq!(
         code,
         Some(0),
-        "closed must exit 0.\nstdout: {}\nstderr: {}\nsim stdout: {}\nsim stderr: {}",
-        stdout,
-        stderr,
-        sim_stdout,
-        sim_stderr
+        "closed must exit 0.\nstdout: {stdout}\nstderr: {stderr}\n\
+         sim stdout: {sim_stdout}\nsim stderr: {sim_stderr}"
     );
     assert!(
         stdout.contains("\"status\": \"closed\"") || stdout.contains("\"status\":\"closed\""),
-        "stdout must contain closed JSON; got: {}",
-        stdout
+        "stdout must contain closed JSON; got: {stdout}"
     );
     assert!(
         !stdout.contains("No sessions matched") && !stdout.contains("already closed"),
-        "closed status should not emit no_match/already_closed prose; got: {}",
-        stdout
+        "closed status should not emit no_match/already_closed prose; got: {stdout}"
     );
 }
 
@@ -819,7 +799,7 @@ fn close_session_response_via_outbox_relative_path_only() {
     let target = "proj:wg-1-test/frank-rel-only";
 
     let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
-    let responses_dir = fix.agent_root.join(format!(".{}", stem)).join("responses");
+    let responses_dir = fix.agent_root.join(format!(".{stem}")).join("responses");
 
     let (code, stdout, stderr, sim_stdout, sim_stderr) = run_close_session_with_simulator(
         tmp.path(),
@@ -832,25 +812,19 @@ fn close_session_response_via_outbox_relative_path_only() {
     assert_eq!(
         code,
         Some(0),
-        "outbox-relative response must exit 0.\nstdout: {}\nstderr: {}\nsim \
-            stdout: {}\nsim stderr: {}",
-        stdout,
-        stderr,
-        sim_stdout,
-        sim_stderr
+        "outbox-relative response must exit 0.\nstdout: {stdout}\nstderr: {stderr}\nsim \
+            stdout: {sim_stdout}\nsim stderr: {sim_stderr}"
     );
     assert!(
         stdout.contains("No sessions matched"),
-        "prose must appear; got: {}",
-        stdout
+        "prose must appear; got: {stdout}"
     );
     let response_files: Vec<_> = std::fs::read_dir(&responses_dir)
         .map(|rd| rd.flatten().collect::<Vec<_>>())
         .unwrap_or_default();
     assert!(
         !response_files.is_empty(),
-        "responses dir at {:?} must contain at least one response file",
-        responses_dir
+        "responses dir at {responses_dir:?} must contain at least one response file"
     );
 }
 
@@ -872,17 +846,12 @@ fn close_session_incoherent_response_exits_two() {
     assert_eq!(
         code,
         Some(2),
-        "unknown response status must exit 2.\nstdout: {}\nstderr: {}\nsim \
-            stdout: {}\nsim stderr: {}",
-        stdout,
-        stderr,
-        sim_stdout,
-        sim_stderr
+        "unknown response status must exit 2.\nstdout: {stdout}\nstderr: {stderr}\nsim \
+            stdout: {sim_stdout}\nsim stderr: {sim_stderr}"
     );
     assert!(
         stdout.contains("new_unrecognized_status"),
-        "stdout must include daemon JSON; got: {}",
-        stdout
+        "stdout must include daemon JSON; got: {stdout}"
     );
 }
 
@@ -903,24 +872,19 @@ fn close_session_rejected_exits_one_with_reason() {
     assert_eq!(
         code,
         Some(1),
-        "a rejected close-session must exit 1.\nstdout: {}\nstderr: {}",
-        stdout,
-        stderr
+        "a rejected close-session must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("close-session rejected"),
-        "stderr must carry the rejection prefix; got: {}",
-        stderr
+        "stderr must carry the rejection prefix; got: {stderr}"
     );
     assert!(
         stderr.contains("target unresolvable: nope"),
-        "stderr must carry the daemon reason; got: {}",
-        stderr
+        "stderr must carry the daemon reason; got: {stderr}"
     );
     assert!(
         !stdout.contains("\"status\""),
-        "no response JSON must reach stdout on rejection; got: {}",
-        stdout
+        "no response JSON must reach stdout on rejection; got: {stdout}"
     );
 }
 
@@ -935,9 +899,8 @@ fn close_session_staged_response_write_still_exits_zero() {
     let fix = build_fixture(tmp.path(), "hank-staged");
     let target = "proj:wg-1-test/hank-staged";
     let body = format!(
-        "{{\"action\":\"close-session\",\"target\":\"{}\",\"status\":\"closed\",\
-            \"sessions_closed\":1,\"session_ids\":[\"7\"],\"requested_by\":\"tester\"}}",
-        target
+        "{{\"action\":\"close-session\",\"target\":\"{target}\",\"status\":\"closed\",\
+            \"sessions_closed\":1,\"session_ids\":[\"7\"],\"requested_by\":\"tester\"}}"
     );
 
     let (code, stdout, stderr, _sim_out, _sim_err) = run_close_session_in_mode(
@@ -953,15 +916,12 @@ fn close_session_staged_response_write_still_exits_zero() {
         code,
         Some(0),
         "a staged (non-atomic) response write must still exit 0.
-stdout: {}
-stderr: {}",
-        stdout,
-        stderr
+stdout: {stdout}
+stderr: {stderr}"
     );
     assert!(
         stdout.starts_with(&body),
         "stdout must begin with the complete response JSON (no torn prefix \
-            may reach stdout); got: {}",
-        stdout
+            may reach stdout); got: {stdout}"
     );
 }

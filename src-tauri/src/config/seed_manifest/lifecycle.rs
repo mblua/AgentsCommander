@@ -453,11 +453,7 @@ impl<'a> ProjectPublicationPermit<'a> {
     ) -> ManifestRecordOutcome {
         activation.authorize();
         if let Err(error) = parse_config_scope(&scope) {
-            log::warn!(
-                "[seed_manifest] rejected invalid unrecordable scope={} error={}",
-                scope,
-                error
-            );
+            log::warn!("[seed_manifest] rejected invalid unrecordable scope={scope} error={error}");
             return ManifestRecordOutcome::PublishedUnrecorded(
                 ManifestDegradedReason::InvalidCanonical,
             );

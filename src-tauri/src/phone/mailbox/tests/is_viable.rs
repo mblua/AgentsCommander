@@ -348,20 +348,18 @@ fn is_viable_root_recipient_requires_pty_for_live_states() {
     ] {
         assert!(
             is_viable_root_recipient(&status, true),
-            "{:?}+pty should be viable",
-            status
+            "{status:?}+pty should be viable"
         );
         assert!(
             !is_viable_root_recipient(&status, false),
-            "{:?}+no-pty must be a phantom",
-            status
+            "{status:?}+no-pty must be a phantom"
         );
     }
 }
 
 /// #293 regression: a coordinator sends to `ROOT_AGENT_SENDER`; the
 /// mailbox accepts the route and the recipient lookup finds the
-/// session marked `is_root_agent`. No auto-spawn, no can_communicate
+/// session marked `is_root_agent`. No auto-spawn, no `can_communicate`
 /// fallback.
 #[test]
 fn coordinator_to_root_uri_route_accepts_and_locates_session_by_flag() {
@@ -589,9 +587,9 @@ fn is_viable_wake_candidate_keeps_live_active() {
     assert!(is_viable_wake_candidate(&SessionStatus::Active, true));
 }
 
-/// Issue #223 — primary regression guard. A SessionManager record with
-/// status=Running but no PtyManager entry (the phantom in the log) MUST be
-/// skipped — otherwise inject_into_pty fails with `Session not found:` and
+/// Issue #223 — primary regression guard. A `SessionManager` record with
+/// status=Running but no `PtyManager` entry (the phantom in the log) MUST be
+/// skipped — otherwise `inject_into_pty` fails with `Session not found:` and
 /// the router has no fallback.
 #[test]
 fn is_viable_wake_candidate_skips_phantom_running_no_pty() {
@@ -619,16 +617,16 @@ fn is_viable_wake_candidate_keeps_exited_without_pty_for_respawn() {
     assert!(is_viable_wake_candidate(&SessionStatus::Exited(-1), false));
 }
 
-/// Stale-PTY-instance edge case: status=Exited with a leftover PtyInstance
-/// entry. Still a candidate — RespawnExited will destroy the leftover.
+/// Stale-PTY-instance edge case: status=Exited with a leftover `PtyInstance`
+/// entry. Still a candidate — `RespawnExited` will destroy the leftover.
 #[test]
 fn is_viable_wake_candidate_keeps_exited_with_stale_pty() {
     assert!(is_viable_wake_candidate(&SessionStatus::Exited(0), true));
 }
 
-/// A PtyManager entry that EXISTS but whose underlying child has exited is
+/// A `PtyManager` entry that EXISTS but whose underlying child has exited is
 /// STILL treated as viable by this layer (we cannot detect child liveness
-/// without surfacing portable_pty::Child::wait()). Documented here so a
+/// without surfacing `portable_pty::Child::wait()`). Documented here so a
 /// future PR closing the AC3 gap (PTY-exit hook in `#223-fu1`) knows this
 /// test must be updated to assert the new contract. (dev-rust R1.E3.)
 #[test]

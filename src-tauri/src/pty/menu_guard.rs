@@ -253,8 +253,7 @@ impl MenuGuard {
         };
         sessions_guard
             .get(&session_id)
-            .map(|s| s.is_blocked)
-            .unwrap_or(false)
+            .is_some_and(|s| s.is_blocked)
     }
 
     async fn clear_disabled_menus(

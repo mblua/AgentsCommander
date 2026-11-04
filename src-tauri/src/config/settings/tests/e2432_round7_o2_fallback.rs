@@ -10,7 +10,7 @@ fn e2432_round7_sidecar_success_main_failure_restarts_canonical_first() {
     let owner =
         super::super::SettingsOwner::open_active(&path, std::time::Duration::from_secs(2)).unwrap();
     super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
-        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace))
+        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace));
     });
     let report = owner
         .with_operation_blocking("e2432-round7-transfer", |current, guard| {

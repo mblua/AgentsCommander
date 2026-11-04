@@ -162,7 +162,7 @@ impl UiAutomationState {
             let mut interval = tokio::time::interval(Duration::from_millis(POLL_MS));
             loop {
                 tokio::select! {
-                    _ = shutdown.cancelled() => break,
+                    () = shutdown.cancelled() => break,
                     _ = interval.tick() => state.poll_once(&app),
                 }
             }
@@ -879,8 +879,7 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
     loop {
         let remaining_ms = deadline
             .checked_duration_since(Instant::now())
-            .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64);
         if remaining_ms == 0 {
             let timeout = last_response.unwrap_or_else(|| {
                 UiAutomationResponse::minimal_error(

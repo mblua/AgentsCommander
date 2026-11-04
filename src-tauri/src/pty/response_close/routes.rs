@@ -351,7 +351,7 @@ impl ResponseCloseState {
         let inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .routes
             .get(&id)

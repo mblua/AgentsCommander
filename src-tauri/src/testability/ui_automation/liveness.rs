@@ -9,9 +9,10 @@ pub(super) fn sorted_labels(labels: &HashSet<String>) -> Vec<String> {
 }
 
 pub(super) fn current_exe_path_string() -> String {
-    std::env::current_exe()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| String::new())
+    std::env::current_exe().map_or_else(
+        |_| String::new(),
+        |path| path.to_string_lossy().into_owned(),
+    )
 }
 
 pub(super) fn paths_equal_for_compare(a: &Path, b: &Path) -> bool {
@@ -35,8 +36,9 @@ pub(super) fn canonical_for_compare(path: &Path) -> PathBuf {
 pub(super) fn now_unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }
 
 #[cfg(target_os = "windows")]

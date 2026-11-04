@@ -147,7 +147,7 @@ fn reorder_fixture_2542() -> AppSettings {
 }
 
 fn owned_ids_2542(ids: &[&str]) -> Vec<String> {
-    ids.iter().map(|id| id.to_string()).collect()
+    ids.iter().map(std::string::ToString::to_string).collect()
 }
 
 #[test]

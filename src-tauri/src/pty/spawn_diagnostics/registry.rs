@@ -48,7 +48,7 @@ pub fn note_spawn_attempt(
     }
 
     SpawnWindow {
-        window_ms: window.as_millis().min(u64::MAX as u128) as u64,
+        window_ms: window.as_millis().min(u128::from(u64::MAX)) as u64,
         total,
         same_cli,
     }

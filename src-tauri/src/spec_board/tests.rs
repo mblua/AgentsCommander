@@ -42,7 +42,7 @@ async fn snapshot_directory_errors_preserve_non_not_found() {
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(
         list_snapshots_from_dir(&invalid).await.unwrap_err(),
-        format!("Failed to read snapshot directory: {}", error)
+        format!("Failed to read snapshot directory: {error}")
     );
 }
 

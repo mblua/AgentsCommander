@@ -214,17 +214,14 @@ impl RetainedContainerOwnerContext {
     pub fn diagnostic(&self) -> String {
         let session = self
             .session_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), |id| id.to_string());
         let program = self
             .program
             .as_deref()
-            .map(normalize_retained_diagnostic_value)
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), normalize_retained_diagnostic_value);
         let runtime_handle = self
             .runtime_handle
-            .map(|present| present.to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), |present| present.to_string());
         let mut diagnostic = format!(
             "owner={} session={} reason={} program={} runtimeHandle={} state={} inFlight={}",
             self.owner,

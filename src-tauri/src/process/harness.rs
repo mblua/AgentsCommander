@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// #992 - Does this process own a console?
 ///

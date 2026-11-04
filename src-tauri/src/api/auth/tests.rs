@@ -14,7 +14,7 @@ fn client(hash: &str, revoked: bool, expires: Option<&str>) -> ApiClient {
             SCOPE_SESSION_TRANSPORT.into(),
         ],
         issued_at: "2026-01-01T00:00:00Z".into(),
-        expires_at: expires.map(|s| s.to_string()),
+        expires_at: expires.map(std::string::ToString::to_string),
         revoked,
         bound_session_id: None,
         credential_generation: None,
@@ -196,7 +196,7 @@ fn malformed_registry_snapshot_is_fail_closed_and_visible() {
     assert!(snapshot.registry.clients.is_empty());
     let problem = snapshot.problem.expect("malformed registry is reported");
     assert_eq!(problem.status, "malformed");
-    assert!(problem.message.contains(REGISTRY_FILENAME), "{:?}", problem);
+    assert!(problem.message.contains(REGISTRY_FILENAME), "{problem:?}");
 }
 
 #[test]

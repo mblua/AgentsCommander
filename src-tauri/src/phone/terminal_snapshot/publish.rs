@@ -143,7 +143,7 @@ fn verify_written_response(
 ) -> Result<crate::path_identity::VerifiedPathIdentity, TerminalSnapshotReasonCode> {
     let written_identity = match retained_directory
         .verify_current()
-        .and_then(|_| retained_directory.verify_opened_regular_file(temporary, file, false))
+        .and_then(|()| retained_directory.verify_opened_regular_file(temporary, file, false))
     {
         Ok(identity)
             if crate::path_identity::same_object(&identity, temporary_identity)
@@ -275,7 +275,7 @@ fn reconcile_published_response(
 ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode> {
     match retained_directory
         .verify_current()
-        .and_then(|_| retained_directory.verify_opened_regular_file(destination, file, false))
+        .and_then(|()| retained_directory.verify_opened_regular_file(destination, file, false))
     {
         Ok(identity)
             if crate::path_identity::same_object(expected, &identity)

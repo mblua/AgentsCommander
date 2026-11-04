@@ -51,7 +51,7 @@ fn workgroup_list_missing_project_errors_without_writes() {
 
     let stderr = run_fail(&bin, &["workgroup", "list", "--project", "MissingProject"]);
 
-    assert!(stderr.contains("MissingProject"), "stderr was:\n{}", stderr);
+    assert!(stderr.contains("MissingProject"), "stderr was:\n{stderr}");
     assert!(project_refresh_request_paths(&config_dir).is_empty());
     assert_eq!(
         std::fs::read_to_string(&config_sentinel).expect("read config sentinel"),
@@ -77,7 +77,7 @@ fn team_list_missing_project_errors_without_writes() {
 
     let stderr = run_fail(&bin, &["team", "list", "--project", "MissingProject"]);
 
-    assert!(stderr.contains("MissingProject"), "stderr was:\n{}", stderr);
+    assert!(stderr.contains("MissingProject"), "stderr was:\n{stderr}");
     assert!(project_refresh_request_paths(&config_dir).is_empty());
     assert_eq!(
         std::fs::read_to_string(&config_sentinel).expect("read config sentinel"),

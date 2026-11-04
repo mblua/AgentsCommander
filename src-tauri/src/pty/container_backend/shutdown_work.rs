@@ -174,8 +174,7 @@ impl ContainerShutdownWorkRegistry {
                                 admission session={} reason={}",
                             context
                                 .session_id
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|| "none".to_string()),
+                                .map_or_else(|| "none".to_string(), |id| id.to_string()),
                             context.reason
                         );
                         false
@@ -192,8 +191,7 @@ impl ContainerShutdownWorkRegistry {
                 serialized cooperative fallback session={} reason={} workers={} queueCapacity={}",
             context
                 .session_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+                .map_or_else(|| "none".to_string(), |id| id.to_string()),
             context.reason,
             worker_count,
             CONTAINER_SHUTDOWN_QUEUE_CAPACITY
@@ -237,8 +235,7 @@ impl ContainerShutdownWorkRegistry {
                             absolute deadline session={} reason={} workers={} state=retained",
                         context
                             .session_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
+                            .map_or_else(|| "none".to_string(), |id| id.to_string()),
                         context.reason,
                         worker_count
                     );
@@ -280,8 +277,7 @@ impl ContainerShutdownWorkRegistry {
                     reason={}",
                 context
                     .session_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
+                    .map_or_else(|| "none".to_string(), |id| id.to_string()),
                 context.reason
             );
         } else {
@@ -400,8 +396,7 @@ impl ContainerShutdownWorkRegistry {
                             reason={}",
                         context
                             .session_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
+                            .map_or_else(|| "none".to_string(), |id| id.to_string()),
                         context.reason
                     );
                 }
@@ -443,8 +438,7 @@ impl ContainerShutdownWorkRegistry {
                         reason={}",
                     context
                         .session_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
+                        .map_or_else(|| "none".to_string(), |id| id.to_string()),
                     context.reason
                 );
                 break;
@@ -479,8 +473,7 @@ impl ContainerShutdownWorkRegistry {
                             worker={} error={}",
                         context
                             .session_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "none".to_string()),
+                            .map_or_else(|| "none".to_string(), |id| id.to_string()),
                         context.reason,
                         worker_index,
                         error
@@ -613,8 +606,7 @@ impl ContainerShutdownWorkRegistry {
                     "session={} reason={} provenance={} state=retained",
                     context
                         .session_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
+                        .map_or_else(|| "none".to_string(), |id| id.to_string()),
                     context.reason,
                     context.provenance.as_str()
                 )
@@ -891,8 +883,7 @@ pub(super) fn run_container_shutdown_work(
             "[container-transport] shutdown work panicked session={} reason={} provenance={}",
             context
                 .session_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+                .map_or_else(|| "none".to_string(), |id| id.to_string()),
             context.reason,
             context.provenance.as_str()
         );

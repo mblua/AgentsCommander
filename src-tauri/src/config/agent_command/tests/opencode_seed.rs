@@ -445,7 +445,7 @@ fn build_spawn_resolves_active_seed_for_replica_without_touching_fs() {
             expected.push(ConfigSeedCandidate {
                 tier,
                 os_specific: true,
-                path: root.join(format!("{}.{}", folder, os)),
+                path: root.join(format!("{folder}.{os}")),
             });
         }
         expected.push(ConfigSeedCandidate {
@@ -457,7 +457,7 @@ fn build_spawn_resolves_active_seed_for_replica_without_touching_fs() {
     tier_pair(
         ConfigSeedTier::MatrixProfile,
         &matrix,
-        format!("default_profile_{}.claude", letter),
+        format!("default_profile_{letter}.claude"),
     );
     tier_pair(
         ConfigSeedTier::MatrixBase,
@@ -467,7 +467,7 @@ fn build_spawn_resolves_active_seed_for_replica_without_touching_fs() {
     tier_pair(
         ConfigSeedTier::WorkspaceProfile,
         ac_root,
-        format!("default_profile_{}.claude", letter),
+        format!("default_profile_{letter}.claude"),
     );
     tier_pair(
         ConfigSeedTier::WorkspaceBase,

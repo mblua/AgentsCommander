@@ -282,7 +282,7 @@ fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() 
             .expect("publish blocked route-remover entry");
         release
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv()
             .expect("release blocked route remover");
         Ok(())

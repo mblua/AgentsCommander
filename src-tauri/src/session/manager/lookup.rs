@@ -140,7 +140,7 @@ impl SessionManager {
     pub async fn set_is_root_agent(&self, id: Uuid, value: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_is_root_agent_with_carrier_permit(&carrier_permit, id, value)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

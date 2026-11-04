@@ -39,12 +39,12 @@ fn print_row(label: &str, chars: usize) {
 fn synthetic_replica_skills_section() -> String {
     let index = super::super::SkillIndex {
         matrix_root: Some(FAKE_MATRIX_ROOT.to_string()),
-        skills_root: Some(format!("{}/skills", FAKE_MATRIX_ROOT)),
+        skills_root: Some(format!("{FAKE_MATRIX_ROOT}/skills")),
         skills: vec![
             super::super::SkillMetadata {
                 folder_name: "alpha-skill".to_string(),
                 name: "alpha-skill".to_string(),
-                entrypoint_path: format!("{}/skills/alpha-skill/SKILL.md", FAKE_MATRIX_ROOT),
+                entrypoint_path: format!("{FAKE_MATRIX_ROOT}/skills/alpha-skill/SKILL.md"),
                 description: Some(
                     "Fixed synthetic description used only by the token-accounting harness."
                         .to_string(),
@@ -55,7 +55,7 @@ fn synthetic_replica_skills_section() -> String {
             super::super::SkillMetadata {
                 folder_name: "beta-skill".to_string(),
                 name: "beta-skill".to_string(),
-                entrypoint_path: format!("{}/skills/beta-skill/SKILL.md", FAKE_MATRIX_ROOT),
+                entrypoint_path: format!("{FAKE_MATRIX_ROOT}/skills/beta-skill/SKILL.md"),
                 description: Some("Second fixed synthetic skill.".to_string()),
                 when_to_use: None,
                 metadata_warnings: Vec::new(),
@@ -708,6 +708,6 @@ fn token_accounting_report() {
         ("b1", b1),
         ("b3", b3.as_str()),
     ] {
-        assert!(!value.is_empty(), "{} profile must not be empty", label);
+        assert!(!value.is_empty(), "{label} profile must not be empty");
     }
 }

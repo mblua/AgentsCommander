@@ -279,8 +279,7 @@ fn is_root_agent_dir(path: &Path) -> bool {
     };
     name.eq_ignore_ascii_case(crate::config::root_agent::ROOT_AGENT_DIR_NAME)
         && crate::config::root_agent::root_agent_dir()
-            .map(|root| same_path_text(&PathBuf::from(root), path))
-            .unwrap_or(false)
+            .is_ok_and(|root| same_path_text(&PathBuf::from(root), path))
 }
 
 #[cfg(windows)]

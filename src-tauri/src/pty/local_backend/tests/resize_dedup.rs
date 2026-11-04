@@ -1,7 +1,7 @@
 use super::PtyInstance;
 use std::sync::Mutex;
 
-/// A `PtyInstance` carries real ConPTY handles, so the tests below drive the one piece
+/// A `PtyInstance` carries real `ConPTY` handles, so the tests below drive the one piece
 /// that #973 (C) actually changes: the size cache and the decision it drives.
 fn cache(cols: u16, rows: u16) -> Mutex<(u16, u16)> {
     Mutex::new((cols, rows))
@@ -9,7 +9,7 @@ fn cache(cols: u16, rows: u16) -> Mutex<(u16, u16)> {
 
 /// #973 (C) - the frontend calls resize unconditionally from a double
 /// `requestAnimationFrame` and a `ResizeObserver`, so a single attach fires 5-20
-/// identical resizes and ConPTY hands every one of them to the child as a real event.
+/// identical resizes and `ConPTY` hands every one of them to the child as a real event.
 /// A resize that changes nothing must not reach the child.
 #[test]
 fn a_resize_to_the_size_it_already_has_is_not_sent_to_the_child() {
@@ -35,7 +35,7 @@ fn a_resize_that_moves_the_size_is_sent() {
     );
 }
 
-/// The trap in the dedup: if the cache were updated BEFORE the ConPTY accepted the new
+/// The trap in the dedup: if the cache were updated BEFORE the `ConPTY` accepted the new
 /// size, a failed resize would leave the cache claiming a size the PTY never took, and
 /// every retry would then be skipped as a no-op - the terminal would be wedged at the
 /// wrong size forever. The cache is only written after `master.resize()` returns Ok.

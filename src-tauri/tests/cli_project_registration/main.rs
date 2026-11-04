@@ -22,7 +22,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -71,6 +71,7 @@ fn config_dir_for_bin(bin: &Path) -> PathBuf {
         .expect("bin stem")
         .to_string_lossy()
         .to_string();
+    // issue_1867 source contract: keep `format!(".{}", stem)`; do not inline.
     bin.parent().expect("bin parent").join(format!(".{}", stem))
 }
 
@@ -132,10 +133,10 @@ fn assert_registration_request(request: &serde_json::Value, project: &Path) {
     );
     assert!(request
         .get("changedPath")
-        .is_none_or(|value| value.is_null()));
+        .is_none_or(serde_json::Value::is_null));
     assert!(request
         .get("changedName")
-        .is_none_or(|value| value.is_null()));
+        .is_none_or(serde_json::Value::is_null));
     assert_eq!(request["reason"], "projectRegistered");
 }
 
@@ -209,7 +210,7 @@ fn run_success(bin: &Path, args: &[&str]) {
 
 /// Success capture that also exposes stderr: #1967 asserts the CLI diagnostics
 /// (stdout JSON plus stderr warnings) while keeping this file's frozen route
-/// set (the issue_1867 isolation contract counts `command_for_binary` routes).
+/// set (the `issue_1867` isolation contract counts `command_for_binary` routes).
 fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
     let mut command = command_for_binary(bin);
     command

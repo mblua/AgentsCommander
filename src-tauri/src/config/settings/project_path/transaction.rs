@@ -224,7 +224,7 @@ impl ProjectPathsWriteTransaction {
                         Err(reason) => {
                             self.fresh.project_paths_persistence_error = Some(format!(
                                 "{message}; project state revalidation failed: {reason}"
-                            ))
+                            ));
                         }
                     }
                     self.revalidated_after_failure = true;

@@ -47,8 +47,8 @@ impl AutoClose {
         loop {
             tokio::select! {
                 biased;
-                _ = shutdown.token().cancelled() => break,
-                _ = tokio::time::sleep(TICK) => {
+                () = shutdown.token().cancelled() => break,
+                () = tokio::time::sleep(TICK) => {
                     tick(&services, &mut last_emitted).await;
                     flush_clocks(&services); // debounced disk flush for the badge store
                 }

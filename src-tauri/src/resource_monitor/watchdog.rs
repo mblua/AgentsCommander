@@ -107,8 +107,8 @@ pub(crate) fn start<S: ResourceWatchdogTaskScope>(
     shutdown.spawn_owned(Box::pin(async move {
         loop {
             tokio::select! {
-                _ = task_scope.token().cancelled() => break,
-                _ = tokio::time::sleep(next_delay(&monitor, &settings).await) => {
+                () = task_scope.token().cancelled() => break,
+                () = tokio::time::sleep(next_delay(&monitor, &settings).await) => {
                     run_tick(&monitor, &settings, &coordinator).await;
                 }
             }

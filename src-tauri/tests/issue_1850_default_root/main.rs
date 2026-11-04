@@ -57,7 +57,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 const CANONICAL: &str = ".agentscommander";
@@ -410,8 +410,7 @@ fn issue_1850_default_root_acceptance() {
         std::env::var("GITHUB_SHA").unwrap_or_else(|_| "<unset>".to_string()),
         known_home
             .as_deref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string()),
+            .map_or_else(|| "<none>".to_string(), |path| path.display().to_string()),
         inherited_home_env.as_deref().unwrap_or("<unset>"),
     );
 
@@ -822,7 +821,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
                 }
                 if settings
                     .get("onboardingDismissed")
-                    .and_then(|value| value.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     == Some(true)
                 {
                     return Err(format!(
@@ -852,7 +851,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
             }
             if settings
                 .get("onboardingDismissed")
-                .and_then(|value| value.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 != Some(true)
             {
                 return Err(format!(

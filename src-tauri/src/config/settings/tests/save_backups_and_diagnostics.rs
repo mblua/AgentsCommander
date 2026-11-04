@@ -461,7 +461,7 @@ fn settings_save_error_preserves_sources_and_separates_diagnostic_from_outward()
         );
         assert_eq!(error.target_path.as_path(), target.as_path());
         assert_eq!(
-            error.temp_path.as_deref().map(|path| path.as_path()),
+            error.temp_path.as_deref().map(std::path::PathBuf::as_path),
             Some(temporary.as_path())
         );
         assert_eq!(error.pid, std::process::id());

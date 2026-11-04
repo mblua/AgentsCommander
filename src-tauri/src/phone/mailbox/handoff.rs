@@ -916,8 +916,7 @@ pub(crate) fn next_sustained_idle_state(
     // "not yet settled" rather than panicking.
     let settled = now
         .checked_duration_since(since)
-        .map(|elapsed| elapsed >= settle)
-        .unwrap_or(false);
+        .is_some_and(|elapsed| elapsed >= settle);
     (Some(since), settled)
 }
 

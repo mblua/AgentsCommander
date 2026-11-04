@@ -239,7 +239,7 @@ impl DockerProcessState {
         // The flag is a no-op when the parent already owns a console, which is why
         // no `cargo test` process can observe it - see tests/spawn_no_window_guard.rs.
         #[cfg(windows)]
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args)
@@ -331,8 +331,7 @@ impl DockerProcessState {
     ) -> Result<DockerCommandOutput, DockerCommandError> {
         let dynamic_hard_deadline = control
             .shutdown_deadline()
-            .map(|deadline| deadline.min(hard_deadline))
-            .unwrap_or(hard_deadline);
+            .map_or(hard_deadline, |deadline| deadline.min(hard_deadline));
         let mut output = match owner.collect_output_until(dynamic_hard_deadline) {
             Some(Ok(output)) => output,
             Some(Err(error)) => {
@@ -465,8 +464,7 @@ impl DockerProcessState {
         let status = loop {
             let dynamic_hard_deadline = control
                 .shutdown_deadline()
-                .map(|deadline| deadline.min(hard_deadline))
-                .unwrap_or(hard_deadline);
+                .map_or(hard_deadline, |deadline| deadline.min(hard_deadline));
             let Some(child) = owner.child.as_mut() else {
                 let message =
                     "container runtime command child ownership became unavailable".to_string();

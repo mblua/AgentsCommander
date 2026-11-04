@@ -16,7 +16,7 @@ fn preamble_emits_fresh_final_answer_and_incremental_read_does_not_repeat() {
         "fixture timestamp must be rewritten"
     );
     let mut f = fs::File::create(&path).unwrap();
-    writeln!(f, "{}", fresh).unwrap();
+    writeln!(f, "{fresh}").unwrap();
     drop(f);
 
     let (bodies, ids, file_len) =
@@ -48,7 +48,7 @@ fn preamble_rejects_missing_invalid_and_out_of_grace_timestamps() {
 
     let mut f = fs::File::create(&path).unwrap();
     for line in [&stale, &invalid, &missing, &fresh] {
-        writeln!(f, "{}", line).unwrap();
+        writeln!(f, "{line}").unwrap();
     }
     drop(f);
 
@@ -117,7 +117,7 @@ fn final_drain_extracts_complete_appended_records_once() {
     let mut offset = 0u64;
     let mut remainder = String::new();
     let mut f = fs::File::create(&path).unwrap();
-    write!(f, "{}\n{}\n", first, second).unwrap();
+    write!(f, "{first}\n{second}\n").unwrap();
     drop(f);
 
     let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
@@ -176,7 +176,7 @@ fn two_identical_final_records_remain_two_bodies() {
     let mut remainder = String::new();
 
     let mut f = fs::File::create(&path).unwrap();
-    write!(f, "{}\n{}\n", record, record).unwrap();
+    write!(f, "{record}\n{record}\n").unwrap();
     drop(f);
 
     let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
@@ -266,7 +266,7 @@ fn rotation_reanchor_and_truncation_do_not_replay_consumed_data() {
     let mut remainder = String::new();
 
     let mut f = fs::File::create(&path).unwrap();
-    writeln!(f, "{}", REAL_CURRENT_CODEX_FINAL).unwrap();
+    writeln!(f, "{REAL_CURRENT_CODEX_FINAL}").unwrap();
     drop(f);
     let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
     assert_eq!(
@@ -299,7 +299,7 @@ fn rotation_reanchor_and_truncation_do_not_replay_consumed_data() {
 
     // A record appended after truncation is extracted normally.
     let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
-    writeln!(f, "{}", REAL_CURRENT_CODEX_FINAL).unwrap();
+    writeln!(f, "{REAL_CURRENT_CODEX_FINAL}").unwrap();
     drop(f);
     let lines = read_new_lines(&path, &mut offset, &mut remainder).unwrap();
     assert_eq!(

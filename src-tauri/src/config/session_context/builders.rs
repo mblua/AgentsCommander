@@ -446,8 +446,7 @@ pub(crate) fn render_root_repos_list(
         {
             let resolved = cwd.join(rel);
             let path = directories::canonical_context_repo(&resolved)
-                .map(|p| display_path(&p))
-                .unwrap_or_else(|_| display_path(&resolved));
+                .map_or_else(|_| display_path(&resolved), |p| display_path(&p));
             let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
             let status = if directories::context_repo_exists(&resolved) {
                 format!(

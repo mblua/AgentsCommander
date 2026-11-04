@@ -224,7 +224,7 @@ fn failed_config_tmp_write_leaves_no_tmp() {
     let config_path = dir.join(LOOP_CONFIG_FILE);
     let before = std::fs::read(&config_path).expect("before");
 
-    let tmp_path = dir.join(format!("{}.blocked.tmp", LOOP_CONFIG_FILE));
+    let tmp_path = dir.join(format!("{LOOP_CONFIG_FILE}.blocked.tmp"));
     std::fs::write(&tmp_path, "partial").expect("pre-create tmp");
     let mut perms = std::fs::metadata(&tmp_path).expect("meta").permissions();
     perms.set_readonly(true);

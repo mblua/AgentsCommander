@@ -738,8 +738,7 @@ fn ui_pointer_and_ui_key_preflight_errors_create_no_request_file() {
 
         let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
         let request_count = std::fs::read_dir(&requests_dir)
-            .map(|entries| entries.filter_map(Result::ok).count())
-            .unwrap_or(0);
+            .map_or(0, |entries| entries.filter_map(Result::ok).count());
         assert_eq!(request_count, 0, "{label} created a request file");
     }
 }

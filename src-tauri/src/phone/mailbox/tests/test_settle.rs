@@ -64,7 +64,7 @@ fn build_purge_wg_message(
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
     std::fs::create_dir_all(&outbox_dir).unwrap();
-    let message_path = outbox_dir.join(format!("{}.json", msg_id));
+    let message_path = outbox_dir.join(format!("{msg_id}.json"));
     let msg = OutboxMessage {
         id: msg_id.into(),
         token: token.map(String::from),
@@ -103,10 +103,10 @@ fn build_purge_wg_message(
 fn setup_purge_fixture(temp: &tempfile::TempDir, wg_suffix: &str) -> (PathBuf, PathBuf) {
     let project = temp.path().join("proj-a");
     let ac_root = project.join(".ac");
-    let team_name = format!("_team_{}", wg_suffix);
+    let team_name = format!("_team_{wg_suffix}");
     let team_dir = ac_root.join(&team_name);
     let origin_tl = ac_root.join("_agent_tech-lead");
-    let wg_dir = ac_root.join(format!("wg-1-{}", wg_suffix));
+    let wg_dir = ac_root.join(format!("wg-1-{wg_suffix}"));
     let sender_cwd = wg_dir.join("__agent_tech-lead");
     let peer_cwd = wg_dir.join("__agent_dev-rust");
     for d in [&team_dir, &origin_tl, &sender_cwd, &peer_cwd] {
@@ -126,7 +126,7 @@ fn setup_purge_fixture(temp: &tempfile::TempDir, wg_suffix: &str) -> (PathBuf, P
 }
 
 /// (E-3) Seed a live, busy peer session so the gate is actually exercised.
-/// Returns the session id and the mock backend handle (to set_live).
+/// Returns the session id and the mock backend handle (to `set_live`).
 async fn seed_live_busy_peer(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
     peer_cwd: &Path,
@@ -363,8 +363,7 @@ async fn root_guard_aborts_purge() {
     let body = std::fs::read_to_string(&response_path).unwrap();
     assert!(
         body.contains("failed_root_guard"),
-        "response must contain 'failed_root_guard': {}",
-        body
+        "response must contain 'failed_root_guard': {body}"
     );
 
     // (#885 E-2) Zero destroy events: the root guard aborts before the
@@ -434,24 +433,21 @@ async fn quiet_period_is_clamped_to_floor() {
         serde_json::from_str(&std::fs::read_to_string(&response_path).unwrap()).unwrap();
     let qp = body
         .get("quiet_period_ms")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .expect("response must contain quiet_period_ms");
     assert!(
         qp >= 2500,
-        "quiet_period_ms must be clamped to >= 2500, got {}",
-        qp
+        "quiet_period_ms must be clamped to >= 2500, got {qp}"
     );
     assert_eq!(
         body.get("status").and_then(|v| v.as_str()),
         Some("dry_run_blocked"),
-        "live busy peer must make the dry-run gate reject: {}",
-        body
+        "live busy peer must make the dry-run gate reject: {body}"
     );
     assert_eq!(
-        body.get("would_purge").and_then(|v| v.as_bool()),
+        body.get("would_purge").and_then(serde_json::Value::as_bool),
         Some(false),
-        "dry-run must report that purge would not proceed: {}",
-        body
+        "dry-run must report that purge would not proceed: {body}"
     );
     let peer_sid_str = peer_sid.to_string();
     let peers = body
@@ -470,10 +466,9 @@ async fn quiet_period_is_clamped_to_floor() {
         })
         .expect("seeded live peer session must appear in purge gate response");
     assert_eq!(
-        peer.get("purgeable").and_then(|v| v.as_bool()),
+        peer.get("purgeable").and_then(serde_json::Value::as_bool),
         Some(false),
-        "seeded live busy peer must be non-purgeable: {}",
-        peer
+        "seeded live busy peer must be non-purgeable: {peer}"
     );
 }
 

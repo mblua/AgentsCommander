@@ -1,6 +1,6 @@
 use super::*;
 
-/// Validation #17: single-repo legacy → one SessionRepo; legacy fields cleared.
+/// Validation #17: single-repo legacy → one `SessionRepo`; legacy fields cleared.
 #[test]
 fn legacy_migration_single_repo_shape() {
     let mut ps = PersistedSession {
@@ -142,7 +142,7 @@ fn is_root_agent_round_trips_true() {
     assert!(back.is_root_agent);
 }
 
-/// Legacy "multi-repo" prefix → git_repos stays empty; legacy fields cleared.
+/// Legacy "multi-repo" prefix → `git_repos` stays empty; legacy fields cleared.
 #[test]
 fn legacy_migration_multi_repo_shape() {
     let mut ps = PersistedSession {
@@ -258,10 +258,10 @@ fn save_sessions_concurrent_calls_all_succeed_with_valid_snapshot_and_no_straggl
         handles.push(thread::spawn(move || {
             let sessions = vec![PersistedSession {
                 last_prompt: None,
-                name: format!("sess-{}", i),
+                name: format!("sess-{i}"),
                 shell: "cmd".into(),
                 shell_args: vec![],
-                working_directory: format!("C:/x/{}", i),
+                working_directory: format!("C:/x/{i}"),
                 ..Default::default()
             }];
             // Synchronize: all threads enter the critical section together,
@@ -310,8 +310,7 @@ fn save_sessions_concurrent_calls_all_succeed_with_valid_snapshot_and_no_straggl
     }
     assert!(
         stragglers.is_empty(),
-        "expected no .tmp stragglers after concurrent saves, found {:?}",
-        stragglers
+        "expected no .tmp stragglers after concurrent saves, found {stragglers:?}"
     );
 }
 
@@ -343,11 +342,7 @@ fn save_sessions_to_dir_round_trips_and_cleans_up_temp() {
             .file_name()
             .to_string_lossy()
             .into_owned();
-        assert!(
-            !name.ends_with(".tmp"),
-            "found leftover temp file: {}",
-            name
-        );
+        assert!(!name.ends_with(".tmp"), "found leftover temp file: {name}");
     }
 }
 

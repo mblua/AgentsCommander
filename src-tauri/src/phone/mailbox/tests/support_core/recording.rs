@@ -249,7 +249,7 @@ pub(crate) fn make_root_route_fixture(
     };
     std::fs::write(
         tech_lead_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        format!(r#"{{"identity":"{tech_lead_identity}"}}"#),
     )
     .unwrap();
     std::fs::write(

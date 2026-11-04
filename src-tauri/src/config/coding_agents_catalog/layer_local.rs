@@ -398,7 +398,7 @@ pub(crate) fn parse_local_layer(
     )?;
     match root.get("schemaVersion") {
         Some(serde_json::Value::Number(version))
-            if version.as_u64() == Some(CATALOG_SCHEMA_VERSION as u64) => {}
+            if version.as_u64() == Some(u64::from(CATALOG_SCHEMA_VERSION)) => {}
         Some(version) => {
             return Err(format!(
                 "unsupported schemaVersion {version}; only schemaVersion 1 is recognized"

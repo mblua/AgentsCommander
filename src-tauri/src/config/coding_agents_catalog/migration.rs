@@ -394,7 +394,7 @@ pub(crate) fn extract_legacy_local_mode(
         "the legacy catalog root",
     )?;
     if let Some(version) = root.get("schemaVersion") {
-        if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
+        if version.as_u64() != Some(u64::from(CATALOG_SCHEMA_VERSION)) {
             return Err(format!(
                 "unsupported legacy schemaVersion {version}; migration is refused"
             ));

@@ -38,7 +38,7 @@ static NAMING_MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 fn naming_migration_guard() -> std::sync::MutexGuard<'static, ()> {
     NAMING_MIGRATION_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 const INSTANCE_FAMILIES_FIXTURE: [(&str, &str); 8] = [
@@ -350,7 +350,7 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
                 nm::rename_step(&dir, rename, "instance-families", Some(&dir), &held);
             }
             nm::update_journal(Some(&dir), |journal| {
-                journal.set_status("instance-families", nm::ScopeStatus::Complete)
+                journal.set_status("instance-families", nm::ScopeStatus::Complete);
             })
             .unwrap();
             drop(held);

@@ -13,7 +13,7 @@ fn a_poisoned_writer_mutex_does_not_panic_a_later_append() {
     let handle = std::thread::spawn(move || {
         let _guard = writer_lock(&poison_owner)
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         panic!("poison the writer mutex on purpose");
     });
     assert!(

@@ -198,7 +198,7 @@ impl MailboxPoller {
         let route_valid = {
             let manager = pty_manager
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let identities = manager.route_identities(created_id);
             manager.has_session(created_id)
                 && manager.backend_kind(created_id) == Some(expected_backend)
@@ -274,7 +274,7 @@ impl MailboxPoller {
                 })
         }) || pty_manager
             .lock()
-            .unwrap_or_else(|lock_error| lock_error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_pending_spawn_for_replica(&verified_target.replica_identity);
         if error == "sessionRace" {
             C::SessionRace

@@ -29,7 +29,7 @@ fn publication_state_try_uses_existing_registry_without_calling_on_contention() 
     let called = std::cell::Cell::new(false);
     let result =
         try_with_agents_layer_publication_state(Path::new("publication-contention-test"), |_| {
-            called.set(true)
+            called.set(true);
         });
     assert_eq!(result, Err(AgentsPublicationLockError::WouldBlock));
     assert!(!called.get());
@@ -119,7 +119,7 @@ fn legacy_defaults_and_boundary_preferences_persist_and_reload() {
 
 #[test]
 fn f1_absent_base_cli_overlay_repairs_without_any_write() {
-    for seconds in [0, 999999] {
+    for seconds in [0, 999_999] {
         let temp = tempfile::tempdir().unwrap();
         let path = seed(temp.path(), None, Some(&overlay(seconds)));
         let before = disk_bytes(temp.path());
@@ -144,7 +144,7 @@ fn f1_absent_base_cli_overlay_repairs_without_any_write() {
 
 #[test]
 fn f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers() {
-    for seconds in [0, 999999] {
+    for seconds in [0, 999_999] {
         let temp = tempfile::tempdir().unwrap();
         let path = seed(temp.path(), None, Some(&overlay(seconds)));
         std::fs::write(&path, b"{malformed-base").unwrap();
@@ -181,7 +181,7 @@ fn f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers() {
 
 #[test]
 fn f3_malformed_base_cli_fallback_and_strict_refusal_preserve_bytes() {
-    for seconds in [0, 999999] {
+    for seconds in [0, 999_999] {
         let temp = tempfile::tempdir().unwrap();
         let path = seed(temp.path(), None, Some(&overlay(seconds)));
         std::fs::write(&path, b"{malformed-base").unwrap();
@@ -205,7 +205,7 @@ fn f3_malformed_base_cli_fallback_and_strict_refusal_preserve_bytes() {
 
 #[test]
 fn valid_base_disk_repair_and_cas_no_write_preserve_false_and_bytes() {
-    for seconds in [0, 999999] {
+    for seconds in [0, 999_999] {
         for with_overlay in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let mut base = base_fixture();
@@ -304,7 +304,7 @@ async fn invalid_explicit_updates_reject_before_either_writer_and_keep_live_and_
     let original = load_settings_from_path(&path);
     let state: SettingsState = crate::config::settings::new_settings_state(original.clone());
     let before = disk_bytes(temp.path());
-    for seconds in [0, 3601, 999999] {
+    for seconds in [0, 3601, 999_999] {
         let mut invalid = original.clone();
         invalid.response_close_enabled = false;
         invalid.response_close_idle_seconds = seconds;

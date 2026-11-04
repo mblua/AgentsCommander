@@ -724,8 +724,7 @@ impl ClaudeReader {
                 // Only switch if current file is stale
                 mtime
                     .elapsed()
-                    .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
-                    .unwrap_or(true)
+                    .map_or(true, |d| d.as_secs() >= ROTATION_STALE_SECS)
             }
             _ => true, // No current file — always accept
         }
@@ -781,8 +780,7 @@ impl ClaudeReader {
                 self.bridge_log("JSONL_ERR", &format!("preamble scan failed: {e}"));
                 self.file_offset = jsonl_kernel::transcript_metadata(p)
                     .ok()
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                    .map_or(0, |m| m.len());
             }
         }
     }
@@ -970,7 +968,7 @@ async fn watch_loop(
         // poll, never after it (section 6).
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
 
             changed = dest_rx.changed() => {
                 if changed.is_err() {

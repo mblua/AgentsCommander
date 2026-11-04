@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[tokio::test]
 async fn i2768_closing_list_changes_restart_candidate() {
@@ -133,7 +134,7 @@ async fn i2768_lifecycle_isolation() {
     // Distinct heads and branches coexist without carrying CI evidence.
     h.git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&alias, 'b');
     publish_branch(&alias, "feature", h.git_state.as_ref());
     queue_endpoint(
@@ -318,7 +319,7 @@ async fn i2768_budget_accounts_for_corroboration() {
         let path = h.repo(name);
         h.git
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .set_origin(&path, &format!("git@github.com:mblua/{name}.git"));
         path
     });
@@ -395,7 +396,7 @@ async fn i2768_budget_accounts_for_corroboration() {
                         "repos/{nwo}/actions/runs?head_sha={}&per_page=100",
                         sha_of('a')
                     );
-                    !h.gh.lock().unwrap_or_else(|e| e.into_inner()).calls[calls_before..]
+                    !h.gh.lock().unwrap_or_else(PoisonError::into_inner).calls[calls_before..]
                         .iter()
                         .any(|call| call.get(1) == Some(&endpoint))
                 })
@@ -783,7 +784,7 @@ async fn i2768_corroboration_limits_arm_the_global_gate() {
             let healthy = h.repo("healthy");
             h.git
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .set_origin(&healthy, "git@github.com:mblua/healthy.git");
             h.set_work(&[repo.clone(), healthy.clone()]);
             let before = h.gh_call_count();

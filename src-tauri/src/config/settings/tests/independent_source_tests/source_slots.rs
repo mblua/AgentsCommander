@@ -242,7 +242,7 @@ fn assert_invalid_slot_shapes(
     .unwrap_err();
     match snapshot.snapshot.availability {
         SourceAvailability::Available => {
-            assert_eq!(refused, SourcePreparationError::InvalidCandidate)
+            assert_eq!(refused, SourcePreparationError::InvalidCandidate);
         }
         SourceAvailability::Invalid => {
             assert!(!snapshot.snapshot.capabilities.editable_save);

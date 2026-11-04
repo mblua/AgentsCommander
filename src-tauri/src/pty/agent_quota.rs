@@ -193,13 +193,13 @@ impl AgentQuotaEngine {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = tokio::time::sleep(interval) => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = tokio::time::sleep(interval) => {}
                     }
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = engine.tick() => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = engine.tick() => {}
                     }
                 }
                 log::info!("[agent_quota] Shutdown signal received, stopping");
@@ -231,7 +231,7 @@ impl AgentQuotaEngine {
     pub fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .contains_key(&id)
     }
 

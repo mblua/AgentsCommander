@@ -98,12 +98,11 @@ impl OwnedReplacementContinuation {
         pty: &Arc<Mutex<PtyManager>>,
     ) -> bool {
         pty.try_lock()
-            .ok()
-            .is_some_and(|pty| self.pending_cleanup_runtime_matches(binding, None, &pty))
+            .is_ok_and(|pty| self.pending_cleanup_runtime_matches(binding, None, &pty))
     }
 
     pub(super) fn pending_cleanup_is_claimed(&self, cleanup_nonce: Uuid) -> bool {
-        self.owner.state.lock().ok().is_some_and(|state| {
+        self.owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == self.executor_nonce
                 && state.replacement.as_ref().is_some_and(|progress| {
                     progress.cleanup == ReplacementCleanupAuthority::Claimed(cleanup_nonce)

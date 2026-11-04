@@ -155,8 +155,7 @@ impl DockerCommandOwner {
         format!(
             "session={} reason={}",
             self.session_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+                .map_or_else(|| "none".to_string(), |id| id.to_string()),
             self.reason
         )
     }

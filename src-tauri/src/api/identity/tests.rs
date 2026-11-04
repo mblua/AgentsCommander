@@ -71,7 +71,7 @@ fn wg_replica_root_resolves_to_fqn() {
     let root = replica.to_string_lossy().to_string();
     let c = client_with_root(&root, "stale-hint");
     let from = resolve_from(&c).expect("existing replica should resolve");
-    assert!(from.ends_with("/dev-rust"), "got: {}", from);
+    assert!(from.ends_with("/dev-rust"), "got: {from}");
     assert_ne!(from, crate::config::root_agent::ROOT_AGENT_SENDER);
 }
 
@@ -95,11 +95,10 @@ fn room_replica_root_resolves_to_fqn() {
     let root = replica.to_string_lossy().to_string();
     let c = client_with_root(&root, "stale-hint");
     let from = resolve_from(&c).expect("existing Room replica should resolve");
-    assert!(from.ends_with("/dev-rust"), "got: {}", from);
+    assert!(from.ends_with("/dev-rust"), "got: {from}");
     assert!(
         from.contains("room-1-team"),
-        "the FQN carries the literal directory name: {}",
-        from
+        "the FQN carries the literal directory name: {from}"
     );
     assert_ne!(from, crate::config::root_agent::ROOT_AGENT_SENDER);
 }

@@ -345,7 +345,7 @@ fn thresholds_is_none_for_a_remote_activity_notice() {
 }
 
 /// #2413 T10: the only close-marker restore goes through the create ledger
-/// (commands::session::CoordinatorCreateTicket); mailbox has none of its own.
+/// (`commands::session::CoordinatorCreateTicket`); mailbox has none of its own.
 #[test]
 fn mailbox_has_no_unchecked_close_marker_restore() {
     let src = concat!(

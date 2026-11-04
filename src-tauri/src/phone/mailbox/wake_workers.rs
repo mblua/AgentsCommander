@@ -79,7 +79,7 @@ impl MailboxPoller {
             loop {
                 tokio::select! {
                     biased;
-                    _ = shutdown.token().cancelled() => {
+                    () = shutdown.token().cancelled() => {
                         log::info!("[MailboxPoller] Shutdown signal received, stopping");
                         // (#1399) Detach instead of cancelling: dropping a
                         // JoinSet cancels its tasks, which would cut a wake
@@ -89,7 +89,7 @@ impl MailboxPoller {
                         self.wake_workers.detach_all();
                         break;
                     }
-                    _ = tokio::time::sleep(self.poll_interval) => {
+                    () = tokio::time::sleep(self.poll_interval) => {
                         if let Err(e) = self.poll(&app).await {
                             log::warn!("MailboxPoller error: {e}");
                         }
@@ -780,7 +780,9 @@ impl MailboxPoller {
                     self.retry_tracker.remove(path);
                 }
                 Err(error) => {
-                    log::warn!("[mailbox] prior clear attempt settlement pending {path:?}: {error}")
+                    log::warn!(
+                        "[mailbox] prior clear attempt settlement pending {path:?}: {error}"
+                    );
                 }
             }
             return true;
@@ -865,11 +867,7 @@ impl MailboxPoller {
                     let reason = if is_permanent {
                         e.clone()
                     } else {
-                        let attempts = self
-                            .retry_tracker
-                            .get(&path)
-                            .map(|s| s.attempt_count)
-                            .unwrap_or(0);
+                        let attempts = self.retry_tracker.get(&path).map_or(0, |s| s.attempt_count);
                         format!("Undeliverable after {attempts} attempts. Last error: {e}")
                     };
 

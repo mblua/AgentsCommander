@@ -188,8 +188,7 @@ pub fn validate_agent_color(color: &str) -> Result<(), String> {
 pub fn mint_agent_id() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as u64);
     let uuid = uuid::Uuid::new_v4().simple().to_string();
     format!("agent_{}_{}", ms, &uuid[..6])
 }

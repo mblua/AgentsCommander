@@ -147,9 +147,7 @@ async fn create_session_command(state: &WsState, args: &Value) -> Result<Value, 
     let cwd = str_or(
         args,
         "cwd",
-        &dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "C:\\".to_string()),
+        &dirs::home_dir().map_or_else(|| "C:\\".to_string(), |p| p.to_string_lossy().to_string()),
     );
     let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
     let session_name = args

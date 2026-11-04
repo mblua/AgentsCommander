@@ -188,10 +188,10 @@ where
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 tokio::select! {
-                    _ = generation_token.cancelled() => {
+                    () = generation_token.cancelled() => {
                         log::info!("[web-server] Generation stop received, stopping listener");
                     }
-                    _ = global_token.cancelled() => {
+                    () = global_token.cancelled() => {
                         generation_for_shutdown.cancel();
                         log::info!("[web-server] Global shutdown received, stopping listener");
                     }
@@ -329,7 +329,7 @@ async fn handle_ws_connection(
     let send_task = tokio::spawn(async move {
         loop {
             let msg = tokio::select! {
-                _ = send_token.cancelled() => break,
+                () = send_token.cancelled() => break,
                 msg = broadcast_rx.recv() => match msg {
                     Some(msg) => msg,
                     None => break,
@@ -342,7 +342,7 @@ async fn handle_ws_connection(
             let send = SinkExt::send(&mut ws_sender, ws_msg);
             tokio::pin!(send);
             tokio::select! {
-                _ = send_token.cancelled() => break,
+                () = send_token.cancelled() => break,
                 result = &mut send => {
                     if result.is_err() {
                         break;
@@ -358,7 +358,7 @@ async fn handle_ws_connection(
     let recv_task = tokio::spawn(async move {
         loop {
             let next = tokio::select! {
-                _ = recv_token.cancelled() => break,
+                () = recv_token.cancelled() => break,
                 next = StreamExt::next(&mut ws_receiver) => next,
             };
             let Some(Ok(msg)) = next else {

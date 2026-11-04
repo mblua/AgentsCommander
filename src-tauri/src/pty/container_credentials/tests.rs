@@ -23,7 +23,7 @@ fn source(host_dir_env: Option<&'static str>) -> ContainerCredentialSource {
     }
 }
 
-/// A plan pointing at `<root>/.claude/.credentials.json`, like resolve_plan
+/// A plan pointing at `<root>/.claude/.credentials.json`, like `resolve_plan`
 /// builds for a container Claude session.
 fn plan_for(root: &Path, first_run: Option<ContainerFirstRunState>) -> ContainerCredentialPlan {
     ContainerCredentialPlan {

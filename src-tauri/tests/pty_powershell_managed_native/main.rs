@@ -49,7 +49,7 @@ use fixture::{
 /// Section 6.2 items 1-3: bare `claude` resolving to a `claude.cmd` shim starts
 /// with the configured system PowerShell as PTY parent, the shim marker arrives
 /// through the normal PTY output, the shim exit code propagates through the
-/// host's WaitForExit, and the spawn-record provenance names the configured
+/// host's `WaitForExit`, and the spawn-record provenance names the configured
 /// PowerShell (never cmd.exe).
 #[test]
 fn configured_powershell_launches_bare_agent_via_cmd_shim() {
@@ -934,7 +934,7 @@ fn ac_1271_reporter_mode() {
             }
         }
     }
-    let exit_code = (logical.iter().map(|arg| arg.len()).sum::<usize>() % 256) as i32;
+    let exit_code = (logical.iter().map(std::string::String::len).sum::<usize>() % 256) as i32;
     #[expect(
         clippy::exit,
         reason = "Native reporter returns the argument-derived process status"

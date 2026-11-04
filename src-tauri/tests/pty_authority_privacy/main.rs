@@ -126,9 +126,7 @@ fn production_library(root: &Path, scratch: &Path) -> Library {
             "cfg(test): {key}"
         );
     }
-    let compiler = env::var_os("RUSTC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "rustc".into());
+    let compiler = env::var_os("RUSTC").map_or_else(|| "rustc".into(), PathBuf::from);
     let version = Command::new(&compiler).arg("-vV").output().unwrap();
     assert!(version.status.success());
     let version = String::from_utf8(version.stdout).unwrap();

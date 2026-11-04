@@ -10,7 +10,7 @@ pub(crate) async fn watcher_status_output(
 
 fn status_command(working_dir: &str) -> tokio::process::Command {
     #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mut cmd = tokio::process::Command::new("git");
     crate::process::host::credentials::scrub_credentials_from_tokio_command(&mut cmd);
@@ -67,7 +67,7 @@ pub(crate) fn resolve_real_git_path() -> Option<String> {
 fn discovery_command() -> std::process::Command {
     use std::os::windows::process::CommandExt;
 
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut cmd = std::process::Command::new("where.exe");
     crate::process::host::credentials::scrub_credentials_from_std_command(&mut cmd);
     cmd.arg("git.exe").creation_flags(CREATE_NO_WINDOW);

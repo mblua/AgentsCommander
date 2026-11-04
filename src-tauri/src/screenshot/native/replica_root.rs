@@ -38,8 +38,7 @@ pub(super) fn find_replica_root(start: &Path) -> Option<PathBuf> {
                     .parent()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
-                    .map(crate::config::entity_prefix::has_entity_prefix)
-                    .unwrap_or(false);
+                    .is_some_and(crate::config::entity_prefix::has_entity_prefix);
                 if parent_is_wg {
                     return Some(dir.to_path_buf());
                 }

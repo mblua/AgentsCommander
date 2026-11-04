@@ -349,12 +349,10 @@ pub(crate) fn root_agency_cache_guidance(agent_root: &str) -> String {
     if !super::super::root_agent::is_root_agent_dir_name(agent_root) {
         return String::new();
     }
-    let cache_path = std::path::Path::new(agent_root)
-        .parent()
-        .map(|p| p.join(crate::commands::role_templates::AGENCY_TEMPLATES_DIR))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(crate::commands::role_templates::AGENCY_TEMPLATES_DIR)
-        });
+    let cache_path = std::path::Path::new(agent_root).parent().map_or_else(
+        || std::path::PathBuf::from(crate::commands::role_templates::AGENCY_TEMPLATES_DIR),
+        |p| p.join(crate::commands::role_templates::AGENCY_TEMPLATES_DIR),
+    );
     format!(
         "Root Agent Agency template cache: `{}`. Manage it only through the documented \
             `agency-templates update`, `agency-templates status`, and `agency-templates list` CLI \

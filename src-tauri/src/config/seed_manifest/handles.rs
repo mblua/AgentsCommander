@@ -230,8 +230,7 @@ pub(crate) fn is_exact_not_found(error: &io::Error) -> bool {
 
         error.raw_os_error().is_some_and(|raw| {
             u32::try_from(raw)
-                .map(|raw| raw == ERROR_FILE_NOT_FOUND || raw == ERROR_PATH_NOT_FOUND)
-                .unwrap_or(false)
+                .is_ok_and(|raw| raw == ERROR_FILE_NOT_FOUND || raw == ERROR_PATH_NOT_FOUND)
         })
     }
 

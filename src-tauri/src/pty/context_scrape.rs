@@ -213,11 +213,11 @@ impl ContextScraper {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => {
+                        () = shutdown.token().cancelled() => {
                             log::info!("[context] Shutdown signal received, stopping");
                             break;
                         }
-                        _ = tokio::time::sleep(SAMPLE_INTERVAL) => {
+                        () = tokio::time::sleep(SAMPLE_INTERVAL) => {
                             scraper.tick().await;
                         }
                     }

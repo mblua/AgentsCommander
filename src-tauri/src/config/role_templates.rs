@@ -180,8 +180,7 @@ pub fn resolve_local_templates_dir(
     let configured = settings
         .agent_templates_path
         .as_deref()
-        .map(str::trim)
-        .unwrap_or("");
+        .map_or("", str::trim);
     if configured.is_empty() {
         return LocalTemplatesDir::Default(default);
     }
@@ -206,7 +205,7 @@ pub fn resolve_local_templates_dir(
 // ---------------------------------------------------------------------------
 
 /// English README seeded into a freshly created `agent-templates/`.
-const AGENT_TEMPLATES_README: &str = r#"# Agent Templates
+const AGENT_TEMPLATES_README: &str = r"# Agent Templates
 
 This folder holds **local agent role templates** for AgentsCommander's New Agent
 dialog. Each template can pre-fill a new Agent Matrix's `Role.md` and, optionally,
@@ -252,7 +251,7 @@ the template is selected.
   lives in the application's config folder next to the app executable. A relative
   value is resolved against that config folder; an absolute value is used as-is.
 - Agency templates are available only after the explicit CLI cache is downloaded.
-"#;
+";
 
 /// Create `<config_dir>/agent-templates/` + a default `README.md` if missing.
 /// Idempotent: an existing dir is left alone; an existing README is NEVER

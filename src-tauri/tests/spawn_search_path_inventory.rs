@@ -682,7 +682,7 @@ fn constructor_count(body: &str) -> usize {
     NEEDLES.iter().map(|needle| occurrences(body, needle)).sum()
 }
 
-/// Every production point where AgentsCommander executes something either
+/// Every production point where `AgentsCommander` executes something either
 /// applies the #2589 effective search path or is classified exempt with one
 /// reason from a fixed vocabulary. For each scanned file the guard checks
 /// `total == covered + sum(exempt)`, so an added or removed site anywhere,

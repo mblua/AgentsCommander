@@ -321,7 +321,7 @@ impl SelectionCoordinator {
             }
             let admission = tokio::select! {
                 biased;
-                _ = self.inner.shutdown.cancelled() => {
+                () = self.inner.shutdown.cancelled() => {
                     return (Err(SelectionCoordinatorError::Unavailable.to_string()), true);
                 }
                 admission = executor.prepare(

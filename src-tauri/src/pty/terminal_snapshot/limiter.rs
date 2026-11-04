@@ -61,7 +61,7 @@ impl RequesterSnapshotPermit {
             return Err(TerminalSnapshotReasonCode::RateLimited);
         }
         let in_flight = limiter.target_in_flight.get(&key).copied().unwrap_or(0);
-        let attempts = limiter.target.get(&key).map(VecDeque::len).unwrap_or(0);
+        let attempts = limiter.target.get(&key).map_or(0, VecDeque::len);
         if attempts >= SNAPSHOT_TARGET_RATE || in_flight >= 1 {
             return Err(TerminalSnapshotReasonCode::RateLimited);
         }

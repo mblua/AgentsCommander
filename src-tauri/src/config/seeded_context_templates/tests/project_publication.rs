@@ -147,10 +147,7 @@ fn historical_windows_customization_is_preserved_with_and_without_state() {
         let ac_root = temp.path().join(".ac");
         std::fs::create_dir(&ac_root).unwrap();
         let filename = crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS;
-        let custom = format!(
-            "{}\nCustom rules",
-            HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT
-        );
+        let custom = format!("{HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT}\nCustom rules");
         std::fs::write(ac_root.join(filename), &custom).unwrap();
         if trusted {
             write_historical_windows_platform_state(&ac_root);
@@ -409,7 +406,7 @@ fn old_coordinator_raise_hand_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S4 failing-first migration proof: the assert_ne fails while the live
+/// #1005 S4 failing-first migration proof: the `assert_ne` fails while the live
 /// template still equals the frozen v2 bytes (pre-rewrite), and the sync half
 /// proves a pristine v2 file on disk auto-upgrades to the current default.
 #[test]

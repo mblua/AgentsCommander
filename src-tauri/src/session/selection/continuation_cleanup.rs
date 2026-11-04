@@ -105,7 +105,7 @@ impl OwnedReplacementContinuation {
         let previous = current.rows.iter().find(|row| {
             row.id == descriptor.previous.id && row.token == descriptor.previous.token
         })?;
-        let fresh_matches = self.owner.state.lock().ok().is_some_and(|state| {
+        let fresh_matches = self.owner.state.lock().is_ok_and(|state| {
             state.replacement.as_ref().is_some_and(|progress| {
                 progress.launch_start_fresh == Some(previous.start_fresh_on_restore)
             })
@@ -345,7 +345,7 @@ impl OwnedReplacementContinuation {
     /// The transport supplies only an actually observed submit/terminal or
     /// conditional source-handoff Result, never byte acquisition or expiry.
     pub(crate) fn precommit_rollback_completed(&self) -> bool {
-        self.owner.state.lock().ok().is_some_and(|state| {
+        self.owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == self.executor_nonce
                 && matches!(state.completion, Some(Err(_)))
                 && state.replacement.as_ref().is_some_and(|progress| {
@@ -415,7 +415,7 @@ impl OwnedReplacementContinuation {
                         &permit, &previous, current,
                     )
                     .is_some()
-                    && pty.try_lock().ok().is_some_and(|pty| {
+                    && pty.try_lock().is_ok_and(|pty| {
                         !pty.has_session(binding.session_id())
                             && pty.backend_kind(binding.session_id()).is_none()
                             && pty
@@ -428,7 +428,7 @@ impl OwnedReplacementContinuation {
         if !current {
             return false;
         }
-        let verified = self.owner.state.lock().ok().is_some_and(|mut state| {
+        let verified = self.owner.state.lock().is_ok_and(|mut state| {
             let Some(progress) = state.replacement.as_mut() else {
                 return false;
             };
@@ -511,8 +511,7 @@ impl OwnedReplacementContinuation {
             .owner
             .state
             .lock()
-            .ok()
-            .is_some_and(|state| state.publication_observed && state.envelope_released)
+            .is_ok_and(|state| state.publication_observed && state.envelope_released)
         {
             return false;
         }
@@ -536,7 +535,7 @@ impl OwnedReplacementContinuation {
         let Some(current) = current else {
             return false;
         };
-        let verified = self.owner.state.lock().ok().is_some_and(|mut state| {
+        let verified = self.owner.state.lock().is_ok_and(|mut state| {
             if state.stage != ReplacementStage::FinalizedPublish {
                 return false;
             }
@@ -709,9 +708,9 @@ impl OwnedReplacementContinuation {
                 return false;
             }
         }
-        let runtime_matches = pty.try_lock().ok().is_some_and(|pty| {
-            self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty)
-        });
+        let runtime_matches = pty
+            .try_lock()
+            .is_ok_and(|pty| self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty));
         if !runtime_matches {
             return false;
         }

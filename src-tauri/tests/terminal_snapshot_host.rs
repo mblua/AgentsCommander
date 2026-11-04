@@ -698,7 +698,7 @@ fn terminal_snapshot_host_process_surfaces_every_fixed_server_failure() {
     }
     let dynamic_refs: Vec<_> = dynamic_canaries
         .iter()
-        .map(|value| value.as_bytes())
+        .map(String::as_bytes)
         .chain(std::iter::once(HOST_TOKEN_CANARY.as_bytes()))
         .collect();
     scan_regular_files(&layout.bundle, &[layout.binary.as_path()], &dynamic_refs);

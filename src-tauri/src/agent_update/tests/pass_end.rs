@@ -19,7 +19,7 @@ async fn finish_pass_emits_before_releasing_admission() {
     *gate
         .wait_registered
         .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(registered_tx);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(registered_tx);
     let waiter_returned = Arc::new(AtomicBool::new(false));
     let waiter = tokio::spawn({
         let gate = Arc::clone(&gate);
@@ -186,7 +186,7 @@ async fn pass_panic_preserves_live_cancellation_response_release() {
     let (release_response_tx, release_response_rx) = tokio::sync::oneshot::channel();
     gate.state
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .controls
         .get_mut("panic-row")
         .expect("panic row control")

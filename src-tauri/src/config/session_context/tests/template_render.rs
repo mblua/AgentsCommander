@@ -1,6 +1,6 @@
 use super::*;
 
-const SUMMARIZED_FINE_PLACEHOLDER_FIXTURE: &str = r#"# AgentsCommander Context
+const SUMMARIZED_FINE_PLACEHOLDER_FIXTURE: &str = r"# AgentsCommander Context
 
 ## GOLDEN RULE — Repository Access Restrictions
 
@@ -27,7 +27,7 @@ Use the session environment.
 
 {{PEER_NAME_FORMAT}}
 {{SEND_MESSAGE_INSTRUCTIONS}}
-"#;
+";
 
 #[test]
 fn legacy_inline_template_does_not_double() {
@@ -54,14 +54,14 @@ fn legacy_inline_template_does_not_double() {
 fn incomplete_template_still_gets_section_appended() {
     // Case ii (SAFETY NET): a genuinely-missing section is still appended
     // even though another section is present inline.
-    let missing_session = r#"# AgentsCommander Context
+    let missing_session = r"# AgentsCommander Context
 
 ## CLI executable
 
 Credentials are in environment variables.
 
 {{SKILLS_SECTION}}
-"#;
+";
     let out = render_global_template_for_test(missing_session, "C:/fake/__agent_dev-rust", false);
     // `## CLI executable` was inline -> deduped to one copy.
     assert_eq!(count_section_headings(&out, "## CLI executable"), 1);

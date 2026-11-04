@@ -402,7 +402,7 @@ impl SessionIoFanout {
         assert!(result.is_err(), "screen-parser poison fixture must panic");
     }
 
-    /// #1439 test-only: force the parser grid WITHOUT recording a ConPTY grid,
+    /// #1439 test-only: force the parser grid WITHOUT recording a `ConPTY` grid,
     /// simulating any historical silent-skip divergence.
     #[cfg(test)]
     pub(crate) fn desync_screen_size_for_test(&self, id: Uuid, rows: u16, cols: u16) {

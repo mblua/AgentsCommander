@@ -55,7 +55,7 @@ pub(crate) fn visit_codex_rollout_candidates(
     day: &Path,
     visit: impl FnMut(PathBuf, std::time::SystemTime),
 ) {
-    crate::filesystem::transcripts::visit_codex_rollout_candidates(day, visit)
+    crate::filesystem::transcripts::visit_codex_rollout_candidates(day, visit);
 }
 
 /// How long the Claude reader waits for the transcript AC minted to appear

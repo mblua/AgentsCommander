@@ -793,9 +793,9 @@ pub async fn quit_gate_run(
         let deadline = gate.deadline_for(new_epoch);
         let has_receivers = !receivers.is_empty();
         tokio::select! {
-            _ = &mut notified => {}
+            () = &mut notified => {}
             Some(_) = futures_util::StreamExt::next(&mut receivers), if has_receivers => {}
-            _ = async {
+            () = async {
                 match deadline {
                     Some(deadline) => gate.clock.sleep_until(deadline).await,
                     None => std::future::pending::<()>().await,

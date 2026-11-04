@@ -90,7 +90,7 @@ impl BridgeLogger {
             log::info!(
                 "Bridge logger active for session {} ({} bytes)",
                 session_id,
-                path.map(|m| m.len()).unwrap_or(0)
+                path.map_or(0, |m| m.len())
             );
         }
 
@@ -280,10 +280,7 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
             end -= 1;
         }
         let actual_end = if end < text.len() {
-            text[start..end]
-                .rfind('\n')
-                .map(|i| start + i + 1)
-                .unwrap_or(end)
+            text[start..end].rfind('\n').map_or(end, |i| start + i + 1)
         } else {
             end
         };

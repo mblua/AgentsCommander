@@ -546,7 +546,7 @@ fn writer_closing_query_preserves_policy() {
                 let mut inner = state
                     .inner
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let route = inner.routes.get_mut(&id).unwrap();
                 route.generation += 1;
                 route.closing = None;

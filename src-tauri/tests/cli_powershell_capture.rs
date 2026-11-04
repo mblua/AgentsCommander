@@ -1,11 +1,11 @@
 #![cfg(target_os = "windows")]
 //! Integration test for issue #129. Reproduces the PS-NonInteractive `&` direct-
-//! call failure mode and asserts that the fix (conditional AttachConsole) lets
+//! call failure mode and asserts that the fix (conditional `AttachConsole`) lets
 //! stdout flow through the inherited pipe.
 //!
 //! IMPORTANT: marked #[ignore] because the bug only reproduces in release mode
 //! (`windows_subsystem = "windows"` is gated on `not(debug_assertions)`). To run:
-//!     cargo test --release --test cli_powershell_capture -- --ignored
+//!     `cargo test --release --test cli_powershell_capture -- --ignored`
 //!
 //! CI coverage for shipped/testable release executable names lives in:
 //!     npm run build:prod
@@ -147,15 +147,14 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive() {
 
     let (_code, stdout, stderr) = run_ps(
         "powershell.exe",
-        &format!("list-peers --token {} --root '{}'", token, safe_root),
+        &format!("list-peers --token {token} --root '{safe_root}'"),
         &guard,
     )
     .expect("powershell.exe must be available on Windows CI/dev");
 
     assert!(
         !stdout.trim().is_empty(),
-        "stdout should contain the JSON payload (post-fix). stderr=[{}]",
-        stderr
+        "stdout should contain the JSON payload (post-fix). stderr=[{stderr}]"
     );
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout should parse as JSON");
@@ -176,13 +175,11 @@ fn send_help_outputs_under_powershell_noninteractive() {
 
     assert!(
         !stdout.trim().is_empty(),
-        "stdout should contain help text. stderr=[{}]",
-        stderr
+        "stdout should contain help text. stderr=[{stderr}]"
     );
     assert!(
         stdout.contains("--to") || stdout.contains("DELIVERY MODES"),
-        "help text missing expected content; got: {}",
-        stdout
+        "help text missing expected content; got: {stdout}"
     );
 }
 
@@ -220,7 +217,7 @@ fn list_peers_outputs_valid_json_under_pwsh_noninteractive() {
 
     let result = run_ps(
         "pwsh.exe",
-        &format!("list-peers --token {} --root '{}'", token, safe_root),
+        &format!("list-peers --token {token} --root '{safe_root}'"),
         &guard,
     );
     let (_code, stdout, _stderr) = match result {
@@ -292,8 +289,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() 
 
     assert!(
         !stdout.trim().is_empty(),
-        "stdout should contain the JSON payload via the Git Bash carrier. stderr=[{}]",
-        stderr
+        "stdout should contain the JSON payload via the Git Bash carrier. stderr=[{stderr}]"
     );
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout should parse as JSON");
@@ -301,8 +297,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() 
     assert_eq!(
         code, 0,
         "outer powershell.exe must exit 0 (bash.exe propagates the AC binary's \
-         $LASTEXITCODE through `; exit $LASTEXITCODE`); stderr=[{}]",
-        stderr
+         $LASTEXITCODE through `; exit $LASTEXITCODE`); stderr=[{stderr}]"
     );
 
     let _ = std::fs::remove_dir_all(&tmp);

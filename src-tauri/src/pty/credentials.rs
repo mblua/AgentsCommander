@@ -49,23 +49,22 @@ pub fn build_credential_values(token: &Uuid, cwd: &str) -> CredentialValues {
         .unwrap_or_else(|| "agentscommander".to_string());
 
     let binary_path = {
-        let raw = exe
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| fallback_binary_path().to_string());
+        let raw = exe.as_ref().map_or_else(
+            || fallback_binary_path().to_string(),
+            |p| p.to_string_lossy().to_string(),
+        );
         raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
     };
 
-    let local_dir = exe
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|parent| {
+    let local_dir = exe.as_ref().and_then(|p| p.parent()).map_or_else(
+        || format!(".{binary}"),
+        |parent| {
             parent
                 .join(format!(".{binary}"))
                 .to_string_lossy()
                 .to_string()
-        })
-        .unwrap_or_else(|| format!(".{binary}"));
+        },
+    );
 
     CredentialValues {
         token: token.to_string(),

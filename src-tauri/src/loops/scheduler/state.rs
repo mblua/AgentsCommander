@@ -44,8 +44,7 @@ pub(super) fn guarded_state_write(
 pub(super) fn generation_key(dir: &Path) -> String {
     let path = match (dir.parent(), dir.file_name()) {
         (Some(parent), Some(name)) => loop_files::canonical_loop_root(parent)
-            .map(|parent| parent.join(name))
-            .unwrap_or_else(|_| dir.to_path_buf()),
+            .map_or_else(|_| dir.to_path_buf(), |parent| parent.join(name)),
         _ => dir.to_path_buf(),
     };
     let key = path.to_string_lossy().into_owned();

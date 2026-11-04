@@ -461,7 +461,7 @@ fn the_loop_scope_ignores_the_new_names_before_it_renames_anything() {
         let dir = b4b_loop(&k.ac, "a", Some(B4B_STATE_A));
         let writer = || {
             crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&k.ac, &[])
-                .expect("writer")
+                .expect("writer");
         };
         if sweep_first {
             drop(b4b_lock(&dir, Some(&k.cfg)));

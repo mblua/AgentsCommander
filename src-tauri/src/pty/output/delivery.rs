@@ -232,7 +232,7 @@ impl SessionIoFanout {
                         (#1439)"
                 );
                 let resized = crate::logging::catch_payload_unwind(|| {
-                    state.parser.set_size(conpty_rows, conpty_cols)
+                    state.parser.set_size(conpty_rows, conpty_cols);
                 });
                 if resized.is_err() {
                     state.parser_availability = ParserAvailability::Unavailable;
