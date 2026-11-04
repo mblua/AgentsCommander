@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 // ---------------------------------------------------------------------
 // #1551 - commit and announce
@@ -533,10 +534,7 @@ async fn rejected_spawn_cleanup_dominates_adapters_and_final_result() {
         });
         spawned_rx.await.expect("updater spawned suspended");
         {
-            let state = gate
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
             assert!(matches!(
                 state
                     .controls
@@ -607,10 +605,7 @@ async fn rejected_spawn_cleanup_dominates_adapters_and_final_result() {
             panic!("target completed before rejected post-probe barrier: {early:?}");
         }
         {
-            let state = gate
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
             let control = state.controls.get(&target.command).expect("target control");
             assert!(matches!(
                 control.phase,
