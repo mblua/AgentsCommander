@@ -91,7 +91,7 @@ fn execute_reseed(
             0
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }

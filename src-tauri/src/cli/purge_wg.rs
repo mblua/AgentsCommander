@@ -223,7 +223,7 @@ fn wait_for_purge_response(
     // fire spuriously.
     const MAX_EXPECTED_PEERS: u64 = 32;
     let deadline = if args.graceful {
-        std::time::Duration::from_secs(args.timeout as u64 * MAX_EXPECTED_PEERS + 30)
+        std::time::Duration::from_secs(u64::from(args.timeout) * MAX_EXPECTED_PEERS + 30)
     } else {
         std::time::Duration::from_secs(90)
     };

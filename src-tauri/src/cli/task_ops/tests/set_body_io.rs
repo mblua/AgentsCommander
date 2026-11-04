@@ -233,7 +233,7 @@ fn set_body_external_edit_reaches_real_nonclean_sentinel() {
             "nonclean_before_recheck".into(),
             root.join("TASK.md"),
             external.to_vec(),
-        ))
+        ));
     });
     let backup = match set_body(root, "replacement").unwrap_err() {
         TaskOpError::ExternalWrite(path) => path,

@@ -204,8 +204,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             crate::config::config_dir()
                 .map(|d| d.join("master-token.txt"))
                 .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
+                .is_some_and(|m| m.trim() == token_str)
         } else {
             false
         }

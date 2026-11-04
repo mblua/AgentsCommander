@@ -74,7 +74,7 @@ fn print_status_prose_does_not_panic_on_known_statuses() {
         "no_match",
         "restore_in_progress",
     ] {
-        let body = format!(r#"{{"status":"{}","target":"t"}}"#, s);
+        let body = format!(r#"{{"status":"{s}","target":"t"}}"#);
         print_status_prose(&body);
     }
 }
