@@ -29,7 +29,7 @@ fn read_sync_updates_old_generated_coordinator_template() {
 }
 
 /// #1030 failing-first migration proof for the STATELESS population (E4 row 4):
-/// the assert_ne is the only check that fails if the v4 rule edit is skipped
+/// the `assert_ne` is the only check that fails if the v4 rule edit is skipped
 /// while the freeze lands, and the assert! is the only one that fails if the
 /// const is never wired into `is_known_generated_coordinator_template`. The
 /// sync half proves a pristine v3 body with no state file auto-upgrades.

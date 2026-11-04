@@ -9,34 +9,29 @@ fn default_context_replica_with_matrix_and_messaging_renders_entries_three_throu
     );
     assert!(
         out.contains("3. **Your origin Agent Matrix"),
-        "matrix section header missing, got:\n{}",
-        out
+        "matrix section header missing, got:\n{out}"
     );
     assert!(
         out.contains("4. **Messaging access:**"),
-        "messaging entry four missing, got:\n{}",
-        out
+        "messaging entry four missing, got:\n{out}"
     );
     assert!(
         out.contains("- `Role.md`\n\n4. **Messaging access:**"),
-        "expected entry 3 immediately followed by entry 4, got:\n{}",
-        out
+        "expected entry 3 immediately followed by entry 4, got:\n{out}"
     );
     assert!(
         out.contains(
             "All filesystem access not authorized by entries 1-6 is OFF-LIMITS, except \
                 user-explicit AgentsCommander CLI commands below."
         ),
-        "entries-1-6 closure missing, got:\n{}",
-        out
+        "entries-1-6 closure missing, got:\n{out}"
     );
     assert!(
         out.contains(
             "FORBIDDEN: reads/writes outside entries 1-6, including other replicas, unlisted \
                 Matrix files, workspace/project parents, user home, arbitrary paths."
         ),
-        "Workgroup write boundary missing, got:\n{}",
-        out
+        "Workgroup write boundary missing, got:\n{out}"
     );
     assert!(
         out.contains(
@@ -44,19 +39,16 @@ fn default_context_replica_with_matrix_and_messaging_renders_entries_three_throu
                 memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
                 read/list/search/summarize, even if asked; message the owner."
         ),
-        "Workgroup read boundary missing, got:\n{}",
-        out
+        "Workgroup read boundary missing, got:\n{out}"
     );
     assert!(!out.contains("Narrow exception — room messaging directory"));
     assert!(
         out.contains("5. **Project shared locations"),
-        "entry five missing, got:\n{}",
-        out
+        "entry five missing, got:\n{out}"
     );
     assert!(
         out.contains("6. **Room shared locations"),
-        "entry six missing, got:\n{}",
-        out
+        "entry six missing, got:\n{out}"
     );
 }
 

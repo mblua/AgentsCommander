@@ -802,7 +802,7 @@ pub(crate) fn spawn_co_managed_supervisor<R: tauri::Runtime>(
         loop {
             tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => break,
+                () = shutdown.cancelled() => break,
                 _ = discovery.tick() => watch_capture_slots(&app, &handle).await,
                 _ = reader_demand.tick() => {
                     reader_demand_pass(&app).await;

@@ -133,11 +133,10 @@ fn single_editor_existing_after_divergent_refusal() {
                 std::fs::create_dir(&path).unwrap();
             }
         }
-        let source = std::fs::read(&path)
-            .map(|bytes| source_transition_digest_bytes(&bytes))
-            .unwrap_or_else(|_| {
-                source_transition_digest_bytes(&before.intents[&operation].serialized_after)
-            });
+        let source = std::fs::read(&path).map_or_else(
+            |_| source_transition_digest_bytes(&before.intents[&operation].serialized_after),
+            |bytes| source_transition_digest_bytes(&bytes),
+        );
         let expected = SourceResumeExpectation {
             source,
             journal: read_own_source_journal(&context).unwrap().0,
@@ -315,21 +314,21 @@ fn single_editor_original_local_journal_immutable_and_missing_inventory_refusal(
                             .progress
                             .get_mut(&operation)
                             .unwrap()
-                            .packets_prepared = false
+                            .packets_prepared = false;
                     }
                     "published" => {
                         journal
                             .progress
                             .get_mut(&operation)
                             .unwrap()
-                            .source_published = false
+                            .source_published = false;
                     }
                     _ => {
                         journal.progress.get_mut(&operation).unwrap().receipt =
                             Some(SourceReceipt {
                                 operation_id: operation.clone(),
                                 source_revision: revision.clone(),
-                            })
+                            });
                     }
                 }
                 Ok(())

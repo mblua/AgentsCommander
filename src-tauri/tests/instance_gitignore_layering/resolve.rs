@@ -142,8 +142,7 @@ pub(crate) fn find_declarations(body: &str, segment: &str) -> Vec<usize> {
 pub(crate) fn attributes_before(body: &str, declaration_at: usize) -> &str {
     let start = body[..declaration_at]
         .rfind([';', '}', '{'])
-        .map(|index| index + 1)
-        .unwrap_or(0);
+        .map_or(0, |index| index + 1);
     &body[start..declaration_at]
 }
 

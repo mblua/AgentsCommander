@@ -35,7 +35,7 @@ impl VerifiedNewFile {
             .map_err(|_| "output_failed".to_string())?;
         self.file
             .write_all(bytes)
-            .and_then(|_| self.file.flush())
+            .and_then(|()| self.file.flush())
             .map_err(|_| "output_failed".to_string())?;
         after_write();
         self.parent

@@ -36,7 +36,7 @@ async fn prepare_replacement_context(
             return Ok(false);
         };
         let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
-        effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+        effect.complete(prepared.as_ref().map(|()| None).map_err(Clone::clone));
         if let Err(error) = prepared {
             continuation
                 .rollback_failed_create(manager, pty, &error)
@@ -142,10 +142,9 @@ async fn peer_candidate_carry(
     Option<crate::session::session::SessionCommunication>,
 ) {
     let mgr = session_mgr.read().await;
-    mgr.get_session(session_id)
-        .await
-        .map(|s| (s.telegram_bot_id.clone(), s.communication.clone()))
-        .unwrap_or((None, None))
+    mgr.get_session(session_id).await.map_or((None, None), |s| {
+        (s.telegram_bot_id.clone(), s.communication.clone())
+    })
 }
 
 impl MailboxPoller {

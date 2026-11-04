@@ -401,7 +401,7 @@ async fn issue_3371_owned_replacement_remains_source_free_and_retained_on_inject
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x0800_0000);
     }
     let mut child = command.spawn().unwrap();
     use tokio::io::AsyncReadExt;

@@ -98,8 +98,7 @@ pub fn room_root_for_path(path: &Path) -> Option<PathBuf> {
             ancestor
                 .file_name()
                 .and_then(|name| name.to_str())
-                .map(is_room_dir_name)
-                .unwrap_or(false)
+                .is_some_and(is_room_dir_name)
         })
         .map(Path::to_path_buf)
 }

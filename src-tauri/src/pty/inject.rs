@@ -853,7 +853,7 @@ async fn session_injection_mode(
 ) -> (Option<Session>, bool) {
     let session = manager.get_session(session_id).await;
     let shell = session.as_ref().map(|session| session.shell.clone());
-    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
+    let send_enter = shell.as_deref().is_some_and(needs_explicit_enter);
     log::info!("[inject] session={session_id} shell={shell:?} send_enter={send_enter}");
 
     (session, send_enter)

@@ -59,7 +59,7 @@ pub(super) async fn poll_task(
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             result = api::get_updates(&network, &token, offset, 5) => {
                 match result {
                     Ok(updates) => {
@@ -390,8 +390,8 @@ async fn sleep_backoff_or_cancel(
     logger.log("POLL_BACKOFF", session_id, &format!("sleep_ms={sleep_ms}"));
     log::debug!("[bridge] POLL_BACKOFF session_id={session_id} sleep_ms={sleep_ms}");
     tokio::select! {
-        _ = cancel.cancelled() => false,
-        _ = tokio::time::sleep(delay) => true,
+        () = cancel.cancelled() => false,
+        () = tokio::time::sleep(delay) => true,
     }
 }
 

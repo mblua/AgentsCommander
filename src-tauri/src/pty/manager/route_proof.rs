@@ -105,8 +105,10 @@ impl PtySnapshotRouteProof {
         match copied {
             TerminalScreenCopyRead::Copied(captured) => captured
                 .into_model(self.session_id, self.proof.backend_kind())
-                .map(TerminalScreenRead::Captured)
-                .unwrap_or(TerminalScreenRead::Unavailable),
+                .map_or(
+                    TerminalScreenRead::Unavailable,
+                    TerminalScreenRead::Captured,
+                ),
             TerminalScreenCopyRead::Unavailable => TerminalScreenRead::Unavailable,
             TerminalScreenCopyRead::TooLarge => TerminalScreenRead::TooLarge,
         }

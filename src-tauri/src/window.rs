@@ -37,8 +37,7 @@ pub(crate) fn physical_to_logical(
     let scale = monitors
         .iter()
         .find(|(mx, my, mx2, my2, _)| cx >= *mx && cx < *mx2 && cy >= *my && cy < *my2)
-        .map(|(_, _, _, _, s)| *s)
-        .unwrap_or(1.0);
+        .map_or(1.0, |(_, _, _, _, s)| *s);
     config::settings::WindowGeometry {
         x: geo.x / scale,
         y: geo.y / scale,

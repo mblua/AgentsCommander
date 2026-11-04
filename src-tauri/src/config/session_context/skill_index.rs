@@ -117,14 +117,10 @@ pub(crate) fn is_frontmatter_delimiter(line: &[u8], allow_bom: bool) -> bool {
     if allow_bom && trimmed.starts_with(&[0xEF, 0xBB, 0xBF]) {
         trimmed = &trimmed[3..];
     }
-    while trimmed
-        .first()
-        .map(u8::is_ascii_whitespace)
-        .unwrap_or(false)
-    {
+    while trimmed.first().is_some_and(u8::is_ascii_whitespace) {
         trimmed = &trimmed[1..];
     }
-    while trimmed.last().map(u8::is_ascii_whitespace).unwrap_or(false) {
+    while trimmed.last().is_some_and(u8::is_ascii_whitespace) {
         trimmed = &trimmed[..trimmed.len() - 1];
     }
     trimmed == b"---"
@@ -344,9 +340,10 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
     let matrix_root_display = display_path(&canonical_matrix);
     let skills_path = matrix_path.join(directory);
     let skills_root_display =
-        crate::filesystem::context_skills::canonical_skill_source(&skills_path)
-            .map(|p| display_path(&p))
-            .unwrap_or_else(|_| display_path(&canonical_matrix.join(directory)));
+        crate::filesystem::context_skills::canonical_skill_source(&skills_path).map_or_else(
+            |_| display_path(&canonical_matrix.join(directory)),
+            |p| display_path(&p),
+        );
     let mut index = SkillIndex {
         matrix_root: Some(sanitize_skill_metadata_for_context(&matrix_root_display)),
         skills_root: Some(sanitize_skill_metadata_for_context(&skills_root_display)),
@@ -552,8 +549,7 @@ fn build_skill_metadata(
     };
 
     let entrypoint_display = crate::filesystem::context_skills::canonical_skill_source(entrypoint)
-        .map(|p| display_path(&p))
-        .unwrap_or_else(|_| display_path(entrypoint));
+        .map_or_else(|_| display_path(entrypoint), |p| display_path(&p));
 
     SkillMetadata {
         folder_name: display_folder,

@@ -459,7 +459,7 @@ async fn native_timeout_case(purge: bool, graceful: bool) {
         tokio::pin!(observation);
         tokio::select! {
             result = &mut observation => panic!("poll returned before native barrier: {result:?}"),
-            _ = reached(&barrier.reached) => {}
+            () = reached(&barrier.reached) => {}
         }
         timeout(Duration::from_secs(7), &mut observation)
             .await
@@ -582,7 +582,7 @@ async fn p01_pending_duplicate_purge_waits_for_key_even_without_public_row() {
         tokio::pin!(observation);
         tokio::select! {
             result = &mut observation => panic!("native barrier not reached: {result:?}"),
-            _ = reached(&barrier.reached) => {}
+            () = reached(&barrier.reached) => {}
         }
         timeout(Duration::from_secs(7), observation)
             .await
@@ -601,7 +601,7 @@ async fn p01_pending_duplicate_purge_waits_for_key_even_without_public_row() {
         tokio::pin!(observation);
         tokio::select! {
             result = &mut observation => panic!("duplicate settled with key present: {result:?}"),
-            _ = async {
+            () = async {
                 timeout(Duration::from_secs(2), async {
                     while !guard.is_active() { sleep(Duration::from_millis(5)).await; }
                 }).await.unwrap();
@@ -836,7 +836,7 @@ async fn p01_purge_delayed_notification_uses_started_deadline_and_stops_next_id(
     tokio::pin!(observer);
     tokio::select! {
         result = &mut observer => panic!("attempt not entered: {result:?}"),
-        _ = reached(&entered) => {}
+        () = reached(&entered) => {}
     }
     // Do not poll the observer: callback completion after the stored deadline cannot start ID2.
     sleep(Duration::from_millis(80)).await;

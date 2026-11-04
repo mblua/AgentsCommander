@@ -56,8 +56,7 @@ fn add_appends_and_repairs_a_cell() {
         .coding_agent_profiles
         .profiles_by_agent
         .get("claude")
-        .map(|cells| cells.contains_key("A"))
-        .unwrap_or(false));
+        .is_some_and(|cells| cells.contains_key("A")));
 }
 
 #[test]

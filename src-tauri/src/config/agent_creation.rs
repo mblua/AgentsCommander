@@ -40,10 +40,10 @@ pub fn create_agent_folder_on_disk(
         Err(e) => return Err(format!("Failed to create folder: {e}")),
     }
 
-    let parent_name = parent
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| parent_path.to_string());
+    let parent_name = parent.file_name().map_or_else(
+        || parent_path.to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
     let display_name = format!("{parent_name}/{agent_name}");
 
     let claude_md = format!("You are the agent {display_name}");

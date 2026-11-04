@@ -114,7 +114,7 @@ impl SessionManager {
     ) {
         let permit = acquire_carrier_mutation_permit().await;
         self.refresh_failed_binding_recipes_with_carrier_permit(&permit, recipes)
-            .await
+            .await;
     }
 
     pub(crate) async fn refresh_failed_binding_recipes_with_carrier_permit(

@@ -304,7 +304,7 @@ fn check_issue_3047_pair_adoption_case(sidecar: bool, orphan: &str, fail_publish
     if fail_publish {
         super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
             *slot.borrow_mut() =
-                Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace))
+                Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace));
         });
     }
     let (records, _capture_guard) = capture_settings_save_diagnostics();
@@ -922,7 +922,7 @@ fn issue_3047_pair_effective_base_without_physical_base_and_rejected_overlay() {
     );
     let previous = std::fs::read(&path).unwrap();
     super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
-        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace))
+        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace));
     });
     let result = super::super::save_settings_to_path_preserving_project_paths(&loaded, &path);
     super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);

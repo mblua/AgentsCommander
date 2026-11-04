@@ -41,8 +41,7 @@ fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flag
         .iter()
         .any(|arg| arg == "-it" || arg == "-i" || arg == "-t"));
     assert!(joined.contains(&format!(
-        "{}=11111111-1111-4111-8111-111111111111",
-        SESSION_LABEL
+        "{SESSION_LABEL}=11111111-1111-4111-8111-111111111111"
     )));
     assert!(joined.contains("AGENTSCOMMANDER_API_URL=http://host.docker.internal:8765"));
     assert!(joined.contains("--env AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN"));
@@ -245,7 +244,7 @@ fn stop_and_orphan_list_commands_are_label_based() {
 
     let list = runtime.build_list_labeled_command();
     assert_eq!(list.args[0], "ps");
-    assert!(list.args.contains(&format!("label={}", SESSION_LABEL)));
+    assert!(list.args.contains(&format!("label={SESSION_LABEL}")));
 }
 
 #[test]
@@ -334,7 +333,7 @@ fn ambiguous_start_outcomes_cleanup_the_deterministic_name() {
 
         let commands = recorded
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         assert_eq!(commands.len(), 2, "{case}");
         assert_eq!(commands[0].args.first().map(String::as_str), Some("run"));
@@ -408,7 +407,7 @@ fn ambiguous_start_cleanup_failure_is_retained_and_retried_once() {
     assert_eq!(
         recorded
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len(),
         3
     );
@@ -417,7 +416,7 @@ fn ambiguous_start_cleanup_failure_is_retained_and_retried_once() {
     assert_eq!(
         recorded
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len(),
         3,
         "a terminal deterministic target must not be stopped twice"
@@ -439,11 +438,13 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
                 let _active = ActiveDockerReaderGuard::new(active);
                 ready.wait();
                 let (released, changed) = &*release;
-                let mut released = released.lock().unwrap_or_else(|error| error.into_inner());
+                let mut released = released
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 while !*released {
                     released = changed
                         .wait(released)
-                        .unwrap_or_else(|error| error.into_inner());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
                 Ok(CappedCommandStream::default())
             })
@@ -505,7 +506,9 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
     assert!(!diagnostic.contains("00000000-0000-0000-0000-000000000000"));
 
     let (released, changed) = &*release;
-    *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+    *released
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     changed.notify_all();
     runtime
         .process_state

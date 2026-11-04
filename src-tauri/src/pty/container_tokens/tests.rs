@@ -18,7 +18,7 @@ fn mint_stores_hash_only_with_container_scopes_and_revoke_marks_client() {
         .iter()
         .find(|client| client.client_id == token.client_id)
         .expect("client");
-    assert_eq!(client.label, format!("container:{}", session_id));
+    assert_eq!(client.label, format!("container:{session_id}"));
     assert!(client.scopes.contains(&SCOPE_SEND.to_string()));
     assert!(client.scopes.contains(&SCOPE_LIST_PEERS.to_string()));
     assert!(client.scopes.contains(&SCOPE_SESSION_TRANSPORT.to_string()));

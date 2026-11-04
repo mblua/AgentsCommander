@@ -170,13 +170,15 @@ pub(in super::super) fn probe_publication_directory(
             if !initial {
                 return PublicationDirectoryIdentity::Legacy;
             }
-            canonical_carrier_cwd(dir)
-                .map(PublicationDirectoryIdentity::Known)
-                .unwrap_or(PublicationDirectoryIdentity::Legacy)
+            canonical_carrier_cwd(dir).map_or(
+                PublicationDirectoryIdentity::Legacy,
+                PublicationDirectoryIdentity::Known,
+            )
         }
-        Some(_) => canonical_carrier_cwd(dir)
-            .map(PublicationDirectoryIdentity::Known)
-            .unwrap_or(PublicationDirectoryIdentity::Unknown),
+        Some(_) => canonical_carrier_cwd(dir).map_or(
+            PublicationDirectoryIdentity::Unknown,
+            PublicationDirectoryIdentity::Known,
+        ),
         None => PublicationDirectoryIdentity::Unknown,
     }
 }

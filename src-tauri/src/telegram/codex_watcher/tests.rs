@@ -79,7 +79,7 @@ fn global_log_sizes() -> Vec<(PathBuf, u64)> {
         .into_iter()
         .map(|name| {
             let path = dir.join(name);
-            let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let len = fs::metadata(&path).map_or(0, |m| m.len());
             (path, len)
         })
         .collect()
@@ -136,7 +136,7 @@ async fn a_room_only_codex_reader_emits_records_with_no_bot_anywhere() {
         "no HTTP request may be attempted without a bot target"
     );
     for (path, len) in before {
-        let now = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let now = fs::metadata(&path).map_or(0, |m| m.len());
         assert_eq!(
             now,
             len,

@@ -367,11 +367,10 @@ pub(crate) fn collect_profile_identity_violations(
     record: &mut impl FnMut(PhysicalIdentityViolation, IdentityValidationError),
 ) {
     let group_for = |id: &str| {
-        agents
-            .iter()
-            .find(|agent| agent.id == id)
-            .map(|agent| configuration_identity(&agent.command, &agent.envs))
-            .unwrap_or_else(|| format!("orphan:{id}"))
+        agents.iter().find(|agent| agent.id == id).map_or_else(
+            || format!("orphan:{id}"),
+            |agent| configuration_identity(&agent.command, &agent.envs),
+        )
     };
     let mut groups = HashSet::new();
     let cells: Vec<_> = profiles
@@ -414,8 +413,7 @@ pub(crate) fn collect_profile_identity_violations(
                     existing_name: agents
                         .iter()
                         .find(|agent| &agent.id == *old_id)
-                        .map(|agent| agent.label.clone())
-                        .unwrap_or_else(|| (*old_id).clone()),
+                        .map_or_else(|| (*old_id).clone(), |agent| agent.label.clone()),
                     entry_hint: (*id).clone(),
                     requested_profile: Some((*letter).clone()),
                 },

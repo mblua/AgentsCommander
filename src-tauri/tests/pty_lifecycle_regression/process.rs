@@ -7,7 +7,7 @@ pub(crate) const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(75);
 
 pub(crate) fn write_child_script(path: &Path) {
-    let script = r#"param([string]$PidFile)
+    let script = r"param([string]$PidFile)
 $ErrorActionPreference = 'Stop'
 $pid | Set-Content -LiteralPath $PidFile -Encoding ASCII
 [Console]::Out.WriteLine('AC_READY')
@@ -25,7 +25,7 @@ while ($true) {
         [Console]::Out.Flush()
     }
 }
-"#;
+";
     std::fs::write(path, script).expect("write pty child script");
 }
 

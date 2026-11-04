@@ -155,7 +155,7 @@ pub(super) fn migrate_loop_state_name(
         return warn("the state rename was refused", refusal);
     }
     if let Err(refusal) = naming_migration::update_journal(journal_dir, |j| {
-        j.set_status(&key, naming_migration::ScopeStatus::Complete)
+        j.set_status(&key, naming_migration::ScopeStatus::Complete);
     }) {
         warn("the scope completion was not recorded", refusal);
     }

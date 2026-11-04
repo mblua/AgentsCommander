@@ -1,7 +1,7 @@
 /// Detect git branch for a given directory path.
 pub(crate) fn detect_session_branch(dir: &str) -> Option<String> {
     #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mut cmd = std::process::Command::new("git");
     crate::process::host::credentials::scrub_credentials_from_std_command(&mut cmd);

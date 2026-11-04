@@ -10,7 +10,7 @@ fn spec(program: PathBuf) -> GhCommandSpec {
             ("GH_NO_UPDATE_NOTIFIER".to_string(), "1".to_string()),
             ("GH_PAGER".to_string(), "cat".to_string()),
         ],
-        creation_flags: if cfg!(windows) { 0x08000000 } else { 0 },
+        creation_flags: if cfg!(windows) { 0x0800_0000 } else { 0 },
     }
 }
 

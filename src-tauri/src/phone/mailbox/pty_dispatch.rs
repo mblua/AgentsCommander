@@ -87,8 +87,9 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         };
         let shutdown = app
             .try_state::<crate::shutdown::ShutdownSignal>()
-            .map(|signal| signal.token().clone())
-            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            .map_or_else(tokio_util::sync::CancellationToken::new, |signal| {
+                signal.token().clone()
+            });
         let _operation_lock = match store.try_operation_lock(injection_id) {
             Ok(Some(lock)) => lock,
             _ => return false,

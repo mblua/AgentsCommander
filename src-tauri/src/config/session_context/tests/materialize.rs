@@ -621,8 +621,7 @@ fn materialize_root_context_never_consumes_a_ac_ancestor_global_template() {
         assert_eq!(
             content.matches(heading).count(),
             0,
-            "removed Root block {} must stay absent",
-            heading
+            "removed Root block {heading} must stay absent"
         );
     }
     assert_contains_canonical_path(&content, &root);

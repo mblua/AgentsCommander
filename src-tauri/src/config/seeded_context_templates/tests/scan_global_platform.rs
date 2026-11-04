@@ -2,7 +2,7 @@ use super::*;
 
 /// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk
 /// with NO `global` state entry. Failing-first proof for the v3 rename
-/// (assert_ne), the #979 standalone recognizer and the version bump,
+/// (`assert_ne`), the #979 standalone recognizer and the version bump,
 /// retargeted by #1748 at the scan.
 #[test]
 fn scan_replaces_pre_agent_repos_global_template() {

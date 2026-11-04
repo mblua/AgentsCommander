@@ -159,8 +159,7 @@ pub async fn get_updates(
             let msg = u.message?;
             let from_name = msg
                 .from
-                .map(|f| f.first_name)
-                .unwrap_or_else(|| "Unknown".to_string());
+                .map_or_else(|| "Unknown".to_string(), |f| f.first_name);
             let chat_id = msg.chat.id;
             let update_id = u.update_id;
 

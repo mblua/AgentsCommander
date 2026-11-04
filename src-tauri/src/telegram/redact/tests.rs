@@ -8,10 +8,8 @@ const FAKE_GEMINI_KEY: &str = "AIzaSyFakeKeyForTesting1234567890";
 
 #[test]
 fn redacts_full_telegram_url() {
-    let url = format!(
-        "url (https://api.telegram.org/bot{}/getUpdates?offset=0&timeout=5)",
-        FAKE_TG_TOKEN
-    );
+    let url =
+        format!("url (https://api.telegram.org/bot{FAKE_TG_TOKEN}/getUpdates?offset=0&timeout=5)");
     let got = redact(&url);
     assert!(
         got.contains("/bot***/getUpdates?offset=0&timeout=5"),
@@ -22,10 +20,7 @@ fn redacts_full_telegram_url() {
 
 #[test]
 fn redacts_sendmessage_url() {
-    let s = format!(
-        "POST https://api.telegram.org/bot{}/sendMessage",
-        FAKE_TG_TOKEN
-    );
+    let s = format!("POST https://api.telegram.org/bot{FAKE_TG_TOKEN}/sendMessage");
     let got = redact(&s);
     assert!(got.contains("/bot***/sendMessage"));
     assert!(!got.contains(FAKE_TG_TOKEN));
@@ -33,10 +28,7 @@ fn redacts_sendmessage_url() {
 
 #[test]
 fn redacts_file_download_url() {
-    let s = format!(
-        "GET https://api.telegram.org/file/bot{}/voice/file_0.oga",
-        FAKE_TG_TOKEN
-    );
+    let s = format!("GET https://api.telegram.org/file/bot{FAKE_TG_TOKEN}/voice/file_0.oga");
     let got = redact(&s);
     assert!(got.contains("/file/bot***/voice/file_0.oga"));
     assert!(!got.contains(FAKE_TG_TOKEN));
@@ -52,7 +44,7 @@ fn redacts_gemini_query_key() {
 
 #[test]
 fn redacts_gemini_ampersand_key() {
-    let s = format!("...?alt=json&key={}&foo=bar", FAKE_GEMINI_KEY);
+    let s = format!("...?alt=json&key={FAKE_GEMINI_KEY}&foo=bar");
     let got = redact(&s);
     assert!(got.contains("&key=***"));
     assert!(!got.contains(FAKE_GEMINI_KEY));
@@ -81,10 +73,7 @@ fn preserves_empty_string() {
 
 #[test]
 fn handles_multiple_tokens_in_one_string() {
-    let s = format!(
-        "first /bot{}/x and second /bot{}/y",
-        FAKE_TG_TOKEN, FAKE_TG_TOKEN
-    );
+    let s = format!("first /bot{FAKE_TG_TOKEN}/x and second /bot{FAKE_TG_TOKEN}/y");
     let got = redact(&s);
     assert!(!got.contains(FAKE_TG_TOKEN));
     assert_eq!(got.matches("/bot***").count(), 2);
@@ -92,7 +81,7 @@ fn handles_multiple_tokens_in_one_string() {
 
 #[test]
 fn handles_telegram_and_gemini_in_one_string() {
-    let s = format!("tg=/bot{}/x gemini=?key={}", FAKE_TG_TOKEN, FAKE_GEMINI_KEY);
+    let s = format!("tg=/bot{FAKE_TG_TOKEN}/x gemini=?key={FAKE_GEMINI_KEY}");
     let got = redact(&s);
     assert!(!got.contains(FAKE_TG_TOKEN));
     assert!(!got.contains(FAKE_GEMINI_KEY));
@@ -120,8 +109,7 @@ fn does_not_match_empty_query_value() {
 fn snapshot_real_shape_url() {
     let input = format!(
         "[ERROR] Telegram poll error: error sending request for url \
-         (https://api.telegram.org/bot{}/getUpdates?offset=0&timeout=5)",
-        FAKE_TG_TOKEN
+         (https://api.telegram.org/bot{FAKE_TG_TOKEN}/getUpdates?offset=0&timeout=5)"
     );
     let expected = "[ERROR] Telegram poll error: error sending request for url \
                     (https://api.telegram.org/bot***/getUpdates?offset=0&timeout=5)";
@@ -146,7 +134,7 @@ fn does_not_match_key_eq_alone() {
 /// #280 /feature-dev review G-HIGH — the byte-walking fallback used
 /// `out.push(bytes[i] as char)` which corrupts UTF-8 continuation
 /// bytes whenever the scanner runs (i.e., when `/bot` or `key=` is
-/// present somewhere in the input). DiagLogger pipes raw agent PTY
+/// present somewhere in the input). `DiagLogger` pipes raw agent PTY
 /// output through `redact()`, so any Spanish/Italian/CJK message
 /// containing one of those markers would have been corrupted.
 #[test]
@@ -183,7 +171,7 @@ fn redacts_short_query_key_values_intentionally() {
 
 #[test]
 fn redacts_telegram_token_surrounded_by_non_ascii() {
-    let s = format!("résumé /bot{}/sendMessage 中文 ñ", FAKE_TG_TOKEN);
+    let s = format!("résumé /bot{FAKE_TG_TOKEN}/sendMessage 中文 ñ");
     let got = redact(&s);
     assert!(got.contains("/bot***/sendMessage"), "got: {got}");
     assert!(!got.contains(FAKE_TG_TOKEN), "token leaked: {got}");

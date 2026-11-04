@@ -11,7 +11,7 @@ pub(super) fn apply(tx: &Transaction<'_>) -> Result<(), MessageStoreError> {
     Ok(())
 }
 
-const SQL: &str = r#"
+const SQL: &str = r"
                 CREATE TABLE pty_input_operations_v3(
                     injection_id TEXT PRIMARY KEY,
                     sender_fqn TEXT NOT NULL,
@@ -386,4 +386,4 @@ const SQL: &str = r#"
                 INSERT INTO pty_input_tombstones_v3 SELECT * FROM pty_input_tombstones;
                 DROP TABLE pty_input_tombstones;
                 ALTER TABLE pty_input_tombstones_v3 RENAME TO pty_input_tombstones;
-                "#;
+                ";

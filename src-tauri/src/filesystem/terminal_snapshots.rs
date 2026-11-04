@@ -72,7 +72,7 @@ pub(crate) fn set_private_snapshot_response(file: &File) -> bool {
 }
 
 pub(crate) fn write_snapshot_response(file: &mut File, bytes: &[u8]) -> io::Result<()> {
-    file.write_all(bytes).and_then(|_| file.flush())
+    file.write_all(bytes).and_then(|()| file.flush())
 }
 
 pub(crate) fn sync_snapshot_response(file: &File) -> io::Result<()> {

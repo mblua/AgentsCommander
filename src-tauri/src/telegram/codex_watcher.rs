@@ -607,7 +607,7 @@ async fn watch_loop(
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             changed = dest_rx.changed() => {
                 if changed.is_err() {
                     break;
@@ -731,16 +731,14 @@ impl CodexWatchState {
                     bridge_log!(self, "CODEX_ERR", &format!("preamble scan failed: {e}"));
                     self.file_offset = jsonl_kernel::transcript_metadata(found)
                         .ok()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                        .map_or(0, |m| m.len());
                 }
             }
         } else {
             self.line_remainder.clear();
             self.file_offset = jsonl_kernel::transcript_metadata(found)
                 .ok()
-                .map(|m| m.len())
-                .unwrap_or(0);
+                .map_or(0, |m| m.len());
             bridge_log!(
                 self,
                 "CODEX_ROTATE",

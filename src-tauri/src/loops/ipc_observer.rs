@@ -756,7 +756,7 @@ pub fn start<H: IpcObserverHost>(app: H, observer: Arc<IpcObserver>, shutdown: S
         let mut marker_warned = false;
         loop {
             tokio::select! {
-                _ = shutdown.token().cancelled() => {
+                () = shutdown.token().cancelled() => {
                     on_shutdown(&observer, &mut marker_warned);
                     break;
                 }

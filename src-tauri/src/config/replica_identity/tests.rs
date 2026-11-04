@@ -352,7 +352,7 @@ fn repair_accepts_windows_case_variant_persisted_identity_component() {
     assert_eq!(config["identity"], "../../_agent_tech-lead");
 }
 
-/// #2557 - seven replicas, one per fault cause; two share ConfigUnreadable.
+/// #2557 - seven replicas, one per fault cause; two share `ConfigUnreadable`.
 fn issue_2557_fault_cases(temp: &tempfile::TempDir) -> Vec<(PathBuf, ReplicaConfigFault)> {
     let room = temp
         .path()

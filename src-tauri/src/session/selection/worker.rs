@@ -29,7 +29,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         loop {
             let envelope = tokio::select! {
                 biased;
-                _ = inner.shutdown.cancelled() => {
+                () = inner.shutdown.cancelled() => {
                     receiver.close();
                     Self::drain_after_shutdown(&transaction, &mut receiver).await;
                     break;

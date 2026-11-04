@@ -495,7 +495,7 @@ pub(crate) fn run_inner_with_fault(name: &str, fault: Fault) -> ChildRun {
         let _ = f.read_to_string(&mut out);
     }
     ChildRun {
-        ok: status.map(|s| s.success()).unwrap_or(false),
+        ok: status.is_some_and(|s| s.success()),
         out,
         timed_out,
         wait_error,

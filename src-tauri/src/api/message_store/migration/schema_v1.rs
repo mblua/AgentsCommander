@@ -4,7 +4,7 @@ use rusqlite::Transaction;
 
 pub(super) fn apply(tx: &Transaction<'_>) -> Result<(), MessageStoreError> {
     tx.execute_batch(
-        r#"
+        r"
                 CREATE TABLE IF NOT EXISTS messages(
                     message_id TEXT PRIMARY KEY,
                     sender_fqn TEXT NOT NULL,
@@ -36,7 +36,7 @@ pub(super) fn apply(tx: &Transaction<'_>) -> Result<(), MessageStoreError> {
                     at TEXT NOT NULL,
                     FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE
                 );
-                "#,
+                ",
     )?;
     tx.execute(
         "INSERT INTO api_message_schema(version, applied_at) VALUES(1, ?1)",
