@@ -1,5 +1,180 @@
 use super::*;
 
+type SelfSwitchDrive = (
+    Arc<crate::PendingSelfClear>,
+    Option<Uuid>,
+    Vec<Uuid>,
+    Vec<(Uuid, String)>,
+    Vec<(Uuid, SelfClearBoundary)>,
+);
+
+/// Drives the real sustained-idle self-switch through app-backed seams whose
+/// restart reseeds the replica as `expected_agent` with profile `A`.
+async fn drive_self_switch_restart(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    replica: &Path,
+    source_id: Uuid,
+    response: &serde_json::Value,
+    expected_agent: &'static str,
+) -> SelfSwitchDrive {
+    let target_agent = response["target_coding_agent"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let target_profile = response["target_profile"].as_str().unwrap().to_string();
+    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+    let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+    let state_ids_seen = Arc::clone(&state_ids);
+    let app_for_state = app.clone();
+    let session_state = move |session_id: Uuid| {
+        let app = app_for_state.clone();
+        let state_ids = Arc::clone(&state_ids_seen);
+        async move {
+            state_ids.lock().unwrap().push(session_id);
+            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = state.read().await;
+            match mgr.get_session(session_id).await {
+                Some(session) => (true, session.waiting_for_input),
+                None => (false, false),
+            }
+        }
+    };
+
+    let app_for_persist = app.clone();
+    let persist = move |cwd: PathBuf, agent: String, profile: String| {
+        let app = app_for_persist.clone();
+        async move {
+            let settings = app.state::<SettingsState>();
+            let snapshot = settings.read().await.clone();
+            crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
+                &snapshot, &cwd, &agent, &profile,
+            )
+        }
+    };
+
+    let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
+    let restarted_id_seen = Arc::clone(&restarted_id);
+    let app_for_restart = app.clone();
+    let replica_for_restart = replica.to_path_buf();
+    let restart = move |session_id: Uuid, agent: String, profile: String| {
+        let app = app_for_restart.clone();
+        let replica = replica_for_restart.clone();
+        let restarted_id = Arc::clone(&restarted_id_seen);
+        async move {
+            assert_eq!(session_id, source_id);
+            assert_eq!(agent, expected_agent);
+            assert_eq!(profile, "A");
+            {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                mgr.destroy_session(session_id).await.unwrap();
+            }
+            let (new_id, _token) = seed_self_switch_session(
+                &app,
+                &replica,
+                expected_agent,
+                Some(expected_agent),
+                Some(&profile),
+                Some(&profile),
+            )
+            .await;
+            {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = state.read().await;
+                mgr.mark_idle(new_id).await;
+            }
+            register_mock_pty_route(&app, new_id);
+            *restarted_id.lock().unwrap() = Some(new_id);
+            Ok(new_id.to_string())
+        }
+    };
+
+    let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
+    let injected_prompts_seen = Arc::clone(&injected_prompts);
+    let app_for_inject = app.clone();
+    let inject = move |session_id: Uuid, prompt: String| {
+        let app = app_for_inject.clone();
+        let injected_prompts = Arc::clone(&injected_prompts_seen);
+        async move {
+            injected_prompts
+                .lock()
+                .unwrap()
+                .push((session_id, prompt.clone()));
+            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
+        }
+    };
+    let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
+    let boundaries_seen = Arc::clone(&boundaries);
+    let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
+        let boundaries = Arc::clone(&boundaries_seen);
+        async move {
+            boundaries.lock().unwrap().push((session_id, boundary));
+        }
+    };
+
+    MailboxPoller::drive_self_switch_after_sustained_idle(
+        source_id,
+        replica.to_path_buf(),
+        target_agent,
+        target_profile,
+        None,
+        SELF_HANDOFF_FLAVOR_SWITCH,
+        Arc::clone(&pending),
+        Duration::ZERO,
+        Duration::ZERO,
+        // The real app-backed restart can exceed one second under the full
+        // parallel suite. Only settle and poll need to be zero in this test.
+        Duration::from_secs(30),
+        session_state,
+        persist,
+        restart,
+        inject,
+        note_boundary,
+    )
+    .await;
+
+    let restarted = *restarted_id.lock().unwrap();
+    let state_ids = state_ids.lock().unwrap().clone();
+    let prompts = injected_prompts.lock().unwrap().clone();
+    let boundaries = boundaries.lock().unwrap().clone();
+    (pending, restarted, state_ids, prompts, boundaries)
+}
+
+fn assert_self_switch_injected(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    source_id: Uuid,
+    target_id: Uuid,
+    state_ids: &[Uuid],
+    prompts: &[(Uuid, String)],
+    boundaries: &[(Uuid, SelfClearBoundary)],
+) {
+    assert_ne!(target_id, source_id);
+    assert_eq!(*state_ids, vec![source_id, target_id]);
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].0, target_id);
+    assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
+    assert_eq!(
+        mock_pty_writes_for(app, target_id),
+        vec![
+            prompts[0].1.as_bytes().to_vec(),
+            b"\r".to_vec(),
+            b"\r".to_vec()
+        ]
+    );
+    assert_eq!(
+        *boundaries,
+        vec![(target_id, SelfClearBoundary::ContentInjected)]
+    );
+}
+
+async fn current_session_manager(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+) -> SessionManager {
+    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let guard = state.read().await;
+    guard.clone()
+}
+
 #[tokio::test]
 async fn self_switch_established_source_to_pi_target_remains_supported() {
     let fixture = make_self_switch_fixture();
@@ -47,149 +222,19 @@ async fn self_switch_established_source_to_pi_target_remains_supported() {
     assert_eq!(response["target_coding_agent"], "pi");
     assert_eq!(response["target_profile"], "A");
 
-    let target_agent = response["target_coding_agent"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let target_profile = response["target_profile"].as_str().unwrap().to_string();
-    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
-    let state_ids_seen = Arc::clone(&state_ids);
-    let app_for_state = app.clone();
-    let session_state = move |session_id: Uuid| {
-        let app = app_for_state.clone();
-        let state_ids = Arc::clone(&state_ids_seen);
-        async move {
-            state_ids.lock().unwrap().push(session_id);
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
-    };
+    let (pending, restarted, state_ids, prompts, boundaries) =
+        drive_self_switch_restart(&app, &fixture.replica, source_id, &response, "pi").await;
 
-    let app_for_persist = app.clone();
-    let persist = move |cwd: PathBuf, agent: String, profile: String| {
-        let app = app_for_persist.clone();
-        async move {
-            let settings = app.state::<SettingsState>();
-            let snapshot = settings.read().await.clone();
-            crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
-                &snapshot, &cwd, &agent, &profile,
-            )
-        }
-    };
-
-    let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
-    let restarted_id_seen = Arc::clone(&restarted_id);
-    let app_for_restart = app.clone();
-    let replica_for_restart = fixture.replica.clone();
-    let restart = move |session_id: Uuid, agent: String, profile: String| {
-        let app = app_for_restart.clone();
-        let replica = replica_for_restart.clone();
-        let restarted_id = Arc::clone(&restarted_id_seen);
-        async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!(agent, "pi");
-            assert_eq!(profile, "A");
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.destroy_session(session_id).await.unwrap();
-            }
-            let (new_id, _token) = seed_self_switch_session(
-                &app,
-                &replica,
-                "pi",
-                Some("pi"),
-                Some(&profile),
-                Some(&profile),
-            )
-            .await;
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.mark_idle(new_id).await;
-            }
-            register_mock_pty_route(&app, new_id);
-            *restarted_id.lock().unwrap() = Some(new_id);
-            Ok(new_id.to_string())
-        }
-    };
-
-    let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
-    let injected_prompts_seen = Arc::clone(&injected_prompts);
-    let app_for_inject = app.clone();
-    let inject = move |session_id: Uuid, prompt: String| {
-        let app = app_for_inject.clone();
-        let injected_prompts = Arc::clone(&injected_prompts_seen);
-        async move {
-            injected_prompts
-                .lock()
-                .unwrap()
-                .push((session_id, prompt.clone()));
-            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
-        }
-    };
-    let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
-    let boundaries_seen = Arc::clone(&boundaries);
-    let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
-        let boundaries = Arc::clone(&boundaries_seen);
-        async move {
-            boundaries.lock().unwrap().push((session_id, boundary));
-        }
-    };
-
-    MailboxPoller::drive_self_switch_after_sustained_idle(
+    let target_id = restarted.expect("restart seam must return the configured Pi session id");
+    assert_self_switch_injected(
+        &app,
         source_id,
-        fixture.replica.clone(),
-        target_agent,
-        target_profile,
-        None,
-        SELF_HANDOFF_FLAVOR_SWITCH,
-        Arc::clone(&pending),
-        Duration::ZERO,
-        Duration::ZERO,
-        // The real app-backed restart can exceed one second under the full
-        // parallel suite. Only settle and poll need to be zero in this test.
-        Duration::from_secs(30),
-        session_state,
-        persist,
-        restart,
-        inject,
-        note_boundary,
-    )
-    .await;
-
-    let target_id = restarted_id
-        .lock()
-        .unwrap()
-        .expect("restart seam must return the configured Pi session id");
-    assert_ne!(target_id, source_id);
-    assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
-    let prompts = injected_prompts.lock().unwrap().clone();
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].0, target_id);
-    assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
-    assert_eq!(
-        mock_pty_writes_for(&app, target_id),
-        vec![
-            prompts[0].1.as_bytes().to_vec(),
-            b"\r".to_vec(),
-            b"\r".to_vec()
-        ]
+        target_id,
+        &state_ids,
+        &prompts,
+        &boundaries,
     );
-    assert_eq!(
-        *boundaries.lock().unwrap(),
-        vec![(target_id, SelfClearBoundary::ContentInjected)]
-    );
-    let manager = {
-        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let guard = state.read().await;
-        guard.clone()
-    };
+    let manager = current_session_manager(&app).await;
     assert!(manager.get_session(source_id).await.is_none());
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "pi");
@@ -290,147 +335,19 @@ async fn self_switch_pi_source_to_established_target_completes() {
     assert_eq!(response["target_coding_agent"], "codex");
     assert_eq!(response["target_profile"], "A");
 
-    let target_agent = response["target_coding_agent"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let target_profile = response["target_profile"].as_str().unwrap().to_string();
-    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
-    let state_ids_seen = Arc::clone(&state_ids);
-    let app_for_state = app.clone();
-    let session_state = move |session_id: Uuid| {
-        let app = app_for_state.clone();
-        let state_ids = Arc::clone(&state_ids_seen);
-        async move {
-            state_ids.lock().unwrap().push(session_id);
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
-    };
+    let (pending, restarted, state_ids, prompts, boundaries) =
+        drive_self_switch_restart(&app, &fixture.replica, source_id, &response, "codex").await;
 
-    let app_for_persist = app.clone();
-    let persist = move |cwd: PathBuf, agent: String, profile: String| {
-        let app = app_for_persist.clone();
-        async move {
-            let settings = app.state::<SettingsState>();
-            let snapshot = settings.read().await.clone();
-            crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
-                &snapshot, &cwd, &agent, &profile,
-            )
-        }
-    };
-
-    let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
-    let restarted_id_seen = Arc::clone(&restarted_id);
-    let app_for_restart = app.clone();
-    let replica_for_restart = fixture.replica.clone();
-    let restart = move |session_id: Uuid, agent: String, profile: String| {
-        let app = app_for_restart.clone();
-        let replica = replica_for_restart.clone();
-        let restarted_id = Arc::clone(&restarted_id_seen);
-        async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!(agent, "codex");
-            assert_eq!(profile, "A");
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.destroy_session(session_id).await.unwrap();
-            }
-            let (new_id, _token) = seed_self_switch_session(
-                &app,
-                &replica,
-                "codex",
-                Some("codex"),
-                Some(&profile),
-                Some(&profile),
-            )
-            .await;
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.mark_idle(new_id).await;
-            }
-            register_mock_pty_route(&app, new_id);
-            *restarted_id.lock().unwrap() = Some(new_id);
-            Ok(new_id.to_string())
-        }
-    };
-
-    let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
-    let injected_prompts_seen = Arc::clone(&injected_prompts);
-    let app_for_inject = app.clone();
-    let inject = move |session_id: Uuid, prompt: String| {
-        let app = app_for_inject.clone();
-        let injected_prompts = Arc::clone(&injected_prompts_seen);
-        async move {
-            injected_prompts
-                .lock()
-                .unwrap()
-                .push((session_id, prompt.clone()));
-            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
-        }
-    };
-    let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
-    let boundaries_seen = Arc::clone(&boundaries);
-    let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
-        let boundaries = Arc::clone(&boundaries_seen);
-        async move {
-            boundaries.lock().unwrap().push((session_id, boundary));
-        }
-    };
-
-    MailboxPoller::drive_self_switch_after_sustained_idle(
+    let target_id = restarted.expect("restart seam must return the configured target session id");
+    assert_self_switch_injected(
+        &app,
         source_id,
-        fixture.replica.clone(),
-        target_agent,
-        target_profile,
-        None,
-        SELF_HANDOFF_FLAVOR_SWITCH,
-        Arc::clone(&pending),
-        Duration::ZERO,
-        Duration::ZERO,
-        Duration::from_secs(30),
-        session_state,
-        persist,
-        restart,
-        inject,
-        note_boundary,
-    )
-    .await;
-
-    let target_id = restarted_id
-        .lock()
-        .unwrap()
-        .expect("restart seam must return the configured target session id");
-    assert_ne!(target_id, source_id);
-    assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
-    let prompts = injected_prompts.lock().unwrap().clone();
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].0, target_id);
-    assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
-    assert_eq!(
-        mock_pty_writes_for(&app, target_id),
-        vec![
-            prompts[0].1.as_bytes().to_vec(),
-            b"\r".to_vec(),
-            b"\r".to_vec()
-        ]
+        target_id,
+        &state_ids,
+        &prompts,
+        &boundaries,
     );
-    assert_eq!(
-        *boundaries.lock().unwrap(),
-        vec![(target_id, SelfClearBoundary::ContentInjected)]
-    );
-    let manager = {
-        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let guard = state.read().await;
-        guard.clone()
-    };
+    let manager = current_session_manager(&app).await;
     assert!(manager.get_session(source_id).await.is_none());
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "codex");
@@ -495,147 +412,19 @@ async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
     assert_eq!(response["target_coding_agent"], "pi");
     assert_eq!(response["target_profile"], "A");
 
-    let target_agent = response["target_coding_agent"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let target_profile = response["target_profile"].as_str().unwrap().to_string();
-    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    let state_ids = Arc::new(Mutex::new(Vec::<Uuid>::new()));
-    let state_ids_seen = Arc::clone(&state_ids);
-    let app_for_state = app.clone();
-    let session_state = move |session_id: Uuid| {
-        let app = app_for_state.clone();
-        let state_ids = Arc::clone(&state_ids_seen);
-        async move {
-            state_ids.lock().unwrap().push(session_id);
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
-    };
+    let (pending, restarted, state_ids, prompts, boundaries) =
+        drive_self_switch_restart(&app, &fixture.replica, source_id, &response, "pi").await;
 
-    let app_for_persist = app.clone();
-    let persist = move |cwd: PathBuf, agent: String, profile: String| {
-        let app = app_for_persist.clone();
-        async move {
-            let settings = app.state::<SettingsState>();
-            let snapshot = settings.read().await.clone();
-            crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
-                &snapshot, &cwd, &agent, &profile,
-            )
-        }
-    };
-
-    let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
-    let restarted_id_seen = Arc::clone(&restarted_id);
-    let app_for_restart = app.clone();
-    let replica_for_restart = fixture.replica.clone();
-    let restart = move |session_id: Uuid, agent: String, profile: String| {
-        let app = app_for_restart.clone();
-        let replica = replica_for_restart.clone();
-        let restarted_id = Arc::clone(&restarted_id_seen);
-        async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!(agent, "pi");
-            assert_eq!(profile, "A");
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.destroy_session(session_id).await.unwrap();
-            }
-            let (new_id, _token) = seed_self_switch_session(
-                &app,
-                &replica,
-                "pi",
-                Some("pi"),
-                Some(&profile),
-                Some(&profile),
-            )
-            .await;
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.mark_idle(new_id).await;
-            }
-            register_mock_pty_route(&app, new_id);
-            *restarted_id.lock().unwrap() = Some(new_id);
-            Ok(new_id.to_string())
-        }
-    };
-
-    let injected_prompts = Arc::new(Mutex::new(Vec::<(Uuid, String)>::new()));
-    let injected_prompts_seen = Arc::clone(&injected_prompts);
-    let app_for_inject = app.clone();
-    let inject = move |session_id: Uuid, prompt: String| {
-        let app = app_for_inject.clone();
-        let injected_prompts = Arc::clone(&injected_prompts_seen);
-        async move {
-            injected_prompts
-                .lock()
-                .unwrap()
-                .push((session_id, prompt.clone()));
-            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
-        }
-    };
-    let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
-    let boundaries_seen = Arc::clone(&boundaries);
-    let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
-        let boundaries = Arc::clone(&boundaries_seen);
-        async move {
-            boundaries.lock().unwrap().push((session_id, boundary));
-        }
-    };
-
-    MailboxPoller::drive_self_switch_after_sustained_idle(
+    let target_id = restarted.expect("restart seam must return the reseeded Pi session id");
+    assert_self_switch_injected(
+        &app,
         source_id,
-        fixture.replica.clone(),
-        target_agent,
-        target_profile,
-        None,
-        SELF_HANDOFF_FLAVOR_SWITCH,
-        Arc::clone(&pending),
-        Duration::ZERO,
-        Duration::ZERO,
-        Duration::from_secs(30),
-        session_state,
-        persist,
-        restart,
-        inject,
-        note_boundary,
-    )
-    .await;
-
-    let target_id = restarted_id
-        .lock()
-        .unwrap()
-        .expect("restart seam must return the reseeded Pi session id");
-    assert_ne!(target_id, source_id);
-    assert_eq!(*state_ids.lock().unwrap(), vec![source_id, target_id]);
-    let prompts = injected_prompts.lock().unwrap().clone();
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].0, target_id);
-    assert!(prompts[0].1.contains("self-clear/"), "{}", prompts[0].1);
-    assert_eq!(
-        mock_pty_writes_for(&app, target_id),
-        vec![
-            prompts[0].1.as_bytes().to_vec(),
-            b"\r".to_vec(),
-            b"\r".to_vec()
-        ]
+        target_id,
+        &state_ids,
+        &prompts,
+        &boundaries,
     );
-    assert_eq!(
-        *boundaries.lock().unwrap(),
-        vec![(target_id, SelfClearBoundary::ContentInjected)]
-    );
-    let manager = {
-        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let guard = state.read().await;
-        guard.clone()
-    };
+    let manager = current_session_manager(&app).await;
     assert!(manager.get_session(source_id).await.is_none());
     let target = manager.get_session(target_id).await.unwrap();
     assert_eq!(target.shell, "pi");

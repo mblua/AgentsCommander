@@ -1,13 +1,20 @@
 use super::*;
 
-/// #1682 - the privileged exact-agent-input plane bypasses `mark_busy`, so
-/// the boundary transaction itself is the arming site for it.
-#[tokio::test]
-async fn the_pty_input_boundary_arms_the_session() {
+pub(super) struct BoundaryRig {
+    pub(super) sender_id: Uuid,
+    pub(super) target_id: Uuid,
+    pub(super) route: crate::config::teams::VerifiedPtyInputRoute,
+    pub(super) authority_route: crate::pty::input_route::PtyAuthorityRouteProof,
+    pub(super) permit: crate::pty::input_route::PtyInputPermit,
+    pub(super) idle: Arc<crate::pty::idle_detector::IdleDetector>,
+    pub(super) sessions: SessionManager,
+    pub(super) settings: SettingsState,
+}
+
+pub(super) async fn boundary_rig(fixture: &MailboxFixture) -> BoundaryRig {
     use crate::pty::backend::SessionBackendKind;
     use crate::session::profile::IdleTuning;
 
-    let fixture = make_mailbox_fixture();
     let app = fixture.app.handle().clone();
     let sender_id = add_mailbox_session(
         &app,
@@ -73,6 +80,35 @@ async fn the_pty_input_boundary_arms_the_session() {
         .await
         .clone();
     let settings = app.state::<SettingsState>().inner().clone();
+    BoundaryRig {
+        sender_id,
+        target_id,
+        route,
+        authority_route,
+        permit,
+        idle,
+        sessions,
+        settings,
+    }
+}
+
+/// #1682 - the privileged exact-agent-input plane bypasses `mark_busy`, so
+/// the boundary transaction itself is the arming site for it.
+#[tokio::test]
+async fn the_pty_input_boundary_arms_the_session() {
+    use crate::pty::backend::SessionBackendKind;
+
+    let fixture = make_mailbox_fixture();
+    let BoundaryRig {
+        sender_id,
+        target_id,
+        route,
+        authority_route,
+        permit,
+        idle,
+        sessions,
+        settings,
+    } = boundary_rig(&fixture).await;
     fn current_recipe(session: &crate::session::session::Session, settings: &AppSettings) -> bool {
         session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
     }
@@ -159,74 +195,18 @@ async fn an_injected_text_block_arms_the_session() {
 async fn final_pty_boundary_linearizes_wrapper_trust_against_concurrent_settings_mutation() {
     use crate::pty::backend::SessionBackendKind;
     use crate::pty::idle_detector::PtyInputBoundaryFailure;
-    use crate::session::profile::IdleTuning;
 
     let fixture = make_mailbox_fixture();
-    let app = fixture.app.handle().clone();
-    let sender_id = add_mailbox_session(
-        &app,
-        &fixture.sender_cwd,
-        "coordinator",
-        SessionStatus::Running,
-        None,
-    )
-    .await;
-    let target_id = add_mailbox_session(
-        &app,
-        &fixture.target_cwd,
-        "member",
-        SessionStatus::Idle,
-        None,
-    )
-    .await;
-    let paths = vec![fixture._temp.path().to_string_lossy().to_string()];
-    let route = crate::config::teams::verify_pty_input_route(
-        &fixture.sender_cwd,
-        false,
-        CANONICAL_WAKE_TO,
-        &paths,
-    )
-    .expect("verified route");
-    let target_cwd_identity =
-        crate::path_identity::verify_directory(&fixture.target_cwd).expect("target identity");
-    let sender_cwd_identity =
-        crate::path_identity::verify_directory(&fixture.sender_cwd).expect("sender identity");
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    pty.lock()
-        .unwrap()
-        .record_route_with_identities(
-            target_id,
-            SessionBackendKind::LocalProcess,
-            Some(target_cwd_identity),
-            Some(route.target.replica_identity.clone()),
-        )
-        .expect("record target route");
-    pty.lock()
-        .unwrap()
-        .record_route_with_identities(
-            sender_id,
-            SessionBackendKind::LocalProcess,
-            Some(sender_cwd_identity),
-            Some(route.sender.replica_identity.clone()),
-        )
-        .expect("record sender route");
-    let authority_route =
-        PtyManager::authority_route_proof(&pty, sender_id).expect("sender authority proof");
-    let permit = PtyManager::acquire_input_writer(&pty, target_id)
-        .await
-        .expect("target permit");
-    let idle = app
-        .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-        .inner()
-        .clone();
-    idle.register_session(target_id, IdleTuning::DEFAULT);
-    idle.set_pty_input_ready_for_test(target_id);
-    let sessions = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
-    let settings = app.state::<SettingsState>().inner().clone();
+    let BoundaryRig {
+        sender_id,
+        target_id,
+        route,
+        authority_route,
+        permit,
+        idle,
+        sessions,
+        settings,
+    } = boundary_rig(&fixture).await;
     fn current_recipe(session: &crate::session::session::Session, settings: &AppSettings) -> bool {
         session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
     }
@@ -547,15 +527,90 @@ async fn host_terminal_artifact_is_source_correlated_and_idempotently_repairable
     assert_host_terminal_artifact_repair(&fixture, fixture._temp.path(), false).await;
 }
 
+fn enqueue_rejected_host_artifact_operation(
+    store: &crate::api::message_store::MessageStore,
+    route: crate::config::teams::VerifiedPtyInputRoute,
+    injection_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    request_fingerprint: &str,
+    confirmation_tag: &str,
+) {
+    use crate::phone::types::{
+        canonical_pty_timestamp, PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
+    };
+    store
+        .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+            injection_id: injection_id.to_owned(),
+            sender_fqn: route.sender.canonical_fqn,
+            target_fqn: route.target.canonical_fqn,
+            op_id: injection_id.to_owned(),
+            nonce_sha256: "c".repeat(64),
+            request_fingerprint: request_fingerprint.to_owned(),
+            confirmation_tag: Some(confirmation_tag.to_owned()),
+            requested_agent_id: None,
+            payload: b"artifact exact text".to_vec(),
+            source_plane: PtyInputSourcePlane::HostCli,
+            sender_incarnation_fingerprint: route.sender.incarnation_fingerprint,
+            sender_identity_fingerprint: route.sender.authority_fingerprint,
+            target_identity_fingerprint: route.target.authority_fingerprint,
+            authority_session_id: Uuid::new_v4().to_string(),
+            authority_client_id: None,
+            authority_client_generation: None,
+            issued_at: canonical_pty_timestamp(now),
+            expires_at: canonical_pty_timestamp(now + chrono::Duration::minutes(10)),
+        })
+        .unwrap();
+    store
+        .terminalize_pty_input(
+            injection_id,
+            PtyInputPublicStatus::Rejected,
+            Some(PtyInputReasonCode::Busy),
+            now + chrono::Duration::seconds(1),
+        )
+        .unwrap();
+}
+
+fn write_host_marker(
+    poller: &MailboxPoller,
+    marker_path: &Path,
+    marker_setup_path: &Path,
+    injection_id: &str,
+    contents: &[u8],
+) {
+    std::fs::write(marker_path, contents).unwrap();
+    let source_identity = crate::path_identity::read_bounded_regular(
+        marker_path,
+        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
+    )
+    .unwrap()
+    .1;
+    poller
+        .replace_host_request_with_marker(
+            marker_setup_path,
+            &source_identity,
+            injection_id,
+            injection_id,
+        )
+        .unwrap();
+}
+
+fn read_host_artifact(artifact_path: &Path) -> crate::phone::types::PtyInputHostArtifact {
+    serde_json::from_slice(
+        &crate::path_identity::read_bounded_regular(
+            artifact_path,
+            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+        )
+        .unwrap()
+        .0,
+    )
+    .unwrap()
+}
+
 async fn assert_host_terminal_artifact_repair(
     fixture: &MailboxFixture,
     database_root: &Path,
     expect_long_path: bool,
 ) {
-    use crate::phone::types::{
-        canonical_pty_timestamp, PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
-    };
-
     let outbox = fixture
         .sender_cwd
         .join(crate::config::agent_local_dir_name())
@@ -576,36 +631,14 @@ async fn assert_host_terminal_artifact_repair(
     let now = chrono::Utc::now();
     let request_fingerprint = "a".repeat(64);
     let confirmation_tag = "b".repeat(64);
-    store
-        .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
-            injection_id: injection_id.clone(),
-            sender_fqn: route.sender.canonical_fqn,
-            target_fqn: route.target.canonical_fqn,
-            op_id: injection_id.clone(),
-            nonce_sha256: "c".repeat(64),
-            request_fingerprint: request_fingerprint.clone(),
-            confirmation_tag: Some(confirmation_tag.clone()),
-            requested_agent_id: None,
-            payload: b"artifact exact text".to_vec(),
-            source_plane: PtyInputSourcePlane::HostCli,
-            sender_incarnation_fingerprint: route.sender.incarnation_fingerprint,
-            sender_identity_fingerprint: route.sender.authority_fingerprint,
-            target_identity_fingerprint: route.target.authority_fingerprint,
-            authority_session_id: Uuid::new_v4().to_string(),
-            authority_client_id: None,
-            authority_client_generation: None,
-            issued_at: canonical_pty_timestamp(now),
-            expires_at: canonical_pty_timestamp(now + chrono::Duration::minutes(10)),
-        })
-        .unwrap();
-    store
-        .terminalize_pty_input(
-            &injection_id,
-            PtyInputPublicStatus::Rejected,
-            Some(PtyInputReasonCode::Busy),
-            now + chrono::Duration::seconds(1),
-        )
-        .unwrap();
+    enqueue_rejected_host_artifact_operation(
+        &store,
+        route,
+        &injection_id,
+        now,
+        &request_fingerprint,
+        &confirmation_tag,
+    );
 
     let poller = MailboxPoller::default();
     let marker_path = outbox.join(format!("{injection_id}.json"));
@@ -629,21 +662,8 @@ async fn assert_host_terminal_artifact_repair(
             artifact_path.as_os_str().encode_wide().count()
         );
     }
-    std::fs::write(&marker_path, b"source envelope").unwrap();
-    let source_identity = crate::path_identity::read_bounded_regular(
-        &marker_path,
-        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
-    )
-    .unwrap()
-    .1;
-    poller
-        .replace_host_request_with_marker(
-            &marker_setup_path,
-            &source_identity,
-            &injection_id,
-            &injection_id,
-        )
-        .unwrap();
+    let marker = (&marker_path, &marker_setup_path, injection_id.as_str());
+    write_host_marker(&poller, marker.0, marker.1, marker.2, b"source envelope");
     poller
         .materialize_host_terminal_artifact(&marker_path, &store, &injection_id)
         .await
@@ -659,34 +679,18 @@ async fn assert_host_terminal_artifact_repair(
     }
     #[cfg(not(windows))]
     let _ = expect_long_path;
-    let artifact: crate::phone::types::PtyInputHostArtifact = serde_json::from_slice(
-        &crate::path_identity::read_bounded_regular(
-            &artifact_path,
-            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
-        )
-        .unwrap()
-        .0,
-    )
-    .unwrap();
+    let artifact = read_host_artifact(&artifact_path);
     assert_eq!(artifact.confirmation_tag, confirmation_tag);
     assert_eq!(artifact.result.injection_id, injection_id);
 
     // Simulate a crash after artifact publication but before marker cleanup.
-    std::fs::write(&marker_path, b"retained source envelope").unwrap();
-    let source_identity = crate::path_identity::read_bounded_regular(
-        &marker_path,
-        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
-    )
-    .unwrap()
-    .1;
-    poller
-        .replace_host_request_with_marker(
-            &marker_setup_path,
-            &source_identity,
-            &injection_id,
-            &injection_id,
-        )
-        .unwrap();
+    write_host_marker(
+        &poller,
+        marker.0,
+        marker.1,
+        marker.2,
+        b"retained source envelope",
+    );
     #[cfg(windows)]
     if expect_long_path {
         use std::os::windows::ffi::OsStrExt;
@@ -699,33 +703,17 @@ async fn assert_host_terminal_artifact_repair(
         .unwrap();
     assert!(!marker_path.exists());
 
-    let repaired: crate::phone::types::PtyInputHostArtifact = serde_json::from_slice(
-        &crate::path_identity::read_bounded_regular(
-            &artifact_path,
-            crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
-        )
-        .unwrap()
-        .0,
-    )
-    .unwrap();
+    let repaired = read_host_artifact(&artifact_path);
     assert_eq!(repaired.result.injection_id, injection_id);
     assert_eq!(repaired.confirmation_tag, confirmation_tag);
 
-    std::fs::write(&marker_path, b"tampered source envelope").unwrap();
-    let source_identity = crate::path_identity::read_bounded_regular(
-        &marker_path,
-        crate::phone::types::PTY_INPUT_HOST_ENVELOPE_MAX_BYTES,
-    )
-    .unwrap()
-    .1;
-    poller
-        .replace_host_request_with_marker(
-            &marker_setup_path,
-            &source_identity,
-            &injection_id,
-            &injection_id,
-        )
-        .unwrap();
+    write_host_marker(
+        &poller,
+        marker.0,
+        marker.1,
+        marker.2,
+        b"tampered source envelope",
+    );
     let mut marker: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
     marker["unexpectedField"] = serde_json::Value::String("tampered".to_string());
