@@ -587,7 +587,7 @@ impl SpawnRecord {
             .ac_stop_source
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source.to_string());
-        let stamp = (self.started.elapsed().as_micros().min(u64::MAX as u128) as u64).max(1);
+        let stamp = (self.started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64).max(1);
         self.ac_stop_at_us.store(stamp, Ordering::SeqCst);
         // Published last: any thread that sees this flag also sees the source, the
         // timestamp and the pre-stop liveness written above.
@@ -664,7 +664,7 @@ impl SpawnRecord {
             // the teardown talking, not the child starting up.
             if !self.stop_in_flight(elapsed) {
                 // 0 is the "nothing yet" sentinel for both stamps, so never store it.
-                let stamp = (elapsed.as_micros().min(u64::MAX as u128) as u64).max(1);
+                let stamp = (elapsed.as_micros().min(u128::from(u64::MAX)) as u64).max(1);
 
                 // The first byte off the PTY. On Windows this is ConPTY greeting us,
                 // not the child, which is why it is DEBUG and never proof of life.

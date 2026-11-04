@@ -122,9 +122,8 @@ pub(crate) fn retire_live_standalone_global(
                 e
             )
         })?;
-    let is_generated = std::str::from_utf8(&bytes)
-        .ok()
-        .is_some_and(is_known_generated_standalone_global_template);
+    let is_generated =
+        std::str::from_utf8(&bytes).is_ok_and(is_known_generated_standalone_global_template);
 
     if !is_generated {
         log::warn!(

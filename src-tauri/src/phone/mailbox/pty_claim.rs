@@ -489,7 +489,7 @@ pub(crate) fn write_atomic_pty_metadata(
     result
 }
 
-/// The MailboxPoller runs as a background tokio task. It polls outbox directories
+/// The `MailboxPoller` runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
 #[cfg(test)]
 pub(crate) type MailboxAttachCalls = Arc<Mutex<Vec<(Uuid, Option<String>)>>>;
@@ -509,7 +509,7 @@ pub(crate) struct MailboxTestHooks {
     pub(crate) consumption_results: Arc<Mutex<VecDeque<ConsumptionVerdict>>>,
     pub(crate) inject_calls: Arc<Mutex<Vec<Uuid>>>,
     pub(crate) settle_calls: Arc<Mutex<Vec<Uuid>>>,
-    /// Sessions whose hooked live-settle step removes the SessionManager
+    /// Sessions whose hooked live-settle step removes the `SessionManager`
     /// record, deterministically exercising the post-preflight race path.
     pub(crate) remove_session_on_settle: Arc<Mutex<std::collections::HashSet<Uuid>>>,
     /// (#1399 T9) Sessions whose hooked inject panics instead of returning,
