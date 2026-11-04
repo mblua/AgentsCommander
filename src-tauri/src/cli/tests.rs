@@ -36,8 +36,7 @@ fn cli_after_help_documents_token_validation_model() {
         .to_string();
     assert!(
         after.contains("TOKEN VALIDATION MODEL"),
-        "after_help missing TOKEN VALIDATION MODEL block: {}",
-        after
+        "after_help missing TOKEN VALIDATION MODEL block: {after}"
     );
 }
 
@@ -70,15 +69,13 @@ fn internal_verbs_and_test_flags_are_hidden_from_help() {
     for name in hidden_verbs {
         assert!(
             !help.contains(name),
-            "hidden verb `{}` must not appear in --help:\n{}",
-            name,
-            help
+            "hidden verb `{name}` must not appear in --help:\n{help}"
         );
         let sub = cmd
             .get_subcommands()
             .find(|c| c.get_name() == name)
-            .unwrap_or_else(|| panic!("`{}` must still be a registered subcommand", name));
-        assert!(sub.is_hide_set(), "`{}` should be marked hidden", name);
+            .unwrap_or_else(|| panic!("`{name}` must still be a registered subcommand"));
+        assert!(sub.is_hide_set(), "`{name}` should be marked hidden");
     }
 
     // #944 - the array above is a manual allowlist. A new ui-* verb that forgets
@@ -105,17 +102,14 @@ fn internal_verbs_and_test_flags_are_hidden_from_help() {
     ] {
         assert!(
             !help.contains(flag),
-            "hidden flag `{}` must not appear in --help:\n{}",
-            flag,
-            help
+            "hidden flag `{flag}` must not appear in --help:\n{help}"
         );
     }
 
     // Sanity: a normal public verb is still listed.
     assert!(
         help.contains("send"),
-        "public verbs should still appear in --help:\n{}",
-        help
+        "public verbs should still appear in --help:\n{help}"
     );
 }
 

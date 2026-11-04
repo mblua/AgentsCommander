@@ -134,7 +134,7 @@ fn claude_projects_dir_for_config_dir_expands_percent_envvar_in_base() {
     let custom_base = tmp.path().join(".claude-env");
     // SAFETY: env state is process-global; unique name avoids cross-test races.
     std::env::set_var(var, custom_base.to_str().unwrap());
-    let resolved = super::super::claude_projects_dir_for_config_dir(&format!("%{}%", var), "C:\\x");
+    let resolved = super::super::claude_projects_dir_for_config_dir(&format!("%{var}%"), "C:\\x");
     std::env::remove_var(var);
     let expected = custom_base
         .join("projects")
@@ -164,10 +164,8 @@ fn local_resume_probe_env_layer_expands_powershell_envvar() {
     let custom_base = tmp.path().join(".claude-env");
     std::env::set_var(var, custom_base.to_str().unwrap());
 
-    let resolved = super::super::claude_projects_dir_for_config_dir(
-        &format!("$env:{}\\.claude", var),
-        "C:\\x",
-    );
+    let resolved =
+        super::super::claude_projects_dir_for_config_dir(&format!("$env:{var}\\.claude"), "C:\\x");
 
     std::env::remove_var(var);
     let expected = PathBuf::from(format!("{}\\.claude", custom_base.to_string_lossy()))
@@ -326,8 +324,7 @@ fn should_inject_fresh_session_id_false_for_each_identity_veto_token() {
     ] {
         assert!(
             !super::super::should_inject_fresh_session_id(true, true, cmd),
-            "identity flag in {:?} must veto the rider",
-            cmd
+            "identity flag in {cmd:?} must veto the rider"
         );
     }
 }
@@ -348,7 +345,7 @@ fn should_inject_fresh_session_id_true_when_unrelated_flag_substring() {
 const TRANSCRIPT_UUID: &str = "7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f";
 
 fn transcript_id_of(args: &[&str]) -> Option<String> {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     super::super::transcript_id_from_args(&args)
 }
 
@@ -669,10 +666,7 @@ fn resolve_claude_projects_dir_expands_percent_envvar_value() {
     let wrapper = write_wrapper(
         tmp.path(),
         "claude-mb.cmd",
-        &format!(
-            "@echo off\r\nset CLAUDE_CONFIG_DIR=%{}%\r\nclaude %*\r\n",
-            var
-        ),
+        &format!("@echo off\r\nset CLAUDE_CONFIG_DIR=%{var}%\r\nclaude %*\r\n"),
     );
     let resolved =
         super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");
@@ -692,10 +686,7 @@ fn resolve_claude_projects_dir_expands_powershell_envvar_value() {
     let wrapper = write_wrapper(
         tmp.path(),
         "claude-mb.ps1",
-        &format!(
-            "$env:CLAUDE_CONFIG_DIR = \"$env:{}\"\r\nclaude @args\r\n",
-            var
-        ),
+        &format!("$env:CLAUDE_CONFIG_DIR = \"$env:{var}\"\r\nclaude @args\r\n"),
     );
     let resolved =
         super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");

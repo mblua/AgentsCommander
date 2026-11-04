@@ -80,7 +80,7 @@ pub(super) fn validate_variant_name_request(
     {
         return Err(vec![err(
             "variant_metadata_missing",
-            format!("Variant '{}' is not in experiment metadata", variant),
+            format!("Variant '{variant}' is not in experiment metadata"),
             Some(variant),
         )]);
     }
@@ -271,7 +271,7 @@ pub(super) fn validate_slug_identity(
     if value.is_empty() {
         return Err(vec![err(
             code,
-            format!("{} name cannot be empty", label),
+            format!("{label} name cannot be empty"),
             None,
         )]);
     }
@@ -279,7 +279,7 @@ pub(super) fn validate_slug_identity(
     if sanitized != value {
         return Err(vec![err(
             code,
-            format!("{} '{}' must already be a lowercase slug", label, value),
+            format!("{label} '{value}' must already be a lowercase slug"),
             None,
         )]);
     }
@@ -352,7 +352,7 @@ pub(super) fn find_live_sessions_for_variant(
     ac_root: &Path,
     variant_agent_name: &str,
 ) -> Vec<LiveSessionBlocker> {
-    let mut out = find_live_sessions_under(&ac_root.join(format!("_agent_{}", variant_agent_name)));
+    let mut out = find_live_sessions_under(&ac_root.join(format!("_agent_{variant_agent_name}")));
     let _ = directories::visit_experiment_entries(ac_root, |entry| {
         let Ok((path, _)) = entry else {
             return std::ops::ControlFlow::<()>::Continue(());
@@ -363,7 +363,7 @@ pub(super) fn find_live_sessions_for_variant(
         if crate::config::entity_prefix::has_entity_prefix(name)
             && directories::experiment_path_is_dir(&path)
         {
-            let replica = path.join(format!("__agent_{}", variant_agent_name));
+            let replica = path.join(format!("__agent_{variant_agent_name}"));
             if directories::experiment_path_is_dir(&replica) {
                 out.extend(find_live_sessions_under(&replica));
             }

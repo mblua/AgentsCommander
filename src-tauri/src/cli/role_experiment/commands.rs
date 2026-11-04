@@ -138,8 +138,8 @@ pub(super) fn init_for_project_path(
             name: variant.clone(),
             source_agent: source_agent.clone(),
             agent_name: agent_name.clone(),
-            matrix_path: format!("../../../_agent_{}", agent_name),
-            role_path: format!("../../../_agent_{}/Role.md", agent_name),
+            matrix_path: format!("../../../_agent_{agent_name}"),
+            role_path: format!("../../../_agent_{agent_name}/Role.md"),
             role_sha256: role_sha.clone(),
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -147,7 +147,7 @@ pub(super) fn init_for_project_path(
         write_json(
             &experiment_dir
                 .join("variants")
-                .join(format!("{}.json", variant)),
+                .join(format!("{variant}.json")),
             &metadata,
             "variant_metadata_write_failed",
             Some(variant.as_str()),
@@ -226,7 +226,7 @@ fn collect_init_variants_preflight(
         if !seen.insert(variant.clone()) {
             preflight_errors.push(err(
                 "variant_name_duplicate",
-                format!("Variant '{}' is duplicated", variant),
+                format!("Variant '{variant}' is duplicated"),
                 Some(variant.as_str()),
             ));
             continue;
@@ -954,8 +954,8 @@ fn init_experiment_metadata(
         name: args.name.clone(),
         project: args.project.clone(),
         source_agent: source_agent.to_string(),
-        source_matrix_path: format!("../../_agent_{}", source_agent),
-        source_role_path: format!("../../_agent_{}/Role.md", source_agent),
+        source_matrix_path: format!("../../_agent_{source_agent}"),
+        source_role_path: format!("../../_agent_{source_agent}/Role.md"),
         source_role_sha256: role_sha.to_string(),
         created_at: now.clone(),
         updated_at: now,
