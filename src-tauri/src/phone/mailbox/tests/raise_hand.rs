@@ -457,7 +457,7 @@ async fn raise_hand_process_message_without_visible_title_slot_returns_false() {
             });
 
         let msg_id = format!("msg-rh-noslot-{idx}");
-        let rid = Uuid::from_u128(0x33180001000040008000000000000100 + idx).to_string();
+        let rid = Uuid::from_u128(0x3318_0001_0000_4000_8000_0000_0000_0100 + idx).to_string();
         let (path, _msg) =
             build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token.to_string()));
         let poller = MailboxPoller::default();
