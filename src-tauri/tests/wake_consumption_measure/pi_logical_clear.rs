@@ -485,8 +485,7 @@ async fn cleanup_pi_trial(
     let pty_live = ctx
         .pty_mgr
         .lock()
-        .map(|manager| manager.has_session(session_id))
-        .unwrap_or(true);
+        .map_or(true, |manager| manager.has_session(session_id));
     if pty_live {
         errors.push("PTY route remained live after cleanup".to_string());
     }

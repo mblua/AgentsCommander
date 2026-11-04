@@ -410,8 +410,7 @@ fn issue_1850_default_root_acceptance() {
         std::env::var("GITHUB_SHA").unwrap_or_else(|_| "<unset>".to_string()),
         known_home
             .as_deref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string()),
+            .map_or_else(|| "<none>".to_string(), |path| path.display().to_string()),
         inherited_home_env.as_deref().unwrap_or("<unset>"),
     );
 

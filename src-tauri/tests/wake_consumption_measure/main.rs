@@ -305,8 +305,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
 fn watcher_idle(idle: &Arc<IdleDetector>, id: Uuid) -> bool {
     idle.purge_readiness(&[id])
         .first()
-        .map(|r| r.watcher_idle)
-        .unwrap_or(false)
+        .is_some_and(|r| r.watcher_idle)
 }
 
 /// Strip the common SGR/CSI escapes so a plain-text screen can be scanned for the
@@ -387,9 +386,9 @@ fn screen_consumed(pre_lines: usize, post: &str, body_token: &str) -> bool {
 /// Ground truth: count marker lines the agent actually wrote to its side-effect
 /// file. Echo-immune: only a real tool execution creates them.
 fn gt_marker_count(file: &Path) -> usize {
-    std::fs::read_to_string(file)
-        .map(|s| s.lines().filter(|l| l.contains("AC_WAKE_MARK")).count())
-        .unwrap_or(0)
+    std::fs::read_to_string(file).map_or(0, |s| {
+        s.lines().filter(|l| l.contains("AC_WAKE_MARK")).count()
+    })
 }
 
 /// The wake body: instruct the agent to append a per-attempt marker line via a

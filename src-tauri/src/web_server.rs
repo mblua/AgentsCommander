@@ -593,7 +593,7 @@ impl WebServerHandle {
 
         let start_output = tokio::select! {
             result = &mut start_future => result,
-            _ = shutdown.token().cancelled() => {
+            () = shutdown.token().cancelled() => {
                 self.move_generation_to_stopping(generation);
                 start_future.await
             }
