@@ -75,7 +75,7 @@ async fn e2432_source_fingerprints_bind_ref_marker_source_and_context() {
             }
             _ => {
                 changed.configuration_ref.profile_calculated_id =
-                    Some(format!("cid1:{}", "a".repeat(64)))
+                    Some(format!("cid1:{}", "a".repeat(64)));
             }
         }
         assert_ne!(

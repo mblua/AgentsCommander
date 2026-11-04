@@ -387,8 +387,7 @@ pub(crate) async fn purge_sessions_after_settings_update(saved: &AppSettings) {
     if let Err(e) = purge_sessions_after_settings_update_in_dir(saved, &dir).await {
         log::warn!(
             "[settings] Failed to purge sessions outside current projectPaths after settings \
-                update: {}",
-            e
+                update: {e}"
         );
     }
 }
@@ -478,7 +477,7 @@ pub(crate) fn emit_room_idle_confirmation_updated(app: &AppHandle, changed: bool
     }
     let payload = serde_json::json!({});
     if let Err(error) = app.emit("room_idle_confirmation_updated", payload.clone()) {
-        log::warn!("Failed to emit room idle confirmation update: {}", error);
+        log::warn!("Failed to emit room idle confirmation update: {error}");
     }
     if let Some(broadcaster) = app.try_state::<WsBroadcaster>() {
         broadcaster.broadcast_event("room_idle_confirmation_updated", &payload);
@@ -503,9 +502,8 @@ pub(crate) fn emit_settings_draft_update_events(
 
     for agent_id in &events.env_agent_ids {
         log::debug!(
-            "[profile-hash] profile-save (save_settings_draft): agent env changed for {}; emitting \
-                coding_agent_env_settings_updated",
-            agent_id
+            "[profile-hash] profile-save (save_settings_draft): agent env changed for {agent_id}; \
+                emitting coding_agent_env_settings_updated"
         );
         let _ = app.emit(
             "coding_agent_env_settings_updated",

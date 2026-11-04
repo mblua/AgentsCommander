@@ -180,7 +180,7 @@ async fn api_start_server_adopts_the_prebound_listener_and_never_releases_the_po
         .no_proxy()
         .build()
         .expect("healthz client");
-    let url = format!("http://{}/api/v1/healthz", addr);
+    let url = format!("http://{addr}/api/v1/healthz");
     let body = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         client
             .get(&url)

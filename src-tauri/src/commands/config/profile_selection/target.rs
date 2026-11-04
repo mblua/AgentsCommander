@@ -133,7 +133,7 @@ pub(crate) fn validate_profile_assignment_request(
         .iter()
         .any(|agent| agent.id == coding_agent_id)
     {
-        return Err(format!("Agent '{}' is not configured", coding_agent_id));
+        return Err(format!("Agent '{coding_agent_id}' is not configured"));
     }
     normalize_profile_letter_for_assignment(profile)?;
     Ok(())

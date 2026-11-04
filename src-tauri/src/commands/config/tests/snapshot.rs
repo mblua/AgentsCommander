@@ -190,7 +190,7 @@ fn snapshot_carries_the_instance_settings_file_path() {
                 path,
                 dir.join("settings.30.instance.no-git.json")
                     .to_string_lossy()
-            )
+            );
         }
         (None, None) => {}
         (dir, path) => {

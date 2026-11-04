@@ -392,7 +392,7 @@ fn raw_agent_delete_rejects_each_malformed_relevant_alert_shape_without_writes()
         let agent_dir = create_test_agent(&base, "dev-rust", "Dev Rust");
         let (config_path, before) = write_team_value(
             &base,
-            &format!("invalid-{}", index),
+            &format!("invalid-{index}"),
             serde_json::json!({
                 "agents": ["_agent_dev-rust"],
                 "coordinator": "_agent_architect",

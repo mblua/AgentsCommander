@@ -77,7 +77,7 @@ pub(crate) async fn persist_coding_agent_env_settings_update_with_saver(
         .agents
         .iter_mut()
         .find(|agent| agent.id == agent_id)
-        .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
+        .ok_or_else(|| format!("Agent '{agent_id}' is not configured"))?;
     agent.envs = envs;
     agent.isolated_home = isolated_home;
     validate_and_repair_settings(&mut candidate)?;

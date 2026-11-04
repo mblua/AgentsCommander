@@ -11,8 +11,9 @@ fn profile_assignment_request(
         profile: "B".to_string(),
         scope,
         restart_sessions: false,
-        confirmed_target_fingerprint: confirmed_target_fingerprint.map(|value| value.to_string()),
-        typed_confirmation: typed_confirmation.map(|value| value.to_string()),
+        confirmed_target_fingerprint: confirmed_target_fingerprint
+            .map(std::string::ToString::to_string),
+        typed_confirmation: typed_confirmation.map(std::string::ToString::to_string),
         assignment_mode: super::AssignmentMode::Ordinary,
         conflict_decision: None,
     }
