@@ -449,7 +449,7 @@ fn analyze_source(source: &str) -> ReadModel {
             return model;
         }
     };
-    if schema_version.unwrap_or(SCHEMA_VERSION as i64) > SCHEMA_VERSION as i64 {
+    if schema_version.unwrap_or(i64::from(SCHEMA_VERSION)) > i64::from(SCHEMA_VERSION) {
         model.strict_invalid = Some(format!(
             "`schema_version` {} is newer than this AgentsCommander understands ({})",
             schema_version.unwrap_or_default(),
@@ -460,7 +460,7 @@ fn analyze_source(source: &str) -> ReadModel {
     // A higher `coverage_version` is deliberately NOT strict-invalid: the
     // structure is unchanged, so discarding the operator's text on a downgrade
     // would be data loss at the moment they most want stability.
-    if coverage_version.unwrap_or(COVERAGE_VERSION as i64) > COVERAGE_VERSION as i64 {
+    if coverage_version.unwrap_or(i64::from(COVERAGE_VERSION)) > i64::from(COVERAGE_VERSION) {
         model.writer_blocked = Some(format!(
             "`coverage_version` {} is newer than this AgentsCommander understands ({})",
             coverage_version.unwrap_or_default(),

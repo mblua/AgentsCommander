@@ -191,7 +191,7 @@ fn git(dir: &Path, args: &[&str]) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x0800_0000);
     }
     let output = command.output().unwrap();
     assert!(
