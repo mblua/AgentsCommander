@@ -38,7 +38,7 @@ static NAMING_MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 fn naming_migration_guard() -> std::sync::MutexGuard<'static, ()> {
     NAMING_MIGRATION_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 const INSTANCE_FAMILIES_FIXTURE: [(&str, &str); 8] = [

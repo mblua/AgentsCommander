@@ -190,7 +190,7 @@ impl super::command_port::WebCommandDispatcher for WebCommandsDispatcher {
 }
 
 /// Dispatch a WebSocket JSON command and return the result as JSON.
-/// Format: { "id": N, "cmd": "command_name", "args": { ... } }
+/// Format: { "id": N, "cmd": "`command_name`", "args": { ... } }
 /// Returns: { "id": N, "result": ... } or { "id": N, "error": "..." }
 pub async fn dispatch(state: &WsState, id: u64, cmd: &str, args: &Value) -> Value {
     match dispatch_inner(state, cmd, args).await {
@@ -270,7 +270,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "list_detached_sessions" => {
             let detached = operations.detached();
             let set = detached.lock().unwrap();
-            Ok(json!(set.iter().map(|u| u.to_string()).collect::<Vec<_>>()))
+            Ok(json!(set.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()))
         }
 
         // --- Window commands (no-ops for web clients) ---
@@ -312,7 +312,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(null))
         }
 
-        _ => Err(format!("Unknown command: {}", cmd)),
+        _ => Err(format!("Unknown command: {cmd}")),
     }
 }
 
@@ -558,11 +558,7 @@ pub(crate) fn binary_pty_write_succeeded(
     match result {
         Ok(()) => true,
         Err(err) => {
-            log::warn!(
-                "[web-server] PTY binary write failed for session {}: {}",
-                uuid,
-                err
-            );
+            log::warn!("[web-server] PTY binary write failed for session {uuid}: {err}");
             false
         }
     }
