@@ -614,9 +614,7 @@ async fn archive_appends_and_rotates_best_effort() {
     // With the cap restored, an append lands in the active file (no rotation).
     append_orphan_archive_record(&dir, "outsideRetainedRoots", "archived", &ps).await;
     assert!(
-        std::fs::metadata(&base)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false),
+        std::fs::metadata(&base).is_ok_and(|m| m.len() > 0),
         "append still works after rotation"
     );
 
