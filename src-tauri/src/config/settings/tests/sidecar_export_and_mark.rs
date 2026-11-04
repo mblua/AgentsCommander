@@ -207,7 +207,7 @@ fn b3_marked(settings: &super::super::AppSettings) -> Option<std::path::PathBuf>
     settings
         .agents_layer
         .unreadable_path()
-        .map(|p| p.to_path_buf())
+        .map(std::path::Path::to_path_buf)
 }
 
 #[test]

@@ -394,7 +394,12 @@ async fn snapshot_pi_persists_configured_args_not_effective_resume() {
 /// snapshot persists the configured argv, never the effective `resume --last`.
 #[tokio::test]
 async fn muse_recipes_and_snapshots_preserve_configured_args_not_effective_resume() {
-    let s = |tokens: &[&str]| tokens.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+    let s = |tokens: &[&str]| {
+        tokens
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+    };
     let recipes: Vec<(&str, Vec<String>)> = vec![
         ("muse", s(&[])),
         ("muse", s(&["--workspace", "/srv/work"])),
