@@ -455,7 +455,7 @@ pub(super) async fn handle_orphan_drops(
             counts.suppressed_repeat += 1;
         }
         let is_dormant = match drop.session.id.as_deref() {
-            Some(id) => Uuid::parse_str(id).map_or(false, |uuid| dormant.contains(&uuid)),
+            Some(id) => Uuid::parse_str(id).is_ok_and(|uuid| dormant.contains(&uuid)),
             // No live row (recipe-only row, e.g. a failed-recoverable merge or
             // a restore-skipped entry): treat as dormant and record it.
             None => true,
