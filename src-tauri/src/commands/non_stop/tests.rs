@@ -101,6 +101,6 @@ fn issue_3260_spawn_from_sync_thread() {
                 .expect("future executed"),
         );
     }
-    executed.sort();
+    executed.sort_unstable();
     assert_eq!(executed, [0, 1, 2]);
 }

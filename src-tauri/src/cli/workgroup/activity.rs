@@ -334,7 +334,16 @@ pub(super) fn index_ci_entries(
                 if existing.conflicting {
                     continue;
                 }
-                if existing.ci.state != ci.state {
+                if existing.ci.state == ci.state {
+                    existing.ci.run_ids.extend_from_slice(&ci.run_ids);
+                    existing
+                        .ci
+                        .pull_requests
+                        .extend_from_slice(&ci.pull_requests);
+                    if existing.ci.unknown_reason.is_none() {
+                        existing.ci.unknown_reason = ci.unknown_reason.clone();
+                    }
+                } else {
                     *existing = IndexedRepoCi {
                         ci: PersistedRepoCi {
                             state: PersistedCiState::Unknown,
@@ -344,15 +353,6 @@ pub(super) fn index_ci_entries(
                         },
                         conflicting: true,
                     };
-                } else {
-                    existing.ci.run_ids.extend_from_slice(&ci.run_ids);
-                    existing
-                        .ci
-                        .pull_requests
-                        .extend_from_slice(&ci.pull_requests);
-                    if existing.ci.unknown_reason.is_none() {
-                        existing.ci.unknown_reason = ci.unknown_reason.clone();
-                    }
                 }
             }
         }

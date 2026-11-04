@@ -13,7 +13,7 @@ fn interpret_self_switch_response_exit_code(content: &str) -> i32 {
         Err(_) => return 2,
     };
     match resp.get("status").and_then(|v| v.as_str()) {
-        Some("queued") | Some("already_queued") => 0,
+        Some("queued" | "already_queued") => 0,
         _ => 2,
     }
 }

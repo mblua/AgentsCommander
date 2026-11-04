@@ -224,7 +224,7 @@ pub(crate) async fn finish_create_core_result<R: tauri::Runtime>(
             t.failed();
         } else if matches!(
             &result,
-            Ok(CreateCompletion::Finalized(_)) | Ok(CreateCompletion::Deferred(_))
+            Ok(CreateCompletion::Finalized(_) | CreateCompletion::Deferred(_))
         ) {
             t.succeeded();
         }

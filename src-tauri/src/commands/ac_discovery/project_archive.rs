@@ -151,7 +151,7 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
         return Err(archive_blocked_message(&blockers));
     }
 
-    let mutation_path = path.to_string();
+    let mutation_path = path.clone();
     mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
         let path = mutation_path.as_str();
         crate::config::projects::archive_project_path(s, path);

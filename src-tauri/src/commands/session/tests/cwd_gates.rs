@@ -97,7 +97,7 @@ async fn create_session_inner_gate_blocks_unregistered_cwd() {
         backend2.clone(),
     )));
     let app2 = session_test_app(settings, Arc::clone(&session_mgr2), Arc::clone(&pty_mgr2));
-    let reg_cwd = reg_cwd.to_string();
+    let reg_cwd = reg_cwd.clone();
     let outcome = super::super::create_session_inner_impl(
         app2.handle(),
         &session_mgr2,

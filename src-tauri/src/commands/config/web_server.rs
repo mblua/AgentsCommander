@@ -851,11 +851,11 @@ impl crate::api::dispatcher::DispatcherDelivery for tauri::AppHandle {
             .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
     }
 
-    fn deliver_wake<'a>(
-        &'a self,
+    fn deliver_wake(
+        &self,
         msg: crate::phone::types::OutboxMessage,
         messages: Arc<crate::config::injected_messages::MessageWarnings>,
-    ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+    ) -> futures::future::BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
             crate::phone::mailbox::MailboxPoller::new(messages)
                 .deliver_wake_with_origin(

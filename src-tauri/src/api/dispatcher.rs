@@ -19,11 +19,11 @@ pub(crate) trait DispatcherDelivery: Clone + Send + Sync + 'static {
     fn purging(&self) -> bool;
     fn message_store_state(&self) -> Option<MessageStoreState>;
     fn restoring(&self) -> bool;
-    fn deliver_wake<'a>(
-        &'a self,
+    fn deliver_wake(
+        &self,
         msg: OutboxMessage,
         messages: Arc<MessageWarnings>,
-    ) -> BoxFuture<'a, Result<(), String>>;
+    ) -> BoxFuture<'_, Result<(), String>>;
     fn dispatch_pty<'a>(
         &'a self,
         state: &'a MessageStoreState,

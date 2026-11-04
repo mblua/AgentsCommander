@@ -7,7 +7,7 @@ use crate::filesystem::agency_templates::ensure_agency_directory;
 use crate::config::role_templates::AGENCY_TEMPLATES_DIR;
 
 const GIT_LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
-const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const GIT_FETCH_TIMEOUT: Duration = Duration::from_mins(10);
 const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn run_git_with_timeout(
