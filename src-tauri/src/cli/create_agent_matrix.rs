@@ -122,7 +122,7 @@ pub(crate) fn execute_matrix_project_create(
     let resolved_project = match resolve_project_reference(&settings.project_paths, project) {
         Ok(project) => project,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };
@@ -138,7 +138,7 @@ pub(crate) fn execute_matrix_project_create(
     }) {
         Ok(created) => created,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };
@@ -179,8 +179,7 @@ pub(crate) fn execute_matrix_project_create(
                             launch_status = LaunchStatus::Rejected;
                             launch_error = Some(e.clone());
                             eprintln!(
-                                "Warning: agent matrix created but failed to request launch: {}",
-                                e
+                                "Warning: agent matrix created but failed to request launch: {e}"
                             );
                         }
                     },
@@ -188,8 +187,7 @@ pub(crate) fn execute_matrix_project_create(
                         launch_status = LaunchStatus::Rejected;
                         launch_error = Some(e.clone());
                         eprintln!(
-                            "Warning: agent matrix created but failed to request launch: {}",
-                            e
+                            "Warning: agent matrix created but failed to request launch: {e}"
                         );
                     }
                 }
@@ -204,7 +202,7 @@ pub(crate) fn execute_matrix_project_create(
                 );
                 launch_status = LaunchStatus::Rejected;
                 launch_error = Some(message.clone());
-                eprintln!("Warning: {}", message);
+                eprintln!("Warning: {message}");
             }
         }
     }
@@ -222,7 +220,7 @@ pub(crate) fn execute_matrix_project_create(
     match serde_json::to_string_pretty(&result) {
         Ok(json) => crate::cli_println!("{}", json),
         Err(e) => {
-            eprintln!("Error: failed to serialize result: {}", e);
+            eprintln!("Error: failed to serialize result: {e}");
             return 1;
         }
     }
@@ -238,7 +236,7 @@ fn wait_for_matrix_launch_result(request_id: &str) -> (bool, LaunchStatus, Optio
         session_request::LaunchOutcome::Launched { .. } => (true, LaunchStatus::Launched, None),
         session_request::LaunchOutcome::Rejected { error } => {
             let launch_error = Some(error.clone());
-            eprintln!("Warning: session launch rejected: {}", error);
+            eprintln!("Warning: session launch rejected: {error}");
             (false, LaunchStatus::Rejected, launch_error)
         }
         session_request::LaunchOutcome::Pending => {
@@ -275,10 +273,7 @@ fn request_matrix_project_refresh(
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
     if let Err(e) = write_project_refresh_request(&refresh_request) {
-        eprintln!(
-            "Warning: agent matrix created but failed to request sidebar refresh: {}",
-            e
-        );
+        eprintln!("Warning: agent matrix created but failed to request sidebar refresh: {e}");
     }
 }
 
@@ -287,17 +282,17 @@ pub(crate) fn write_project_refresh_request(request: &ProjectRefreshRequest) -> 
         crate::config::config_dir().ok_or("Cannot determine config directory".to_string())?;
     let requests_dir = config_dir.join(PROJECT_REFRESH_REQUESTS_DIR_NAME);
     crate::filesystem::directories::ensure_project_refresh_requests(&requests_dir)
-        .map_err(|e| format!("Failed to create project-refresh-requests dir: {}", e))?;
+        .map_err(|e| format!("Failed to create project-refresh-requests dir: {e}"))?;
 
     let final_path = requests_dir.join(format!("{}.json", request.id));
     let tmp_path = requests_dir.join(format!("{}.json.tmp", request.id));
     let json = serde_json::to_string_pretty(request)
-        .map_err(|e| format!("Failed to serialize project refresh request: {}", e))?;
+        .map_err(|e| format!("Failed to serialize project refresh request: {e}"))?;
 
     crate::filesystem::documents::write_refresh_request_stage(&tmp_path, json.as_bytes())
-        .map_err(|e| format!("Failed to write project refresh request: {}", e))?;
+        .map_err(|e| format!("Failed to write project refresh request: {e}"))?;
     crate::filesystem::documents::finalize_refresh_request(&tmp_path, &final_path)
-        .map_err(|e| format!("Failed to finalize project refresh request: {}", e))?;
+        .map_err(|e| format!("Failed to finalize project refresh request: {e}"))?;
     log::info!(
         "[project-refresh-requests] Wrote request: dir='{}' project='{}' reason='{}'",
         requests_dir.display(),

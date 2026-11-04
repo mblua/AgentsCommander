@@ -395,10 +395,7 @@ pub async fn create_session(
         };
 
     log::info!(
-        "[session] FINAL resolved: shell={:?}, args={:?}, label={:?}",
-        shell,
-        shell_args,
-        agent_label
+        "[session] FINAL resolved: shell={shell:?}, args={shell_args:?}, label={agent_label:?}"
     );
 
     drop(cfg);
@@ -454,10 +451,7 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         if let Some(window) = transaction.app().get_webview_window(&label) {
             if let Err(error) = window.destroy() {
                 log::warn!(
-                    "[session] detached window destroy failed session={} source={:?}: {}",
-                    session_id,
-                    source,
-                    error
+                    "[session] detached window destroy failed session={session_id} source={source:?}: {error}"
                 );
             }
         }
@@ -480,11 +474,11 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
     }
 
-    for row in committed.changed_rows.iter().filter(|row| {
-        Uuid::parse_str(&row.id)
-            .ok()
-            .is_some_and(|id| retained_marked.contains(&id))
-    }) {
+    for row in committed
+        .changed_rows
+        .iter()
+        .filter(|row| Uuid::parse_str(&row.id).is_ok_and(|id| retained_marked.contains(&id)))
+    {
         transaction.publish_created(row);
     }
     for session_id in &committed.cleared_raise_hand_ids {
@@ -594,8 +588,7 @@ pub async fn close_coordinator(
             let waiting = mgr
                 .get_session(*mid)
                 .await
-                .map(|s| s.waiting_for_input)
-                .unwrap_or(true);
+                .is_none_or(|s| s.waiting_for_input);
             member_states.push((true, waiting));
         }
         let working_count = count_working_members(&member_states);
@@ -619,7 +612,7 @@ pub async fn close_coordinator(
         let now = chrono::Utc::now();
         let newly = clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_manually_closed(&fqn, now);
         if newly {
             let _ = app.emit(
@@ -635,7 +628,7 @@ pub async fn close_coordinator(
         }
         let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
         if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-            log::warn!("[manual-close] clocks save failed: {}", e);
+            log::warn!("[manual-close] clocks save failed: {e}");
         }
     }
 
@@ -851,7 +844,7 @@ pub async fn create_root_agent_session(
 }
 
 /// #1646 / #1647 - Resolves a blocking menu episode for a session.
-/// Clears the blocked menu in SessionManager and publishes the updated communication state.
+/// Clears the blocked menu in `SessionManager` and publishes the updated communication state.
 /// #1669 - the clear is persisted through the same atomic helper `scan_tick` uses,
 /// so a disk-reading CLI stops reporting `blockedMenu` as soon as the user
 /// resolves the menu. The scan loop cannot do this: `resolve_current_episode`

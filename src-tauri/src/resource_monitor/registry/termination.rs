@@ -90,14 +90,11 @@ impl ResourceMonitorState {
         if !self.supports_process_tree_enforcement() {
             return false;
         }
-        self.inner
-            .lock()
-            .map(|inner| {
-                inner.groups.get(&session_id).is_some_and(|group| {
-                    !matches!(group.state, ResourceGroupState::Terminated) || !group.permit_released
-                })
+        self.inner.lock().is_ok_and(|inner| {
+            inner.groups.get(&session_id).is_some_and(|group| {
+                !matches!(group.state, ResourceGroupState::Terminated) || !group.permit_released
             })
-            .unwrap_or(false)
+        })
     }
 
     /// #632 B2a - shared kill implementation. `fresh_targets_only` controls only the
