@@ -274,7 +274,7 @@ async fn derived_agent_id_binding_deferred_and_root_restore_install_before_publi
         let origin = serde_json::json!({
             "sessionsPath": "C:/sessions.json",
             "rawFileSHA256": "original-bytes",
-            "originalOrdinal": if root { 1 } else { 0 }
+            "originalOrdinal": i32::from(root)
         });
         let cwd = if root { "C:/root" } else { "C:/deferred" };
         let info = transaction

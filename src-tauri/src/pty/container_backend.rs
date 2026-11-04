@@ -76,7 +76,7 @@ pub(crate) trait ContainerBackgroundTasks {
 
 type RouteRemover = Arc<dyn Fn(Uuid, Instant) -> Result<(), RouteRemovalError> + Send + Sync>;
 
-fn lock_mutex_until<'a, T>(mutex: &'a Mutex<T>, deadline: Instant) -> Option<MutexGuard<'a, T>> {
+fn lock_mutex_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<MutexGuard<'_, T>> {
     loop {
         match mutex.try_lock() {
             Ok(guard) => return Some(guard),

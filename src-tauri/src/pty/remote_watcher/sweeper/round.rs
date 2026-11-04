@@ -89,11 +89,7 @@ impl RemoteSweeper {
             due_keys.sort_by_cached_key(|(key, _)| {
                 let entry = state.keys.get(key);
                 (
-                    if entry.map(|e| e.ci.confirmed) == Some(Some(CiState::Running)) {
-                        0u8
-                    } else {
-                        1u8
-                    },
+                    u8::from(entry.map(|e| e.ci.confirmed) != Some(Some(CiState::Running))),
                     entry.and_then(|e| e.ci.last_confirmed_at),
                     entry.and_then(|e| e.staleness.last_confirmed_at),
                     key.clone(),

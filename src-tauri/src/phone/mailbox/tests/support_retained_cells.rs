@@ -7,18 +7,18 @@ pub(super) async fn assert_retained_failure_close(
     let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
         .await
         .expect("actual failure close");
-    if !setup_rolled_back {
-        assert!(
-            !report.persistence_safe,
-            "incomplete failure cannot certify safety"
-        );
-    } else {
+    if setup_rolled_back {
         assert!(
             report.persistence_safe,
             "actual returned setup failure must finish its own verified rollback/handoff: {:?}",
             report.retained
         );
         assert_eq!(coordinator.fixture_root_count(), Some(0));
+    } else {
+        assert!(
+            !report.persistence_safe,
+            "incomplete failure cannot certify safety"
+        );
     }
 }
 

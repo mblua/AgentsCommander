@@ -125,7 +125,7 @@ async fn remote_activity_cache_producer_positive_wiring() {
         .map(|repo| repo["path"].as_str().expect("path"))
         .collect();
     let mut sorted = raw_paths.clone();
-    sorted.sort();
+    sorted.sort_unstable();
     assert_eq!(raw_paths, sorted, "entries are sorted by raw path string");
     assert_eq!(repos[0]["path"], repo_running);
     assert_eq!(repos[0]["ciState"], "running");

@@ -667,7 +667,9 @@ fn issue_3029_windows_input_resize_stop() {
             .unwrap();
         assert!(String::from_utf8_lossy(&snapshot.data).contains("AC3029_READY"));
         assert!(!snapshot.data.windows(4).any(|bytes| bytes == b"\x1b[6n"));
-        if !stop_while_waiting {
+        if stop_while_waiting {
+            assert!(matches!(backend.probe_child(id), ChildLiveness::Alive));
+        } else {
             write_to_local_pty(&backend.ptys, id, b"ok\r\n").unwrap();
             cursor_wait(
                 || cursor_marker(&backend, id, "AC3029_AFTER"),
@@ -685,8 +687,6 @@ fn issue_3029_windows_input_resize_stop() {
                 },
                 "input exit0",
             );
-        } else {
-            assert!(matches!(backend.probe_child(id), ChildLiveness::Alive));
         }
         cleanup.stop();
     }

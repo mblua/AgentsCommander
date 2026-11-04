@@ -468,7 +468,7 @@ fn idle_tuning_for_launch_resolves_burst_subfields() {
         Some((None, Some(1e9), Some(1e9))),
     );
     assert_eq!(capped.burst_window, Duration::from_secs(600));
-    assert_eq!(capped.burst_prior_silence, Duration::from_secs(86_400));
+    assert_eq!(capped.burst_prior_silence, Duration::from_hours(24));
 
     let kind = Some(CodingAgentKind::Pi);
     let resolved = idle_tuning_for_launch(kind, Some((Some(2048), Some(2.0), Some(30.0))));

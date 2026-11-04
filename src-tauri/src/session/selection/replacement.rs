@@ -676,8 +676,11 @@ impl ReplacementState {
                 matches!(
                     (&terminal.disposition, &terminal.actual_result),
                     (EntryTerminalDisposition::Success, Ok(_))
-                        | (EntryTerminalDisposition::Failure, Err(_))
-                        | (EntryTerminalDisposition::RolledBack, Err(_))
+                        | (
+                            EntryTerminalDisposition::Failure
+                                | EntryTerminalDisposition::RolledBack,
+                            Err(_)
+                        )
                 ) && terminal.release_receipt.operation == operation
                     && self.prerequisite_attempt().ok()
                         == Some(terminal.release_receipt.prerequisite_attempt)

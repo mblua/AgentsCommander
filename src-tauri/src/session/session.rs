@@ -276,10 +276,7 @@ pub fn persisted_is_working(
     waiting_for_input: Option<bool>,
 ) -> bool {
     waiting_for_input == Some(false)
-        && matches!(
-            status,
-            Some(SessionStatus::Active) | Some(SessionStatus::Running)
-        )
+        && matches!(status, Some(SessionStatus::Active | SessionStatus::Running))
 }
 
 pub(crate) fn is_live_session_record(has_id: bool, status: Option<&SessionStatus>) -> bool {
