@@ -47,7 +47,7 @@ fn managed_catalog_refresh_reaches_unpinned_values_and_keeps_pinned_local() {
     write_managed_base(dir.path(), &[claude], "stale-revision", true);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MINE"}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"MINE"}]}"#,
     );
     let local_before = std::fs::read(local_catalog_path(dir.path())).unwrap();
 
@@ -287,10 +287,10 @@ fn managed_catalog_local_new_row_order_and_tombstone() {
 fn managed_catalog_local_invalid_layer_falls_back_as_a_whole() {
     let dir = seed_dir();
     ensure_seeded(dir.path(), None);
-    let bad = r##"{"schemaVersion":1,"agents":[
+    let bad = r#"{"schemaVersion":1,"agents":[
         {"key":"claude","label":"Would Apply"},
         {"key":"broken","label":"Broken"}
-    ]}"##;
+    ]}"#;
     write_local(dir.path(), bad);
     let report = load_catalog_report(dir.path());
     assert!(report.unavailable.is_none());
@@ -315,31 +315,28 @@ fn managed_catalog_local_schema_rejections_are_whole_layer() {
     let cases = [
         (
             "duplicate member",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude","key":"pi"}]}"##,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","key":"pi"}]}"#,
         ),
         (
             "unknown field",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude","mystery":1}]}"##,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","mystery":1}]}"#,
         ),
-        (
-            "unsupported schema",
-            r##"{"schemaVersion":999,"agents":[]}"##,
-        ),
+        ("unsupported schema", r#"{"schemaVersion":999,"agents":[]}"#),
         (
             "remove false",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude","remove":false}]}"##,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","remove":false}]}"#,
         ),
         (
             "tombstone extra field",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude","remove":true,"label":"x"}]}"##,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","remove":true,"label":"x"}]}"#,
         ),
         (
             "duplicate local key",
-            r##"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"##,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"#,
         ),
         (
             "duplicate order key",
-            r##"{"schemaVersion":1,"agents":[],"order":["claude","claude"]}"##,
+            r#"{"schemaVersion":1,"agents":[],"order":["claude","claude"]}"#,
         ),
         (
             "control character in update command",
@@ -379,7 +376,7 @@ fn managed_catalog_local_removability_is_evaluated_against_the_base() {
     write_managed_base(dir.path(), &[grok], "stale", true);
     write_local(
         dir.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"grok","remove":true}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"grok","remove":true}]}"#,
     );
     let report = load_catalog_report(dir.path());
     assert!(report

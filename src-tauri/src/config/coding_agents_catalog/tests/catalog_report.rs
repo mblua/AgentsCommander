@@ -153,9 +153,9 @@ fn catalog_report_symlink_manifest_is_unavailable() {
 #[test]
 fn catalog_report_unsupported_schema_is_base_invalid() {
     for raw in [
-        r##"{"schemaVersion":999,"agents":[]}"##,
-        r##"{"schemaVersion":"1","agents":[]}"##,
-        r##"{"schemaVersion":null,"agents":[]}"##,
+        r#"{"schemaVersion":999,"agents":[]}"#,
+        r#"{"schemaVersion":"1","agents":[]}"#,
+        r#"{"schemaVersion":null,"agents":[]}"#,
     ] {
         let dir = seed_dir();
         write_report_manifest(dir.path(), raw);
@@ -174,9 +174,9 @@ fn catalog_report_unsupported_schema_is_base_invalid() {
 #[test]
 fn catalog_report_missing_schema_version_and_empty_catalog_are_success() {
     for raw in [
-        r##"{}"##,
-        r##"{"schemaVersion":1}"##,
-        r##"{"schemaVersion":1,"agents":[]}"##,
+        r"{}",
+        r#"{"schemaVersion":1}"#,
+        r#"{"schemaVersion":1,"agents":[]}"#,
     ] {
         let dir = seed_dir();
         write_report_manifest(dir.path(), raw);
@@ -194,10 +194,10 @@ fn catalog_report_missing_schema_version_and_empty_catalog_are_success() {
 #[test]
 fn catalog_report_invalid_root_shape_is_base_invalid() {
     for raw in [
-        r##"[]"##,
-        r##""text""##,
-        r##"{"schemaVersion":1,"agents":{}}"##,
-        r##"{"schemaVersion":1,"agents":"nope"}"##,
+        r"[]",
+        r#""text""#,
+        r#"{"schemaVersion":1,"agents":{}}"#,
+        r#"{"schemaVersion":1,"agents":"nope"}"#,
     ] {
         let dir = seed_dir();
         write_report_manifest(dir.path(), raw);
@@ -315,7 +315,7 @@ fn catalog_report_explicit_empty_has_no_missing_commands_warning() {
         .catalog
         .iter()
         .all(|d| d.update_commands.is_empty()));
-    assert!(report_json(&reported_explicit).contains(r##""updateCommands":[]"##));
+    assert!(report_json(&reported_explicit).contains(r#""updateCommands":[]"#));
 
     // Custom and changed commands are preserved exactly, warn-free.
     let custom_dir = seed_dir();
