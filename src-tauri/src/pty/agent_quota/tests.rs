@@ -64,8 +64,8 @@ async fn e2992_p51_unavailable_mid_tick_retirement() {
         loop {
             tokio::select! {
                 biased;
-                _ = shutdown.token().cancelled() => break,
-                _ = h.engine.tick() => {
+                () = shutdown.token().cancelled() => break,
+                () = h.engine.tick() => {
                     completed_ticks += 1;
                     if completed_ticks == 3 { shutdown.trigger(); }
                 }
