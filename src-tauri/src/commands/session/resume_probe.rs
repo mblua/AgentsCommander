@@ -141,13 +141,10 @@ pub(crate) fn resolve_claude_projects_dir_in(
     }
 
     fn looks_like_wrapper_extension(path: &Path) -> bool {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| {
-                let lc = e.to_ascii_lowercase();
-                matches!(lc.as_str(), "cmd" | "bat" | "ps1" | "sh")
-            })
-            .unwrap_or(false)
+        path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            let lc = e.to_ascii_lowercase();
+            matches!(lc.as_str(), "cmd" | "bat" | "ps1" | "sh")
+        })
     }
 
     // Find the first token whose basename starts with "claude" across
@@ -226,10 +223,7 @@ pub(crate) fn container_path_context_for_cwd(cwd: &str) -> Result<ContainerPathC
         crate::filesystem::projects::canonical_project_path(std::path::Path::new(cwd))
             .map(|path| crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path))
             .map_err(|err| {
-                format!(
-                    "failed to canonicalize container mount source '{}': {}",
-                    cwd, err
-                )
+                format!("failed to canonicalize container mount source '{cwd}': {err}")
             })?;
     if let Some(reason) = crate::pty::container_paths::container_mount_source_rejection(
         std::path::Path::new(&canonical_host_root),
@@ -255,10 +249,7 @@ pub(crate) fn container_mount_rejection_message(
     if selected == canonical {
         reason
     } else {
-        format!(
-            "{} (selected path '{}', canonical path '{}')",
-            reason, selected, canonical
-        )
+        format!("{reason} (selected path '{selected}', canonical path '{canonical}')")
     }
 }
 
@@ -331,11 +322,11 @@ pub(crate) fn claude_resume_probe_target_for_kind(
     ))
 }
 
-/// #930 - the CLAUDE_CONFIG_DIR value to inject for a container coding agent whose
+/// #930 - the `CLAUDE_CONFIG_DIR` value to inject for a container coding agent whose
 /// host credentials we will copy. Returns the copy directory (a host path under
 /// the replica mount, which the container env translation later maps to
 /// `/workspace/.claude`) ONLY when a copy plan exists AND the user configured no
-/// CLAUDE_CONFIG_DIR (`user_has_claude_config_dir == false`). `None` => inject
+/// `CLAUDE_CONFIG_DIR` (`user_has_claude_config_dir == false`). `None` => inject
 /// nothing (host-login-reuse off, no host credentials, or an explicit user
 /// value/removal we must not override).
 pub(crate) fn injected_claude_config_dir_for_copy(
@@ -417,7 +408,7 @@ pub(crate) fn resume_probe_target_for_config_dir(
 /// `claude_projects_dir_for_config_dir`; this function itself is unchanged.
 /// Note: a wrapper named exactly
 /// `claude.cmd` / `claude.exe` / `claude.ps1` that overrides `CLAUDE_CONFIG_DIR`
-/// is intentionally NOT honored — the resolver short-circuits when the file_stem
+/// is intentionally NOT honored — the resolver short-circuits when the `file_stem`
 /// equals `claude`. Users who need wrapper overrides should rename to
 /// `claude-<suffix>` (e.g. `claude-mb`).
 ///
@@ -506,7 +497,7 @@ pub(crate) fn configured_prompt_identity(
 ///
 /// Purpose: belt-and-suspenders freshness (immune to future provider
 /// auto-resume surprises) and a known-AT-SPAWN transcript identity (hands the
-/// telegram claude_watcher its file identity instead of cwd+mtime heuristics).
+/// telegram `claude_watcher` its file identity instead of cwd+mtime heuristics).
 /// The injected id is the SPAWN id, not a stable session id: a later in-session
 /// `/clear` mints a new one.
 pub(crate) fn should_inject_fresh_session_id(

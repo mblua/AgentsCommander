@@ -48,8 +48,7 @@ fn build_role_content_with_template_inserts_role_profile() {
     let out = build_role_content("alpha", "Test description.", Some(&template));
     assert!(
         out.contains("## Role Profile"),
-        "must add a Role Profile section: {}",
-        out
+        "must add a Role Profile section: {out}"
     );
     assert!(
         out.contains("Template body line one."),
@@ -62,14 +61,12 @@ fn build_role_content_with_template_inserts_role_profile() {
     // Plan §7.2: opening delimiter carries provenance via source="<id>".
     assert!(
         out.contains("<!-- ac:role-profile source=\"agency:my-test\""),
-        "must include opening ac:role-profile delimiter with template id: {}",
-        out
+        "must include opening ac:role-profile delimiter with template id: {out}"
     );
     // Plan §7.2: closing delimiter fences the imported body.
     assert!(
         out.contains("<!-- ac:role-profile:end -->"),
-        "must include closing ac:role-profile:end delimiter: {}",
-        out
+        "must include closing ac:role-profile:end delimiter: {out}"
     );
     // Role Profile must come BEFORE Source of Truth in the file.
     let profile_idx = out.find("## Role Profile").expect("Role Profile present");
@@ -158,14 +155,12 @@ fn build_role_content_escapes_single_quote_in_description() {
     // YAML line uses single-quoted value with doubled apostrophes.
     assert!(
         out.contains("description: 'Don''t break the YAML ''header''.'"),
-        "YAML description must double-escape single quotes; got:\n{}",
-        out
+        "YAML description must double-escape single quotes; got:\n{out}"
     );
     // Body keeps the original (un-doubled) description.
     assert!(
         out.contains("Don't break the YAML 'header'."),
-        "human-readable description body must keep the original characters; got:\n{}",
-        out
+        "human-readable description body must keep the original characters; got:\n{out}"
     );
 }
 
@@ -192,8 +187,7 @@ fn create_agent_matrix_from_role_writes_role_bytes_exactly() {
     for dir in AGENT_MATRIX_DIRS {
         assert!(
             created.agent_dir.join(dir).is_dir(),
-            "missing expected matrix dir {}",
-            dir
+            "missing expected matrix dir {dir}"
         );
     }
 }
@@ -212,7 +206,7 @@ fn create_agent_matrix_from_role_rejects_existing_target() {
     })
     .unwrap_err();
 
-    assert!(err.contains("already exists"), "unexpected error: {}", err);
+    assert!(err.contains("already exists"), "unexpected error: {err}");
 }
 
 #[test]
@@ -229,6 +223,6 @@ fn create_agent_matrix_from_role_requires_slug_identity() {
     })
     .unwrap_err();
 
-    assert!(err.contains("lowercase slug"), "unexpected error: {}", err);
+    assert!(err.contains("lowercase slug"), "unexpected error: {err}");
     assert!(!ac_root.join("_agent_Tech Lead").exists());
 }

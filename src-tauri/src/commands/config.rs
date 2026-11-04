@@ -312,7 +312,7 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
     )
     .await
     .map_err(|_| "Network error: request timed out".to_string())?
-    .map_err(|e| format!("Network error: {}", e))?;
+    .map_err(|e| format!("Network error: {e}"))?;
 
     if !resp.status().is_success() {
         return Err(format!("Server returned status {}", resp.status().as_u16()));
@@ -322,7 +322,7 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if bytes.is_empty() {
         return Err("Server returned empty response".to_string());

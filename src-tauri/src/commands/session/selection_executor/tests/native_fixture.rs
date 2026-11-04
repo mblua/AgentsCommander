@@ -1,5 +1,6 @@
 //! Shared native lifecycle fixtures and forwarding observer.
 
+use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::commands::session::selection_executor::NativeLifecycleLease;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -232,7 +233,7 @@ impl NativeSchedule {
     fn trace(&self, operation: Uuid) -> crate::session::selection::SelectionPortTestTrace {
         self.traces
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(operation)
             .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
             .clone()
@@ -284,12 +285,14 @@ impl NativeReceiptObserver {
         } else {
             &self.schedule.before
         };
-        let gate = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let gate = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(gate) = gate {
             let receipt = lease
                 .downcast_ref::<NativeLifecycleLease>()
-                .map(|n| n.release_receipt.load(Ordering::Acquire))
-                .unwrap_or(255);
+                .map_or(255, |n| n.release_receipt.load(Ordering::Acquire));
             let _ = gate.reached.send((
                 t.has_accepted_lifecycle_core(),
                 self.original.has_claim(lease),
@@ -305,7 +308,7 @@ impl NativeReceiptObserver {
         let mut records = self
             .records
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(record) = records
             .iter_mut()
             .find(|record| Arc::ptr_eq(&record.receipt, &native.release_receipt))
@@ -343,14 +346,14 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
                         claimed: native
                             .authority
                             .as_ref()
-                            .is_some_and(|a| a.has_owned_claim()),
+                            .is_some_and(LifecycleEntryAuthority::has_owned_claim),
                         outcome: None,
                         trace: self.schedule.trace(operation),
                     };
                     lease.port_test_attach_trace(record.trace.clone());
                     self.records
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(record);
                 }
             }
@@ -383,7 +386,7 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
         self.schedule
             .trace(identity.0)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((
                 identity.0,
                 identity.1,
@@ -394,7 +397,7 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
         self.schedule
             .root_outcomes
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(RootDirectoryRecord {
                 operation: identity.0,
                 nonce: identity.1,

@@ -285,7 +285,9 @@ async fn fresh_intent_fixture() -> FreshIntentFixture {
         mgr.set_start_fresh_on_restore(session.id, true).await;
     }
     {
-        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(guard.mark_start_fresh(&fqn, chrono::Utc::now()));
     }
 
@@ -309,7 +311,7 @@ async fn record_fresh(f: &FreshIntentFixture) -> bool {
 fn mirror_fresh(f: &FreshIntentFixture) -> bool {
     f.clocks
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .start_fresh_at(&f.fqn)
         .is_some()
 }
@@ -465,7 +467,10 @@ async fn a_substantive_terminal_prompt_arms() {
 async fn typed_input_clears_auto_closed_marker() {
     let f = fresh_intent_fixture().await;
     {
-        let mut guard = f.clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = f
+            .clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(guard.mark_auto_closed(&f.fqn, chrono::Utc::now()));
     }
     let handle = f.app.handle().clone();
@@ -473,7 +478,7 @@ async fn typed_input_clears_auto_closed_marker() {
     assert_eq!(
         f.clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .auto_closed_at(&f.fqn),
         None
     );

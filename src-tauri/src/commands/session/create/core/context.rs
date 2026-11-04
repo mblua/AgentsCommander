@@ -61,8 +61,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     let spawn_cwd = pending
         .container_path_context
         .as_ref()
-        .map(|context| context.host_root.clone())
-        .unwrap_or_else(|| cwd.to_owned());
+        .map_or_else(|| cwd.to_owned(), |context| context.host_root.clone());
     let container_credential = if pending.session.backend_kind
         == SessionBackendKind::ContainerTransport
     {
@@ -99,17 +98,15 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     // default it to the copy directory so a default-on container authenticates with
     // zero env rows. Injected as a host path; the container env translation maps it
     // to /workspace/.claude and the resume probe then treats state as durable.
-    let user_has_claude_config_dir = resolved_spawn
-        .map(|spawn| {
-            spawn.effective_env_value(CLAUDE_CONFIG_DIR_KEY).is_some()
-                || spawn.env_remove_keys.iter().any(|remove| {
-                    crate::config::settings::normalize_env_key_for_platform(remove)
-                        == crate::config::settings::normalize_env_key_for_platform(
-                            CLAUDE_CONFIG_DIR_KEY,
-                        )
-                })
-        })
-        .unwrap_or(false);
+    let user_has_claude_config_dir = resolved_spawn.is_some_and(|spawn| {
+        spawn.effective_env_value(CLAUDE_CONFIG_DIR_KEY).is_some()
+            || spawn.env_remove_keys.iter().any(|remove| {
+                crate::config::settings::normalize_env_key_for_platform(remove)
+                    == crate::config::settings::normalize_env_key_for_platform(
+                        CLAUDE_CONFIG_DIR_KEY,
+                    )
+            })
+    });
     let injected_claude_config_dir = injected_claude_config_dir_for_copy(
         container_credential.as_ref(),
         user_has_claude_config_dir,
@@ -386,22 +383,18 @@ fn inject_claude_continue_args(
         if executable_basename(shell) == "cmd" {
             if let Some(last) = shell_args.last_mut() {
                 if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
-                    *last = format!("{} {}", last, continue_flag);
+                    *last = format!("{last} {continue_flag}");
                     effective_continuation = true;
                     log::info!(
-                        "Auto-injected --continue for agent '{}' \
-                         (prior conversation exists, cmd path)",
-                        aid
+                        "Auto-injected --continue for agent '{aid}' \
+                         (prior conversation exists, cmd path)"
                     );
                 }
             }
         } else {
             shell_args.push(continue_flag.to_string());
             effective_continuation = true;
-            log::info!(
-                "Auto-injected --continue for agent '{}' (prior conversation exists)",
-                aid
-            );
+            log::info!("Auto-injected --continue for agent '{aid}' (prior conversation exists)");
         }
     }
 
@@ -414,12 +407,10 @@ fn inject_claude_fresh_args(shell: &str, agent_id: Option<&str>, shell_args: &mu
         if executable_basename(shell) == "cmd" {
             if let Some(last) = shell_args.last_mut() {
                 if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
-                    *last = format!("{} --session-id {}", last, fresh_session_id);
+                    *last = format!("{last} --session-id {fresh_session_id}");
                     log::info!(
-                        "Auto-injected --session-id {} for agent '{}' (fresh spawn, cmd path, \
-                     #756)",
-                        fresh_session_id,
-                        aid
+                        "Auto-injected --session-id {fresh_session_id} for agent '{aid}' \
+                         (fresh spawn, cmd path, #756)"
                     );
                 }
             }
@@ -427,9 +418,8 @@ fn inject_claude_fresh_args(shell: &str, agent_id: Option<&str>, shell_args: &mu
             shell_args.push("--session-id".to_string());
             shell_args.push(fresh_session_id.to_string());
             log::info!(
-                "Auto-injected --session-id {} for agent '{}' (fresh spawn, #756)",
-                fresh_session_id,
-                aid
+                "Auto-injected --session-id {fresh_session_id} for agent '{aid}' \
+                 (fresh spawn, #756)"
             );
         }
     }
@@ -464,7 +454,7 @@ fn inject_other_provider_resume_args(
         if let Some(aid) = agent_id {
             if inject_codex_resume(shell, shell_args) {
                 effective_continuation = true;
-                log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
+                log::info!("Auto-injected `codex resume --last` for agent '{aid}'");
             }
         }
     }
@@ -473,7 +463,7 @@ fn inject_other_provider_resume_args(
         if let Some(aid) = agent_id {
             if inject_antigravity_resume(shell, shell_args) {
                 effective_continuation = true;
-                log::info!("Auto-injected `agy --continue` for agent '{}'", aid);
+                log::info!("Auto-injected `agy --continue` for agent '{aid}'");
             }
         }
     }
@@ -707,7 +697,7 @@ pub(crate) async fn bind_and_check_target<R: tauri::Runtime>(
         });
         let appeared_spawn = pty_mgr
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_pending_spawn_for_replica(target);
         if appeared_session || appeared_spawn {
             drop(carrier_u0);

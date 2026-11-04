@@ -305,7 +305,7 @@ async fn spawn_backend<R: tauri::Runtime>(
     // any point inside or after spawn keeps the close markers cleared.
     if let Some(t) = marker_ticket
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
     {
         t.session_may_exist = true;
@@ -346,8 +346,8 @@ async fn spawn_backend<R: tauri::Runtime>(
         effect.complete(
             spawn_result
                 .as_ref()
-                .map(|_| Some(id.to_string()))
-                .map_err(|error| error.to_string()),
+                .map(|()| Some(id.to_string()))
+                .map_err(std::string::ToString::to_string),
         );
     }
     drop(spawn_mark);
@@ -355,7 +355,7 @@ async fn spawn_backend<R: tauri::Runtime>(
         if !launch_witness.launched() {
             if let Some(t) = marker_ticket
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_mut()
             {
                 t.session_may_exist = false;
@@ -363,8 +363,7 @@ async fn spawn_backend<R: tauri::Runtime>(
         } else {
             log::warn!(
                 "[coordinator-create] spawn failed after process launch; close markers stay \
-                 cleared session={}",
-                id
+                 cleared session={id}"
             );
         }
         let err = e.to_string();
@@ -380,7 +379,9 @@ fn child_environment(
     recipe_env: Option<&[(String, String)]>,
     injected_claude_config_dir: Option<&str>,
 ) -> Vec<(String, String)> {
-    let mut configured_env = recipe_env.map(|env| env.to_vec()).unwrap_or_default();
+    let mut configured_env = recipe_env
+        .map(<[(std::string::String, std::string::String)]>::to_vec)
+        .unwrap_or_default();
     // #930 - inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
     // container env translation below maps it to /workspace/.claude and the copied
     // token is actually read. Only present when we will copy and the user set none.
@@ -434,7 +435,7 @@ fn resource_launch_metadata(
                 .replace('\\', "/")
                 .rsplit('/')
                 .find(|s| !s.is_empty())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             (Some("Root agent".to_string()), bare)
         } else {
             (None, None)
@@ -592,7 +593,7 @@ async fn prepare_config_seed_stage<'a: 'b, 'b, R: tauri::Runtime>(
         .await;
         match seed_result {
             Ok(report) => {
-                log::debug!("[config-seed] session {} outcome: {:?}", id, report);
+                log::debug!("[config-seed] session {id} outcome: {report:?}");
                 seed_report = Some(report);
             }
             Err(error) => {
@@ -711,8 +712,7 @@ fn prepare_environment<R: tauri::Runtime>(
                 );
                 ResourceLaunchRegistration::new(resource_monitor.as_ref().clone(), permit, metadata)
             })
-            .map(|registration| (Some(registration), None))
-            .unwrap_or((None, None)),
+            .map_or((None, None), |registration| (Some(registration), None)),
         SessionBackendKind::ContainerTransport => (
             None,
             resource_permit

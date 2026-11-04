@@ -7,31 +7,30 @@ fn loaded_fixture(source_agent: &str) -> (tempfile::TempDir, LoadedExperiment) {
     let experiment_dir = ac_root.join("experiments").join("exp");
     std::fs::create_dir_all(experiment_dir.join("variants")).expect("experiment dirs");
 
-    let source_matrix = ac_root.join(format!("_agent_{}", source_agent));
+    let source_matrix = ac_root.join(format!("_agent_{source_agent}"));
     std::fs::create_dir_all(&source_matrix).expect("source matrix");
     std::fs::write(source_matrix.join("Role.md"), "source role\n").expect("source role");
 
     for variant in ["control", "test"] {
         let agent_name = variant_agent_name(source_agent, variant);
-        let matrix = ac_root.join(format!("_agent_{}", agent_name));
+        let matrix = ac_root.join(format!("_agent_{agent_name}"));
         std::fs::create_dir_all(&matrix).expect("variant matrix");
-        std::fs::write(matrix.join("Role.md"), format!("{} role\n", variant))
-            .expect("variant role");
+        std::fs::write(matrix.join("Role.md"), format!("{variant} role\n")).expect("variant role");
         let metadata = VariantMetadata {
             schema_version: 1,
             name: variant.to_string(),
             source_agent: source_agent.to_string(),
             agent_name,
-            matrix_path: format!("../../../_agent_{}-{}", source_agent, variant),
-            role_path: format!("../../../_agent_{}-{}/Role.md", source_agent, variant),
-            role_sha256: sha256_hex(format!("{} role\n", variant).as_bytes()),
+            matrix_path: format!("../../../_agent_{source_agent}-{variant}"),
+            role_path: format!("../../../_agent_{source_agent}-{variant}/Role.md"),
+            role_sha256: sha256_hex(format!("{variant} role\n").as_bytes()),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
         write_json(
             &experiment_dir
                 .join("variants")
-                .join(format!("{}.json", variant)),
+                .join(format!("{variant}.json")),
             &metadata,
             "variant_metadata_write_failed",
             Some(variant),
@@ -44,8 +43,8 @@ fn loaded_fixture(source_agent: &str) -> (tempfile::TempDir, LoadedExperiment) {
         name: "exp".to_string(),
         project: "project".to_string(),
         source_agent: source_agent.to_string(),
-        source_matrix_path: format!("../../_agent_{}", source_agent),
-        source_role_path: format!("../../_agent_{}/Role.md", source_agent),
+        source_matrix_path: format!("../../_agent_{source_agent}"),
+        source_role_path: format!("../../_agent_{source_agent}/Role.md"),
         source_role_sha256: sha256_hex(b"source role\n"),
         created_at: "2026-01-01T00:00:00Z".to_string(),
         updated_at: "2026-01-01T00:00:00Z".to_string(),
@@ -460,7 +459,7 @@ fn attempts_reader_preserves_empty_and_invalid_line_behavior() {
     let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
     let fixture = std::fs::read_to_string(attempts_path(&run_dir)).expect("fixture");
     let first = fixture.lines().next().expect("first attempt");
-    std::fs::write(&path, format!("{}\ninvalid\n", first)).expect("invalid fixture");
+    std::fs::write(&path, format!("{first}\ninvalid\n")).expect("invalid fixture");
     let errors = storage::load_attempts(tmp.path()).expect_err("invalid line");
     assert_eq!(errors[0].code, "run_artifact_unparseable");
     assert_eq!(errors[0].line, Some(2));
@@ -468,7 +467,7 @@ fn attempts_reader_preserves_empty_and_invalid_line_behavior() {
         .message
         .starts_with("Attempt line 2 is invalid JSON: "));
 
-    std::fs::write(&path, format!("{}\n\n", first)).expect("blank line fixture");
+    std::fs::write(&path, format!("{first}\n\n")).expect("blank line fixture");
     let errors = storage::load_attempts(tmp.path()).expect_err("blank line");
     assert_eq!(errors[0].line, Some(2));
 }
@@ -483,7 +482,7 @@ fn attempts_storage_preserves_bytes_order_and_create_new() {
         .collect();
     let target = tempfile::tempdir().expect("target");
     storage::create_attempts(target.path(), &attempts).expect("create");
-    let expected = format!("{}\n", fixture);
+    let expected = format!("{fixture}\n");
     assert_eq!(
         std::fs::read_to_string(attempts_path(target.path())).unwrap(),
         expected

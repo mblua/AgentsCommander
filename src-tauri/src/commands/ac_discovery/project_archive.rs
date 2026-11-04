@@ -30,7 +30,9 @@ pub(crate) async fn snapshot_archive_state(
         .collect::<Vec<_>>();
     let ids = session_ids.iter().flatten().copied().collect::<Vec<_>>();
     let (pending, live) = {
-        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         pty.archive_liveness(&ids)
     };
     let live_by_id = ids.into_iter().zip(live).collect::<HashMap<_, _>>();
@@ -200,10 +202,7 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
             })
             .await
             {
-                log::warn!(
-                    "[ac-discovery] catalog seed after archive rollback failed: {}",
-                    error
-                );
+                log::warn!("[ac-discovery] catalog seed after archive rollback failed: {error}");
             }
             Err(archive_blocked_message(&late))
         }
@@ -270,10 +269,7 @@ pub(crate) async fn unarchive_project_inner<R: tauri::Runtime>(
         })
         .await
         {
-            log::warn!(
-                "[ac-discovery] catalog seed after unarchive failed: {}",
-                error
-            );
+            log::warn!("[ac-discovery] catalog seed after unarchive failed: {error}");
         }
     }
     Ok(result)
@@ -299,7 +295,7 @@ pub(crate) async fn list_archived_projects_inner(
         crate::config::projects::archived_projects_from_paths(&paths)
     })
     .await
-    .map_err(|e| format!("archived project stat task failed: {}", e))
+    .map_err(|e| format!("archived project stat task failed: {e}"))
 }
 
 #[tauri::command]

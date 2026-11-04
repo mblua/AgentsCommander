@@ -127,7 +127,7 @@ fn apply_set_title_idempotent_when_value_matches() {
     let r = perform_inner(&wg, TaskOp::SetTitle("X".into()), now).unwrap();
     match r {
         EditOutcome::NoOp { .. } => {}
-        other => panic!("expected NoOp, got {:?}", other),
+        other => panic!("expected NoOp, got {other:?}"),
     }
 }
 
@@ -248,8 +248,7 @@ fn atomic_publish_via_rename_round_trip() {
         let name = n.to_string_lossy();
         assert!(
             !name.starts_with("TASK.md.tmp."),
-            "leftover tmp file: {}",
-            name
+            "leftover tmp file: {name}"
         );
     }
     // Stable lock file remains.
@@ -270,15 +269,14 @@ fn backup_filename_uses_utc_timestamp_format() {
         EditOutcome::Wrote {
             backup: Some(bp), ..
         } => bp,
-        other => panic!("expected Wrote with backup, got {:?}", other),
+        other => panic!("expected Wrote with backup, got {other:?}"),
     };
     let name = bp.file_name().unwrap().to_string_lossy().into_owned();
     // Pattern: TASK.YYYYMMDD-HHMMSS(.N)?.bak.md
     assert!(
         name == "TASK.20260101-123456.bak.md"
             || name.starts_with("TASK.20260101-123456.") && name.ends_with(".bak.md"),
-        "unexpected backup filename: {}",
-        name
+        "unexpected backup filename: {name}"
     );
 }
 
@@ -306,7 +304,7 @@ fn backup_failure_aborts_write_and_preserves_task() {
         let candidate = if n == 0 {
             wg.join("TASK.20260101-000000.bak.md")
         } else {
-            wg.join(format!("TASK.20260101-000000.{}.bak.md", n))
+            wg.join(format!("TASK.20260101-000000.{n}.bak.md"))
         };
         std::fs::create_dir(&candidate).unwrap();
     }
@@ -316,8 +314,7 @@ fn backup_failure_aborts_write_and_preserves_task() {
             result,
             Err(TaskOpError::BackupExhausted(_)) | Err(TaskOpError::BackupFailed(_, _))
         ),
-        "expected backup-class failure, got {:?}",
-        result
+        "expected backup-class failure, got {result:?}"
     );
     // TASK.md unchanged.
     assert_eq!(std::fs::read(&task).unwrap(), original);
@@ -340,7 +337,7 @@ fn backup_failure_releases_lockfile() {
         let candidate = if n == 0 {
             wg.join("TASK.20260101-000000.bak.md")
         } else {
-            wg.join(format!("TASK.20260101-000000.{}.bak.md", n))
+            wg.join(format!("TASK.20260101-000000.{n}.bak.md"))
         };
         std::fs::create_dir(&candidate).unwrap();
     }
@@ -399,7 +396,7 @@ fn parse_task_tolerates_trailing_space_on_markers() {
 #[test]
 fn parse_task_unicode_in_body_preserved_byte_for_byte() {
     let body = "café\n🎉\n";
-    let input = format!("---\ntitle: x\n---\n{}", body);
+    let input = format!("---\ntitle: x\n---\n{body}");
     let p = parse_task(&input);
     assert!(p.has_frontmatter);
     assert_eq!(p.body, body);
@@ -462,8 +459,7 @@ fn set_title_round_trip_preserves_crlf_no_extra_blank_line() {
     // Closing "---\r\n" is followed immediately by "body\r\n" (no blank line).
     assert!(
         out.contains("---\r\nbody\r\n"),
-        "expected '---\\r\\nbody\\r\\n' in output, got: {:?}",
-        out
+        "expected '---\\r\\nbody\\r\\n' in output, got: {out:?}"
     );
     // No extra leading "\r\n" before "body".
     assert!(!out.contains("---\r\n\r\nbody"));
@@ -601,7 +597,7 @@ fn perform_clean_idempotent_on_canonical_clean() {
     let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
     match r {
         EditOutcome::NoOp { .. } => {}
-        other => panic!("expected NoOp, got {:?}", other),
+        other => panic!("expected NoOp, got {other:?}"),
     }
     // No backup file created.
     let entries: Vec<_> = std::fs::read_dir(&wg).unwrap().flatten().collect();
@@ -632,7 +628,7 @@ fn perform_clean_writes_backup_when_file_existed() {
         EditOutcome::Wrote {
             backup: Some(bp), ..
         } => bp.clone(),
-        other => panic!("expected Wrote with backup, got {:?}", other),
+        other => panic!("expected Wrote with backup, got {other:?}"),
     };
     // HIGH-2 assertion: backup bytes must equal the pre-clean file.
     let backup_content = std::fs::read_to_string(&backup_path).unwrap();
@@ -698,12 +694,12 @@ fn concurrent_writes_return_correct_post_edit_content() {
         let content1 = match r1 {
             Ok(EditOutcome::Wrote { content, .. }) => content,
             Err(TaskOpError::LockTimeout) => continue,
-            other => panic!("h1 unexpected outcome: {:?}", other),
+            other => panic!("h1 unexpected outcome: {other:?}"),
         };
         let content2 = match r2 {
             Ok(EditOutcome::Wrote { content, .. }) => content,
             Err(TaskOpError::LockTimeout) => continue,
-            other => panic!("h2 unexpected outcome: {:?}", other),
+            other => panic!("h2 unexpected outcome: {other:?}"),
         };
 
         let final_disk_content = std::fs::read_to_string(wg.join("TASK.md")).unwrap();

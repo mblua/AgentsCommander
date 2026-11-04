@@ -99,7 +99,7 @@ pub(super) fn build_wg_peer(
     // #2786 (C1) - through the shared loader: state file first, key-wise.
     let peer_config = read_agent_local_config(&replica_ac).unwrap_or_default();
 
-    let expected_session_name = format!("{}/{}", wg_name, agent_name);
+    let expected_session_name = format!("{wg_name}/{agent_name}");
     let ps = compute_peer_status(
         &agent_path.to_string_lossy(),
         Some(&expected_session_name),
@@ -107,7 +107,7 @@ pub(super) fn build_wg_peer(
     );
 
     PeerInfo {
-        name: format!("{}:{}/{}", project, wg_name, agent_name),
+        name: format!("{project}:{wg_name}/{agent_name}"),
         path: agent_path.to_string_lossy().to_string(),
         status: ps.status_legacy.to_string(),
         role: read_wg_role(agent_path),
@@ -214,7 +214,7 @@ pub(super) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
             };
 
             if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
-                let coord_dir = other_wg_dir.join(format!("__agent_{}", other_coord));
+                let coord_dir = other_wg_dir.join(format!("__agent_{other_coord}"));
                 if !crate::filesystem::directories::cli_discovery_is_dir(&coord_dir) {
                     return ControlFlow::Continue(());
                 }
@@ -300,9 +300,10 @@ pub(super) fn append_origin_team_peers(
 
         for (i, display_name) in team.agent_names.iter().enumerate() {
             let member_path = team.agent_paths.get(i).and_then(|p| p.as_ref());
-            let peer_name = member_path
-                .map(|p| crate::config::teams::agent_fqn_from_path(&p.to_string_lossy()))
-                .unwrap_or_else(|| display_name.clone());
+            let peer_name = member_path.map_or_else(
+                || display_name.clone(),
+                |p| crate::config::teams::agent_fqn_from_path(&p.to_string_lossy()),
+            );
 
             // Skip ourselves
             if peer_name == my_name || display_name == my_name {
@@ -328,11 +329,10 @@ pub(super) fn append_origin_team_peers(
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            let peer_ac = member_path
-                .map(|p| p.join(crate::config::agent_local_dir_name()))
-                .unwrap_or_else(|| {
-                    PathBuf::from(&path_str).join(crate::config::agent_local_dir_name())
-                });
+            let peer_ac = member_path.map_or_else(
+                || PathBuf::from(&path_str).join(crate::config::agent_local_dir_name()),
+                |p| p.join(crate::config::agent_local_dir_name()),
+            );
 
             let peer_config = read_agent_local_config(&peer_ac).unwrap_or_default();
 
@@ -341,9 +341,10 @@ pub(super) fn append_origin_team_peers(
                 name: peer_name,
                 path: path_str,
                 status: ps.status_legacy.to_string(),
-                role: member_path
-                    .map(|p| read_role(&p.to_string_lossy()))
-                    .unwrap_or_else(|| "No role description available.".to_string()),
+                role: member_path.map_or_else(
+                    || "No role description available.".to_string(),
+                    |p| read_role(&p.to_string_lossy()),
+                ),
                 teams: vec![team.name.clone()],
                 reachable,
                 last_coding_agent: peer_config.tooling.last_coding_agent,
@@ -445,8 +446,7 @@ pub(super) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec
                                 .strip_prefix("__agent_")
                                 .unwrap_or(&agent_dir)
                                 .to_string();
-                            let peer_name =
-                                format!("{}:{}/{}", project_folder, wg_name, agent_short);
+                            let peer_name = format!("{project_folder}:{wg_name}/{agent_short}");
 
                             // Skip self
                             if peer_name == my_name {

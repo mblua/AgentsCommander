@@ -534,7 +534,7 @@ pub fn execute(args: RoleExperimentArgs) -> i32 {
     let code = if envelope.ok { 0 } else { 1 };
     match serde_json::to_string_pretty(&envelope) {
         Ok(json) => crate::cli_println!("{}", json),
-        Err(e) => eprintln!("Error: failed to serialize role-experiment output: {}", e),
+        Err(e) => eprintln!("Error: failed to serialize role-experiment output: {e}"),
     }
     code
 }
