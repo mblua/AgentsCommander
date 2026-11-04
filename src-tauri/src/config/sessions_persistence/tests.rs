@@ -37,7 +37,7 @@ mod strip_args;
 /// §1295 — held for the WHOLE of any test that counts orphan sweeps or
 /// reads/writes the shared archive, so a concurrently-running test cannot
 /// pollute the process-global counters / dedup registry or race a tiny-cap
-/// rotation. Mirrors the `COUNTING_LOCK` pattern in injected_messages.rs.
+/// rotation. Mirrors the `COUNTING_LOCK` pattern in `injected_messages.rs`.
 static ORPHAN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
