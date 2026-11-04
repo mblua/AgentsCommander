@@ -125,10 +125,10 @@ pub use field::{
 };
 pub(crate) use instance::settings_path;
 #[cfg(test)]
+pub(crate) use instance::{instance_settings_display_path, settings_fixture_path};
 pub(crate) use instance::{
-    instance_settings_display_path, instance_settings_target, persisted_instance_token_matches,
-    settings_fixture_path, SettingsFileTarget, SettingsProjectCheckpoint,
-    SettingsProjectTransaction,
+    instance_settings_target, persisted_instance_token_matches, SettingsFileTarget,
+    SettingsProjectCheckpoint, SettingsProjectTransaction,
 };
 #[cfg(test)]
 pub(crate) use load::load_settings_from_path;

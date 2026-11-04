@@ -4,28 +4,22 @@ use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use std::path::PathBuf;
 
 #[cfg(test)]
-use super::{
-    AgentHelpFile, AppSettings, BlockingMenusFile, ProjectPathsRepairStage,
-    ProjectPathsWriteTransaction,
-};
+use super::{AgentHelpFile, BlockingMenusFile, ProjectPathsRepairStage};
+use super::{AppSettings, ProjectPathsWriteTransaction};
 #[cfg(test)]
 use chrono::{DateTime, Utc};
-#[cfg(test)]
 use serde_json::{Map, Value};
-#[cfg(test)]
 use std::path::Path;
 
 pub(crate) fn settings_path() -> Option<PathBuf> {
     super::super::config_dir().map(|d| d.join(SETTINGS_FILE_NAME))
 }
 
-#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct SettingsFileTarget {
     path: PathBuf,
 }
 
-#[cfg(test)]
 pub(crate) fn instance_settings_target() -> Option<SettingsFileTarget> {
     settings_path().map(|path| SettingsFileTarget { path })
 }
@@ -35,7 +29,6 @@ pub(crate) fn instance_settings_display_path() -> Option<String> {
     settings_path().map(|path| path.display().to_string())
 }
 
-#[cfg(test)]
 pub(crate) fn persisted_instance_token_matches(directory: &Path, token: &str) -> bool {
     let settings_token = crate::path_identity::read_bounded_regular(
         &directory.join(SETTINGS_FILE_NAME),
@@ -52,17 +45,14 @@ pub(crate) fn persisted_instance_token_matches(directory: &Path, token: &str) ->
     settings_token.as_deref() == Some(token)
 }
 
-#[cfg(test)]
 pub(crate) struct SettingsProjectTransaction {
     transaction: ProjectPathsWriteTransaction,
 }
 
-#[cfg(test)]
 pub(crate) struct SettingsProjectCheckpoint {
     projection: Map<String, Value>,
 }
 
-#[cfg(test)]
 impl SettingsFileTarget {
     pub(crate) fn begin_project_paths(
         &self,
@@ -72,6 +62,7 @@ impl SettingsFileTarget {
             .map(|transaction| SettingsProjectTransaction { transaction })
     }
 
+    #[cfg(test)]
     pub(crate) fn repair_project_paths(
         &self,
         current: &mut AppSettings,
@@ -79,20 +70,24 @@ impl SettingsFileTarget {
         super::repair_fresh_project_paths_at_path(current, &self.path)
     }
 
+    #[cfg(test)]
     pub(crate) fn read_agent_help_layers(&self) -> (AgentHelpFile, Option<String>, AgentHelpFile) {
         let (local, error) = super::load_local_agent_help_file(&self.path);
         let remote = super::load_remote_agent_help_file(&self.path);
         (local, error, remote)
     }
 
+    #[cfg(test)]
     pub(crate) fn read_remote_agent_help_check_stamp(&self) -> Option<DateTime<Utc>> {
         super::read_remote_agent_help_check_stamp(&self.path)
     }
 
+    #[cfg(test)]
     pub(crate) fn read_remote_blocking_menus_check_stamp(&self) -> Option<DateTime<Utc>> {
         super::read_remote_blocking_menus_check_stamp(&self.path)
     }
 
+    #[cfg(test)]
     pub(crate) fn write_remote_agent_help_check_stamp(
         &self,
         at: DateTime<Utc>,
@@ -100,6 +95,7 @@ impl SettingsFileTarget {
         super::write_remote_agent_help_check_stamp(&self.path, at)
     }
 
+    #[cfg(test)]
     pub(crate) fn write_remote_blocking_menus_check_stamp(
         &self,
         at: DateTime<Utc>,
@@ -107,6 +103,7 @@ impl SettingsFileTarget {
         super::write_remote_blocking_menus_check_stamp(&self.path, at)
     }
 
+    #[cfg(test)]
     pub(crate) fn write_remote_agent_help_cache(
         &self,
         file: AgentHelpFile,
@@ -116,6 +113,7 @@ impl SettingsFileTarget {
         super::write_remote_agent_help_cache(&self.path, file, source_url, fetched_at)
     }
 
+    #[cfg(test)]
     pub(crate) fn write_remote_blocking_menus_cache(
         &self,
         file: BlockingMenusFile,
@@ -125,6 +123,7 @@ impl SettingsFileTarget {
         super::write_remote_blocking_menus_cache(&self.path, file, source_url, fetched_at)
     }
 
+    #[cfg(test)]
     pub(crate) fn for_test_path(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
@@ -132,7 +131,6 @@ impl SettingsFileTarget {
     }
 }
 
-#[cfg(test)]
 impl SettingsProjectTransaction {
     pub(crate) fn fresh_settings(&self) -> &AppSettings {
         self.transaction.fresh_settings()

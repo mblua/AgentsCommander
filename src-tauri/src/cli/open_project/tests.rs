@@ -32,7 +32,7 @@ impl FixtureRoot {
 // The CLI execute() touches the live settings.json on disk. These two
 // tests exercise the arg parsing + early-error paths only — the
 // persistence-mutating success paths are covered by `config::projects`
-// unit tests, which use an in-memory AppSettings.
+// unit tests, including disk-authoritative registration through the typed target.
 
 #[test]
 fn open_project_returns_1_when_path_missing() {
