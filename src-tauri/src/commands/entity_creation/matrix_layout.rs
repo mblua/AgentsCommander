@@ -97,8 +97,10 @@ pub(super) fn agent_matrix_display_name(project_path: &Path, safe_name: &str) ->
     let project_folder = project_path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| project_path.to_string_lossy().to_string());
+        .map_or_else(
+            || project_path.to_string_lossy().to_string(),
+            str::to_string,
+        );
     format!("{project_folder}/{safe_name}")
 }
 

@@ -207,10 +207,8 @@ pub fn set_last_coding_agent(
     )?;
 
     log::info!(
-        "Updated lastCodingAgent to '{}' ({}) in {} + root config.json",
-        agent_id,
-        app_label,
-        local_dir_name
+        "Updated lastCodingAgent to '{agent_id}' ({app_label}) in \
+         {local_dir_name} + root config.json"
     );
     Ok(())
 }

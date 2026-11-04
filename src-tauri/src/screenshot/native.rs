@@ -554,7 +554,7 @@ async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {
                 .map_err(|e| format!("monitor {idx} capture failed: {e}"))?;
             let x = monitor.x().map_err(|e| e.to_string())?;
             let y = monitor.y().map_err(|e| e.to_string())?;
-            let scale_factor = monitor.scale_factor().map_err(|e| e.to_string())? as f64;
+            let scale_factor = f64::from(monitor.scale_factor().map_err(|e| e.to_string())?);
             let name = monitor.name().unwrap_or_else(|_| format!("monitor-{idx}"));
             // The captured bitmap is the authoritative size for crop math; do not
             // trust monitor.width()/height() for it (plan §B, dev-rust §B).

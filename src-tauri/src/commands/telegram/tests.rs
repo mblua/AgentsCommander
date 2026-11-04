@@ -288,11 +288,7 @@ fn truncate_caption_emoji_surrogate() {
     assert_eq!(s.encode_utf16().count(), 1200);
     let out = truncate_caption(&s);
     let units = out.encode_utf16().count();
-    assert!(
-        units <= 1024,
-        "expected <= 1024 UTF-16 units, got {}",
-        units
-    );
+    assert!(units <= 1024, "expected <= 1024 UTF-16 units, got {units}");
     assert!(
         !out.contains('\u{FFFD}'),
         "truncate_caption emitted U+FFFD: dangling surrogate not dropped"

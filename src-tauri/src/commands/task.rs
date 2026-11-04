@@ -115,8 +115,7 @@ fn validate_wg_root(
     //    sneak through. Un-canonicalizable project entries are skipped, not fatal.
     let under_known_root = project_paths.iter().any(|base| {
         canonical_project_path(Path::new(base))
-            .map(|canon_base| canonical.starts_with(&canon_base))
-            .unwrap_or(false)
+            .is_ok_and(|canon_base| canonical.starts_with(&canon_base))
     });
     if !under_known_root {
         return Err(format!(

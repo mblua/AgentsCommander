@@ -447,7 +447,7 @@ impl ContainerTransportBackend {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
-                    _ = shutdown.token().cancelled() => break,
+                    () = shutdown.token().cancelled() => break,
                     _ = interval.tick() => {
                         let count = backend.reap_expired_pending_sessions().await;
                         if count > 0 {
