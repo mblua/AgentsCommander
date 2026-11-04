@@ -247,9 +247,7 @@ pub(super) fn write_host_request_bytes(
 
 pub(super) fn audit_contains_request(settings_path: &Path, request_id: &str) -> bool {
     let audit = settings_path.with_file_name("api-audit.log");
-    std::fs::read(audit)
-        .ok()
-        .is_some_and(|bytes| contains_raw(&bytes, request_id.as_bytes()))
+    std::fs::read(audit).is_ok_and(|bytes| contains_raw(&bytes, request_id.as_bytes()))
 }
 
 pub(super) async fn submit_uncorrelated_host_bytes(

@@ -22,8 +22,7 @@ pub(crate) async fn logical_session_snapshot(
     {
         Some(session) => Ok((session.shell.clone(), session.waiting_for_input)),
         None => Err(format!(
-            "Session not found: {} - cannot execute logical remote command '{}'",
-            session_id, command
+            "Session not found: {session_id} - cannot execute logical remote command '{command}'"
         )),
     }
 }
