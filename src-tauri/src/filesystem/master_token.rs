@@ -4,8 +4,7 @@ pub(crate) fn matches(config_dir: Option<&std::path::Path>, token: &str) -> bool
     config_dir
         .map(|d| d.join(FILE_NAME))
         .and_then(|p| super::documents::read_cli_outbox_text(&p).ok())
-        .map(|m| m.trim() == token)
-        .unwrap_or(false)
+        .is_some_and(|m| m.trim() == token)
 }
 
 #[cfg(test)]

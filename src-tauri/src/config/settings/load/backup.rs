@@ -36,7 +36,7 @@ pub(crate) fn settings_backup_path(settings_path: &Path, index: u32) -> PathBuf 
 /// temporary. Deliberate local mirror of
 /// `sessions_persistence::rotate_orphan_archive`.
 pub(crate) fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
-    rotate_settings_backups_labeled(settings_path, settings_path, previous)
+    rotate_settings_backups_labeled(settings_path, settings_path, previous);
 }
 
 pub(crate) fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path, previous: &[u8]) {

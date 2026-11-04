@@ -546,8 +546,9 @@ impl SourcePrivateJournal {
                 || intent
                     .before_bytes
                     .as_ref()
-                    .map(|bytes| source_bytes_revision(bytes))
-                    .unwrap_or(SourceRevision::Absent {})
+                    .map_or(SourceRevision::Absent {}, |bytes| {
+                        source_bytes_revision(bytes)
+                    })
                     != intent.expected_revision
             {
                 return Err(SourceCoordinationError::Invalid);

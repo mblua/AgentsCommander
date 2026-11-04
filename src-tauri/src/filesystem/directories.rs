@@ -203,8 +203,7 @@ pub(crate) fn inspect_experiment_path_chain(path: &Path) -> Result<(), Experimen
 
 pub(crate) fn experiment_path_is_link(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
-        .map(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
-        .unwrap_or(false)
+        .is_ok_and(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
 }
 
 pub(crate) fn ensure_cli_outbox(path: &Path) -> io::Result<()> {
