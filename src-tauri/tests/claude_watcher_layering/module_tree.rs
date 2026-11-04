@@ -1,4 +1,5 @@
 use super::*;
+use syn::parse::ParseBuffer;
 
 pub(crate) fn unraw(ident: &syn::Ident) -> String {
     ident.unraw().to_string()
@@ -49,7 +50,7 @@ fn collect_conditional_paths(
     if meta.input.peek(syn::token::Paren) {
         let content;
         syn::parenthesized!(content in meta.input);
-        let nested = content.parse_terminated(|input| input.parse::<Meta>(), syn::Token![,])?;
+        let nested = content.parse_terminated(ParseBuffer::parse::<Meta>, syn::Token![,])?;
         for nested_meta in nested {
             collect_paths_from_meta(&nested_meta, paths)?;
         }

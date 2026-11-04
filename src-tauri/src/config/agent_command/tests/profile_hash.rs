@@ -334,7 +334,7 @@ fn canonical_command_text_round_trips_through_the_tokenizer() {
         &["claude", "it's here"],
     ];
     for row in table {
-        let vector: Vec<String> = row.iter().map(|s| s.to_string()).collect();
+        let vector: Vec<String> = row.iter().map(ToString::to_string).collect();
         let text = vector
             .iter()
             .map(|t| super::render_command_token(t))

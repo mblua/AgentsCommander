@@ -441,7 +441,7 @@ async fn a_fifth_destination_abstains_while_a_valid_sibling_classifies() {
     );
 }
 
-/// Test 12 (jev half): an orchestrator without a peer and a default_reply
+/// Test 12 (jev half): an orchestrator without a peer and a `default_reply`
 /// without a reply each abstain, naming the category.
 #[tokio::test]
 async fn orchestrator_without_peer_and_default_reply_without_reply_abstain() {

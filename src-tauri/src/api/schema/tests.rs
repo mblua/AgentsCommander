@@ -12,8 +12,7 @@ fn send_request_rejects_unknown_top_level_field() {
         let parsed: Result<SendRequest, _> = serde_json::from_str(&json);
         assert!(
             parsed.is_err(),
-            "body field '{}' must be rejected by deny_unknown_fields",
-            forbidden
+            "body field '{forbidden}' must be rejected by deny_unknown_fields"
         );
     }
 }

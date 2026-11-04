@@ -173,7 +173,7 @@ fn teardown(
     let mut fail = |name: &str, at: usize| failures.push(format!("{name} (stage {at})"));
 
     stage.store(STAGE_DRAIN, Ordering::SeqCst);
-    let hwnd = owned.window.as_ref().map_or(0, |window| window.hwnd());
+    let hwnd = owned.window.as_ref().map_or(0, WindowExtWindows::hwnd);
     if !drain_sent_messages(hwnd) {
         fail("DRAIN_DEADLINE_EXPIRED", STAGE_DRAIN);
     }

@@ -49,7 +49,7 @@ fn errors_when_parent_folder_is_missing() {
 
     let err = create_agent_folder_on_disk(&missing_s, "architect").expect_err("missing parent");
 
-    assert_eq!(err, format!("Parent folder does not exist: {}", missing_s));
+    assert_eq!(err, format!("Parent folder does not exist: {missing_s}"));
 }
 
 #[test]
