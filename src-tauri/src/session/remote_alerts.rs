@@ -105,7 +105,7 @@ async fn run_with_ports(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.cancelled() => break,
+            () = shutdown.cancelled() => break,
             received = transitions.recv() => match received {
                 Some(transition) => {
                     let now = now_source();
@@ -220,8 +220,8 @@ impl RemoteAlertState {
             }
             tokio::select! {
                 biased;
-                _ = self.shutdown.cancelled() => return false,
-                _ = (self.retry_wait)(PENDING_RETRY_INTERVAL) => {}
+                () = self.shutdown.cancelled() => return false,
+                () = (self.retry_wait)(PENDING_RETRY_INTERVAL) => {}
             }
             if self.shutdown.is_cancelled() {
                 return false;

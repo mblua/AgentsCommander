@@ -14,10 +14,7 @@ impl RestoreContext {
         let root_agent_path = match crate::config::root_agent::ensure_root_agent_dir() {
             Ok(path) => Some(path),
             Err(e) => {
-                log::error!(
-                    "[root-agent] Failed to provision root agent during restore: {}",
-                    e
-                );
+                log::error!("[root-agent] Failed to provision root agent during restore: {e}");
                 None
             }
         };
@@ -91,7 +88,7 @@ impl RestoreContext {
             .await
             {
                 Ok(_) => progress.n_woken += 1,
-                Err(e) => log::error!("[root-agent] Failed to auto-create root session: {}", e),
+                Err(e) => log::error!("[root-agent] Failed to auto-create root session: {e}"),
             }
         } else {
             log::info!(
@@ -141,8 +138,7 @@ impl RestoreContext {
                     if let Err(e) = stale_destroy {
                         log::warn!(
                             "[root-agent] Failed to force-destroy stale \
-                                        dormant root during restore: {}",
-                            e
+                                        dormant root during restore: {e}"
                         );
                     }
                 }

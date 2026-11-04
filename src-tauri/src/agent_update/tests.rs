@@ -410,7 +410,7 @@ fn seed_retained_target(gate: &AgentUpdateGate, command: &str, label: &str) {
 fn set_target_phase(gate: &AgentUpdateGate, command: &str, phase: TargetPhase) {
     gate.state
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .controls
         .get_mut(command)
         .expect("retained target")
