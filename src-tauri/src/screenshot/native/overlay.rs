@@ -69,10 +69,10 @@ fn positive_scale(scale: f64) -> f64 {
 fn tauri_logical_frame(g: &MonitorGeometry) -> LogicalFrame {
     let scale = positive_scale(g.scale);
     LogicalFrame {
-        x: g.position.0 as f64 / scale,
-        y: g.position.1 as f64 / scale,
-        width: g.size.0 as f64 / scale,
-        height: g.size.1 as f64 / scale,
+        x: f64::from(g.position.0) / scale,
+        y: f64::from(g.position.1) / scale,
+        width: f64::from(g.size.0) / scale,
+        height: f64::from(g.size.1) / scale,
     }
 }
 
@@ -81,10 +81,10 @@ fn tauri_logical_frame(g: &MonitorGeometry) -> LogicalFrame {
 pub(super) fn xcap_logical_frame(g: &MonitorGeometry) -> LogicalFrame {
     let scale = positive_scale(g.scale);
     LogicalFrame {
-        x: g.position.0 as f64,
-        y: g.position.1 as f64,
-        width: g.size.0 as f64 / scale,
-        height: g.size.1 as f64 / scale,
+        x: f64::from(g.position.0),
+        y: f64::from(g.position.1),
+        width: f64::from(g.size.0) / scale,
+        height: f64::from(g.size.1) / scale,
     }
 }
 
@@ -121,8 +121,8 @@ pub(super) fn match_monitor(
             .iter()
             .enumerate()
             .min_by_key(|(_, tm)| {
-                let dx = (tm.position.0 - cx).unsigned_abs() as u64;
-                let dy = (tm.position.1 - cy).unsigned_abs() as u64;
+                let dx = u64::from((tm.position.0 - cx).unsigned_abs());
+                let dy = u64::from((tm.position.1 - cy).unsigned_abs());
                 dx + dy
             })
             .map(|(idx, _)| idx);
@@ -308,14 +308,19 @@ pub(super) fn open_overlay_windows<H: ScreenshotHost>(
         // `Logical` frame the placement already is points; on `Physical` it is
         // pixels and divides by the monitor scale, exactly as before.
         let (logical_w, logical_h, logical_x, logical_y) = match p.frame {
-            PlacementFrame::Logical => (p.width as f64, p.height as f64, p.x as f64, p.y as f64),
+            PlacementFrame::Logical => (
+                f64::from(p.width),
+                f64::from(p.height),
+                f64::from(p.x),
+                f64::from(p.y),
+            ),
             PlacementFrame::Physical => {
                 let scale = positive_scale(p.scale_factor);
                 (
-                    p.width as f64 / scale,
-                    p.height as f64 / scale,
-                    p.x as f64 / scale,
-                    p.y as f64 / scale,
+                    f64::from(p.width) / scale,
+                    f64::from(p.height) / scale,
+                    f64::from(p.x) / scale,
+                    f64::from(p.y) / scale,
                 )
             }
         };

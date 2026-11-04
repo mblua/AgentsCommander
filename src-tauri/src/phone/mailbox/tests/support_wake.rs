@@ -191,7 +191,7 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
         drop(finish_outer);
         binding
     };
-    let (_, _, binding) = tokio::time::timeout(Duration::from_secs(20), async {
+    let ((), (), binding) = tokio::time::timeout(Duration::from_secs(20), async {
         tokio::join!(first_delivery, second_delivery, controller)
     })
     .await
@@ -723,13 +723,11 @@ pub(super) fn seed_self_handoff(cwd: &Path) {
 /// not exact name). Returns 0 if `self-clear/` does not exist
 /// (`read_dir` errors -> `unwrap_or(0)`).
 pub(super) fn count_forget_archives(cwd: &Path) -> usize {
-    std::fs::read_dir(cwd.join("self-clear"))
-        .map(|rd| {
-            rd.filter_map(std::result::Result::ok)
-                .filter(|e| e.file_name().to_string_lossy().ends_with("_SELF-FORGET.md"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(cwd.join("self-clear")).map_or(0, |rd| {
+        rd.filter_map(std::result::Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with("_SELF-FORGET.md"))
+            .count()
+    })
 }
 
 pub(super) fn read_only_forget_archive(cwd: &Path) -> String {
@@ -738,8 +736,7 @@ pub(super) fn read_only_forget_archive(cwd: &Path) -> String {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.file_name()
-                .map(|name| name.to_string_lossy().ends_with("_SELF-FORGET.md"))
-                .unwrap_or(false)
+                .is_some_and(|name| name.to_string_lossy().ends_with("_SELF-FORGET.md"))
         })
         .collect();
     assert_eq!(

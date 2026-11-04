@@ -395,7 +395,7 @@ const NEWER_COVERAGE_VERSION: u32 = 3;
 fn appended_headers(tail: &str) -> Vec<String> {
     tail.lines()
         .filter(|line| line.starts_with("[messages."))
-        .map(|line| line.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
