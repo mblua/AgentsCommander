@@ -360,7 +360,7 @@ fn loop_test_replica_dir(tmp: &tempfile::TempDir) -> PathBuf {
 fn write_replica_config(replica: &Path, tooling: &str) {
     std::fs::write(
         replica.join("config.json"),
-        format!(r#"{{"tooling":{}}}"#, tooling),
+        format!(r#"{{"tooling":{tooling}}}"#),
     )
     .expect("write replica config.json");
 }

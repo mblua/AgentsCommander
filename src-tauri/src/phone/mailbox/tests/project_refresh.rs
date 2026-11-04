@@ -417,8 +417,7 @@ async fn deliver_wake_falls_back_when_first_inject_race_kills_pty() {
     {
         let mut results = hooks.inject_results.lock().unwrap();
         results.push_back(Err(format!(
-            "PTY write failed: Session not found: {}",
-            first_id
+            "PTY write failed: Session not found: {first_id}"
         )));
         results.push_back(Ok(()));
     }
