@@ -388,11 +388,9 @@ fn report_pty_input_confirmation(
                 0
             }
             PtyInputPublicStatus::Rejected => {
-                let code = result
-                    .reason
-                    .as_ref()
-                    .map(|reason| reason_code_for_cli(reason.code))
-                    .unwrap_or("invalid_envelope");
+                let code = result.reason.as_ref().map_or("invalid_envelope", |reason| {
+                    reason_code_for_cli(reason.code)
+                });
                 eprintln!("Rejected: {injection_id} code={code}");
                 1
             }
@@ -400,8 +398,9 @@ fn report_pty_input_confirmation(
                 let code = result
                     .reason
                     .as_ref()
-                    .map(|reason| reason_code_for_cli(reason.code))
-                    .unwrap_or("terminal_store_failed");
+                    .map_or("terminal_store_failed", |reason| {
+                        reason_code_for_cli(reason.code)
+                    });
                 eprintln!("Indeterminate: {injection_id} code={code}; do not resubmit");
                 1
             }

@@ -19,7 +19,7 @@ static AFTER_SEED_BEFORE_PTY: BarrierMap = Mutex::new(None);
 fn install(slot: &BarrierMap, key: &str) -> Arc<SeedRaceBarrier> {
     let barrier = Arc::new(SeedRaceBarrier::default());
     slot.lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert_with(HashMap::new)
         .insert(key.to_string(), barrier.clone());
     barrier
@@ -28,7 +28,7 @@ fn install(slot: &BarrierMap, key: &str) -> Arc<SeedRaceBarrier> {
 async fn hit(slot: &BarrierMap, key: &str) {
     let barrier = slot
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
         .and_then(|map| map.remove(key));
     if let Some(barrier) = barrier {
