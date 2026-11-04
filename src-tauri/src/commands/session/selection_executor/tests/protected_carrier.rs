@@ -366,7 +366,7 @@ pub(crate) async fn run_isolated(name: &str, body: impl std::future::Future<Outp
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x0800_0000);
     }
     let mut owner = CarrierChild {
         child: command.spawn().unwrap(),

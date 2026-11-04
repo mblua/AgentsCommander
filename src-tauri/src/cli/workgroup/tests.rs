@@ -478,7 +478,7 @@ fn u4_aggregation_reports_every_reason_and_unions_runs() {
         ),
     ]);
     let reason = |keys: &[&str], gate: Option<&'static str>| {
-        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        let keys: Vec<String> = keys.iter().map(std::string::ToString::to_string).collect();
         aggregate_room_ci(&keys, &entries, gate)
     };
     let running = reason(&["run1", "run2", "unk", "idle"], None);

@@ -116,7 +116,7 @@ impl RouteHarness {
             &self.manager,
             &self.pty,
             shell.to_string(),
-            args.iter().map(|a| a.to_string()).collect(),
+            args.iter().map(std::string::ToString::to_string).collect(),
             cwd.to_string_lossy().into_owned(),
             Some("route fixture".to_string()),
             agent_id.map(str::to_string),

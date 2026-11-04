@@ -414,7 +414,7 @@ fn remove_hooked(
                     "[workgroup-remove] dropped {} clock key(s) for {}",
                     n,
                     args.workgroup
-                )
+                );
             }
             Ok(_) => {}
             Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {e}"),

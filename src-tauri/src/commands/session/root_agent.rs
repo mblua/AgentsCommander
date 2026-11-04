@@ -352,7 +352,7 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
             .await;
         let has_pty = pty_mgr
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
             ExistingRootAction::ReuseLive => {
