@@ -421,8 +421,8 @@ fn terminated_rows_are_bounded_by_retention_cap() {
     let total = MAX_TERMINATED_RETAINED + 4;
     for i in 0..total {
         let pid = 100 + i as u32;
-        let root = identity(pid, pid as u64);
-        backend.add_tree(root, vec![observed(pid, pid as u64, None, 0)]);
+        let root = identity(pid, u64::from(pid));
+        backend.add_tree(root, vec![observed(pid, u64::from(pid), None, 0)]);
         let permit = state.try_reserve_agent_slot(limits(100)).unwrap().unwrap();
         let id = Uuid::new_v4();
         state
@@ -658,8 +658,8 @@ fn errored_sample_does_not_prune() {
 // bytes + limit) and never duplicated as free text in `warnings`.
 fn snapshot_with_group_at(bytes: u32) -> (Uuid, ResourceSnapshot) {
     let (state, backend) = state_with_fake();
-    let root = identity(bytes, bytes as u64);
-    backend.add_tree(root, vec![observed(bytes, bytes as u64, None, 0)]);
+    let root = identity(bytes, u64::from(bytes));
+    backend.add_tree(root, vec![observed(bytes, u64::from(bytes), None, 0)]);
     let permit = state.try_reserve_agent_slot(limits(3)).unwrap().unwrap();
     let id = Uuid::new_v4();
     state

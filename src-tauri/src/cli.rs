@@ -37,7 +37,7 @@ mod workgroup;
 use crate::filesystem::{directories, documents};
 use clap::{Parser, Subcommand};
 
-/// Print to stdout with BrokenPipe tolerance. If the underlying write fails
+/// Print to stdout with `BrokenPipe` tolerance. If the underlying write fails
 /// SPECIFICALLY with `io::ErrorKind::BrokenPipe` (typically because the
 /// consumer closed stdout early — `head`, captured pipe in PS without
 /// `Out-String`, etc.), exit the process cleanly with code 0 instead of
@@ -221,28 +221,28 @@ pub enum Commands {
     /// Delete only the disposable testable app state
     #[command(hide = true)]
     TestReset(crate::testability::reset::TestResetArgs),
-    /// Inspect running AgentsCommander GUI windows for this binary identity
+    /// Inspect running `AgentsCommander` GUI windows for this binary identity
     #[command(hide = true)]
     WindowInfo(crate::testability::window_info::WindowInfoArgs),
-    /// Query a WebView automation target by data-ac-testid
+    /// Query a `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
     /// Query or scroll a visible xterm through the test-only automation bridge
     #[command(hide = true)]
     UiTerminal(crate::testability::ui_automation::UiTerminalArgs),
-    /// Dispatch a WebView pointer button/move operation on an automation target by data-ac-testid
+    /// Dispatch a `WebView` pointer button/move operation on an automation target by data-ac-testid
     #[command(hide = true)]
     UiPointer(crate::testability::ui_automation::UiPointerArgs),
-    /// Dispatch a WebView key press on an automation target by data-ac-testid
+    /// Dispatch a `WebView` key press on an automation target by data-ac-testid
     #[command(hide = true)]
     UiKey(crate::testability::ui_automation::UiKeyArgs),
-    /// Click a WebView automation target by data-ac-testid
+    /// Click a `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiClick(crate::testability::ui_automation::UiClickArgs),
-    /// Dispatch a WebView contextmenu event on an automation target by data-ac-testid
+    /// Dispatch a `WebView` contextmenu event on an automation target by data-ac-testid
     #[command(hide = true)]
     UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
-    /// Dispatch a WebView pointer hover transition on an automation target by data-ac-testid
+    /// Dispatch a `WebView` pointer hover transition on an automation target by data-ac-testid
     #[command(hide = true)]
     UiHover(crate::testability::ui_automation::UiHoverArgs),
     /// List live native windows as decimal id and title (Windows only)
@@ -251,16 +251,16 @@ pub enum Commands {
     /// Capture a live native window to a PNG file (Windows only)
     #[cfg(target_os = "windows")]
     WindowScreenshot(window_screenshot::WindowScreenshotArgs),
-    /// Set an input/select WebView automation target by data-ac-testid
+    /// Set an input/select `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiSet(crate::testability::ui_automation::UiSetArgs),
-    /// Type text into a WebView automation target by data-ac-testid
+    /// Type text into a `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiType(crate::testability::ui_automation::UiTypeArgs),
     /// Execute a Rust-handled automation hook
     #[command(hide = true)]
     UiBackend(crate::testability::ui_automation::UiBackendArgs),
-    /// Wait until a WebView automation target is available by data-ac-testid
+    /// Wait until a `WebView` automation target is available by data-ac-testid
     #[command(hide = true)]
     UiWait(crate::testability::ui_automation::UiWaitArgs),
 }
@@ -270,8 +270,8 @@ pub enum Commands {
 /// inherited console handles, or file redirects from the parent), `AttachConsole`
 /// would REBIND the std handles to a fresh console buffer — breaking those
 /// inherited channels. That rebinding is the root cause of issue #129: PS
-/// -NonInteractive `&` direct calls inherit pipe handles to the GUI-subsystem
-/// child, and AttachConsole's rebind sends subsequent writes to a console buffer
+/// -`NonInteractive` `&` direct calls inherit pipe handles to the GUI-subsystem
+/// child, and `AttachConsole`'s rebind sends subsequent writes to a console buffer
 /// that PS does not surface, dropping all output.
 ///
 /// The condition uses `GetFileType` on the std handles. `FILE_TYPE_UNKNOWN`

@@ -18,8 +18,8 @@ struct FakeProcessTreeBackend {
     exit_during_terminate: Mutex<BTreeSet<ProcessIdentity>>,
     remove_on_terminate: Mutex<HashMap<ProcessIdentity, Vec<ProcessIdentity>>>,
     terminated: Mutex<Vec<ProcessIdentity>>,
-    /// #559 (T1) - roots flagged here make observe_tree return Err, modelling a
-    /// failed enumeration. The Err arm of snapshot() must never reach the strike
+    /// #559 (T1) - roots flagged here make `observe_tree` return Err, modelling a
+    /// failed enumeration. The Err arm of `snapshot()` must never reach the strike
     /// counter or reap.
     fail_observe: Mutex<BTreeSet<ProcessIdentity>>,
     /// #1151 - call counters so a test can assert that an ineligible orphan retry
@@ -165,7 +165,7 @@ impl FakeProcessTreeBackend {
         self.terminated.lock().unwrap().clone()
     }
 
-    /// #1151 - (observe_tree, observe_identity, terminate_verified) call counts.
+    /// #1151 - (`observe_tree`, `observe_identity`, `terminate_verified`) call counts.
     fn call_counts(&self) -> (usize, usize, usize) {
         (
             self.observe_tree_calls.load(Ordering::SeqCst),
@@ -283,11 +283,11 @@ fn observed(pid: u32, tick: u64, parent_pid: Option<u32>, depth: u32) -> Observe
     ObservedProcess {
         identity: identity(pid, tick),
         parent_pid,
-        parent_identity: parent_pid.map(|p| identity(p, p as u64)),
+        parent_identity: parent_pid.map(|p| identity(p, u64::from(p))),
         exe_name: format!("p{pid}"),
         depth,
-        private_bytes: Some(pid as u64),
-        working_set_bytes: Some(pid as u64),
+        private_bytes: Some(u64::from(pid)),
+        working_set_bytes: Some(u64::from(pid)),
         cpu_percent: None,
         kill_allowed: true,
     }
@@ -300,11 +300,11 @@ fn observed_unverifiable(pid: u32, parent_pid: Option<u32>, depth: u32) -> Obser
             creation_time_100ns: 0,
         },
         parent_pid,
-        parent_identity: parent_pid.map(|p| identity(p, p as u64)),
+        parent_identity: parent_pid.map(|p| identity(p, u64::from(p))),
         exe_name: format!("p{pid}"),
         depth,
-        private_bytes: Some(pid as u64),
-        working_set_bytes: Some(pid as u64),
+        private_bytes: Some(u64::from(pid)),
+        working_set_bytes: Some(u64::from(pid)),
         cpu_percent: None,
         kill_allowed: false,
     }
