@@ -527,8 +527,8 @@ async fn typed_target_registration_preserves_fresh_disk_projects_over_stale_stat
     for project in [&existing, &added] {
         std::fs::create_dir_all(project.join(".ac")).unwrap();
     }
-    let existing = existing.to_string_lossy().replace(char::from(92), "/");
-    let added = added.to_string_lossy().replace(char::from(92), "/");
+    let existing = existing.to_string_lossy().into_owned();
+    let added = added.to_string_lossy().into_owned();
     let disk = serde_json::json!({"projectPaths": [existing], "projectPath": existing});
     std::fs::write(&settings_path, disk.to_string()).unwrap();
     let state = crate::config::settings::new_settings_state(AppSettings::default());
