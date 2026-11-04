@@ -740,7 +740,7 @@ fn the_scope_ignores_the_new_names_before_it_renames_anything() {
         std::fs::write(legacy_settings_path(&k.project), B4A_LEGACY_BYTES).unwrap();
         let writer = || {
             crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
-                .expect("writer")
+                .expect("writer");
         };
         if sweep_first {
             load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");

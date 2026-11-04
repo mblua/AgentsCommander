@@ -711,7 +711,7 @@ fn terminal_snapshot_gate_defaults_true_and_strict_reader_fails_closed() {
     std::fs::write(&path, r#"{"terminalSnapshotsEnabled":true}"#).unwrap();
     let destination = super::super::project_paths_path(&path);
     for projection in [
-        r#"{}"#,
+        r"{}",
         r#"{"archivedProjectPaths":["archived"]}"#,
         r#"{"projectPaths":[]}"#,
     ] {

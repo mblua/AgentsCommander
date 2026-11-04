@@ -422,7 +422,7 @@ fn p8_is_frozen() {
     let pin = Pin {
         total: 215,
         distinct: 172,
-        sha256: "B7F490965F035260607C2172953F4B874283FEBE69E8628A44D77DC10B98DD2A",
+        sha256: "EF0A437F76F210286F4E67A8A6B7855582827304CE5B20A2CF5DCD4206DB76A0",
         per_file: &[
             ("config/agent_config.rs", 9),
             ("config/agent_config/load_probe_harness.rs", 2),
