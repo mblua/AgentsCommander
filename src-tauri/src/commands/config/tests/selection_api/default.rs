@@ -128,7 +128,7 @@ async fn issue_1937_selection_api_default_rejects_malformed_and_invalid_input() 
         super::get_replica_selection_default_inner(&settings, api_default_request(&replica))
             .await
             .expect_err("malformed default must fail the read");
-    let error = error.to_string();
+    let error = error.clone();
     assert!(error.contains("replicaSelectionDefault"), "{error}");
 
     let error = super::set_replica_selection_default_inner(

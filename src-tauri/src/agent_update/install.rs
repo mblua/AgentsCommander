@@ -203,18 +203,7 @@ pub(crate) fn install_run_from_settlement(
         stderr,
         defects,
     } = settlement;
-    let (ok, exit_code, detail) = if !defects.is_empty() {
-        // A status observed before the defective cleanup is still reported.
-        let observed = match &waited {
-            TargetWait::Exited(Ok(status)) => status.code(),
-            _ => None,
-        };
-        (
-            false,
-            observed,
-            format!("process cleanup defective: {}", defects.join("; ")),
-        )
-    } else {
+    let (ok, exit_code, detail) = if defects.is_empty() {
         match waited {
             TargetWait::TimedOut => (
                 false,
@@ -232,6 +221,17 @@ pub(crate) fn install_run_from_settlement(
             ),
             TargetWait::Cancelled => (false, None, "unexpected cancellation".to_string()),
         }
+    } else {
+        // A status observed before the defective cleanup is still reported.
+        let observed = match &waited {
+            TargetWait::Exited(Ok(status)) => status.code(),
+            _ => None,
+        };
+        (
+            false,
+            observed,
+            format!("process cleanup defective: {}", defects.join("; ")),
+        )
     };
     AgentInstallRun {
         ok,

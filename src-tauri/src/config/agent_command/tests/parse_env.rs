@@ -48,7 +48,7 @@ fn stringifies_migration_tokens_with_spaces_quotes_and_empty_args() {
     let tokens = vec![
         "C:\\Program Files\\Codex\\codex.exe".to_string(),
         "--config".to_string(),
-        "".to_string(),
+        String::new(),
         "a\"b".to_string(),
     ];
     let text = super::stringify_agent_command_tokens(&tokens);

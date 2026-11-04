@@ -197,7 +197,7 @@ pub fn scrub_host_paths(detail: &str) -> String {
         // A drive-letter path starts as `<letter>:` followed by `\` or `/`.
         let is_drive_start = c.is_ascii_alphabetic()
             && bytes.get(i + 1) == Some(&b':')
-            && matches!(bytes.get(i + 2), Some(&b'\\') | Some(&b'/'))
+            && matches!(bytes.get(i + 2), Some(&b'\\' | &b'/'))
             // Must be at a token boundary so `https://` (no drive letter) and
             // mid-word colons are not misread. Preceding char is start-or-space.
             && (i == 0 || bytes.get(i - 1).is_some_and(u8::is_ascii_whitespace));

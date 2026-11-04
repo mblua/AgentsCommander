@@ -102,7 +102,7 @@ async fn assert_serialized_resource_kills(watchdog_first: bool) {
         .unwrap()
         .record_route(session.id, SessionBackendKind::LocalProcess);
 
-    let order_offset = if watchdog_first { 1 } else { 0 };
+    let order_offset = u32::from(watchdog_first);
     let root = ProcessIdentity {
         pid: 5100 + order_offset,
         creation_time_100ns: 700 + u64::from(order_offset),

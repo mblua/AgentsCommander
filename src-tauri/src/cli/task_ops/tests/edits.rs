@@ -312,7 +312,7 @@ fn backup_failure_aborts_write_and_preserves_task() {
     assert!(
         matches!(
             result,
-            Err(TaskOpError::BackupExhausted(_)) | Err(TaskOpError::BackupFailed(_, _))
+            Err(TaskOpError::BackupExhausted(_) | TaskOpError::BackupFailed(_, _))
         ),
         "expected backup-class failure, got {result:?}"
     );

@@ -285,9 +285,7 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
     }
 
     let selected_was_torn_down = selected_id.is_some_and(|selected| outcome.succeeded(selected));
-    let decision = if !selected_was_torn_down {
-        CommitDecision::Keep
-    } else {
+    let decision = if selected_was_torn_down {
         match request.source {
             DestructionSource::ManualClose => {
                 let final_snapshot = transaction.aggregate_snapshot().await;
@@ -349,6 +347,8 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
             | DestructionSource::SpawnRollback
             | DestructionSource::BackgroundCleanup => CommitDecision::Clear,
         }
+    } else {
+        CommitDecision::Keep
     };
 
     let committed = transaction

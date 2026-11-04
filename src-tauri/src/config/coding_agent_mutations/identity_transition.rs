@@ -44,9 +44,7 @@ pub(crate) fn get_identity_transition(
                     status.source_revision_observed == summary.after_source_revision
                 }
             };
-            if !matches {
-                IdentityTransitionReadState::Conflict
-            } else {
+            if matches {
                 match summary.phase {
                     SourceTransitionPhase::IntentStored => {
                         IdentityTransitionReadState::IntentStored
@@ -57,6 +55,8 @@ pub(crate) fn get_identity_transition(
                     }
                     SourceTransitionPhase::Complete => IdentityTransitionReadState::Complete,
                 }
+            } else {
+                IdentityTransitionReadState::Conflict
             }
         }
     };
