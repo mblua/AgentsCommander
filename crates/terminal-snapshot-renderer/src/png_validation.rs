@@ -49,6 +49,22 @@ pub fn validate_generated_png(
         .filter(|bytes| *bytes <= MAX_RGB_BYTES)
         .ok_or(ProtocolError::InvalidPng)?;
 
+    validate_chunks(bytes, expected_width, expected_height)?;
+    decode_and_check(bytes, expected_width, expected_height, expected_rgb)?;
+
+    Ok(ValidatedPng {
+        width: expected_width,
+        height: expected_height,
+        bytes: bytes.len(),
+        rgb_bytes: expected_rgb,
+    })
+}
+
+fn validate_chunks(
+    bytes: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+) -> Result<(), ProtocolError> {
     let mut offset = PNG_SIGNATURE.len();
     let mut saw_ihdr = false;
     let mut saw_idat = false;
@@ -132,7 +148,15 @@ pub fn validate_generated_png(
     if !saw_ihdr || !saw_idat || !saw_iend || offset != bytes.len() {
         return Err(ProtocolError::InvalidPng);
     }
+    Ok(())
+}
 
+fn decode_and_check(
+    bytes: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+    expected_rgb: usize,
+) -> Result<(), ProtocolError> {
     let mut decoder = png::Decoder::new_with_limits(
         Cursor::new(bytes),
         png::Limits {
@@ -166,13 +190,7 @@ pub fn validate_generated_png(
         return Err(ProtocolError::InvalidPng);
     }
     reader.finish().map_err(|_| ProtocolError::InvalidPng)?;
-
-    Ok(ValidatedPng {
-        width: expected_width,
-        height: expected_height,
-        bytes: bytes.len(),
-        rgb_bytes: expected_rgb,
-    })
+    Ok(())
 }
 
 #[cfg(test)]
