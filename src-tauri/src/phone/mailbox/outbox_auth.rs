@@ -35,7 +35,9 @@ impl MailboxPoller {
         use crate::phone::types::PtyInputReasonCode as C;
         let route_valid = {
             let manager = app.pty_routes();
-            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            let manager = manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             manager.has_session(session_id)
                 && manager.backend_kind(session_id) == Some(session.backend_kind)
                 && manager
@@ -297,7 +299,7 @@ impl MailboxPoller {
         // (routing, action dispatch, injection, archival) reads the canonical
         // form without re-mutation.
         let mut msg: OutboxMessage = serde_json::from_str(content)
-            .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
+            .map_err(|e| format!("Failed to parse outbox message: {e}"))?;
 
         if let Some(raw) = msg.request_id.as_deref() {
             let parsed = Uuid::parse_str(raw).map_err(|_| "invalid_request_id".to_string())?;
@@ -439,7 +441,7 @@ impl MailboxPoller {
                 }
                 Err(e) => {
                     return Ok(std::ops::ControlFlow::Break(
-                        self.reject_message(path, msg, &format!("Unresolvable target: {}", e))
+                        self.reject_message(path, msg, &format!("Unresolvable target: {e}"))
                             .await,
                     ));
                 }
@@ -714,8 +716,8 @@ impl MailboxPoller {
         // directory; include it so a qualified coordinator FQN resolves even
         // when the project is not in settings (session-derived rooms).
         if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
-            .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
-            .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
+            .and_then(|room_root| room_root.parent().map(std::path::Path::to_path_buf))
+            .and_then(|ac_root| ac_root.parent().map(std::path::Path::to_path_buf))
         {
             let canon_project = phone_mailbox::canonical_mailbox_path(&project_dir).ok();
             let already_present = paths.iter().any(|p| match &canon_project {

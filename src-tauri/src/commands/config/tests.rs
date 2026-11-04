@@ -220,7 +220,7 @@ fn canonical_display(dir: &Path) -> String {
     )
 }
 
-/// #1077: seed a whole, valid AppSettings object on disk with `keys` removed
+/// #1077: seed a whole, valid `AppSettings` object on disk with `keys` removed
 /// (to simulate an absent-key scenario without tripping the preserve writer's
 /// whole-object gate).
 fn write_settings_file_without_keys(dir: &Path, settings: &AppSettings, keys: &[&str]) {

@@ -439,8 +439,7 @@ async fn bench_batch_locked(
                     .lock()
                     .expect("fixture temp")
                     .take()
-                    .map(tempfile::TempDir::keep)
-                    .unwrap_or_else(|| bench.root.clone());
+                    .map_or_else(|| bench.root.clone(), tempfile::TempDir::keep);
                 // 2. keep the sinks registered and 3. keep `serial` held;
                 // 4. name what is still pending and where the fixture is.
                 let finished_ids = done.lock().expect("done").clone();
