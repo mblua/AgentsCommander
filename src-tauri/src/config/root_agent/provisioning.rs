@@ -12,17 +12,16 @@ use crate::config::ROOT_AGENT_DIR_NAME;
 use crate::filesystem::agent_files;
 use std::path::Path;
 
-pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r#"# Role
+pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r"# Role
 
 You are the personal Root Agent for AgentsCommander.
-"#;
+";
 
 pub fn is_root_agent_dir_name(cwd: &str) -> bool {
     Path::new(cwd)
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case(ROOT_AGENT_DIR_NAME))
-        .unwrap_or(false)
+        .is_some_and(|name| name.eq_ignore_ascii_case(ROOT_AGENT_DIR_NAME))
 }
 
 pub fn is_root_agent_path(cwd: &str) -> bool {

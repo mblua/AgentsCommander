@@ -107,7 +107,7 @@ fn set_aside_picks_the_first_absent_ordinal() {
     let outcomes = run_scope(&g.data, &[STEP], SCOPE, Some(&g.cfg));
     match outcomes.as_slice() {
         [Outcome::Refused(Refusal::Io(message))] => {
-            assert!(message.contains("ceiling of 999"), "{message}")
+            assert!(message.contains("ceiling of 999"), "{message}");
         }
         other => panic!("the 999 ceiling must be an Io refusal: {other:?}"),
     }
@@ -196,7 +196,7 @@ fn a_failed_set_aside_move_never_loses_bytes_and_never_leaves_a_stub() {
         .expect("scope ran");
         match outcomes.as_slice() {
             [Outcome::Refused(Refusal::Io(message))] => {
-                assert!(message.contains(&aside(1)), "{message}")
+                assert!(message.contains(&aside(1)), "{message}");
             }
             other => panic!("expected an Io refusal: {other:?}"),
         }
@@ -361,7 +361,7 @@ fn a_refused_step_re_evaluates_after_the_state_changes() {
             reason: Some("lock unavailable".into()),
             ..StepRecord::new(&f.data, FROM, TO, StepState::Refused)
         };
-        j.record_step(SCOPE, record)
+        j.record_step(SCOPE, record);
     })
     .expect("record refusal");
     assert_eq!(get(&f.data, TO), None);

@@ -385,10 +385,10 @@ where
         let remaining = deadline.saturating_duration_since(Instant::now());
         tokio::select! {
             joined = &mut handle => joined,
-            _ = tokio::time::sleep(remaining) => {
+            () = tokio::time::sleep(remaining) => {
                 return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
             }
-            _ = control.deadline_expired() => {
+            () = control.deadline_expired() => {
                 return Err(TerminalSnapshotReasonCode::SnapshotTimeout);
             }
         }

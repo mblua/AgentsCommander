@@ -127,10 +127,7 @@ fn prepared_identity_pair_serializer_cleanup_and_split_parity() {
 #[test]
 fn prepared_identity_malformed_tooling_zero_write() {
     use crate::config::local_config_io::PhysicalState;
-    for (d, s) in [
-        (r#"{"tooling":null}"#, r#"{}"#),
-        (r#"{}"#, r#"{"tooling":[]}"#),
-    ] {
+    for (d, s) in [(r#"{"tooling":null}"#, r"{}"), (r"{}", r#"{"tooling":[]}"#)] {
         assert!(prepare_identity_reference_pair(
             [
                 PhysicalState::from_bytes(d.as_bytes().to_vec()),
