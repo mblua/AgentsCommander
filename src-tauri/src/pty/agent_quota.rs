@@ -231,7 +231,7 @@ impl AgentQuotaEngine {
     pub fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .contains_key(&id)
     }
 
