@@ -578,7 +578,7 @@ async fn recheck_pending_archive<R: tauri::Runtime>(
     )
     .await
     {
-        let err = e.to_string();
+        let err = e.clone();
         release_resource_launch_permit(&state.resource_monitor, resource_permit);
         drop(state.mgr);
         rollback_pre_created_session(app, session_mgr, pty_mgr, state.session.id, &err).await;
@@ -744,9 +744,9 @@ async fn destination_admission<R: tauri::Runtime>(
         return Ok(None);
     };
     Ok(Some(DestinationAdmission {
-        create_target_replica_identity,
-        create_manager,
         create_owner,
+        create_manager,
+        create_target_replica_identity,
     }))
 }
 
