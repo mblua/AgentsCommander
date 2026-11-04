@@ -465,7 +465,7 @@ pub(crate) async fn resume_create_resource_admission(
         // Do not occupy quota needed by the protected owner while G waits.
         // This is only a preflight probe; target/U/M admission still follows.
         let permit = acquire_carrier_mutation_permit().await;
-        let eligible = owner.lock().ok().is_some_and(|owner| {
+        let eligible = owner.lock().is_ok_and(|owner| {
             use crate::config::sessions_persistence::CreateCarrierScope;
             match crate::config::sessions_persistence::classify_create_carrier_scope(
                 &permit,
@@ -619,7 +619,7 @@ pub(crate) async fn try_acquire_create_publication_region_checked(
     })?;
     let admitted = manager
         .with_current_carrier_snapshot(&permit, |current| {
-            owner.lock().ok().is_some_and(|mut owner| {
+            owner.lock().is_ok_and(|mut owner| {
                 context_is_current()
                     && match (
                         owner.owned_replacement.as_ref(),
@@ -695,7 +695,7 @@ pub(crate) async fn acquire_lifecycle_create_publication_region<R: tauri::Runtim
         };
     }
     let Some(domain) = domain else {
-        if owner.lock().ok().is_some_and(|owner| owner.preheld_target) {
+        if owner.lock().is_ok_and(|owner| owner.preheld_target) {
             return match try_acquire_create_publication_region(owner, manager).await {
                 Some(permit) => Ok(permit),
                 None => {
@@ -802,7 +802,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                     written.response_close_enabled,
                     written.response_close_idle_seconds,
                     std::time::Instant::now(),
-                )
+                );
             },
         )
         .await;
@@ -831,9 +831,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                 let manager = manager.clone();
                 async move {
                     let admitted = try_acquire_create_publication_region(&owner, &manager).await;
-                    if admitted.is_none()
-                        && owner.lock().ok().is_some_and(|owner| owner.preheld_target)
-                    {
+                    if admitted.is_none() && owner.lock().is_ok_and(|owner| owner.preheld_target) {
                         if let Ok(mut owner) = owner.lock() {
                             owner.blocked_bound = true;
                         }
@@ -847,7 +845,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                     written.response_close_enabled,
                     written.response_close_idle_seconds,
                     std::time::Instant::now(),
-                )
+                );
             },
         )
         .await

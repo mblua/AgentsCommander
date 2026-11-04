@@ -1,4 +1,4 @@
-//! The run-event handler of run(): window teardown and the exit path.
+//! The run-event handler of `run()`: window teardown and the exit path.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -81,7 +81,7 @@ fn on_window_destroyed<H, S, F, FF>(
         host.spawn_background(async move {
             pty_mgr
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .release_window_attachments(&destroyed);
         });
     }
@@ -412,10 +412,10 @@ fn flush_exit_metadata<S>(ctx: &ExitCtx<S>) {
     {
         let snap = coordinator_clocks_for_exit
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot();
         if let Err(e) = crate::config::coordinator_clocks::save_map(&snap) {
-            log::warn!("[coordinator-clocks] exit flush failed: {}", e);
+            log::warn!("[coordinator-clocks] exit flush failed: {e}");
         }
     }
 
@@ -468,7 +468,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
             // the alert actor consumes its sole join handle.
             if let Some(monitor) = context_alert_monitor {
                 if let Err(error) = host.block_on(monitor.close_and_join()) {
-                    log::warn!("[shutdown] context alert monitor join failed: {}", error);
+                    log::warn!("[shutdown] context alert monitor join failed: {error}");
                 }
             }
 

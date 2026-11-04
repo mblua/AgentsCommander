@@ -362,18 +362,18 @@ async fn create_session_inner_rolls_back_pre_created_session_on_spawn_error() {
 
 /// #973 - THE REGRESSION. Red against main, which hardcodes `cols: 120, rows: 30`.
 ///
-/// AC used to open every ConPTY at 120x30 and let the frontend correct it 300-500 ms
+/// AC used to open every `ConPTY` at 120x30 and let the frontend correct it 300-500 ms
 /// later. That correction lands inside a coding agent's TUI startup, and a resize there
 /// makes Codex redraw its still-empty viewport and lose the wakeup for the content that
 /// becomes ready straight after: a blank terminal, alive, until any key is pressed.
 ///
-/// Measured outside AC, on a bare ConPTY: opened at 120x30 and then resized in the
+/// Measured outside AC, on a bare `ConPTY`: opened at 120x30 and then resized in the
 /// window, Codex comes up blank 8 times in 10. Opened at the size the view actually
 /// wants, and never resized, 0 times in 10.
 ///
 /// This pins the plumbing: the size the caller supplies is the size the PTY is opened
 /// at. It does not, and cannot, prove Codex stops hanging - that needs a real child in a
-/// real ConPTY inside a ~100 ms race. The harness is the proof of that.
+/// real `ConPTY` inside a ~100 ms race. The harness is the proof of that.
 #[tokio::test]
 async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or_live() {
     let (_fixture, first_cwd, _) = strict_target_fixture();
@@ -839,10 +839,10 @@ async fn create_session_without_a_view_keeps_the_historical_120x30() {
     );
 }
 
-/// #973 - opening a 0-column ConPTY would be worse than the bug we are fixing, so a
+/// #973 - opening a 0-column `ConPTY` would be worse than the bug we are fixing, so a
 /// degenerate fitted size must fall back rather than be honoured.
 ///
-/// It does not come from xterm: `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1. It is
+/// It does not come from xterm: `fit()` clamps to `MINIMUM_COLS` = 2 / `MINIMUM_ROWS` = 1. It is
 /// guarded because this is a `u16` boundary that anything upstream can hand a 0 to, and
 /// because the cost of being wrong is a terminal with no screen at all.
 #[tokio::test]

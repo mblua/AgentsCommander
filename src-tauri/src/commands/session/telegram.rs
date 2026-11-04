@@ -31,10 +31,8 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
 
     if !exists {
         log::warn!(
-            "[telegram] Persisted bot '{}' for session {} no longer exists in settings; leaving \
-             bridge OFF",
-            bot_id,
-            session_id
+            "[telegram] Persisted bot '{bot_id}' for session {session_id} no longer exists in \
+             settings; leaving bridge OFF"
         );
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
@@ -72,10 +70,7 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
         crate::commands::telegram::attach_telegram_bot_by_id(app, session_id, bot_id).await
     {
         log::warn!(
-            "[telegram] Failed to restore persisted bot '{}' for session {}: {}",
-            bot_id,
-            session_id,
-            e
+            "[telegram] Failed to restore persisted bot '{bot_id}' for session {session_id}: {e}"
         );
         // Availability failure during attach must not erase the persisted intent.
         if let Err(error) = settings.current_read().await {
@@ -116,10 +111,8 @@ pub(crate) async fn preserve_deferred_telegram_intent_if_valid(
             .await;
     } else {
         log::warn!(
-            "[telegram] Persisted bot '{}' for deferred session '{}' no longer exists in settings; \
-             leaving bridge OFF",
-            bot_id,
-            session_name
+            "[telegram] Persisted bot '{bot_id}' for deferred session '{session_name}' no longer \
+             exists in settings; leaving bridge OFF"
         );
         mgr.set_telegram_bot_id(session_id, None).await;
     }
@@ -165,19 +158,15 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
                 crate::commands::telegram::attach_telegram_bot_by_id(app, session_id, &bot_id).await
             {
                 log::warn!(
-                    "[telegram] Failed to auto-attach configured bot '{}' for session {}: {}",
-                    bot_label,
-                    session_id,
-                    e
+                    "[telegram] Failed to auto-attach configured bot '{bot_label}' for session \
+                     {session_id}: {e}"
                 );
             }
         }
         None => {
             log::warn!(
-                "[telegram] Configured bot label '{}' for session {} no longer exists in settings; \
-                 leaving bridge OFF",
-                bot_label,
-                session_id
+                "[telegram] Configured bot label '{bot_label}' for session {session_id} no longer \
+                 exists in settings; leaving bridge OFF"
             );
         }
     }

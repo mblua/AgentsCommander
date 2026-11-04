@@ -16,7 +16,7 @@ OUTPUT: prints exactly true or false on stdout when the daemon processes the req
 Infrastructure failures, stale tokens, daemon rejection, delivery timeout, and malformed \
 responses exit non-zero and write errors to stderr.")]
 pub struct RaiseHandArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
     #[arg(long)]
     pub token: Option<String>,
@@ -32,7 +32,9 @@ pub struct RaiseHandArgs {
 
 fn interpret_raise_hand_response(content: &str) -> Result<bool, i32> {
     let resp: serde_json::Value = serde_json::from_str(content).map_err(|_| 2)?;
-    resp.get("raised").and_then(|v| v.as_bool()).ok_or(2)
+    resp.get("raised")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or(2)
 }
 
 pub fn execute(args: RaiseHandArgs) -> i32 {
@@ -47,7 +49,7 @@ pub fn execute(args: RaiseHandArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_t, r)) => r,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -93,12 +95,12 @@ pub fn execute(args: RaiseHandArgs) -> i32 {
         &ac_dir,
     );
     if let Err(error) = super::outbox_delivery::deliver(&outbox_dir, &message, "raise-hand") {
-        eprintln!("Error: {}", error);
+        eprintln!("Error: {error}");
         return 1;
     }
 
     let responses_dir = ac_dir.join("responses");
-    let response_path = responses_dir.join(format!("{}.json", request_id));
+    let response_path = responses_dir.join(format!("{request_id}.json"));
     let resp_timeout = std::time::Duration::from_secs(args.timeout);
     let resp_poll = std::time::Duration::from_millis(250);
     let resp_start = std::time::Instant::now();
@@ -116,7 +118,7 @@ pub fn execute(args: RaiseHandArgs) -> i32 {
                     }
                 },
                 Err(e) => {
-                    eprintln!("Error: failed to read response: {}", e);
+                    eprintln!("Error: failed to read response: {e}");
                     return 1;
                 }
             }
