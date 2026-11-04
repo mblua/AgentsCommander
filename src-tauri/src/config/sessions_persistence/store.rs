@@ -379,7 +379,7 @@ impl<'a> SnapshotStore<'a> {
             tmp_path,
             op_id,
             pid,
-            instance: crate::config::agent_local_dir_name().to_owned(),
+            instance: crate::config::agent_local_dir_name().clone(),
             started: std::time::Instant::now(),
         })
     }

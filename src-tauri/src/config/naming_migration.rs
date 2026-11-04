@@ -490,7 +490,7 @@ fn replace_file(src: &Path, dst: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn is_transient_replace_error(e: &io::Error) -> bool {
     // ERROR_ACCESS_DENIED (a held destination) and ERROR_SHARING_VIOLATION.
-    matches!(e.raw_os_error(), Some(5) | Some(32))
+    matches!(e.raw_os_error(), Some(5 | 32))
 }
 
 #[cfg(not(windows))]

@@ -21,7 +21,7 @@ fn catalog_report_serializes_exact_camel_case_wire_shape() {
         .keys()
         .map(String::as_str)
         .collect();
-    keys.sort();
+    keys.sort_unstable();
     assert_eq!(
         keys,
         [

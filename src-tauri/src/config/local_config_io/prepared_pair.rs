@@ -291,7 +291,7 @@ pub(super) fn execute_unreserved_config_pair_inner(
         if read()? != plan.stages[stage - 1] {
             return Err(PreparedPairError::Conflict);
         }
-        let side = if stage == 1 || stage == 3 { 1 } else { 0 };
+        let side = usize::from(stage == 1 || stage == 3);
         if plan.stages[stage][side] != plan.stages[stage - 1][side] {
             let path = if side == 0 { &decisions } else { &state };
             publish_prepared_pair_image(

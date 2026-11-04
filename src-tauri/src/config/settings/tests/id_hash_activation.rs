@@ -76,7 +76,7 @@ fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
             );
             assert_eq!(
                 settings.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
-                Some(vec!["claude".into(), "".into()]),
+                Some(vec!["claude".into(), String::new()]),
                 "{loader}"
             );
             assert_eq!(hash_activation_files(temp.path()), before, "{loader}");

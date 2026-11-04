@@ -592,10 +592,10 @@ fn issue_2868_legacy_classifier_and_healing_keep_agent_only_inputs() {
         issue_2868_assert_permission(&content, &ac.join("project-skills"));
         assert!(content.contains("`project:project`"));
         let disk = std::fs::read_to_string(&template).unwrap();
-        if !matches!(expected, LegacyRenderedDefaultContext::StaleGenerated) {
-            assert_eq!(&disk, text);
-        } else {
+        if matches!(expected, LegacyRenderedDefaultContext::StaleGenerated) {
             assert_eq!(disk, get_default_agent_template());
+        } else {
+            assert_eq!(&disk, text);
         }
     }
 }
