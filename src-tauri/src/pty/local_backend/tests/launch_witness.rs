@@ -21,7 +21,7 @@ fn spawn_spec(cmd: &str, args: &[&str]) -> BackendSpawnSpec {
         agent_id: None,
         coding_agent: None,
         cmd: cmd.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(std::string::ToString::to_string).collect(),
         resolved_agent_host_shell: None,
         cwd: std::env::temp_dir().to_string_lossy().to_string(),
         selected_cwd: None,

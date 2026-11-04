@@ -5,7 +5,7 @@ use crate::pty::backend::ResolvedAgentHostShell;
 fn host(program: &str, args: &[&str]) -> ResolvedAgentHostShell {
     ResolvedAgentHostShell {
         program: program.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
