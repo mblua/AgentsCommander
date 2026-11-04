@@ -135,8 +135,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
     let is_workgroup_root = wg_root
         .file_name()
         .and_then(|name| name.to_str())
-        .map(crate::config::entity_prefix::has_entity_prefix)
-        .unwrap_or(false)
+        .is_some_and(crate::config::entity_prefix::has_entity_prefix)
         && crate::config::ac_root::find_ac_root_ancestor(&wg_root).is_some();
     if !is_workgroup_root {
         return Ok(RepoMountResolution::default());
@@ -168,12 +167,9 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
         // an apparent-name check but must be rejected by the canonical-name check.
         let parent_is_wg_root = canonical
             .parent()
-            .map(|dir| root_key(&dir.to_string_lossy()) == wg_key)
-            .unwrap_or(false);
+            .is_some_and(|dir| root_key(&dir.to_string_lossy()) == wg_key);
         let canonical_name = canonical.file_name().and_then(|name| name.to_str());
-        let name_has_repo_prefix = canonical_name
-            .map(|name| name.starts_with("repo-"))
-            .unwrap_or(false);
+        let name_has_repo_prefix = canonical_name.is_some_and(|name| name.starts_with("repo-"));
         let is_dir = crate::filesystem::directories::container_mount_is_dir(&canonical);
         let not_rejected = container_mount_source_rejection(&canonical).is_none();
 

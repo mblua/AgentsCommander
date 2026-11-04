@@ -209,9 +209,9 @@ impl LoopScheduler {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tokio::select! {
-                    _ = shutdown.token().cancelled() => break,
+                    () = shutdown.token().cancelled() => break,
                     _ = interval.tick() => self.scan_once(&context, false, false).await,
-                    _ = self.notify.notified() => self.scan_once(&context, false, false).await,
+                    () = self.notify.notified() => self.scan_once(&context, false, false).await,
                 }
             }
         }));

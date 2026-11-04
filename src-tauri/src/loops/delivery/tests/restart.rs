@@ -314,10 +314,10 @@ fn pre_restart_decision_covers_all_busy_policy_cells() {
             match (idle, &policy) {
                 (true, _) => assert!(matches!(decision, PreRestartDecision::Restart)),
                 (false, WaitUntilIdle) => {
-                    assert!(matches!(decision, PreRestartDecision::Pending))
+                    assert!(matches!(decision, PreRestartDecision::Pending));
                 }
                 (false, ForceInject) => {
-                    assert!(matches!(decision, PreRestartDecision::Restart))
+                    assert!(matches!(decision, PreRestartDecision::Restart));
                 }
                 (false, Skip) => assert!(matches!(decision, PreRestartDecision::Skip)),
             }
@@ -350,10 +350,10 @@ fn post_restart_decision_has_no_pending_cell() {
             match (idle, &policy) {
                 (true, _) => assert!(matches!(decision, PostRestartDecision::Inject)),
                 (false, WaitUntilIdle) => {
-                    assert!(matches!(decision, PostRestartDecision::Failed))
+                    assert!(matches!(decision, PostRestartDecision::Failed));
                 }
                 (false, ForceInject) => {
-                    assert!(matches!(decision, PostRestartDecision::Inject))
+                    assert!(matches!(decision, PostRestartDecision::Inject));
                 }
                 (false, Skip) => assert!(matches!(decision, PostRestartDecision::Skip)),
             }
