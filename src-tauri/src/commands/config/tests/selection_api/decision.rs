@@ -286,10 +286,18 @@ async fn issue_1937_selection_api_stale_approvals_are_rejected_without_writes() 
     assert!(error.contains("stalePreview"), "{error}");
     assert_eq!(config_bytes(&added), added_bytes);
 
+    assert_live_session_stales_preview(&fixture, &settings, &anchor).await;
+}
+
+async fn assert_live_session_stales_preview(
+    fixture: &SelectionApiFixture,
+    settings: &SettingsState,
+    anchor: &Path,
+) {
     // (d) a relevant live session appears after the preview.
     let manager = SessionManager::new();
     let live = selection_api_replica(
-        &fixture,
+        fixture,
         "room-1-team",
         "c-rust",
         unlocked_tooling("A", "agent-0"),
@@ -297,9 +305,9 @@ async fn issue_1937_selection_api_stale_approvals_are_rejected_without_writes() 
     let session_mgr = Arc::new(RwLock::new(manager));
     let session_preview = super::preview_coding_agent_profile_selection_inner(
         &session_mgr,
-        &settings,
+        settings,
         api_preview_request(
-            &anchor,
+            anchor,
             super::ProfileAssignmentScope::Workgroup,
             super::AssignmentMode::Ordinary,
         ),
@@ -333,9 +341,9 @@ async fn issue_1937_selection_api_stale_approvals_are_rejected_without_writes() 
         app.handle(),
         &session_mgr,
         &pty_mgr,
-        &settings,
+        settings,
         api_apply_request(
-            &anchor,
+            anchor,
             super::ProfileAssignmentScope::Workgroup,
             super::AssignmentMode::Ordinary,
             None,

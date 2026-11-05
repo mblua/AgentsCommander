@@ -119,25 +119,6 @@ fn assert_mandatory_sections_once(out: &str) {
 }
 
 fn assert_no_broad_read_grant(out: &str) {
-    fn normalize(text: &str) -> String {
-        let mut normalized = String::with_capacity(text.len());
-        let mut pending_space = false;
-        for ch in text.to_lowercase().chars() {
-            if ch.is_alphanumeric() {
-                if pending_space && !normalized.is_empty() {
-                    normalized.push(' ');
-                }
-                normalized.push(ch);
-                pending_space = false;
-            } else {
-                // This deliberately treats backticks, ASCII/Unicode hyphens,
-                // punctuation, and repeated whitespace as the same separator.
-                pending_space = true;
-            }
-        }
-        normalized
-    }
-
     const EXPLICIT_BROAD_GRANTS: [&str; 13] = [
         "Read any path",
         "Read-only operations on ANY path",
@@ -157,9 +138,9 @@ fn assert_no_broad_read_grant(out: &str) {
         "Do NOT list or explore the other workspace or room, read a second external file or any \
             other file or content there";
 
-    let normalized = normalize(out);
+    let normalized = normalize_read_policy(out);
     for fragment in EXPLICIT_BROAD_GRANTS {
-        let fragment = normalize(fragment);
+        let fragment = normalize_read_policy(fragment);
         assert!(
             !normalized.contains(&fragment),
             "broad read grant `{fragment}` found in:\n{out}"
@@ -171,24 +152,11 @@ fn assert_no_broad_read_grant(out: &str) {
     // prohibition as one recognized negative rather than misclassifying it.
     let detector_input = out.replace(EXPLICIT_PROHIBITIVE_CROSS_WORKSPACE_READ, "");
     for raw_clause in detector_input.split(['\n', '\r', '.', ';', ':', ',', '!', '?']) {
-        let clause = normalize(raw_clause);
+        let clause = normalize_read_policy(raw_clause);
         if clause.is_empty() {
             continue;
         }
-        let tokens: Vec<&str> = clause
-            .split_whitespace()
-            .map(|token| match token {
-                "reads" | "reading" => "read",
-                "accesses" | "accessing" => "access",
-                "inspects" | "inspecting" => "inspect",
-                "searches" | "searching" => "search",
-                "paths" => "path",
-                "files" => "file",
-                "directories" => "directory",
-                "locations" => "location",
-                other => other,
-            })
-            .collect();
+        let tokens = broad_read_tokens(&clause);
         let is_read_like = |token: &str| matches!(token, "read" | "access" | "inspect" | "search");
         let is_quantifier = |token: &str| matches!(token, "any" | "all");
         let is_universe = |token: &str| matches!(token, "path" | "file" | "directory" | "location");
@@ -249,6 +217,23 @@ fn assert_no_broad_read_grant(out: &str) {
             "semantic broad read grant found in clause `{clause}`"
         );
     }
+}
+
+fn broad_read_tokens(clause: &str) -> Vec<&str> {
+    clause
+        .split_whitespace()
+        .map(|token| match token {
+            "reads" | "reading" => "read",
+            "accesses" | "accessing" => "access",
+            "inspects" | "inspecting" => "inspect",
+            "searches" | "searching" => "search",
+            "paths" => "path",
+            "files" => "file",
+            "directories" => "directory",
+            "locations" => "location",
+            other => other,
+        })
+        .collect()
 }
 
 // ---- #658 presence-aware append-fallback tests ----------------------------
@@ -535,4 +520,23 @@ fn make_valid_replica(temp: &std::path::Path) -> (PathBuf, PathBuf, PathBuf, Str
         canonical_or_original(&replica_root),
         display_path(&canonical_or_original(&matrix_dir)),
     )
+}
+
+fn normalize_read_policy(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for ch in text.to_lowercase().chars() {
+        if ch.is_alphanumeric() {
+            if pending_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            normalized.push(ch);
+            pending_space = false;
+        } else {
+            // This deliberately treats backticks, ASCII/Unicode hyphens,
+            // punctuation, and repeated whitespace as the same separator.
+            pending_space = true;
+        }
+    }
+    normalized
 }
