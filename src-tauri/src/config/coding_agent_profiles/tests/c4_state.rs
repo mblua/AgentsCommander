@@ -96,20 +96,41 @@ const C4_STATE_AFTER_SITE_3A: &str =
         r#""profileContentHash"]}}"#,
     );
 
+/// C4 (#2470): seeds `dir` with a selection config and the seeded state file.
+fn c4_seed(dir: &Path) -> PathBuf {
+    write_config(dir, &seed_selection_config("{}"));
+    let tracked = dir.join("config.json");
+    std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).unwrap();
+    tracked
+}
+
+fn c4_tooling(dir: &Path) -> serde_json::Value {
+    config_value(dir)["tooling"].clone()
+}
+
 /// C4 (#2470) E12, sites 3a, 3b, 8, 9, 10 and 11, each on its own fixture
 /// except 9 and 10, which need the same replica.
 #[test]
 fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
     let journal = tempfile::tempdir().unwrap();
     let _journal = crate::config::agent_config::journal_redirect::set(journal.path());
-    let seed = |dir: &Path| -> PathBuf {
-        write_config(dir, &seed_selection_config("{}"));
-        let tracked = dir.join("config.json");
-        std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).unwrap();
-        tracked
-    };
-    let tooling = |dir: &Path| config_value(dir)["tooling"].clone();
+    let seed = c4_seed;
+    let tooling = c4_tooling;
 
+    c4_site_3a(seed, tooling);
+    c4_site_3b(seed, tooling);
+    c4_site_8(tooling);
+    c4_sites_9_10(seed, tooling);
+    c4_site_11(seed, tooling);
+
+    let control_dir = tempfile::tempdir().unwrap();
+    c4_absence_controls(control_dir.path());
+}
+
+type C4Seed = fn(&Path) -> PathBuf;
+type C4Tooling = fn(&Path) -> serde_json::Value;
+
+fn c4_site_3a(seed: C4Seed, tooling: C4Tooling) {
     let fx = selection_fixture();
     let tracked = seed(&fx.replica);
     assert_eq!(
@@ -119,7 +140,9 @@ fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
     c4_tracked_is_clean(&tracked, "site 3a");
     c4_state_is(&c4_state_path(&tracked), C4_STATE_AFTER_SITE_3A, "site 3a");
     assert_eq!(tooling(&fx.replica), serde_json::json!({}));
+}
 
+fn c4_site_3b(seed: C4Seed, tooling: C4Tooling) {
     let fx = selection_fixture();
     let tracked = seed(&fx.matrix);
     assert_eq!(
@@ -132,7 +155,9 @@ fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
         tooling(&fx.matrix)["defaultProfile"],
         serde_json::json!("B")
     );
+}
 
+fn c4_site_8(tooling: C4Tooling) {
     let fx = selection_fixture();
     let default = ReplicaSelectionDefault {
         configuration_ref: None,
@@ -152,7 +177,9 @@ fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
             "selectionLocked": false
         })
     );
+}
 
+fn c4_sites_9_10(seed: C4Seed, tooling: C4Tooling) {
     let fx = selection_fixture();
     let tracked = seed(&fx.replica);
     let pair = ReplicaSelectionPair {
@@ -205,7 +232,9 @@ fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
         tooling(&fx.replica)["selectionLocked"],
         serde_json::json!(false)
     );
+}
 
+fn c4_site_11(seed: C4Seed, tooling: C4Tooling) {
     let fx = selection_fixture();
     let tracked = seed(&fx.replica);
     assert_eq!(
@@ -223,7 +252,4 @@ fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {
         tooling(&fx.replica)["instanceProfileOverrideSource"],
         serde_json::json!("manual")
     );
-
-    let control_dir = tempfile::tempdir().unwrap();
-    c4_absence_controls(control_dir.path());
 }
