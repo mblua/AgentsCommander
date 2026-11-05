@@ -386,19 +386,16 @@ async fn readiness_restore_blocks_later_getters_and_absence_reaches_authority() 
 
 #[test]
 fn wake_delivery_getters_keep_required_and_optional_registration() {
-    use tauri::Manager;
-
     let app = crate::test_support::test_builder()
         .manage(crate::MasterToken::new("master".to_string()))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build test app");
     let handle = app.handle();
-    assert!(std::ptr::eq(
-        handle.selection(),
-        handle
-            .state::<crate::session::selection::SelectionCoordinator>()
-            .inner()
-    ));
+    // Required stays required: an unregistered coordinator panics like `state()`.
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.selection();
+    }))
+    .is_err());
     assert!(handle
         .master_token()
         .is_some_and(|token| token.matches("master")));
