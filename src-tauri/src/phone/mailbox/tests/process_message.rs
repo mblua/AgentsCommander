@@ -59,6 +59,31 @@ async fn reseed_restarted_pi(
     Ok(new_id.to_string())
 }
 
+async fn pi_session_state(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    session_id: Uuid,
+) -> (bool, bool) {
+    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let mgr = state.read().await;
+    match mgr.get_session(session_id).await {
+        Some(session) => (true, session.waiting_for_input),
+        None => (false, false),
+    }
+}
+
+async fn record_and_inject(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    injected_prompts: &Mutex<Vec<(Uuid, String)>>,
+    session_id: Uuid,
+    prompt: String,
+) -> Result<(), String> {
+    injected_prompts
+        .lock()
+        .unwrap()
+        .push((session_id, prompt.clone()));
+    crate::pty::inject::inject_text_into_session(app, session_id, &prompt).await
+}
+
 fn assert_pi_restart_outcome(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
     source_id: Uuid,
@@ -124,14 +149,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let app_for_state = app.clone();
     let session_state = move |session_id: Uuid| {
         let app = app_for_state.clone();
-        async move {
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
+        async move { pi_session_state(&app, session_id).await }
     };
 
     let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
@@ -160,13 +178,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let inject = move |session_id: Uuid, prompt: String| {
         let app = app_for_inject.clone();
         let injected_prompts = Arc::clone(&injected_prompts_seen);
-        async move {
-            injected_prompts
-                .lock()
-                .unwrap()
-                .push((session_id, prompt.clone()));
-            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
-        }
+        async move { record_and_inject(&app, &injected_prompts, session_id, prompt).await }
     };
     let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let boundaries_seen = Arc::clone(&boundaries);
