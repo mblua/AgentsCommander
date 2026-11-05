@@ -386,6 +386,14 @@ impl SettingsFileLock {
         timeout: std::time::Duration,
         debug: &mut Option<SettingsLockDebugAttempt>,
     ) -> Result<std::fs::File, SettingsSaveError> {
+        let file = Self::open_verified_lock_file(settings_path, lock_name)?;
+        Self::wait_for_lock(settings_path, file, timeout, debug)
+    }
+
+    fn open_verified_lock_file(
+        settings_path: &Path,
+        lock_name: &str,
+    ) -> Result<std::fs::File, SettingsSaveError> {
         let parent = settings_path.parent().ok_or_else(|| {
             SettingsSaveError::semantic(
                 SettingsSaveStage::LockAcquire,
@@ -473,7 +481,15 @@ impl SettingsFileLock {
                 SettingsSaveLegacyOutward::SettingsLockUnavailable,
             )
         })?;
+        Ok(file)
+    }
 
+    fn wait_for_lock(
+        settings_path: &Path,
+        file: std::fs::File,
+        timeout: std::time::Duration,
+        debug: &mut Option<SettingsLockDebugAttempt>,
+    ) -> Result<std::fs::File, SettingsSaveError> {
         let retry_started = std::time::Instant::now();
         if let Some(debug) = debug.as_mut() {
             debug.retry_started = Some(retry_started);
