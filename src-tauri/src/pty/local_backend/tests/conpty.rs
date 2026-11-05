@@ -116,51 +116,128 @@ impl Write for CursorTestWriter {
     }
 }
 
+// A channel only in the fake: caller-controlled EOF/Stop proves failure retains the drainer.
+struct CursorFrames(std::sync::mpsc::Receiver<Vec<u8>>);
+impl Read for CursorFrames {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        match self.0.recv_timeout(Duration::from_secs(5)) {
+            Ok(frame) => {
+                out[..frame.len()].copy_from_slice(&frame);
+                Ok(frame.len())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(0),
+            Err(error) => Err(std::io::Error::other(error)),
+        }
+    }
+}
+
+struct CursorReplyWorker {
+    fail: u8,
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    fanout: SessionIoFanout,
+    id: Uuid,
+    token: crate::pty::output::PtyOutputRegistrationToken,
+    weak: std::sync::Weak<Mutex<Box<dyn Write + Send>>>,
+    retained: Option<CursorTestWriterHandle>,
+    policy_worker: CursorNotices,
+    observed: Arc<CursorReplyObserver>,
+    raw_copy: Arc<Mutex<Vec<u8>>>,
+    out: Arc<Mutex<Vec<u8>>>,
+    seen_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    done_tx: std::sync::mpsc::Sender<()>,
+    final_tx: std::sync::mpsc::Sender<()>,
+}
+impl CursorReplyWorker {
+    fn run(self) {
+        let Self {
+            fail,
+            rx,
+            fanout,
+            id,
+            token,
+            weak,
+            retained,
+            policy_worker,
+            observed,
+            raw_copy,
+            out,
+            seen_tx,
+            done_tx,
+            final_tx,
+        } = self;
+        pump_cursor_query(
+            &mut CursorFrames(rx),
+            |chunk| {
+                let at = Instant::now();
+                raw_copy.lock().unwrap().extend_from_slice(chunk);
+                let admitted = fanout.observe_raw_read_for_reader(&token, chunk.len(), at);
+                if fail == 3 && chunk == b"FINAL" {
+                    assert!(!admitted);
+                    final_tx.send(()).unwrap();
+                }
+                admitted
+            },
+            |chunk| {
+                fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
+                out.lock().unwrap().extend_from_slice(chunk);
+                if chunk.ends_with(b"TAIL\x1b[6n") || chunk == b"FINAL" {
+                    seen_tx.send(chunk.to_vec()).unwrap();
+                }
+            },
+            || {
+                assert_eq!(&*out.lock().unwrap(), b"\x1b[3;4Hhi");
+                assert_eq!(fanout.cursor_position_for_reader(&token), Some((3, 6)));
+                if fail == 3 {
+                    fanout.remove_session(id);
+                    fanout
+                        .register_session_for_test(
+                            id,
+                            crate::session::profile::IdleTuning::DEFAULT,
+                            24,
+                            80,
+                        )
+                        .unwrap();
+                }
+                let result = write_cursor_reply(&weak, fanout.cursor_position_for_reader(&token));
+                assert!(weak
+                    .upgrade()
+                    .is_none_or(|writer| writer.try_lock().is_ok()));
+                result
+            },
+            Some(&observed),
+        );
+        if fail == 3 {
+            let replacement = fanout.registration_token_for_session(id).unwrap();
+            assert_eq!(
+                fanout.cursor_position_for_reader(&replacement),
+                Some((1, 1))
+            );
+            assert_eq!(fanout.get_screen_snapshot(id).unwrap().sequence, 0);
+        }
+        assert!(policy_worker
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(observed_id, _)| *observed_id == id));
+        drop(retained);
+        done_tx.send(()).unwrap();
+    }
+}
+
 #[test]
 fn issue_3029_cursor_reply_order_and_failure() {
     use std::sync::mpsc;
-    // A channel only in the fake: caller-controlled EOF/Stop proves failure retains the drainer.
-    struct Frames(mpsc::Receiver<Vec<u8>>);
-    impl Read for Frames {
-        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-            match self.0.recv_timeout(Duration::from_secs(5)) {
-                Ok(frame) => {
-                    out[..frame.len()].copy_from_slice(&frame);
-                    Ok(frame.len())
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
-                Err(error) => Err(std::io::Error::other(error)),
-            }
-        }
-    }
     for fail in 0..5 {
         let saved = Arc::new(Mutex::new(vec![]));
-        let original: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(Box::new(CursorTestWriter {
-                bytes: saved.clone(),
-                fail,
-            })));
+        let original = cursor_test_writer(&saved, fail);
         let weak = Arc::downgrade(&original);
         let replacement_bytes = Arc::new(Mutex::new(vec![]));
-        let replacement: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(Box::new(CursorTestWriter {
-                bytes: replacement_bytes.clone(),
-                fail: 0,
-            })));
+        let replacement = cursor_test_writer(&replacement_bytes, 0);
         let mut map = HashMap::from([(Uuid::nil(), original)]);
         // An already upgraded original remains valid, never redirects to the replacement.
         let retained = if fail == 4 { None } else { weak.upgrade() };
         map.insert(Uuid::nil(), replacement);
-        let detector = IdleDetector::new(|_| {}, |_| {});
-        let policy = Arc::new(Mutex::new(Vec::new()));
-        let notices = policy.clone();
-        assert!(detector
-            .bind_raw_output_observer(1, move |id, at| notices.lock().unwrap().push((id, at))));
-        let fanout = SessionIoFanout::new(Arc::new(Mutex::new(HashMap::new())), detector, None);
-        let id = Uuid::new_v4();
-        let token = fanout
-            .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 24, 80)
-            .unwrap();
+        let (fanout, policy, id, token) = cursor_test_fanout();
         let observer = Arc::new(CursorReplyObserver::default());
         let raw = Arc::new(Mutex::new(vec![]));
         let output = Arc::new(Mutex::new(vec![]));
@@ -168,70 +245,24 @@ fn issue_3029_cursor_reply_order_and_failure() {
         let (seen_tx, seen_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let (final_tx, final_rx) = mpsc::channel();
-        let policy_worker = policy.clone();
-        let observed = observer.clone();
+        let worker_state = CursorReplyWorker {
+            fail,
+            rx,
+            fanout,
+            id,
+            token,
+            weak,
+            retained,
+            policy_worker: policy.clone(),
+            observed: observer.clone(),
+            raw_copy: raw.clone(),
+            out: output.clone(),
+            seen_tx,
+            done_tx,
+            final_tx,
+        };
         let bytes = saved.clone();
-        let raw_copy = raw.clone();
-        let out = output.clone();
-        let worker = std::thread::spawn(move || {
-            pump_cursor_query(
-                &mut Frames(rx),
-                |chunk| {
-                    let at = Instant::now();
-                    raw_copy.lock().unwrap().extend_from_slice(chunk);
-                    let admitted = fanout.observe_raw_read_for_reader(&token, chunk.len(), at);
-                    if fail == 3 && chunk == b"FINAL" {
-                        assert!(!admitted);
-                        final_tx.send(()).unwrap();
-                    }
-                    admitted
-                },
-                |chunk| {
-                    fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
-                    out.lock().unwrap().extend_from_slice(chunk);
-                    if chunk.ends_with(b"TAIL\x1b[6n") || chunk == b"FINAL" {
-                        seen_tx.send(chunk.to_vec()).unwrap();
-                    }
-                },
-                || {
-                    assert_eq!(&*out.lock().unwrap(), b"\x1b[3;4Hhi");
-                    assert_eq!(fanout.cursor_position_for_reader(&token), Some((3, 6)));
-                    if fail == 3 {
-                        fanout.remove_session(id);
-                        fanout
-                            .register_session_for_test(
-                                id,
-                                crate::session::profile::IdleTuning::DEFAULT,
-                                24,
-                                80,
-                            )
-                            .unwrap();
-                    }
-                    let result =
-                        write_cursor_reply(&weak, fanout.cursor_position_for_reader(&token));
-                    assert!(weak
-                        .upgrade()
-                        .is_none_or(|writer| writer.try_lock().is_ok()));
-                    result
-                },
-                Some(&observed),
-            );
-            if fail == 3 {
-                let replacement = fanout.registration_token_for_session(id).unwrap();
-                assert_eq!(
-                    fanout.cursor_position_for_reader(&replacement),
-                    Some((1, 1))
-                );
-                assert_eq!(fanout.get_screen_snapshot(id).unwrap().sequence, 0);
-            }
-            assert!(policy_worker
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(observed_id, _)| *observed_id == id));
-            drop(retained);
-            done_tx.send(()).unwrap();
-        });
+        let worker = std::thread::spawn(move || worker_state.run());
         tx.send(b"\x1b[3;4Hhi\x1b[6nTAIL\x1b[6n".to_vec()).unwrap();
         seen_rx
             .recv_timeout(Duration::from_secs(5))
@@ -285,36 +316,89 @@ fn issue_3029_cursor_reply_order_and_failure() {
     }
 }
 
+type CursorTestWriterHandle = Arc<Mutex<Box<dyn Write + Send>>>;
+type CursorNotices = Arc<Mutex<Vec<(Uuid, Instant)>>>;
+
+fn cursor_test_writer(bytes: &Arc<Mutex<Vec<u8>>>, fail: u8) -> CursorTestWriterHandle {
+    Arc::new(Mutex::new(Box::new(CursorTestWriter {
+        bytes: bytes.clone(),
+        fail,
+    })))
+}
+
+fn cursor_test_fanout() -> (
+    SessionIoFanout,
+    CursorNotices,
+    Uuid,
+    crate::pty::output::PtyOutputRegistrationToken,
+) {
+    let detector = IdleDetector::new(|_| {}, |_| {});
+    let notices: CursorNotices = Arc::new(Mutex::new(Vec::new()));
+    let captured = notices.clone();
+    assert!(
+        detector.bind_raw_output_observer(1, move |id, at| captured.lock().unwrap().push((id, at)))
+    );
+    let fanout = SessionIoFanout::new(Arc::new(Mutex::new(HashMap::new())), detector, None);
+    let id = Uuid::new_v4();
+    let token = fanout
+        .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 24, 80)
+        .unwrap();
+    (fanout, notices, id, token)
+}
+
+struct CursorStartup {
+    phase: u8,
+    reply: Arc<Mutex<Vec<u8>>>,
+}
+impl Read for CursorStartup {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let bytes: &[u8] = match self.phase {
+            0 => b"\x1b[6n",
+            1 => {
+                let deadline = Instant::now() + Duration::from_millis(100);
+                while &*self.reply.lock().unwrap() != b"\x1b[1;1R" {
+                    if Instant::now() >= deadline {
+                        self.phase = 2;
+                        return Ok(0);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                b"READY"
+            }
+            _ => return Ok(0),
+        };
+        self.phase += 1;
+        out[..bytes.len()].copy_from_slice(bytes);
+        Ok(bytes.len())
+    }
+}
+
+struct CursorFiniteReads {
+    frames: std::collections::VecDeque<Vec<u8>>,
+    reply: Arc<Mutex<Vec<u8>>>,
+    terminal_error: bool,
+}
+impl Read for CursorFiniteReads {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let Some(bytes) = self.frames.pop_front() else {
+            return if self.terminal_error {
+                Err(std::io::Error::other("finite read error"))
+            } else {
+                Ok(0)
+            };
+        };
+        if bytes == b"READY" {
+            assert_eq!(&*self.reply.lock().unwrap(), b"\x1b[1;4R");
+        }
+        out[..bytes.len()].copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }
+}
+
 #[test]
 fn issue_3029_cursor_query_positive_control() {
-    struct Startup {
-        phase: u8,
-        reply: Arc<Mutex<Vec<u8>>>,
-    }
-    impl Read for Startup {
-        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-            let bytes: &[u8] = match self.phase {
-                0 => b"\x1b[6n",
-                1 => {
-                    let deadline = Instant::now() + Duration::from_millis(100);
-                    while &*self.reply.lock().unwrap() != b"\x1b[1;1R" {
-                        if Instant::now() >= deadline {
-                            self.phase = 2;
-                            return Ok(0);
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    b"READY"
-                }
-                _ => return Ok(0),
-            };
-            self.phase += 1;
-            out[..bytes.len()].copy_from_slice(bytes);
-            Ok(bytes.len())
-        }
-    }
     let saved = Arc::new(Mutex::new(vec![]));
-    let mut control = Startup {
+    let mut control = CursorStartup {
         phase: 0,
         reply: saved.clone(),
     };
@@ -327,47 +411,11 @@ fn issue_3029_cursor_query_positive_control() {
     for terminal_error in [false, true] {
         for complete in [false, true] {
             let saved = Arc::new(Mutex::new(Vec::new()));
-            let writer: Arc<Mutex<Box<dyn Write + Send>>> =
-                Arc::new(Mutex::new(Box::new(CursorTestWriter {
-                    bytes: saved.clone(),
-                    fail: 0,
-                })));
+            let writer = cursor_test_writer(&saved, 0);
 
             let observer = CursorReplyObserver::default();
-            let detector = IdleDetector::new(|_| {}, |_| {});
-            let notices = Arc::new(Mutex::new(Vec::new()));
-            let captured = notices.clone();
-            assert!(detector.bind_raw_output_observer(1, move |id, at| captured
-                .lock()
-                .unwrap()
-                .push((id, at))));
-            let fanout = SessionIoFanout::new(Arc::new(Mutex::new(HashMap::new())), detector, None);
-            let id = Uuid::new_v4();
-            let token = fanout
-                .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 24, 80)
-                .unwrap();
-            struct FiniteReads {
-                frames: std::collections::VecDeque<Vec<u8>>,
-                reply: Arc<Mutex<Vec<u8>>>,
-                terminal_error: bool,
-            }
-            impl Read for FiniteReads {
-                fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-                    let Some(bytes) = self.frames.pop_front() else {
-                        return if self.terminal_error {
-                            Err(std::io::Error::other("finite read error"))
-                        } else {
-                            Ok(0)
-                        };
-                    };
-                    if bytes == b"READY" {
-                        assert_eq!(&*self.reply.lock().unwrap(), b"\x1b[1;4R");
-                    }
-                    out[..bytes.len()].copy_from_slice(&bytes);
-                    Ok(bytes.len())
-                }
-            }
-            let mut reader = FiniteReads {
+            let (fanout, notices, id, token) = cursor_test_fanout();
+            let mut reader = CursorFiniteReads {
                 frames: if complete {
                     vec![
                         b"abc".to_vec(),
@@ -781,17 +829,7 @@ fn git_guard_sequence_shared_unique_and_noop() {
     let independent = crate::AppOwners::new();
     assert!(Arc::ptr_eq(&owners.git_guard, &clone.git_guard));
     assert!(!Arc::ptr_eq(&owners.git_guard, &independent.git_guard));
-    let sessions = Arc::new(tokio::sync::RwLock::new(
-        crate::session::manager::SessionManager::new(),
-    ));
-    let backend = LocalProcessBackend::with_owners(
-        Arc::new(Mutex::new(HashMap::new())),
-        IdleDetector::new(|_| {}, |_| {}),
-        GitWatcher::new_headless_for_tests(sessions),
-        None,
-        owners.git_guard.clone(),
-        owners.spawn.clone(),
-    );
+    let backend = git_guard_test_backend(&owners);
     assert!(Arc::ptr_eq(&backend.git_guard, &owners.git_guard));
     assert!(Arc::ptr_eq(&backend.clone().git_guard, &owners.git_guard));
     let dir = tempfile::tempdir().unwrap();
@@ -869,10 +907,29 @@ fn git_guard_sequence_shared_unique_and_noop() {
     assert_eq!(sequence.0.load(Ordering::Relaxed), 1);
     assert_no_temp_files(dir.path());
 
+    let values = git_guard_concurrent_next(&owners.git_guard);
+    assert_eq!(values, (used..used + 4).collect::<Vec<_>>());
+}
+
+fn git_guard_test_backend(owners: &crate::AppOwners) -> LocalProcessBackend {
+    let sessions = Arc::new(tokio::sync::RwLock::new(
+        crate::session::manager::SessionManager::new(),
+    ));
+    LocalProcessBackend::with_owners(
+        Arc::new(Mutex::new(HashMap::new())),
+        IdleDetector::new(|_| {}, |_| {}),
+        GitWatcher::new_headless_for_tests(sessions),
+        None,
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
+    )
+}
+
+fn git_guard_concurrent_next(git_guard: &Arc<GitGuardTempSequence>) -> Vec<u64> {
     let barrier = Arc::new(Barrier::new(5));
     let values: Vec<_> = (0..4)
         .map(|_| {
-            let sequence = owners.git_guard.clone();
+            let sequence = git_guard.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
@@ -883,5 +940,5 @@ fn git_guard_sequence_shared_unique_and_noop() {
     barrier.wait();
     let mut values: Vec<_> = values.into_iter().map(|t| t.join().unwrap()).collect();
     values.sort_unstable();
-    assert_eq!(values, (used..used + 4).collect::<Vec<_>>());
+    values
 }
