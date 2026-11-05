@@ -63,16 +63,6 @@ impl<R: tauri::Runtime> WakeDeliveryState for tauri::AppHandle<R> {
         self.state::<crate::session::selection::SelectionCoordinator>()
             .inner()
     }
-
-    fn pty_routes_opt(&self) -> Option<&Arc<Mutex<PtyManager>>> {
-        self.try_state::<Arc<Mutex<PtyManager>>>()
-            .map(|state| state.inner())
-    }
-
-    fn pty_readiness_opt(&self) -> Option<&Arc<IdleDetector>> {
-        self.try_state::<Arc<IdleDetector>>()
-            .map(|state| state.inner())
-    }
 }
 
 #[cfg(test)]

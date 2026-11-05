@@ -403,12 +403,4 @@ fn wake_delivery_getters_keep_required_and_optional_registration() {
         .master_token()
         .is_some_and(|token| token.matches("master")));
     assert!(handle.message_store().is_none());
-    assert!(handle.pty_routes_opt().is_none());
-    assert!(handle.pty_readiness_opt().is_none());
-
-    let readiness = IdleDetector::new(|_| {}, |_| {});
-    handle.manage(Arc::clone(&readiness));
-    assert!(handle
-        .pty_readiness_opt()
-        .is_some_and(|state| Arc::ptr_eq(state, &readiness)));
 }
