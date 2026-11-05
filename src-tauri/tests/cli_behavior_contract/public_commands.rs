@@ -63,10 +63,16 @@ fn unknown_root_subcommand_exits_one_with_usage() {
     assert!(stderr.contains("unrecognized subcommand") || stderr.contains("Usage:"));
 }
 
-#[test]
-fn public_subcommand_help_contracts() {
-    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
-    let cases: &[(&[&str], &[&str])] = &[
+type HelpCase = (&'static [&'static str], &'static [&'static str]);
+
+fn public_subcommand_help_cases() -> Vec<HelpCase> {
+    let mut cases = public_subcommand_help_cases_head().to_vec();
+    cases.extend_from_slice(public_subcommand_help_cases_tail());
+    cases
+}
+
+fn public_subcommand_help_cases_head() -> &'static [HelpCase] {
+    &[
         (
             &["send", "--help"],
             &["DELIVERY MODES", "--token", "--to", "--send", "--mode"],
@@ -129,6 +135,11 @@ fn public_subcommand_help_contracts() {
             &["role-experiment", "init", "--help"],
             &["--project", "--source-agent"],
         ),
+    ]
+}
+
+fn public_subcommand_help_cases_tail() -> &'static [HelpCase] {
+    &[
         (&["role-experiment", "list", "--help"], &["--project"]),
         (&["role-experiment", "show", "--help"], &["--experiment"]),
         (&["role-experiment", "variant", "--help"], &["set", "diff"]),
@@ -202,7 +213,13 @@ fn public_subcommand_help_contracts() {
         (&["harness", "--help"], &["--dry-run", "--raw-command"]),
         (&["test-reset", "--help"], &["--confirm-testeable"]),
         (&["window-info", "--help"], &["Usage:"]),
-    ];
+    ]
+}
+
+#[test]
+fn public_subcommand_help_contracts() {
+    let bin = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
+    let cases: &[(&[&str], &[&str])] = &public_subcommand_help_cases();
 
     for (args, markers) in cases {
         let (code, stdout, stderr) = run(bin, args);
@@ -436,6 +453,40 @@ fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
     let config_dir = config_dir_for_bin(&bin);
     std::fs::create_dir_all(&config_dir).expect("config dir");
 
+    let sessions = raised_hand_sessions_fixture();
+    std::fs::write(
+        config_dir.join("sessions.json"),
+        serde_json::to_string_pretty(&sessions).expect("sessions json"),
+    )
+    .expect("write sessions");
+
+    let (code, stdout, stderr) = run(&bin, &["list-sessions"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let rows = assert_success_json_array(&stdout);
+    assert_eq!(rows.as_array().unwrap().len(), 5);
+    assert_eq!(rows[0]["raisedHand"], true);
+    assert_eq!(rows[1]["raisedHand"], false);
+    assert_eq!(rows[2]["raisedHand"], false);
+    assert_eq!(rows[3]["raisedHand"], false);
+    assert_eq!(rows[4]["raisedHand"], true);
+    assert!(rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["raisedHand"].is_boolean()));
+
+    let (code, stdout, stderr) = run(&bin, &["list-sessions", "--status", "running"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let running = assert_success_json_array(&stdout);
+    assert_eq!(running.as_array().unwrap().len(), 4);
+    assert!(running
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["status"] == "running" && row.get("raisedHand").is_some()));
+}
+
+fn raised_hand_sessions_fixture() -> serde_json::Value {
     let visible_raise_hand = serde_json::json!({
         "kind": "raiseHand",
         "visible": true,
@@ -446,7 +497,7 @@ fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
         "visible": false,
         "updatedAt": "2026-06-30T11:00:00+00:00"
     });
-    let sessions = serde_json::json!([
+    serde_json::json!([
         {
             "name": "tech-lead",
             "shell": "codex",
@@ -506,37 +557,7 @@ fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {
             "communication": visible_raise_hand,
             "createdAt": "2026-06-30T10:20:00+00:00"
         }
-    ]);
-    std::fs::write(
-        config_dir.join("sessions.json"),
-        serde_json::to_string_pretty(&sessions).expect("sessions json"),
-    )
-    .expect("write sessions");
-
-    let (code, stdout, stderr) = run(&bin, &["list-sessions"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let rows = assert_success_json_array(&stdout);
-    assert_eq!(rows.as_array().unwrap().len(), 5);
-    assert_eq!(rows[0]["raisedHand"], true);
-    assert_eq!(rows[1]["raisedHand"], false);
-    assert_eq!(rows[2]["raisedHand"], false);
-    assert_eq!(rows[3]["raisedHand"], false);
-    assert_eq!(rows[4]["raisedHand"], true);
-    assert!(rows
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|row| row["raisedHand"].is_boolean()));
-
-    let (code, stdout, stderr) = run(&bin, &["list-sessions", "--status", "running"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let running = assert_success_json_array(&stdout);
-    assert_eq!(running.as_array().unwrap().len(), 4);
-    assert!(running
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|row| row["status"] == "running" && row.get("raisedHand").is_some()));
+    ])
 }
 
 #[test]

@@ -1,5 +1,66 @@
 use super::*;
 
+fn spawn_activating_restart(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+    old_id: Uuid,
+) -> tokio::task::JoinHandle<Result<SessionInfo, String>> {
+    use tauri::Manager;
+
+    let app_handle = app.handle().clone();
+    let session_mgr = Arc::clone(session_mgr);
+    let pty_mgr = Arc::clone(pty_mgr);
+    let settings = app
+        .state::<crate::config::settings::SettingsState>()
+        .inner()
+        .clone();
+    tokio::spawn(async move {
+        super::super::restart_session_inner_with_activation(
+            &app_handle,
+            &session_mgr,
+            &pty_mgr,
+            &settings,
+            old_id,
+            None,
+            None,
+            Some(false),
+            true,
+        )
+        .await
+    })
+}
+
+async fn privileged_target_create(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+    cwd: String,
+    session_name: &str,
+    ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+) -> Result<super::super::PtyTargetCreateStep, String> {
+    super::super::create_session_inner_with_pty_target_ownership(
+        app.handle(),
+        session_mgr,
+        pty_mgr,
+        "codex".to_string(),
+        Vec::new(),
+        cwd,
+        Some(session_name.to_string()),
+        None,
+        None,
+        true,
+        Vec::new(),
+        true,
+        None,
+        None,
+        None,
+        CreateSelectionIntent::Background,
+        ownership,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn restart_after_route_loss_cleans_old_external_state_once_before_replacement() {
     use tauri::Manager;
@@ -39,29 +100,7 @@ async fn restart_after_route_loss_cleans_old_external_state_once_before_replacem
     let (spawn_release_tx, spawn_release_rx) = tokio::sync::oneshot::channel();
     backend.gate_spawn(2, spawn_started_tx, spawn_release_rx);
     let events = capture_session_lifecycle(&app);
-    let restart = {
-        let app_handle = app.handle().clone();
-        let session_mgr = Arc::clone(&session_mgr);
-        let pty_mgr = Arc::clone(&pty_mgr);
-        let settings = app
-            .state::<crate::config::settings::SettingsState>()
-            .inner()
-            .clone();
-        tokio::spawn(async move {
-            super::super::restart_session_inner_with_activation(
-                &app_handle,
-                &session_mgr,
-                &pty_mgr,
-                &settings,
-                old_id,
-                None,
-                None,
-                Some(false),
-                true,
-            )
-            .await
-        })
-    };
+    let restart = spawn_activating_restart(&app, &session_mgr, &pty_mgr, old_id);
 
     let replacement_id = spawn_started_rx.await.expect("replacement spawn starts");
     assert!(!telegram.lock().await.has_bridge(old_id));
@@ -405,23 +444,12 @@ async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or
         .lock()
         .unwrap()
         .mark_spawning(&first_cwd, "pending race");
-    let pending_error = super::super::create_session_inner_with_pty_target_ownership(
-        app.handle(),
+    let pending_error = privileged_target_create(
+        &app,
         &session_mgr,
         &pty_mgr,
-        "codex".to_string(),
-        Vec::new(),
         first_cwd.clone(),
-        Some("privileged target".to_string()),
-        None,
-        None,
-        true,
-        Vec::new(),
-        true,
-        None,
-        None,
-        None,
-        CreateSelectionIntent::Background,
+        "privileged target",
         &ownership,
     )
     .await
@@ -430,23 +458,12 @@ async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or
     assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 0);
     drop(pending);
 
-    let created = super::super::create_session_inner_with_pty_target_ownership(
-        app.handle(),
+    let created = privileged_target_create(
+        &app,
         &session_mgr,
         &pty_mgr,
-        "codex".to_string(),
-        Vec::new(),
         first_cwd.clone(),
-        Some("privileged target".to_string()),
-        None,
-        None,
-        true,
-        Vec::new(),
-        true,
-        None,
-        None,
-        None,
-        CreateSelectionIntent::Background,
+        "privileged target",
         &ownership,
     )
     .await
@@ -457,23 +474,12 @@ async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or
     assert_eq!(created.working_directory, first_cwd);
     assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
 
-    let live_error = super::super::create_session_inner_with_pty_target_ownership(
-        app.handle(),
+    let live_error = privileged_target_create(
+        &app,
         &session_mgr,
         &pty_mgr,
-        "codex".to_string(),
-        Vec::new(),
         first_cwd,
-        Some("stale background create".to_string()),
-        None,
-        None,
-        true,
-        Vec::new(),
-        true,
-        None,
-        None,
-        None,
-        CreateSelectionIntent::Background,
+        "stale background create",
         &ownership,
     )
     .await

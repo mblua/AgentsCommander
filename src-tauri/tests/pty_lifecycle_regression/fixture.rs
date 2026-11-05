@@ -166,6 +166,154 @@ pub(crate) struct LifecycleFixture {
     _env_lock: std::sync::MutexGuard<'static, ()>,
 }
 
+fn seed_project_authority(config_dir: &Path, repo_root: &Path) -> (AppSettings, PathBuf, Vec<u8>) {
+    // Seed canonical project authority before the unrelated Preserve save.
+    let mut settings = AppSettings::default();
+    settings.default_shell = "powershell.exe".to_string();
+    settings.default_shell_args = vec!["-NoLogo".to_string()];
+    settings.project_paths = vec![path_to_string(repo_root)];
+    let project_paths_path = config_dir.join("project-paths.json");
+    let seed = serde_json::to_vec(&serde_json::json!({
+        "projectPaths": settings.project_paths,
+        "projectPathsRelativeToInstance": [null],
+        "archivedProjectPaths": [],
+        "archivedProjectPathsRelativeToInstance": []
+    }))
+    .expect("serialize canonical project fixture");
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&project_paths_path)
+            .expect("create isolated project authority");
+        file.write_all(&seed)
+            .expect("write canonical project fixture");
+    }
+    let project_paths_before = std::fs::read(&project_paths_path).expect("read seeded authority");
+    (settings, project_paths_path, project_paths_before)
+}
+
+fn expected_canonical_project_path(repo_root: &Path) -> String {
+    let canonical_repo_root = std::fs::canonicalize(repo_root)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", repo_root.display()));
+    let canonical_repo_root = canonical_repo_root.to_str().unwrap_or_else(|| {
+        panic!(
+            "canonical repo root is not UTF-8: {}",
+            canonical_repo_root.display()
+        )
+    });
+    if let Some(unc) = canonical_repo_root.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(drive_path) = canonical_repo_root.strip_prefix(r"\\?\") {
+        let bytes = drive_path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+        {
+            drive_path.to_string()
+        } else {
+            canonical_repo_root.to_string()
+        }
+    } else {
+        canonical_repo_root.to_string()
+    }
+}
+
+fn assert_managed_settings_omit_project_paths(config_dir: &Path) {
+    let managed: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(config_dir.join("settings.30.instance.no-git.json"))
+            .expect("read managed settings"),
+    )
+    .expect("parse managed settings");
+    for key in [
+        "projectPath",
+        "projectPathRelativeToInstance",
+        "projectPaths",
+        "projectPathsRelativeToInstance",
+        "archivedProjectPaths",
+        "archivedProjectPathsRelativeToInstance",
+    ] {
+        assert!(
+            managed.get(key).is_none(),
+            "managed settings retained {key}"
+        );
+    }
+}
+
+fn start_selection_coordinator(app: &tauri::App, selection_coordinator: &SelectionCoordinator) {
+    selection_coordinator
+        .start(app.handle().clone())
+        .expect("start selection coordinator");
+    let bootstrap = selection_coordinator.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            bootstrap
+                .submit_restore_first()
+                .await
+                .expect("open selection coordinator")
+                .finish();
+        });
+    })
+    .join()
+    .expect("join selection bootstrap");
+}
+
+fn install_pty_output_listener(
+    app: &tauri::App,
+    captured: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    captured_sequences: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+    captured_deliveries: Arc<Mutex<HashMap<String, usize>>>,
+    listener_errors: Arc<Mutex<Vec<String>>>,
+) {
+    app.listen_any("pty_output", move |event| {
+        let raw = event.payload().to_string();
+        match serde_json::from_str::<TestPtyOutputDelivery>(&raw) {
+            Ok(TestPtyOutputDelivery::Data {
+                session_id,
+                sequence,
+                data,
+                ..
+            }) => {
+                captured
+                    .lock()
+                    .unwrap()
+                    .entry(session_id.clone())
+                    .or_default()
+                    .extend(data);
+                captured_deliveries
+                    .lock()
+                    .unwrap()
+                    .entry(session_id.clone())
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+                match sequence.parse::<u64>() {
+                    Ok(sequence) => captured_sequences
+                        .lock()
+                        .unwrap()
+                        .entry(session_id)
+                        .or_default()
+                        .push(sequence),
+                    Err(err) => listener_errors.lock().unwrap().push(format!(
+                        "pty_output data sequence is not canonical decimal: {err}; raw={raw}"
+                    )),
+                }
+            }
+            Ok(TestPtyOutputDelivery::ResyncRequired { session_id, .. }) => {
+                captured_deliveries
+                    .lock()
+                    .unwrap()
+                    .entry(session_id)
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+            }
+            Err(err) => listener_errors.lock().unwrap().push(format!(
+                "failed to parse pty_output payload: {err}; raw={raw}"
+            )),
+        }
+    });
+}
+
 pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     let env_lock = TEST_CONFIG_ENV_LOCK
         .lock()
@@ -197,54 +345,10 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     );
     let root = config_dir.join(agentscommander_lib::config::ROOT_AGENT_DIR_NAME);
     std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
-    // Seed canonical project authority before the unrelated Preserve save.
-    let mut settings = AppSettings::default();
-    settings.default_shell = "powershell.exe".to_string();
-    settings.default_shell_args = vec!["-NoLogo".to_string()];
-    settings.project_paths = vec![path_to_string(&repo_root)];
-    let project_paths_path = config_dir.join("project-paths.json");
-    let seed = serde_json::to_vec(&serde_json::json!({
-        "projectPaths": settings.project_paths,
-        "projectPathsRelativeToInstance": [null],
-        "archivedProjectPaths": [],
-        "archivedProjectPathsRelativeToInstance": []
-    }))
-    .expect("serialize canonical project fixture");
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&project_paths_path)
-            .expect("create isolated project authority");
-        file.write_all(&seed)
-            .expect("write canonical project fixture");
-    }
-    let project_paths_before = std::fs::read(&project_paths_path).expect("read seeded authority");
+    let (settings, project_paths_path, project_paths_before) =
+        seed_project_authority(&config_dir, &repo_root);
     let saved = save_settings(&settings).expect("seed isolated settings");
-    let canonical_repo_root = std::fs::canonicalize(&repo_root)
-        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", repo_root.display()));
-    let canonical_repo_root = canonical_repo_root.to_str().unwrap_or_else(|| {
-        panic!(
-            "canonical repo root is not UTF-8: {}",
-            canonical_repo_root.display()
-        )
-    });
-    let expected_project_path = if let Some(unc) = canonical_repo_root.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{unc}")
-    } else if let Some(drive_path) = canonical_repo_root.strip_prefix(r"\\?\") {
-        let bytes = drive_path.as_bytes();
-        if bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && bytes[2] == b'\\'
-        {
-            drive_path.to_string()
-        } else {
-            canonical_repo_root.to_string()
-        }
-    } else {
-        canonical_repo_root.to_string()
-    };
+    let expected_project_path = expected_canonical_project_path(&repo_root);
     let expected_project_paths = vec![expected_project_path];
     assert_eq!(saved.project_paths, expected_project_paths);
     assert_eq!(saved.default_shell, "powershell.exe");
@@ -253,24 +357,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
         std::fs::read(&project_paths_path).expect("read preserved authority"),
         project_paths_before
     );
-    let managed: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(config_dir.join("settings.30.instance.no-git.json"))
-            .expect("read managed settings"),
-    )
-    .expect("parse managed settings");
-    for key in [
-        "projectPath",
-        "projectPathRelativeToInstance",
-        "projectPaths",
-        "projectPathsRelativeToInstance",
-        "archivedProjectPaths",
-        "archivedProjectPathsRelativeToInstance",
-    ] {
-        assert!(
-            managed.get(key).is_none(),
-            "managed settings retained {key}"
-        );
-    }
+    assert_managed_settings_omit_project_paths(&config_dir);
 
     write_child_script(&script_path);
     run_powershell_preflight();
@@ -406,68 +493,15 @@ pub(crate) fn make_test_app(
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty lifecycle test app");
 
-    selection_coordinator
-        .start(app.handle().clone())
-        .expect("start selection coordinator");
-    let bootstrap = selection_coordinator.clone();
-    std::thread::spawn(move || {
-        tauri::async_runtime::block_on(async move {
-            bootstrap
-                .submit_restore_first()
-                .await
-                .expect("open selection coordinator")
-                .finish();
-        });
-    })
-    .join()
-    .expect("join selection bootstrap");
+    start_selection_coordinator(&app, &selection_coordinator);
 
-    app.listen_any("pty_output", move |event| {
-        let raw = event.payload().to_string();
-        match serde_json::from_str::<TestPtyOutputDelivery>(&raw) {
-            Ok(TestPtyOutputDelivery::Data {
-                session_id,
-                sequence,
-                data,
-                ..
-            }) => {
-                captured
-                    .lock()
-                    .unwrap()
-                    .entry(session_id.clone())
-                    .or_default()
-                    .extend(data);
-                captured_deliveries
-                    .lock()
-                    .unwrap()
-                    .entry(session_id.clone())
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
-                match sequence.parse::<u64>() {
-                    Ok(sequence) => captured_sequences
-                        .lock()
-                        .unwrap()
-                        .entry(session_id)
-                        .or_default()
-                        .push(sequence),
-                    Err(err) => listener_errors.lock().unwrap().push(format!(
-                        "pty_output data sequence is not canonical decimal: {err}; raw={raw}"
-                    )),
-                }
-            }
-            Ok(TestPtyOutputDelivery::ResyncRequired { session_id, .. }) => {
-                captured_deliveries
-                    .lock()
-                    .unwrap()
-                    .entry(session_id)
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
-            }
-            Err(err) => listener_errors.lock().unwrap().push(format!(
-                "failed to parse pty_output payload: {err}; raw={raw}"
-            )),
-        }
-    });
+    install_pty_output_listener(
+        &app,
+        captured,
+        captured_sequences,
+        captured_deliveries,
+        listener_errors,
+    );
 
     (app, session_mgr, pty_mgr)
 }

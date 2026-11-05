@@ -122,6 +122,16 @@ fn ordinary_ack_dormant_settlement(now: Instant) -> Uuid {
         .is_closing(member.session_id, member.generation)
         .unwrap());
     assert_eq!(ticket.committed_binding().close_nonce, nonce);
+    ordinary_ack_dormant_finish(&state, &member, &ticket, now);
+    nonce
+}
+
+fn ordinary_ack_dormant_finish(
+    state: &ResponseCloseState,
+    member: &ResponseRouteIdentity,
+    ticket: &ResponseCloseTicket,
+    now: Instant,
+) {
     let dormant = || ResponseCloseSettlementOutcome::Dormant {
         exact_backend_absent: true,
         all_effects_completed: true,
@@ -158,42 +168,42 @@ fn ordinary_ack_dormant_settlement(now: Instant) -> Uuid {
     let mut stale = evidence(2, dormant());
     stale.current_settlement.confirmed_carrier_version = 1;
     assert_eq!(
-        state.finish_response_close(&ticket, stale),
+        state.finish_response_close(ticket, stale),
         Err(StaleOrInvalidSettlement)
     );
     assert_eq!(
-        state.finish_response_close(&ticket, evidence(1, dormant())),
+        state.finish_response_close(ticket, evidence(1, dormant())),
         Err(StaleOrInvalidSettlement)
     );
     let mut stale = evidence(2, dormant());
     stale.current_settlement.current_checkpoint_nonce = Uuid::new_v4();
     assert_eq!(
-        state.finish_response_close(&ticket, stale),
+        state.finish_response_close(ticket, stale),
         Err(StaleOrInvalidSettlement)
     );
     let mut stale = evidence(2, dormant());
     stale.current_settlement.current_publication_epoch += 1;
     assert_eq!(
-        state.finish_response_close(&ticket, stale),
+        state.finish_response_close(ticket, stale),
         Err(StaleOrInvalidSettlement)
     );
     let mut stale = evidence(2, dormant());
     stale.committed_binding.member.backend = SessionBackendKind::ContainerTransport;
     assert_eq!(
-        state.finish_response_close(&ticket, stale),
+        state.finish_response_close(ticket, stale),
         Err(StaleOrInvalidSettlement)
     );
     let mut stale = evidence(2, dormant());
     stale.committed_binding.member.generation += 1;
     assert_eq!(
-        state.finish_response_close(&ticket, stale),
+        state.finish_response_close(ticket, stale),
         Err(StaleOrInvalidSettlement)
     );
     // None facts are not proof of completion. Running, NotStarted or
     // Ambiguous must be represented by false, not Completed(Err).
     assert_eq!(
         state.finish_response_close(
-            &ticket,
+            ticket,
             evidence(
                 2,
                 ResponseCloseSettlementOutcome::Dormant {
@@ -210,14 +220,13 @@ fn ordinary_ack_dormant_settlement(now: Instant) -> Uuid {
         .is_closing(member.session_id, member.generation)
         .unwrap());
     assert_eq!(
-        state.finish_response_close(&ticket, evidence(2, dormant())),
+        state.finish_response_close(ticket, evidence(2, dormant())),
         Ok(())
     );
     assert_eq!(
         state.inner.lock().unwrap().work[&member.target].pending["after-commit"],
         "retained-body"
     );
-    nonce
 }
 
 fn ordinary_ack_reopen_and_fresh_return(now: Instant, nonce: Uuid) {
@@ -275,7 +284,15 @@ fn ordinary_ack_reopen_and_fresh_return(now: Instant, nonce: Uuid) {
     assert!(state
         .try_commit_response_close(&ticket, now + Duration::from_secs(100))
         .is_err());
+    ordinary_ack_fresh_return(&state, &member, &coordinator, now);
+}
 
+fn ordinary_ack_fresh_return(
+    state: &ResponseCloseState,
+    member: &ResponseRouteIdentity,
+    coordinator: &ResponseRouteIdentity,
+    now: Instant,
+) {
     let mut current_member = member.clone();
     current_member.carrier_version = 2;
     state.publish_manager_facts(current_member.clone(), true, false, now);
@@ -293,16 +310,16 @@ fn ordinary_ack_reopen_and_fresh_return(now: Instant, nonce: Uuid) {
     ));
 
     let new_request = candidate(
-        &state,
+        state,
         &current_member,
-        &coordinator,
+        coordinator,
         "new-request",
         now + Duration::from_secs(100),
     );
     register(
-        &state,
+        state,
         &current_member,
-        &coordinator,
+        coordinator,
         new_request,
         now + Duration::from_secs(100),
     );
@@ -314,7 +331,7 @@ fn ordinary_ack_reopen_and_fresh_return(now: Instant, nonce: Uuid) {
     let fresh_return = state
         .admit_return(
             &current_member,
-            &coordinator,
+            coordinator,
             "fresh-ack".into(),
             "fresh-ack".into(),
             returned_at,
