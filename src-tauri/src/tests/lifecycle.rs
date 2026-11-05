@@ -210,13 +210,35 @@ fn p51_denied_app(denied: &SettingsState) -> tauri::App<tauri::test::MockRuntime
         .unwrap()
 }
 
+fn p51_demand_app(
+    denied: &SettingsState,
+    demand_harness: &crate::commands::session::reader_demand_tests::Harness,
+) -> tauri::App<tauri::test::MockRuntime> {
+    use crate::telegram::manager::TelegramBridgeState;
+    use tauri::Manager;
+    tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .manage(Arc::clone(denied))
+        .manage(Arc::clone(
+            demand_harness
+                .app
+                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                .inner(),
+        ))
+        .manage(Arc::clone(
+            demand_harness.app.state::<TelegramBridgeState>().inner(),
+        ))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn e2992_p51_invalid_no_co_managed_budget() {
     use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
     use crate::commands::session::reader_demand_tests::harness;
     use crate::commands::telegram::{holds_room_reader_demand, room_demand_epoch};
-    use crate::telegram::manager::TelegramBridgeState;
-    use tauri::Manager;
 
     let fixture = make_co_managed_fixture();
     let (endpoint, hits) = spawn_jev_listener(vec![("to-user", 0.9)]).await;
@@ -274,22 +296,7 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     super::reader_demand_pass(demand_harness.app.handle()).await;
     assert!(holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
     let epoch = room_demand_epoch(demand_harness.app.handle(), demand_id).await;
-    let demand_app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&denied))
-        .manage(Arc::clone(
-            demand_harness
-                .app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .inner(),
-        ))
-        .manage(Arc::clone(
-            demand_harness.app.state::<TelegramBridgeState>().inner(),
-        ))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    let demand_app = p51_demand_app(&denied, &demand_harness);
     for _ in 0..2 {
         assert!(!super::release_room_reader_demands_when_globally_off(demand_app.handle()).await);
         assert!(holds_room_reader_demand(demand_app.handle(), demand_id).await);
@@ -421,6 +428,39 @@ fn p51_restore_continuation(
     })
 }
 
+fn p51_restore_body(
+    mode: &'static str,
+    rows: Result<Vec<PersistedSession>, String>,
+    snapshot: AppSettings,
+    [body_entries, future_entries, body_completions]: [&P51Counter; 3],
+    manager: &Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
+) -> P51RestoreTask {
+    let body_entries = Arc::clone(body_entries);
+    let future_entries = Arc::clone(future_entries);
+    let body_completions = Arc::clone(body_completions);
+    let manager = Arc::clone(manager);
+    Box::new(move || -> futures::future::BoxFuture<'static, ()> {
+        body_entries.fetch_add(1, Ordering::SeqCst);
+        assert_ne!(
+            mode, "invalid",
+            "Invalid owner admitted saved restore input"
+        );
+        assert_ne!(mode, "sync-panic", "synchronous body panic control");
+        Box::pin(async move {
+            future_entries.fetch_add(1, Ordering::SeqCst);
+            assert!(matches!(rows, Ok(ref rows) if !rows.is_empty()));
+            assert!(!snapshot.agents.is_empty());
+            assert!(manager.read().await.list_sessions().await.is_empty());
+            assert_ne!(mode, "future-panic", "body future panic control");
+            body_completions.fetch_add(1, Ordering::SeqCst);
+        })
+    })
+}
+
+fn p51_counters() -> [P51Counter; 5] {
+    std::array::from_fn(|_| Arc::new(std::sync::atomic::AtomicUsize::new(0)))
+}
+
 fn p51_assert_restore_counters(
     mode: &str,
     [body_entries, tail_entries, future_entries, body_completions, tail_completions]: [&P51Counter;
@@ -489,33 +529,15 @@ async fn p51_restore_lifecycle_case(mode: &'static str) {
     assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued)
         .await
         .is_err());
-    let body_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let tail_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let future_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let body_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let tail_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let body = {
-        let body_entries = Arc::clone(&body_entries);
-        let future_entries = Arc::clone(&future_entries);
-        let body_completions = Arc::clone(&body_completions);
-        let manager = Arc::clone(&manager);
-        Box::new(move || -> futures::future::BoxFuture<'static, ()> {
-            body_entries.fetch_add(1, Ordering::SeqCst);
-            assert_ne!(
-                mode, "invalid",
-                "Invalid owner admitted saved restore input"
-            );
-            assert_ne!(mode, "sync-panic", "synchronous body panic control");
-            Box::pin(async move {
-                future_entries.fetch_add(1, Ordering::SeqCst);
-                assert!(matches!(rows, Ok(ref rows) if !rows.is_empty()));
-                assert!(!snapshot.agents.is_empty());
-                assert!(manager.read().await.list_sessions().await.is_empty());
-                assert_ne!(mode, "future-panic", "body future panic control");
-                body_completions.fetch_add(1, Ordering::SeqCst);
-            })
-        })
-    };
+    let [body_entries, tail_entries, future_entries, body_completions, tail_completions] =
+        p51_counters();
+    let body = p51_restore_body(
+        mode,
+        rows,
+        snapshot,
+        [&body_entries, &future_entries, &body_completions],
+        &manager,
+    );
     let continuation = p51_restore_continuation(
         mode,
         [
