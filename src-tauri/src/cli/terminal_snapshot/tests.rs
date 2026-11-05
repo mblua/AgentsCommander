@@ -388,6 +388,32 @@ fn write_private_response(path: &Path, bytes: &[u8]) {
     }
 }
 
+fn cancelled_marker_path(directory: &Path, request_id: Uuid, nonce: &str) -> PathBuf {
+    directory.join(format!(".{request_id}.{nonce}.terminal-snapshot-cancelled"))
+}
+
+fn processing_path(directory: &Path, request_id: Uuid) -> PathBuf {
+    directory.join(format!(
+        ".{request_id}.{}.terminal-snapshot-processing",
+        Uuid::new_v4()
+    ))
+}
+
+fn new_request(directory: &Path) -> (Uuid, PathBuf) {
+    let request_id = Uuid::new_v4();
+    (request_id, directory.join(format!("{request_id}.json")))
+}
+
+fn cancel_in(
+    directory: &Path,
+    request_id: Uuid,
+    nonce: &str,
+    expected: &crate::path_identity::VerifiedPathIdentity,
+) -> bool {
+    let request = directory.join(format!("{request_id}.json"));
+    cancel_request_for_test(&request, directory, request_id, nonce, expected)
+}
+
 #[test]
 fn timeout_cancellation_claims_and_removes_only_the_original_request() {
     let directory = tempfile::TempDir::new().unwrap();
@@ -395,11 +421,8 @@ fn timeout_cancellation_claims_and_removes_only_the_original_request() {
     let caller_output = directory.path().join("caller-output.png");
     let nonce = "a".repeat(64);
 
-    let request_id = Uuid::new_v4();
-    let request = directory.path().join(format!("{request_id}.json"));
-    let marker = directory
-        .path()
-        .join(format!(".{request_id}.{nonce}.terminal-snapshot-cancelled"));
+    let (request_id, request) = new_request(directory.path());
+    let marker = cancelled_marker_path(directory.path(), request_id, &nonce);
     std::fs::write(&request, b"unclaimed-request").unwrap();
     let expected = crate::path_identity::verify_regular_file(&request).unwrap();
     assert!(cancel_request_observed(
@@ -426,74 +449,39 @@ fn timeout_cancellation_claims_and_removes_only_the_original_request() {
     assert!(!marker.exists());
     assert!(!caller_output.exists());
 
-    let request_id = Uuid::new_v4();
-    let request = directory.path().join(format!("{request_id}.json"));
-    let processing = directory.path().join(format!(
-        ".{request_id}.{}.terminal-snapshot-processing",
-        Uuid::new_v4()
-    ));
+    let (request_id, request) = new_request(directory.path());
+    let processing = processing_path(directory.path(), request_id);
     std::fs::write(&request, b"daemon-claimed-request").unwrap();
     let expected = crate::path_identity::verify_regular_file(&request).unwrap();
     crate::path_identity::publish_new_file_atomic(&request, &processing).unwrap();
-    assert!(!cancel_request_for_test(
-        &request,
-        directory.path(),
-        request_id,
-        &nonce,
-        &expected,
-    ));
+    assert!(!cancel_in(directory.path(), request_id, &nonce, &expected));
     assert_eq!(
         std::fs::read(&processing).unwrap(),
         b"daemon-claimed-request"
     );
-    assert!(!directory
-        .path()
-        .join(format!(".{request_id}.{nonce}.terminal-snapshot-cancelled"))
-        .exists());
+    assert!(!cancelled_marker_path(directory.path(), request_id, &nonce).exists());
 
-    let request_id = Uuid::new_v4();
-    let request = directory.path().join(format!("{request_id}.json"));
-    let marker = directory
-        .path()
-        .join(format!(".{request_id}.{nonce}.terminal-snapshot-cancelled"));
+    let (request_id, request) = new_request(directory.path());
+    let marker = cancelled_marker_path(directory.path(), request_id, &nonce);
     std::fs::write(&request, b"collision-request").unwrap();
     let expected = crate::path_identity::verify_regular_file(&request).unwrap();
     std::fs::write(&marker, b"marker-collision").unwrap();
-    assert!(!cancel_request_for_test(
-        &request,
-        directory.path(),
-        request_id,
-        &nonce,
-        &expected,
-    ));
+    assert!(!cancel_in(directory.path(), request_id, &nonce, &expected));
     assert_eq!(std::fs::read(&request).unwrap(), b"collision-request");
     assert_eq!(std::fs::read(&marker).unwrap(), b"marker-collision");
 
-    let request_id = Uuid::new_v4();
-    let request = directory.path().join(format!("{request_id}.json"));
-    let accepted = directory.path().join(format!(
-        ".{request_id}.{}.terminal-snapshot-processing",
-        Uuid::new_v4()
-    ));
+    let (request_id, request) = new_request(directory.path());
+    let accepted = processing_path(directory.path(), request_id);
     std::fs::write(&request, b"original-request").unwrap();
     let expected = crate::path_identity::verify_regular_file(&request).unwrap();
     crate::path_identity::publish_new_file_atomic(&request, &accepted).unwrap();
     std::fs::write(&request, b"replacement-request").unwrap();
-    assert!(!cancel_request_for_test(
-        &request,
-        directory.path(),
-        request_id,
-        &nonce,
-        &expected,
-    ));
+    assert!(!cancel_in(directory.path(), request_id, &nonce, &expected));
     assert_eq!(std::fs::read(&request).unwrap(), b"replacement-request");
     assert_eq!(std::fs::read(&accepted).unwrap(), b"original-request");
 
-    let request_id = Uuid::new_v4();
-    let request = directory.path().join(format!("{request_id}.json"));
-    let marker = directory
-        .path()
-        .join(format!(".{request_id}.{nonce}.terminal-snapshot-cancelled"));
+    let (request_id, request) = new_request(directory.path());
+    let marker = cancelled_marker_path(directory.path(), request_id, &nonce);
     let displaced = directory.path().join("displaced-original-request");
     std::fs::write(&request, b"original-at-marker").unwrap();
     let expected = crate::path_identity::verify_regular_file(&request).unwrap();

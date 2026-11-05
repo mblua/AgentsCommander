@@ -98,28 +98,7 @@ fn resume_fixture() -> (
     let workgroup_dir = loaded.ac_root.join("wg-1-role-exp-exp");
     std::fs::create_dir_all(&workgroup_dir).expect("workgroup dir");
 
-    let suite = ParsedPromptSuite {
-        path: loaded.experiment_dir.join("suite.md"),
-        sha256: sha256_hex(b"prompt suite"),
-        prompts: vec![
-            PromptCase {
-                id: "prompt-a".to_string(),
-                title: "Prompt A".to_string(),
-                prompt: "Do A".to_string(),
-                tags: vec!["one".to_string()],
-                expected_behaviors: vec!["A happens".to_string()],
-                line: 1,
-            },
-            PromptCase {
-                id: "prompt-b".to_string(),
-                title: "Prompt B".to_string(),
-                prompt: "Do B".to_string(),
-                tags: vec!["two".to_string()],
-                expected_behaviors: vec!["B happens".to_string()],
-                line: 7,
-            },
-        ],
-    };
+    let suite = resume_prompt_suite(&loaded);
     let variants = loaded
         .experiment
         .variants
@@ -191,9 +170,47 @@ fn resume_fixture() -> (
         warnings: Vec::new(),
     };
 
+    write_resume_run_files(&run_dir, &run, &attempts, &report);
+
+    let args = resume_run_args(&loaded, &suite, &run_id);
+
+    (tmp, loaded, suite, variants, args, run_dir, run_id, report)
+}
+
+fn resume_prompt_suite(loaded: &LoadedExperiment) -> ParsedPromptSuite {
+    ParsedPromptSuite {
+        path: loaded.experiment_dir.join("suite.md"),
+        sha256: sha256_hex(b"prompt suite"),
+        prompts: vec![
+            PromptCase {
+                id: "prompt-a".to_string(),
+                title: "Prompt A".to_string(),
+                prompt: "Do A".to_string(),
+                tags: vec!["one".to_string()],
+                expected_behaviors: vec!["A happens".to_string()],
+                line: 1,
+            },
+            PromptCase {
+                id: "prompt-b".to_string(),
+                title: "Prompt B".to_string(),
+                prompt: "Do B".to_string(),
+                tags: vec!["two".to_string()],
+                expected_behaviors: vec!["B happens".to_string()],
+                line: 7,
+            },
+        ],
+    }
+}
+
+fn write_resume_run_files(
+    run_dir: &std::path::Path,
+    run: &RunArtifact,
+    attempts: &[AttemptArtifact],
+    report: &ReportArtifact,
+) {
     std::fs::write(
         run_dir.join("run.json"),
-        serde_json::to_string_pretty(&run).expect("run json"),
+        serde_json::to_string_pretty(run).expect("run json"),
     )
     .expect("write run");
     std::fs::write(
@@ -207,19 +224,21 @@ fn resume_fixture() -> (
     .expect("write attempts");
     std::fs::write(
         run_dir.join("report.json"),
-        serde_json::to_string_pretty(&report).expect("report json"),
+        serde_json::to_string_pretty(report).expect("report json"),
     )
     .expect("write report");
-    std::fs::write(run_dir.join("report.md"), render_report_markdown(&report))
+    std::fs::write(run_dir.join("report.md"), render_report_markdown(report))
         .expect("write report markdown");
+}
 
-    let args = RunArgs {
+fn resume_run_args(loaded: &LoadedExperiment, suite: &ParsedPromptSuite, run_id: &str) -> RunArgs {
+    RunArgs {
         project: loaded.experiment.project.clone(),
         experiment: loaded.experiment.name.clone(),
         prompt_suite: suite.path.to_string_lossy().to_string(),
         replicates: 1,
         seed: None,
-        run_id: Some(run_id.clone()),
+        run_id: Some(run_id.to_string()),
         dry_run: false,
         execute: true,
         provider: "auto".to_string(),
@@ -229,9 +248,7 @@ fn resume_fixture() -> (
         resume_run: true,
         retry_failed: true,
         fake_executor: true,
-    };
-
-    (tmp, loaded, suite, variants, args, run_dir, run_id, report)
+    }
 }
 
 fn assert_resume_report_tamper_rejected_without_mutation(

@@ -97,74 +97,7 @@ fn bounded(command: &mut Command, prefix: &Path, limit: Duration) -> ExitStatus 
     }
 }
 
-fn production_library(root: &Path, scratch: &Path) -> Library {
-    for key in [
-        "RUSTFLAGS",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "CARGO_BUILD_RUSTFLAGS",
-        "RUSTC",
-        "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
-        "CARGO_BUILD_TARGET",
-        "CARGO_TARGET_DIR",
-        "CARGO_BUILD_BUILD_DIR",
-        "BUILD_PROFILE",
-    ] {
-        println!("{key}={:?}", env::var_os(key));
-    }
-    for key in [
-        "RUSTFLAGS",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "CARGO_BUILD_RUSTFLAGS",
-    ] {
-        let flags = env::var(key)
-            .unwrap_or_default()
-            .replace(['=', '\u{1f}'], " ");
-        let words: Vec<_> = flags.split_whitespace().collect();
-        assert!(
-            !words.windows(2).any(|w| w == ["--cfg", "test"]),
-            "cfg(test): {key}"
-        );
-    }
-    let compiler = env::var_os("RUSTC").map_or_else(|| "rustc".into(), PathBuf::from);
-    let version = Command::new(&compiler).arg("-vV").output().unwrap();
-    assert!(version.status.success());
-    let version = String::from_utf8(version.stdout).unwrap();
-    println!("compiler={}; {version}", compiler.display());
-    fs::write(scratch.join("compiler.txt"), &version).unwrap();
-    let host = version
-        .lines()
-        .find_map(|l| l.strip_prefix("host: "))
-        .unwrap();
-    if let Ok(target) = env::var("CARGO_BUILD_TARGET") {
-        assert_eq!(
-            target, host,
-            "cross-target library cannot be used by host probes"
-        );
-    }
-    let config = root.join(".cargo/config.toml");
-    if config.exists() {
-        println!(
-            "workspace Cargo config:\n{}",
-            fs::read_to_string(config).unwrap()
-        );
-    }
-    let prefix = scratch.join("production-build");
-    let status = bounded(
-        Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-            .current_dir(root)
-            .args(["build", "--locked", "-p", "agentscommander", "--lib"])
-            .arg("--message-format=json")
-            .env("RUSTC", &compiler),
-        &prefix,
-        Duration::from_mins(40),
-    );
-    assert!(
-        status.success(),
-        "normal production build failed; logs={}",
-        prefix.display()
-    );
-    let output = fs::read_to_string(prefix.with_extension("stdout")).unwrap();
+fn build_artifacts(output: &str) -> (Vec<PathBuf>, BTreeSet<PathBuf>) {
     let mut libraries = Vec::new();
     let mut dependencies = BTreeSet::new();
     for line in output.lines() {
@@ -208,6 +141,82 @@ fn production_library(root: &Path, scratch: &Path) -> Library {
             libraries.push(rlibs[0].clone());
         }
     }
+    (libraries, dependencies)
+}
+
+fn assert_no_cfg_test_flags() {
+    for key in [
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+    ] {
+        let flags = env::var(key)
+            .unwrap_or_default()
+            .replace(['=', '\u{1f}'], " ");
+        let words: Vec<_> = flags.split_whitespace().collect();
+        assert!(
+            !words.windows(2).any(|w| w == ["--cfg", "test"]),
+            "cfg(test): {key}"
+        );
+    }
+}
+
+fn production_library(root: &Path, scratch: &Path) -> Library {
+    for key in [
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_TARGET",
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_BUILD_DIR",
+        "BUILD_PROFILE",
+    ] {
+        println!("{key}={:?}", env::var_os(key));
+    }
+    assert_no_cfg_test_flags();
+    let compiler = env::var_os("RUSTC").map_or_else(|| "rustc".into(), PathBuf::from);
+    let version = Command::new(&compiler).arg("-vV").output().unwrap();
+    assert!(version.status.success());
+    let version = String::from_utf8(version.stdout).unwrap();
+    println!("compiler={}; {version}", compiler.display());
+    fs::write(scratch.join("compiler.txt"), &version).unwrap();
+    let host = version
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .unwrap();
+    if let Ok(target) = env::var("CARGO_BUILD_TARGET") {
+        assert_eq!(
+            target, host,
+            "cross-target library cannot be used by host probes"
+        );
+    }
+    let config = root.join(".cargo/config.toml");
+    if config.exists() {
+        println!(
+            "workspace Cargo config:\n{}",
+            fs::read_to_string(config).unwrap()
+        );
+    }
+    let prefix = scratch.join("production-build");
+    let status = bounded(
+        Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .current_dir(root)
+            .args(["build", "--locked", "-p", "agentscommander", "--lib"])
+            .arg("--message-format=json")
+            .env("RUSTC", &compiler),
+        &prefix,
+        Duration::from_mins(40),
+    );
+    assert!(
+        status.success(),
+        "normal production build failed; logs={}",
+        prefix.display()
+    );
+    let output = fs::read_to_string(prefix.with_extension("stdout")).unwrap();
+    let (mut libraries, dependencies) = build_artifacts(&output);
     assert_eq!(libraries.len(), 1, "exactly one normal library artifact");
     assert!(!dependencies.is_empty());
     println!(

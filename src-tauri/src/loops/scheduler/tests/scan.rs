@@ -1,20 +1,71 @@
 use super::*;
 
-#[tokio::test]
-async fn e2992_p43_invalid_no_candidate_action() {
-    use crate::config::settings::{
-        AppSettings, SettingsAvailability, SettingsOwner, SettingsPublisher,
-    };
+fn p43_active_owner(
+    project: &std::path::Path,
+) -> (tempfile::TempDir, crate::config::settings::SettingsState) {
+    use crate::config::settings::{AppSettings, SettingsOwner};
 
-    let (project, dir) = pending_loop_fixture();
     let instance = tempfile::tempdir().unwrap();
     let path = instance.path().join("settings.json");
     let settings = AppSettings {
-        project_paths: vec![project.path().to_string_lossy().to_string()],
+        project_paths: vec![project.to_string_lossy().to_string()],
         ..AppSettings::default()
     };
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+    (instance, owner)
+}
+
+fn p43_ready_transition_count(
+    context: &SchedulerContext,
+    dir: &std::path::Path,
+    project: &std::path::Path,
+) -> usize {
+    let SchedulerContext::Headless { transitions, .. } = context else {
+        unreachable!("P43 uses a headless scheduler context")
+    };
+    let recorded = transitions.lock().expect("scheduler transitions");
+    assert!(!recorded.is_empty(), "Ready emits a real transition");
+    let config = read_loop_config(dir).unwrap();
+    assert!(recorded
+        .iter()
+        .any(|(project_dir, loop_dir, loop_id, kind, summary, message)| {
+            std::fs::canonicalize(project_dir).expect("recorded project exists")
+                == std::fs::canonicalize(project).expect("fixture project exists")
+                && std::fs::canonicalize(loop_dir).expect("recorded loop exists")
+                    == std::fs::canonicalize(dir).expect("fixture loop exists")
+                && loop_id == &config.loop_def.id
+                && kind == "delivered"
+                && summary.is_some()
+                && message.as_deref() == Some("gated delivery")
+        }));
+    recorded.len()
+}
+
+async fn p43_wait_for_scans(
+    scheduler: &LoopScheduler,
+    target: usize,
+    timeout_secs: u64,
+    poll_millis: u64,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+        while scheduler
+            .completed_scans
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < target
+        {
+            tokio::time::sleep(Duration::from_millis(poll_millis)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn e2992_p43_invalid_no_candidate_action() {
+    use crate::config::settings::{SettingsAvailability, SettingsPublisher};
+
+    let (project, dir) = pending_loop_fixture();
+    let (_instance, owner) = p43_active_owner(project.path());
     let transitions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let context = SchedulerContext::Headless {
         owner: Arc::clone(&owner),
@@ -29,24 +80,7 @@ async fn e2992_p43_invalid_no_candidate_action() {
         !gate_is_untaken(&scheduler),
         "Ready delivers the eligible pending run"
     );
-    let ready_transitions = {
-        let recorded = transitions.lock().expect("scheduler transitions");
-        assert!(!recorded.is_empty(), "Ready emits a real transition");
-        let config = read_loop_config(&dir).unwrap();
-        assert!(recorded
-            .iter()
-            .any(|(project_dir, loop_dir, loop_id, kind, summary, message)| {
-                std::fs::canonicalize(project_dir).expect("recorded project exists")
-                    == std::fs::canonicalize(project.path()).expect("fixture project exists")
-                    && std::fs::canonicalize(loop_dir).expect("recorded loop exists")
-                        == std::fs::canonicalize(&dir).expect("fixture loop exists")
-                    && loop_id == &config.loop_def.id
-                    && kind == "delivered"
-                    && summary.is_some()
-                    && message.as_deref() == Some("gated delivery")
-            }));
-        recorded.len()
-    };
+    let ready_transitions = p43_ready_transition_count(&context, &dir, project.path());
     // Keep the same eligible work pending for the Invalid negative control.
     std::fs::write(dir.join(LOOP_STATE_FILE), &pending).unwrap();
 
@@ -84,40 +118,16 @@ async fn e2992_p43_invalid_no_candidate_action() {
         drop(tokio::spawn(future));
     });
     // Observe the actual task's startup scan and first interval tick.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while scheduler
-            .completed_scans
-            .load(std::sync::atomic::Ordering::SeqCst)
-            < completed + 2
-        {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("Invalid preserves startup and interval scans");
+    p43_wait_for_scans(&scheduler, completed + 2, 5, 1)
+        .await
+        .expect("Invalid preserves startup and interval scans");
     scheduler.request_scan();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while scheduler
-            .completed_scans
-            .load(std::sync::atomic::Ordering::SeqCst)
-            < completed + 3
-        {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("Invalid preserves requested scans");
-    tokio::time::timeout(Duration::from_secs(35), async {
-        while scheduler
-            .completed_scans
-            .load(std::sync::atomic::Ordering::SeqCst)
-            < completed + 4
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Invalid preserves the next 30-second interval tick");
+    p43_wait_for_scans(&scheduler, completed + 3, 5, 1)
+        .await
+        .expect("Invalid preserves requested scans");
+    p43_wait_for_scans(&scheduler, completed + 4, 35, 10)
+        .await
+        .expect("Invalid preserves the next 30-second interval tick");
     assert!(started.elapsed() >= Duration::from_secs(30));
     shutdown.trigger();
     // The task owns the only other scheduler Arc. Its release proves exit,

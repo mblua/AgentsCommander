@@ -237,23 +237,18 @@ fn quoted_field(line: &str, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-#[test]
-fn deliberately_failing_cargo_harness_diagnostics_are_payload_free() {
-    let scratch = ScratchDirectory::create().expect("create diagnostic harness scratch directory");
-    let target = scratch.path().join("target");
-    let temporary = scratch.path().join("temp");
-    let persisted = scratch.path().join("persisted");
-    fs::create_dir_all(&target).expect("create isolated Cargo target directory");
-    fs::create_dir_all(&temporary).expect("create isolated child temporary directory");
-    fs::create_dir_all(&persisted).expect("create persisted diagnostic directory");
-
+fn fixture_command(
+    target: &Path,
+    temporary: &Path,
+    persisted: &Path,
+    canaries: &ChildCanaries,
+) -> Command {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("diagnostic-failure-harness")
         .join("Cargo.toml");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let canaries = ChildCanaries::new();
     let mut command = Command::new(cargo);
     command
         .args([
@@ -268,19 +263,52 @@ fn deliberately_failing_cargo_harness_diagnostics_are_payload_free() {
             "--",
             "--test-threads=1",
         ])
-        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_TARGET_DIR", target)
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_INCREMENTAL", "0")
         .env("CARGO_TERM_COLOR", "never")
         .env("NO_COLOR", "1")
         .env("RUST_BACKTRACE", "1")
-        .env("AC_SNAPSHOT_DIAG_PERSIST_DIR", &persisted)
-        .env("TMP", &temporary)
-        .env("TEMP", &temporary)
-        .env("TMPDIR", &temporary);
+        .env("AC_SNAPSHOT_DIAG_PERSIST_DIR", persisted)
+        .env("TMP", temporary)
+        .env("TEMP", temporary)
+        .env("TMPDIR", temporary);
     for (name, value) in &canaries.environment {
         command.env(name, value);
     }
+    command
+}
+
+fn assert_structural_diagnostics(combined: &str) {
+    for required in [
+        "assertion `left == right` failed",
+        "assertion `left != right` failed",
+        "called `Result::unwrap()` on an `Err` value",
+        "fixed renderer expectation: Invariant",
+        "Error: Invalid",
+        "spawned task snapshot result: TerminalSnapshotApiSuccess",
+        "failures:",
+        "test result: FAILED. 0 passed; 8 failed",
+    ] {
+        assert!(
+            combined.contains(required),
+            "Cargo test output omitted required structural diagnostic {required:?}"
+        );
+    }
+}
+
+#[test]
+fn deliberately_failing_cargo_harness_diagnostics_are_payload_free() {
+    let scratch = ScratchDirectory::create().expect("create diagnostic harness scratch directory");
+    let target = scratch.path().join("target");
+    let temporary = scratch.path().join("temp");
+    let persisted = scratch.path().join("persisted");
+    fs::create_dir_all(&target).expect("create isolated Cargo target directory");
+    fs::create_dir_all(&temporary).expect("create isolated child temporary directory");
+    fs::create_dir_all(&persisted).expect("create persisted diagnostic directory");
+
+    let canaries = ChildCanaries::new();
+    let mut command = fixture_command(&target, &temporary, &persisted, &canaries);
 
     let output = command
         .output()
@@ -315,21 +343,7 @@ fn deliberately_failing_cargo_harness_diagnostics_are_payload_free() {
     combined.push(b'\n');
     combined.extend_from_slice(&output.stderr);
     let combined = String::from_utf8_lossy(&combined);
-    for required in [
-        "assertion `left == right` failed",
-        "assertion `left != right` failed",
-        "called `Result::unwrap()` on an `Err` value",
-        "fixed renderer expectation: Invariant",
-        "Error: Invalid",
-        "spawned task snapshot result: TerminalSnapshotApiSuccess",
-        "failures:",
-        "test result: FAILED. 0 passed; 8 failed",
-    ] {
-        assert!(
-            combined.contains(required),
-            "Cargo test output omitted required structural diagnostic {required:?}"
-        );
-    }
+    assert_structural_diagnostics(&combined);
 
     let persisted_files = fs::read_dir(&persisted)
         .expect("read persisted diagnostic directory")

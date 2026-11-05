@@ -3,12 +3,107 @@ use super::*;
 #[test]
 fn role_experiment_report_reads_text_and_json_artifacts() {
     let tmp = Tmp::new("role-exp-report");
-    let bin = copy_binary_into(tmp.path());
+    let (bin, run_dir) = report_dry_run_fixture(tmp.path());
+    let expected_run_path = report_canonical_string(&run_dir.join("run.json"));
+    let expected_attempts_path = report_canonical_string(&run_dir.join("attempts.jsonl"));
+    let expected_report_json_path = report_canonical_string(&run_dir.join("report.json"));
+    let expected_report_markdown_path = report_canonical_string(&run_dir.join("report.md"));
+
+    let text = run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+        ],
+    );
+    assert_eq!(text["data"]["experiment"], "techlead-test");
+    assert_eq!(text["data"]["runId"], "20260601-181500");
+    assert_eq!(text["data"]["format"], "text");
+    assert_eq!(text["data"]["status"], "dry_run");
+    assert_report_artifact_paths(
+        &text["data"]["artifactPaths"],
+        [
+            &expected_run_path,
+            &expected_attempts_path,
+            &expected_report_json_path,
+            &expected_report_markdown_path,
+        ],
+    );
+    assert!(text["data"]["reportMarkdown"]
+        .as_str()
+        .unwrap()
+        .contains("Status: dry_run"));
+    let json = run_ok(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(json["data"]["experiment"], "techlead-test");
+    assert_eq!(json["data"]["runId"], "20260601-181500");
+    assert_eq!(json["data"]["format"], "json");
+    assert_eq!(json["data"]["status"], "dry_run");
+    assert_report_artifact_paths(
+        &json["data"]["artifactPaths"],
+        [
+            &expected_run_path,
+            &expected_attempts_path,
+            &expected_report_json_path,
+            &expected_report_markdown_path,
+        ],
+    );
+    let persisted_report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("report.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted_report["format"], "json");
+    assert_eq!(
+        persisted_report["artifactPaths"],
+        json["data"]["artifactPaths"]
+    );
+    assert_eq!(persisted_report, json["data"]["report"]);
+    assert_eq!(json["data"]["report"]["summary"]["attemptCount"], 4);
+
+    let (code, invalid, _stderr) = run(
+        &bin,
+        &[
+            "role-experiment",
+            "report",
+            "--project",
+            "ProjectAlpha",
+            "--experiment",
+            "techlead-test",
+            "--run-id",
+            "20260601-181500",
+            "--format",
+            "xml",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert_eq!(invalid["errors"][0]["code"], "report_format_invalid");
+}
+
+fn report_dry_run_fixture(tmp: &Path) -> (PathBuf, PathBuf) {
+    let bin = copy_binary_into(tmp);
     let config_dir = config_dir_for_bin(&bin);
-    write_settings(&config_dir, tmp.path());
-    let project = project_with_source(tmp.path());
+    write_settings(&config_dir, tmp);
+    let project = project_with_source(tmp);
     init_experiment(&bin);
-    let suite = tmp.path().join("prompts.jsonl");
+    let suite = tmp.join("prompts.jsonl");
     write_prompt_suite(&suite);
     run_ok(
         &bin,
@@ -40,117 +135,22 @@ fn role_experiment_report_reads_text_and_json_artifacts() {
         serde_json::to_string_pretty(&run_artifact).unwrap(),
     )
     .unwrap();
-    let expected_run_path = std::fs::canonicalize(run_dir.join("run.json"))
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-    let expected_attempts_path = std::fs::canonicalize(run_dir.join("attempts.jsonl"))
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-    let expected_report_json_path = std::fs::canonicalize(run_dir.join("report.json"))
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-    let expected_report_markdown_path = std::fs::canonicalize(run_dir.join("report.md"))
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    (bin, run_dir)
+}
 
-    let text = run_ok(
-        &bin,
-        &[
-            "role-experiment",
-            "report",
-            "--project",
-            "ProjectAlpha",
-            "--experiment",
-            "techlead-test",
-            "--run-id",
-            "20260601-181500",
-        ],
-    );
-    assert_eq!(text["data"]["experiment"], "techlead-test");
-    assert_eq!(text["data"]["runId"], "20260601-181500");
-    assert_eq!(text["data"]["format"], "text");
-    assert_eq!(text["data"]["status"], "dry_run");
-    assert_eq!(text["data"]["artifactPaths"]["run"], expected_run_path);
-    assert_eq!(
-        text["data"]["artifactPaths"]["attempts"],
-        expected_attempts_path
-    );
-    assert_eq!(
-        text["data"]["artifactPaths"]["reportJson"],
-        expected_report_json_path
-    );
-    assert_eq!(
-        text["data"]["artifactPaths"]["reportMarkdown"],
-        expected_report_markdown_path
-    );
-    assert!(text["data"]["reportMarkdown"]
-        .as_str()
+fn report_canonical_string(path: &std::path::Path) -> String {
+    std::fs::canonicalize(path)
         .unwrap()
-        .contains("Status: dry_run"));
-    let json = run_ok(
-        &bin,
-        &[
-            "role-experiment",
-            "report",
-            "--project",
-            "ProjectAlpha",
-            "--experiment",
-            "techlead-test",
-            "--run-id",
-            "20260601-181500",
-            "--format",
-            "json",
-        ],
-    );
-    assert_eq!(json["data"]["experiment"], "techlead-test");
-    assert_eq!(json["data"]["runId"], "20260601-181500");
-    assert_eq!(json["data"]["format"], "json");
-    assert_eq!(json["data"]["status"], "dry_run");
-    assert_eq!(json["data"]["artifactPaths"]["run"], expected_run_path);
-    assert_eq!(
-        json["data"]["artifactPaths"]["attempts"],
-        expected_attempts_path
-    );
-    assert_eq!(
-        json["data"]["artifactPaths"]["reportJson"],
-        expected_report_json_path
-    );
-    assert_eq!(
-        json["data"]["artifactPaths"]["reportMarkdown"],
-        expected_report_markdown_path
-    );
-    let persisted_report: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(run_dir.join("report.json")).unwrap())
-            .unwrap();
-    assert_eq!(persisted_report["format"], "json");
-    assert_eq!(
-        persisted_report["artifactPaths"],
-        json["data"]["artifactPaths"]
-    );
-    assert_eq!(persisted_report, json["data"]["report"]);
-    assert_eq!(json["data"]["report"]["summary"]["attemptCount"], 4);
+        .to_string_lossy()
+        .to_string()
+}
 
-    let (code, invalid, _stderr) = run(
-        &bin,
-        &[
-            "role-experiment",
-            "report",
-            "--project",
-            "ProjectAlpha",
-            "--experiment",
-            "techlead-test",
-            "--run-id",
-            "20260601-181500",
-            "--format",
-            "xml",
-        ],
-    );
-    assert_eq!(code, 1);
-    assert_eq!(invalid["errors"][0]["code"], "report_format_invalid");
+fn assert_report_artifact_paths(paths: &serde_json::Value, expected: [&String; 4]) {
+    let [run_path, attempts_path, report_json_path, report_markdown_path] = expected;
+    assert_eq!(paths["run"], *run_path);
+    assert_eq!(paths["attempts"], *attempts_path);
+    assert_eq!(paths["reportJson"], *report_json_path);
+    assert_eq!(paths["reportMarkdown"], *report_markdown_path);
 }
 
 #[test]
