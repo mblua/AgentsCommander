@@ -19,11 +19,11 @@ use super::ac_root::{ac_root_for_project, existing_ac_root, has_ac_root};
 use super::settings::AppSettings;
 
 #[cfg(test)]
-pub(crate) use super::settings::project_path::{
+pub(crate) use super::settings::{
     decode_instance_relative, encode_instance_relative, resolve_registrations, CandidateResolver,
     DirectoryIdentity, FsCandidateResolver, RawPair, RelDecodeError, RepairKind, SideOutcome,
 };
-pub(crate) use super::settings::project_path::{
+pub(crate) use super::settings::{
     display_canonical, normalize_for_compare, IssueKind, ProjectPathPersistenceState,
     ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };

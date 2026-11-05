@@ -6,7 +6,7 @@ mod load;
 mod naming;
 mod overlay;
 mod owner;
-pub(crate) mod project_path;
+mod project_path;
 mod save;
 mod source;
 
@@ -131,6 +131,9 @@ pub use field::{
 };
 #[cfg(test)]
 pub(crate) use instance::settings_fixture_path;
+#[cfg(not(test))]
+use instance::settings_path;
+#[cfg(test)]
 pub(crate) use instance::settings_path;
 pub(crate) use instance::{
     instance_settings_display_path, instance_settings_target, persisted_instance_token_matches,
@@ -182,9 +185,8 @@ use project_path::{
     select_project_source_at_path, OVERLAY_PREMIGRATION_UNSAFE_KEYS,
 };
 pub(crate) use project_path::{
-    apply_project_decode_to_value, begin_project_paths_transaction_at_path, decode_project_state,
-    repair_fresh_project_paths_at_path, resync_project_state_from_runtime, ProjectPathsRepairStage,
-    ProjectPathsWriteTransaction, ProjectWriteMode, OVERLAY_DERIVED_ID_CLOSURES,
+    apply_project_decode_to_value, decode_project_state, resync_project_state_from_runtime,
+    ProjectPathsRepairStage, ProjectWriteMode, OVERLAY_DERIVED_ID_CLOSURES,
     OVERLAY_INELIGIBLE_DISK_KEYS, OVERLAY_INELIGIBLE_LEGACY_KEYS, OVERLAY_KEY_AGENTS,
     OVERLAY_KEY_MAIN_ALWAYS_ON_TOP, OVERLAY_KEY_MAIN_DISPLAY_STATE, OVERLAY_KEY_MAIN_GEOMETRY,
     OVERLAY_KEY_MAIN_ZOOM, OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE,
@@ -201,6 +203,19 @@ use project_path::{
     TerminalSnapshotGateWriteMode, FIELD_ARCHIVED, FIELD_ARCHIVED_REL, FIELD_MAIN_DISPLAY_STATE,
     FIELD_MAIN_GEOMETRY, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL,
     FIELD_PROJECT_PATH_REL, FIELD_TERMINAL_SNAPSHOTS_ENABLED,
+};
+use project_path::{
+    begin_project_paths_transaction_at_path, repair_fresh_project_paths_at_path,
+    ProjectPathsWriteTransaction,
+};
+#[cfg(test)]
+pub(crate) use project_path::{
+    decode_instance_relative, encode_instance_relative, resolve_registrations, CandidateResolver,
+    DirectoryIdentity, FsCandidateResolver, RawPair, RelDecodeError, RepairKind, SideOutcome,
+};
+pub(crate) use project_path::{
+    display_canonical, normalize_for_compare, IssueKind, ProjectPathPersistenceState,
+    ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
 #[cfg(test)]
 pub(crate) use project_path::{
