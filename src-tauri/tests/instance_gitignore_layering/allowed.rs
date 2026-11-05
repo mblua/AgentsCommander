@@ -516,16 +516,6 @@ pub(crate) const CONSTANT_HOME: &str = "src/config.rs";
 /// reads it.
 pub(crate) const GLOB_CHILD: &str = "*";
 
-/// Whether literal bodies survive `scrub`.
-///
-/// They must survive when the text is about to be read for `path = "..."`,
-/// and must not when it is about to be read for dependencies or for structure.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Literals {
-    Keep,
-    Drop,
-}
-
 /// Whether a module's submodules are read with it.
 ///
 /// `WithSubmodules` for the guarded module, so a reference cannot be parked in a

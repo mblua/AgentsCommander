@@ -34,6 +34,7 @@ dependencies = [
  "rfd 0.15.4",
  "rusqlite",
  "rust-embed",
+ "rust-source-scrub",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -5157,6 +5158,10 @@ dependencies = [
  "sha2",
  "walkdir",
 ]
+
+[[package]]
+name = "rust-source-scrub"
+version = "0.1.0"
 
 [[package]]
 name = "rustc-hash"

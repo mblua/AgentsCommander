@@ -5271,25 +5271,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/tests/instance_gitignore_layering/scan.rs::scrub",
-      "name": "scrub",
-      "anchor": "1869d863852b",
-      "sites": {
-        "linux": {
-          "lines": 126,
-          "production": false
-        },
-        "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
-          "lines": 126,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/tests/issue_1850_default_root/main.rs::issue_1850_admission_gate_table",
       "name": "issue_1850_admission_gate_table",
       "anchor": "29fdfb4e1f84",
@@ -5345,25 +5326,6 @@
         },
         "macos": {
           "lines": 113,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/project_settings_layering/source_text.rs::scrub",
-      "name": "scrub",
-      "anchor": "1869d863852b",
-      "sites": {
-        "linux": {
-          "lines": 126,
-          "production": false
-        },
-        "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
-          "lines": 126,
           "production": false
         }
       }
