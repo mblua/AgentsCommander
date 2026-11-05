@@ -53,7 +53,19 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     // 3. Release the old runtime slot while retaining its canonical manager row.
     // Dormant rows skip teardown and remain retryable until replacement success.
     let old_was_dormant = matches!(next.old_status, SessionStatus::Exited(_));
+    // #3532 P03: close the old observation before teardown (bounded, fail-soft).
+    let history = (!old_was_dormant && !next.is_root_agent)
+        .then(|| app.try_state::<crate::history_runtime::HistoryIngress>())
+        .flatten()
+        .map(|ingress| ingress.inner().clone());
+    let history_intent = uuid::Uuid::new_v4();
+    if let Some(history) = &history {
+        history.restart_boundary(uuid, history_intent).await;
+    }
     let teardown = teardown_old_for_restart(transaction, uuid, old_was_dormant).await;
+    if let (Some(history), Err(_)) = (&history, &teardown) {
+        history.restart_teardown_failed(uuid, history_intent);
+    }
     complete_restart_retirement(retirement, &teardown);
     let old_lost =
         accept_restart_teardown(transaction, teardown, uuid, next.old_selected, next.intent)

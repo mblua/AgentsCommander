@@ -8,7 +8,7 @@
 //! lock is held during history I/O, and no `AppHandle` reaches this module:
 //! `lib`/`setup` compose it and own the shutdown hook.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -43,6 +43,8 @@ pub(crate) const BUSY_MIN_SPAN: Duration = Duration::from_secs(1);
 pub(crate) const BUSY_MAX_CALLS: u32 = 10;
 /// Shutdown flush budget; whatever is left afterwards is dropped and logged.
 pub(crate) const SHUTDOWN_FLUSH: Duration = Duration::from_secs(2);
+/// Restart waits at most this long for its boundary; lifecycle then goes on.
+pub(crate) const RESTART_ACK: Duration = Duration::from_millis(250);
 
 fn now_utc_ms() -> i64 {
     SystemTime::now()
@@ -62,10 +64,46 @@ pub(crate) struct StampedSample {
     pub(crate) stamp: Stamp,
 }
 
+/// What restart reports about one old instance (#3532 P03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartPhase {
+    /// Teardown is about to start: close the old observation now.
+    Closing,
+    /// Teardown failed: the old instance may keep producing observations.
+    TeardownFailed,
+}
+
+/// One restart notice, stamped at ingress like a sample.
+#[derive(Debug)]
+pub(crate) struct RestartNotice {
+    session_id: Uuid,
+    intent_id: Uuid,
+    phase: RestartPhase,
+    stamp: Stamp,
+    ack: Option<oneshot::Sender<()>>,
+}
+
+/// One mailbox entry. Notices share the FIFO with samples, so everything
+/// admitted before a restart is processed before its boundary.
+#[derive(Debug)]
+pub(crate) enum IngressMessage {
+    Sample(StampedSample),
+    Restart(RestartNotice),
+}
+
+/// How a restart boundary request ended. Every outcome lets restart go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestartAck {
+    Acked,
+    Busy,
+    TimedOut,
+    Closed,
+}
+
 /// Nonblocking, fail-soft entry point used by the scraper's sample bridge.
 #[derive(Clone)]
 pub(crate) struct HistoryIngress {
-    sender: mpsc::Sender<StampedSample>,
+    sender: mpsc::Sender<IngressMessage>,
     sequence: Arc<AtomicU64>,
     dropped: Arc<AtomicU64>,
     /// Set when samples were lost; the actor turns it into gap boundaries.
@@ -86,11 +124,67 @@ impl HistoryIngress {
             stamp,
         };
         // A closed mailbox means the actor already stopped: the sample is moot.
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.sender.try_send(sample) {
+        let message = IngressMessage::Sample(sample);
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.sender.try_send(message) {
             let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             if !self.gap.swap(true, Ordering::Relaxed) {
                 log::warn!("[context-history] mailbox full; sample dropped (dropped={dropped})");
             }
+        }
+    }
+
+    /// Close the old instance's observation before restart teardown. The
+    /// record is a `lifecycle` boundary meaning "AC restart attempt", not a
+    /// confirmed provider restart. Waits at most [`RESTART_ACK`]; a full
+    /// mailbox, a closed actor or the timeout are logged and never fail the
+    /// restart. A dropped wait leaves no task behind.
+    pub(crate) async fn restart_boundary(&self, session_id: Uuid, intent_id: Uuid) -> RestartAck {
+        let (ack, wait) = oneshot::channel();
+        let notice = self.notice(session_id, intent_id, RestartPhase::Closing, Some(ack));
+        if let Err(error) = self.sender.try_send(IngressMessage::Restart(notice)) {
+            return Self::refused(&error);
+        }
+        match tokio::time::timeout(RESTART_ACK, wait).await {
+            Ok(Ok(())) => RestartAck::Acked,
+            Ok(Err(_)) => RestartAck::Closed,
+            Err(_) => {
+                log::warn!("[context-history] restart boundary not acknowledged in time");
+                RestartAck::TimedOut
+            }
+        }
+    }
+
+    /// Teardown of a closed instance failed. Its later observations, if any,
+    /// start a new segment of unknown start; they never join the replacement.
+    pub(crate) fn restart_teardown_failed(&self, session_id: Uuid, intent_id: Uuid) {
+        let notice = self.notice(session_id, intent_id, RestartPhase::TeardownFailed, None);
+        if let Err(error) = self.sender.try_send(IngressMessage::Restart(notice)) {
+            Self::refused(&error);
+        }
+    }
+
+    fn notice(
+        &self,
+        session_id: Uuid,
+        intent_id: Uuid,
+        phase: RestartPhase,
+        ack: Option<oneshot::Sender<()>>,
+    ) -> RestartNotice {
+        RestartNotice {
+            session_id,
+            intent_id,
+            phase,
+            stamp: self.next_stamp(),
+            ack,
+        }
+    }
+
+    fn refused(error: &mpsc::error::TrySendError<IngressMessage>) -> RestartAck {
+        if let mpsc::error::TrySendError::Full(_) = error {
+            log::warn!("[context-history] mailbox full; restart notice dropped");
+            RestartAck::Busy
+        } else {
+            RestartAck::Closed
         }
     }
 
@@ -512,6 +606,8 @@ impl HistoryRuntime {
             app_run_id: Uuid::new_v4(),
             projects: HashMap::new(),
             tracked: HashMap::new(),
+            restart_closed: HashSet::new(),
+            restart_intents: HashSet::new(),
             next_epoch: 1,
         };
         (ingress, actor.run(receiver, shutdown))
@@ -525,13 +621,17 @@ struct Actor {
     app_run_id: Uuid,
     projects: HashMap<String, Project>,
     tracked: HashMap<Uuid, Tracked>,
+    /// Old instances closed by a restart: their late samples write nothing.
+    restart_closed: HashSet<Uuid>,
+    /// Restart intents already closed; a retry of one is a no-op.
+    restart_intents: HashSet<Uuid>,
     next_epoch: u64,
 }
 
 impl Actor {
     async fn run(
         mut self,
-        mut receiver: mpsc::Receiver<StampedSample>,
+        mut receiver: mpsc::Receiver<IngressMessage>,
         shutdown: CancellationToken,
     ) {
         let mut poll = tokio::time::interval(CONFIG_POLL_INTERVAL);
@@ -539,8 +639,9 @@ impl Actor {
         loop {
             tokio::select! {
                 () = shutdown.cancelled() => break,
-                sample = receiver.recv() => match sample {
-                    Some(sample) => self.handle(sample).await,
+                message = receiver.recv() => match message {
+                    Some(IngressMessage::Sample(sample)) => self.handle(sample).await,
+                    Some(IngressMessage::Restart(notice)) => self.restart(notice),
                     None => break,
                 },
                 _ = poll.tick() => self.poll_configs().await,
@@ -550,11 +651,21 @@ impl Actor {
         self.flush().await;
     }
 
-    async fn handle(&mut self, sample: StampedSample) {
+    fn note_losses(&mut self) {
         if self.ingress.gap.swap(false, Ordering::Relaxed) {
             self.mark_gap(None);
         }
         self.mark_overflowed_projects();
+    }
+
+    async fn handle(&mut self, sample: StampedSample) {
+        self.note_losses();
+        if self.restart_closed.contains(&sample.session_id) {
+            if sample.value != ObservedValue::SessionOver {
+                return;
+            }
+            self.restart_closed.remove(&sample.session_id);
+        }
         if !self.tracked.contains_key(&sample.session_id) {
             if sample.value == ObservedValue::SessionOver {
                 return;
@@ -578,6 +689,71 @@ impl Actor {
         }
         if let Some((ac_root, epoch, record)) = produced {
             self.send(&ac_root, epoch, vec![record]);
+        }
+    }
+
+    /// Apply one restart notice, then acknowledge it. Never touches disk.
+    fn restart(&mut self, mut notice: RestartNotice) {
+        self.note_losses();
+        match notice.phase {
+            RestartPhase::Closing => {
+                if self.restart_intents.len() >= LIVE_STATE_CAPACITY {
+                    self.restart_intents.clear();
+                }
+                if self.restart_intents.insert(notice.intent_id) {
+                    self.close_for_restart(&notice);
+                }
+            }
+            RestartPhase::TeardownFailed => self.reopen_after_failed_teardown(&notice),
+        }
+        if let Some(ack) = notice.ack.take() {
+            let _ = ack.send(());
+        }
+    }
+
+    fn close_for_restart(&mut self, notice: &RestartNotice) {
+        if self.restart_closed.len() >= LIVE_STATE_CAPACITY {
+            log::warn!("[context-history] restart capacity reached; old instance not isolated");
+        } else {
+            self.restart_closed.insert(notice.session_id);
+        }
+        let produced = match self.tracked.get_mut(&notice.session_id) {
+            Some(Tracked::Scoped {
+                ac_root,
+                context,
+                state: Some(state),
+                epoch,
+            }) => state
+                .observe(
+                    context,
+                    ObservedValue::SessionOver,
+                    notice.stamp,
+                    &mut Uuid::new_v4,
+                )
+                .map(|record| (ac_root.clone(), *epoch, record)),
+            _ => None,
+        };
+        if let Some((ac_root, epoch, record)) = produced {
+            self.send(&ac_root, epoch, vec![record]);
+        }
+    }
+
+    /// The old instance survived: let it observe again as a new segment whose
+    /// start is unknown, keeping its own runtime identity.
+    fn reopen_after_failed_teardown(&mut self, notice: &RestartNotice) {
+        if !self.restart_closed.remove(&notice.session_id) {
+            return;
+        }
+        if let Some(Tracked::Scoped {
+            context,
+            state: Some(state),
+            ..
+        }) = self.tracked.get_mut(&notice.session_id)
+        {
+            let mut reopened = InstanceState::default();
+            // No session is open, so this only marks the next start as lost.
+            let _ = reopened.observe_gap(context, notice.stamp, &mut Uuid::new_v4);
+            *state = reopened;
         }
     }
 
@@ -775,6 +951,38 @@ impl Actor {
                 log::warn!("[context-history] shutdown flush timed out; pending records lost");
                 return;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+impl HistoryIngress {
+    /// An ingress whose mailbox the test drains itself.
+    pub(crate) fn for_test(capacity: usize) -> (Self, mpsc::Receiver<IngressMessage>) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        let ingress = Self {
+            sender,
+            sequence: Arc::new(AtomicU64::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            gap: Arc::new(AtomicBool::new(false)),
+        };
+        (ingress, receiver)
+    }
+}
+
+#[cfg(test)]
+impl RestartNotice {
+    pub(crate) fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+
+    pub(crate) fn closes(&self) -> bool {
+        self.phase == RestartPhase::Closing
+    }
+
+    pub(crate) fn acknowledge(mut self) {
+        if let Some(ack) = self.ack.take() {
+            let _ = ack.send(());
         }
     }
 }
