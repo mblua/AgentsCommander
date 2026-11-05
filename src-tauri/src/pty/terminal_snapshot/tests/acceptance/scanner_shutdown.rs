@@ -350,59 +350,69 @@ async fn seal_and_assert_first_scanner_drain(
         assert_eq!(owner.task_count(), 0);
         assert_api_lifecycle_idle(&fixture.snapshot_state);
     } else {
-        assert!(!first.terminal, "started scanner owner must be retained");
-        assert_eq!(first.aborted, 0);
-        assert_eq!(first.joined, 0);
-        assert_eq!(first.retained.len(), 1);
-        assert_eq!(owner.task_count(), 1);
-        // A retained scanner is still reported in the shutdown diagnostics
-        // below, but it must not suppress session persistence: its only
-        // SessionManager access is a read-lock clone, so it cannot leave session
-        // state inconsistent.
-        assert!(
-            crate::shutdown_persistence_allowed(true, true),
-            "a retained snapshot scanner must not suppress session persistence"
-        );
-        let diagnostics = crate::combined_shutdown_retained_diagnostics_with_scanner(
-            first.retained.clone(),
-            Vec::new(),
-            Vec::new(),
-        );
-        assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].contains("owner=terminalSnapshotScanner"));
-        assert!(!diagnostics[0].contains(&request.request_id));
-        assert!(!diagnostics[0].contains(SCREEN_SENTINEL));
-        assert!(!diagnostics[0].contains('/'));
-        assert!(!diagnostics[0].contains('\\'));
-        if phase == ScannerShutdownPhase::FinalizerOwned {
-            assert!(first.retained[0].contains("terminal-snapshot-finalizer"));
-        } else {
-            assert!(first.retained[0].contains("terminal-snapshot-service"));
-        }
-        assert!(fixture
-            .app
-            .as_ref()
-            .expect("fixture app is alive")
-            .try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .is_some());
-        assert!(fixture
-            .app
-            .as_ref()
-            .expect("fixture app is alive")
-            .try_state::<Arc<std::sync::Mutex<PtyManager>>>()
-            .is_some());
-        match phase {
-            ScannerShutdownPhase::CancellationRace => assert_eq!(
-                api_lifecycle_counts(&fixture.snapshot_state),
-                ApiLifecycleCounts {
-                    ingress_available: SNAPSHOT_INGRESS_LIMIT - 1,
-                    requester_in_flight: 0,
-                    target_in_flight: 0,
-                    global_in_flight: 0,
-                }
-            ),
-            _ => assert_api_lifecycle_active(api_lifecycle_counts(&fixture.snapshot_state), true),
-        }
+        assert_retained_first_drain(phase, fixture, owner, request, &first);
+    }
+}
+
+fn assert_retained_first_drain(
+    phase: ScannerShutdownPhase,
+    fixture: &AcceptanceFixture,
+    owner: &crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner,
+    request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    first: &crate::phone::terminal_snapshot::SnapshotScannerDrainResult,
+) {
+    assert!(!first.terminal, "started scanner owner must be retained");
+    assert_eq!(first.aborted, 0);
+    assert_eq!(first.joined, 0);
+    assert_eq!(first.retained.len(), 1);
+    assert_eq!(owner.task_count(), 1);
+    // A retained scanner is still reported in the shutdown diagnostics
+    // below, but it must not suppress session persistence: its only
+    // SessionManager access is a read-lock clone, so it cannot leave session
+    // state inconsistent.
+    assert!(
+        crate::shutdown_persistence_allowed(true, true),
+        "a retained snapshot scanner must not suppress session persistence"
+    );
+    let diagnostics = crate::combined_shutdown_retained_diagnostics_with_scanner(
+        first.retained.clone(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("owner=terminalSnapshotScanner"));
+    assert!(!diagnostics[0].contains(&request.request_id));
+    assert!(!diagnostics[0].contains(SCREEN_SENTINEL));
+    assert!(!diagnostics[0].contains('/'));
+    assert!(!diagnostics[0].contains('\\'));
+    if phase == ScannerShutdownPhase::FinalizerOwned {
+        assert!(first.retained[0].contains("terminal-snapshot-finalizer"));
+    } else {
+        assert!(first.retained[0].contains("terminal-snapshot-service"));
+    }
+    assert!(fixture
+        .app
+        .as_ref()
+        .expect("fixture app is alive")
+        .try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .is_some());
+    assert!(fixture
+        .app
+        .as_ref()
+        .expect("fixture app is alive")
+        .try_state::<Arc<std::sync::Mutex<PtyManager>>>()
+        .is_some());
+    match phase {
+        ScannerShutdownPhase::CancellationRace => assert_eq!(
+            api_lifecycle_counts(&fixture.snapshot_state),
+            ApiLifecycleCounts {
+                ingress_available: SNAPSHOT_INGRESS_LIMIT - 1,
+                requester_in_flight: 0,
+                target_in_flight: 0,
+                global_in_flight: 0,
+            }
+        ),
+        _ => assert_api_lifecycle_active(api_lifecycle_counts(&fixture.snapshot_state), true),
     }
 }
 
