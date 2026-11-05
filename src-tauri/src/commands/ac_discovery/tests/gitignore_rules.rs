@@ -489,18 +489,7 @@ fn assert_later_user_negation_reincludes_manifest() {
 }
 
 fn assert_repository_exclude_hides_manifest() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let project = tmp.path().join("project");
-    let ac_root = project.join(".ac");
-    std::fs::create_dir_all(&ac_root).expect("create .ac");
-    ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
-    std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
-    let init = std::process::Command::new("git")
-        .args(["init", "--quiet"])
-        .current_dir(&project)
-        .status()
-        .expect("git init");
-    assert!(init.success());
+    let (_tmp, project) = repository_with_managed_manifest();
     std::fs::write(
         project.join(".git").join("info").join("exclude"),
         b"/.ac/\n",
@@ -529,18 +518,7 @@ fn assert_repository_exclude_hides_manifest() {
 }
 
 fn assert_global_exclude_hides_manifest() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let project = tmp.path().join("project");
-    let ac_root = project.join(".ac");
-    std::fs::create_dir_all(&ac_root).expect("create .ac");
-    ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
-    std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
-    let init = std::process::Command::new("git")
-        .args(["init", "--quiet"])
-        .current_dir(&project)
-        .status()
-        .expect("git init");
-    assert!(init.success());
+    let (_tmp, project) = repository_with_managed_manifest();
     let global = project.join("global-excludes");
     std::fs::write(&global, b"/.ac/\n").expect("write global excludes");
     let override_arg = format!(
@@ -569,4 +547,20 @@ fn assert_global_exclude_hides_manifest() {
         line.contains("global-excludes"),
         "check-ignore -v must name the global excludes file, got {line:?}"
     );
+}
+
+fn repository_with_managed_manifest() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("project");
+    let ac_root = project.join(".ac");
+    std::fs::create_dir_all(&ac_root).expect("create .ac");
+    ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
+    std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init");
+    assert!(init.success());
+    (tmp, project)
 }
