@@ -196,11 +196,14 @@ fn check_teams(attribution: TeamAttribution, team_ids: &[String]) -> Result<(), 
 }
 
 fn check_value(record: &HistoryRecord) -> Result<(), String> {
-    let valid = match (record.kind, record.boundary_reason, record.percent) {
-        (RecordKind::Change, None, Some(percent)) => (1..=100).contains(&percent),
-        (RecordKind::Boundary, Some(BoundaryReason::ObservedZero), Some(0)) => true,
-        (RecordKind::Boundary, Some(BoundaryReason::Lifecycle), None) => true,
-        (RecordKind::Boundary, Some(BoundaryReason::ObservationGap), None) => true,
+    let percent = record.percent;
+    let valid = match (record.kind, record.boundary_reason) {
+        (RecordKind::Change, None) => percent.is_some_and(|value| (1..=100).contains(&value)),
+        (RecordKind::Boundary, Some(BoundaryReason::ObservedZero)) => percent == Some(0),
+        (
+            RecordKind::Boundary,
+            Some(BoundaryReason::Lifecycle | BoundaryReason::ObservationGap),
+        ) => percent.is_none(),
         _ => false,
     };
     if !valid {
