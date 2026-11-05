@@ -113,6 +113,40 @@ fn binary_handler_before_move() -> bool {
     before_move
 }
 
+fn scan_writer_sets() -> [Vec<String>; 4] {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut permit_paths = Vec::new();
+    let mut raw_backend_paths = Vec::new();
+    let mut route_guard_write_paths = Vec::new();
+    let mut route_guard_capability_paths = Vec::new();
+    for path in rust_sources(&source_root) {
+        let relative = relative_of(&path);
+        let body = normalized(&source(&relative));
+        if body.contains("write_with_permit(") {
+            permit_paths.push(relative.clone());
+        }
+        if body.contains("backend.write(") {
+            raw_backend_paths.push(relative.clone());
+        }
+        if body.contains("route_guard.write(") {
+            route_guard_write_paths.push(relative.clone());
+        }
+        if body.contains("for_route_guard") {
+            route_guard_capability_paths.push(relative);
+        }
+    }
+    permit_paths.sort();
+    raw_backend_paths.sort();
+    route_guard_write_paths.sort();
+    route_guard_capability_paths.sort();
+    [
+        permit_paths,
+        raw_backend_paths,
+        route_guard_write_paths,
+        route_guard_capability_paths,
+    ]
+}
+
 /// A test-owned, whitespace-normalized inventory proving that every production
 /// PTY writer reaches the single permit-guarded chokepoint and that no code
 /// outside `pty::manager` can issue a raw `PtyBackend::write`.
@@ -148,31 +182,8 @@ fn every_production_pty_writer_is_in_the_explicit_permit_inventory() {
     }
 
     // 2. Whole-tree scan (whitespace-normalized) of the writer/capability sets.
-    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut permit_paths = Vec::new();
-    let mut raw_backend_paths = Vec::new();
-    let mut route_guard_write_paths = Vec::new();
-    let mut route_guard_capability_paths = Vec::new();
-    for path in rust_sources(&source_root) {
-        let relative = relative_of(&path);
-        let body = normalized(&source(&relative));
-        if body.contains("write_with_permit(") {
-            permit_paths.push(relative.clone());
-        }
-        if body.contains("backend.write(") {
-            raw_backend_paths.push(relative.clone());
-        }
-        if body.contains("route_guard.write(") {
-            route_guard_write_paths.push(relative.clone());
-        }
-        if body.contains("for_route_guard") {
-            route_guard_capability_paths.push(relative);
-        }
-    }
-    permit_paths.sort();
-    raw_backend_paths.sort();
-    route_guard_write_paths.sort();
-    route_guard_capability_paths.sort();
+    let [permit_paths, raw_backend_paths, route_guard_write_paths, route_guard_capability_paths] =
+        scan_writer_sets();
 
     let mut expected_permit_paths = vec![
         "src/commands/pty.rs",
@@ -752,11 +763,8 @@ fn capability_construction_and_privacy_inventory() {
     assert_eq!(total, expected);
 }
 
-#[test]
-fn inventory_rejects_each_visibility_and_construction_mutation() {
-    let valid = source(DOMAIN);
-    assert!(inspect(DOMAIN, &valid).errors.is_empty());
-    let parsed = syn::parse_file(&valid).unwrap();
+fn field_visibility_mutations(valid: &str) -> usize {
+    let parsed = syn::parse_file(valid).unwrap();
     let mut mutations = 0;
     for item in parsed.items {
         let syn::Item::Struct(item) = item else {
@@ -772,7 +780,7 @@ fn inventory_rejects_each_visibility_and_construction_mutation() {
             let field = field.ident.unwrap().to_string();
             let offset = start + body.find(&format!("    {field}:")).unwrap() + 4;
             for visibility in ["pub(crate) ", "pub(in crate::pty) "] {
-                let mut mutated = valid.clone();
+                let mut mutated = valid.to_owned();
                 mutated.insert_str(offset, visibility);
                 assert!(
                     inspect(DOMAIN, &mutated)
@@ -785,25 +793,10 @@ fn inventory_rejects_each_visibility_and_construction_mutation() {
             }
         }
     }
-    for visibility in ["pub(crate) ", "pub(in crate::pty) "] {
-        let mutated = valid.replace(
-            "    fn for_route_guard",
-            &format!("    {visibility}fn for_route_guard"),
-        );
-        assert!(inspect(DOMAIN, &mutated)
-            .errors
-            .iter()
-            .any(|e| e.contains("issuer must")));
-        mutations += 1;
-    }
-    let ungated = valid.replace(
-        "#[cfg(test)]\n    pub(crate) fn for_backend_test",
-        "pub(crate) fn for_backend_test",
-    );
-    assert!(inspect(DOMAIN, &ungated)
-        .errors
-        .iter()
-        .any(|e| e.contains("ungated")));
+    mutations
+}
+
+fn assert_entry_and_derive_mutations(valid: &str) {
     for name in [
         "prepare",
         "publish",
@@ -862,6 +855,33 @@ fn inventory_rejects_each_visibility_and_construction_mutation() {
             .iter()
             .any(|e| e.contains("unlisted construction")));
     }
+}
+
+#[test]
+fn inventory_rejects_each_visibility_and_construction_mutation() {
+    let valid = source(DOMAIN);
+    assert!(inspect(DOMAIN, &valid).errors.is_empty());
+    let mut mutations = field_visibility_mutations(&valid);
+    for visibility in ["pub(crate) ", "pub(in crate::pty) "] {
+        let mutated = valid.replace(
+            "    fn for_route_guard",
+            &format!("    {visibility}fn for_route_guard"),
+        );
+        assert!(inspect(DOMAIN, &mutated)
+            .errors
+            .iter()
+            .any(|e| e.contains("issuer must")));
+        mutations += 1;
+    }
+    let ungated = valid.replace(
+        "#[cfg(test)]\n    pub(crate) fn for_backend_test",
+        "pub(crate) fn for_backend_test",
+    );
+    assert!(inspect(DOMAIN, &ungated)
+        .errors
+        .iter()
+        .any(|e| e.contains("ungated")));
+    assert_entry_and_derive_mutations(&valid);
     let extra_issuer = format!(
         "{valid}\nfn illegal() {{\n\
         BackendWriteAuthority::\n for_route_guard(); }}"
