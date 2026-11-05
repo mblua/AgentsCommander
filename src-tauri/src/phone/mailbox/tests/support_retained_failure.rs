@@ -8,64 +8,16 @@ pub(super) async fn assert_retained_pty_preboundary_rejections(
     previous: Uuid,
 ) {
     use crate::phone::types::{PtyInputReasonCode as C, PtyInputSourcePlane as Plane};
-    use crate::session::selection::{
-        OwnedReplacementWork, ResolvedReplacement, SourceExecutorGuard,
-    };
+    use crate::session::selection::SourceExecutorGuard;
     let app = fixture.app.handle();
-    let manager = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
-    let state = app.state::<crate::api::message_store::MessageStoreState>();
-    let store = state.store.as_ref().unwrap().clone();
-    let gate = state.target_gate.as_ref().unwrap().clone();
-    let original_settings = app.state::<SettingsState>().read().await.clone();
-    let original_name = manager.get_session(previous).await.unwrap().name;
-    let directory = crate::config::config_dir().unwrap();
-    let publication = std::fs::read(directory.join("sessions.json")).unwrap();
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let backend = pty
-        .lock()
-        .unwrap()
-        .backend_for_kind(SessionBackendKind::LocalProcess);
-    let backend = backend
-        .as_any()
-        .downcast_ref::<MailboxMockPtyBackend>()
-        .unwrap();
-    let kills = backend.kill_attempts.load(Ordering::SeqCst);
-    let hooks = MailboxTestHooks::default();
-    let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+    let env = RetainedEnv::new(fixture, coordinator, route, previous).await;
+    let (store, gate, poller) = (&env.store, &env.gate, &env.poller);
     // These are primitive checks in the existing positive PTY cell. Every
     // input has a genuine store claim and the SAME truly retired A.
     for case in ["backend", "absent", "temporary", "different", "prepared"] {
         tokio::time::timeout(Duration::from_secs(20), async {
-            let injection = enqueue_shared_pty_engine_operation(
-                &store,
-                route,
-                sender,
-                b"preboundary-rejection",
-            );
-            let initial = store
-                .query_pty_input_by_injection(&injection)
-                .unwrap()
-                .unwrap();
-            assert!(!initial.terminal);
-            let claimed = store
-                .claim_pty_input(
-                    Plane::HostCli,
-                    Some(&injection),
-                    &Uuid::new_v4().to_string(),
-                    chrono::Utc::now(),
-                )
-                .unwrap()
-                .unwrap();
-            let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
-                store.clone(),
-                injection.clone(),
-                claimed.lease_owner.clone(),
-                crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap(),
-            );
+            let (injection, initial, claimed, mut heartbeat) =
+                claim_retained_preboundary_input(store, route, sender);
             let stripe = gate
                 .try_target_lock(&route.target.canonical_fqn)
                 .unwrap()
@@ -76,198 +28,10 @@ pub(super) async fn assert_retained_pty_preboundary_rejections(
                 .unwrap();
             let mut prepared = None;
             if case == "prepared" {
-                let cwd = crate::path_utils::normalize_windows_verbatim_path(
-                    &route.target.replica_root.to_string_lossy(),
-                );
-                let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
-                    &original_settings,
-                    "codex",
-                    &cwd,
-                    None,
-                )
-                .unwrap()
-                .unwrap();
-                let request = crate::commands::session::OwnedReplacementCreateRequest {
-                    shell: spawn.shell.clone(),
-                    shell_args: spawn.shell_args.clone(),
-                    cwd: cwd.clone(),
-                    name: Some(
-                        crate::config::teams::split_project_prefix(&claimed.target_fqn)
-                            .1
-                            .to_string(),
-                    ),
-                    agent_id: Some("codex".into()),
-                    agent_label: Some(spawn.trusted_agent_label.clone()),
-                    skip_tooling_save: false,
-                    git_repos: Vec::new(),
-                    resolved_spawn: Some(spawn),
-                    host_shell: Some(crate::pty::backend::ResolvedAgentHostShell {
-                        program: original_settings.default_shell.clone(),
-                        args: original_settings.default_shell_args.clone(),
-                    }),
-                };
-                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-                let (carrier, row) = manager
-                    .with_current_carrier_snapshot(&permit, |current| {
-                        (
-                            crate::config::sessions_persistence::retained_carrier_for_replacement(
-                                &permit,
-                                &directory,
-                                &route.target.canonical_fqn,
-                                previous,
-                                current,
-                            )
-                            .unwrap(),
-                            current
-                                .rows
-                                .iter()
-                                .find(|row| row.id == previous)
-                                .unwrap()
-                                .clone(),
-                        )
-                    })
-                    .await;
-                drop(permit);
-                prepared = Some(
-                    coordinator.prepare_owned_replacement(
-                        ResolvedReplacement {
-                            target: route.target.canonical_fqn.clone(),
-                            directory: directory.clone(),
-                            previous: row,
-                            carrier,
-                            requested_agent_id: request.agent_id.clone(),
-                            requested_profile: None,
-                            shell: request.shell.clone(),
-                            shell_args: request.shell_args.clone(),
-                            launch_recipe: owned_replacement_launch_recipe(&request),
-                            cwd: cwd.clone(),
-                            backend: SessionBackendKind::LocalProcess,
-                            work: OwnedReplacementWork::PtyDurableReference {
-                                version: initial.version,
-                                injection_id: claimed.injection_id.clone(),
-                                op_id: claimed.op_id.clone(),
-                                sender: claimed.sender_fqn.clone(),
-                                target: claimed.target_fqn.clone(),
-                                source_plane: "host_cli".into(),
-                                payload_sha256: initial.payload_sha256.clone().unwrap(),
-                                payload_bytes: initial.payload_bytes.unwrap(),
-                                issued_at: initial.issued_at.clone().unwrap(),
-                                expires_at: claimed.expires_at.clone(),
-                                queued_at: initial.queued_at.clone().unwrap(),
-                                lease_owner: claimed.lease_owner.clone(),
-                                attempt: claimed.attempt,
-                                authority_session_id: claimed.authority_session_id.clone(),
-                                authority_client_id: claimed.authority_client_id.clone(),
-                                authority_client_generation: claimed
-                                    .authority_client_generation
-                                    .clone(),
-                                sender_identity_fingerprint: claimed
-                                    .sender_identity_fingerprint
-                                    .clone(),
-                                target_identity_fingerprint: claimed
-                                    .target_identity_fingerprint
-                                    .clone(),
-                                requested_agent_id: claimed.requested_agent_id.clone(),
-                            },
-                            cwd_identity: crate::path_identity::verify_directory(Path::new(&cwd))
-                                .unwrap()
-                                .into(),
-                            replica_identity: Some(route.target.replica_identity.clone().into()),
-                        },
-                        manager.reserve_carrier_create_binding(),
-                    ),
-                );
-                assert!(
-                    prepared.as_ref().unwrap().matches_launch(
-                        &request.shell,
-                        &request.shell_args,
-                        &request.cwd,
-                        &request.agent_id,
-                        &owned_replacement_launch_recipe(&request)
-                    ),
-                    "original actual prepared recipe matches"
-                );
-                app.state::<SettingsState>()
-                    .write()
-                    .await
-                    .agents
-                    .iter_mut()
-                    .find(|agent| agent.id == "codex")
-                    .unwrap()
-                    .command
-                    .push_str(" --changed-before-admission");
+                prepared = prepare_retained_replacement(&env, &initial, &claimed).await;
             }
-            if case == "backend" {
-                let settings_state = app.state::<SettingsState>();
-                let mut settings = settings_state.write().await;
-                let agent = settings
-                    .agents
-                    .iter_mut()
-                    .find(|agent| agent.id == "codex")
-                    .unwrap();
-                agent.backend.kind = SessionBackendKind::ContainerTransport;
-                agent.backend.image = Some("agentscommander/ac-codex:latest".into());
-            }
-            if case == "temporary" {
-                manager
-                    .rename_session(
-                        previous,
-                        format!(
-                            "{}preboundary",
-                            crate::session::session::TEMP_SESSION_PREFIX
-                        ),
-                    )
-                    .await
-                    .unwrap();
-            }
-            let other = if case == "different" {
-                Some(
-                    add_mailbox_session(
-                        app,
-                        &fixture.target_cwd,
-                        "other real exited row",
-                        SessionStatus::Exited(0),
-                        None,
-                    )
-                    .await,
-                )
-            } else {
-                None
-            };
-            let before = serde_json::to_value(SessionInfo::from(
-                &manager.get_session(previous).await.unwrap(),
-            ))
-            .unwrap();
-            let mut before_ids: Vec<_> = manager
-                .list_sessions()
-                .await
-                .into_iter()
-                .map(|row| row.id)
-                .collect();
-            before_ids.sort();
-            let before_live = backend.live.lock().unwrap().clone();
-            let mut matching: Vec<_> = manager
-                .list_sessions()
-                .await
-                .into_iter()
-                .filter(|row| {
-                    crate::config::teams::agent_fqn_from_path(&row.working_directory)
-                        == route.target.canonical_fqn
-                })
-                .collect();
-            if case == "absent" || case == "backend" {
-                matching.clear();
-            }
-            if let Some(other) = other {
-                matching.retain(|row| row.id == other.to_string());
-            }
-            let (_, ready_a) = observe_pty_spawn_scope(app, &route.target).await;
-            assert_eq!(
-                ready_a,
-                Some(previous),
-                "test needs actual strict retained A: {case}"
-            );
-            assert!(pty_spawn_scope_may_resume(app, &route.target).await);
+            let (other, snapshot) = apply_retained_case_mutation(&env, case).await;
+            let matching = retained_matching_rows(&env, case, other).await;
             let mut source = SourceExecutorGuard::unbound();
             let actual = poller
                 .spawn_pty_input_target(
@@ -297,7 +61,7 @@ pub(super) async fn assert_retained_pty_preboundary_rejections(
             source.returned(false);
             assert!(
                 finish_pty_input_before_boundary(
-                    &store,
+                    store,
                     &mut heartbeat,
                     &injection,
                     &claimed.lease_owner,
@@ -307,66 +71,12 @@ pub(super) async fn assert_retained_pty_preboundary_rejections(
             );
             drop(exact);
             drop(stripe);
-            let result = store
-                .query_pty_input_by_injection(&injection)
-                .unwrap()
-                .unwrap();
-            assert!(result.terminal);
-            assert_eq!(
-                result.status,
-                crate::phone::types::PtyInputPublicStatus::Rejected
-            );
-            assert_eq!(result.reason.map(|reason| reason.code), Some(expected));
-            let connection =
-                rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
-                    .unwrap();
-            let counts: (i64, i64, i64) = connection.query_row(
-                "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
-                status='retry'),(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
-                status='rejected') FROM pty_input_operations WHERE injection_id=?1",
-                [&injection], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
-            assert_eq!(counts, (claimed.attempt, 0, 1));
-            assert_eq!(coordinator.fixture_root_count(), Some(0));
-            let mut after_ids: Vec<_> = manager
-                .list_sessions()
-                .await
-                .into_iter()
-                .map(|row| row.id)
-                .collect();
-            after_ids.sort();
-            assert_eq!(after_ids, before_ids, "no B inserted or A removed: {case}");
-            assert_eq!(
-                *backend.live.lock().unwrap(),
-                before_live,
-                "no native runtime created: {case}"
-            );
-            assert_eq!(
-                serde_json::to_value(SessionInfo::from(
-                    &manager.get_session(previous).await.unwrap()
-                ))
-                .unwrap(),
-                before
-            );
-            assert_eq!(
-                std::fs::read(directory.join("sessions.json")).unwrap(),
-                publication
-            );
-            assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
-            assert!(backend.writes.lock().unwrap().is_empty());
-            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
-            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
-            assert!(gate
-                .try_target_lock(&route.target.canonical_fqn)
-                .unwrap()
-                .is_some());
-            if let Some(other) = other {
-                assert_eq!(manager.remove_exited_sessions(&[other]).await, 1);
-            }
-            manager
-                .rename_session(previous, original_name.clone())
-                .await
-                .unwrap();
-            *app.state::<SettingsState>().write().await = original_settings.clone();
+            let outcome = RetainedOutcome {
+                case,
+                injection: &injection,
+                claimed: &claimed,
+            };
+            assert_retained_preboundary_outcome(&env, &outcome, expected, snapshot, other).await;
         })
         .await
         .expect("entire preboundary operation must finish before its 20s deadline");
@@ -375,6 +85,473 @@ pub(super) async fn assert_retained_pty_preboundary_rejections(
         observe_pty_spawn_scope(app, &route.target).await.1,
         Some(previous)
     );
+}
+
+/// Owned shared state of `assert_retained_pty_preboundary_rejections`. Fields
+/// are declared in reverse creation order so they drop like the former locals.
+struct RetainedEnv<'a> {
+    poller: MailboxPoller,
+    hooks: MailboxTestHooks,
+    kills: usize,
+    backend: Arc<dyn PtyBackend>,
+    _pty: Arc<Mutex<PtyManager>>,
+    publication: Vec<u8>,
+    directory: PathBuf,
+    original_name: String,
+    original_settings: AppSettings,
+    gate: Arc<crate::api::message_store::PtyInputTargetGate>,
+    store: Arc<crate::api::message_store::MessageStore>,
+    manager: SessionManager,
+    fixture: &'a MailboxFixture,
+    coordinator: &'a crate::session::selection::SelectionCoordinator,
+    route: &'a crate::config::teams::VerifiedPtyInputRoute,
+    previous: Uuid,
+}
+
+impl<'a> RetainedEnv<'a> {
+    async fn new(
+        fixture: &'a MailboxFixture,
+        coordinator: &'a crate::session::selection::SelectionCoordinator,
+        route: &'a crate::config::teams::VerifiedPtyInputRoute,
+        previous: Uuid,
+    ) -> Self {
+        let app = fixture.app.handle();
+        let manager = app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .read()
+            .await
+            .clone();
+        let state = app.state::<crate::api::message_store::MessageStoreState>();
+        let store = state.store.as_ref().unwrap().clone();
+        let gate = state.target_gate.as_ref().unwrap().clone();
+        let original_settings = app.state::<SettingsState>().read().await.clone();
+        let original_name = manager.get_session(previous).await.unwrap().name;
+        let directory = crate::config::config_dir().unwrap();
+        let publication = std::fs::read(directory.join("sessions.json")).unwrap();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let backend = pty
+            .lock()
+            .unwrap()
+            .backend_for_kind(SessionBackendKind::LocalProcess);
+        let kills = Self::mock_of(&backend).kill_attempts.load(Ordering::SeqCst);
+        let hooks = MailboxTestHooks::default();
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        Self {
+            poller,
+            hooks,
+            kills,
+            backend,
+            _pty: pty,
+            publication,
+            directory,
+            original_name,
+            original_settings,
+            gate,
+            store,
+            manager,
+            fixture,
+            coordinator,
+            route,
+            previous,
+        }
+    }
+
+    fn mock_of(backend: &Arc<dyn PtyBackend>) -> &MailboxMockPtyBackend {
+        backend
+            .as_any()
+            .downcast_ref::<MailboxMockPtyBackend>()
+            .unwrap()
+    }
+
+    fn mock(&self) -> &MailboxMockPtyBackend {
+        Self::mock_of(&self.backend)
+    }
+}
+
+fn claim_retained_preboundary_input(
+    store: &Arc<crate::api::message_store::MessageStore>,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender: Uuid,
+) -> (
+    String,
+    crate::phone::types::PtyInputResult,
+    crate::api::message_store::ClaimedPtyInputOperation,
+    crate::api::message_store::PreparationHeartbeatGuard,
+) {
+    use crate::phone::types::PtyInputSourcePlane as Plane;
+    let injection =
+        enqueue_shared_pty_engine_operation(store, route, sender, b"preboundary-rejection");
+    let initial = store
+        .query_pty_input_by_injection(&injection)
+        .unwrap()
+        .unwrap();
+    assert!(!initial.terminal);
+    let claimed = store
+        .claim_pty_input(
+            Plane::HostCli,
+            Some(&injection),
+            &Uuid::new_v4().to_string(),
+            chrono::Utc::now(),
+        )
+        .unwrap()
+        .unwrap();
+    let heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
+        store.clone(),
+        injection.clone(),
+        claimed.lease_owner.clone(),
+        crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap(),
+    );
+    (injection, initial, claimed, heartbeat)
+}
+
+fn retained_replacement_request(
+    original_settings: &AppSettings,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+) -> (
+    String,
+    crate::commands::session::OwnedReplacementCreateRequest,
+) {
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(
+        &route.target.replica_root.to_string_lossy(),
+    );
+    let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+        original_settings,
+        "codex",
+        &cwd,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let request = crate::commands::session::OwnedReplacementCreateRequest {
+        shell: spawn.shell.clone(),
+        shell_args: spawn.shell_args.clone(),
+        cwd: cwd.clone(),
+        name: Some(
+            crate::config::teams::split_project_prefix(&claimed.target_fqn)
+                .1
+                .to_string(),
+        ),
+        agent_id: Some("codex".into()),
+        agent_label: Some(spawn.trusted_agent_label.clone()),
+        skip_tooling_save: false,
+        git_repos: Vec::new(),
+        resolved_spawn: Some(spawn),
+        host_shell: Some(crate::pty::backend::ResolvedAgentHostShell {
+            program: original_settings.default_shell.clone(),
+            args: original_settings.default_shell_args.clone(),
+        }),
+    };
+    (cwd, request)
+}
+
+fn retained_pty_work(
+    initial: &crate::phone::types::PtyInputResult,
+    claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+) -> crate::session::selection::OwnedReplacementWork {
+    use crate::session::selection::OwnedReplacementWork;
+    OwnedReplacementWork::PtyDurableReference {
+        version: initial.version,
+        injection_id: claimed.injection_id.clone(),
+        op_id: claimed.op_id.clone(),
+        sender: claimed.sender_fqn.clone(),
+        target: claimed.target_fqn.clone(),
+        source_plane: "host_cli".into(),
+        payload_sha256: initial.payload_sha256.clone().unwrap(),
+        payload_bytes: initial.payload_bytes.unwrap(),
+        issued_at: initial.issued_at.clone().unwrap(),
+        expires_at: claimed.expires_at.clone(),
+        queued_at: initial.queued_at.clone().unwrap(),
+        lease_owner: claimed.lease_owner.clone(),
+        attempt: claimed.attempt,
+        authority_session_id: claimed.authority_session_id.clone(),
+        authority_client_id: claimed.authority_client_id.clone(),
+        authority_client_generation: claimed.authority_client_generation.clone(),
+        sender_identity_fingerprint: claimed.sender_identity_fingerprint.clone(),
+        target_identity_fingerprint: claimed.target_identity_fingerprint.clone(),
+        requested_agent_id: claimed.requested_agent_id.clone(),
+    }
+}
+
+async fn prepare_retained_replacement(
+    env: &RetainedEnv<'_>,
+    initial: &crate::phone::types::PtyInputResult,
+    claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+) -> Option<crate::session::selection::PreparedOwnedReplacement> {
+    use crate::session::selection::ResolvedReplacement;
+    let (app, manager, route) = (env.fixture.app.handle(), &env.manager, env.route);
+    let (directory, previous) = (&env.directory, env.previous);
+    let (cwd, request) = retained_replacement_request(&env.original_settings, route, claimed);
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let (carrier, row) = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            (
+                crate::config::sessions_persistence::retained_carrier_for_replacement(
+                    &permit,
+                    directory,
+                    &route.target.canonical_fqn,
+                    previous,
+                    current,
+                )
+                .unwrap(),
+                current
+                    .rows
+                    .iter()
+                    .find(|row| row.id == previous)
+                    .unwrap()
+                    .clone(),
+            )
+        })
+        .await;
+    drop(permit);
+    let prepared = Some(
+        env.coordinator.prepare_owned_replacement(
+            ResolvedReplacement {
+                target: route.target.canonical_fqn.clone(),
+                directory: directory.clone(),
+                previous: row,
+                carrier,
+                requested_agent_id: request.agent_id.clone(),
+                requested_profile: None,
+                shell: request.shell.clone(),
+                shell_args: request.shell_args.clone(),
+                launch_recipe: owned_replacement_launch_recipe(&request),
+                cwd: cwd.clone(),
+                backend: SessionBackendKind::LocalProcess,
+                work: retained_pty_work(initial, claimed),
+                cwd_identity: crate::path_identity::verify_directory(Path::new(&cwd))
+                    .unwrap()
+                    .into(),
+                replica_identity: Some(route.target.replica_identity.clone().into()),
+            },
+            manager.reserve_carrier_create_binding(),
+        ),
+    );
+    assert!(
+        prepared.as_ref().unwrap().matches_launch(
+            &request.shell,
+            &request.shell_args,
+            &request.cwd,
+            &request.agent_id,
+            &owned_replacement_launch_recipe(&request)
+        ),
+        "original actual prepared recipe matches"
+    );
+    app.state::<SettingsState>()
+        .write()
+        .await
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == "codex")
+        .unwrap()
+        .command
+        .push_str(" --changed-before-admission");
+    prepared
+}
+
+async fn apply_retained_case_mutation(
+    env: &RetainedEnv<'_>,
+    case: &str,
+) -> (Option<Uuid>, RetainedSnapshot) {
+    let (app, manager, previous) = (env.fixture.app.handle(), &env.manager, env.previous);
+    let fixture = env.fixture;
+    if case == "backend" {
+        let settings_state = app.state::<SettingsState>();
+        let mut settings = settings_state.write().await;
+        let agent = settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap();
+        agent.backend.kind = SessionBackendKind::ContainerTransport;
+        agent.backend.image = Some("agentscommander/ac-codex:latest".into());
+    }
+    if case == "temporary" {
+        manager
+            .rename_session(
+                previous,
+                format!(
+                    "{}preboundary",
+                    crate::session::session::TEMP_SESSION_PREFIX
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    let other = if case == "different" {
+        Some(
+            add_mailbox_session(
+                app,
+                &fixture.target_cwd,
+                "other real exited row",
+                SessionStatus::Exited(0),
+                None,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    (other, RetainedSnapshot::capture(env).await)
+}
+
+struct RetainedSnapshot {
+    before: serde_json::Value,
+    before_ids: Vec<String>,
+    before_live: HashSet<Uuid>,
+}
+
+impl RetainedSnapshot {
+    async fn capture(env: &RetainedEnv<'_>) -> Self {
+        let (manager, previous, backend) = (&env.manager, env.previous, env.mock());
+        let before = serde_json::to_value(SessionInfo::from(
+            &manager.get_session(previous).await.unwrap(),
+        ))
+        .unwrap();
+        let mut before_ids: Vec<_> = manager
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        before_ids.sort();
+        let before_live = backend.live.lock().unwrap().clone();
+        Self {
+            before,
+            before_ids,
+            before_live,
+        }
+    }
+}
+
+async fn retained_matching_rows(
+    env: &RetainedEnv<'_>,
+    case: &str,
+    other: Option<Uuid>,
+) -> Vec<SessionInfo> {
+    let (app, manager, route) = (env.fixture.app.handle(), &env.manager, env.route);
+    let previous = env.previous;
+    let mut matching: Vec<_> = manager
+        .list_sessions()
+        .await
+        .into_iter()
+        .filter(|row| {
+            crate::config::teams::agent_fqn_from_path(&row.working_directory)
+                == route.target.canonical_fqn
+        })
+        .collect();
+    if case == "absent" || case == "backend" {
+        matching.clear();
+    }
+    if let Some(other) = other {
+        matching.retain(|row| row.id == other.to_string());
+    }
+    let (_, ready_a) = observe_pty_spawn_scope(app, &route.target).await;
+    assert_eq!(
+        ready_a,
+        Some(previous),
+        "test needs actual strict retained A: {case}"
+    );
+    assert!(pty_spawn_scope_may_resume(app, &route.target).await);
+    matching
+}
+
+struct RetainedOutcome<'a> {
+    case: &'a str,
+    injection: &'a String,
+    claimed: &'a crate::api::message_store::ClaimedPtyInputOperation,
+}
+
+async fn assert_retained_preboundary_outcome(
+    env: &RetainedEnv<'_>,
+    outcome: &RetainedOutcome<'_>,
+    expected: crate::phone::types::PtyInputReasonCode,
+    snapshot: RetainedSnapshot,
+    other: Option<Uuid>,
+) {
+    let RetainedOutcome {
+        case,
+        injection,
+        claimed,
+    } = *outcome;
+    let (app, fixture, manager, store) = (
+        env.fixture.app.handle(),
+        env.fixture,
+        &env.manager,
+        &env.store,
+    );
+    let (directory, publication, backend) = (&env.directory, &env.publication, env.mock());
+    let (route, previous, kills, hooks) = (env.route, env.previous, env.kills, &env.hooks);
+    let RetainedSnapshot {
+        before,
+        before_ids,
+        before_live,
+    } = snapshot;
+    let (coordinator, gate) = (env.coordinator, &env.gate);
+    let (original_name, original_settings) = (&env.original_name, &env.original_settings);
+    let result = store
+        .query_pty_input_by_injection(injection)
+        .unwrap()
+        .unwrap();
+    assert!(result.terminal);
+    assert_eq!(
+        result.status,
+        crate::phone::types::PtyInputPublicStatus::Rejected
+    );
+    assert_eq!(result.reason.map(|reason| reason.code), Some(expected));
+    let connection =
+        rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3")).unwrap();
+    let counts: (i64, i64, i64) = connection
+        .query_row(
+            "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
+        status='retry'),(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 AND \
+        status='rejected') FROM pty_input_operations WHERE injection_id=?1",
+            [&injection],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (claimed.attempt, 0, 1));
+    assert_eq!(coordinator.fixture_root_count(), Some(0));
+    let mut after_ids: Vec<_> = manager
+        .list_sessions()
+        .await
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    after_ids.sort();
+    assert_eq!(after_ids, before_ids, "no B inserted or A removed: {case}");
+    assert_eq!(
+        *backend.live.lock().unwrap(),
+        before_live,
+        "no native runtime created: {case}"
+    );
+    assert_eq!(
+        serde_json::to_value(SessionInfo::from(
+            &manager.get_session(previous).await.unwrap()
+        ))
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        std::fs::read(directory.join("sessions.json")).unwrap(),
+        *publication
+    );
+    assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+    assert!(backend.writes.lock().unwrap().is_empty());
+    assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+    assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+    assert!(gate
+        .try_target_lock(&route.target.canonical_fqn)
+        .unwrap()
+        .is_some());
+    if let Some(other) = other {
+        assert_eq!(manager.remove_exited_sessions(&[other]).await, 1);
+    }
+    manager
+        .rename_session(previous, original_name.clone())
+        .await
+        .unwrap();
+    *app.state::<SettingsState>().write().await = original_settings.clone();
 }
 
 #[cfg(test)]

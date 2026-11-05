@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::profile::IdleTuning;
 
 /// #1682 - both privileged planes cancel a standing control-write mark when
 /// they arm a turn: (a) the injection funnel, which clears through
@@ -9,42 +10,11 @@ use super::*;
 #[tokio::test]
 async fn arming_a_turn_clears_the_control_write_mark_on_both_privileged_planes() {
     use crate::pty::backend::SessionBackendKind;
-    use crate::session::profile::IdleTuning;
 
     let fixture = make_mailbox_fixture();
     let app = app_handle(&fixture.app);
 
-    // (a) The injection plane.
-    let inject_id = add_mailbox_session_with_shell(
-        &app,
-        &fixture.target_cwd,
-        "pi-live",
-        "pi",
-        SessionStatus::Idle,
-    )
-    .await;
-    register_mock_pty_route(&app, inject_id);
-    {
-        let idle = app
-            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-            .inner()
-            .clone();
-        idle.register_session(inject_id, IdleTuning::DEFAULT);
-        idle.set_pty_input_ready_for_test(inject_id);
-        crate::commands::pty::mark_successful_pty_write_busy(&app, inject_id, 3).await;
-        assert!(
-            idle.control_write_age(inject_id).is_some(),
-            "the control: a PTY write into the idle session must mark it"
-        );
-
-        crate::pty::inject::inject_text_into_session(&app, inject_id, "arbitrary payload")
-            .await
-            .unwrap();
-        assert!(
-            idle.control_write_age(inject_id).is_none(),
-            "the injection funnel arms the turn and must cancel the mark"
-        );
-    }
+    assert_injection_plane_clears_mark(app.clone(), &fixture).await;
 
     // (b) The exact-agent-input plane. Setup copied from
     // `pty_input_boundary_yields_exactly_one_busy_record`.
@@ -116,17 +86,7 @@ async fn arming_a_turn_clears_the_control_write_mark_on_both_privileged_planes()
         session_has_current_pty_submission_provenance(&SessionInfo::from(session), settings)
     }
 
-    crate::commands::pty::mark_successful_pty_write_busy(&app, target_id, 3).await;
-    assert!(
-        idle.control_write_age(target_id).is_some(),
-        "the control: a preceding control write into the idle target must mark it"
-    );
-    // That helper necessarily destroys BOTH readiness legs the boundary
-    // requires (`mark_busy` clears `waiting_for_input`, and
-    // `record_activity_with_bytes` stamps `activity` and drops the session from
-    // `idle_set`). Restore the pre-write state; neither call touches the mark.
-    sessions.mark_idle(target_id).await;
-    idle.set_pty_input_ready_for_test(target_id);
+    mark_target_then_restore_idle(app.clone(), &sessions, &idle, target_id).await;
 
     let boundary_guard = sessions
         .prepare_pty_input_boundary(
@@ -151,6 +111,62 @@ async fn arming_a_turn_clears_the_control_write_mark_on_both_privileged_planes()
         idle.control_write_age(target_id).is_none(),
         "the exact-agent-input boundary arms the turn and must cancel the mark"
     );
+}
+
+async fn assert_injection_plane_clears_mark(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    fixture: &MailboxFixture,
+) {
+    // (a) The injection plane.
+    let inject_id = add_mailbox_session_with_shell(
+        &app,
+        &fixture.target_cwd,
+        "pi-live",
+        "pi",
+        SessionStatus::Idle,
+    )
+    .await;
+    register_mock_pty_route(&app, inject_id);
+    {
+        let idle = app
+            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
+            .inner()
+            .clone();
+        idle.register_session(inject_id, IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(inject_id);
+        crate::commands::pty::mark_successful_pty_write_busy(&app, inject_id, 3).await;
+        assert!(
+            idle.control_write_age(inject_id).is_some(),
+            "the control: a PTY write into the idle session must mark it"
+        );
+
+        crate::pty::inject::inject_text_into_session(&app, inject_id, "arbitrary payload")
+            .await
+            .unwrap();
+        assert!(
+            idle.control_write_age(inject_id).is_none(),
+            "the injection funnel arms the turn and must cancel the mark"
+        );
+    }
+}
+
+async fn mark_target_then_restore_idle(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    sessions: &SessionManager,
+    idle: &crate::pty::idle_detector::IdleDetector,
+    target_id: Uuid,
+) {
+    crate::commands::pty::mark_successful_pty_write_busy(&app, target_id, 3).await;
+    assert!(
+        idle.control_write_age(target_id).is_some(),
+        "the control: a preceding control write into the idle target must mark it"
+    );
+    // That helper necessarily destroys BOTH readiness legs the boundary
+    // requires (`mark_busy` clears `waiting_for_input`, and
+    // `record_activity_with_bytes` stamps `activity` and drops the session from
+    // `idle_set`). Restore the pre-write state; neither call touches the mark.
+    sessions.mark_idle(target_id).await;
+    idle.set_pty_input_ready_for_test(target_id);
 }
 
 #[test]
@@ -512,6 +528,56 @@ async fn comanaged_origin_rejects_action_and_command_while_replica_is_unchanged(
     let hooks = MailboxTestHooks::default();
     let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
 
+    assert_comanaged_queue_rejects_action_and_command(app.clone(), &fixture, &hooks, &mut poller)
+        .await;
+    assert_comanaged_sweep_rejects_privileged_pty(app.clone(), &fixture, &hooks, &mut poller).await;
+
+    // (b) The same document from the sender's own replica outbox goes
+    // through today's chain: the Co-managed rejection text is absent.
+    let replica_path = write_wake_outbox_message_with_route(
+        &fixture.sender_cwd,
+        "replica-action",
+        CANONICAL_WAKE_FROM,
+        CANONICAL_WAKE_TO,
+    );
+    let mut replica_msg: OutboxMessage =
+        serde_json::from_str(&std::fs::read_to_string(&replica_path).unwrap()).unwrap();
+    replica_msg.action = Some("close-session".to_string());
+    std::fs::write(
+        &replica_path,
+        serde_json::to_string_pretty(&replica_msg).unwrap(),
+    )
+    .unwrap();
+    let replica_result = poller
+        .process_message(&app, &replica_path, OutboxOrigin::Replica)
+        .await;
+    if let Err(error) = &replica_result {
+        assert!(
+            !error.contains("Co-managed origin"),
+            "the rejection must be origin-scoped, got: {error}"
+        );
+    }
+    let replica_reason = std::fs::read_to_string(
+        fixture
+            .sender_cwd
+            .join(crate::config::agent_local_dir_name())
+            .join("outbox")
+            .join("rejected")
+            .join("replica-action.reason.txt"),
+    )
+    .unwrap_or_default();
+    assert!(
+        !replica_reason.contains("Co-managed origin"),
+        "the rejection must be origin-scoped, got: {replica_reason}"
+    );
+}
+
+async fn assert_comanaged_queue_rejects_action_and_command(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    fixture: &MailboxFixture,
+    hooks: &MailboxTestHooks,
+    poller: &mut MailboxPoller,
+) {
     // (a) The Co-managed queue: `action` is rejected before dispatch.
     let queue_dir = fixture
         .sender_cwd
@@ -568,7 +634,14 @@ async fn comanaged_origin_rejects_action_and_command_while_replica_is_unchanged(
         reason.contains("Co-managed origin may carry only a wake"),
         "{reason}"
     );
+}
 
+async fn assert_comanaged_sweep_rejects_privileged_pty(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    fixture: &MailboxFixture,
+    hooks: &MailboxTestHooks,
+    poller: &mut MailboxPoller,
+) {
     // (a3) A privileged PTY-input envelope is not a wake either. Drive the
     // PRODUCTION sweep (`poll`), not the test-only `process_message`
     // mirror, so deleting the CoManaged arm in the sweep fails this test.
@@ -624,45 +697,6 @@ async fn comanaged_origin_rejects_action_and_command_while_replica_is_unchanged(
         "the sweep settles the file out of the queue"
     );
     assert!(hooks.inject_calls.lock().unwrap().is_empty());
-
-    // (b) The same document from the sender's own replica outbox goes
-    // through today's chain: the Co-managed rejection text is absent.
-    let replica_path = write_wake_outbox_message_with_route(
-        &fixture.sender_cwd,
-        "replica-action",
-        CANONICAL_WAKE_FROM,
-        CANONICAL_WAKE_TO,
-    );
-    let mut replica_msg: OutboxMessage =
-        serde_json::from_str(&std::fs::read_to_string(&replica_path).unwrap()).unwrap();
-    replica_msg.action = Some("close-session".to_string());
-    std::fs::write(
-        &replica_path,
-        serde_json::to_string_pretty(&replica_msg).unwrap(),
-    )
-    .unwrap();
-    let replica_result = poller
-        .process_message(&app, &replica_path, OutboxOrigin::Replica)
-        .await;
-    if let Err(error) = &replica_result {
-        assert!(
-            !error.contains("Co-managed origin"),
-            "the rejection must be origin-scoped, got: {error}"
-        );
-    }
-    let replica_reason = std::fs::read_to_string(
-        fixture
-            .sender_cwd
-            .join(crate::config::agent_local_dir_name())
-            .join("outbox")
-            .join("rejected")
-            .join("replica-action.reason.txt"),
-    )
-    .unwrap_or_default();
-    assert!(
-        !replica_reason.contains("Co-managed origin"),
-        "the rejection must be origin-scoped, got: {replica_reason}"
-    );
 }
 
 // #2716 (B3, option C) - rows E35, E36 and E38 of the phase plan.
