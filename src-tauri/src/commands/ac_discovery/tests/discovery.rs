@@ -12,30 +12,7 @@ fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
         .expect("ensure workspace .gitignore");
 
-    let fixtures = [
-        ".ac/_agent_probe/rtk-matrix-history.db",
-        ".ac/_agent_probe/rtk-matrix-history-claude.db",
-        ".ac/_agent_probe/rtk-matrix-history-pi.db-shm",
-        ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
-        ".ac/_agent_probe/rtk_ignored_tools.md",
-        ".ac/_agent_probe/rtk-ignored-tools-pi.md",
-        concat!(
-            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/",
-            "__pycache__/rtk_patterns.cpython-314.pyc"
-        ),
-        ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
-        ".ac/_agent_probe/rtk-matrix-history.sqbpro",
-        ".ac/_agent_probe/rtk-ignored-tools.md",
-        ".ac/_agent_probe/skills/rtk-telemetry-forensics/SKILL.md",
-        ".ac/wg-1/__agent_replica/rtk_ignored_tools.md",
-        ".ac/__agent_replica/rtk_ignored_tools.md",
-    ];
-    for relative in fixtures {
-        let path = project.join(relative);
-        std::fs::create_dir_all(path.parent().expect("fixture has a parent"))
-            .expect("create fixture dir");
-        std::fs::write(&path, b"fixture").expect("write Git fixture");
-    }
+    create_rtk_runtime_fixtures(&project);
 
     let init = std::process::Command::new("git")
         .args(["init", "--quiet"])
@@ -56,35 +33,7 @@ fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
             .expect("git check-ignore")
             .success()
     };
-    for relative in [
-        ".ac/_agent_probe/rtk-matrix-history.db",
-        ".ac/_agent_probe/rtk-matrix-history-claude.db",
-        ".ac/_agent_probe/rtk-matrix-history-pi.db-shm",
-        ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
-        ".ac/_agent_probe/rtk_ignored_tools.md",
-        ".ac/_agent_probe/rtk-ignored-tools-pi.md",
-        concat!(
-            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/",
-            "__pycache__/rtk_patterns.cpython-314.pyc"
-        ),
-        ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
-        // This path is ignored only because the pre-existing `wg-*/` first
-        // entry excludes the whole `wg-1/` subtree, not because any new
-        // pattern matches it.
-        ".ac/wg-1/__agent_replica/rtk_ignored_tools.md",
-    ] {
-        assert!(ignored(relative), "{relative} must be ignored");
-    }
-    for relative in [
-        ".ac/_agent_probe/rtk-matrix-history.sqbpro",
-        ".ac/_agent_probe/rtk-ignored-tools.md",
-        ".ac/_agent_probe/skills/rtk-telemetry-forensics/SKILL.md",
-        // Replica-folder shape directly under `.ac/`, outside `wg-*`: pins
-        // that no new pattern matches `__agent_*` folder names.
-        ".ac/__agent_replica/rtk_ignored_tools.md",
-    ] {
-        assert!(!ignored(relative), "{relative} must not be ignored");
-    }
+    assert_rtk_runtime_ignore_rules(ignored);
 
     // Part B: append path keeps the prefix and appends each new pattern once.
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -100,32 +49,7 @@ fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
         .expect("ensure workspace .gitignore");
 
     let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
-    assert_eq!(
-        content
-            .lines()
-            .filter(|line| line.trim() == "wg-*/")
-            .count(),
-        1,
-        "the pre-existing wg-*/ line must survive exactly once"
-    );
-    for pattern in [
-        "_agent_*/rtk-matrix-history*.db",
-        "_agent_*/rtk-matrix-history*.db-shm",
-        "_agent_*/rtk-matrix-history*.db-wal",
-        "_agent_*/rtk_ignored_tools*.md",
-        "_agent_*/rtk-ignored-tools-*.md",
-        "_agent_*/**/__pycache__/",
-        "_agent_*/**/*.pyc",
-    ] {
-        assert_eq!(
-            content
-                .lines()
-                .filter(|line| line.trim() == pattern)
-                .count(),
-            1,
-            "pattern {pattern} must be appended exactly once"
-        );
-    }
+    assert_appended_rtk_runtime_patterns(&content);
 
     // Part C: 7-pattern-only fixture, replicating the Section 4.2 probe.
     // None of the 7 patterns alone matches replica-shaped content, so a
@@ -871,4 +795,92 @@ async fn c4_site_4_writes_context_and_leaves_no_state_key() {
     c4_tracked_is_clean(&tracked, "site 4 remove");
     c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 4 remove");
     assert!(read(&tracked).get("context").is_none());
+}
+
+fn create_rtk_runtime_fixtures(project: &std::path::Path) {
+    let fixtures = [
+        ".ac/_agent_probe/rtk-matrix-history.db",
+        ".ac/_agent_probe/rtk-matrix-history-claude.db",
+        ".ac/_agent_probe/rtk-matrix-history-pi.db-shm",
+        ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
+        ".ac/_agent_probe/rtk_ignored_tools.md",
+        ".ac/_agent_probe/rtk-ignored-tools-pi.md",
+        concat!(
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/",
+            "__pycache__/rtk_patterns.cpython-314.pyc"
+        ),
+        ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
+        ".ac/_agent_probe/rtk-matrix-history.sqbpro",
+        ".ac/_agent_probe/rtk-ignored-tools.md",
+        ".ac/_agent_probe/skills/rtk-telemetry-forensics/SKILL.md",
+        ".ac/wg-1/__agent_replica/rtk_ignored_tools.md",
+        ".ac/__agent_replica/rtk_ignored_tools.md",
+    ];
+    for relative in fixtures {
+        let path = project.join(relative);
+        std::fs::create_dir_all(path.parent().expect("fixture has a parent"))
+            .expect("create fixture dir");
+        std::fs::write(&path, b"fixture").expect("write Git fixture");
+    }
+}
+
+fn assert_rtk_runtime_ignore_rules(ignored: impl Fn(&str) -> bool) {
+    for relative in [
+        ".ac/_agent_probe/rtk-matrix-history.db",
+        ".ac/_agent_probe/rtk-matrix-history-claude.db",
+        ".ac/_agent_probe/rtk-matrix-history-pi.db-shm",
+        ".ac/_agent_probe/rtk-matrix-history-pi.db-wal",
+        ".ac/_agent_probe/rtk_ignored_tools.md",
+        ".ac/_agent_probe/rtk-ignored-tools-pi.md",
+        concat!(
+            ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/",
+            "__pycache__/rtk_patterns.cpython-314.pyc"
+        ),
+        ".ac/_agent_probe/skills/rtk-telemetry-forensics/scripts/__pycache__/non_pyc.bin",
+        // This path is ignored only because the pre-existing `wg-*/` first
+        // entry excludes the whole `wg-1/` subtree, not because any new
+        // pattern matches it.
+        ".ac/wg-1/__agent_replica/rtk_ignored_tools.md",
+    ] {
+        assert!(ignored(relative), "{relative} must be ignored");
+    }
+    for relative in [
+        ".ac/_agent_probe/rtk-matrix-history.sqbpro",
+        ".ac/_agent_probe/rtk-ignored-tools.md",
+        ".ac/_agent_probe/skills/rtk-telemetry-forensics/SKILL.md",
+        // Replica-folder shape directly under `.ac/`, outside `wg-*`: pins
+        // that no new pattern matches `__agent_*` folder names.
+        ".ac/__agent_replica/rtk_ignored_tools.md",
+    ] {
+        assert!(!ignored(relative), "{relative} must not be ignored");
+    }
+}
+
+fn assert_appended_rtk_runtime_patterns(content: &str) {
+    assert_eq!(
+        content
+            .lines()
+            .filter(|line| line.trim() == "wg-*/")
+            .count(),
+        1,
+        "the pre-existing wg-*/ line must survive exactly once"
+    );
+    for pattern in [
+        "_agent_*/rtk-matrix-history*.db",
+        "_agent_*/rtk-matrix-history*.db-shm",
+        "_agent_*/rtk-matrix-history*.db-wal",
+        "_agent_*/rtk_ignored_tools*.md",
+        "_agent_*/rtk-ignored-tools-*.md",
+        "_agent_*/**/__pycache__/",
+        "_agent_*/**/*.pyc",
+    ] {
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| line.trim() == pattern)
+                .count(),
+            1,
+            "pattern {pattern} must be appended exactly once"
+        );
+    }
 }
