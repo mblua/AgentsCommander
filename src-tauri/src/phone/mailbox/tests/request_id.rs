@@ -755,9 +755,7 @@ fn assert_delivered_move(
             serde_json::to_value(archived).unwrap(),
             serde_json::to_value(stripped).unwrap()
         );
-        assert_claimed_invalid_delivery_receipt(
-            outbox, delivered, origin, claimed, valid, failure,
-        );
+        assert_claimed_invalid_delivery_receipt(outbox, delivered, origin, claimed, valid, failure);
     }
 }
 
