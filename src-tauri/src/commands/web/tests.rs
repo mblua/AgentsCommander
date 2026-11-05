@@ -866,6 +866,11 @@ async fn ws_preflight_draft_parity(
         args["draft"] = bad;
         let reply = dispatch(state, 9, cmd, &args).await;
         assert!(reply["error"].is_string(), "draft {index}: {reply}");
+        let error = reply["error"].as_str().unwrap_or_default();
+        assert!(
+            index != 2 || error.starts_with("Invalid field draft"),
+            "{reply}"
+        );
     }
     for bad in [
         json!({"agentId": "claude"}),
