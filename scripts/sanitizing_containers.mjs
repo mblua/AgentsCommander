@@ -22,6 +22,8 @@ export function parseRegistry(text) {
         typeof c.name !== 'string' || !/^(?!\.{1,2}$)[\w.-]+$/.test(c.name) ||
         !validPath(c.scope) || !c.scope.endsWith('/') ||
         !validPath(c.owner) || !c.owner.startsWith(c.scope) || !c.owner.endsWith('.rs') ||
+        c.literalScope !== undefined && (!validPath(c.literalScope) ||
+          !c.literalScope.endsWith('/') || !c.scope.startsWith(c.literalScope)) ||
         c.externalLiteralBaseline !== 0 ||
         !Number.isInteger(c.writerInventory?.files) || c.writerInventory.files < 0 ||
         !Number.isInteger(c.writerInventory?.sites) ||
@@ -42,7 +44,15 @@ const settingsPaths = ['', 'names::'].flatMap(prefix => settingsNames.map(name =
   'crate::config::instance_artifacts::' + prefix + name));
 const owns = (c, p) => p === c.owner || c.ownerModule && p.startsWith(c.owner.slice(0, -3) + '/');
 const rustPath = /^(?:crate|self|super|[A-Za-z_]\w*)(?:::[A-Za-z_]\w*)*$/;
+const settingsPolicy = 'instance-settings-v1', artifactsPolicy = 'instance-artifacts-v1';
+const metadataFiles = [artifactRoot + '.rs', artifactRoot + '/names.rs'];
 function validatePolicy(c) {
+  if (c.metadataPolicy === artifactsPolicy) {
+    if (c.literalScope === undefined || c.ownerModule !== undefined ||
+        c.constantPaths !== undefined)
+      throw new GateError('containers.json: instance-artifacts-v1 requires literalScope only');
+    return;
+  }
   const opt = c.constantPaths !== undefined || c.metadataPolicy !== undefined;
   if (c.ownerModule !== undefined && typeof c.ownerModule !== 'boolean' || opt && !c.ownerModule)
     throw new GateError('containers.json: constant policy requires ownerModule:true');
@@ -51,7 +61,7 @@ function validatePolicy(c) {
       c.constantPaths.some(p => typeof p !== 'string' ||
         !p.startsWith('crate::') || !rustPath.test(p))))
     throw new GateError('containers.json: invalid constantPaths');
-  if (c.metadataPolicy !== undefined && (c.metadataPolicy !== 'instance-settings-v1' ||
+  if (c.metadataPolicy !== undefined && (c.metadataPolicy !== settingsPolicy ||
       c.id !== 'Instance/Settings' || c.name !== 'settings.30.instance.no-git.json' ||
       c.scope !== 'src-tauri/src/' || c.owner !== settingsOwner ||
       JSON.stringify(c.constantPaths) !== JSON.stringify(settingsPaths)))
@@ -75,8 +85,7 @@ const tokenText = ts => ts.map(t => t.kind === 'string' ? JSON.stringify(t.value
   t.name ?? t.text).join(' ');
 function metadataExemptions(path, scan, c) {
   const exempt = new Set();
-  if (!c.metadataPolicy || ![artifactRoot + '.rs', artifactRoot + '/names.rs'].includes(path))
-    return exempt;
+  if (c.metadataPolicy !== settingsPolicy || !metadataFiles.includes(path)) return exempt;
   const production = new Set(scan.productionTokens);
   const items = scan.items.filter(i => !i.testOnly && i.scope === scan.root);
   const tokens = i => scan.tokens.slice(i.first, i.last + 1);
@@ -142,6 +151,44 @@ function metadataExemptions(path, scan, c) {
   for (const start of exempt) if (!scan.tokens.some(t => t.start === start && production.has(t)))
     invalid('nonproduction exemption');
   return exempt;
+}
+
+// instance-artifacts-v1: a container name may appear in instance metadata only as the
+// exact `const X: &str = "<name>";` in names.rs or as an INSTANCE_ARTIFACTS row name.
+const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function artifactExemptions(path, scan, c) {
+  const exempt = new Set();
+  if (c.metadataPolicy !== artifactsPolicy || !metadataFiles.includes(path)) return exempt;
+  const names = path.endsWith('/names.rs'), name = escapeRegex(JSON.stringify(c.name));
+  const shape = names ? new RegExp('^const [A-Za-z_]\\w* : & str = ' + name + ' ;$') :
+    new RegExp('^InstanceArtifact \\{ name : ' + name + ' , kind : ArtifactKind :: \\w+ , ' +
+      'disposition : Disposition :: \\w+ , comment : "(?:[^"\\\\]|\\\\.)*" , \\}$');
+  const production = new Set(scan.productionTokens);
+  for (const t of scan.productionTokens) {
+    if (t.kind !== 'string' || t.value !== c.name) continue;
+    const site = names ? rootItem(scan, t, 'const') : artifactRow(scan, t);
+    const ts = site && scan.tokens.slice(site.first, site.last + 1);
+    if (ts && ts.every(x => production.has(x)) && shape.test(tokenText(ts))) exempt.add(t.start);
+  }
+  return exempt;
+}
+const rootItem = (scan, t, kind, name) => scan.items.find(i => i.kind === kind &&
+  (name === undefined || i.name === name) && !i.testOnly && i.scope === scan.root &&
+  i.first <= t.index && i.last >= t.index);
+function artifactRow(scan, t) {
+  const table = rootItem(scan, t, 'const', 'INSTANCE_ARTIFACTS');
+  if (!table) return null;
+  for (let i = t.index; i > table.first; i--) {
+    const open = scan.tokens[i];
+    if (open.text !== '{' || scan.tokens[i - 1]?.name !== 'InstanceArtifact') continue;
+    return open.mate >= t.index ? { first: i - 1, last: open.mate } : null;
+  }
+  return null;
+}
+function externalLiterals(path, scan, c) {
+  const exempt = artifactExemptions(path, scan, c);
+  return scan.productionTokens.filter(t => t.kind === 'string' && t.value === c.name &&
+    !exempt.has(t.start)).map(t => ({ path, line: t.line }));
 }
 
 // The scanner resolves lexical aliases. This adapter supplies Rust module identity,
@@ -314,7 +361,7 @@ export function runGate(snapshot) {
       p.startsWith(c.owner.slice(0, -3) + '/')))
       throw new GateError('containers.json: owner subtree missing: ' + c.owner);
     for (const c of containers) if (c.metadataPolicy)
-      for (const p of [artifactRoot + '.rs', artifactRoot + '/names.rs'])
+      for (const p of metadataFiles)
         if (!snapshot.headTree.has(p)) throw new GateError('metadata source missing: ' + p);
     const measurements = new Map();
     const scan = createRustScanner(snapshot.headTree, snapshot.readBlob);
@@ -335,17 +382,18 @@ export function runGate(snapshot) {
       paths: unknown.map(([p]) => p) });
     for (const c of containers) {
       const external = [], constants = [], scopedWriters = { files: 0, sites: 0 };
+      const literalScope = c.literalScope ?? c.scope;
       for (const [p, m] of measurements) {
+        if (p.startsWith(literalScope) && !owns(c, p))
+          external.push(...externalLiterals(p, scan(p), c));
         if (!p.startsWith(c.scope)) continue;
         if (m.writers.length && (!c.ownerModule || owns(c, p))) {
           scopedWriters.files++; scopedWriters.sites += m.writers.length;
         }
-        if (c.constantPaths || c.metadataPolicy) {
+        if (c.constantPaths) {
           const source = scan(p), exempt = metadataExemptions(p, source, c);
           if (!owns(c, p)) constants.push(...constantReferences(p, source, c, exempt, contexts));
         }
-        if (!owns(c, p)) for (const t of m.literals) if (t.value === c.name)
-          external.push({ path: p, line: t.line });
       }
       metrics.push({ id: c.id,
         externalFiles: new Set([...external, ...constants].map(t => t.path)).size,
