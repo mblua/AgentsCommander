@@ -73,111 +73,122 @@ fn supported_agent_final_snapshot_rejects_unsafe_recipient_records() {
     assert!(validate_supported_agent_session(&shell, shell.id).is_err());
 }
 
+const PI_POSITIVE: &[&str] = &[
+    "pi",
+    "PI",
+    "pi.exe",
+    "Pi.CMD",
+    "pi.ps1",
+    r"C:\Tools\pi.exe",
+    r"\\server\share\pi.cmd",
+    r"\\?\C:\Tools\pi.exe",
+    "/usr/local/bin/pi",
+    "  pi  ",
+];
+
+const EXPLICIT_SUBMIT_POSITIVE: &[&str] = &[
+    "hermes",
+    "Hermes",
+    "hermes.exe",
+    "HERMES.CMD",
+    "hermes.ps1",
+    "opencode",
+    "OpenCode",
+    "opencode.exe",
+    "OpenCode.CMD",
+    "opencode.ps1",
+    "grok",
+    "GROK",
+    "grok.exe",
+    "Grok.CMD",
+    "grok.ps1",
+    "  grok  ",
+    "/usr/local/bin/hermes",
+    "/usr/local/bin/opencode",
+];
+
+const UNSUPPORTED: &[&str] = &[
+    "pip",
+    "pipx",
+    "ping",
+    "pixel",
+    "pi-agent",
+    "pi2",
+    "pi-claude",
+    "hermes-wrapper",
+    "hermes-cli",
+    "my-hermes",
+    "opencode-proxy",
+    "opencode2",
+    "opencode-tui",
+    "grok-build",
+    "grokx",
+    "grok-cli",
+    r"C:\pi\runner.exe",
+    "agy-proxy",
+    "agyctl",
+    "cmd.exe",
+    "pwsh",
+    "",
+    "   ",
+    "bash",
+];
+
+fn assert_pi_positive_shell(shell: &str) {
+    assert!(needs_explicit_enter(shell), "Pi positive: {shell:?}");
+    assert_eq!(
+        resolve_logical_command_text(shell, LogicalPtyCommand::Clear),
+        Some("/new"),
+        "Pi clear mapping: {shell:?}"
+    );
+    assert_eq!(
+        resolve_logical_command_text(shell, LogicalPtyCommand::Compact),
+        None,
+        "Pi compact remains unsupported: {shell:?}"
+    );
+    assert!(supports_auto_self_maintenance(shell));
+    assert!(
+        supports_self_handoff_switch(shell),
+        "Pi switch source: {shell:?}"
+    );
+}
+
+fn assert_explicit_submit_shell(shell: &str) {
+    assert!(
+        needs_explicit_enter(shell),
+        "ExplicitSubmit positive: {shell:?}"
+    );
+    assert_eq!(
+        resolve_logical_command_text(shell, LogicalPtyCommand::Clear),
+        None,
+        "ExplicitSubmit clear remains unsupported: {shell:?}"
+    );
+    assert_eq!(
+        resolve_logical_command_text(shell, LogicalPtyCommand::Compact),
+        None,
+        "ExplicitSubmit compact remains unsupported: {shell:?}"
+    );
+    assert!(
+        !supports_auto_self_maintenance(shell),
+        "ExplicitSubmit maintenance stays off: {shell:?}"
+    );
+    assert!(
+        !supports_self_handoff_switch(shell),
+        "ExplicitSubmit switch stays off: {shell:?}"
+    );
+}
+
 #[test]
 fn direct_shell_capability_matrix() {
-    let pi_positive = [
-        "pi",
-        "PI",
-        "pi.exe",
-        "Pi.CMD",
-        "pi.ps1",
-        r"C:\Tools\pi.exe",
-        r"\\server\share\pi.cmd",
-        r"\\?\C:\Tools\pi.exe",
-        "/usr/local/bin/pi",
-        "  pi  ",
-    ];
-    for shell in pi_positive {
-        assert!(needs_explicit_enter(shell), "Pi positive: {shell:?}");
-        assert_eq!(
-            resolve_logical_command_text(shell, LogicalPtyCommand::Clear),
-            Some("/new"),
-            "Pi clear mapping: {shell:?}"
-        );
-        assert_eq!(
-            resolve_logical_command_text(shell, LogicalPtyCommand::Compact),
-            None,
-            "Pi compact remains unsupported: {shell:?}"
-        );
-        assert!(supports_auto_self_maintenance(shell));
-        assert!(
-            supports_self_handoff_switch(shell),
-            "Pi switch source: {shell:?}"
-        );
+    for &shell in PI_POSITIVE {
+        assert_pi_positive_shell(shell);
     }
 
-    let explicit_submit_positive = [
-        "hermes",
-        "Hermes",
-        "hermes.exe",
-        "HERMES.CMD",
-        "hermes.ps1",
-        "opencode",
-        "OpenCode",
-        "opencode.exe",
-        "OpenCode.CMD",
-        "opencode.ps1",
-        "grok",
-        "GROK",
-        "grok.exe",
-        "Grok.CMD",
-        "grok.ps1",
-        "  grok  ",
-        "/usr/local/bin/hermes",
-        "/usr/local/bin/opencode",
-    ];
-    for shell in explicit_submit_positive {
-        assert!(
-            needs_explicit_enter(shell),
-            "ExplicitSubmit positive: {shell:?}"
-        );
-        assert_eq!(
-            resolve_logical_command_text(shell, LogicalPtyCommand::Clear),
-            None,
-            "ExplicitSubmit clear remains unsupported: {shell:?}"
-        );
-        assert_eq!(
-            resolve_logical_command_text(shell, LogicalPtyCommand::Compact),
-            None,
-            "ExplicitSubmit compact remains unsupported: {shell:?}"
-        );
-        assert!(
-            !supports_auto_self_maintenance(shell),
-            "ExplicitSubmit maintenance stays off: {shell:?}"
-        );
-        assert!(
-            !supports_self_handoff_switch(shell),
-            "ExplicitSubmit switch stays off: {shell:?}"
-        );
+    for &shell in EXPLICIT_SUBMIT_POSITIVE {
+        assert_explicit_submit_shell(shell);
     }
 
-    let unsupported = [
-        "pip",
-        "pipx",
-        "ping",
-        "pixel",
-        "pi-agent",
-        "pi2",
-        "pi-claude",
-        "hermes-wrapper",
-        "hermes-cli",
-        "my-hermes",
-        "opencode-proxy",
-        "opencode2",
-        "opencode-tui",
-        "grok-build",
-        "grokx",
-        "grok-cli",
-        r"C:\pi\runner.exe",
-        "agy-proxy",
-        "agyctl",
-        "cmd.exe",
-        "pwsh",
-        "",
-        "   ",
-        "bash",
-    ];
-    for shell in unsupported {
+    for &shell in UNSUPPORTED {
         assert!(!needs_explicit_enter(shell), "unsupported: {shell:?}");
         assert_eq!(
             resolve_logical_command_text(shell, LogicalPtyCommand::Clear),

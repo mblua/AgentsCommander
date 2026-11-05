@@ -65,74 +65,7 @@ impl ResponseCloseState {
         let Some(route) = inner.routes.get(&id) else {
             return;
         };
-        let policy = route.policy.as_ref();
-        let registered = policy.and_then(|p| p.registered_at);
-        let success = policy.and_then(|p| p.success_at);
-        let work = policy.and_then(|p| {
-            route
-                .facts
-                .as_ref()
-                .map(|_| inner.work.get(&p.member.target))
-        });
-        let anchor = registered.zip(success).map(|(registered, success)| {
-            registered
-                .max(success)
-                .max(route.last_change)
-                .max(route.hold_until.unwrap_or(registered))
-        });
-        // One bit per safe predicate, including its three early-return requirements.
-        let predicates = [
-            Some(policy.is_some()),
-            {
-                let registered_present = registered.is_some();
-                policy.is_some().then_some(registered_present)
-            },
-            {
-                let success_present = success.is_some();
-                policy.is_some().then_some(success_present)
-            },
-            Some(inner.unknown_spawns == 0),
-            Some(inner.ready),
-            Some(inner.work_bootstrapped),
-            Some(inner.enabled),
-            Some((1..=3600).contains(&inner.seconds)),
-            Some(!inner.failed),
-            Some(route.closing.is_none()),
-            Some(route.eligible),
-            policy.map(|p| route.facts.as_ref() == Some(&p.member)),
-            policy.map(|p| {
-                inner
-                    .routes
-                    .get(&p.coordinator.session_id)
-                    .is_some_and(|r| r.facts.as_ref() == Some(&p.coordinator))
-            }),
-            route.manager_working.map(|working| !working),
-            route.detector_working.map(|working| !working),
-            route.menu_blocked.map(|blocked| !blocked),
-            Some(route.hold_known),
-            {
-                let hold_elapsed = route.hold_until.is_none_or(|end| now > end);
-                route.hold_known.then_some(hold_elapsed)
-            },
-            Some(route.held.is_empty()),
-            Some(route.writers == 0),
-            work.map(|w| {
-                w.is_none_or(|w| w.provisional == 0 && w.dispatch == 0 && w.pending.is_empty())
-            }),
-            policy.and_then(|p| {
-                route
-                    .facts
-                    .as_ref()
-                    .map(|_| !inner.create_owners.contains_key(&p.member.target))
-            }),
-            policy.map(|p| p.returns.is_empty()),
-            policy.map(|p| p.settings_epoch == inner.settings_epoch),
-            policy.map(|p| p.work_epoch == route.work_epoch),
-            anchor.map(|anchor| {
-                now.saturating_duration_since(anchor)
-                    >= std::time::Duration::from_secs(u64::from(inner.seconds))
-            }),
-        ];
+        let (predicates, anchor) = diagnostic_select_predicates(inner, route, now);
         let (false_mask, unknown_mask) = diagnostic_predicate_masks(&predicates);
         let old = route.diagnostic_select;
         let modulo = old.map_or(0, |(_, _, modulo)| modulo);
@@ -295,4 +228,81 @@ fn diagnostic_predicate_masks(predicates: &[Option<bool>]) -> (u64, u64) {
         }
     }
     (false_mask, unknown_mask)
+}
+
+/// Safe-predicate observations for the select diagnostic, plus its anchor.
+fn diagnostic_select_predicates(
+    inner: &ResponseCloseInner,
+    route: &ResponseCloseRoute,
+    now: std::time::Instant,
+) -> ([Option<bool>; 26], Option<std::time::Instant>) {
+    let policy = route.policy.as_ref();
+    let registered = policy.and_then(|p| p.registered_at);
+    let success = policy.and_then(|p| p.success_at);
+    let work = policy.and_then(|p| {
+        route
+            .facts
+            .as_ref()
+            .map(|_| inner.work.get(&p.member.target))
+    });
+    let anchor = registered.zip(success).map(|(registered, success)| {
+        registered
+            .max(success)
+            .max(route.last_change)
+            .max(route.hold_until.unwrap_or(registered))
+    });
+    // One bit per safe predicate, including its three early-return requirements.
+    let predicates = [
+        Some(policy.is_some()),
+        {
+            let registered_present = registered.is_some();
+            policy.is_some().then_some(registered_present)
+        },
+        {
+            let success_present = success.is_some();
+            policy.is_some().then_some(success_present)
+        },
+        Some(inner.unknown_spawns == 0),
+        Some(inner.ready),
+        Some(inner.work_bootstrapped),
+        Some(inner.enabled),
+        Some((1..=3600).contains(&inner.seconds)),
+        Some(!inner.failed),
+        Some(route.closing.is_none()),
+        Some(route.eligible),
+        policy.map(|p| route.facts.as_ref() == Some(&p.member)),
+        policy.map(|p| {
+            inner
+                .routes
+                .get(&p.coordinator.session_id)
+                .is_some_and(|r| r.facts.as_ref() == Some(&p.coordinator))
+        }),
+        route.manager_working.map(|working| !working),
+        route.detector_working.map(|working| !working),
+        route.menu_blocked.map(|blocked| !blocked),
+        Some(route.hold_known),
+        {
+            let hold_elapsed = route.hold_until.is_none_or(|end| now > end);
+            route.hold_known.then_some(hold_elapsed)
+        },
+        Some(route.held.is_empty()),
+        Some(route.writers == 0),
+        work.map(|w| {
+            w.is_none_or(|w| w.provisional == 0 && w.dispatch == 0 && w.pending.is_empty())
+        }),
+        policy.and_then(|p| {
+            route
+                .facts
+                .as_ref()
+                .map(|_| !inner.create_owners.contains_key(&p.member.target))
+        }),
+        policy.map(|p| p.returns.is_empty()),
+        policy.map(|p| p.settings_epoch == inner.settings_epoch),
+        policy.map(|p| p.work_epoch == route.work_epoch),
+        anchor.map(|anchor| {
+            now.saturating_duration_since(anchor)
+                >= std::time::Duration::from_secs(u64::from(inner.seconds))
+        }),
+    ];
+    (predicates, anchor)
 }

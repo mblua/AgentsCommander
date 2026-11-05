@@ -109,32 +109,31 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
     assert!(report_artifact.get("artifacts").is_none());
     assert_eq!(
         report_artifact["artifactPaths"]["run"],
-        std::fs::canonicalize(run_dir.join("run.json"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("run.json"))
     );
     assert_eq!(
         report_artifact["artifactPaths"]["attempts"],
-        std::fs::canonicalize(run_dir.join("attempts.jsonl"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("attempts.jsonl"))
     );
     assert_eq!(
         report_artifact["artifactPaths"]["reportJson"],
-        std::fs::canonicalize(run_dir.join("report.json"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("report.json"))
     );
     assert_eq!(
         report_artifact["artifactPaths"]["reportMarkdown"],
-        std::fs::canonicalize(run_dir.join("report.md"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("report.md"))
     );
+    assert_dry_run_planned_attempts(&run_dir);
+}
+
+fn dry_run_canonical_string(path: &std::path::Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap()
+        .to_string_lossy()
+        .to_string()
+}
+
+fn assert_dry_run_planned_attempts(run_dir: &std::path::Path) {
     let attempts: Vec<serde_json::Value> = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
         .unwrap()
         .lines()

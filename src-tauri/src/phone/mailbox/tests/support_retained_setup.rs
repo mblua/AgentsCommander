@@ -1,36 +1,20 @@
 use super::*;
 
-pub(super) async fn retire_retained_fixture_member(
-    fixture: &MailboxFixture,
-    coordinator: &crate::session::selection::SelectionCoordinator,
+type RetainedRouteIdentity = crate::pty::manager::ResponseRouteIdentity;
+
+async fn retained_route_identities(
+    manager: &SessionManager,
+    tracker: &crate::pty::manager::ResponseCloseState,
     route: &crate::config::teams::VerifiedPtyInputRoute,
     sender: Uuid,
     previous: Uuid,
-) {
-    use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
-    let app = fixture.app.handle();
-    let tracker = app
-        .state::<crate::pty::manager::ResponseCloseState>()
-        .inner()
-        .clone();
-    let manager = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
-    manager.set_is_coordinator(sender, true).await;
-    manager
-        .set_agent_kind(
-            previous,
-            Some(crate::session::profile::CodingAgentKind::Codex),
-        )
-        .await;
+) -> (RetainedRouteIdentity, RetainedRouteIdentity) {
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     let (member, leader) = manager
         .with_current_carrier_snapshot(&permit, |current| {
             let identity = |id, target: String| {
                 let row = current.rows.iter().find(|row| row.id == id).unwrap();
-                ResponseRouteIdentity {
+                RetainedRouteIdentity {
                     target,
                     session_id: id,
                     token: row.token,
@@ -46,6 +30,12 @@ pub(super) async fn retire_retained_fixture_member(
         })
         .await;
     drop(permit);
+    (member, leader)
+}
+
+async fn save_isolated_retained_settings(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+) -> PathBuf {
     let directory = crate::config::config_dir().expect("designated isolated test config directory");
     let configured = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
         .expect("retained-source fixtures require the designated isolated test configuration");
@@ -58,26 +48,17 @@ pub(super) async fn retire_retained_fixture_member(
     crate::config::settings::save_settings_with_project_paths(&settings).unwrap();
     let written = crate::config::settings::save_settings(&settings).unwrap();
     *app.state::<SettingsState>().write().await = written;
-    let carrier = crate::config::sessions_persistence::persist_initial_carrier(
-        &manager,
-        directory,
-        vec![fixture._temp.path().to_string_lossy().into_owned()],
-        crate::config::sessions_persistence::InitialCarrierIntent::new(
-            member.target.clone(),
-            previous,
-            member.token,
-            member.carrier_version,
-            route.target.replica_identity.canonical_path.clone(),
-        ),
-    )
-    .await
-    .unwrap()
-    .expect("real initial Confirmed A");
-    let key = format!("prepare:{}", Uuid::new_v4());
-    let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
-    admission.accept_durable("prepare-body").unwrap();
-    drop(admission);
-    let past = std::time::Instant::now() - Duration::from_secs(120);
+    directory
+}
+
+fn publish_retained_route_facts(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    member: &RetainedRouteIdentity,
+    leader: &RetainedRouteIdentity,
+    previous: Uuid,
+    past: std::time::Instant,
+) {
+    use crate::pty::manager::ResponseClosePublisher as P;
     for publisher in [
         P::Manager,
         P::Pty,
@@ -93,7 +74,7 @@ pub(super) async fn retire_retained_fixture_member(
     tracker.apply_settings(true, 30, past);
     // Re-publish the real route identities on the fake Instant timeline
     // before admitting this test's first policy. No retirement is forged.
-    for (identity, eligible) in [(&member, true), (&leader, false)] {
+    for (identity, eligible) in [(member, true), (leader, false)] {
         tracker.register_route(identity.session_id, identity.generation, past);
         tracker.publish_manager_row(
             identity.session_id,
@@ -109,22 +90,22 @@ pub(super) async fn retire_retained_fixture_member(
     tracker.observe_detector(previous, false, past);
     tracker.publish_menu(previous, Some(false), past);
     tracker.publish_hold(previous, None, true, past);
-    let context = tracker
-        .reserve_policy_candidate(
-            member.clone(),
-            leader.clone(),
-            key,
-            "prepare-body".into(),
-            past,
-        )
-        .unwrap();
-    tracker.mark_request_submitted(&context, true);
+}
+
+async fn register_retained_request(
+    manager: &SessionManager,
+    tracker: &crate::pty::manager::ResponseCloseState,
+    carrier: &crate::config::sessions_persistence::PublishedCarrier,
+    context: crate::pty::manager::ResponseDeliveryContext,
+    (member, leader): (&RetainedRouteIdentity, &RetainedRouteIdentity),
+    past: std::time::Instant,
+) {
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     manager
         .with_current_carrier_snapshot(&permit, |current| {
             crate::config::sessions_persistence::register_published_carrier(
                 &permit,
-                &carrier,
+                carrier,
                 current,
                 |_| {
                     tracker
@@ -144,31 +125,15 @@ pub(super) async fn retire_retained_fixture_member(
         .await
         .expect("real current published request registration");
     drop(permit);
-    let context = tracker
-        .admit_return(
-            &member,
-            &leader,
-            format!("prepare-return-{}", Uuid::new_v4()),
-            "prepare-return-body".into(),
-            past,
-        )
-        .unwrap();
-    tracker
-        .observe_return_success(crate::pty::manager::ReturnDeliveryProof { context }, past)
-        .unwrap();
-    assert!(
-        crate::session::selection::remember_response_close_registration(
-            crate::session::selection::ResponseCloseRegistration {
-                diagnostic_last_poll_outcome: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                tracker: tracker.clone(),
-                member,
-                coordinator: leader,
-                carrier
-            },
-        )
-    );
-    crate::commands::session::selection_executor::poll_response_close(app).await;
-    coordinator.snapshot().await.unwrap();
+}
+
+async fn assert_previous_retired(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    manager: &SessionManager,
+    tracker: &crate::pty::manager::ResponseCloseState,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    previous: Uuid,
+) {
     let row = manager.get_session(previous).await.unwrap();
     assert_eq!(row.status, SessionStatus::Exited(0));
     assert!(
@@ -195,6 +160,101 @@ pub(super) async fn retire_retained_fixture_member(
         .await;
     drop(permit);
     assert!(retired, "genuine current retired Protected A prerequisite");
+}
+
+pub(super) async fn retire_retained_fixture_member(
+    fixture: &MailboxFixture,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender: Uuid,
+    previous: Uuid,
+) {
+    let app = fixture.app.handle();
+    let tracker = app
+        .state::<crate::pty::manager::ResponseCloseState>()
+        .inner()
+        .clone();
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    manager.set_is_coordinator(sender, true).await;
+    manager
+        .set_agent_kind(
+            previous,
+            Some(crate::session::profile::CodingAgentKind::Codex),
+        )
+        .await;
+    let (member, leader) =
+        retained_route_identities(&manager, &tracker, route, sender, previous).await;
+    let directory = save_isolated_retained_settings(app).await;
+    let carrier = crate::config::sessions_persistence::persist_initial_carrier(
+        &manager,
+        directory,
+        vec![fixture._temp.path().to_string_lossy().into_owned()],
+        crate::config::sessions_persistence::InitialCarrierIntent::new(
+            member.target.clone(),
+            previous,
+            member.token,
+            member.carrier_version,
+            route.target.replica_identity.canonical_path.clone(),
+        ),
+    )
+    .await
+    .unwrap()
+    .expect("real initial Confirmed A");
+    let key = format!("prepare:{}", Uuid::new_v4());
+    let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
+    admission.accept_durable("prepare-body").unwrap();
+    drop(admission);
+    let past = std::time::Instant::now() - Duration::from_secs(120);
+    publish_retained_route_facts(&tracker, &member, &leader, previous, past);
+    let context = tracker
+        .reserve_policy_candidate(
+            member.clone(),
+            leader.clone(),
+            key,
+            "prepare-body".into(),
+            past,
+        )
+        .unwrap();
+    tracker.mark_request_submitted(&context, true);
+    register_retained_request(
+        &manager,
+        &tracker,
+        &carrier,
+        context,
+        (&member, &leader),
+        past,
+    )
+    .await;
+    let context = tracker
+        .admit_return(
+            &member,
+            &leader,
+            format!("prepare-return-{}", Uuid::new_v4()),
+            "prepare-return-body".into(),
+            past,
+        )
+        .unwrap();
+    tracker
+        .observe_return_success(crate::pty::manager::ReturnDeliveryProof { context }, past)
+        .unwrap();
+    assert!(
+        crate::session::selection::remember_response_close_registration(
+            crate::session::selection::ResponseCloseRegistration {
+                diagnostic_last_poll_outcome: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tracker: tracker.clone(),
+                member,
+                coordinator: leader,
+                carrier
+            },
+        )
+    );
+    crate::commands::session::selection_executor::poll_response_close(app).await;
+    coordinator.snapshot().await.unwrap();
+    assert_previous_retired(app, &manager, &tracker, route, previous).await;
 }
 
 pub(super) fn provision_retained_fixture_member(

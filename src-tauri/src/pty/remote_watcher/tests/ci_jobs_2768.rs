@@ -216,22 +216,77 @@ async fn i2768_stale_completed_list_does_not_finish() {
     i2768_assert_consumed(&h);
 }
 
+fn i2768_rows(status: &str) -> Vec<serde_json::Value> {
+    (1..=12)
+        .rev()
+        .map(|id| {
+            let mut row = i2768_row(id, status);
+            row["workflow_id"] = serde_json::json!(700 + id % 2);
+            row
+        })
+        .collect::<Vec<_>>()
+}
+async fn i2768_timeout_at_seven(
+    h: &Harness,
+    repo: &str,
+    row: &serde_json::Value,
+    now: &mut Instant,
+    wall: &mut DateTime<Local>,
+    expected: &mut Vec<String>,
+) {
+    let proofs = h.sweeper.lock_state().keys[&i2768_key()]
+        .ci
+        .completion
+        .proofs
+        .clone();
+    assert_eq!(proofs.len(), 6);
+    i2768_list(h, i2768_rows("completed"));
+    queue_endpoint(
+        h,
+        "repos/mblua/AgentsCommander/actions/runs/7",
+        Ok(ok_output(&row.to_string())),
+    );
+    queue_endpoint(
+        h,
+        "repos/mblua/AgentsCommander/actions/runs/7/attempts/1/jobs?per_page=100",
+        Err(FailureKind::Timeout),
+    );
+    tick(now, wall, 10);
+    h.round(*now, *wall).await;
+    i2768_assert_edges(h, 0, 0);
+    assert_eq!(h.snapshot()[repo].ci, CiState::Unknown);
+    {
+        let state = h.sweeper.lock_state();
+        let ci = &state.keys[&i2768_key()].ci;
+        assert_eq!(ci.failure, Some(FailureKind::Timeout));
+        assert_eq!(ci.completion.proofs, proofs);
+        assert!(!ci.completion.closing_ready);
+    }
+    expected.extend([
+        format!(
+            "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",
+            sha_of('a')
+        ),
+        "repos/mblua/AgentsCommander/actions/runs/7".to_string(),
+        "repos/mblua/AgentsCommander/actions/runs/7/attempts/1/jobs?per_page=100".to_string(),
+    ]);
+}
+fn i2768_assert_proof_round(h: &Harness, id: u64, confirmed_wall: DateTime<Local>) {
+    let state = h.sweeper.lock_state();
+    let ci = &state.keys[&i2768_key()].ci;
+    assert_eq!(ci.completion.proofs.len(), id as usize);
+    assert_eq!(ci.last_confirmed_at, Some(confirmed_wall));
+    assert_eq!(ci.run_ids, (1..=12).rev().collect::<Vec<_>>());
+    assert!(state.budget_tokens >= 0.0);
+}
+
 #[tokio::test]
 async fn i2768_all_runs_finish_once() {
     let _guard = round_test_lock().await;
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
-    let rows = |status| {
-        (1..=12)
-            .rev()
-            .map(|id| {
-                let mut row = i2768_row(id, status);
-                row["workflow_id"] = serde_json::json!(700 + id % 2);
-                row
-            })
-            .collect::<Vec<_>>()
-    };
+    let rows = i2768_rows;
     i2768_list(&h, rows("in_progress"));
     h.round(now, wall).await;
     let confirmed_wall = wall;
@@ -247,43 +302,7 @@ async fn i2768_all_runs_finish_once() {
         let mut row = i2768_row(id, "completed");
         row["workflow_id"] = serde_json::json!(700 + id % 2);
         if id == 7 {
-            let proofs = h.sweeper.lock_state().keys[&i2768_key()]
-                .ci
-                .completion
-                .proofs
-                .clone();
-            assert_eq!(proofs.len(), 6);
-            i2768_list(&h, rows("completed"));
-            queue_endpoint(
-                &h,
-                "repos/mblua/AgentsCommander/actions/runs/7",
-                Ok(ok_output(&row.to_string())),
-            );
-            queue_endpoint(
-                &h,
-                "repos/mblua/AgentsCommander/actions/runs/7/attempts/1/jobs?per_page=100",
-                Err(FailureKind::Timeout),
-            );
-            tick(&mut now, &mut wall, 10);
-            h.round(now, wall).await;
-            i2768_assert_edges(&h, 0, 0);
-            assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
-            {
-                let state = h.sweeper.lock_state();
-                let ci = &state.keys[&i2768_key()].ci;
-                assert_eq!(ci.failure, Some(FailureKind::Timeout));
-                assert_eq!(ci.completion.proofs, proofs);
-                assert!(!ci.completion.closing_ready);
-            }
-            expected.extend([
-                format!(
-                    "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",
-                    sha_of('a')
-                ),
-                "repos/mblua/AgentsCommander/actions/runs/7".to_string(),
-                "repos/mblua/AgentsCommander/actions/runs/7/attempts/1/jobs?per_page=100"
-                    .to_string(),
-            ]);
+            i2768_timeout_at_seven(&h, &repo, &row, &mut now, &mut wall, &mut expected).await;
         }
         i2768_list(&h, rows("completed"));
         queue_completion(&h, &i2768_key().nwo, row);
@@ -291,14 +310,7 @@ async fn i2768_all_runs_finish_once() {
         h.round(now, wall).await;
         i2768_assert_edges(&h, 0, 0);
         i2768_assert_running(&h, &repo);
-        {
-            let state = h.sweeper.lock_state();
-            let ci = &state.keys[&i2768_key()].ci;
-            assert_eq!(ci.completion.proofs.len(), id as usize);
-            assert_eq!(ci.last_confirmed_at, Some(confirmed_wall));
-            assert_eq!(ci.run_ids, (1..=12).rev().collect::<Vec<_>>());
-            assert!(state.budget_tokens >= 0.0);
-        }
+        i2768_assert_proof_round(&h, id, confirmed_wall);
         expected.extend([
             format!(
                 "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",
@@ -497,93 +509,39 @@ async fn i2768_identity_and_attempt_fail_closed() {
     assert_eq!(answer.observations.len(), 2);
 }
 
-#[tokio::test]
-async fn i2768_incomplete_evidence_never_finishes() {
-    let _guard = round_test_lock().await;
-    let run = parse_ci_run_response(&i2768_row(1, "completed").to_string(), &i2768_key()).unwrap();
-    for count in [0, 2, 101] {
-        let mut jobs: serde_json::Value =
-            serde_json::from_str(&ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"]))
-                .unwrap();
-        jobs["total_count"] = serde_json::json!(count);
-        assert_eq!(
-            parse_ci_jobs_response(&jobs.to_string(), &run),
-            Err(FailureKind::Incomplete)
-        );
-    }
-    let jobs = ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"; 101]);
-    assert_eq!(
-        parse_ci_jobs_response(&jobs, &run),
-        Err(FailureKind::Incomplete)
+fn i2768_jobs_json() -> serde_json::Value {
+    serde_json::from_str(&ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"])).unwrap()
+}
+async fn i2768_bad_job_field(field: &str, value: serde_json::Value, kind: FailureKind) {
+    let (h, repo) = i2768_harness();
+    let mut now = Instant::now();
+    let mut wall = Local::now();
+    i2768_list(&h, vec![i2768_row(1, "in_progress")]);
+    h.round(now, wall).await;
+    i2768_list(&h, vec![i2768_row(1, "completed")]);
+    queue_endpoint(
+        &h,
+        "repos/mblua/AgentsCommander/actions/runs/1",
+        Ok(ok_output(&i2768_row(1, "completed").to_string())),
     );
-    for (field, value, kind) in [
-        ("run_id", serde_json::json!(50), FailureKind::Other),
-        (
-            "head_sha",
-            serde_json::json!(sha_of('b')),
-            FailureKind::Other,
-        ),
-        ("run_attempt", serde_json::Value::Null, FailureKind::Other),
-        ("head_branch", serde_json::Value::Null, FailureKind::Other),
-        ("id", serde_json::json!(0), FailureKind::Other),
-        (
-            "conclusion",
-            serde_json::Value::Null,
-            FailureKind::Incomplete,
-        ),
-    ] {
-        let (h, repo) = i2768_harness();
-        let mut now = Instant::now();
-        let mut wall = Local::now();
-        i2768_list(&h, vec![i2768_row(1, "in_progress")]);
-        h.round(now, wall).await;
-        i2768_list(&h, vec![i2768_row(1, "completed")]);
-        queue_endpoint(
-            &h,
-            "repos/mblua/AgentsCommander/actions/runs/1",
-            Ok(ok_output(&i2768_row(1, "completed").to_string())),
-        );
-        let mut jobs: serde_json::Value =
-            serde_json::from_str(&ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"]))
-                .unwrap();
-        jobs["jobs"][0][field] = value;
-        queue_endpoint(
-            &h,
-            "repos/mblua/AgentsCommander/actions/runs/1/attempts/1/jobs?per_page=100",
-            Ok(ok_output(&jobs.to_string())),
-        );
-        tick(&mut now, &mut wall, 10);
-        h.round(now, wall).await;
-        i2768_assert_edges(&h, 0, 0);
-        assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
-        assert_eq!(
-            h.sweeper.lock_state().keys[&i2768_key()].ci.failure,
-            Some(kind)
-        );
-        i2768_assert_consumed(&h);
-    }
-    let mut jobs: serde_json::Value =
-        serde_json::from_str(&ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"])).unwrap();
-    jobs["jobs"][0].as_object_mut().unwrap().remove("status");
-    assert_eq!(parse_ci_jobs_response(&jobs.to_string(), &run), Ok(false));
-    let mut jobs: serde_json::Value =
-        serde_json::from_str(&ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"])).unwrap();
-    jobs["jobs"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("run_attempt");
-    jobs["jobs"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("head_branch");
-    assert_eq!(parse_ci_jobs_response(&jobs.to_string(), &run), Ok(true));
-    let duplicate = jobs["jobs"][0].clone();
-    jobs["jobs"].as_array_mut().unwrap().push(duplicate);
-    jobs["total_count"] = serde_json::json!(2);
-    assert_eq!(
-        parse_ci_jobs_response(&jobs.to_string(), &run),
-        Err(FailureKind::Other)
+    let mut jobs: serde_json::Value = i2768_jobs_json();
+    jobs["jobs"][0][field] = value;
+    queue_endpoint(
+        &h,
+        "repos/mblua/AgentsCommander/actions/runs/1/attempts/1/jobs?per_page=100",
+        Ok(ok_output(&jobs.to_string())),
     );
+    tick(&mut now, &mut wall, 10);
+    h.round(now, wall).await;
+    i2768_assert_edges(&h, 0, 0);
+    assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
+    assert_eq!(
+        h.sweeper.lock_state().keys[&i2768_key()].ci.failure,
+        Some(kind)
+    );
+    i2768_assert_consumed(&h);
+}
+fn i2768_ledger_overflow() {
     let mut ledger = CiCompletionState::default();
     let runs = (1..=100)
         .map(|id| {
@@ -603,7 +561,8 @@ async fn i2768_incomplete_evidence_never_finishes() {
         Err(FailureKind::Incomplete)
     );
     assert_eq!(ledger.known.len(), 100);
-    // A cancelled run with no jobs still needs matching latest details.
+}
+async fn i2768_cancelled_without_jobs() {
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
@@ -649,6 +608,66 @@ async fn i2768_incomplete_evidence_never_finishes() {
     h.round(now, wall).await;
     i2768_assert_edges(&h, 0, 1);
     i2768_assert_consumed(&h);
+}
+
+#[tokio::test]
+async fn i2768_incomplete_evidence_never_finishes() {
+    let _guard = round_test_lock().await;
+    let run = parse_ci_run_response(&i2768_row(1, "completed").to_string(), &i2768_key()).unwrap();
+    for count in [0, 2, 101] {
+        let mut jobs: serde_json::Value = i2768_jobs_json();
+        jobs["total_count"] = serde_json::json!(count);
+        assert_eq!(
+            parse_ci_jobs_response(&jobs.to_string(), &run),
+            Err(FailureKind::Incomplete)
+        );
+    }
+    let jobs = ci_jobs_body(1, &sha_of('a'), "main", 1, &["completed"; 101]);
+    assert_eq!(
+        parse_ci_jobs_response(&jobs, &run),
+        Err(FailureKind::Incomplete)
+    );
+    for (field, value, kind) in [
+        ("run_id", serde_json::json!(50), FailureKind::Other),
+        (
+            "head_sha",
+            serde_json::json!(sha_of('b')),
+            FailureKind::Other,
+        ),
+        ("run_attempt", serde_json::Value::Null, FailureKind::Other),
+        ("head_branch", serde_json::Value::Null, FailureKind::Other),
+        ("id", serde_json::json!(0), FailureKind::Other),
+        (
+            "conclusion",
+            serde_json::Value::Null,
+            FailureKind::Incomplete,
+        ),
+    ] {
+        i2768_bad_job_field(field, value, kind).await;
+    }
+    let mut jobs: serde_json::Value = i2768_jobs_json();
+    jobs["jobs"][0].as_object_mut().unwrap().remove("status");
+    assert_eq!(parse_ci_jobs_response(&jobs.to_string(), &run), Ok(false));
+    let mut jobs: serde_json::Value = i2768_jobs_json();
+    jobs["jobs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("run_attempt");
+    jobs["jobs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("head_branch");
+    assert_eq!(parse_ci_jobs_response(&jobs.to_string(), &run), Ok(true));
+    let duplicate = jobs["jobs"][0].clone();
+    jobs["jobs"].as_array_mut().unwrap().push(duplicate);
+    jobs["total_count"] = serde_json::json!(2);
+    assert_eq!(
+        parse_ci_jobs_response(&jobs.to_string(), &run),
+        Err(FailureKind::Other)
+    );
+    i2768_ledger_overflow();
+    // A cancelled run with no jobs still needs matching latest details.
+    i2768_cancelled_without_jobs().await;
 }
 
 #[tokio::test]
@@ -743,10 +762,8 @@ async fn i2768_rerun_invalidates_completion() {
         i2768_assert_consumed(&h);
     }
 }
-#[tokio::test]
-async fn i2768_failures_preserve_known_runs() {
-    let _guard = round_test_lock().await;
-    let failures = [
+fn i2768_failures() -> [Result<GhCallOutput, FailureKind>; 7] {
+    [
         Err(FailureKind::Timeout),
         Ok(ok_output("{")),
         Ok(GhCallOutput {
@@ -762,161 +779,162 @@ async fn i2768_failures_preserve_known_runs() {
         Ok(primary_limit_output()),
         Ok(secondary_limit_output()),
         Err(FailureKind::Other),
-    ];
-    let kinds = [
-        FailureKind::Timeout,
-        FailureKind::Other,
-        FailureKind::NotAuthenticated,
-        FailureKind::Other,
-        FailureKind::RateLimited,
-        FailureKind::SecondaryRateLimited,
-        FailureKind::Other,
-    ];
-    for point in ["A", "B", "C", "list", "compare"] {
-        for (failure, kind) in failures.iter().zip(kinds) {
-            let failure = || match failure {
-                Ok(output) => Ok(GhCallOutput {
-                    success: output.success,
-                    stdout: output.stdout.clone(),
-                    stderr: output.stderr.clone(),
-                }),
-                Err(kind) => Err(*kind),
-            };
-            let (h, repo) = i2768_harness();
-            let mut now = Instant::now();
-            let mut wall = Local::now();
-            let terminal = || vec![i2768_row(1, "completed"), i2768_row(2, "completed")];
-            i2768_list(
-                &h,
-                vec![i2768_row(1, "in_progress"), i2768_row(2, "in_progress")],
-            );
-            h.round(now, wall).await;
-            i2768_list(&h, terminal());
-            queue_completion(&h, &i2768_key().nwo, i2768_row(1, "completed"));
-            tick(&mut now, &mut wall, 10);
-            h.round(now, wall).await;
-            let proofs = h.sweeper.lock_state().keys[&i2768_key()]
-                .ci
-                .completion
-                .proofs
-                .clone();
-            assert_eq!(proofs.len(), 1);
-            if point == "list" {
-                queue_endpoint(
-                    &h,
-                    &format!(
-                        "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",
-                        sha_of('a')
-                    ),
-                    failure(),
-                );
+    ]
+}
+fn i2768_queue_failure(
+    h: &Harness,
+    point: &str,
+    failure: &impl Fn() -> Result<GhCallOutput, FailureKind>,
+    terminal: &impl Fn() -> Vec<serde_json::Value>,
+) {
+    if point == "list" {
+        queue_endpoint(
+            h,
+            &format!(
+                "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",
+                sha_of('a')
+            ),
+            failure(),
+        );
+    } else {
+        i2768_list(h, terminal());
+    }
+    if point == "compare" {
+        h.sweeper
+            .lock_state()
+            .base_branches
+            .insert(i2768_key().nwo, "base".to_string());
+        queue_endpoint(
+            h,
+            &format!("repos/mblua/AgentsCommander/compare/HEAD...{}", sha_of('a')),
+            failure(),
+        );
+    }
+    if ["A", "B", "C"].contains(&point) {
+        let endpoint = "repos/mblua/AgentsCommander/actions/runs/2";
+        queue_endpoint(
+            h,
+            endpoint,
+            if point == "A" {
+                failure()
             } else {
-                i2768_list(&h, terminal());
-            }
-            if point == "compare" {
-                h.sweeper
-                    .lock_state()
-                    .base_branches
-                    .insert(i2768_key().nwo, "base".to_string());
-                queue_endpoint(
-                    &h,
-                    &format!("repos/mblua/AgentsCommander/compare/HEAD...{}", sha_of('a')),
-                    failure(),
-                );
-            }
-            if ["A", "B", "C"].contains(&point) {
-                let endpoint = "repos/mblua/AgentsCommander/actions/runs/2";
-                queue_endpoint(
-                    &h,
-                    endpoint,
-                    if point == "A" {
-                        failure()
-                    } else {
-                        Ok(ok_output(&i2768_row(2, "completed").to_string()))
-                    },
-                );
-                if point != "A" {
-                    queue_endpoint(
-                        &h,
-                        &format!("{endpoint}/attempts/1/jobs?per_page=100"),
-                        if point == "B" {
-                            failure()
-                        } else {
-                            Ok(ok_output(&ci_jobs_body(
-                                2,
-                                &sha_of('a'),
-                                "main",
-                                1,
-                                &["completed"],
-                            )))
-                        },
-                    );
-                }
-                if point == "C" {
-                    queue_endpoint(&h, endpoint, failure());
-                }
-            }
-            tick(&mut now, &mut wall, 10);
+                Ok(ok_output(&i2768_row(2, "completed").to_string()))
+            },
+        );
+        if point != "A" {
+            queue_endpoint(
+                h,
+                &format!("{endpoint}/attempts/1/jobs?per_page=100"),
+                if point == "B" {
+                    failure()
+                } else {
+                    Ok(ok_output(&ci_jobs_body(
+                        2,
+                        &sha_of('a'),
+                        "main",
+                        1,
+                        &["completed"],
+                    )))
+                },
+            );
+        }
+        if point == "C" {
+            queue_endpoint(h, endpoint, failure());
+        }
+    }
+}
+async fn i2768_failure_case(
+    point: &str,
+    failure: &Result<GhCallOutput, FailureKind>,
+    kind: FailureKind,
+) {
+    let failure = || match failure {
+        Ok(output) => Ok(GhCallOutput {
+            success: output.success,
+            stdout: output.stdout.clone(),
+            stderr: output.stderr.clone(),
+        }),
+        Err(kind) => Err(*kind),
+    };
+    let (h, repo) = i2768_harness();
+    let mut now = Instant::now();
+    let mut wall = Local::now();
+    let terminal = || vec![i2768_row(1, "completed"), i2768_row(2, "completed")];
+    i2768_list(
+        &h,
+        vec![i2768_row(1, "in_progress"), i2768_row(2, "in_progress")],
+    );
+    h.round(now, wall).await;
+    i2768_list(&h, terminal());
+    queue_completion(&h, &i2768_key().nwo, i2768_row(1, "completed"));
+    tick(&mut now, &mut wall, 10);
+    h.round(now, wall).await;
+    let proofs = h.sweeper.lock_state().keys[&i2768_key()]
+        .ci
+        .completion
+        .proofs
+        .clone();
+    assert_eq!(proofs.len(), 1);
+    i2768_queue_failure(&h, point, &failure, &terminal);
+    tick(&mut now, &mut wall, 10);
+    h.round(now, wall).await;
+    i2768_assert_edges(&h, 0, 0);
+    assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
+    {
+        let state = h.sweeper.lock_state();
+        let ci = &state.keys[&i2768_key()].ci;
+        assert_eq!(ci.failure, Some(kind), "point={point}");
+        assert_eq!(ci.completion.known.len(), 2);
+        assert_eq!(ci.completion.active_ids, vec![1, 2]);
+        assert_eq!(ci.completion.proofs, proofs);
+        assert!(!ci.completion.closing_ready);
+    }
+    // Three permanent failures remain unknown; no age-based success.
+    if point == "A" && kind == FailureKind::Other {
+        for _ in 0..3 {
+            i2768_list(&h, terminal());
+            queue_endpoint(
+                &h,
+                "repos/mblua/AgentsCommander/actions/runs/2",
+                Ok(GhCallOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "HTTP 404".to_string(),
+                }),
+            );
+            tick(&mut now, &mut wall, 900);
             h.round(now, wall).await;
             i2768_assert_edges(&h, 0, 0);
             assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
-            {
-                let state = h.sweeper.lock_state();
-                let ci = &state.keys[&i2768_key()].ci;
-                assert_eq!(ci.failure, Some(kind), "point={point}");
-                assert_eq!(ci.completion.known.len(), 2);
-                assert_eq!(ci.completion.active_ids, vec![1, 2]);
-                assert_eq!(ci.completion.proofs, proofs);
-                assert!(!ci.completion.closing_ready);
-            }
-            // Three permanent failures remain unknown; no age-based success.
-            if point == "A" && kind == FailureKind::Other {
-                for _ in 0..3 {
-                    i2768_list(&h, terminal());
-                    queue_endpoint(
-                        &h,
-                        "repos/mblua/AgentsCommander/actions/runs/2",
-                        Ok(GhCallOutput {
-                            success: false,
-                            stdout: String::new(),
-                            stderr: "HTTP 404".to_string(),
-                        }),
-                    );
-                    tick(&mut now, &mut wall, 900);
-                    h.round(now, wall).await;
-                    i2768_assert_edges(&h, 0, 0);
-                    assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
-                }
-            }
-            if point == "compare" {
-                h.sweeper
-                    .lock_state()
-                    .base_branches
-                    .insert(i2768_key().nwo, DEFAULT_BRANCH_LABEL.to_string());
-            }
-            i2768_list(&h, terminal());
-            queue_completion(&h, &i2768_key().nwo, i2768_row(2, "completed"));
-            tick(&mut now, &mut wall, 900);
-            h.round(now, wall).await;
-            i2768_assert_running(&h, &repo);
-            i2768_assert_edges(&h, 0, 0);
-            i2768_list(&h, vec![]);
-            tick(&mut now, &mut wall, 10);
-            h.round(now, wall).await;
-            i2768_assert_edges(&h, 0, 1);
-            let details = i2768_details(&h);
-            assert_eq!(
-                details
-                    .iter()
-                    .filter(|endpoint| endpoint.as_str()
-                        == "repos/mblua/AgentsCommander/actions/runs/1")
-                    .count(),
-                2
-            );
-            i2768_assert_consumed(&h);
         }
     }
-    // Even all old proofs cannot finish through a failed closing list.
+    if point == "compare" {
+        h.sweeper
+            .lock_state()
+            .base_branches
+            .insert(i2768_key().nwo, DEFAULT_BRANCH_LABEL.to_string());
+    }
+    i2768_list(&h, terminal());
+    queue_completion(&h, &i2768_key().nwo, i2768_row(2, "completed"));
+    tick(&mut now, &mut wall, 900);
+    h.round(now, wall).await;
+    i2768_assert_running(&h, &repo);
+    i2768_assert_edges(&h, 0, 0);
+    i2768_list(&h, vec![]);
+    tick(&mut now, &mut wall, 10);
+    h.round(now, wall).await;
+    i2768_assert_edges(&h, 0, 1);
+    let details = i2768_details(&h);
+    assert_eq!(
+        details
+            .iter()
+            .filter(|endpoint| endpoint.as_str() == "repos/mblua/AgentsCommander/actions/runs/1")
+            .count(),
+        2
+    );
+    i2768_assert_consumed(&h);
+}
+async fn i2768_failed_closing_list() {
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
@@ -955,4 +973,26 @@ async fn i2768_failures_preserve_known_runs() {
     i2768_assert_edges(&h, 0, 1);
     assert_eq!(i2768_details(&h).len(), 3);
     i2768_assert_consumed(&h);
+}
+
+#[tokio::test]
+async fn i2768_failures_preserve_known_runs() {
+    let _guard = round_test_lock().await;
+    let failures = i2768_failures();
+    let kinds = [
+        FailureKind::Timeout,
+        FailureKind::Other,
+        FailureKind::NotAuthenticated,
+        FailureKind::Other,
+        FailureKind::RateLimited,
+        FailureKind::SecondaryRateLimited,
+        FailureKind::Other,
+    ];
+    for point in ["A", "B", "C", "list", "compare"] {
+        for (failure, kind) in failures.iter().zip(kinds) {
+            i2768_failure_case(point, failure, kind).await;
+        }
+    }
+    // Even all old proofs cannot finish through a failed closing list.
+    i2768_failed_closing_list().await;
 }

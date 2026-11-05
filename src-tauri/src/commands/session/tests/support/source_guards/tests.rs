@@ -186,57 +186,61 @@ fn source_guards_round4_controls() {
             .unwrap()
             .push_str("\nasync fn create_session_inner_core() {}\n");
         rejected(mode, "duplicate entry", source_map_complete(&probe));
-        if original.contains_key(CORE_SOURCE) {
-            for path in [
-                CORE_SOURCE,
-                CREATION_SOURCE,
-                CONTEXT_SOURCE,
-                BACKEND_SOURCE,
-                PUBLICATION_SOURCE,
-            ] {
+        assert_split_source_controls(mode, &original);
+    }
+}
+
+fn assert_split_source_controls(mode: &str, original: &SessionSources) {
+    if original.contains_key(CORE_SOURCE) {
+        for path in [
+            CORE_SOURCE,
+            CREATION_SOURCE,
+            CONTEXT_SOURCE,
+            BACKEND_SOURCE,
+            PUBLICATION_SOURCE,
+        ] {
+            let mut probe = original.clone();
+            probe.remove(path);
+            rejected(
+                mode,
+                &format!("missing {path}"),
+                source_map_complete(&probe),
+            );
+        }
+        for call in [
+            "context::prepare(",
+            "backend::spawn(",
+            "publication::complete(",
+        ] {
+            for replacement in ["", "other::redirect("] {
                 let mut probe = original.clone();
-                probe.remove(path);
+                replace_source(&mut probe, call, replacement);
+                assert!(!source_chain(&probe), "{mode}: remove/redirect {call}");
+                println!("{mode}: {call} -> {replacement}: rejected");
+            }
+        }
+        for &(_, call, _, _) in LINKS {
+            for replacement in ["", "other::redirect("] {
+                let mut probe = original.clone();
+                replace_source(&mut probe, call, replacement);
                 rejected(
                     mode,
-                    &format!("missing {path}"),
+                    &format!("helper {call} -> {replacement}"),
                     source_map_complete(&probe),
                 );
             }
-            for call in [
-                "context::prepare(",
-                "backend::spawn(",
-                "publication::complete(",
-            ] {
-                for replacement in ["", "other::redirect("] {
-                    let mut probe = original.clone();
-                    replace_source(&mut probe, call, replacement);
-                    assert!(!source_chain(&probe), "{mode}: remove/redirect {call}");
-                    println!("{mode}: {call} -> {replacement}: rejected");
-                }
-            }
-            for &(_, call, _, _) in LINKS {
-                for replacement in ["", "other::redirect("] {
-                    let mut probe = original.clone();
-                    replace_source(&mut probe, call, replacement);
-                    rejected(
-                        mode,
-                        &format!("helper {call} -> {replacement}"),
-                        source_map_complete(&probe),
-                    );
-                }
-            }
-            let mut probe = original.clone();
-            let core = probe.get_mut(CORE_SOURCE).unwrap();
-            let pending = source_range(core, PENDING, 0).unwrap().start;
-            let tail = ".map_err(|error|error.to_string());";
-            let range = source_range(&core[pending..], tail, 0).unwrap();
-            let end = pending + range.end;
-            let statement = core[pending..end].to_string();
-            core.replace_range(pending..end, "");
-            let call = "context::prepare(";
-            let after = core.find(call).unwrap() + call.len();
-            core.insert_str(after, &statement);
-            rejected(mode, "late pending insertion", source_pending(&probe));
         }
+        let mut probe = original.clone();
+        let core = probe.get_mut(CORE_SOURCE).unwrap();
+        let pending = source_range(core, PENDING, 0).unwrap().start;
+        let tail = ".map_err(|error|error.to_string());";
+        let range = source_range(&core[pending..], tail, 0).unwrap();
+        let end = pending + range.end;
+        let statement = core[pending..end].to_string();
+        core.replace_range(pending..end, "");
+        let call = "context::prepare(";
+        let after = core.find(call).unwrap() + call.len();
+        core.insert_str(after, &statement);
+        rejected(mode, "late pending insertion", source_pending(&probe));
     }
 }

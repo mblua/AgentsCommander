@@ -196,41 +196,7 @@ fn render_png_inner(model: &TerminalScreenModel) -> Result<RenderedTerminalPng, 
         image.pixel_height,
         DEFAULT_BACKGROUND,
     )?;
-
-    for (row, line) in model.screen.lines.iter().enumerate() {
-        let mut column = 0usize;
-        while column < line.cells.len() {
-            let cell = &line.cells[column];
-            let span_columns = if cell.width == TerminalCellWidth::WideLead {
-                2usize
-            } else {
-                1usize
-            };
-            let (_, background) = resolved_colors(cell);
-            fill_cell_span(
-                &mut pixels,
-                image.pixel_width,
-                row,
-                column,
-                span_columns,
-                background,
-            )?;
-            column = column
-                .checked_add(span_columns)
-                .ok_or(RenderError::Invariant)?;
-        }
-    }
-
-    if model.screen.cursor.visible && model.screen.cursor.in_bounds {
-        fill_cell_span(
-            &mut pixels,
-            image.pixel_width,
-            usize::from(model.screen.cursor.row),
-            usize::from(model.screen.cursor.column),
-            1,
-            CURSOR_BACKGROUND,
-        )?;
-    }
+    paint_backgrounds(model, &mut pixels, image.pixel_width)?;
 
     let mut glyph_cache: HashMap<u16, (Metrics, Vec<u8>)> = HashMap::new();
     let mut mask_bytes = 0usize;
@@ -272,24 +238,7 @@ fn render_png_inner(model: &TerminalScreenModel) -> Result<RenderedTerminalPng, 
                     continue;
                 }
 
-                if !glyph_cache.contains_key(&resolved_index) {
-                    if glyph_cache.len() >= usize::from(font.glyph_count()) {
-                        return Err(RenderError::Invariant);
-                    }
-                    let (metrics, mask) = font.rasterize_indexed(resolved_index, FONT_SIZE_PX);
-                    let expected = metrics
-                        .width
-                        .checked_mul(metrics.height)
-                        .ok_or(RenderError::Invariant)?;
-                    if expected != mask.len() {
-                        return Err(RenderError::Invariant);
-                    }
-                    mask_bytes = mask_bytes
-                        .checked_add(mask.len())
-                        .filter(|bytes| *bytes <= MAX_GLYPH_MASK_BYTES)
-                        .ok_or(RenderError::TooLarge)?;
-                    glyph_cache.insert(resolved_index, (metrics, mask));
-                }
+                ensure_glyph_cached(font, &mut glyph_cache, &mut mask_bytes, resolved_index)?;
                 let (metrics, mask) = glyph_cache
                     .get(&resolved_index)
                     .ok_or(RenderError::Invariant)?;
@@ -324,9 +273,87 @@ fn render_png_inner(model: &TerminalScreenModel) -> Result<RenderedTerminalPng, 
     }
 
     drop(glyph_cache);
+    let bytes = encode_png(pixels, image.pixel_width, image.pixel_height)?;
+    validate_generated_png(&bytes, image.pixel_width, image.pixel_height)
+        .map_err(|_| RenderError::Png)?;
+    Ok(RenderedTerminalPng {
+        bytes,
+        pixel_width: image.pixel_width,
+        pixel_height: image.pixel_height,
+        fallback_glyph_count,
+    })
+}
+
+fn paint_backgrounds(
+    model: &TerminalScreenModel,
+    pixels: &mut [u8],
+    pixel_width: u32,
+) -> Result<(), RenderError> {
+    for (row, line) in model.screen.lines.iter().enumerate() {
+        let mut column = 0usize;
+        while column < line.cells.len() {
+            let cell = &line.cells[column];
+            let span_columns = if cell.width == TerminalCellWidth::WideLead {
+                2usize
+            } else {
+                1usize
+            };
+            let (_, background) = resolved_colors(cell);
+            fill_cell_span(pixels, pixel_width, row, column, span_columns, background)?;
+            column = column
+                .checked_add(span_columns)
+                .ok_or(RenderError::Invariant)?;
+        }
+    }
+
+    if model.screen.cursor.visible && model.screen.cursor.in_bounds {
+        fill_cell_span(
+            pixels,
+            pixel_width,
+            usize::from(model.screen.cursor.row),
+            usize::from(model.screen.cursor.column),
+            1,
+            CURSOR_BACKGROUND,
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_glyph_cached(
+    font: &Font,
+    glyph_cache: &mut HashMap<u16, (Metrics, Vec<u8>)>,
+    mask_bytes: &mut usize,
+    resolved_index: u16,
+) -> Result<(), RenderError> {
+    if !glyph_cache.contains_key(&resolved_index) {
+        if glyph_cache.len() >= usize::from(font.glyph_count()) {
+            return Err(RenderError::Invariant);
+        }
+        let (metrics, mask) = font.rasterize_indexed(resolved_index, FONT_SIZE_PX);
+        let expected = metrics
+            .width
+            .checked_mul(metrics.height)
+            .ok_or(RenderError::Invariant)?;
+        if expected != mask.len() {
+            return Err(RenderError::Invariant);
+        }
+        *mask_bytes = mask_bytes
+            .checked_add(mask.len())
+            .filter(|bytes| *bytes <= MAX_GLYPH_MASK_BYTES)
+            .ok_or(RenderError::TooLarge)?;
+        glyph_cache.insert(resolved_index, (metrics, mask));
+    }
+    Ok(())
+}
+
+fn encode_png(
+    pixels: Vec<u8>,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> Result<Vec<u8>, RenderError> {
     let mut capped = CappedWriter::new(MAX_PNG_BYTES);
     {
-        let mut encoder = png::Encoder::new(&mut capped, image.pixel_width, image.pixel_height);
+        let mut encoder = png::Encoder::new(&mut capped, pixel_width, pixel_height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Fast);
@@ -338,17 +365,9 @@ fn render_png_inner(model: &TerminalScreenModel) -> Result<RenderedTerminalPng, 
         writer.finish().map_err(|_| RenderError::Png)?;
     }
     drop(pixels);
-    let bytes = capped.into_bytes().map_err(|error| match error {
+    capped.into_bytes().map_err(|error| match error {
         ProtocolError::TooLarge => RenderError::TooLarge,
         _ => RenderError::Png,
-    })?;
-    validate_generated_png(&bytes, image.pixel_width, image.pixel_height)
-        .map_err(|_| RenderError::Png)?;
-    Ok(RenderedTerminalPng {
-        bytes,
-        pixel_width: image.pixel_width,
-        pixel_height: image.pixel_height,
-        fallback_glyph_count,
     })
 }
 

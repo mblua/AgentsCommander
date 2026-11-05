@@ -261,16 +261,14 @@ pub(crate) fn validate_selection_anchor(
     Ok((validated.launch_path, validated.origin_matrix_dir))
 }
 
-pub(crate) fn enumerate_profile_assignment_targets(
+fn collect_scope_candidate_dirs(
     settings: &AppSettings,
-    target_replica_path: &Path,
     scope: &ProfileAssignmentScope,
-    sessions: &[SessionInfo],
-) -> Result<ProfileTargetEnumeration, String> {
-    let (anchor_dir, anchor_matrix_dir) = validate_selection_anchor(settings, target_replica_path)?;
+    anchor_dir: &Path,
+) -> Result<CandidateDirs, String> {
     let mut candidate_dirs = CandidateDirs::new();
     match scope {
-        ProfileAssignmentScope::Replica => candidate_dirs.dirs.push(anchor_dir.clone()),
+        ProfileAssignmentScope::Replica => candidate_dirs.dirs.push(anchor_dir.to_path_buf()),
         ProfileAssignmentScope::Workgroup => {
             let room_dir = anchor_dir
                 .parent()
@@ -283,6 +281,17 @@ pub(crate) fn enumerate_profile_assignment_targets(
             }
         }
     }
+    Ok(candidate_dirs)
+}
+
+pub(crate) fn enumerate_profile_assignment_targets(
+    settings: &AppSettings,
+    target_replica_path: &Path,
+    scope: &ProfileAssignmentScope,
+    sessions: &[SessionInfo],
+) -> Result<ProfileTargetEnumeration, String> {
+    let (anchor_dir, anchor_matrix_dir) = validate_selection_anchor(settings, target_replica_path)?;
+    let candidate_dirs = collect_scope_candidate_dirs(settings, scope, &anchor_dir)?;
     let mut warnings = candidate_dirs.warnings;
     let mut scope_faults = candidate_dirs.faults;
     let mut counts_complete = candidate_dirs.complete;

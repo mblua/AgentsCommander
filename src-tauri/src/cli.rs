@@ -522,33 +522,22 @@ pub fn flush_outputs() {
     let _ = std::io::stderr().flush();
 }
 
-fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
-    use std::path::PathBuf;
-    use uuid::Uuid;
-    let Some(root) = args.root else {
-        eprintln!("Error: --root is required.");
-        return 1;
-    };
-    let is_root = match validate_cli_token(&args.token) {
-        Ok((_, privileged)) => privileged,
-        Err(error) => {
-            eprintln!("{error}");
-            return 1;
-        }
-    };
-    let sender = self_clear::resolve_self_clear_sender(&root);
-    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
-    let msg_id = Uuid::new_v4().to_string();
-    let request_id = Uuid::new_v4().to_string();
-    let message = crate::phone::types::OutboxMessage {
-        id: msg_id.clone(),
-        token: args.token,
-        from: sender.clone(),
+/// Builds the outbox request for a plain self-clear.
+fn plain_clear_message(
+    token: Option<String>,
+    sender: &str,
+    msg_id: &str,
+    request_id: &str,
+) -> crate::phone::types::OutboxMessage {
+    crate::phone::types::OutboxMessage {
+        id: msg_id.to_string(),
+        token,
+        from: sender.to_string(),
         to: String::new(),
         body: String::new(),
         mode: String::new(),
         get_output: false,
-        request_id: Some(request_id.clone()),
+        request_id: Some(request_id.to_string()),
         sender_agent: None,
         preferred_agent: String::new(),
         requested_profile: None,
@@ -568,17 +557,43 @@ fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
         dry_run: None,
         quiet_period_ms: None,
         pty_input: None,
-    };
-    let outbox_dir = if is_root {
+    }
+}
+
+/// Picks the outbox: the app-published path for root tokens, else the agent's own.
+fn plain_clear_outbox_dir(is_root: bool, ac_dir: &std::path::Path) -> std::path::PathBuf {
+    if is_root {
         crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
             .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()))
+            .map(|s| std::path::PathBuf::from(s.trim()))
             .filter(|p| directories::cli_discovery_is_dir(p))
             .unwrap_or_else(|| ac_dir.join("outbox"))
     } else {
         ac_dir.join("outbox")
+    }
+}
+
+fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
+    use std::path::PathBuf;
+    use uuid::Uuid;
+    let Some(root) = args.root else {
+        eprintln!("Error: --root is required.");
+        return 1;
     };
+    let is_root = match validate_cli_token(&args.token) {
+        Ok((_, privileged)) => privileged,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    let sender = self_clear::resolve_self_clear_sender(&root);
+    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
+    let msg_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4().to_string();
+    let message = plain_clear_message(args.token, &sender, &msg_id, &request_id);
+    let outbox_dir = plain_clear_outbox_dir(is_root, &ac_dir);
     let request_path = outbox_dir.join(format!("{msg_id}.json"));
     let ack_path = ac_dir.join("responses").join(format!("{request_id}.json"));
     let rejection_path = outbox_dir

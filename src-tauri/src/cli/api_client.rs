@@ -217,11 +217,7 @@ fn list(a: ListArgs) -> i32 {
     match serde_json::to_string_pretty(&output) {
         Ok(json) => {
             crate::cli_println!("{}", json);
-            if snapshot.problem.is_some() {
-                1
-            } else {
-                0
-            }
+            i32::from(snapshot.problem.is_some())
         }
         Err(e) => {
             eprintln!("Error: failed to serialize client list: {e}");

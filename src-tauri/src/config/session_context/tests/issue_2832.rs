@@ -364,57 +364,9 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
                 std::fs::write(path, "PROTECTED CONTEXT SENTINEL\n").unwrap();
             }
         }
-        for (source, selected_override, entries, selected_off, selected_on) in [
-            (
-                authored,
-                None,
-                serde_json::json!(["../Context.root-agent.md"]),
-                authored_off,
-                "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
-            ),
-            (
-                "DELETED ALL DEFAULT SECTIONS\n",
-                None,
-                serde_json::json!(["../Context.root-agent.md"]),
-                "DELETED ALL DEFAULT SECTIONS\n",
-                "DELETED ALL DEFAULT SECTIONS\n",
-            ),
-            (
-                "",
-                None,
-                serde_json::json!(["../Context.root-agent.md"]),
-                "",
-                "",
-            ),
-            (
-                authored,
-                Some(local),
-                serde_json::json!(["../Context.root-agent.md"]),
-                local,
-                local,
-            ),
-            (
-                authored,
-                Some(""),
-                serde_json::json!(["../Context.root-agent.md"]),
-                "",
-                "",
-            ),
-            (
-                authored,
-                None,
-                serde_json::json!([]),
-                authored_off,
-                "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
-            ),
-            (
-                authored,
-                None,
-                serde_json::json!(["Role.md"]),
-                authored_off,
-                "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
-            ),
-        ] {
+        for (source, selected_override, entries, selected_off, selected_on) in
+            root_exclusion_cases(authored, authored_off, local)
+        {
             std::fs::write(&base, source).unwrap();
             match selected_override {
                 Some(text) => std::fs::write(&overlay, text).unwrap(),
@@ -727,4 +679,70 @@ fn issue_2832_raw_and_canonical_aliases_cannot_enter_other_context_routes() {
         .unwrap()
         .join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)
         .exists());
+}
+
+type RootExclusionCase<'a> = (
+    &'a str,
+    Option<&'a str>,
+    serde_json::Value,
+    &'a str,
+    &'a str,
+);
+
+fn root_exclusion_cases<'a>(
+    authored: &'a str,
+    authored_off: &'a str,
+    local: &'a str,
+) -> [RootExclusionCase<'a>; 7] {
+    [
+        (
+            authored,
+            None,
+            serde_json::json!(["../Context.root-agent.md"]),
+            authored_off,
+            "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
+        ),
+        (
+            "DELETED ALL DEFAULT SECTIONS\n",
+            None,
+            serde_json::json!(["../Context.root-agent.md"]),
+            "DELETED ALL DEFAULT SECTIONS\n",
+            "DELETED ALL DEFAULT SECTIONS\n",
+        ),
+        (
+            "",
+            None,
+            serde_json::json!(["../Context.root-agent.md"]),
+            "",
+            "",
+        ),
+        (
+            authored,
+            Some(local),
+            serde_json::json!(["../Context.root-agent.md"]),
+            local,
+            local,
+        ),
+        (
+            authored,
+            Some(""),
+            serde_json::json!(["../Context.root-agent.md"]),
+            "",
+            "",
+        ),
+        (
+            authored,
+            None,
+            serde_json::json!([]),
+            authored_off,
+            "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
+        ),
+        (
+            authored,
+            None,
+            serde_json::json!(["Role.md"]),
+            authored_off,
+            "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
+        ),
+    ]
 }

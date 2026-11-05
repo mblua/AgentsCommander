@@ -1,26 +1,62 @@
 use super::*;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "P05 reuses one operation within the same fixture and whole66 history using the \
-        unchanged outer scenario."
-)]
-pub(super) async fn retained_source_operation(
-    fixture: &MailboxFixture,
-    coordinator: &crate::session::selection::SelectionCoordinator,
-    route: &crate::config::teams::VerifiedPtyInputRoute,
+mod readiness;
+use readiness::retained_readiness_observer;
+
+#[derive(Clone, Copy)]
+struct RetainedSourceFlags {
+    reclaim: bool,
+    check_reacquire: bool,
+    newer_b: bool,
+    walk_terminal: bool,
+    shutdown_executing: bool,
+    seal_insert_first: bool,
+    seed_scenario: bool,
+    full: bool,
+    under_commit: bool,
+    inline: bool,
+}
+
+struct RetainedSourceResumes {
+    terminal: tokio::sync::oneshot::Sender<()>,
+    tail: tokio::sync::oneshot::Sender<()>,
+    insertion: tokio::sync::oneshot::Sender<()>,
+    native: tokio::sync::oneshot::Sender<()>,
+    baseline: tokio::sync::oneshot::Sender<()>,
+    commit: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Sender<()>,
+    publication: tokio::sync::oneshot::Sender<()>,
+}
+
+struct RetainedSourceCtx<'a> {
+    fixture: &'a MailboxFixture,
+    app: &'a tauri::AppHandle<tauri::test::MockRuntime>,
+    coordinator: &'a crate::session::selection::SelectionCoordinator,
+    route: &'a crate::config::teams::VerifiedPtyInputRoute,
     sender: uuid::Uuid,
-    previous_slot: &mut uuid::Uuid,
+    previous: uuid::Uuid,
+    scenario: &'a str,
+    flags: RetainedSourceFlags,
+    control: &'a Arc<crate::session::selection::ReplacementFixtureControl>,
+    hooks: &'a MailboxTestHooks,
+    poller: &'a MailboxPoller,
+    manager: &'a SessionManager,
+    state: &'a crate::api::message_store::MessageStoreState,
+    store: &'a Arc<crate::api::message_store::MessageStore>,
+    seed_source: &'a Path,
+}
+
+type RetainedSourceOutcome = (
+    uuid::Uuid,
+    Option<crate::session::session::SessionCommunication>,
+    crate::session::selection::ReplacementFixtureOwnerWeak,
+);
+
+fn retained_source_flags(
+    scenario: &str,
     pty_source: bool,
     inline: bool,
-    outer_scenario: &str,
-    operation: usize,
-) -> bool {
-    use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
-    use std::future::Future;
-    let app = fixture.app.handle();
-    let previous = *previous_slot;
-    let scenario = outer_scenario;
+) -> (RetainedSourceFlags, &str) {
     let reclaim = scenario == "reclaim-66";
     let check_reacquire = pty_source && scenario == "positive";
     let newer_b = scenario.starts_with("newer-") || scenario.starts_with("under-commit-");
@@ -31,19 +67,33 @@ pub(super) async fn retained_source_operation(
     let full = scenario.ends_with("full");
     let under_commit = scenario.starts_with("under-commit");
     let scenario = if reclaim { "positive" } else { scenario };
-    let seed_source = fixture
-        .target_cwd
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("default.p05-seed");
-    if seed_scenario {
-        configure_retained_seed_fixture(fixture, &seed_source).await;
-    }
+    let flags = RetainedSourceFlags {
+        reclaim,
+        check_reacquire,
+        newer_b,
+        walk_terminal,
+        shutdown_executing,
+        seal_insert_first,
+        seed_scenario,
+        full,
+        under_commit,
+        inline,
+    };
+    (flags, scenario)
+}
+
+fn retained_source_control(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    flags: RetainedSourceFlags,
+    scenario: &str,
+) -> (
+    Arc<crate::session::selection::ReplacementFixtureControl>,
+    RetainedSourceResumes,
+) {
+    use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
     let control = Arc::new(ReplacementFixtureControl::default());
     let (resume_terminal, terminal_gate) = tokio::sync::oneshot::channel();
-    if walk_terminal {
+    if flags.walk_terminal {
         control.actions.lock().unwrap().push(
             crate::session::selection::ReplacementFixtureAction::Pause {
                 cut: Cut::BeforeTerminalRemoval,
@@ -52,7 +102,7 @@ pub(super) async fn retained_source_operation(
         );
     }
     let (resume_tail, tail_gate) = tokio::sync::oneshot::channel();
-    if shutdown_executing {
+    if flags.shutdown_executing {
         control.actions.lock().unwrap().push(
             crate::session::selection::ReplacementFixtureAction::Pause {
                 cut: Cut::BeforeCarry,
@@ -69,9 +119,9 @@ pub(super) async fn retained_source_operation(
         assert!(backend.as_any().is::<MailboxMockPtyBackend>());
     }
     control.mock_backend.store(true, Ordering::Release);
-    control.ticket_only.store(!inline, Ordering::Release);
+    control.ticket_only.store(!flags.inline, Ordering::Release);
     let (resume_insertion, insertion_gate) = tokio::sync::oneshot::channel();
-    if scenario == "root-duplicate" || seal_insert_first {
+    if scenario == "root-duplicate" || flags.seal_insert_first {
         control.actions.lock().unwrap().push(
             crate::session::selection::ReplacementFixtureAction::Pause {
                 cut: Cut::SourceCoreEntered,
@@ -80,7 +130,7 @@ pub(super) async fn retained_source_operation(
         );
     }
     let (resume_native, native_gate) = tokio::sync::oneshot::channel();
-    if seed_scenario {
+    if flags.seed_scenario {
         control.actions.lock().unwrap().push(
             crate::session::selection::ReplacementFixtureAction::Pause {
                 cut: Cut::SeedNativeEnter,
@@ -91,7 +141,7 @@ pub(super) async fn retained_source_operation(
     let (resume_baseline, baseline_gate) = tokio::sync::oneshot::channel();
     *control.baseline_gate.lock().unwrap() = Some(baseline_gate);
     let (resume_commit, commit_gate) = tokio::sync::oneshot::channel();
-    if under_commit {
+    if flags.under_commit {
         control.actions.lock().unwrap().push(
             crate::session::selection::ReplacementFixtureAction::Pause {
                 cut: Cut::AfterDisarm,
@@ -101,7 +151,7 @@ pub(super) async fn retained_source_operation(
     }
     let (resume_release, release_gate) = tokio::sync::oneshot::channel();
     let (resume_publication, publication_gate) = tokio::sync::oneshot::channel();
-    if newer_b {
+    if flags.newer_b {
         control.actions.lock().unwrap().push(
             crate::session::selection::ReplacementFixtureAction::Pause {
                 cut: Cut::BeforePublication,
@@ -109,9 +159,435 @@ pub(super) async fn retained_source_operation(
             },
         );
     }
-    if inline {
+    if flags.inline {
         *control.before_release_gate.lock().unwrap() = Some(release_gate);
     }
+    let resumes = RetainedSourceResumes {
+        terminal: resume_terminal,
+        tail: resume_tail,
+        insertion: resume_insertion,
+        native: resume_native,
+        baseline: resume_baseline,
+        commit: resume_commit,
+        release: resume_release,
+        publication: resume_publication,
+    };
+    (control, resumes)
+}
+
+async fn retained_source_delivery(
+    ctx: &RetainedSourceCtx<'_>,
+    injection: Option<&str>,
+    message: &OutboxMessage,
+    delivery_finished: tokio::sync::oneshot::Sender<()>,
+) {
+    let (app, poller, control) = (ctx.app, ctx.poller, ctx.control);
+    let (seal_insert_first, inline) = (ctx.flags.seal_insert_first, ctx.flags.inline);
+    if let Some(injection) = injection {
+        poller
+            .dispatch_pty_input_operation(
+                app,
+                ctx.state,
+                injection,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+    } else {
+        let result = retained_fixture_ordinary_wake(poller, app, message, control).await;
+        if seal_insert_first {
+            if inline {
+                assert!(
+                    result.is_none(),
+                    "actual closed inline reserve returns retained"
+                );
+            } else {
+                assert!(result
+                    .expect("actual ticket setup result")
+                    .unwrap_err()
+                    .contains(
+                        &crate::session::selection::SelectionCoordinatorError::Unavailable
+                            .to_string()
+                    ));
+            }
+        } else if !ctx.flags.newer_b {
+            result
+                .expect("actual ordinary result")
+                .expect("actual ordinary source tail");
+        }
+    }
+    let _ = delivery_finished.send(());
+}
+
+async fn retained_source_root_prelude(
+    ctx: &RetainedSourceCtx<'_>,
+    resume_insertion: tokio::sync::oneshot::Sender<()>,
+) -> Option<RetainedSourceOutcome> {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let (control, coordinator) = (ctx.control, ctx.coordinator);
+    let seal_insert_first = ctx.flags.seal_insert_first;
+    if ctx.scenario == "root-duplicate" || seal_insert_first {
+        let entered = retained_source_wait_cut(control, Cut::SourceCoreEntered).await;
+        let weak = control.owner_weak(coordinator).unwrap();
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        if seal_insert_first {
+            assert_eq!(
+                control.observe_owner(coordinator).unwrap().effects_started,
+                0
+            );
+            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("real insertion precedes actual seal");
+            assert!(
+                !report.persistence_safe,
+                "real admitted work is incomplete at seal"
+            );
+            resume_insertion.send(()).unwrap();
+            return Some((entered.binding.unwrap().session_id(), None, weak));
+        }
+        assert_eq!(
+            control.attempt_duplicate(coordinator).unwrap_err(),
+            crate::session::selection::SelectionCoordinatorError::Busy.to_string()
+        );
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        assert!(weak.is_alive());
+        assert_eq!(
+            control.observe_owner(coordinator).unwrap().effects_started,
+            0
+        );
+        assert!(ctx
+            .manager
+            .get_pending_session(entered.binding.unwrap())
+            .await
+            .is_none());
+        resume_insertion.send(()).unwrap();
+    } else {
+        drop(resume_insertion);
+    }
+    None
+}
+
+async fn retained_source_seed_and_commit(
+    ctx: &RetainedSourceCtx<'_>,
+    resume_native: tokio::sync::oneshot::Sender<()>,
+    resume_commit: tokio::sync::oneshot::Sender<()>,
+) -> Option<crate::session::session::SessionCommunication> {
+    if ctx.flags.seed_scenario {
+        observe_retained_seed_fixture(
+            ctx.fixture,
+            ctx.coordinator,
+            ctx.control,
+            ctx.manager,
+            resume_native,
+            ctx.scenario,
+            ctx.seed_source,
+        )
+        .await;
+    } else {
+        drop(resume_native);
+    }
+    let mut expected_communication = None;
+    if ctx.flags.under_commit {
+        expected_communication =
+            observe_retained_commit_setter(ctx.control, ctx.manager, resume_commit, ctx.flags.full)
+                .await;
+    } else {
+        drop(resume_commit);
+    }
+    expected_communication
+}
+
+async fn retained_source_baseline_and_publication(
+    ctx: &RetainedSourceCtx<'_>,
+    expected_communication: &mut Option<crate::session::session::SessionCommunication>,
+    wait_gate: tokio::sync::oneshot::Receiver<()>,
+    resume_baseline: tokio::sync::oneshot::Sender<()>,
+    resume_publication: tokio::sync::oneshot::Sender<()>,
+) -> (
+    uuid::Uuid,
+    crate::session::selection::ReplacementFixtureOwnerWeak,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let (control, coordinator, manager) = (ctx.control, ctx.coordinator, ctx.manager);
+    let (newer_b, under_commit) = (ctx.flags.newer_b, ctx.flags.under_commit);
+    let baseline = retained_source_wait_cut(control, Cut::Baseline).await;
+    let id = baseline.binding.unwrap().session_id();
+    let owner_weak = control
+        .owner_weak(coordinator)
+        .expect("actual baseline owner Weak");
+    assert_ne!(id, ctx.previous);
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let version = manager
+        .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
+        .await;
+    drop(permit);
+    if !under_commit {
+        assert_eq!(baseline.initial_version, Some(version));
+    }
+    let setter_version = if newer_b {
+        if !under_commit {
+            *expected_communication =
+                set_retained_fixture_communication(manager, id, ctx.flags.full).await;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let changed = manager
+            .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
+            .await;
+        drop(permit);
+        assert_ne!(Some(changed), baseline.initial_version);
+        Some(changed)
+    } else {
+        None
+    };
+    // Existing detector fixture stimulus; no Ready result is forged.
+    let idle = ctx
+        .app
+        .state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+    idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+    idle.set_pty_input_ready_for_test(id);
+    ctx.hooks.real_inject_sessions.lock().unwrap().insert(id);
+    if ctx.flags.check_reacquire {
+        wait_gate.await.expect("real not-ready observation");
+    }
+    resume_baseline.send(()).unwrap();
+    if let Some(expected_version) = setter_version {
+        retained_source_wait_cut(control, Cut::BeforePublication).await;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let actual_version = manager
+            .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
+            .await;
+        drop(permit);
+        assert_retained_source_reconciliation(
+            control,
+            coordinator,
+            actual_version,
+            expected_version,
+            baseline.initial_version,
+        );
+        resume_publication.send(()).unwrap();
+    } else {
+        drop(resume_publication);
+    }
+    (id, owner_weak)
+}
+
+async fn retained_source_inline_release(
+    ctx: &RetainedSourceCtx<'_>,
+    id: uuid::Uuid,
+    resume_release: tokio::sync::oneshot::Sender<()>,
+    resume_tail: tokio::sync::oneshot::Sender<()>,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    use std::future::Future;
+    let (control, coordinator) = (ctx.control, ctx.coordinator);
+    let shutdown_executing = ctx.flags.shutdown_executing;
+    if ctx.flags.inline {
+        retained_source_wait_cut(control, Cut::AdapterReturned).await;
+        assert_retained_source_inline_boundary(
+            control,
+            coordinator,
+            ctx.app,
+            id,
+            ctx.flags.newer_b,
+        );
+        if shutdown_executing {
+            let close = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join());
+            tokio::pin!(close);
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    close.as_mut().poll(cx).is_pending()
+                ))
+                .await,
+                "actual worker still executes its admitted inline envelope"
+            );
+            resume_release.send(()).unwrap();
+            retained_source_wait_cut(control, Cut::BeforeCarry).await;
+            let report = close.await.expect("actual executing-inline shutdown/join");
+            assert!(
+                !report.persistence_safe,
+                "actual source carry is still Running"
+            );
+            assert!(control.received.load(Ordering::Acquire));
+            assert!(!control.observe_owner(coordinator).unwrap().transferred);
+        } else {
+            resume_release.send(()).unwrap();
+        }
+    } else {
+        drop(resume_release);
+    }
+    if shutdown_executing {
+        resume_tail.send(()).unwrap();
+    } else {
+        drop(resume_tail);
+    }
+}
+
+async fn retained_source_walk_terminal(
+    ctx: &RetainedSourceCtx<'_>,
+    owner_weak: &crate::session::selection::ReplacementFixtureOwnerWeak,
+    resume_terminal: tokio::sync::oneshot::Sender<()>,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let (control, coordinator) = (ctx.control, ctx.coordinator);
+    if ctx.flags.walk_terminal {
+        retained_source_wait_cut(control, Cut::BeforeTerminalRemoval).await;
+        let actual = control.observe_owner(coordinator).unwrap();
+        assert!(
+            actual.terminal && actual.transferred,
+            "actual strict terminal proof precedes observer, outside U"
+        );
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+            .await
+            .expect("actual terminal entry seal/traversal");
+        assert!(
+            report.persistence_safe,
+            "sealed traversal sees genuinely verified terminal owner"
+        );
+        assert!(owner_weak.is_alive());
+        resume_terminal.send(()).unwrap();
+    } else {
+        drop(resume_terminal);
+    }
+}
+
+async fn retained_source_controller(
+    ctx: &RetainedSourceCtx<'_>,
+    resumes: RetainedSourceResumes,
+    wait_gate: tokio::sync::oneshot::Receiver<()>,
+) -> RetainedSourceOutcome {
+    let RetainedSourceResumes {
+        terminal,
+        tail,
+        insertion,
+        native,
+        baseline,
+        commit,
+        release,
+        publication,
+    } = resumes;
+    if let Some(outcome) = retained_source_root_prelude(ctx, insertion).await {
+        return outcome;
+    }
+    let mut expected_communication = retained_source_seed_and_commit(ctx, native, commit).await;
+    let (id, owner_weak) = retained_source_baseline_and_publication(
+        ctx,
+        &mut expected_communication,
+        wait_gate,
+        baseline,
+        publication,
+    )
+    .await;
+    retained_source_inline_release(ctx, id, release, tail).await;
+    retained_source_walk_terminal(ctx, &owner_weak, terminal).await;
+    (id, expected_communication, owner_weak)
+}
+
+async fn retained_source_finish(
+    ctx: &RetainedSourceCtx<'_>,
+    previous_slot: &mut uuid::Uuid,
+    operation: usize,
+    outcome: RetainedSourceOutcome,
+    injection: Option<String>,
+) -> bool {
+    let (fixture, coordinator, control, manager) =
+        (ctx.fixture, ctx.coordinator, ctx.control, ctx.manager);
+    let (previous, flags) = (ctx.previous, ctx.flags);
+    let (id, expected_communication, owner_weak) = outcome;
+    if flags.seal_insert_first {
+        assert_retained_source_sealed(
+            fixture,
+            coordinator,
+            control,
+            manager,
+            previous,
+            id,
+            injection,
+            ctx.store,
+            &owner_weak,
+        )
+        .await;
+        return true;
+    }
+    if flags.inline {
+        assert_retained_source_receipt_order(control);
+    }
+    if flags.newer_b {
+        assert_retained_source_newer_result(
+            fixture,
+            coordinator,
+            control,
+            manager,
+            previous,
+            id,
+            flags.full,
+            expected_communication,
+        )
+        .await;
+    } else {
+        assert_retained_source_positive(
+            fixture, manager, previous, id, injection, ctx.store, ctx.hooks,
+        )
+        .await;
+    }
+    if flags.reclaim {
+        coordinator
+            .snapshot()
+            .await
+            .expect("real worker barrier after actual source transfer");
+        assert_eq!(
+            coordinator.fixture_root_count(),
+            Some(0),
+            "actual terminal removal reclaims capacity"
+        );
+        if operation + 1 < 66 {
+            retire_retained_fixture_member(fixture, coordinator, ctx.route, ctx.sender, id).await;
+            *previous_slot = id;
+        }
+        return false;
+    }
+    let report = coordinator.close_and_join().await;
+    assert_retained_source_lifetime(
+        coordinator,
+        &report,
+        &owner_weak,
+        flags.full,
+        flags.shutdown_executing,
+        flags.walk_terminal,
+    );
+    false
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "P05 reuses one operation within the same fixture and whole66 history using the \
+        unchanged outer scenario."
+)]
+pub(super) async fn retained_source_operation(
+    fixture: &MailboxFixture,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    route: &crate::config::teams::VerifiedPtyInputRoute,
+    sender: uuid::Uuid,
+    previous_slot: &mut uuid::Uuid,
+    pty_source: bool,
+    inline: bool,
+    outer_scenario: &str,
+    operation: usize,
+) -> bool {
+    let app = fixture.app.handle();
+    let previous = *previous_slot;
+    let (flags, scenario) = retained_source_flags(outer_scenario, pty_source, inline);
+    let seed_source = fixture
+        .target_cwd
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("default.p05-seed");
+    if flags.seed_scenario {
+        configure_retained_seed_fixture(fixture, &seed_source).await;
+    }
+    let (control, resumes) = retained_source_control(app, flags, scenario);
     let hooks = MailboxTestHooks::default();
     *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
     let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
@@ -129,411 +605,33 @@ pub(super) async fn retained_source_operation(
     message.id = format!("retained-source-{}", Uuid::new_v4());
     let (wait_observed, wait_gate) = tokio::sync::oneshot::channel();
     let (delivery_finished, delivery_gate) = tokio::sync::oneshot::channel();
-    let delivery = async {
-        if let Some(injection) = injection.as_deref() {
-            poller
-                .dispatch_pty_input_operation(
-                    app,
-                    &state,
-                    injection,
-                    crate::phone::types::PtyInputSourcePlane::HostCli,
-                    None,
-                )
-                .await;
-        } else {
-            let result = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
-            if seal_insert_first {
-                if inline {
-                    assert!(
-                        result.is_none(),
-                        "actual closed inline reserve returns retained"
-                    );
-                } else {
-                    assert!(result
-                        .expect("actual ticket setup result")
-                        .unwrap_err()
-                        .contains(
-                            &crate::session::selection::SelectionCoordinatorError::Unavailable
-                                .to_string()
-                        ));
-                }
-            } else if !newer_b {
-                result
-                    .expect("actual ordinary result")
-                    .expect("actual ordinary source tail");
-            }
-        }
-        let _ = delivery_finished.send(());
-    };
-    let readiness_observer = async {
-        if !check_reacquire {
-            return;
-        }
-        let baseline = retained_source_wait_cut(&control, Cut::Baseline).await;
-        let id = baseline.binding.unwrap().session_id();
-        assert!(
-            !pty_spawn_scope_may_resume(app, &route.target).await,
-            "real Preparing B is not strict retired A"
-        );
-        let waiting_id =
-            enqueue_shared_pty_engine_operation(&store, route, sender, b"waiting-preboundary");
-        let initial = store
-            .query_pty_input_by_injection(&waiting_id)
-            .unwrap()
-            .unwrap();
-        let claimed = store
-            .claim_pty_input(
-                crate::phone::types::PtyInputSourcePlane::HostCli,
-                Some(&waiting_id),
-                &Uuid::new_v4().to_string(),
-                chrono::Utc::now(),
-            )
-            .unwrap()
-            .unwrap();
-        let expires =
-            crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at).unwrap();
-        let mut heartbeat = crate::api::message_store::PreparationHeartbeatGuard::start(
-            store.clone(),
-            waiting_id.clone(),
-            claimed.lease_owner.clone(),
-            expires,
-        );
-        let gate = state.target_gate.as_ref().unwrap().clone();
-        let shutdown = tokio_util::sync::CancellationToken::new();
-        {
-            let waiting = reacquire_pty_dispatch_target(
-                app,
-                (&store, &initial, &claimed),
-                (&gate, &route.target, PtyReacquireGoal::Spawn),
-                (expires, &shutdown),
-                &mut heartbeat,
-            );
-            tokio::pin!(waiting);
-            assert!(
-                std::future::poll_fn(|cx| std::task::Poll::Ready(
-                    waiting.as_mut().poll(cx).is_pending()
-                ))
-                .await
-            );
-            wait_observed.send(()).unwrap();
-            tokio::select! {
-                biased;
-                _ = &mut waiting => panic!("not-ready operation reacquired before real state \
-                    change"),
-                done = delivery_gate => done.expect("whole first source returned"),
-            }
-            // The first source has released its guards; the suspended
-            // operation must still own none, including exact/U/M.
-            let stripe = gate
-                .try_target_lock(&route.target.canonical_fqn)
-                .unwrap()
-                .unwrap();
-            let exact = gate.acquire_exact(&route.target.canonical_fqn).await;
-            drop(exact);
-            drop(stripe);
-            assert!(!pty_spawn_scope_may_resume(app, &route.target).await);
-            retire_retained_fixture_member(fixture, coordinator, route, sender, id).await;
-            let (stripe, exact) = waiting
-                .await
-                .expect("real retirement resumes the SAME claim");
-            let ownership = gate
-                .target_ownership(&route.target.canonical_fqn, &stripe, &exact)
-                .unwrap();
-            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
-            let actual = poller
-                .spawn_pty_input_target(
-                    app,
-                    &claimed,
-                    &[],
-                    &route.sender,
-                    &route.target,
-                    crate::phone::types::PtyInputSourcePlane::HostCli,
-                    None,
-                    &ownership,
-                    &initial,
-                    None,
-                    &mut source,
-                    None,
-                )
-                .await;
-            assert!(matches!(
-                actual,
-                Err(crate::phone::types::PtyInputReasonCode::InconsistentSession)
-            ));
-            source.returned(false);
-            drop(exact);
-            drop(stripe);
-        }
-        assert!(
-            finish_pty_input_before_boundary(
-                &store,
-                &mut heartbeat,
-                &waiting_id,
-                &claimed.lease_owner,
-                crate::phone::types::PtyInputReasonCode::InconsistentSession
-            )
-            .await
-        );
-        let actual = store
-            .query_pty_input_by_injection(&waiting_id)
-            .unwrap()
-            .unwrap();
-        assert!(actual.terminal);
-        assert_eq!(
-            actual.reason.unwrap().code,
-            crate::phone::types::PtyInputReasonCode::InconsistentSession
-        );
-        let connection =
-            rusqlite::Connection::open(fixture._temp.path().join("retained-respawn.sqlite3"))
-                .unwrap();
-        let (attempt, retries): (i64, i64) = connection
-            .query_row(
-                "SELECT attempt,(SELECT count(*) FROM pty_input_audit WHERE injection_id=?1 \
-                    AND status='retry') FROM pty_input_operations WHERE injection_id=?1",
-                [&waiting_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!((attempt, retries), (claimed.attempt, 0));
-    };
-    let controller = async {
-        if scenario == "root-duplicate" || seal_insert_first {
-            let entered = retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
-            let weak = control.owner_weak(coordinator).unwrap();
-            assert_eq!(coordinator.fixture_root_count(), Some(1));
-            if seal_insert_first {
-                assert_eq!(
-                    control.observe_owner(coordinator).unwrap().effects_started,
-                    0
-                );
-                let report =
-                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
-                        .await
-                        .expect("real insertion precedes actual seal");
-                assert!(
-                    !report.persistence_safe,
-                    "real admitted work is incomplete at seal"
-                );
-                resume_insertion.send(()).unwrap();
-                return (entered.binding.unwrap().session_id(), None, weak);
-            }
-            assert_eq!(
-                control.attempt_duplicate(coordinator).unwrap_err(),
-                crate::session::selection::SelectionCoordinatorError::Busy.to_string()
-            );
-            assert_eq!(coordinator.fixture_root_count(), Some(1));
-            assert!(weak.is_alive());
-            assert_eq!(
-                control.observe_owner(coordinator).unwrap().effects_started,
-                0
-            );
-            assert!(manager
-                .get_pending_session(entered.binding.unwrap())
-                .await
-                .is_none());
-            resume_insertion.send(()).unwrap();
-        } else {
-            drop(resume_insertion);
-        }
-        if seed_scenario {
-            observe_retained_seed_fixture(
-                fixture,
-                coordinator,
-                &control,
-                &manager,
-                resume_native,
-                scenario,
-                &seed_source,
-            )
-            .await;
-        } else {
-            drop(resume_native);
-        }
-        let mut expected_communication = None;
-        if under_commit {
-            expected_communication =
-                observe_retained_commit_setter(&control, &manager, resume_commit, full).await;
-        } else {
-            drop(resume_commit);
-        }
-        let baseline = retained_source_wait_cut(&control, Cut::Baseline).await;
-        let id = baseline.binding.unwrap().session_id();
-        let owner_weak = control
-            .owner_weak(coordinator)
-            .expect("actual baseline owner Weak");
-        assert_ne!(id, previous);
-        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let version = manager
-            .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
-            .await;
-        drop(permit);
-        if !under_commit {
-            assert_eq!(baseline.initial_version, Some(version));
-        }
-        let setter_version = if newer_b {
-            if !under_commit {
-                expected_communication =
-                    set_retained_fixture_communication(&manager, id, full).await;
-            }
-            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-            let changed = manager
-                .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
-                .await;
-            drop(permit);
-            assert_ne!(Some(changed), baseline.initial_version);
-            Some(changed)
-        } else {
-            None
-        };
-        // Existing detector fixture stimulus; no Ready result is forged.
-        let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
-        idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
-        idle.set_pty_input_ready_for_test(id);
-        hooks.real_inject_sessions.lock().unwrap().insert(id);
-        if check_reacquire {
-            wait_gate.await.expect("real not-ready observation");
-        }
-        resume_baseline.send(()).unwrap();
-        if let Some(expected_version) = setter_version {
-            retained_source_wait_cut(&control, Cut::BeforePublication).await;
-            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-            let actual_version = manager
-                .with_current_carrier_snapshot(&permit, |current| current.versions[&id])
-                .await;
-            drop(permit);
-            assert_retained_source_reconciliation(
-                &control,
-                coordinator,
-                actual_version,
-                expected_version,
-                baseline.initial_version,
-            );
-            resume_publication.send(()).unwrap();
-        } else {
-            drop(resume_publication);
-        }
-        if inline {
-            retained_source_wait_cut(&control, Cut::AdapterReturned).await;
-            assert_retained_source_inline_boundary(&control, coordinator, app, id, newer_b);
-            if shutdown_executing {
-                let close =
-                    tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join());
-                tokio::pin!(close);
-                assert!(
-                    std::future::poll_fn(|cx| std::task::Poll::Ready(
-                        close.as_mut().poll(cx).is_pending()
-                    ))
-                    .await,
-                    "actual worker still executes its admitted inline envelope"
-                );
-                resume_release.send(()).unwrap();
-                retained_source_wait_cut(&control, Cut::BeforeCarry).await;
-                let report = close.await.expect("actual executing-inline shutdown/join");
-                assert!(
-                    !report.persistence_safe,
-                    "actual source carry is still Running"
-                );
-                assert!(control.received.load(Ordering::Acquire));
-                assert!(!control.observe_owner(coordinator).unwrap().transferred);
-            } else {
-                resume_release.send(()).unwrap();
-            }
-        } else {
-            drop(resume_release);
-        }
-        if shutdown_executing {
-            resume_tail.send(()).unwrap();
-        } else {
-            drop(resume_tail);
-        }
-        if walk_terminal {
-            retained_source_wait_cut(&control, Cut::BeforeTerminalRemoval).await;
-            let actual = control.observe_owner(coordinator).unwrap();
-            assert!(
-                actual.terminal && actual.transferred,
-                "actual strict terminal proof precedes observer, outside U"
-            );
-            assert_eq!(coordinator.fixture_root_count(), Some(1));
-            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
-                .await
-                .expect("actual terminal entry seal/traversal");
-            assert!(
-                report.persistence_safe,
-                "sealed traversal sees genuinely verified terminal owner"
-            );
-            assert!(owner_weak.is_alive());
-            resume_terminal.send(()).unwrap();
-        } else {
-            drop(resume_terminal);
-        }
-        (id, expected_communication, owner_weak)
-    };
-    let ((), (id, expected_communication, owner_weak), ()) =
-        tokio::time::timeout(Duration::from_secs(20), async {
-            tokio::join!(delivery, controller, readiness_observer)
-        })
-        .await
-        .expect("source and controller both progress");
-    if seal_insert_first {
-        assert_retained_source_sealed(
-            fixture,
-            coordinator,
-            &control,
-            &manager,
-            previous,
-            id,
-            injection,
-            &store,
-            &owner_weak,
-        )
-        .await;
-        return true;
-    }
-    if inline {
-        assert_retained_source_receipt_order(&control);
-    }
-    if newer_b {
-        assert_retained_source_newer_result(
-            fixture,
-            coordinator,
-            &control,
-            &manager,
-            previous,
-            id,
-            full,
-            expected_communication,
-        )
-        .await;
-    } else {
-        assert_retained_source_positive(fixture, &manager, previous, id, injection, &store, &hooks)
-            .await;
-    }
-    if reclaim {
-        coordinator
-            .snapshot()
-            .await
-            .expect("real worker barrier after actual source transfer");
-        assert_eq!(
-            coordinator.fixture_root_count(),
-            Some(0),
-            "actual terminal removal reclaims capacity"
-        );
-        if operation + 1 < 66 {
-            retire_retained_fixture_member(fixture, coordinator, route, sender, id).await;
-            *previous_slot = id;
-        }
-        return false;
-    }
-    let report = coordinator.close_and_join().await;
-    assert_retained_source_lifetime(
+    let ctx = RetainedSourceCtx {
+        fixture,
+        app,
         coordinator,
-        &report,
-        &owner_weak,
-        full,
-        shutdown_executing,
-        walk_terminal,
-    );
-    false
+        route,
+        sender,
+        previous,
+        scenario,
+        flags,
+        control: &control,
+        hooks: &hooks,
+        poller: &poller,
+        manager: &manager,
+        state: &state,
+        store: &store,
+        seed_source: &seed_source,
+    };
+    let delivery =
+        retained_source_delivery(&ctx, injection.as_deref(), &message, delivery_finished);
+    let readiness_observer = retained_readiness_observer(&ctx, wait_observed, delivery_gate);
+    let controller = retained_source_controller(&ctx, resumes, wait_gate);
+    let ((), outcome, ()) = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::join!(delivery, controller, readiness_observer)
+    })
+    .await
+    .expect("source and controller both progress");
+    retained_source_finish(&ctx, previous_slot, operation, outcome, injection).await
 }
 
 pub(super) async fn retained_exited_respawn_source_cell(
@@ -645,24 +743,18 @@ pub(super) async fn assert_retained_native_paused(
     assert_eq!(coordinator.fixture_native_work_counts(), Some((1, 1)));
 }
 
-pub(super) async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: bool) {
+type NativeWaiterControl = (
+    Arc<crate::session::selection::ReplacementFixtureControl>,
+    crate::session::selection::ReplacementFixtureCut,
+    crate::session::selection::ReplacementFixtureCut,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Sender<()>,
+);
+
+fn native_waiter_control(seed: bool) -> NativeWaiterControl {
     use crate::session::selection::{
         ReplacementFixtureAction as Action, ReplacementFixtureControl, ReplacementFixtureCut as Cut,
     };
-    let fixture = make_mailbox_fixture();
-    let app = fixture.app.handle();
-    let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
-    configure_retained_context_fixture(&fixture).await;
-    let seed_source = fixture
-        .target_cwd
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("default.p05-seed");
-    if seed {
-        configure_retained_seed_fixture(&fixture, &seed_source).await;
-    }
     let control = Arc::new(ReplacementFixtureControl::default());
     control.ticket_only.store(true, Ordering::Release);
     control.mock_backend.store(true, Ordering::Release);
@@ -687,6 +779,74 @@ pub(super) async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: 
     } else {
         crate::session::selection::NativeAwaitPanicOnce::Context(panic_gate)
     });
+    (control, entered, returned, resume_native, panic_source)
+}
+
+async fn native_waiter_delivery(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    state: &crate::api::message_store::MessageStoreState,
+    poller: &MailboxPoller,
+    injection: Option<&str>,
+    message: &OutboxMessage,
+) {
+    if let Some(injection) = injection {
+        poller
+            .dispatch_pty_input_operation(
+                app,
+                state,
+                injection,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+    } else {
+        let _ = poller.deliver_wake(app, message).await;
+    }
+}
+
+async fn native_waiter_drain_and_result(
+    fixture: &MailboxFixture,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    control: &crate::session::selection::ReplacementFixtureControl,
+    returned: crate::session::selection::ReplacementFixtureCut,
+    seed: bool,
+) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        retained_source_wait_cut(control, returned).await;
+        while coordinator.fixture_native_work_counts() != Some((0, 0)) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("same native closure returns normally and actual tracker drains");
+    let actual = control
+        .native_results
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(cut, _)| *cut == returned)
+        .unwrap()
+        .1
+        .clone();
+    assert_retained_native_result(fixture, seed, &actual);
+}
+
+pub(super) async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: bool) {
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle();
+    let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
+    configure_retained_context_fixture(&fixture).await;
+    let seed_source = fixture
+        .target_cwd
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("default.p05-seed");
+    if seed {
+        configure_retained_seed_fixture(&fixture, &seed_source).await;
+    }
+    let (control, entered, returned, resume_native, panic_source) = native_waiter_control(seed);
     let hooks = MailboxTestHooks::default();
     *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
     let poller = MailboxPoller::new_with_test_hooks(hooks);
@@ -713,21 +873,7 @@ pub(super) async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: 
     let mut message = wake_message_to_target();
     message.id = format!("native-waiter-{}", Uuid::new_v4());
     let binding = {
-        let delivery = async {
-            if let Some(injection) = injection.as_deref() {
-                poller
-                    .dispatch_pty_input_operation(
-                        app,
-                        &state,
-                        injection,
-                        crate::phone::types::PtyInputSourcePlane::HostCli,
-                        None,
-                    )
-                    .await;
-            } else {
-                let _ = poller.deliver_wake(app, &message).await;
-            }
-        };
+        let delivery = native_waiter_delivery(app, &state, &poller, injection.as_deref(), &message);
         tokio::pin!(delivery);
         let controller = observe_retained_native_source_unwind(
             seed,
@@ -760,24 +906,7 @@ pub(super) async fn retained_exited_respawn_native_waiter_cell(pty: bool, seed: 
     )
     .await;
     resume_native.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        retained_source_wait_cut(&control, returned).await;
-        while coordinator.fixture_native_work_counts() != Some((0, 0)) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("same native closure returns normally and actual tracker drains");
-    let actual = control
-        .native_results
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|(cut, _)| *cut == returned)
-        .unwrap()
-        .1
-        .clone();
-    assert_retained_native_result(&fixture, seed, &actual);
+    native_waiter_drain_and_result(&fixture, &coordinator, &control, returned, seed).await;
     let after = coordinator.close_and_join().await;
     assert!(!after
         .retained

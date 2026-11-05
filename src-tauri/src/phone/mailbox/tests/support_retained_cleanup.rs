@@ -1,95 +1,53 @@
 use super::*;
 
-pub(super) async fn retained_exited_respawn_root_refusal_cell(
-    pty: bool,
-    inline: bool,
-    poison: bool,
+async fn sorted_session_ids(manager: &SessionManager) -> Vec<String> {
+    let mut ids: Vec<_> = manager
+        .list_sessions()
+        .await
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+async fn root_refusal_delivery(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    state: &crate::api::message_store::MessageStoreState,
+    poller: &MailboxPoller,
+    injection: Option<&str>,
+    message: &OutboxMessage,
 ) {
-    use crate::session::selection::ReplacementFixtureControl;
-    let fixture = make_mailbox_fixture();
-    let app = fixture.app.handle();
-    let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
-    let control = Arc::new(ReplacementFixtureControl::default());
-    control.ticket_only.store(!inline, Ordering::Release);
-    let (resume, gate) = tokio::sync::oneshot::channel();
-    *control.preaccept_gate.lock().unwrap() = Some(gate);
-    let hooks = MailboxTestHooks::default();
-    *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
-    let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
-    let manager = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
-    let mut before: Vec<_> = manager
-        .list_sessions()
-        .await
-        .into_iter()
-        .map(|row| row.id)
-        .collect();
-    before.sort();
-    let state = app.state::<crate::api::message_store::MessageStoreState>();
-    let store = state.store.as_ref().unwrap().clone();
-    let injection =
-        pty.then(|| enqueue_shared_pty_engine_operation(&store, &route, sender, b"root-refused"));
-    let mut message = wake_message_to_target();
-    message.id = format!("root-refused-{}", Uuid::new_v4());
-    let delivery = async {
-        if let Some(injection) = injection.as_deref() {
-            poller
-                .dispatch_pty_input_operation(
-                    app,
-                    &state,
-                    injection,
-                    crate::phone::types::PtyInputSourcePlane::HostCli,
-                    None,
-                )
-                .await;
-        } else {
-            let error = poller
-                .deliver_wake(app, &message)
-                .await
-                .expect_err("actual unavailable source mapping");
-            assert!(
-                error.contains(
-                    &crate::session::selection::SelectionCoordinatorError::Unavailable.to_string()
-                ),
-                "actual root refusal: {error}"
-            );
-        }
-    };
-    let controller = async {
-        while !control.preaccept_entered.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(coordinator.fixture_root_count(), Some(0));
-        if poison {
-            coordinator.fixture_poison_root();
-        } else {
-            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
-                .await
-                .expect("actual root close-first");
-            assert!(
-                report.persistence_safe,
-                "no admitted owner before actual seal"
-            );
-        }
-        resume.send(()).unwrap();
-    };
-    tokio::time::timeout(Duration::from_secs(20), async {
-        tokio::join!(delivery, controller);
-    })
-    .await
-    .expect("actual producer refusal after root poison/seal");
-    let mut after: Vec<_> = manager
-        .list_sessions()
-        .await
-        .into_iter()
-        .map(|row| row.id)
-        .collect();
-    after.sort();
-    assert_eq!(after, before, "refusal added no row or pending B");
-    assert!(manager.get_session(previous).await.is_some());
+    if let Some(injection) = injection {
+        poller
+            .dispatch_pty_input_operation(
+                app,
+                state,
+                injection,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+    } else {
+        let error = poller
+            .deliver_wake(app, message)
+            .await
+            .expect_err("actual unavailable source mapping");
+        assert!(
+            error.contains(
+                &crate::session::selection::SelectionCoordinatorError::Unavailable.to_string()
+            ),
+            "actual root refusal: {error}"
+        );
+    }
+}
+
+fn assert_root_refusal_untouched(
+    control: &crate::session::selection::ReplacementFixtureControl,
+    hooks: &MailboxTestHooks,
+    store: &crate::api::message_store::MessageStore,
+    injection: Option<String>,
+) {
     assert!(
         control.receipts.lock().unwrap().is_empty(),
         "no accepted operation/effect receipt"
@@ -113,6 +71,64 @@ pub(super) async fn retained_exited_respawn_root_refusal_cell(
             Some(crate::phone::types::PtyInputReasonCode::StoreTransient)
         );
     }
+}
+
+pub(super) async fn retained_exited_respawn_root_refusal_cell(
+    pty: bool,
+    inline: bool,
+    poison: bool,
+) {
+    use crate::session::selection::ReplacementFixtureControl;
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle();
+    let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
+    let control = Arc::new(ReplacementFixtureControl::default());
+    control.ticket_only.store(!inline, Ordering::Release);
+    let (resume, gate) = tokio::sync::oneshot::channel();
+    *control.preaccept_gate.lock().unwrap() = Some(gate);
+    let hooks = MailboxTestHooks::default();
+    *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+    let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    let before = sorted_session_ids(&manager).await;
+    let state = app.state::<crate::api::message_store::MessageStoreState>();
+    let store = state.store.as_ref().unwrap().clone();
+    let injection =
+        pty.then(|| enqueue_shared_pty_engine_operation(&store, &route, sender, b"root-refused"));
+    let mut message = wake_message_to_target();
+    message.id = format!("root-refused-{}", Uuid::new_v4());
+    let delivery = root_refusal_delivery(app, &state, &poller, injection.as_deref(), &message);
+    let controller = async {
+        while !control.preaccept_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(coordinator.fixture_root_count(), Some(0));
+        if poison {
+            coordinator.fixture_poison_root();
+        } else {
+            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("actual root close-first");
+            assert!(
+                report.persistence_safe,
+                "no admitted owner before actual seal"
+            );
+        }
+        resume.send(()).unwrap();
+    };
+    tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::join!(delivery, controller);
+    })
+    .await
+    .expect("actual producer refusal after root poison/seal");
+    let after = sorted_session_ids(&manager).await;
+    assert_eq!(after, before, "refusal added no row or pending B");
+    assert!(manager.get_session(previous).await.is_some());
+    assert_root_refusal_untouched(&control, &hooks, &store, injection);
     let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
         .await
         .expect("actual root-refusal traversal");
@@ -122,17 +138,22 @@ pub(super) async fn retained_exited_respawn_root_refusal_cell(
     );
 }
 
-pub(super) async fn retained_exited_respawn_caller_cell(
+type CallerGates = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Sender<()>,
+);
+
+fn caller_cell_control(
     pty: bool,
     inline: bool,
     before_accept: bool,
+) -> (
+    Arc<crate::session::selection::ReplacementFixtureControl>,
+    CallerGates,
 ) {
     use crate::session::selection::{
         ReplacementFixtureAction as Action, ReplacementFixtureControl, ReplacementFixtureCut as Cut,
     };
-    let fixture = make_mailbox_fixture();
-    let app = fixture.app.handle();
-    let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
     let control = Arc::new(ReplacementFixtureControl::default());
     control.ticket_only.store(!inline, Ordering::Release);
     let (resume, gate) = tokio::sync::oneshot::channel();
@@ -150,6 +171,119 @@ pub(super) async fn retained_exited_respawn_caller_cell(
             });
         }
     }
+    (control, (resume, resume_core))
+}
+
+async fn caller_cell_delivery(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    state: &crate::api::message_store::MessageStoreState,
+    poller: &MailboxPoller,
+    control: &crate::session::selection::ReplacementFixtureControl,
+    injection: Option<&str>,
+    message: &OutboxMessage,
+) {
+    if let Some(injection) = injection {
+        poller
+            .dispatch_pty_input_operation(
+                app,
+                state,
+                injection,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+    } else {
+        let _ = retained_fixture_ordinary_wake(poller, app, message, control).await;
+    }
+}
+
+async fn caller_before_accept(
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    control: &crate::session::selection::ReplacementFixtureControl,
+    cancel: tokio::sync::oneshot::Sender<()>,
+    caller_dropped: &AtomicBool,
+    gates: CallerGates,
+) -> Option<Uuid> {
+    let (resume, resume_core) = gates;
+    loop {
+        if control.preaccept_entered.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(coordinator.fixture_root_count(), Some(0));
+    cancel.send(()).unwrap();
+    while !caller_dropped.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    // The canceled caller owns no accepted core. Its gate is
+    // dropped as housekeeping, never resumed to manufacture one.
+    drop(resume);
+    drop(resume_core);
+    assert!(!control.accepted_core_entered.load(Ordering::Acquire));
+    assert!(control.receipts.lock().unwrap().is_empty());
+    None
+}
+
+async fn caller_after_accept(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    control: &crate::session::selection::ReplacementFixtureControl,
+    hooks: &MailboxTestHooks,
+    cancel: tokio::sync::oneshot::Sender<()>,
+    caller_dropped: &AtomicBool,
+    (gates, pty): (CallerGates, bool),
+) -> Option<Uuid> {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let (resume, resume_core) = gates;
+    if pty {
+        while !control.accepted_core_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            coordinator.fixture_root_count(),
+            Some(0),
+            "real PTY core acceptance precedes Replacement root insertion"
+        );
+    } else {
+        retained_source_wait_cut(control, Cut::SourceCoreEntered).await;
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+    }
+    cancel.send(()).unwrap();
+    while !caller_dropped.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    resume_core.send(()).unwrap();
+    let baseline = retained_source_wait_cut(control, Cut::Baseline).await;
+    let id = baseline.binding.unwrap().session_id();
+    assert_eq!(coordinator.fixture_root_count(), Some(1));
+    let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+    idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+    idle.set_pty_input_ready_for_test(id);
+    hooks.real_inject_sessions.lock().unwrap().insert(id);
+    resume.send(()).unwrap();
+    loop {
+        if coordinator.fixture_root_count() == Some(0) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !shared_engine_writes(app, id).is_empty(),
+        "accepted core performs actual source transfer after caller loss"
+    );
+    Some(id)
+}
+
+pub(super) async fn retained_exited_respawn_caller_cell(
+    pty: bool,
+    inline: bool,
+    before_accept: bool,
+) {
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle();
+    let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
+    let (control, gates) = caller_cell_control(pty, inline, before_accept);
     let hooks = MailboxTestHooks::default();
     *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
     let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
@@ -161,21 +295,14 @@ pub(super) async fn retained_exited_respawn_caller_cell(
     message.id = format!("caller-source-{}", Uuid::new_v4());
     let (cancel, canceled) = tokio::sync::oneshot::channel::<()>();
     let caller_dropped = AtomicBool::new(false);
-    let delivery = async {
-        if let Some(injection) = injection.as_deref() {
-            poller
-                .dispatch_pty_input_operation(
-                    app,
-                    &state,
-                    injection,
-                    crate::phone::types::PtyInputSourcePlane::HostCli,
-                    None,
-                )
-                .await;
-        } else {
-            let _ = retained_fixture_ordinary_wake(&poller, app, &message, &control).await;
-        }
-    };
+    let delivery = caller_cell_delivery(
+        app,
+        &state,
+        &poller,
+        &control,
+        injection.as_deref(),
+        &message,
+    );
     let caller = async {
         tokio::select! {
             biased;
@@ -186,62 +313,10 @@ pub(super) async fn retained_exited_respawn_caller_cell(
     };
     let controller = async {
         if before_accept {
-            loop {
-                if control.preaccept_entered.load(Ordering::Acquire) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-            assert_eq!(coordinator.fixture_root_count(), Some(0));
-            cancel.send(()).unwrap();
-            while !caller_dropped.load(Ordering::Acquire) {
-                tokio::task::yield_now().await;
-            }
-            // The canceled caller owns no accepted core. Its gate is
-            // dropped as housekeeping, never resumed to manufacture one.
-            drop(resume);
-            drop(resume_core);
-            assert!(!control.accepted_core_entered.load(Ordering::Acquire));
-            assert!(control.receipts.lock().unwrap().is_empty());
-            None
+            caller_before_accept(&coordinator, &control, cancel, &caller_dropped, gates).await
         } else {
-            if pty {
-                while !control.accepted_core_entered.load(Ordering::Acquire) {
-                    tokio::task::yield_now().await;
-                }
-                assert_eq!(
-                    coordinator.fixture_root_count(),
-                    Some(0),
-                    "real PTY core acceptance precedes Replacement root insertion"
-                );
-            } else {
-                retained_source_wait_cut(&control, Cut::SourceCoreEntered).await;
-                assert_eq!(coordinator.fixture_root_count(), Some(1));
-            }
-            cancel.send(()).unwrap();
-            while !caller_dropped.load(Ordering::Acquire) {
-                tokio::task::yield_now().await;
-            }
-            resume_core.send(()).unwrap();
-            let baseline = retained_source_wait_cut(&control, Cut::Baseline).await;
-            let id = baseline.binding.unwrap().session_id();
-            assert_eq!(coordinator.fixture_root_count(), Some(1));
-            let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
-            idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
-            idle.set_pty_input_ready_for_test(id);
-            hooks.real_inject_sessions.lock().unwrap().insert(id);
-            resume.send(()).unwrap();
-            loop {
-                if coordinator.fixture_root_count() == Some(0) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-            assert!(
-                !shared_engine_writes(app, id).is_empty(),
-                "accepted core performs actual source transfer after caller loss"
-            );
-            Some(id)
+            let (dropped, rest) = (&caller_dropped, (gates, pty));
+            caller_after_accept(app, &coordinator, &control, &hooks, cancel, dropped, rest).await
         }
     };
     let ((), new_id) = tokio::time::timeout(Duration::from_secs(20), async {
@@ -574,6 +649,54 @@ pub(super) async fn prepare_retained_cleanup_observation(
     }
 }
 
+type CleanupRaceWorkers<'a> = (
+    &'a mut Option<tokio::sync::oneshot::Sender<()>>,
+    &'a mut Option<tokio::sync::oneshot::Sender<()>>,
+    tokio::sync::oneshot::Sender<()>,
+);
+
+async fn retained_cleanup_race_branch(
+    control: &Arc<crate::session::selection::ReplacementFixtureControl>,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+    binding: crate::session::manager::PendingCreateBinding,
+    (first, finalizer, disarmed): CleanupRaceWorkers<'_>,
+    (runtime_changed, claim_first, inline): (bool, bool, bool),
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    use std::future::Future;
+    let cleanup = control.cleanup_observed_stopped(coordinator, manager, pty);
+    if runtime_changed {
+        assert!(
+            !cleanup.await,
+            "later actual runtime route vetoes stopped-source claim"
+        );
+        assert_retained_cleanup_runtime_veto(control, coordinator, manager, pty, binding).await;
+        release_retained_cleanup_worker(first, finalizer, inline);
+        drop(disarmed);
+    } else if claim_first {
+        assert!(cleanup.await, "actual stopped-source claim and rollback");
+        assert_retained_cleanup_claimed(control, coordinator, manager, pty, binding).await;
+        release_retained_cleanup_worker(first, finalizer, inline);
+        drop(disarmed);
+    } else {
+        release_retained_cleanup_worker(first, finalizer, inline);
+        retained_source_wait_cut(control, Cut::AfterDisarm).await;
+        tokio::pin!(cleanup);
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                cleanup.as_mut().poll(cx).is_pending()
+            ))
+            .await,
+            "same cleanup future waits for actual finalization U"
+        );
+        disarmed.send(()).unwrap();
+        assert!(!cleanup.await, "real finalized/disarmed B vetoes cleanup");
+        assert_retained_cleanup_finalized(control, coordinator, manager, pty, binding).await;
+    }
+}
+
 pub(super) async fn retained_source_cleanup_race(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
     coordinator: &crate::session::selection::SelectionCoordinator,
@@ -582,7 +705,6 @@ pub(super) async fn retained_source_cleanup_race(
     inline: bool,
 ) {
     use crate::session::selection::ReplacementFixtureCut as Cut;
-    use std::future::Future;
     if gates.unknown {
         retained_source_unknown_cleanup(app, coordinator, control, gates, inline).await;
         return;
@@ -637,35 +759,16 @@ pub(super) async fn retained_source_cleanup_race(
         runtime_changed,
     )
     .await;
-    let cleanup = control.cleanup_observed_stopped(coordinator, &manager, &pty);
-    if runtime_changed {
-        assert!(
-            !cleanup.await,
-            "later actual runtime route vetoes stopped-source claim"
-        );
-        assert_retained_cleanup_runtime_veto(control, coordinator, &manager, &pty, binding).await;
-        release_retained_cleanup_worker(&mut first, &mut finalizer, inline);
-        drop(disarmed);
-    } else if claim_first {
-        assert!(cleanup.await, "actual stopped-source claim and rollback");
-        assert_retained_cleanup_claimed(control, coordinator, &manager, &pty, binding).await;
-        release_retained_cleanup_worker(&mut first, &mut finalizer, inline);
-        drop(disarmed);
-    } else {
-        release_retained_cleanup_worker(&mut first, &mut finalizer, inline);
-        retained_source_wait_cut(control, Cut::AfterDisarm).await;
-        tokio::pin!(cleanup);
-        assert!(
-            std::future::poll_fn(|cx| std::task::Poll::Ready(
-                cleanup.as_mut().poll(cx).is_pending()
-            ))
-            .await,
-            "same cleanup future waits for actual finalization U"
-        );
-        disarmed.send(()).unwrap();
-        assert!(!cleanup.await, "real finalized/disarmed B vetoes cleanup");
-        assert_retained_cleanup_finalized(control, coordinator, &manager, &pty, binding).await;
-    }
+    retained_cleanup_race_branch(
+        control,
+        coordinator,
+        &manager,
+        &pty,
+        binding,
+        (&mut first, &mut finalizer, disarmed),
+        (runtime_changed, claim_first, inline),
+    )
+    .await;
     coordinator
         .snapshot()
         .await

@@ -138,7 +138,7 @@ fn on_window_destroyed<H, S, F, FF>(
     // own teardown): clear capture state and destroy sibling
     // overlays. Idempotent — a no-op once state is already Idle.
     if label.starts_with("screenshot-overlay-") {
-        host.overlay_destroyed(label.to_string());
+        host.overlay_destroyed(label.clone());
     }
 }
 

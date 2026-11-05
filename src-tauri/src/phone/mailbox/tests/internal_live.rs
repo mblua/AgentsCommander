@@ -1,5 +1,41 @@
 use super::*;
 
+async fn deliver_context_alert_with_stale_guard(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    hooks: &MailboxTestHooks,
+    sender_cwd: &Path,
+    stale: &'static str,
+) -> String {
+    let calls = Arc::new(AtomicU32::new(0));
+    let guard_calls = Arc::clone(&calls);
+    MailboxPoller::new_with_test_hooks(hooks.clone())
+        .deliver_internal_system_notice(
+            app,
+            InternalSystemTarget::for_context_alert(
+                CANONICAL_WAKE_FROM.to_string(),
+                sender_cwd.to_path_buf(),
+            )
+            .unwrap(),
+            InternalSystemNotice::for_context_alert(
+                "dev-rust".to_string(),
+                "wg-1-dev-team".to_string(),
+                50,
+                vec![50],
+            )
+            .unwrap(),
+            CancellationToken::new(),
+            Arc::new(move || {
+                if guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    Err(stale.to_string())
+                } else {
+                    Ok(())
+                }
+            }),
+        )
+        .await
+        .unwrap_err()
+}
+
 #[tokio::test]
 async fn internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries() {
     let live = make_mailbox_fixture();
@@ -18,34 +54,13 @@ async fn internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries() {
         .lock()
         .unwrap()
         .insert(live_id, true);
-    let live_calls = Arc::new(AtomicU32::new(0));
-    let live_guard_calls = Arc::clone(&live_calls);
-    let live_error = MailboxPoller::new_with_test_hooks(live_hooks.clone())
-        .deliver_internal_system_notice(
-            &live_app,
-            InternalSystemTarget::for_context_alert(
-                CANONICAL_WAKE_FROM.to_string(),
-                live.sender_cwd.clone(),
-            )
-            .unwrap(),
-            InternalSystemNotice::for_context_alert(
-                "dev-rust".to_string(),
-                "wg-1-dev-team".to_string(),
-                50,
-                vec![50],
-            )
-            .unwrap(),
-            CancellationToken::new(),
-            Arc::new(move || {
-                if live_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
-                    Err("stale before write".to_string())
-                } else {
-                    Ok(())
-                }
-            }),
-        )
-        .await
-        .unwrap_err();
+    let live_error = deliver_context_alert_with_stale_guard(
+        &live_app,
+        &live_hooks,
+        &live.sender_cwd,
+        "stale before write",
+    )
+    .await;
     assert!(live_error.contains("stale before write"));
     assert!(live_hooks.inject_calls.lock().unwrap().is_empty());
 
@@ -60,34 +75,13 @@ async fn internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries() {
     )
     .await;
     let exited_hooks = MailboxTestHooks::default();
-    let exited_calls = Arc::new(AtomicU32::new(0));
-    let exited_guard_calls = Arc::clone(&exited_calls);
-    let exited_error = MailboxPoller::new_with_test_hooks(exited_hooks.clone())
-        .deliver_internal_system_notice(
-            &exited_app,
-            InternalSystemTarget::for_context_alert(
-                CANONICAL_WAKE_FROM.to_string(),
-                exited.sender_cwd.clone(),
-            )
-            .unwrap(),
-            InternalSystemNotice::for_context_alert(
-                "dev-rust".to_string(),
-                "wg-1-dev-team".to_string(),
-                50,
-                vec![50],
-            )
-            .unwrap(),
-            CancellationToken::new(),
-            Arc::new(move || {
-                if exited_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
-                    Err("stale before destroy".to_string())
-                } else {
-                    Ok(())
-                }
-            }),
-        )
-        .await
-        .unwrap_err();
+    let exited_error = deliver_context_alert_with_stale_guard(
+        &exited_app,
+        &exited_hooks,
+        &exited.sender_cwd,
+        "stale before destroy",
+    )
+    .await;
     assert!(exited_error.contains("stale before destroy"));
     assert!(exited_hooks.destroy_calls.lock().unwrap().is_empty());
     assert!(exited_hooks.spawn_calls.lock().unwrap().is_empty());
@@ -102,34 +96,13 @@ async fn internal_repeatable_guard_blocks_live_destroy_and_spawn_boundaries() {
     let absent = make_mailbox_fixture();
     let absent_app = app_handle(&absent.app);
     let absent_hooks = MailboxTestHooks::default();
-    let absent_calls = Arc::new(AtomicU32::new(0));
-    let absent_guard_calls = Arc::clone(&absent_calls);
-    let absent_error = MailboxPoller::new_with_test_hooks(absent_hooks.clone())
-        .deliver_internal_system_notice(
-            &absent_app,
-            InternalSystemTarget::for_context_alert(
-                CANONICAL_WAKE_FROM.to_string(),
-                absent.sender_cwd.clone(),
-            )
-            .unwrap(),
-            InternalSystemNotice::for_context_alert(
-                "dev-rust".to_string(),
-                "wg-1-dev-team".to_string(),
-                50,
-                vec![50],
-            )
-            .unwrap(),
-            CancellationToken::new(),
-            Arc::new(move || {
-                if absent_guard_calls.fetch_add(1, Ordering::SeqCst) >= 1 {
-                    Err("stale before spawn".to_string())
-                } else {
-                    Ok(())
-                }
-            }),
-        )
-        .await
-        .unwrap_err();
+    let absent_error = deliver_context_alert_with_stale_guard(
+        &absent_app,
+        &absent_hooks,
+        &absent.sender_cwd,
+        "stale before spawn",
+    )
+    .await;
     assert!(absent_error.contains("stale before spawn"));
     assert!(absent_hooks.spawn_calls.lock().unwrap().is_empty());
 }

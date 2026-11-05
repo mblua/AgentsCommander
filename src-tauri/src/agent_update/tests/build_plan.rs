@@ -213,19 +213,9 @@ fn build_plan_registered_filter_preserves_first_entry_semantics() {
 // here launches a vendor process.
 // ---------------------------------------------------------------------
 
-#[test]
-fn build_plan_from_a_migrated_on_disk_catalog_keeps_first_entry_precedence() {
-    use crate::config::coding_agents_catalog::ensure_seeded;
-
-    let temp = tempfile::tempdir().expect("tempdir");
-    let project = temp.path().join("project");
-    let ac_dir = project.join(".ac");
-    let catalog_dir = ac_dir.join("coding-agents");
-    std::fs::create_dir_all(&catalog_dir).unwrap();
-    // A legacy user-owned catalog with: a custom command appearing twice
-    // (its FIRST row leaves updateCommands absent -> materialized as []),
-    // an ordered custom sequence, and an authored claude sequence.
-    let legacy = serde_json::json!({
+/// The #1968 R2 legacy user-owned catalog fixture.
+fn legacy_migrated_catalog_fixture() -> serde_json::Value {
+    serde_json::json!({
         "schemaVersion": 1,
         "agents": [
             {
@@ -272,7 +262,22 @@ fn build_plan_from_a_migrated_on_disk_catalog_keeps_first_entry_precedence() {
                 "updateCommands": ["claude --legacy"]
             }
         ]
-    });
+    })
+}
+
+#[test]
+fn build_plan_from_a_migrated_on_disk_catalog_keeps_first_entry_precedence() {
+    use crate::config::coding_agents_catalog::ensure_seeded;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let ac_dir = project.join(".ac");
+    let catalog_dir = ac_dir.join("coding-agents");
+    std::fs::create_dir_all(&catalog_dir).unwrap();
+    // A legacy user-owned catalog with: a custom command appearing twice
+    // (its FIRST row leaves updateCommands absent -> materialized as []),
+    // an ordered custom sequence, and an authored claude sequence.
+    let legacy = legacy_migrated_catalog_fixture();
     let mut bytes = serde_json::to_vec_pretty(&legacy).unwrap();
     bytes.push(b'\n');
     std::fs::write(catalog_dir.join("agents.10.default.json"), &bytes).unwrap();

@@ -314,7 +314,7 @@ pub fn materialize_agent_context_file(
 /// generous enough never to drop the cache of an agent the user simply has not
 /// launched recently, while still capping the directory. Internal GC knob,
 /// intentionally a const (not a user setting); promote to settings later if needed.
-pub(crate) const CONTEXT_CACHE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub(crate) const CONTEXT_CACHE_RETENTION: Duration = Duration::from_hours(720);
 
 /// (#621) Startup entry point: GC the context-cache dir with the default
 /// retention. No-op (logs) when no config dir resolves. Never returns an error;

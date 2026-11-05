@@ -836,10 +836,10 @@ fn build_spawn_spec<R: tauri::Runtime>(
         // program/argument fields, so the pairing invariant cannot drift).
         resolved_agent_host_shell: resolved_agent_host_shell.cloned(),
         cwd: spawn_cwd.to_owned(),
-        selected_cwd: if spawn_cwd != cwd {
-            Some(cwd.to_owned())
-        } else {
+        selected_cwd: if spawn_cwd == cwd {
             None
+        } else {
+            Some(cwd.to_owned())
         },
         // #973 - open the PTY at the size the terminal is actually going to be, so the
         // frontend never has to resize a child that is still starting up. Callers with no

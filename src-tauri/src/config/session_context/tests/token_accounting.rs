@@ -93,92 +93,117 @@ fn root_skills_section_fixed() -> String {
     rendered.replace(&super::super::display_path(&root), FAKE_ROOT_AGENT)
 }
 
-#[test]
-fn summarized_default_context_meets_size_budget() {
-    const V3_TOUCHED_OWNERS_BYTES: usize = 7_567;
-    const V3_FULL_WG_PROFILE_BYTES: usize = 9_070;
-    const REQUIRED_REDUCTION_BYTES: usize = 757;
-    const V3_MAX_TOUCHED_OWNERS_BYTES: usize = 6_810;
-    const V3_MAX_FULL_WG_PROFILE_BYTES: usize = 8_313;
-    const ROOM_ENTRY_FOUR_DELTA_BYTES: usize = 796;
-    const V4_TOUCHED_OWNERS_BYTES: usize = 8_363;
-    const V4_FULL_WG_PROFILE_BYTES: usize = 9_866;
-    const V4_MAX_TOUCHED_OWNERS_BYTES: usize = 7_606;
-    const V4_MAX_FULL_WG_PROFILE_BYTES: usize = 9_109;
-    // #1795 V5 generation, on the exact V3-to-V4 pattern. Every V3 and V4
-    // constant and every existing `assert_eq!` is kept; `REQUIRED_REDUCTION_BYTES`
-    // stays 757 and is not re-derived.
-    //
-    // The delta has TWO halves and both are measured INSIDE this test, so no
-    // unmeasured slack is load-bearing anywhere in the ladder. The two range
-    // literals are the same byte length, so the renumbering contributes zero.
-    const PRE_1795_FAKE_REPLICA_ROOT: &str = "C:/fake/wg-1-team/__agent_dev";
-    const AC_ROOT_FIXTURE_CORRECTION_BYTES: usize = 8;
-    const SHARED_LOCATIONS_ENTRY_DELTA_BYTES: usize = 1_103;
-    const V5_DELTA_BYTES: usize =
-        AC_ROOT_FIXTURE_CORRECTION_BYTES + SHARED_LOCATIONS_ENTRY_DELTA_BYTES;
-    const V5_TOUCHED_OWNERS_BYTES: usize = 9_474;
-    const V5_FULL_WG_PROFILE_BYTES: usize = 10_977;
-    const V5_MAX_TOUCHED_OWNERS_BYTES: usize = 8_717;
-    const V5_MAX_FULL_WG_PROFILE_BYTES: usize = 10_220;
-    // #2031 V6 generation: the Answering section is TEMPLATE BODY text, so it
-    // moves the full WG profile only. The five touched owners are summed from
-    // the dynamic blocks (write restrictions + messaging + CLI + credentials +
-    // delegated reporting), which this change does not touch, so their V5
-    // constants and gates stay exactly where they are.
-    //
-    // The delta is measured INSIDE this test against the frozen pre-Answering
-    // template size (559, pinned by
-    // `seeded_context_templates::tests::global_before_answering_snapshot_is_byte_exact`),
-    // so a later text edit cannot ride silently under the ceiling.
-    const V6_PRE_TEMPLATE_BYTES: usize = 559;
-    const V6_DELTA_BYTES: usize = 294;
-    const V6_FULL_WG_PROFILE_BYTES: usize = 11_271;
-    const V6_MAX_FULL_WG_PROFILE_BYTES: usize = 10_514;
-    // The pre-#1795 fixture renders no shared-location entries, so its full
-    // profile is the V4-shaped render plus the V6 template delta.
-    const V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES: usize =
-        V4_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES;
-    // #2840 adds an explicitly measured status grant. Keep every historical
-    // constant and the required 757-byte reduction; account only this exact
-    // addition separately so unrelated growth still fails the old ladder.
-    const P2_STATUS_GRANT_BYTES: usize = 1_145;
+const V3_TOUCHED_OWNERS_BYTES: usize = 7_567;
+const V3_FULL_WG_PROFILE_BYTES: usize = 9_070;
+const REQUIRED_REDUCTION_BYTES: usize = 757;
+const V3_MAX_TOUCHED_OWNERS_BYTES: usize = 6_810;
+const V3_MAX_FULL_WG_PROFILE_BYTES: usize = 8_313;
+const ROOM_ENTRY_FOUR_DELTA_BYTES: usize = 796;
+const V4_TOUCHED_OWNERS_BYTES: usize = 8_363;
+const V4_FULL_WG_PROFILE_BYTES: usize = 9_866;
+const V4_MAX_TOUCHED_OWNERS_BYTES: usize = 7_606;
+const V4_MAX_FULL_WG_PROFILE_BYTES: usize = 9_109;
+// #1795 V5 generation, on the exact V3-to-V4 pattern. Every V3 and V4
+// constant and every existing `assert_eq!` is kept; `REQUIRED_REDUCTION_BYTES`
+// stays 757 and is not re-derived.
+//
+// The delta has TWO halves and both are measured INSIDE this test, so no
+// unmeasured slack is load-bearing anywhere in the ladder. The two range
+// literals are the same byte length, so the renumbering contributes zero.
+const PRE_1795_FAKE_REPLICA_ROOT: &str = "C:/fake/wg-1-team/__agent_dev";
+const AC_ROOT_FIXTURE_CORRECTION_BYTES: usize = 8;
+const SHARED_LOCATIONS_ENTRY_DELTA_BYTES: usize = 1_103;
+const V5_DELTA_BYTES: usize = AC_ROOT_FIXTURE_CORRECTION_BYTES + SHARED_LOCATIONS_ENTRY_DELTA_BYTES;
+const V5_TOUCHED_OWNERS_BYTES: usize = 9_474;
+const V5_FULL_WG_PROFILE_BYTES: usize = 10_977;
+const V5_MAX_TOUCHED_OWNERS_BYTES: usize = 8_717;
+const V5_MAX_FULL_WG_PROFILE_BYTES: usize = 10_220;
+// #2031 V6 generation: the Answering section is TEMPLATE BODY text, so it
+// moves the full WG profile only. The five touched owners are summed from
+// the dynamic blocks (write restrictions + messaging + CLI + credentials +
+// delegated reporting), which this change does not touch, so their V5
+// constants and gates stay exactly where they are.
+//
+// The delta is measured INSIDE this test against the frozen pre-Answering
+// template size (559, pinned by
+// `seeded_context_templates::tests::global_before_answering_snapshot_is_byte_exact`),
+// so a later text edit cannot ride silently under the ceiling.
+const V6_PRE_TEMPLATE_BYTES: usize = 559;
+const V6_DELTA_BYTES: usize = 294;
+const V6_FULL_WG_PROFILE_BYTES: usize = 11_271;
+const V6_MAX_FULL_WG_PROFILE_BYTES: usize = 10_514;
+// The pre-#1795 fixture renders no shared-location entries, so its full
+// profile is the V4-shaped render plus the V6 template delta.
+const V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES: usize = V4_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES;
+// #2840 adds an explicitly measured status grant. Keep every historical
+// constant and the required 757-byte reduction; account only this exact
+// addition separately so unrelated growth still fails the old ladder.
+const P2_STATUS_GRANT_BYTES: usize = 1_145;
 
-    // #2871: explicit human approval permits only the independently measured
-    // Windows host wording addition; other hosts retain their existing gates.
-    const OLD_WINDOWS_HOST_RULES: &str = concat!(
-        r#"## Host Platform Rules
+// #2871: explicit human approval permits only the independently measured
+// Windows host wording addition; other hosts retain their existing gates.
+const OLD_WINDOWS_HOST_RULES: &str = concat!(
+    r#"## Host Platform Rules
 
 Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work and every "#,
-        r#"AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program "#,
-        r#"Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | "#,
-        r#"Out-String`."#
-    );
-    const NEW_WINDOWS_HOST_RULES: &str = concat!(
-        r#"## Host Platform Rules
+    r#"AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program "#,
+    r#"Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | "#,
+    r#"Out-String`."#
+);
+const NEW_WINDOWS_HOST_RULES: &str = concat!(
+    r#"## Host Platform Rules
 
 Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and "#,
-        r#"every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is "#,
-        r#"available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program "#,
-        r#"Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | "#,
-        r#"Out-String`."#
-    );
-    const WINDOWS_HOST_RULES_DELTA_BYTES: usize = 74;
-    assert_eq!(OLD_WINDOWS_HOST_RULES.len(), 277);
-    assert_eq!(NEW_WINDOWS_HOST_RULES.len(), 351);
-    assert_eq!(
-        NEW_WINDOWS_HOST_RULES.len() - OLD_WINDOWS_HOST_RULES.len(),
-        WINDOWS_HOST_RULES_DELTA_BYTES
-    );
-    assert_eq!(
-        super::super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
-        NEW_WINDOWS_HOST_RULES
-    );
-    let host_allowance = if cfg!(target_os = "windows") {
-        WINDOWS_HOST_RULES_DELTA_BYTES
-    } else {
-        0
-    };
+    r#"every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is "#,
+    r#"available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program "#,
+    r#"Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | "#,
+    r#"Out-String`."#
+);
+const WINDOWS_HOST_RULES_DELTA_BYTES: usize = 74;
+
+// #2888: account only the exact archive-layout wording growth. Frozen
+// previous clauses and independently pinned new clauses keep historical
+// ceilings/reduction checks meaningful without removing privacy text.
+const OLD_ARCHIVE_GRANT: &str = "Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` \
+    archive of your own memory. Read them freely; never modify or delete them.";
+const NEW_ARCHIVE_GRANT: &str = "Read-only there: every rotated \
+    `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your own memory and legacy root \
+    `memory_YYYYMMDD_hhmmss/` archives. You may list your own `memory-archive/` solely to \
+    discover archive directories. Read them freely; never write, modify or delete archives or \
+    their container.";
+const OLD_PEER_PRIVACY: &str = "Other agents' memory* directories (live or rotated \
+    memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
+    read/list/search/summarize, even if asked; message the owner.";
+const NEW_PEER_PRIVACY: &str = "Other agents' memory* directories (live memory/, \
+    memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: \
+    never read/list/search/summarize, even if asked; message the owner.";
+const MEMORY_LAYOUT_DELTA_BYTES: usize = 200;
+
+// #2931 changes only the TASK verb list. Pin both literal clauses and
+// measure their exact delta independently of the generated output;
+// historical accounting excludes it, while actual ceilings stay fixed.
+const OLD_TASK_VERBS: &str = "only through the `task-set-title` and `task-append-body` CLI verbs";
+const NEW_TASK_VERBS: &str =
+    "only through the `task-set-title`, `task-append-body` and `task-set-body` CLI verbs";
+const TASK_SET_BODY_RULE_DELTA_BYTES: usize = 17;
+
+struct CurrentProfile {
+    touched_owners: usize,
+    full_wg: String,
+    selected_host_rules: &'static str,
+    historical_full_wg_bytes: usize,
+}
+
+struct Pre1795Profile {
+    pre_values: super::super::DefaultContextDynamicValues,
+    pre_touched_owners: usize,
+    pre_full_wg: String,
+    historical_pre_full_wg_bytes: usize,
+}
+
+#[test]
+fn summarized_default_context_meets_size_budget() {
+    let host_allowance = assert_windows_host_rules_delta();
 
     let skills = synthetic_replica_skills_section();
     let values = super::super::default_context_dynamic_values(
@@ -189,23 +214,38 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     );
     let write_restrictions =
         super::super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
-    // #2888: account only the exact archive-layout wording growth. Frozen
-    // previous clauses and independently pinned new clauses keep historical
-    // ceilings/reduction checks meaningful without removing privacy text.
-    const OLD_ARCHIVE_GRANT: &str = "Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` \
-        archive of your own memory. Read them freely; never modify or delete them.";
-    const NEW_ARCHIVE_GRANT: &str = "Read-only there: every rotated \
-        `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your own memory and legacy root \
-        `memory_YYYYMMDD_hhmmss/` archives. You may list your own `memory-archive/` solely to \
-        discover archive directories. Read them freely; never write, modify or delete archives or \
-        their container.";
-    const OLD_PEER_PRIVACY: &str = "Other agents' memory* directories (live or rotated \
-        memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never \
-        read/list/search/summarize, even if asked; message the owner.";
-    const NEW_PEER_PRIVACY: &str = "Other agents' memory* directories (live memory/, \
-        memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: \
-        never read/list/search/summarize, even if asked; message the owner.";
-    const MEMORY_LAYOUT_DELTA_BYTES: usize = 200;
+    assert_memory_layout_and_task_verbs(&values, &write_restrictions);
+    let current = measure_current_profile(&values, &write_restrictions, &skills, host_allowance);
+    let pre = measure_pre_1795_profile(&skills, current.selected_host_rules, host_allowance);
+    assert_v5_delta_oracle(&values, &current, &pre);
+    assert_budget_ladder_constants();
+    assert_full_wg_required_text(&current.full_wg);
+    assert_write_restriction_bodies(&write_restrictions);
+    assert_final_budgets(&current, host_allowance);
+}
+
+fn assert_windows_host_rules_delta() -> usize {
+    assert_eq!(OLD_WINDOWS_HOST_RULES.len(), 277);
+    assert_eq!(NEW_WINDOWS_HOST_RULES.len(), 351);
+    assert_eq!(
+        NEW_WINDOWS_HOST_RULES.len() - OLD_WINDOWS_HOST_RULES.len(),
+        WINDOWS_HOST_RULES_DELTA_BYTES
+    );
+    assert_eq!(
+        super::super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+        NEW_WINDOWS_HOST_RULES
+    );
+    if cfg!(target_os = "windows") {
+        WINDOWS_HOST_RULES_DELTA_BYTES
+    } else {
+        0
+    }
+}
+
+fn assert_memory_layout_and_task_verbs(
+    values: &super::super::DefaultContextDynamicValues,
+    write_restrictions: &str,
+) {
     assert_eq!(
         NEW_ARCHIVE_GRANT.len() + NEW_PEER_PRIVACY.len()
             - OLD_ARCHIVE_GRANT.len()
@@ -214,23 +254,21 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     );
     assert_eq!(values.matrix_section.matches(NEW_ARCHIVE_GRANT).count(), 1);
     assert_eq!(write_restrictions.matches(NEW_PEER_PRIVACY).count(), 1);
-
-    // #2931 changes only the TASK verb list. Pin both literal clauses and
-    // measure their exact delta independently of the generated output;
-    // historical accounting excludes it, while actual ceilings stay fixed.
-    const OLD_TASK_VERBS: &str =
-        "only through the `task-set-title` and `task-append-body` CLI verbs";
-    const NEW_TASK_VERBS: &str =
-        "only through the `task-set-title`, `task-append-body` and `task-set-body` CLI verbs";
-    const TASK_SET_BODY_RULE_DELTA_BYTES: usize = 17;
     assert_eq!(
         NEW_TASK_VERBS.len() - OLD_TASK_VERBS.len(),
         TASK_SET_BODY_RULE_DELTA_BYTES
     );
     assert_eq!(values.room_shared_entry.matches(NEW_TASK_VERBS).count(), 1);
     assert!(!values.room_shared_entry.contains(OLD_TASK_VERBS));
+}
 
-    let messaging = super::super::render_inter_agent_messaging_block(&values);
+fn measure_current_profile(
+    values: &super::super::DefaultContextDynamicValues,
+    write_restrictions: &str,
+    skills: &str,
+    host_allowance: usize,
+) -> CurrentProfile {
+    let messaging = super::super::render_inter_agent_messaging_block(values);
     let status_grant_offset = values
         .room_shared_entry
         .find("Room status is at")
@@ -249,7 +287,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         - P2_STATUS_GRANT_BYTES
         - MEMORY_LAYOUT_DELTA_BYTES
         - TASK_SET_BODY_RULE_DELTA_BYTES;
-    let full_wg = super::super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+    let full_wg = super::super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), skills);
     let selected_host_rules = super::super::host_platform_rules_default();
     assert_eq!(full_wg.matches(selected_host_rules).count(), 1);
     if cfg!(target_os = "windows") {
@@ -276,7 +314,19 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         raw_touched_owners,
         values.room_shared_entry.len() - status_grant_offset
     );
+    CurrentProfile {
+        touched_owners,
+        full_wg,
+        selected_host_rules,
+        historical_full_wg_bytes,
+    }
+}
 
+fn measure_pre_1795_profile(
+    skills: &str,
+    selected_host_rules: &str,
+    host_allowance: usize,
+) -> Pre1795Profile {
     // #1795 6.1: the fixture half of the delta, measured against the pre-#1795
     // fixture in this same run. That root has no `.ac` grandparent, so check 3
     // rejects it, it renders the four-entry text, and the difference is exactly
@@ -284,7 +334,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     let pre_values = super::super::default_context_dynamic_values(
         PRE_1795_FAKE_REPLICA_ROOT,
         Some(FAKE_MATRIX_ROOT),
-        &skills,
+        skills,
         false,
     );
     let pre_write_restrictions =
@@ -297,14 +347,32 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         + super::super::DEFAULT_DELEGATED_TASK_REPORTING.len()
         - MEMORY_LAYOUT_DELTA_BYTES;
     let pre_full_wg =
-        super::super::default_context(PRE_1795_FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+        super::super::default_context(PRE_1795_FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), skills);
     assert_eq!(pre_full_wg.matches(selected_host_rules).count(), 1);
     if cfg!(target_os = "windows") {
         assert_eq!(selected_host_rules, NEW_WINDOWS_HOST_RULES);
     }
     let historical_pre_full_wg_bytes =
         pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES - host_allowance;
+    Pre1795Profile {
+        pre_values,
+        pre_touched_owners,
+        pre_full_wg,
+        historical_pre_full_wg_bytes,
+    }
+}
 
+fn assert_v5_delta_oracle(
+    values: &super::super::DefaultContextDynamicValues,
+    current: &CurrentProfile,
+    pre: &Pre1795Profile,
+) {
+    let touched_owners = current.touched_owners;
+    let historical_full_wg_bytes = current.historical_full_wg_bytes;
+    let pre_values = &pre.pre_values;
+    let pre_touched_owners = pre.pre_touched_owners;
+    let pre_full_wg = &pre.pre_full_wg;
+    let historical_pre_full_wg_bytes = pre.historical_pre_full_wg_bytes;
     // #1795 6.1: an oracle that depends on NO measured number. Equal deltas across
     // the two rows would otherwise certify any wrong common text, because V5 is
     // measured from the changed output itself.
@@ -346,7 +414,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
             {V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES}",
         pre_full_wg.len()
     );
+}
 
+fn assert_budget_ladder_constants() {
     assert_eq!(
         V5_TOUCHED_OWNERS_BYTES,
         V4_TOUCHED_OWNERS_BYTES + V5_DELTA_BYTES
@@ -413,7 +483,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         V4_FULL_WG_PROFILE_BYTES - V4_MAX_FULL_WG_PROFILE_BYTES,
         REQUIRED_REDUCTION_BYTES
     );
+}
 
+fn assert_full_wg_required_text(full_wg: &str) {
     // Security, ownership, and protocol assertions precede the byte budget.
     for required in [
         "Allowed for reading and writing there",
@@ -442,7 +514,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         full_wg.contains("## Host Platform Rules"),
         "the platform block must render in the WG profile"
     );
+}
 
+fn assert_write_restriction_bodies(write_restrictions: &str) {
     // #1795 6.1: bind the exact bodies, so the ladder cannot certify wrong text of
     // the right length. `display_path` does NOT normalize separators
     // (`path_utils.rs:32-35`) and `Path::join` pushes `\` on Windows, so a
@@ -465,7 +539,12 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     ] {
         assert!(normalized.contains(required), "missing `{required}`");
     }
+}
 
+fn assert_final_budgets(current: &CurrentProfile, host_allowance: usize) {
+    let touched_owners = current.touched_owners;
+    let full_wg = &current.full_wg;
+    let historical_full_wg_bytes = current.historical_full_wg_bytes;
     assert!(
         touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES,
         "five touched owners are {touched_owners} bytes; v5 baseline {V5_TOUCHED_OWNERS_BYTES}, \
@@ -600,60 +679,7 @@ fn token_accounting_report() {
     let agent_repos =
         super::super::render_agent_repos_string(Path::new(FAKE_REPLICA_ROOT), None, None, false);
 
-    println!();
-    println!("## #1005 token accounting (chars, chars/4)");
-    println!();
-    println!("| item | chars | ~tokens |");
-    println!("|---|---|---|");
-    print_row(
-        "block: write restrictions (A2, replica)",
-        write_restrictions.len(),
-    );
-    print_row(
-        "block: inter-agent messaging (A3, replica)",
-        messaging.len(),
-    );
-    print_row(
-        "block: CLI context (A4a)",
-        super::super::DEFAULT_CLI_CONTEXT.len(),
-    );
-    print_row(
-        "block: session credentials (A4b)",
-        super::super::DEFAULT_SESSION_CREDENTIALS.len(),
-    );
-    print_row(
-        "block: delegated task reporting (A4c)",
-        super::super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
-    );
-    print_row(
-        "block: host platform rules (Windows default)",
-        super::super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS.len(),
-    );
-    print_row(
-        "block: host platform rules (linux/macos default)",
-        super::super::DEFAULT_HOST_PLATFORM_RULES_LINUX.len(),
-    );
-    print_row(
-        "block: agent repos header (A6, replica variant)",
-        super::super::agent_repos_header(false).len(),
-    );
-    print_row(
-        "block: agent repos header (A6, root variant)",
-        super::super::agent_repos_header(true).len(),
-    );
-    print_row(
-        "block: skills section (A5, synthetic 2 skills)",
-        skills.len(),
-    );
-    print_row("block: agent repos (A6, empty)", agent_repos.len());
-    print_row(
-        "block: self-maintenance (A8)",
-        super::super::SELF_MAINTENANCE_AUTO_SECTION.len(),
-    );
-    print_row(
-        "block: coordinator template (A9)",
-        super::super::get_default_coordinator_template().len(),
-    );
+    print_block_rows(&write_restrictions, &messaging, &skills, &agent_repos);
 
     // Profiles.
     let replica = super::super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
@@ -710,4 +736,61 @@ fn token_accounting_report() {
     ] {
         assert!(!value.is_empty(), "{label} profile must not be empty");
     }
+}
+
+fn print_block_rows(write_restrictions: &str, messaging: &str, skills: &str, agent_repos: &str) {
+    println!();
+    println!("## #1005 token accounting (chars, chars/4)");
+    println!();
+    println!("| item | chars | ~tokens |");
+    println!("|---|---|---|");
+    print_row(
+        "block: write restrictions (A2, replica)",
+        write_restrictions.len(),
+    );
+    print_row(
+        "block: inter-agent messaging (A3, replica)",
+        messaging.len(),
+    );
+    print_row(
+        "block: CLI context (A4a)",
+        super::super::DEFAULT_CLI_CONTEXT.len(),
+    );
+    print_row(
+        "block: session credentials (A4b)",
+        super::super::DEFAULT_SESSION_CREDENTIALS.len(),
+    );
+    print_row(
+        "block: delegated task reporting (A4c)",
+        super::super::DEFAULT_DELEGATED_TASK_REPORTING.len(),
+    );
+    print_row(
+        "block: host platform rules (Windows default)",
+        super::super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS.len(),
+    );
+    print_row(
+        "block: host platform rules (linux/macos default)",
+        super::super::DEFAULT_HOST_PLATFORM_RULES_LINUX.len(),
+    );
+    print_row(
+        "block: agent repos header (A6, replica variant)",
+        super::super::agent_repos_header(false).len(),
+    );
+    print_row(
+        "block: agent repos header (A6, root variant)",
+        super::super::agent_repos_header(true).len(),
+    );
+    print_row(
+        "block: skills section (A5, synthetic 2 skills)",
+        skills.len(),
+    );
+    print_row("block: agent repos (A6, empty)", agent_repos.len());
+    print_row(
+        "block: self-maintenance (A8)",
+        super::super::SELF_MAINTENANCE_AUTO_SECTION.len(),
+    );
+    print_row(
+        "block: coordinator template (A9)",
+        super::super::get_default_coordinator_template().len(),
+    );
 }

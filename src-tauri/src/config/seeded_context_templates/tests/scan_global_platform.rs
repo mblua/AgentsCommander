@@ -404,15 +404,8 @@ fn ensure_project_context_templates_seeds_platform_files_absent_only() {
     );
 }
 
-/// #1625 T-3: `ensure_platform_context_templates` seeds ONLY the missing
-/// platform files, byte-equal to their embedded defaults, with `platform.*`
-/// state entries at current versions carrying the default sha; global/coordinator templates
-/// are never touched (scope is platform-only). A pre-existing custom
-/// platform file is preserved and stays unowned (silent preservation via
-/// `suppress_unknown_without_state`).
-#[test]
-fn ensure_platform_context_templates_seeds_only_missing_platform_files() {
-    let platform_files = [
+fn platform_files() -> [(&'static str, &'static str); 3] {
+    [
         (
             crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
             crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
@@ -425,35 +418,21 @@ fn ensure_platform_context_templates_seeds_only_missing_platform_files() {
             crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_MACOS,
             crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
         ),
-    ];
-    let assert_platform_only_scope = |ac_root: &Path| {
-        assert!(
-            !ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists(),
-            "global template is out of scope for the platform seeder"
-        );
-        assert!(
-            !ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).exists(),
-            "coordinator template is out of scope for the platform seeder"
-        );
-    };
+    ]
+}
 
-    // Fresh `.ac`: all three platform files are created byte-equal to their
-    // embedded defaults and the state records Windows v2 and Linux/macOS v1
-    // with `lastSeededSha256` = hash of the default.
-    let temp = tempfile::tempdir().expect("tempdir");
-    let fresh = temp.path().join(".ac");
-    std::fs::create_dir(&fresh).expect("create workspace");
-    ensure_platform_context_templates(&fresh).expect("seed platform templates");
-    for (filename, default) in platform_files {
-        assert_eq!(
-            std::fs::read_to_string(fresh.join(filename)).expect("read seeded platform file"),
-            default,
-            "{filename} must be seeded byte-equal to its embedded default"
-        );
-    }
-    let state = std::fs::read_to_string(fresh.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
-        .expect("read seeded state");
-    let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+fn assert_platform_only_scope(ac_root: &Path) {
+    assert!(
+        !ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists(),
+        "global template is out of scope for the platform seeder"
+    );
+    assert!(
+        !ac_root.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME).exists(),
+        "coordinator template is out of scope for the platform seeder"
+    );
+}
+
+fn assert_fresh_platform_state(parsed: &serde_json::Value) {
     for (id, default) in [
         (
             "platform.windows",
@@ -479,6 +458,36 @@ fn ensure_platform_context_templates_seeds_only_missing_platform_files() {
             "{id} state entry must carry the default sha"
         );
     }
+}
+
+/// #1625 T-3: `ensure_platform_context_templates` seeds ONLY the missing
+/// platform files, byte-equal to their embedded defaults, with `platform.*`
+/// state entries at current versions carrying the default sha; global/coordinator templates
+/// are never touched (scope is platform-only). A pre-existing custom
+/// platform file is preserved and stays unowned (silent preservation via
+/// `suppress_unknown_without_state`).
+#[test]
+fn ensure_platform_context_templates_seeds_only_missing_platform_files() {
+    let platform_files = platform_files();
+
+    // Fresh `.ac`: all three platform files are created byte-equal to their
+    // embedded defaults and the state records Windows v2 and Linux/macOS v1
+    // with `lastSeededSha256` = hash of the default.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fresh = temp.path().join(".ac");
+    std::fs::create_dir(&fresh).expect("create workspace");
+    ensure_platform_context_templates(&fresh).expect("seed platform templates");
+    for (filename, default) in platform_files {
+        assert_eq!(
+            std::fs::read_to_string(fresh.join(filename)).expect("read seeded platform file"),
+            default,
+            "{filename} must be seeded byte-equal to its embedded default"
+        );
+    }
+    let state = std::fs::read_to_string(fresh.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+        .expect("read seeded state");
+    let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
+    assert_fresh_platform_state(&parsed);
     assert_platform_only_scope(&fresh);
 
     // Pre-existing custom file: preserved byte-for-byte and left unowned

@@ -1,5 +1,125 @@
 use super::*;
 
+async fn seed_pi_restart_source(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    replica: &Path,
+) -> (Uuid, Arc<crate::PendingSelfClear>) {
+    {
+        let settings = app.state::<SettingsState>();
+        settings
+            .write()
+            .await
+            .agents
+            .push(wake_agent("pi", "Pi", "pi"));
+    }
+    let (source_id, _token) =
+        seed_self_switch_session(app, replica, "pi", Some("pi"), Some("A"), Some("A")).await;
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.mark_idle(source_id).await;
+    }
+    seed_self_handoff(replica);
+    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+    pending.seed_legacy(source_id);
+    (source_id, pending)
+}
+
+async fn reseed_restarted_pi(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    replica: PathBuf,
+    source_id: Uuid,
+    (session_id, agent, profile): (Uuid, String, String),
+    restarted_id: Arc<Mutex<Option<Uuid>>>,
+) -> Result<String, String> {
+    assert_eq!(session_id, source_id);
+    assert_eq!(agent, "pi");
+    assert_eq!(profile, "A");
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.destroy_session(session_id).await.unwrap();
+    }
+    let (new_id, _token) = seed_self_switch_session(
+        &app,
+        &replica,
+        "pi",
+        Some("pi"),
+        Some(&profile),
+        Some(&profile),
+    )
+    .await;
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.mark_idle(new_id).await;
+    }
+    register_mock_pty_route(&app, new_id);
+    *restarted_id.lock().unwrap() = Some(new_id);
+    Ok(new_id.to_string())
+}
+
+async fn pi_session_state(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    session_id: Uuid,
+) -> (bool, bool) {
+    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let mgr = state.read().await;
+    match mgr.get_session(session_id).await {
+        Some(session) => (true, session.waiting_for_input),
+        None => (false, false),
+    }
+}
+
+async fn record_and_inject(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    injected_prompts: &Mutex<Vec<(Uuid, String)>>,
+    session_id: Uuid,
+    prompt: String,
+) -> Result<(), String> {
+    injected_prompts
+        .lock()
+        .unwrap()
+        .push((session_id, prompt.clone()));
+    crate::pty::inject::inject_text_into_session(app, session_id, &prompt).await
+}
+
+fn assert_pi_restart_outcome(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    source_id: Uuid,
+    restarted_id: &Mutex<Option<Uuid>>,
+    injected_prompts: &Mutex<Vec<(Uuid, String)>>,
+    boundaries: &Mutex<Vec<(Uuid, SelfClearBoundary)>>,
+    pending: &crate::PendingSelfClear,
+) {
+    let target_id = restarted_id
+        .lock()
+        .unwrap()
+        .expect("restart seam must return the reseeded Pi session id");
+    assert_ne!(target_id, source_id);
+    let prompts = injected_prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].0, target_id);
+    assert!(
+        prompts[0].1.contains("self-handoff-and-restart"),
+        "{}",
+        prompts[0].1
+    );
+    assert_eq!(
+        mock_pty_writes_for(app, target_id),
+        vec![
+            prompts[0].1.as_bytes().to_vec(),
+            b"\r".to_vec(),
+            b"\r".to_vec()
+        ]
+    );
+    assert_eq!(
+        *boundaries.lock().unwrap(),
+        vec![(target_id, SelfClearBoundary::ContentInjected)]
+    );
+    assert!(pending.is_empty());
+}
+
 /// T25 - the app-backed restart seam, which is the one that actually has a PTY: the
 /// resume prompt reaches the restarted session's PTY followed by the two staggered `\r`
 /// bytes, and the persist recorder sees the single call the shared driver makes for BOTH
@@ -14,31 +134,7 @@ use super::*;
 async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let fixture = make_self_switch_fixture();
     let app = app_handle(&fixture.app);
-    {
-        let settings = app.state::<SettingsState>();
-        settings
-            .write()
-            .await
-            .agents
-            .push(wake_agent("pi", "Pi", "pi"));
-    }
-    let (source_id, _token) = seed_self_switch_session(
-        &app,
-        &fixture.replica,
-        "pi",
-        Some("pi"),
-        Some("A"),
-        Some("A"),
-    )
-    .await;
-    {
-        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let mgr = state.read().await;
-        mgr.mark_idle(source_id).await;
-    }
-    seed_self_handoff(&fixture.replica);
-    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    pending.seed_legacy(source_id);
+    let (source_id, pending) = seed_pi_restart_source(&app, &fixture.replica).await;
 
     let persist_calls = Arc::new(Mutex::new(0usize));
     let persist_seen = persist_calls.clone();
@@ -53,14 +149,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let app_for_state = app.clone();
     let session_state = move |session_id: Uuid| {
         let app = app_for_state.clone();
-        async move {
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
+        async move { pi_session_state(&app, session_id).await }
     };
 
     let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
@@ -72,31 +161,14 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
         let replica = replica_for_restart.clone();
         let restarted_id = Arc::clone(&restarted_id_seen);
         async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!(agent, "pi");
-            assert_eq!(profile, "A");
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.destroy_session(session_id).await.unwrap();
-            }
-            let (new_id, _token) = seed_self_switch_session(
-                &app,
-                &replica,
-                "pi",
-                Some("pi"),
-                Some(&profile),
-                Some(&profile),
+            reseed_restarted_pi(
+                app,
+                replica,
+                source_id,
+                (session_id, agent, profile),
+                restarted_id,
             )
-            .await;
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.mark_idle(new_id).await;
-            }
-            register_mock_pty_route(&app, new_id);
-            *restarted_id.lock().unwrap() = Some(new_id);
-            Ok(new_id.to_string())
+            .await
         }
     };
 
@@ -106,13 +178,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let inject = move |session_id: Uuid, prompt: String| {
         let app = app_for_inject.clone();
         let injected_prompts = Arc::clone(&injected_prompts_seen);
-        async move {
-            injected_prompts
-                .lock()
-                .unwrap()
-                .push((session_id, prompt.clone()));
-            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
-        }
+        async move { record_and_inject(&app, &injected_prompts, session_id, prompt).await }
     };
     let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let boundaries_seen = Arc::clone(&boundaries);
@@ -163,32 +229,14 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
         "no closure this test supplies writes the replica currentCodingAgent cell; per the \
              note above this does NOT discriminate the flavor"
     );
-    let target_id = restarted_id
-        .lock()
-        .unwrap()
-        .expect("restart seam must return the reseeded Pi session id");
-    assert_ne!(target_id, source_id);
-    let prompts = injected_prompts.lock().unwrap().clone();
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].0, target_id);
-    assert!(
-        prompts[0].1.contains("self-handoff-and-restart"),
-        "{}",
-        prompts[0].1
+    assert_pi_restart_outcome(
+        &app,
+        source_id,
+        &restarted_id,
+        &injected_prompts,
+        &boundaries,
+        &pending,
     );
-    assert_eq!(
-        mock_pty_writes_for(&app, target_id),
-        vec![
-            prompts[0].1.as_bytes().to_vec(),
-            b"\r".to_vec(),
-            b"\r".to_vec()
-        ]
-    );
-    assert_eq!(
-        *boundaries.lock().unwrap(),
-        vec![(target_id, SelfClearBoundary::ContentInjected)]
-    );
-    assert!(pending.is_empty());
 }
 
 /// #1632 - mutual exclusion over the shared, NON-msg-id-scoped names in the process-global

@@ -180,6 +180,28 @@ async fn purge_keeps_root_agent_and_archived_root_rows() {
     assert_eq!(filtered2.len(), 2, "both rows survive both cycles");
 }
 
+/// Creates a local-process session with no agent metadata, as the AC3 test
+/// does for both its dormant and live orphans.
+async fn create_local_session(
+    mgr: &SessionManager,
+    shell: &str,
+    working_directory: String,
+    expect_msg: &str,
+) -> crate::session::session::Session {
+    mgr.create_session(
+        shell.into(),
+        vec![],
+        working_directory,
+        None,
+        None,
+        Vec::new(),
+        false,
+        crate::pty::backend::SessionBackendKind::LocalProcess,
+    )
+    .await
+    .expect(expect_msg)
+}
+
 /// AC3 (test 4): a dormant orphan leaves the manager + disk on the first
 /// persist and is recorded; a live orphan keeps running in RAM, is dropped
 /// from disk, counts `live_kept`, and is NOT recorded (its recipe is still
@@ -199,32 +221,9 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
     let dormant_cwd = wg.join("__agent_dormant").to_string_lossy().to_string();
     let live_cwd = wg.join("__agent_live").to_string_lossy().to_string();
     let mgr = SessionManager::new();
-    let dormant = mgr
-        .create_session(
-            "dormant".into(),
-            vec![],
-            dormant_cwd.clone(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            crate::pty::backend::SessionBackendKind::LocalProcess,
-        )
-        .await
-        .expect("create dormant");
-    let live = mgr
-        .create_session(
-            "live".into(),
-            vec![],
-            live_cwd.clone(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            crate::pty::backend::SessionBackendKind::LocalProcess,
-        )
-        .await
-        .expect("create live");
+    let dormant =
+        create_local_session(&mgr, "dormant", dormant_cwd.clone(), "create dormant").await;
+    let live = create_local_session(&mgr, "live", live_cwd.clone(), "create live").await;
     mgr.mark_exited(dormant.id, 0).await;
 
     let retention = vec![current.to_string_lossy().to_string()];

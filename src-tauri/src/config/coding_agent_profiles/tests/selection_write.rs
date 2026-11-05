@@ -146,13 +146,17 @@ fn e2432_source_prepared_publication_manual_clear_and_stale_are_atomic() {
         format!("cid1:{}", "c".repeat(64))
     );
     assert_eq!(after["tooling"]["unrelated"], 42);
+    e2432_manual_clear_and_stale(&fx, &mut prepared);
+}
+
+fn e2432_manual_clear_and_stale(fx: &SelectionFixture, prepared: &mut PreparedSourceSelection) {
     for locked in [false, true] {
-        e2432_seed_source(&fx, Some("manual"), "D", locked);
+        e2432_seed_source(fx, Some("manual"), "D", locked);
         let before = config_bytes(&fx.replica);
         assert!(set_instance_profile_override(&fx.settings, &fx.replica, None).is_err());
         assert_eq!(config_bytes(&fx.replica), before);
     }
-    e2432_seed_source(&fx, Some("manual"), "D", false);
+    e2432_seed_source(fx, Some("manual"), "D", false);
     let expected = read_replica_selection_state(&fx.replica)
         .expectation()
         .unwrap();
@@ -162,7 +166,7 @@ fn e2432_source_prepared_publication_manual_clear_and_stale_are_atomic() {
     assert!(write_prepared_source_selection(
         &fx.settings,
         &fx.replica,
-        &prepared,
+        prepared,
         SelectionWriteIntent::Individual,
         &expected
     )
@@ -174,7 +178,7 @@ fn e2432_source_prepared_publication_manual_clear_and_stale_are_atomic() {
         write_prepared_source_selection(
             &fx.settings,
             &fx.replica,
-            &prepared,
+            prepared,
             SelectionWriteIntent::Individual,
             &expected
         )
@@ -580,6 +584,36 @@ fn issue_1937_selection_state_intent_table() {
         assert_eq!(stored_flag, expect_flag_true, "{intent:?}");
     }
 
+    issue_1937_locked_individual_and_bulk();
+
+    let fixture = selection_fixture();
+    write_config(
+        &fixture.replica,
+        &seed_selection_config(
+            r#"{"currentCodingAgent":"claude","profile":"A","selectionLocked":true}"#,
+        ),
+    );
+    let before = config_bytes(&fixture.replica);
+    let expected = read_replica_selection_state(&fixture.replica)
+        .expectation()
+        .unwrap();
+    let outcome = write_replica_selection(
+        &fixture.settings,
+        &fixture.replica,
+        &pair("codex", "B"),
+        SelectionWriteIntent::BulkForceReviewed,
+        &expected,
+    )
+    .unwrap();
+    assert!(outcome.changed && outcome.published);
+    assert_eq!(outcome.lock_transition, None, "already locked");
+    assert_ne!(config_bytes(&fixture.replica), before);
+    let saved = config_value(&fixture.replica);
+    assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+    assert_eq!(saved["tooling"]["selectionLocked"], true);
+}
+
+fn issue_1937_locked_individual_and_bulk() {
     // Locked replicas: individual intents are rejected (bytes untouched);
     // bulk intents skip without publishing; force applies and keeps locked.
     for intent in [
@@ -634,32 +668,6 @@ fn issue_1937_selection_state_intent_table() {
         assert_eq!(outcome, SelectionWriteOutcome::UNCHANGED, "{intent:?}");
         assert_eq!(config_bytes(&fixture.replica), before, "{intent:?}");
     }
-
-    let fixture = selection_fixture();
-    write_config(
-        &fixture.replica,
-        &seed_selection_config(
-            r#"{"currentCodingAgent":"claude","profile":"A","selectionLocked":true}"#,
-        ),
-    );
-    let before = config_bytes(&fixture.replica);
-    let expected = read_replica_selection_state(&fixture.replica)
-        .expectation()
-        .unwrap();
-    let outcome = write_replica_selection(
-        &fixture.settings,
-        &fixture.replica,
-        &pair("codex", "B"),
-        SelectionWriteIntent::BulkForceReviewed,
-        &expected,
-    )
-    .unwrap();
-    assert!(outcome.changed && outcome.published);
-    assert_eq!(outcome.lock_transition, None, "already locked");
-    assert_ne!(config_bytes(&fixture.replica), before);
-    let saved = config_value(&fixture.replica);
-    assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
-    assert_eq!(saved["tooling"]["selectionLocked"], true);
 }
 
 #[test]

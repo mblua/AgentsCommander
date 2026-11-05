@@ -314,6 +314,64 @@ async fn run_clear_watch(case: WatchCase) -> WatchRun {
     }
 }
 
+async fn write_unblocked_inputs(manager: &Arc<Mutex<PtyManager>>, id: Uuid) {
+    use std::time::Duration;
+    for bytes in [b"k".as_slice(), b"\x03", b"\x1b", b"web", b"privileged"] {
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            test_input_write(manager, id, bytes),
+        )
+        .await
+        .expect("writer blocked by observation")
+        .unwrap();
+    }
+}
+
+async fn write_close_and_other_route(manager: &Arc<Mutex<PtyManager>>, id: Uuid) {
+    use std::time::Duration;
+    let close = tokio::time::timeout(
+        Duration::from_millis(500),
+        test_input_write(manager, id, &[b'e', b'x', b'i', b't', 13, 10]),
+    )
+    .await;
+    assert!(
+        matches!(close, Ok(Ok(()))),
+        "close writer missed observer budget"
+    );
+    let other = Uuid::new_v4();
+    manager
+        .lock()
+        .unwrap()
+        .record_route(other, SessionBackendKind::LocalProcess);
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        test_input_write(manager, other, b"other"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    manager
+        .lock()
+        .unwrap()
+        .try_remove_route_if_kind(other, SessionBackendKind::LocalProcess)
+        .unwrap();
+}
+
+fn expected_clear_watch_writes(remove: bool, poison: bool) -> Vec<Vec<u8>> {
+    let mut expected = vec![
+        vec![b'k'],
+        vec![3],
+        vec![27],
+        b"web".to_vec(),
+        b"privileged".to_vec(),
+    ];
+    if !remove && !poison {
+        expected.extend([b"second".to_vec(), vec![13], vec![13]]);
+    }
+    expected.push(vec![b'e', b'x', b'i', b't', 13, 10]);
+    expected
+}
+
 async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Result<(), String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -354,15 +412,7 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
             recorded_writes(&backend, id),
             vec![b"/clear".to_vec(), vec![13], vec![13]]
         );
-        for bytes in [b"k".as_slice(), b"\x03", b"\x1b", b"web", b"privileged"] {
-            tokio::time::timeout(
-                Duration::from_millis(500),
-                test_input_write(&manager, id, bytes),
-            )
-            .await
-            .expect("writer blocked by observation")
-            .unwrap();
-        }
+        write_unblocked_inputs(&manager, id).await;
         if !remove && !poison && !cancel {
             tokio::time::timeout(
                 Duration::from_secs(5),
@@ -372,32 +422,7 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
             .expect("direct submission waited for watch")
             .unwrap();
         }
-        let close = tokio::time::timeout(
-            Duration::from_millis(500),
-            test_input_write(&manager, id, &[b'e', b'x', b'i', b't', 13, 10]),
-        )
-        .await;
-        assert!(
-            matches!(close, Ok(Ok(()))),
-            "close writer missed observer budget"
-        );
-        let other = Uuid::new_v4();
-        manager
-            .lock()
-            .unwrap()
-            .record_route(other, SessionBackendKind::LocalProcess);
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            test_input_write(&manager, other, b"other"),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        manager
-            .lock()
-            .unwrap()
-            .try_remove_route_if_kind(other, SessionBackendKind::LocalProcess)
-            .unwrap();
+        write_close_and_other_route(&manager, id).await;
         if remove {
             manager
                 .lock()
@@ -427,17 +452,7 @@ async fn clear_watch_concurrency(remove: bool, poison: bool, cancel: bool) -> Re
     let (result, ()) = tokio::join!(&mut future, parallel);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let writes = recorded_writes(&backend, id);
-    let mut expected = vec![
-        vec![b'k'],
-        vec![3],
-        vec![27],
-        b"web".to_vec(),
-        b"privileged".to_vec(),
-    ];
-    if !remove && !poison {
-        expected.extend([b"second".to_vec(), vec![13], vec![13]]);
-    }
-    expected.push(vec![b'e', b'x', b'i', b't', 13, 10]);
+    let expected = expected_clear_watch_writes(remove, poison);
     assert_eq!(&writes[3..], expected);
     if poison {
         manager

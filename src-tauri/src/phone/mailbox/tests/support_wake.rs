@@ -1,21 +1,21 @@
 use super::*;
 
-pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool, scenario: &str) {
+type QueuedRaceSenders = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Sender<()>,
+);
+
+fn queued_second_actor(
+    inline: bool,
+    scenario: &str,
+) -> (
+    Arc<crate::session::selection::ReplacementFixtureControl>,
+    MailboxPoller,
+    bool,
+    QueuedRaceSenders,
+) {
     use crate::session::selection::{ReplacementFixtureControl, ReplacementFixtureCut as Cut};
-    use std::future::Future;
-    let fixture = make_mailbox_fixture();
-    // Both actors belong to one unchanged authority history, before restore.
-    let (replica, target) = provision_retained_fixture_member(&fixture, "queued-member");
-    let app = fixture.app.handle();
-    let (coordinator, _, sender, _) = prepare_retained_exited_respawn(&fixture).await;
-    let (route, _) =
-        prepare_additional_retained_member(&fixture, &coordinator, sender, &replica, &target).await;
-    let first = Arc::new(ReplacementFixtureControl::default());
-    let (release_first, first_gate) = tokio::sync::oneshot::channel();
-    *first.before_release_gate.lock().unwrap() = Some(first_gate);
-    let first_hooks = MailboxTestHooks::default();
-    *first_hooks.replacement_fixture.lock().unwrap() = Some(first.clone());
-    let first_poller = MailboxPoller::new_with_test_hooks(first_hooks.clone());
     let second = Arc::new(ReplacementFixtureControl::default());
     second.ticket_only.store(!inline, Ordering::Release);
     let race = scenario != "queued-drain";
@@ -41,6 +41,234 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
     let second_hooks = MailboxTestHooks::default();
     *second_hooks.replacement_fixture.lock().unwrap() = Some(second.clone());
     let second_poller = MailboxPoller::new_with_test_hooks(second_hooks);
+    (
+        second,
+        second_poller,
+        race,
+        (resume_finalizer, resume_disarmed, panic_source),
+    )
+}
+
+async fn queued_actual_delivery(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    state: &crate::api::message_store::MessageStoreState,
+    second_poller: &MailboxPoller,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    injection: Option<&str>,
+    second_message: &OutboxMessage,
+) {
+    if let Some(injection) = injection {
+        second_poller
+            .dispatch_pty_input_operation(
+                app,
+                state,
+                injection,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+    } else {
+        let _ = retained_fixture_ordinary_wake(second_poller, app, second_message, second).await;
+    }
+}
+
+async fn queued_select_housekeeping(
+    actual_delivery: impl std::future::Future<Output = ()>,
+    outer_finished: tokio::sync::oneshot::Receiver<()>,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+) {
+    let housekeeping = async {
+        if outer_finished.await.is_ok() {
+            return;
+        }
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        () = actual_delivery => {},
+        () = housekeeping => assert!(second.observe_owner(coordinator)
+            .is_some_and(|owner| owner.source_stopped),
+            "drop only the outer waiter after real accepted-core unwind"),
+    }
+}
+
+async fn queued_wait_submitted(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    inline: bool,
+) -> (
+    crate::session::manager::PendingCreateBinding,
+    SessionManager,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let queued = retained_source_wait_cut(
+        second,
+        if inline {
+            Cut::Submitted
+        } else {
+            Cut::TicketSubmitted
+        },
+    )
+    .await;
+    let binding = queued.binding.unwrap();
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    if !inline {
+        assert!(
+            manager.get_pending_session(binding).await.is_some(),
+            "original ticket queued only after actual pending creation/native effects"
+        );
+    }
+    assert!(!second.received.load(Ordering::Acquire));
+    assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+    (binding, manager)
+}
+
+async fn queued_arm_first(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    first: &crate::session::selection::ReplacementFixtureControl,
+    first_hooks: &MailboxTestHooks,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    let first_return = retained_source_wait_cut(first, Cut::AdapterReturned).await;
+    let first_id = first_return.binding.unwrap().session_id();
+    let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+    idle.register_session(first_id, crate::session::profile::IdleTuning::DEFAULT);
+    idle.set_pty_input_ready_for_test(first_id);
+    first_hooks
+        .real_inject_sessions
+        .lock()
+        .unwrap()
+        .insert(first_id);
+}
+
+async fn queued_cleanup_race(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    second: &Arc<crate::session::selection::ReplacementFixtureControl>,
+    release_first: tokio::sync::oneshot::Sender<()>,
+    senders: QueuedRaceSenders,
+    scenario: &str,
+    inline: bool,
+) {
+    let (resume_finalizer, resume_disarmed, panic_source) = senders;
+    retained_source_cleanup_race(
+        app,
+        coordinator,
+        second,
+        RetainedCleanupRaceGates {
+            first: release_first,
+            finalizer: resume_finalizer,
+            disarmed: resume_disarmed,
+            panic_source,
+            claim_first: scenario == "cleanup-claim-first",
+            runtime_changed: scenario == "cleanup-runtime-changed",
+            unknown: scenario == "cleanup-unknown-veto",
+        },
+        inline,
+    )
+    .await;
+}
+
+async fn queued_drain_close(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    release_first: tokio::sync::oneshot::Sender<()>,
+    manager: &SessionManager,
+    binding: crate::session::manager::PendingCreateBinding,
+    inline: bool,
+) {
+    use crate::session::selection::ReplacementFixtureCut as Cut;
+    use std::future::Future;
+    // Poll the same actual close future to publish shutdown while the
+    // genuine earlier inline envelope still owns the worker.
+    let close = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join());
+    tokio::pin!(close);
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(close.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    release_first.send(()).unwrap();
+    retained_source_wait_cut(
+        second,
+        if inline {
+            Cut::Drained
+        } else {
+            Cut::TicketDrained
+        },
+    )
+    .await;
+    retained_source_wait_cut(second, Cut::ReceiverLost).await;
+    let report = close.await.expect("actual queued-drain close");
+    assert!(!report.persistence_safe);
+    let owner = second.observe_owner(coordinator).unwrap();
+    assert!(!owner.terminal && !owner.transferred);
+    if inline {
+        assert_eq!(owner.effects_started, 0);
+        assert!(manager.get_pending_session(binding).await.is_none());
+    } else {
+        assert!(
+            manager.get_pending_session(binding).await.is_some(),
+            "owned shutdown drain neither invents setup error nor rolls back B"
+        );
+        assert!(!owner.rollback_completed);
+    }
+    assert!(!second
+        .receipts
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|receipt| receipt.cut == Cut::Baseline || receipt.cut == Cut::SourceReceived));
+    assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+}
+
+fn assert_queued_cell_outcome(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    store: &crate::api::message_store::MessageStore,
+    coordinator: &crate::session::selection::SelectionCoordinator,
+    second: &crate::session::selection::ReplacementFixtureControl,
+    scenario: &str,
+    binding: crate::session::manager::PendingCreateBinding,
+    injection: Option<String>,
+) {
+    if scenario == "cleanup-unknown-veto" {
+        assert!(second.observe_owner(coordinator).is_none());
+    } else {
+        assert!(!second.observe_owner(coordinator).unwrap().transferred);
+    }
+    assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+    if let Some(injection) = injection {
+        let actual = store
+            .query_pty_input_by_injection(&injection)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !actual.terminal,
+            "drained retained work cannot claim delivery"
+        );
+    }
+}
+
+pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool, scenario: &str) {
+    use crate::session::selection::ReplacementFixtureControl;
+    let fixture = make_mailbox_fixture();
+    // Both actors belong to one unchanged authority history, before restore.
+    let (replica, target) = provision_retained_fixture_member(&fixture, "queued-member");
+    let app = fixture.app.handle();
+    let (coordinator, _, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+    let (route, _) =
+        prepare_additional_retained_member(&fixture, &coordinator, sender, &replica, &target).await;
+    let first = Arc::new(ReplacementFixtureControl::default());
+    let (release_first, first_gate) = tokio::sync::oneshot::channel();
+    *first.before_release_gate.lock().unwrap() = Some(first_gate);
+    let first_hooks = MailboxTestHooks::default();
+    *first_hooks.replacement_fixture.lock().unwrap() = Some(first.clone());
+    let first_poller = MailboxPoller::new_with_test_hooks(first_hooks.clone());
+    let (second, second_poller, race, race_senders) = queued_second_actor(inline, scenario);
     let state = app.state::<crate::api::message_store::MessageStoreState>();
     let store = state.store.as_ref().unwrap().clone();
     let injection = pty.then(|| {
@@ -58,85 +286,29 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
     };
     let second_delivery = async {
         second_gate.await.unwrap();
-        let actual_delivery = async {
-            if let Some(injection) = injection.as_deref() {
-                second_poller
-                    .dispatch_pty_input_operation(
-                        app,
-                        &state,
-                        injection,
-                        crate::phone::types::PtyInputSourcePlane::HostCli,
-                        None,
-                    )
-                    .await;
-            } else {
-                let _ =
-                    retained_fixture_ordinary_wake(&second_poller, app, &second_message, &second)
-                        .await;
-            }
-        };
-        let housekeeping = async {
-            if outer_finished.await.is_ok() {
-                return;
-            }
-            std::future::pending::<()>().await;
-        };
-        tokio::select! {
-            () = actual_delivery => {},
-            () = housekeeping => assert!(second.observe_owner(&coordinator)
-                .is_some_and(|owner| owner.source_stopped),
-                "drop only the outer waiter after real accepted-core unwind"),
-        }
+        let actual_delivery = queued_actual_delivery(
+            app,
+            &state,
+            &second_poller,
+            &second,
+            injection.as_deref(),
+            &second_message,
+        );
+        queued_select_housekeeping(actual_delivery, outer_finished, &second, &coordinator).await;
     };
     let controller = async {
-        let first_return = retained_source_wait_cut(&first, Cut::AdapterReturned).await;
-        let first_id = first_return.binding.unwrap().session_id();
-        let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
-        idle.register_session(first_id, crate::session::profile::IdleTuning::DEFAULT);
-        idle.set_pty_input_ready_for_test(first_id);
-        first_hooks
-            .real_inject_sessions
-            .lock()
-            .unwrap()
-            .insert(first_id);
+        queued_arm_first(app, &first, &first_hooks).await;
         start_second.send(()).unwrap();
-        let queued = retained_source_wait_cut(
-            &second,
-            if inline {
-                Cut::Submitted
-            } else {
-                Cut::TicketSubmitted
-            },
-        )
-        .await;
-        let binding = queued.binding.unwrap();
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        if !inline {
-            assert!(
-                manager.get_pending_session(binding).await.is_some(),
-                "original ticket queued only after actual pending creation/native effects"
-            );
-        }
-        assert!(!second.received.load(Ordering::Acquire));
-        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
+        let (binding, manager) = queued_wait_submitted(app, &second, inline).await;
         if race {
-            retained_source_cleanup_race(
+            let gates = race_senders;
+            queued_cleanup_race(
                 app,
                 &coordinator,
                 &second,
-                RetainedCleanupRaceGates {
-                    first: release_first,
-                    finalizer: resume_finalizer,
-                    disarmed: resume_disarmed,
-                    panic_source,
-                    claim_first: scenario == "cleanup-claim-first",
-                    runtime_changed: scenario == "cleanup-runtime-changed",
-                    unknown: scenario == "cleanup-unknown-veto",
-                },
+                release_first,
+                gates,
+                scenario,
                 inline,
             )
             .await;
@@ -147,46 +319,16 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
             }
             return binding;
         }
-        // Poll the same actual close future to publish shutdown while the
-        // genuine earlier inline envelope still owns the worker.
-        let close = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join());
-        tokio::pin!(close);
-        assert!(
-            std::future::poll_fn(|cx| std::task::Poll::Ready(close.as_mut().poll(cx).is_pending()))
-                .await
-        );
-        release_first.send(()).unwrap();
-        retained_source_wait_cut(
+        queued_drain_close(
+            app,
+            &coordinator,
             &second,
-            if inline {
-                Cut::Drained
-            } else {
-                Cut::TicketDrained
-            },
+            release_first,
+            &manager,
+            binding,
+            inline,
         )
         .await;
-        retained_source_wait_cut(&second, Cut::ReceiverLost).await;
-        let report = close.await.expect("actual queued-drain close");
-        assert!(!report.persistence_safe);
-        let owner = second.observe_owner(&coordinator).unwrap();
-        assert!(!owner.terminal && !owner.transferred);
-        if inline {
-            assert_eq!(owner.effects_started, 0);
-            assert!(manager.get_pending_session(binding).await.is_none());
-        } else {
-            assert!(
-                manager.get_pending_session(binding).await.is_some(),
-                "owned shutdown drain neither invents setup error nor rolls back B"
-            );
-            assert!(!owner.rollback_completed);
-        }
-        assert!(!second
-            .receipts
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|receipt| receipt.cut == Cut::Baseline || receipt.cut == Cut::SourceReceived));
-        assert!(shared_engine_writes(app, binding.session_id()).is_empty());
         // A closed housekeeping signal is disabled above.
         drop(finish_outer);
         binding
@@ -196,51 +338,58 @@ pub(super) async fn retained_exited_respawn_queued_cell(pty: bool, inline: bool,
     })
     .await
     .expect("genuine earlier inline actor and queued source drain");
-    if scenario == "cleanup-unknown-veto" {
-        assert!(second.observe_owner(&coordinator).is_none());
-    } else {
-        assert!(!second.observe_owner(&coordinator).unwrap().transferred);
-    }
-    assert!(shared_engine_writes(app, binding.session_id()).is_empty());
-    if let Some(injection) = injection {
-        let actual = store
-            .query_pty_input_by_injection(&injection)
-            .unwrap()
-            .unwrap();
-        assert!(
-            !actual.terminal,
-            "drained retained work cannot claim delivery"
-        );
-    }
+    assert_queued_cell_outcome(
+        app,
+        &store,
+        &coordinator,
+        &second,
+        scenario,
+        binding,
+        injection,
+    );
 }
 
-pub(super) async fn retained_exited_respawn_lifetime_cell(pty: bool, inline: bool) {
+fn lifetime_backend_weak(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+) -> std::sync::Weak<dyn PtyBackend> {
+    let state = app.state::<Arc<Mutex<PtyManager>>>();
+    let actual = state
+        .lock()
+        .unwrap()
+        .backend_for_kind(SessionBackendKind::LocalProcess);
+    assert!(actual.as_any().is::<MailboxMockPtyBackend>());
+    Arc::downgrade(&actual)
+}
+
+fn lifetime_source_actor(
+    inline: bool,
+) -> (
+    Arc<crate::session::selection::ReplacementFixtureControl>,
+    MailboxPoller,
+) {
     use crate::session::selection::{
         ReplacementFixtureAction as Action, ReplacementFixtureControl, ReplacementFixtureCut as Cut,
     };
+    let control = Arc::new(ReplacementFixtureControl::default());
+    control.ticket_only.store(!inline, Ordering::Release);
+    control.actions.lock().unwrap().push(Action::PanicOnce {
+        cut: Cut::SourceCoreEntered,
+    });
+    let hooks = MailboxTestHooks::default();
+    *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
+    let poller = MailboxPoller::new_with_test_hooks(hooks);
+    (control, poller)
+}
+
+pub(super) async fn retained_exited_respawn_lifetime_cell(pty: bool, inline: bool) {
     let fixture = make_mailbox_fixture();
     let probe = Arc::downgrade(fixture.app.state::<Arc<AppLifetimeProbe>>().inner());
     let retained_handle = fixture.app.handle().clone();
     let (coordinator, backend, owner) = {
         let app = fixture.app.handle();
         let (coordinator, route, sender, _) = prepare_retained_exited_respawn(&fixture).await;
-        let backend = {
-            let state = app.state::<Arc<Mutex<PtyManager>>>();
-            let actual = state
-                .lock()
-                .unwrap()
-                .backend_for_kind(SessionBackendKind::LocalProcess);
-            assert!(actual.as_any().is::<MailboxMockPtyBackend>());
-            Arc::downgrade(&actual)
-        };
-        let control = Arc::new(ReplacementFixtureControl::default());
-        control.ticket_only.store(!inline, Ordering::Release);
-        control.actions.lock().unwrap().push(Action::PanicOnce {
-            cut: Cut::SourceCoreEntered,
-        });
-        let hooks = MailboxTestHooks::default();
-        *hooks.replacement_fixture.lock().unwrap() = Some(control.clone());
-        let poller = MailboxPoller::new_with_test_hooks(hooks);
+        let backend = lifetime_backend_weak(app);
+        let (control, poller) = lifetime_source_actor(inline);
         let state = app.state::<crate::api::message_store::MessageStoreState>();
         let store = state.store.as_ref().unwrap().clone();
         let injection = pty.then(|| {

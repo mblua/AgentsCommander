@@ -1,9 +1,10 @@
 use super::*;
 
-async fn retained_exited_respawn_host(pty: bool, inline: bool, wrapper: &str) {
-    const MARKER: &str = "AC_P05_RETAINED_SOURCE_CHILD";
-    const SCENARIO: &str = "AC_P05_RETAINED_SOURCE_SCENARIO";
-    const IDENTITY: &str = "AC_P05_RETAINED_SOURCE_IDENTITY";
+const MARKER: &str = "AC_P05_RETAINED_SOURCE_CHILD";
+const SCENARIO: &str = "AC_P05_RETAINED_SOURCE_SCENARIO";
+const IDENTITY: &str = "AC_P05_RETAINED_SOURCE_IDENTITY";
+
+fn retained_exited_scenarios(pty: bool, inline: bool) -> Vec<&'static str> {
     let mut scenarios = vec![
         "positive",
         "reclaim-66",
@@ -70,6 +71,45 @@ async fn retained_exited_respawn_host(pty: bool, inline: bool, wrapper: &str) {
         scenarios.push("entry-root-reclaim");
         scenarios.push("entry-restart-reclaim");
     }
+    scenarios
+}
+
+fn spawn_and_supervise_retained_child(wrapper: &str, scenario: &str) {
+    let directory = tempfile::tempdir().expect("parent child directory");
+    let path = directory
+        .path()
+        .canonicalize()
+        .expect("absolute child directory");
+    let identity = format!("{}\n{wrapper}\n{scenario}", Uuid::new_v4());
+    let stdout = std::fs::File::create(path.join("stdout.log")).expect("child stdout");
+    let stderr = std::fs::File::create(path.join("stderr.log")).expect("child stderr");
+    let mut command = std::process::Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args([wrapper, "--exact", "--nocapture", "--test-threads=1"])
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .env(MARKER, wrapper)
+        .env(SCENARIO, scenario)
+        .env(IDENTITY, &identity)
+        .env("AGENTSCOMMANDER_CONFIG_DIR", &path)
+        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let child = command.spawn().expect("spawn exact fixture child");
+    let mut owner = RetainedSourceChild {
+        child,
+        directory: Some(directory),
+        reaped: false,
+    };
+    owner.supervise(&identity, scenario);
+}
+
+async fn retained_exited_respawn_host(pty: bool, inline: bool, wrapper: &str) {
+    let scenarios = retained_exited_scenarios(pty, inline);
     if let Some(marked_wrapper) = std::env::var_os(MARKER) {
         assert_eq!(
             marked_wrapper.to_str(),
@@ -106,38 +146,7 @@ async fn retained_exited_respawn_host(pty: bool, inline: bool, wrapper: &str) {
         "orphan child markers"
     );
     for scenario in scenarios {
-        let directory = tempfile::tempdir().expect("parent child directory");
-        let path = directory
-            .path()
-            .canonicalize()
-            .expect("absolute child directory");
-        let identity = format!("{}\n{wrapper}\n{scenario}", Uuid::new_v4());
-        let stdout = std::fs::File::create(path.join("stdout.log")).expect("child stdout");
-        let stderr = std::fs::File::create(path.join("stderr.log")).expect("child stderr");
-        let mut command =
-            std::process::Command::new(std::env::current_exe().expect("test executable"));
-        command
-            .args([wrapper, "--exact", "--nocapture", "--test-threads=1"])
-            .stdin(std::process::Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr)
-            .env(MARKER, wrapper)
-            .env(SCENARIO, scenario)
-            .env(IDENTITY, &identity)
-            .env("AGENTSCOMMANDER_CONFIG_DIR", &path)
-            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &path);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000);
-        }
-        let child = command.spawn().expect("spawn exact fixture child");
-        let mut owner = RetainedSourceChild {
-            child,
-            directory: Some(directory),
-            reaped: false,
-        };
-        owner.supervise(&identity, scenario);
+        spawn_and_supervise_retained_child(wrapper, scenario);
     }
 }
 

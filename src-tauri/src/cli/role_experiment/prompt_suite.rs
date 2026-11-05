@@ -42,69 +42,9 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         if line.trim().is_empty() {
             continue;
         }
-        let Some(parsed) = parse_prompt_json(line, physical_line, &mut errors) else {
-            continue;
-        };
-        let Some(object) = parsed.as_object() else {
-            errors.push(err_at_line(
-                "prompt_suite_unparseable",
-                format!("Prompt suite line {physical_line} must be a JSON object"),
-                physical_line,
-                None,
-            ));
-            continue;
-        };
-        let Some(id) = required_prompt_string(object, "id", physical_line, &mut errors) else {
-            continue;
-        };
-        if !is_safe_prompt_id(&id) {
-            errors.push(err_at_line(
-                "prompt_suite_unparseable",
-                format!(
-                    "Prompt suite line {physical_line} has invalid id '{id}'; \
-                     use lowercase ASCII letters, digits, hyphen, or underscore"
-                ),
-                physical_line,
-                Some("id"),
-            ));
-            continue;
+        if let Some(case) = parse_prompt_case(line, physical_line, &mut ids, &mut errors) {
+            prompts.push(case);
         }
-        let Some(title) = required_prompt_string(object, "title", physical_line, &mut errors)
-        else {
-            continue;
-        };
-        let Some(prompt) = required_prompt_string(object, "prompt", physical_line, &mut errors)
-        else {
-            continue;
-        };
-        let Some(tags) = optional_string_array(object, "tags", physical_line, &mut errors) else {
-            continue;
-        };
-        let Some(expected_behaviors) =
-            optional_string_array(object, "expectedBehaviors", physical_line, &mut errors)
-        else {
-            continue;
-        };
-        if let Some(first_line) = ids.insert(id.clone(), physical_line) {
-            errors.push(err_at_line(
-                "prompt_suite_duplicate_id",
-                format!(
-                    "Prompt suite duplicate id '{id}' at line {physical_line}; \
-                     first seen at line {first_line}"
-                ),
-                physical_line,
-                Some("id"),
-            ));
-            continue;
-        }
-        prompts.push(PromptCase {
-            id,
-            title,
-            prompt,
-            tags,
-            expected_behaviors,
-            line: physical_line,
-        });
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -120,6 +60,63 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         path: documents::canonical_prompt_suite_path(path),
         sha256,
         prompts,
+    })
+}
+
+/// Parses one non-blank suite line; records errors and returns `None` when invalid.
+fn parse_prompt_case(
+    line: &str,
+    physical_line: usize,
+    ids: &mut BTreeMap<String, usize>,
+    errors: &mut Vec<CliError>,
+) -> Option<PromptCase> {
+    let parsed = parse_prompt_json(line, physical_line, errors)?;
+    let Some(object) = parsed.as_object() else {
+        errors.push(err_at_line(
+            "prompt_suite_unparseable",
+            format!("Prompt suite line {physical_line} must be a JSON object"),
+            physical_line,
+            None,
+        ));
+        return None;
+    };
+    let id = required_prompt_string(object, "id", physical_line, errors)?;
+    if !is_safe_prompt_id(&id) {
+        errors.push(err_at_line(
+            "prompt_suite_unparseable",
+            format!(
+                "Prompt suite line {physical_line} has invalid id '{id}'; \
+                 use lowercase ASCII letters, digits, hyphen, or underscore"
+            ),
+            physical_line,
+            Some("id"),
+        ));
+        return None;
+    }
+    let title = required_prompt_string(object, "title", physical_line, errors)?;
+    let prompt = required_prompt_string(object, "prompt", physical_line, errors)?;
+    let tags = optional_string_array(object, "tags", physical_line, errors)?;
+    let expected_behaviors =
+        optional_string_array(object, "expectedBehaviors", physical_line, errors)?;
+    if let Some(first_line) = ids.insert(id.clone(), physical_line) {
+        errors.push(err_at_line(
+            "prompt_suite_duplicate_id",
+            format!(
+                "Prompt suite duplicate id '{id}' at line {physical_line}; \
+                 first seen at line {first_line}"
+            ),
+            physical_line,
+            Some("id"),
+        ));
+        return None;
+    }
+    Some(PromptCase {
+        id,
+        title,
+        prompt,
+        tags,
+        expected_behaviors,
+        line: physical_line,
     })
 }
 
