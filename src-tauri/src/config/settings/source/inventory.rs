@@ -4,6 +4,7 @@ use super::super::CodingAgentEnv;
 use super::super::IdentityReferenceError;
 use super::super::IdentityReferencePacket;
 use super::super::IdentityReferencePhysicalState;
+use super::super::ProfileCellConfig;
 use super::coordination::read_own_source_journal;
 use super::coordination::IdentityWriteLease;
 use super::coordination::SourceDiscoveryWitness;
@@ -168,28 +169,28 @@ pub(crate) fn source_inventory_target(
     })
 }
 
-pub(crate) fn source_original_mappings(
-    snapshot: &RawSourceSnapshot,
-    prepared: &PreparedSourceCandidate,
-) -> Result<Vec<SourceIdentityMapping>, SourcePreparationError> {
-    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
-    let after: Value = serde_json::from_slice(&prepared.serialized_after)
+type SourceAgentProfileCells = BTreeMap<String, BTreeMap<String, ProfileCellConfig>>;
+
+fn decode_source_after_agents(
+    registered: bool,
+    serialized_after: &[u8],
+) -> Result<(Vec<Value>, SourceAgentProfileCells), SourcePreparationError> {
+    let after: Value = serde_json::from_slice(serialized_after)
         .map_err(|_| SourcePreparationError::InvalidCandidate)?;
-    let (after_agents, after_profiles) = if registered {
+    if registered {
         let (agents, profiles) = decode_registered_raw(&after)?;
-        (
+        Ok((
             agents
                 .iter()
                 .map(serde_json::to_value)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| SourcePreparationError::InvalidCandidate)?,
             profiles.profiles_by_agent,
-        )
+        ))
     } else {
-        let catalog =
-            crate::config::coding_agents_catalog::parse_catalog_schema2(&prepared.serialized_after)
-                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
-        (
+        let catalog = crate::config::coding_agents_catalog::parse_catalog_schema2(serialized_after)
+            .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+        Ok((
             catalog
                 .agents
                 .iter()
@@ -197,13 +198,15 @@ pub(crate) fn source_original_mappings(
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| SourcePreparationError::InvalidCandidate)?,
             catalog.coding_agent_profiles,
-        )
-    };
-    let key_field = if registered { "id" } else { "key" };
-    let old: BTreeMap<_, _> = snapshot
-        .snapshot
-        .agents
-        .iter()
+        ))
+    }
+}
+
+fn index_source_agents_by_key<'a>(
+    agents: impl Iterator<Item = &'a Value>,
+    key_field: &str,
+) -> Result<BTreeMap<String, &'a Value>, SourcePreparationError> {
+    agents
         .map(|agent| {
             agent
                 .get(key_field)
@@ -211,35 +214,39 @@ pub(crate) fn source_original_mappings(
                 .map(|key| (key.to_owned(), agent))
                 .ok_or(SourcePreparationError::InvalidCandidate)
         })
-        .collect::<Result<_, _>>()?;
-    let new: BTreeMap<_, _> = after_agents
-        .iter()
-        .map(|agent| {
-            agent
-                .get(key_field)
-                .and_then(Value::as_str)
-                .map(|key| (key.to_owned(), agent))
-                .ok_or(SourcePreparationError::InvalidCandidate)
-        })
-        .collect::<Result<_, _>>()?;
-    let calculated = |value: &&Value| -> Result<String, SourcePreparationError> {
-        let command = raw_configuration_command(
-            value
-                .as_object()
-                .ok_or(SourcePreparationError::InvalidCandidate)?,
-            "baseCommand",
-        )
+        .collect()
+}
+
+fn source_agent_calculated_id(value: &&Value) -> Result<String, SourcePreparationError> {
+    let command = raw_configuration_command(
+        value
+            .as_object()
+            .ok_or(SourcePreparationError::InvalidCandidate)?,
+        "baseCommand",
+    )
+    .map_err(|_| SourcePreparationError::InvalidCandidate)?
+    .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let envs: Vec<CodingAgentEnv> = value
+        .get("envs")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
         .map_err(|_| SourcePreparationError::InvalidCandidate)?
-        .ok_or(SourcePreparationError::InvalidCandidate)?;
-        let envs: Vec<CodingAgentEnv> = value
-            .get("envs")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| SourcePreparationError::InvalidCandidate)?
-            .unwrap_or_default();
-        Ok(configuration_identity(command, &envs))
-    };
+        .unwrap_or_default();
+    Ok(configuration_identity(command, &envs))
+}
+
+pub(crate) fn source_original_mappings(
+    snapshot: &RawSourceSnapshot,
+    prepared: &PreparedSourceCandidate,
+) -> Result<Vec<SourceIdentityMapping>, SourcePreparationError> {
+    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    let (after_agents, after_profiles) =
+        decode_source_after_agents(registered, &prepared.serialized_after)?;
+    let key_field = if registered { "id" } else { "key" };
+    let old = index_source_agents_by_key(snapshot.snapshot.agents.iter(), key_field)?;
+    let new = index_source_agents_by_key(after_agents.iter(), key_field)?;
+    let calculated = source_agent_calculated_id;
     let keys: std::collections::BTreeSet<_> = old.keys().chain(new.keys()).cloned().collect();
     let mut mappings = Vec::new();
     for key in keys {
@@ -434,12 +441,136 @@ pub(crate) struct SourceInventoryCapture {
     pub(crate) classified: bool,
 }
 
+type InventoryDirectoryObjects = Vec<(PathBuf, (u64, u64))>;
+
+fn verified_inventory_objects(
+    discovery: &SourceDiscoveryWitness,
+    discovered: &[SourceDiscoveredTargetEvidence],
+) -> Result<InventoryDirectoryObjects, SourcePreparationError> {
+    let invalid = || SourcePreparationError::LegacyOriginUnresolved;
+    let mut paths = discovery.parents.clone();
+    for (root, members) in &discovery.membership {
+        paths.push(root.clone());
+        paths.extend(members.iter().cloned());
+    }
+    paths.extend(
+        discovered
+            .iter()
+            .map(|evidence| evidence.target.root.clone()),
+    );
+    paths.sort();
+    paths.dedup();
+    let mut objects = Vec::new();
+    for path in paths {
+        let verified = crate::path_identity::verify_directory(&path).map_err(|_| invalid())?;
+        objects.push((
+            verified.canonical_path,
+            (verified.object_id.volume, verified.object_id.file),
+        ));
+    }
+    objects.sort();
+    objects.dedup();
+    if objects.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(invalid());
+    }
+    Ok(objects)
+}
+
+fn verify_inventory_discovery_slots(
+    discovery: &SourceDiscoveryWitness,
+    objects: &[(PathBuf, (u64, u64))],
+) -> Result<(), SourcePreparationError> {
+    let invalid = || SourcePreparationError::LegacyOriginUnresolved;
+    for (slot, present) in &discovery.slots {
+        if *present {
+            let verified = crate::path_identity::verify_directory(slot).map_err(|_| invalid())?;
+            if !objects.iter().any(|(path, object)| {
+                path == &verified.canonical_path
+                    && *object == (verified.object_id.volume, verified.object_id.file)
+            }) {
+                return Err(invalid());
+            }
+        } else {
+            let parent = slot.parent().ok_or_else(invalid)?;
+            crate::path_identity::verify_directory(parent).map_err(|_| invalid())?;
+            match settings_sources::probe(slot) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(invalid()),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_default_slot_root_name(
+    target: &SourceInventoryTarget,
+    slot: &SourceOriginalSlot,
+) -> Result<(), SourcePreparationError> {
+    let invalid = || SourcePreparationError::LegacyOriginUnresolved;
+    if matches!(
+        slot,
+        SourceOriginalSlot::MatrixDefault | SourceOriginalSlot::ReplicaDefault
+    ) {
+        let name = target
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(invalid)?;
+        let matrix = name.starts_with("_agent_");
+        let replica = name.starts_with("__agent_");
+        if matrix != matches!(slot, SourceOriginalSlot::MatrixDefault)
+            || replica != matches!(slot, SourceOriginalSlot::ReplicaDefault)
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::match_wildcard_for_single_variants,
+    reason = "E2992 postponed: conservar validación/ownership Settings \
+        sin rediseño; este match acepta Bytes y rechaza el otro estado"
+)]
+fn original_slot_bytes<'a>(
+    physical: &'a [IdentityReferencePhysicalState; 2],
+    slot: &SourceOriginalSlot,
+) -> Result<&'a Vec<u8>, SourcePreparationError> {
+    let side = match slot {
+        SourceOriginalSlot::Decision
+        | SourceOriginalSlot::MatrixDefault
+        | SourceOriginalSlot::ReplicaDefault => 0,
+        _ => 1,
+    };
+    match &physical[side] {
+        IdentityReferencePhysicalState::Bytes { bytes, .. } => Ok(bytes),
+        _ => Err(SourcePreparationError::LegacyOriginUnresolved),
+    }
+}
+
+fn original_default_matrix_name<'a>(
+    target: &'a SourceInventoryTarget,
+    slot: &SourceOriginalSlot,
+) -> Result<Option<&'a str>, SourcePreparationError> {
+    let invalid = || SourcePreparationError::LegacyOriginUnresolved;
+    Ok(if matches!(slot, SourceOriginalSlot::MatrixDefault) {
+        // Only a real origin Matrix can own N. Replica/history never mint Default.
+        let name = target
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(invalid)?;
+        Some(
+            name.strip_prefix("_agent_")
+                .filter(|name| !name.is_empty())
+                .ok_or_else(invalid)?,
+        )
+    } else {
+        None
+    })
+}
+
 impl SourceInventoryCapture {
-    #[expect(
-        clippy::match_wildcard_for_single_variants,
-        reason = "E2992 postponed: conservar validación/ownership Settings \
-            sin rediseño; este match acepta Bytes y rechaza el otro estado"
-    )]
     pub(crate) fn capture(
         discovery: SourceDiscoveryWitness,
         mut discovered: Vec<SourceDiscoveredTargetEvidence>,
@@ -448,50 +579,8 @@ impl SourceInventoryCapture {
         physical_source_key: &str,
     ) -> Result<Self, SourcePreparationError> {
         let invalid = || SourcePreparationError::LegacyOriginUnresolved;
-        let mut paths = discovery.parents.clone();
-        for (root, members) in &discovery.membership {
-            paths.push(root.clone());
-            paths.extend(members.iter().cloned());
-        }
-        paths.extend(
-            discovered
-                .iter()
-                .map(|evidence| evidence.target.root.clone()),
-        );
-        paths.sort();
-        paths.dedup();
-        let mut objects = Vec::new();
-        for path in paths {
-            let verified = crate::path_identity::verify_directory(&path).map_err(|_| invalid())?;
-            objects.push((
-                verified.canonical_path,
-                (verified.object_id.volume, verified.object_id.file),
-            ));
-        }
-        objects.sort();
-        objects.dedup();
-        if objects.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(invalid());
-        }
-        for (slot, present) in &discovery.slots {
-            if *present {
-                let verified =
-                    crate::path_identity::verify_directory(slot).map_err(|_| invalid())?;
-                if !objects.iter().any(|(path, object)| {
-                    path == &verified.canonical_path
-                        && *object == (verified.object_id.volume, verified.object_id.file)
-                }) {
-                    return Err(invalid());
-                }
-            } else {
-                let parent = slot.parent().ok_or_else(invalid)?;
-                crate::path_identity::verify_directory(parent).map_err(|_| invalid())?;
-                match settings_sources::probe(slot) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    _ => return Err(invalid()),
-                }
-            }
-        }
+        let objects = verified_inventory_objects(&discovery, &discovered)?;
+        verify_inventory_discovery_slots(&discovery, &objects)?;
         discovered.sort_by(|a, b| a.target.decisions.cmp(&b.target.decisions));
         if discovered
             .windows(2)
@@ -520,33 +609,8 @@ impl SourceInventoryCapture {
                 if selection.version != 1 {
                     return Err(invalid());
                 }
-                if matches!(
-                    slot,
-                    SourceOriginalSlot::MatrixDefault | SourceOriginalSlot::ReplicaDefault
-                ) {
-                    let name = target
-                        .root
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .ok_or_else(invalid)?;
-                    let matrix = name.starts_with("_agent_");
-                    let replica = name.starts_with("__agent_");
-                    if matrix != matches!(slot, SourceOriginalSlot::MatrixDefault)
-                        || replica != matches!(slot, SourceOriginalSlot::ReplicaDefault)
-                    {
-                        return Err(invalid());
-                    }
-                }
-                let side = match slot {
-                    SourceOriginalSlot::Decision
-                    | SourceOriginalSlot::MatrixDefault
-                    | SourceOriginalSlot::ReplicaDefault => 0,
-                    _ => 1,
-                };
-                let bytes = match &physical[side] {
-                    IdentityReferencePhysicalState::Bytes { bytes, .. } => bytes,
-                    _ => return Err(invalid()),
-                };
+                verify_default_slot_root_name(target, slot)?;
+                let bytes = original_slot_bytes(physical, slot)?;
                 let raw: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
                 let stored: ConfigurationRef =
                     serde_json::from_value(slot.stored(&raw).cloned().ok_or_else(invalid)?)
@@ -566,21 +630,7 @@ impl SourceInventoryCapture {
                 if snapshot.snapshot.source.kind != SourceKind::RegisteredInstance {
                     continue;
                 }
-                let matrix = if matches!(slot, SourceOriginalSlot::MatrixDefault) {
-                    // Only a real origin Matrix can own N. Replica/history never mint Default.
-                    let name = target
-                        .root
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .ok_or_else(invalid)?;
-                    Some(
-                        name.strip_prefix("_agent_")
-                            .filter(|name| !name.is_empty())
-                            .ok_or_else(invalid)?,
-                    )
-                } else {
-                    None
-                };
+                let matrix = original_default_matrix_name(target, slot)?;
                 let proof = origin.bind_original_selection_at(
                     snapshot,
                     selection,
