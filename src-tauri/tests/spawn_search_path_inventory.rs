@@ -222,9 +222,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/gitignore_rules.rs",
-        14,
+        13,
         0,
-        &[(TestOnly, 14)],
+        &[(TestOnly, 13)],
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/snapshot_null.rs",
@@ -555,43 +555,13 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/process/git/remote.rs", 1, 1, &[]),
     ("src-tauri/src/process/github.rs", 1, 1, &[]),
     (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/common_blocking.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
         "src-tauri/src/pty/terminal_snapshot/tests/acceptance/daemon_paths.rs",
         1,
         0,
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_cancellation.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_finalizer.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/panic_boundaries.rs",
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/fixture.rs",
         1,
         0,
         &[(TestOnly, 1)],

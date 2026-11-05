@@ -168,24 +168,17 @@ fn borrowed_wire_debug_is_structural_and_non_disclosing() {
     ]
     .join("\n");
 
-    for forbidden in [
-        CELL_CANARY,
+    assert_borrowed_wire_diagnostics(
+        &diagnostics,
+        &[
+            CELL_CANARY,
+            BASE64_CANARY,
+            AUTH_CANARY,
+            PATH_CANARY,
+            TRANSPORT_CANARY,
+        ],
         BASE64_CANARY,
-        AUTH_CANARY,
-        PATH_CANARY,
-        TRANSPORT_CANARY,
-    ] {
-        assert!(!diagnostics.contains(forbidden));
-    }
-    for structural in [
-        "BorrowedSnapshotResult::Json",
-        "BorrowedSnapshotResult::Png",
-        "has_detail: true",
-        "cells: 2",
-    ] {
-        assert!(diagnostics.contains(structural));
-    }
-    assert!(diagnostics.contains(&format!("base64_bytes: {}", BASE64_CANARY.len())));
+    );
 }
 
 fn assert_safe_protocol_error(error: ProtocolError, expected: ProtocolError, forbidden: &[&str]) {
@@ -328,4 +321,19 @@ fn png_wire_encoding_streams_base64_and_decodes_to_raw_bytes() {
         TerminalSnapshotPayload::Png { png, .. } => assert_eq!(png, expected),
         TerminalSnapshotPayload::Json { .. } => panic!("wrong decoded format"),
     }
+}
+
+fn assert_borrowed_wire_diagnostics(diagnostics: &str, forbidden: &[&str], base64: &str) {
+    for &forbidden in forbidden {
+        assert!(!diagnostics.contains(forbidden));
+    }
+    for structural in [
+        "BorrowedSnapshotResult::Json",
+        "BorrowedSnapshotResult::Png",
+        "has_detail: true",
+        "cells: 2",
+    ] {
+        assert!(diagnostics.contains(structural));
+    }
+    assert!(diagnostics.contains(&format!("base64_bytes: {}", base64.len())));
 }

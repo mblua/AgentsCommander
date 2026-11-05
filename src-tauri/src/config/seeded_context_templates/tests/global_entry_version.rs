@@ -122,30 +122,7 @@ fn the_read_path_no_longer_repairs_the_global_but_the_scan_does() {
         "an installation with no state entry must be notified"
     );
 
-    // (d) the scan, on a second tree built from the same fixture.
-    let scan_temp = tempfile::tempdir().expect("tempdir");
-    let scan_ac_root = scan_temp.path().join(".ac");
-    std::fs::create_dir(&scan_ac_root).expect("create scan workspace");
-    let scan_path = scan_ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-    std::fs::write(
-        &scan_path,
-        GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
-    )
-    .expect("write pristine v4 global");
-    let replacements =
-        scan_project_context_template_replacements_for_test(scan_temp.path(), &scan_ac_root)
-            .expect("scan the second tree");
-    assert_eq!(replacements.len(), 1);
-    assert_eq!(
-        std::fs::read_to_string(&scan_path).expect("read repaired global"),
-        crate::config::session_context::get_default_agent_template()
-    );
-    let backups = backup_files(&scan_ac_root);
-    assert_eq!(backups.len(), 1, "{backups:?}");
-    assert_eq!(
-        std::fs::read_to_string(&backups[0]).expect("read backup"),
-        GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
-    );
+    assert_scan_repairs_pristine_global();
 }
 
 /// #1748 new test 8: distribution ownership and the recognizer slot are one
@@ -359,4 +336,31 @@ fn an_in_sync_installation_still_drops_its_recorded_global_version() {
             assert_eq!(raw, fixture, "{arm}: the state file is byte-identical");
         }
     }
+}
+
+fn assert_scan_repairs_pristine_global() {
+    // (d) the scan, on a second tree built from the same fixture.
+    let scan_temp = tempfile::tempdir().expect("tempdir");
+    let scan_ac_root = scan_temp.path().join(".ac");
+    std::fs::create_dir(&scan_ac_root).expect("create scan workspace");
+    let scan_path = scan_ac_root.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+    std::fs::write(
+        &scan_path,
+        GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
+    )
+    .expect("write pristine v4 global");
+    let replacements =
+        scan_project_context_template_replacements_for_test(scan_temp.path(), &scan_ac_root)
+            .expect("scan the second tree");
+    assert_eq!(replacements.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&scan_path).expect("read repaired global"),
+        crate::config::session_context::get_default_agent_template()
+    );
+    let backups = backup_files(&scan_ac_root);
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    assert_eq!(
+        std::fs::read_to_string(&backups[0]).expect("read backup"),
+        GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
+    );
 }

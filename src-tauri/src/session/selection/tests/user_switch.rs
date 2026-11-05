@@ -305,6 +305,14 @@ async fn user_switch_to_session_without_live_pty_publishes_no_view_requested() {
         .unwrap()
         .expect("the control switch reaches the live session");
 
+    assert_repair_then_live_switch_events(&events_rx, live_session.id);
+    coordinator.close_and_join().await;
+}
+
+fn assert_repair_then_live_switch_events(
+    events_rx: &std::sync::mpsc::Receiver<(&str, String)>,
+    live_session_id: uuid::Uuid,
+) {
     // The channel was never drained: the repair event is the in-test positive
     // control that proves the dead switch emitted no view request.
     let (repair_name, repair_payload) = events_rx
@@ -318,15 +326,14 @@ async fn user_switch_to_session_without_live_pty_publishes_no_view_requested() {
     let (view_name, view_payload) = events_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(view_name, "session_view_requested");
     let view_payload: serde_json::Value = serde_json::from_str(&view_payload).unwrap();
-    assert_eq!(view_payload["id"], live_session.id.to_string());
+    assert_eq!(view_payload["id"], live_session_id.to_string());
 
     let (switched_name, switched_payload) = events_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(switched_name, "session_switched");
     let switched_payload: serde_json::Value = serde_json::from_str(&switched_payload).unwrap();
-    assert_eq!(switched_payload["id"], live_session.id.to_string());
+    assert_eq!(switched_payload["id"], live_session_id.to_string());
 
     assert!(events_rx.try_recv().is_err());
-    coordinator.close_and_join().await;
 }
 
 #[tokio::test]

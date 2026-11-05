@@ -374,40 +374,10 @@ fn exact_use_leaf_set(item_use: &ItemUse, prefix: &[&str], names: &[&str]) -> bo
     actual == expected
 }
 
-pub(crate) fn verify_exact_interface(
+fn verify_output_module_ownership(
     index: &ModuleIndex,
-    crate_id: &str,
+    target_body: &ModuleBody,
 ) -> Result<(), GuardError> {
-    let target_bodies = index
-        .bodies
-        .iter()
-        .filter(|body| body.module_id == TARGET_MODULE)
-        .collect::<Vec<_>>();
-    let output_bodies = index
-        .bodies
-        .iter()
-        .filter(|body| body.module_id == OUTPUT_MODULE)
-        .collect::<Vec<_>>();
-    let bridge_bodies = index
-        .bodies
-        .iter()
-        .filter(|body| body.module_id == "agentscommander_lib::telegram::bridge")
-        .collect::<Vec<_>>();
-    if target_bodies.len() != 1 || output_bodies.len() != 1 || bridge_bodies.len() != 1 {
-        return Err(GuardError::new(
-            "interface module identity",
-            format!(
-                "expected one target/output/bridge body, got {}/{}/{}",
-                target_bodies.len(),
-                output_bodies.len(),
-                bridge_bodies.len()
-            ),
-        ));
-    }
-
-    let target_body = target_bodies[0];
-    let output_body = output_bodies[0];
-    let bridge_body = bridge_bodies[0];
     let output_declarations = target_body
         .items
         .iter()
@@ -452,7 +422,14 @@ pub(crate) fn verify_exact_interface(
         RequiredVisibility::Public,
         "telegram::output module",
     )?;
+    Ok(())
+}
 
+fn collect_output_interface(
+    index: &ModuleIndex,
+    output_body: &ModuleBody,
+    crate_id: &str,
+) -> Result<BTreeSet<String>, GuardError> {
     let mut interface = BTreeSet::new();
     let aliases = module_item_aliases(output_body, crate_id, &index.declared_modules);
     for item in &output_body.items {
@@ -537,30 +514,10 @@ pub(crate) fn verify_exact_interface(
             _ => {}
         }
     }
-    let expected_interface = [
-        "struct BridgeLogger",
-        "method BridgeLogger::new",
-        "method BridgeLogger::log",
-        "struct DiagLogger",
-        "method DiagLogger::new",
-        "method DiagLogger::log_raw",
-        "method DiagLogger::log_sent",
-        "enum TelegramErrKind",
-        "method TelegramErrKind::classify",
-        "method TelegramErrKind::as_str",
-        "fn flush_buffer",
-        "fn chunk_text private",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<BTreeSet<_>>();
-    if interface != expected_interface {
-        return Err(GuardError::new(
-            "output interface members",
-            format!("expected {expected_interface:?}; observed {interface:?}"),
-        ));
-    }
+    Ok(interface)
+}
 
+fn verify_bridge_output_imports(bridge_body: &ModuleBody) -> Result<(), GuardError> {
     let bridge_uses = bridge_body
         .items
         .iter()
@@ -630,7 +587,10 @@ pub(crate) fn verify_exact_interface(
             ),
         ));
     }
+    Ok(())
+}
 
+fn verify_claude_output_import(target_body: &ModuleBody) -> Result<(), GuardError> {
     let claude_import = target_body
         .items
         .iter()
@@ -661,5 +621,72 @@ pub(crate) fn verify_exact_interface(
         RequiredVisibility::Private,
         "Claude watcher output import",
     )?;
+    Ok(())
+}
+
+pub(crate) fn verify_exact_interface(
+    index: &ModuleIndex,
+    crate_id: &str,
+) -> Result<(), GuardError> {
+    let target_bodies = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == TARGET_MODULE)
+        .collect::<Vec<_>>();
+    let output_bodies = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == OUTPUT_MODULE)
+        .collect::<Vec<_>>();
+    let bridge_bodies = index
+        .bodies
+        .iter()
+        .filter(|body| body.module_id == "agentscommander_lib::telegram::bridge")
+        .collect::<Vec<_>>();
+    if target_bodies.len() != 1 || output_bodies.len() != 1 || bridge_bodies.len() != 1 {
+        return Err(GuardError::new(
+            "interface module identity",
+            format!(
+                "expected one target/output/bridge body, got {}/{}/{}",
+                target_bodies.len(),
+                output_bodies.len(),
+                bridge_bodies.len()
+            ),
+        ));
+    }
+
+    let target_body = target_bodies[0];
+    let output_body = output_bodies[0];
+    let bridge_body = bridge_bodies[0];
+    verify_output_module_ownership(index, target_body)?;
+
+    let interface = collect_output_interface(index, output_body, crate_id)?;
+    let expected_interface = [
+        "struct BridgeLogger",
+        "method BridgeLogger::new",
+        "method BridgeLogger::log",
+        "struct DiagLogger",
+        "method DiagLogger::new",
+        "method DiagLogger::log_raw",
+        "method DiagLogger::log_sent",
+        "enum TelegramErrKind",
+        "method TelegramErrKind::classify",
+        "method TelegramErrKind::as_str",
+        "fn flush_buffer",
+        "fn chunk_text private",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    if interface != expected_interface {
+        return Err(GuardError::new(
+            "output interface members",
+            format!("expected {expected_interface:?}; observed {interface:?}"),
+        ));
+    }
+
+    verify_bridge_output_imports(bridge_body)?;
+
+    verify_claude_output_import(target_body)?;
     Ok(())
 }

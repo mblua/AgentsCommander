@@ -38,29 +38,7 @@ async fn unsupported_backend_manual_kill_is_side_effect_free() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build unsupported resource-kill app");
     assert!(app.try_state::<SelectionCoordinator>().is_none());
-    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-        .build()
-        .unwrap();
-    let public_response = tauri::test::get_ipc_response(
-        &webview,
-        tauri::webview::InvokeRequest {
-            cmd: "kill_resource_group".into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: "http://tauri.localhost".parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(serde_json::json!({
-                "request": {
-                    "sessionId": session.id,
-                    "reason": "user",
-                }
-            })),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-        },
-    )
-    .expect("unsupported public kill returns success")
-    .deserialize::<ResourceKillResult>()
-    .unwrap();
+    let (_webview, public_response) = invoke_unsupported_resource_kill(&app, session.id);
     assert_unsupported_kill_result(&public_response, session.id);
 
     let transaction = SelectionTransaction::for_test(app.handle().clone());
@@ -399,4 +377,37 @@ fn finalizes_only_on_verified_terminated() {
     // do NOT finalize here (the bug grinch HIGH-1 would otherwise reintroduce).
     assert!(!should_finalize_kill(ResourceGroupState::Terminating));
     assert!(!should_finalize_kill(ResourceGroupState::Running));
+}
+
+fn invoke_unsupported_resource_kill(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_id: Uuid,
+) -> (
+    tauri::WebviewWindow<tauri::test::MockRuntime>,
+    ResourceKillResult,
+) {
+    let webview = tauri::WebviewWindowBuilder::new(app, "main", Default::default())
+        .build()
+        .unwrap();
+    let public_response = tauri::test::get_ipc_response(
+        &webview,
+        tauri::webview::InvokeRequest {
+            cmd: "kill_resource_group".into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "http://tauri.localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(serde_json::json!({
+                "request": {
+                    "sessionId": session_id,
+                    "reason": "user",
+                }
+            })),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        },
+    )
+    .expect("unsupported public kill returns success")
+    .deserialize::<ResourceKillResult>()
+    .unwrap();
+    (webview, public_response)
 }

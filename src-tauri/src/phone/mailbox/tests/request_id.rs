@@ -216,77 +216,109 @@ async fn noncanonical_ids_retry_ten_times_before_rejection_without_action_effect
             let hooks = MailboxTestHooks::default();
             hooks.pty_presence.lock().unwrap().insert(target, true);
             let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+            let case = NoncanonicalCase {
+                fixture: &fixture,
+                app: &app,
+                hooks: &hooks,
+                backend: &backend,
+                sender,
+                target,
+                master,
+                action,
+            };
             for raw in invalid {
-                // msg.id is always safe; request_id is the only adversarial selector.
-                let id = Uuid::new_v4().to_string();
-                let path = source_path(&fixture, master, &id);
-                let mut msg = wake_message_to_target();
-                msg.id = id.clone();
-                msg.token = Some(token.to_string());
-                msg.request_id = Some(raw.into());
-                msg.action = action.map(str::to_string);
-                msg.get_output = action.is_none();
-                msg.target = Some(CANONICAL_WAKE_TO.into());
-                msg.force = Some(true);
-                if action.is_some() {
-                    msg.to.clear();
-                }
-                let bytes = save(&path, &msg);
-                let rejected = path
-                    .parent()
-                    .unwrap()
-                    .join("rejected")
-                    .join(format!("{id}.json"));
-                let reason = rejected.with_extension("reason.txt");
-                for attempt in 1..=MAX_DELIVERY_ATTEMPTS {
-                    // Supplemental exact-error observation uses the production content entry.
-                    // poll() alone owns attempt accounting and the rejection lifecycle.
-                    let mut deferred = None;
-                    let origin = if master {
-                        OutboxOrigin::Master
-                    } else {
-                        OutboxOrigin::Replica
-                    };
-                    let error = poller
-                        .process_message_content(
-                            &app,
-                            &path,
-                            origin,
-                            std::str::from_utf8(&bytes).unwrap(),
-                            Some(&mut deferred),
-                        )
-                        .await
-                        .unwrap_err();
-                    assert_eq!(error, "invalid_request_id");
-                    assert!(deferred.is_none());
-                    tokio::time::timeout(Duration::from_secs(10), poller.poll(&app))
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    poller.settle_wake_workers().await;
-                    assert_no_effects(&fixture, &poller, &hooks, &backend, sender, target).await;
-                    if attempt < MAX_DELIVERY_ATTEMPTS {
-                        let state = poller.retry_tracker.get(&path).expect("counted retry");
-                        assert_eq!(state.attempt_count, attempt);
-                        assert!(state.logged);
-                        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-                        assert!(!rejected.exists());
-                        assert!(!reason.exists());
-                    } else {
-                        assert!(!path.exists());
-                        assert!(!poller.retry_tracker.contains_key(&path));
-                        assert_eq!(
-                            std::fs::read_to_string(&reason).unwrap(),
-                            "Undeliverable after 10 attempts. Last error: invalid_request_id"
-                        );
-                        let copy: OutboxMessage =
-                            serde_json::from_slice(&std::fs::read(&rejected).unwrap()).unwrap();
-                        let mut expected = serde_json::to_value(&msg).unwrap();
-                        expected.as_object_mut().unwrap().remove("token");
-                        assert_eq!(serde_json::to_value(copy).unwrap(), expected);
-                    }
-                }
+                noncanonical_id_attempts(&case, &mut poller, &token, raw).await;
             }
+        }
+    }
+}
+
+struct NoncanonicalCase<'a> {
+    fixture: &'a MailboxFixture,
+    app: &'a tauri::AppHandle<tauri::test::MockRuntime>,
+    hooks: &'a MailboxTestHooks,
+    backend: &'a CorrelationBackend,
+    sender: Uuid,
+    target: Uuid,
+    master: bool,
+    action: Option<&'a str>,
+}
+
+async fn noncanonical_id_attempts(
+    case: &NoncanonicalCase<'_>,
+    poller: &mut MailboxPoller,
+    token: &impl ToString,
+    raw: &str,
+) {
+    let (fixture, app, master, action) = (case.fixture, case.app, case.master, case.action);
+    let (hooks, backend, sender, target) = (case.hooks, case.backend, case.sender, case.target);
+    // msg.id is always safe; request_id is the only adversarial selector.
+    let id = Uuid::new_v4().to_string();
+    let path = source_path(fixture, master, &id);
+    let mut msg = wake_message_to_target();
+    msg.id = id.clone();
+    msg.token = Some(token.to_string());
+    msg.request_id = Some(raw.into());
+    msg.action = action.map(str::to_string);
+    msg.get_output = action.is_none();
+    msg.target = Some(CANONICAL_WAKE_TO.into());
+    msg.force = Some(true);
+    if action.is_some() {
+        msg.to.clear();
+    }
+    let bytes = save(&path, &msg);
+    let rejected = path
+        .parent()
+        .unwrap()
+        .join("rejected")
+        .join(format!("{id}.json"));
+    let reason = rejected.with_extension("reason.txt");
+    for attempt in 1..=MAX_DELIVERY_ATTEMPTS {
+        // Supplemental exact-error observation uses the production content entry.
+        // poll() alone owns attempt accounting and the rejection lifecycle.
+        let mut deferred = None;
+        let origin = if master {
+            OutboxOrigin::Master
+        } else {
+            OutboxOrigin::Replica
+        };
+        let error = poller
+            .process_message_content(
+                app,
+                &path,
+                origin,
+                std::str::from_utf8(&bytes).unwrap(),
+                Some(&mut deferred),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, "invalid_request_id");
+        assert!(deferred.is_none());
+        tokio::time::timeout(Duration::from_secs(10), poller.poll(app))
+            .await
+            .unwrap()
+            .unwrap();
+        poller.settle_wake_workers().await;
+        assert_no_effects(fixture, poller, hooks, backend, sender, target).await;
+        if attempt < MAX_DELIVERY_ATTEMPTS {
+            let state = poller.retry_tracker.get(&path).expect("counted retry");
+            assert_eq!(state.attempt_count, attempt);
+            assert!(state.logged);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!rejected.exists());
+            assert!(!reason.exists());
+        } else {
+            assert!(!path.exists());
+            assert!(!poller.retry_tracker.contains_key(&path));
+            assert_eq!(
+                std::fs::read_to_string(&reason).unwrap(),
+                "Undeliverable after 10 attempts. Last error: invalid_request_id"
+            );
+            let copy: OutboxMessage =
+                serde_json::from_slice(&std::fs::read(&rejected).unwrap()).unwrap();
+            let mut expected = serde_json::to_value(&msg).unwrap();
+            expected.as_object_mut().unwrap().remove("token");
+            assert_eq!(serde_json::to_value(copy).unwrap(), expected);
         }
     }
 }
@@ -611,57 +643,22 @@ async fn delivered_case(raw: &str, valid: bool, claimed: bool, failure: u8) {
     let mut admission = state.reserve_work(&msg.to, "delivery-work").unwrap();
     assert!(admission.accept_durable("digest").unwrap());
     drop(admission);
-    poller.response_sources.lock().unwrap().insert(
-        origin.clone(),
-        ResponseWakeWork {
-            diagnostic_message_id: None,
-            state: state.clone(),
-            target: msg.to.clone(),
-            key: "delivery-work".into(),
-            digest: "digest".into(),
-            attempt: Arc::default(),
-            return_context: None,
-            return_routes: None,
-            delivery_context: None,
-        },
-    );
+    insert_delivered_work(&poller, &origin, &state, &msg);
     assert_delivered_work_terminal(&state, &msg.to, false);
     let result = poller.move_to_delivered(&app, &source, &msg).await;
-    if failure == 1 {
-        assert!(result
-            .unwrap_err()
-            .starts_with("Failed to write delivered file:"));
-        assert_eq!(std::fs::read(&source).unwrap(), bytes);
-    } else {
-        let mut stripped = msg.clone();
-        stripped.token = None;
-        let archived_bytes = serde_json::to_vec_pretty(&stripped).unwrap();
-        expected.push((
-            archive.strip_prefix(root).unwrap().to_path_buf(),
-            Some(archived_bytes.clone()),
-        ));
-        if failure == 2 {
-            assert!(result
-                .unwrap_err()
-                .starts_with("Failed to remove outbox file:"));
-        } else {
-            assert_eq!(result, Ok(()), "id={id:?}, claimed={claimed}");
-            expected.retain(|(path, _)| path != source.strip_prefix(root).unwrap());
-            assert!(!source.exists());
-        }
-        assert_eq!(std::fs::read(&archive).unwrap(), archived_bytes);
-        let archived: OutboxMessage =
-            serde_json::from_slice(&std::fs::read(&archive).unwrap()).unwrap();
-        assert!(archived.token.is_none());
-        assert_eq!(archived.id, id);
-        assert_eq!(
-            serde_json::to_value(archived).unwrap(),
-            serde_json::to_value(stripped).unwrap()
-        );
-        assert_claimed_invalid_delivery_receipt(
-            &outbox, &delivered, &origin, claimed, valid, failure,
-        );
-    }
+    let paths = DeliveredPaths {
+        root,
+        outbox: &outbox,
+        delivered: &delivered,
+        origin: &origin,
+        source: &source,
+        archive: &archive,
+        id: &id,
+        valid,
+        claimed,
+        failure,
+    };
+    assert_delivered_move(&paths, result, &msg, &bytes, &mut expected);
     expected.sort();
     assert_eq!(
         delivered_inventory(root),
@@ -680,6 +677,86 @@ async fn delivered_case(raw: &str, valid: bool, claimed: bool, failure: u8) {
     app.state::<crate::session::selection::SelectionCoordinator>()
         .close_and_join()
         .await;
+}
+
+fn insert_delivered_work(
+    poller: &MailboxPoller,
+    origin: &Path,
+    state: &crate::pty::manager::ResponseCloseState,
+    msg: &OutboxMessage,
+) {
+    poller.response_sources.lock().unwrap().insert(
+        origin.to_path_buf(),
+        ResponseWakeWork {
+            diagnostic_message_id: None,
+            state: state.clone(),
+            target: msg.to.clone(),
+            key: "delivery-work".into(),
+            digest: "digest".into(),
+            attempt: Arc::default(),
+            return_context: None,
+            return_routes: None,
+            delivery_context: None,
+        },
+    );
+}
+
+struct DeliveredPaths<'a> {
+    root: &'a Path,
+    outbox: &'a Path,
+    delivered: &'a Path,
+    origin: &'a Path,
+    source: &'a Path,
+    archive: &'a Path,
+    id: &'a str,
+    valid: bool,
+    claimed: bool,
+    failure: u8,
+}
+
+fn assert_delivered_move(
+    paths: &DeliveredPaths<'_>,
+    result: Result<(), String>,
+    msg: &OutboxMessage,
+    bytes: &[u8],
+    expected: &mut Vec<(PathBuf, Option<Vec<u8>>)>,
+) {
+    let (root, outbox, delivered) = (paths.root, paths.outbox, paths.delivered);
+    let (origin, source, archive) = (paths.origin, paths.source, paths.archive);
+    let (id, valid, claimed, failure) = (paths.id, paths.valid, paths.claimed, paths.failure);
+    if failure == 1 {
+        assert!(result
+            .unwrap_err()
+            .starts_with("Failed to write delivered file:"));
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
+    } else {
+        let mut stripped = msg.clone();
+        stripped.token = None;
+        let archived_bytes = serde_json::to_vec_pretty(&stripped).unwrap();
+        expected.push((
+            archive.strip_prefix(root).unwrap().to_path_buf(),
+            Some(archived_bytes.clone()),
+        ));
+        if failure == 2 {
+            assert!(result
+                .unwrap_err()
+                .starts_with("Failed to remove outbox file:"));
+        } else {
+            assert_eq!(result, Ok(()), "id={id:?}, claimed={claimed}");
+            expected.retain(|(path, _)| path != source.strip_prefix(root).unwrap());
+            assert!(!source.exists());
+        }
+        assert_eq!(std::fs::read(archive).unwrap(), archived_bytes);
+        let archived: OutboxMessage =
+            serde_json::from_slice(&std::fs::read(archive).unwrap()).unwrap();
+        assert!(archived.token.is_none());
+        assert_eq!(archived.id, id);
+        assert_eq!(
+            serde_json::to_value(archived).unwrap(),
+            serde_json::to_value(stripped).unwrap()
+        );
+        assert_claimed_invalid_delivery_receipt(outbox, delivered, origin, claimed, valid, failure);
+    }
 }
 
 #[tokio::test]

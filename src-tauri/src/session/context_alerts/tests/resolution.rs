@@ -64,15 +64,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
     let checks_before_cancel = services.state_checks.load(Ordering::SeqCst);
     let canceled = CancellationToken::new();
     canceled.cancel();
-    assert!(validate_attempt_guard(
-        &services,
-        &policy.fingerprint,
-        &target,
-        &[50, 75],
-        &canceled,
-    )
-    .unwrap_err()
-    .contains("canceled"));
+    assert!(
+        attempt_guard_error(&services, &policy.fingerprint, &target, &canceled)
+            .contains("canceled")
+    );
 
     assert_eq!(
         services.state_checks.load(Ordering::SeqCst),
@@ -80,15 +75,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
         "cancellation must precede state validation",
     );
     services.blocked.store(true, Ordering::SeqCst);
-    assert!(validate_attempt_guard(
-        &services,
-        &policy.fingerprint,
-        &target,
-        &[50, 75],
-        &cancellation,
-    )
-    .unwrap_err()
-    .contains("purge-room"));
+    assert!(
+        attempt_guard_error(&services, &policy.fingerprint, &target, &cancellation)
+            .contains("purge-room")
+    );
     let mut missing_paths = policy.fingerprint.clone();
     missing_paths.replica_dir = fixture.replica.join("missing");
     assert!(
@@ -106,15 +96,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
         ),
     )
     .unwrap();
-    assert!(validate_attempt_guard(
-        &services,
-        &policy.fingerprint,
-        &target,
-        &[50, 75],
-        &cancellation,
-    )
-    .unwrap_err()
-    .contains("policy changed"));
+    assert!(
+        attempt_guard_error(&services, &policy.fingerprint, &target, &cancellation)
+            .contains("policy changed")
+    );
 
     std::fs::write(
         &fixture.team_config,
@@ -124,15 +109,10 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
         ),
     )
     .unwrap();
-    assert!(validate_attempt_guard(
-        &services,
-        &policy.fingerprint,
-        &target,
-        &[50, 75],
-        &cancellation,
-    )
-    .unwrap_err()
-    .contains("Orchestrator target changed"));
+    assert!(
+        attempt_guard_error(&services, &policy.fingerprint, &target, &cancellation)
+            .contains("Orchestrator target changed")
+    );
 
     std::fs::write(
         &fixture.team_config,
@@ -142,26 +122,25 @@ async fn production_attempt_guard_rechecks_cancellation_purge_registration_polic
         ),
     )
     .unwrap();
-    assert!(validate_attempt_guard(
-        &services,
-        &policy.fingerprint,
-        &target,
-        &[50, 75],
-        &cancellation,
-    )
-    .unwrap_err()
-    .contains("roster"));
+    assert!(
+        attempt_guard_error(&services, &policy.fingerprint, &target, &cancellation)
+            .contains("roster")
+    );
 
     services.retire_sample_registration(fixture.session.id);
-    assert!(validate_attempt_guard(
-        &services,
-        &policy.fingerprint,
-        &target,
-        &[50, 75],
-        &cancellation,
-    )
-    .unwrap_err()
-    .contains("no longer registered"));
+    assert!(
+        attempt_guard_error(&services, &policy.fingerprint, &target, &cancellation)
+            .contains("no longer registered")
+    );
+}
+
+fn attempt_guard_error(
+    services: &FakeContextAlertServices,
+    fingerprint: &MemberIdentityFingerprint,
+    target: &InternalSystemTarget,
+    cancellation: &CancellationToken,
+) -> String {
+    validate_attempt_guard(services, fingerprint, target, &[50, 75], cancellation).unwrap_err()
 }
 
 #[tokio::test]

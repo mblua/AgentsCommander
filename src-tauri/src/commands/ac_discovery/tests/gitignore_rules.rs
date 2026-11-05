@@ -49,149 +49,9 @@ fn stage_e_parent_gitignore_excluding_ac_hides_manifest() {
 
 #[test]
 fn stage_e_later_user_rule_and_excludes_win_over_managed_rules() {
-    // (a) A later user negation in the SAME .ac/.gitignore re-includes the manifest.
-    {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project = tmp.path().join("project");
-        let ac_root = project.join(".ac");
-        std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
-        // Append a later user negation (never reordered by AC).
-        let mut content =
-            std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
-        content.push_str("\n# user rule\n!/seed-manifest.toml\n");
-        std::fs::write(ac_root.join(".gitignore"), content).expect("append user rule");
-        std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
-
-        let init = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&project)
-            .status()
-            .expect("git init");
-        assert!(init.success());
-        let verbose = std::process::Command::new("git")
-            .args([
-                "check-ignore",
-                "-v",
-                "--non-matching",
-                "--no-index",
-                "--",
-                ".ac/seed-manifest.toml",
-            ])
-            .current_dir(&project)
-            .output()
-            .expect("check-ignore");
-        assert!(
-            verbose.status.success(),
-            "check-ignore -v --non-matching must name the winning rule"
-        );
-        let line = String::from_utf8(verbose.stdout).expect("utf8");
-        assert!(
-            line.contains(".ac/.gitignore") && line.contains("!/seed-manifest.toml"),
-            "a later same-file user negation must re-include the manifest, got {line:?}"
-        );
-        let ignored = std::process::Command::new("git")
-            .args([
-                "check-ignore",
-                "--quiet",
-                "--no-index",
-                "--",
-                ".ac/seed-manifest.toml",
-            ])
-            .current_dir(&project)
-            .status()
-            .expect("check-ignore");
-        assert!(
-            !ignored.success(),
-            "the manifest must not be ignored after the user negation, got exit {:?}",
-            ignored.code()
-        );
-    }
-
-    // (b) A repository exclude of the parent .ac/ dir hides the manifest.
-    {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project = tmp.path().join("project");
-        let ac_root = project.join(".ac");
-        std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
-        std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
-        let init = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&project)
-            .status()
-            .expect("git init");
-        assert!(init.success());
-        std::fs::write(
-            project.join(".git").join("info").join("exclude"),
-            b"/.ac/\n",
-        )
-        .expect("write repo exclude");
-        let verbose = std::process::Command::new("git")
-            .args([
-                "check-ignore",
-                "-v",
-                "--no-index",
-                "--",
-                ".ac/seed-manifest.toml",
-            ])
-            .current_dir(&project)
-            .output()
-            .expect("check-ignore");
-        assert!(
-            verbose.status.success(),
-            "a repository exclude of .ac/ must hide the manifest"
-        );
-        let line = String::from_utf8(verbose.stdout).expect("utf8");
-        assert!(
-            line.contains("info") && line.contains("exclude"),
-            "check-ignore -v must name the repository exclude, got {line:?}"
-        );
-    }
-
-    // (c) A global excludes file excluding the parent .ac/ dir hides it.
-    {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let project = tmp.path().join("project");
-        let ac_root = project.join(".ac");
-        std::fs::create_dir_all(&ac_root).expect("create .ac");
-        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
-        std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
-        let init = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&project)
-            .status()
-            .expect("git init");
-        assert!(init.success());
-        let global = project.join("global-excludes");
-        std::fs::write(&global, b"/.ac/\n").expect("write global excludes");
-        let override_arg = format!(
-            "core.excludesFile={}",
-            global.to_string_lossy().replace('\\', "/")
-        );
-        let verbose = std::process::Command::new("git")
-            .arg("-c")
-            .arg(&override_arg)
-            .args([
-                "check-ignore",
-                "-v",
-                "--no-index",
-                "--",
-                ".ac/seed-manifest.toml",
-            ])
-            .current_dir(&project)
-            .output()
-            .expect("check-ignore");
-        assert!(
-            verbose.status.success(),
-            "a global exclude of .ac/ must hide the manifest"
-        );
-        let line = String::from_utf8(verbose.stdout).expect("utf8");
-        assert!(
-            line.contains("global-excludes"),
-            "check-ignore -v must name the global excludes file, got {line:?}"
-        );
-    }
+    assert_later_user_negation_reincludes_manifest();
+    assert_repository_exclude_hides_manifest();
+    assert_global_exclude_hides_manifest();
 }
 
 #[test]
@@ -569,4 +429,138 @@ fn ensure_ac_root_gitignore_team_config_lock_rule_is_root_anchored() {
         nested_output.stdout.is_empty(),
         "nested git check-ignore must emit no stdout"
     );
+}
+
+fn assert_later_user_negation_reincludes_manifest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("project");
+    let ac_root = project.join(".ac");
+    std::fs::create_dir_all(&ac_root).expect("create .ac");
+    ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
+    // Append a later user negation (never reordered by AC).
+    let mut content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
+    content.push_str("\n# user rule\n!/seed-manifest.toml\n");
+    std::fs::write(ac_root.join(".gitignore"), content).expect("append user rule");
+    std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
+
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init");
+    assert!(init.success());
+    let verbose = std::process::Command::new("git")
+        .args([
+            "check-ignore",
+            "-v",
+            "--non-matching",
+            "--no-index",
+            "--",
+            ".ac/seed-manifest.toml",
+        ])
+        .current_dir(&project)
+        .output()
+        .expect("check-ignore");
+    assert!(
+        verbose.status.success(),
+        "check-ignore -v --non-matching must name the winning rule"
+    );
+    let line = String::from_utf8(verbose.stdout).expect("utf8");
+    assert!(
+        line.contains(".ac/.gitignore") && line.contains("!/seed-manifest.toml"),
+        "a later same-file user negation must re-include the manifest, got {line:?}"
+    );
+    let ignored = std::process::Command::new("git")
+        .args([
+            "check-ignore",
+            "--quiet",
+            "--no-index",
+            "--",
+            ".ac/seed-manifest.toml",
+        ])
+        .current_dir(&project)
+        .status()
+        .expect("check-ignore");
+    assert!(
+        !ignored.success(),
+        "the manifest must not be ignored after the user negation, got exit {:?}",
+        ignored.code()
+    );
+}
+
+fn assert_repository_exclude_hides_manifest() {
+    let (_tmp, project) = repository_with_managed_manifest();
+    std::fs::write(
+        project.join(".git").join("info").join("exclude"),
+        b"/.ac/\n",
+    )
+    .expect("write repo exclude");
+    let verbose = std::process::Command::new("git")
+        .args([
+            "check-ignore",
+            "-v",
+            "--no-index",
+            "--",
+            ".ac/seed-manifest.toml",
+        ])
+        .current_dir(&project)
+        .output()
+        .expect("check-ignore");
+    assert!(
+        verbose.status.success(),
+        "a repository exclude of .ac/ must hide the manifest"
+    );
+    let line = String::from_utf8(verbose.stdout).expect("utf8");
+    assert!(
+        line.contains("info") && line.contains("exclude"),
+        "check-ignore -v must name the repository exclude, got {line:?}"
+    );
+}
+
+fn assert_global_exclude_hides_manifest() {
+    let (_tmp, project) = repository_with_managed_manifest();
+    let global = project.join("global-excludes");
+    std::fs::write(&global, b"/.ac/\n").expect("write global excludes");
+    let override_arg = format!(
+        "core.excludesFile={}",
+        global.to_string_lossy().replace('\\', "/")
+    );
+    let verbose = std::process::Command::new("git")
+        .arg("-c")
+        .arg(&override_arg)
+        .args([
+            "check-ignore",
+            "-v",
+            "--no-index",
+            "--",
+            ".ac/seed-manifest.toml",
+        ])
+        .current_dir(&project)
+        .output()
+        .expect("check-ignore");
+    assert!(
+        verbose.status.success(),
+        "a global exclude of .ac/ must hide the manifest"
+    );
+    let line = String::from_utf8(verbose.stdout).expect("utf8");
+    assert!(
+        line.contains("global-excludes"),
+        "check-ignore -v must name the global excludes file, got {line:?}"
+    );
+}
+
+fn repository_with_managed_manifest() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("project");
+    let ac_root = project.join(".ac");
+    std::fs::create_dir_all(&ac_root).expect("create .ac");
+    ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
+    std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init");
+    assert!(init.success());
+    (tmp, project)
 }
