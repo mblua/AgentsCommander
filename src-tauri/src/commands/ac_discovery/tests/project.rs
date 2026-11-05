@@ -541,9 +541,22 @@ async fn typed_target_registration_preserves_fresh_disk_projects_over_stale_stat
     .await
     .expect("registration refreshes disk projects");
 
+    // AC-3843-004: live state expands Windows 8.3 aliases during reconstruction.
+    let expected_existing = crate::config::projects::display_canonical(
+        std::fs::canonicalize(&existing)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref(),
+    );
+    let expected_added = crate::config::projects::display_canonical(
+        std::fs::canonicalize(&added)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref(),
+    );
     assert_eq!(
         state.read().await.project_paths,
-        vec![existing.clone(), added.clone()]
+        vec![expected_existing, expected_added]
     );
     let persisted: serde_json::Value = serde_json::from_slice(
         &std::fs::read(settings_path.with_file_name("project-paths.json")).unwrap(),
@@ -593,7 +606,14 @@ async fn new_project_compensation_failure_reports_error_and_keeps_last_written_s
     assert_eq!(live.project_paths.len(), 1);
     assert_eq!(
         crate::config::projects::normalize_for_compare(&live.project_paths[0]),
-        crate::config::projects::normalize_for_compare(&project.to_string_lossy())
+        crate::config::projects::normalize_for_compare(
+            &crate::config::projects::display_canonical(
+                std::fs::canonicalize(&project)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
+        )
     );
     let persistence_error = live.project_paths_persistence_error.as_ref().unwrap();
     assert!(error.contains(persistence_error));
