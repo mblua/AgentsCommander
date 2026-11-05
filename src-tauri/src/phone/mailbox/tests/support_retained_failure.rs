@@ -61,7 +61,7 @@ pub(super) async fn assert_retained_pty_preboundary_rejections(
             source.returned(false);
             assert!(
                 finish_pty_input_before_boundary(
-                    &store,
+                    store,
                     &mut heartbeat,
                     &injection,
                     &claimed.lease_owner,
@@ -180,7 +180,7 @@ fn claim_retained_preboundary_input(
 ) {
     use crate::phone::types::PtyInputSourcePlane as Plane;
     let injection =
-        enqueue_shared_pty_engine_operation(&store, route, sender, b"preboundary-rejection");
+        enqueue_shared_pty_engine_operation(store, route, sender, b"preboundary-rejection");
     let initial = store
         .query_pty_input_by_injection(&injection)
         .unwrap()
@@ -216,7 +216,7 @@ fn retained_replacement_request(
         &route.target.replica_root.to_string_lossy(),
     );
     let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
-        &original_settings,
+        original_settings,
         "codex",
         &cwd,
         None,
@@ -288,7 +288,7 @@ async fn prepare_retained_replacement(
             (
                 crate::config::sessions_persistence::retained_carrier_for_replacement(
                     &permit,
-                    &directory,
+                    directory,
                     &route.target.canonical_fqn,
                     previous,
                     current,
@@ -490,7 +490,7 @@ async fn assert_retained_preboundary_outcome(
     let (coordinator, gate) = (env.coordinator, &env.gate);
     let (original_name, original_settings) = (&env.original_name, &env.original_settings);
     let result = store
-        .query_pty_input_by_injection(&injection)
+        .query_pty_input_by_injection(injection)
         .unwrap()
         .unwrap();
     assert!(result.terminal);

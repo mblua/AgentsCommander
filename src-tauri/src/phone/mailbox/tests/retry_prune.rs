@@ -205,7 +205,7 @@ async fn assert_panic_worker_phase1(
         coordinator,
         now,
     } = *refs;
-    assert!(original.state.same_state(&tracker));
+    assert!(original.state.same_state(tracker));
     assert_eq!(original.target, member.target);
     assert!(original.delivery_context.is_none());
     assert!(tracker
@@ -228,7 +228,7 @@ async fn assert_panic_worker_phase1(
             .map(|state| state.attempt_count),
         Some(1)
     );
-    assert!(!wake_claim_path(&source).exists());
+    assert!(!wake_claim_path(source).exists());
     assert!(source.exists());
     // Phase 1: preservation before synthetic discharge. Exact pending proves
     // that the scenario target has a work entry; no counters are inferred here.
@@ -239,7 +239,7 @@ async fn assert_panic_worker_phase1(
         .get(source)
         .unwrap()
         .clone();
-    assert!(retained.state.same_state(&tracker));
+    assert!(retained.state.same_state(tracker));
     assert_eq!(
         (&retained.target, &retained.key, &retained.digest),
         (&original.target, &original.key, &original.digest)
@@ -264,7 +264,7 @@ async fn assert_panic_worker_phase1(
     let snapshot_path = if source.exists() {
         source.to_path_buf()
     } else {
-        wake_claim_path(&source)
+        wake_claim_path(source)
     };
     let preservation_snapshot = (
         retained.target.clone(),
@@ -293,7 +293,7 @@ fn probe_panic_worker_sensitivity(refs: &PanicRefs<'_>, scenario_target: &str, s
         ..
     } = *refs;
     let dispatch = if sensitivity == 1 {
-        Some(tracker.begin_delivery(&scenario_target).unwrap())
+        Some(tracker.begin_delivery(scenario_target).unwrap())
     } else {
         None
     };
@@ -301,7 +301,7 @@ fn probe_panic_worker_sensitivity(refs: &PanicRefs<'_>, scenario_target: &str, s
         Some(
             tracker
                 .reserve_work(
-                    &scenario_target,
+                    scenario_target,
                     &format!("diagnostic-held-{}", Uuid::new_v4()),
                 )
                 .unwrap(),
@@ -311,7 +311,7 @@ fn probe_panic_worker_sensitivity(refs: &PanicRefs<'_>, scenario_target: &str, s
     };
     let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
     let probe_digest = "diagnostic-body";
-    let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+    let mut admission = tracker.reserve_work(scenario_target, &probe_key).unwrap();
     assert_eq!(admission.accept_durable(probe_digest), Ok(true));
     drop(admission);
     let probe_at = std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
@@ -340,7 +340,7 @@ fn probe_panic_worker_sensitivity(refs: &PanicRefs<'_>, scenario_target: &str, s
             registered.is_err(),
             "retained real provisional admission must be detected"
         );
-        tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+        tracker.settle_terminal(scenario_target, &probe_key, probe_at);
         drop(provisional);
         drop(dispatch);
         return;
@@ -361,8 +361,8 @@ fn assert_panic_probe_return(refs: &PanicRefs<'_>, probe_at: std::time::Instant,
     } = *refs;
     let context = tracker
         .admit_return(
-            &member,
-            &coordinator,
+            member,
+            coordinator,
             format!("diagnostic-return-{}", Uuid::new_v4()),
             "diagnostic-return-body".into(),
             probe_at,
@@ -399,7 +399,7 @@ fn assert_panic_worker_retained_after(
         .get(source)
         .unwrap()
         .clone();
-    assert!(retained_after.state.same_state(&tracker));
+    assert!(retained_after.state.same_state(tracker));
     assert_eq!(
         (
             retained_after.target,
@@ -417,7 +417,7 @@ fn assert_panic_worker_retained_after(
     let path_after = if source.exists() {
         source.to_path_buf()
     } else {
-        wake_claim_path(&source)
+        wake_claim_path(source)
     };
     assert_eq!(std::fs::read(path_after).unwrap(), preservation_snapshot.3);
 }

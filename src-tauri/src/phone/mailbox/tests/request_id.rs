@@ -728,7 +728,7 @@ fn assert_delivered_move(
         assert!(result
             .unwrap_err()
             .starts_with("Failed to write delivered file:"));
-        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
     } else {
         let mut stripped = msg.clone();
         stripped.token = None;
@@ -746,9 +746,9 @@ fn assert_delivered_move(
             expected.retain(|(path, _)| path != source.strip_prefix(root).unwrap());
             assert!(!source.exists());
         }
-        assert_eq!(std::fs::read(&archive).unwrap(), archived_bytes);
+        assert_eq!(std::fs::read(archive).unwrap(), archived_bytes);
         let archived: OutboxMessage =
-            serde_json::from_slice(&std::fs::read(&archive).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(archive).unwrap()).unwrap();
         assert!(archived.token.is_none());
         assert_eq!(archived.id, id);
         assert_eq!(
@@ -756,7 +756,7 @@ fn assert_delivered_move(
             serde_json::to_value(stripped).unwrap()
         );
         assert_claimed_invalid_delivery_receipt(
-            &outbox, &delivered, &origin, claimed, valid, failure,
+            outbox, delivered, origin, claimed, valid, failure,
         );
     }
 }

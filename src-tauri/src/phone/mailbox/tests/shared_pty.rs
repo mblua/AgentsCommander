@@ -109,7 +109,7 @@ async fn assert_shared_engine_injects_exact_text(
     );
     let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
     let injection_id =
-        enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"exact shared input");
+        enqueue_shared_pty_engine_operation(&store, route, sender_id, b"exact shared input");
 
     tokio::time::timeout(
         Duration::from_secs(10),
@@ -154,7 +154,7 @@ async fn assert_resume_refresh_uses_real_claim(
     sender_id: Uuid,
 ) -> rusqlite::Connection {
     let resume_id =
-        enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"resume metadata");
+        enqueue_shared_pty_engine_operation(store, route, sender_id, b"resume metadata");
     let original = store
         .query_pty_input_by_injection(&resume_id)
         .unwrap()
@@ -176,26 +176,26 @@ async fn assert_resume_refresh_uses_real_claim(
     assert!(!current.terminal, "real Preparing claim is not a handoff");
     assert!(pty_resume_metadata_matches(&original, &current, &claimed));
     assert_eq!(
-        refresh_pty_claim_for_resume(&store, &original, &claimed).await,
+        refresh_pty_claim_for_resume(store, &original, &claimed).await,
         Ok(PtyClaimRefresh::Current),
     );
     let mut wrong_owner = claimed.clone();
     wrong_owner.lease_owner = Uuid::new_v4().to_string();
     assert_eq!(
-        refresh_pty_claim_for_resume(&store, &original, &wrong_owner).await,
+        refresh_pty_claim_for_resume(store, &original, &wrong_owner).await,
         Err(crate::phone::types::PtyInputReasonCode::LeaseLost),
         "queued metadata cannot replace actual conditional renew Ok(true)",
     );
     let mut wrong_identity = claimed.clone();
     wrong_identity.op_id = Uuid::new_v4().to_string();
     assert_eq!(
-        refresh_pty_claim_for_resume(&store, &original, &wrong_identity).await,
+        refresh_pty_claim_for_resume(store, &original, &wrong_identity).await,
         Err(crate::phone::types::PtyInputReasonCode::AuthorityChanged),
     );
     let mut missing = claimed.clone();
     missing.injection_id = Uuid::new_v4().to_string();
     assert_eq!(
-        refresh_pty_claim_for_resume(&store, &original, &missing).await,
+        refresh_pty_claim_for_resume(store, &original, &missing).await,
         Err(crate::phone::types::PtyInputReasonCode::AuthorityChanged),
     );
     let mut changed = current.clone();
@@ -242,7 +242,7 @@ async fn assert_terminal_refresh_certifies_release(
     sender_id: Uuid,
 ) {
     let terminal_id =
-        enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"terminal metadata");
+        enqueue_shared_pty_engine_operation(store, route, sender_id, b"terminal metadata");
     let terminal_original = store
         .query_pty_input_by_injection(&terminal_id)
         .unwrap()
@@ -258,7 +258,7 @@ async fn assert_terminal_refresh_certifies_release(
         .unwrap();
     let mut mismatched_original = terminal_original.clone();
     mismatched_original.payload_sha256 = Some("0".repeat(64));
-    let reason = refresh_pty_claim_for_resume(&store, &mismatched_original, &terminal_claim)
+    let reason = refresh_pty_claim_for_resume(store, &mismatched_original, &terminal_claim)
         .await
         .unwrap_err();
     assert_eq!(
@@ -273,7 +273,7 @@ async fn assert_terminal_refresh_certifies_release(
     );
     assert!(
         finish_pty_input_before_boundary(
-            &store,
+            store,
             &mut terminal_heartbeat,
             &terminal_id,
             &terminal_claim.lease_owner,
@@ -309,7 +309,7 @@ async fn assert_terminal_refresh_certifies_release(
     assert_eq!(attempt, terminal_claim.attempt);
     assert_eq!(retries, 0);
     assert_eq!(
-        refresh_pty_claim_for_resume(&store, &terminal_original, &terminal_claim).await,
+        refresh_pty_claim_for_resume(store, &terminal_original, &terminal_claim).await,
         Ok(PtyClaimRefresh::Terminal),
     );
     let after_terminal = store
@@ -411,8 +411,8 @@ fn commit_closing_ticket(
         .unwrap();
     let context = tracker
         .admit_return(
-            &member,
-            &coordinator,
+            member,
+            coordinator,
             "return".into(),
             "return-body".into(),
             now,
@@ -425,7 +425,7 @@ fn commit_closing_ticket(
     let ticket = tracker.select_ticket(target_id, at).unwrap();
     PtyManager::authority_route_proof(pty, target_id)
         .unwrap()
-        .try_commit_response_close(&tracker, &ticket, at)
+        .try_commit_response_close(tracker, &ticket, at)
         .unwrap();
 }
 
@@ -446,8 +446,8 @@ async fn assert_closing_dispatch_keeps_queued(
 ) {
     let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(store));
     let injection_id =
-        enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must remain queued");
-    let connection = rusqlite::Connection::open(&database).unwrap();
+        enqueue_shared_pty_engine_operation(store, route, sender_id, b"must remain queued");
+    let connection = rusqlite::Connection::open(database).unwrap();
     let snapshot = || {
         connection
             .query_row(
