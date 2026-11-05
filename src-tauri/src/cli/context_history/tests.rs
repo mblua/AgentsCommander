@@ -234,3 +234,35 @@ fn non_utf8_agent_is_rejected_by_the_parser() {
     .collect();
     assert!(TestCli::try_parse_from(all).is_err());
 }
+
+#[test]
+fn a_corrupt_database_fails_with_no_stdout_and_keeps_its_bytes() {
+    use crate::context_history::store::{history_database_path, history_directory};
+    let (tmp, project) = project();
+    let ac_root = tmp.path().join(".ac");
+    std::fs::create_dir(history_directory(&ac_root)).expect("mkdir");
+    let junk = vec![0x5a; 4096];
+    std::fs::write(history_database_path(&ac_root), &junk).expect("write");
+    let (code, output) = run_to_string(&args(&project, FROM, TO));
+    assert_eq!((code, output.as_str()), (1, ""));
+    let after = std::fs::read(history_database_path(&ac_root)).expect("read");
+    assert_eq!(after, junk, "bytes must be preserved");
+}
+
+#[test]
+fn every_store_failure_exits_1_and_is_never_an_empty_success() {
+    let failures = [
+        StoreError::Corrupt("not_a_sqlite_database".to_string()),
+        StoreError::UnsupportedVersion(3),
+        StoreError::RetryableBusy,
+        StoreError::DeadlineExceeded,
+        StoreError::TooManyRows(100_001),
+        StoreError::RecoveryRequired {
+            action: "retry".to_string(),
+        },
+    ];
+    for failure in failures {
+        let shown = format!("{failure:?}");
+        assert_eq!(exit_code(Err(CliError::Store(failure))), 1, "{shown}");
+    }
+}

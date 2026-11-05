@@ -484,3 +484,21 @@ fn sidebar_ids_are_validated_before_any_scan() {
         Err(ReportError::InvalidQuery("sidebar_ids_too_many"))
     );
 }
+
+#[test]
+fn root_sessions_never_reach_the_report() {
+    use crate::context_history::observation::{resolve_history_scope, ScopeInput, ScopeResolution};
+    let root = ScopeInput {
+        working_directory: "C:/projects/demo/.ac/_agent_dev",
+        is_root_agent: true,
+        authoritative_ac_root: true,
+        teams: &[],
+    };
+    assert_eq!(
+        resolve_history_scope(&root),
+        ScopeResolution::Excluded("root_agent")
+    );
+    let response = report(&[], &last_days(7));
+    assert_eq!(response.total_agents, 0);
+    assert!(response.agents_page.is_empty());
+}
