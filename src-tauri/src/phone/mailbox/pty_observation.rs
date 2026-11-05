@@ -31,6 +31,10 @@ pub(crate) trait WakeDeliveryState: PtyReadinessState {
     /// Security credential: compare with `matches()`; never log it.
     fn master_token(&self) -> Option<&crate::MasterToken>;
     fn selection(&self) -> &crate::session::selection::SelectionCoordinator;
+    /// Optional route registry: `None` when no `PtyManager` is registered.
+    fn pty_routes_opt(&self) -> Option<&Arc<Mutex<PtyManager>>>;
+    /// Optional readiness detector: `None` when no `IdleDetector` is registered.
+    fn pty_readiness_opt(&self) -> Option<&Arc<IdleDetector>>;
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use super::poller::{reserve_response_request_at_write, MailboxPoller};
 use super::pty_claim::{response_diag_debug_only, ResponseWakeWork};
 #[cfg(test)]
 use super::pty_claim::{MailboxSpawnCall, MailboxTestEvent};
-use super::pty_observation::{PtyAuthorityState, PtyReadinessState};
+use super::pty_observation::{PtyAuthorityState, PtyReadinessState, WakeDeliveryState};
 use super::settle::{
     classify_injection_error, live_settle_action, live_wake_route, settle_tick, wake_settle_ready,
     LiveWakeRoute, STARTUP_SETTLE_THRESHOLD,
@@ -258,10 +258,10 @@ impl MailboxPoller {
         loop {
             // #1388: first condition, read in its own scope so the std Mutex guard is
             // dropped before the await below - the guard is not Send, so this is enforced
-            // by the compiler rather than by convention. `try_state` (not `state`) mirrors
-            // the IdleDetector read in `settle_live_before_inject` (:7719): a missing
-            // manager is "no claim", not "not rendered", and must not gate.
-            let rendered = match app.try_state::<Arc<Mutex<PtyManager>>>() {
+            // by the compiler rather than by convention. `pty_routes_opt` (not `pty_routes`)
+            // mirrors the optional IdleDetector read in `settle_live_before_inject`: a
+            // missing manager is "no claim", not "not rendered", and must not gate.
+            let rendered = match app.pty_routes_opt() {
                 Some(pty_mgr) => match pty_mgr.lock() {
                     Ok(pty) => pty.has_rendered_visible_content(session_id),
                     Err(_) => true,
@@ -387,8 +387,7 @@ impl MailboxPoller {
             return SettleReadiness::Unknown;
         }
 
-        let Some(idle) = app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
-        else {
+        let Some(idle) = app.pty_readiness_opt() else {
             // #2586 - no detector means no settle gate ran.
             return SettleReadiness::Unknown;
         };
