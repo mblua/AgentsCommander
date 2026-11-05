@@ -69,6 +69,97 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
     let fixture = AcceptanceFixture::new(temporary).await;
     let target = format!("{PROJECT}:{WORKGROUP}/member-live");
     let requester = format!("{PROJECT}:{WORKGROUP}/coordinator");
+    let (
+        request,
+        request_directory,
+        response_directory,
+        request_path,
+        response_path,
+        original_identity,
+    ) = prepare_scanner_shutdown_request(&fixture, phase, &target, &requester);
+    let root = &fixture.paths.coordinator;
+
+    let mut scanner = crate::phone::terminal_snapshot::SnapshotMailboxScanner::default();
+    let owner = scanner.shutdown_owner_for_test();
+    let ScannerShutdownControls {
+        start_control,
+        blocking_control,
+        cancellation_barrier,
+        finalizer_control,
+    } = install_scanner_shutdown_controls(phase, &owner, &fixture);
+
+    run_scanner_cycle_until_entered(
+        &mut scanner,
+        &fixture,
+        root,
+        start_control.as_ref(),
+        blocking_control.as_ref(),
+        cancellation_barrier.as_ref(),
+        finalizer_control.as_ref(),
+    );
+
+    let replacement = apply_scanner_processing_phase(
+        phase,
+        &request_directory,
+        &request,
+        &request_path,
+        &original_identity,
+    );
+
+    seal_and_assert_first_scanner_drain(
+        phase,
+        &owner,
+        &fixture,
+        &request,
+        blocking_control.as_ref(),
+    )
+    .await;
+
+    release_scanner_service_controls(start_control.as_ref(), blocking_control.as_ref());
+    if let Some((_, release)) = cancellation_barrier {
+        release
+            .send(())
+            .expect("release scanner cancellation barrier");
+    }
+    release_finalizer_and_drain_scanner(finalizer_control.as_ref(), &owner, &fixture).await;
+
+    let response_reason =
+        assert_scanner_shutdown_response(phase, &fixture, &request, &target, &response_path);
+
+    if let Some((replacement_path, displaced)) = replacement {
+        assert_eq!(
+            std::fs::read(&replacement_path).expect("read processing replacement"),
+            b"foreign processing replacement"
+        );
+        assert!(displaced.exists());
+        std::fs::remove_file(replacement_path).expect("remove processing replacement");
+        std::fs::remove_file(displaced).expect("remove displaced scanner-owned file");
+        #[cfg(not(unix))]
+        fixture.snapshot_state.untrack_artifact(&original_identity);
+    }
+    assert_scanner_shutdown_residue(
+        &fixture,
+        &request,
+        &request_directory,
+        &response_directory,
+        &config,
+        response_reason,
+    );
+}
+
+fn prepare_scanner_shutdown_request(
+    fixture: &AcceptanceFixture,
+    phase: ScannerShutdownPhase,
+    target: &str,
+    requester: &str,
+) -> (
+    crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+    crate::path_identity::VerifiedPathIdentity,
+) {
     let nonce = match phase {
         ScannerShutdownPhase::BeforeService => "1".repeat(64),
         ScannerShutdownPhase::BlockingService => "2".repeat(64),
@@ -78,7 +169,7 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         ScannerShutdownPhase::ReplacementCleanup => "6".repeat(64),
     };
     let request = retag_host_request(
-        host_request(&fixture.host_coordinator, &requester, &target),
+        host_request(&fixture.host_coordinator, requester, target),
         &nonce,
     );
     let root = &fixture.paths.coordinator;
@@ -90,9 +181,33 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         write_host_request_bytes(root, &request.request_id, &request_bytes);
     let original_identity = crate::path_identity::verify_regular_file(&request_path)
         .expect("scanner shutdown request identity");
+    (
+        request,
+        request_directory,
+        response_directory,
+        request_path,
+        response_path,
+        original_identity,
+    )
+}
 
-    let mut scanner = crate::phone::terminal_snapshot::SnapshotMailboxScanner::default();
-    let owner = scanner.shutdown_owner_for_test();
+type ScannerCancellationBarrier = (
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::SyncSender<()>,
+);
+
+struct ScannerShutdownControls {
+    start_control: Option<Arc<crate::phone::terminal_snapshot::SnapshotScannerTaskStartControl>>,
+    blocking_control: Option<Arc<TerminalSnapshotBlockingControl>>,
+    cancellation_barrier: Option<ScannerCancellationBarrier>,
+    finalizer_control: Option<Arc<TerminalSnapshotHostFinalizerControl>>,
+}
+
+fn install_scanner_shutdown_controls(
+    phase: ScannerShutdownPhase,
+    owner: &crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner,
+    fixture: &AcceptanceFixture,
+) -> ScannerShutdownControls {
     let start_control = phase
         .abortable()
         .then(crate::phone::terminal_snapshot::SnapshotScannerTaskStartControl::new);
@@ -128,42 +243,66 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
             .snapshot_state
             .install_next_host_finalizer_control(Arc::clone(control));
     }
+    ScannerShutdownControls {
+        start_control,
+        blocking_control,
+        cancellation_barrier,
+        finalizer_control,
+    }
+}
 
+fn run_scanner_cycle_until_entered(
+    scanner: &mut crate::phone::terminal_snapshot::SnapshotMailboxScanner,
+    fixture: &AcceptanceFixture,
+    root: &Path,
+    start_control: Option<&Arc<crate::phone::terminal_snapshot::SnapshotScannerTaskStartControl>>,
+    blocking_control: Option<&Arc<TerminalSnapshotBlockingControl>>,
+    cancellation_barrier: Option<&ScannerCancellationBarrier>,
+    finalizer_control: Option<&Arc<TerminalSnapshotHostFinalizerControl>>,
+) {
     scanner.begin_cycle();
     scanner.scan_root(
         fixture.app.as_ref().expect("fixture app is alive").handle(),
         root,
     );
     scanner.finish_cycle();
-    if let Some(control) = &start_control {
+    if let Some(control) = start_control {
         control.wait_until_entered();
     }
-    if let Some(control) = &blocking_control {
+    if let Some(control) = blocking_control {
         control.wait_until_entered();
     }
-    if let Some((entered, _)) = &cancellation_barrier {
+    if let Some((entered, _)) = cancellation_barrier {
         wait_for_host_cancellation_barrier(entered);
     }
-    if let Some(control) = &finalizer_control {
+    if let Some(control) = finalizer_control {
         control.wait_until_entered();
         assert!(control.retained_response_bytes() > 0);
     }
+}
 
+fn apply_scanner_processing_phase(
+    phase: ScannerShutdownPhase,
+    request_directory: &Path,
+    request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    request_path: &Path,
+    original_identity: &crate::path_identity::VerifiedPathIdentity,
+) -> Option<(PathBuf, PathBuf)> {
     let processing = matches!(
         phase,
         ScannerShutdownPhase::CancellationRace | ScannerShutdownPhase::ReplacementCleanup
     )
-    .then(|| scanner_processing_path(&request_directory, &request.request_id));
+    .then(|| scanner_processing_path(request_directory, &request.request_id));
     let mut replacement = None;
     if phase == ScannerShutdownPhase::CancellationRace {
         assert!(!crate::cli::terminal_snapshot::cancel_request_for_test(
-            &request_path,
-            &request_directory,
+            request_path,
+            request_directory,
             Uuid::parse_str(&request.request_id).expect("scanner cancellation request UUID"),
             &request.nonce,
-            &original_identity,
+            original_identity,
         ));
-        assert!(!host_cancellation_marker(&request_directory, &request).exists());
+        assert!(!host_cancellation_marker(request_directory, request).exists());
     }
     if phase == ScannerShutdownPhase::ReplacementCleanup {
         let processing = processing.expect("replacement processing path");
@@ -179,11 +318,20 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         }
         replacement = Some((processing.clone(), displaced));
     }
+    replacement
+}
 
+async fn seal_and_assert_first_scanner_drain(
+    phase: ScannerShutdownPhase,
+    owner: &crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner,
+    fixture: &AcceptanceFixture,
+    request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    blocking_control: Option<&Arc<TerminalSnapshotBlockingControl>>,
+) {
     owner.seal();
     assert!(owner.is_sealed());
     fixture.snapshot_state.shutdown.trigger();
-    if let Some(control) = &blocking_control {
+    if let Some(control) = blocking_control {
         control.expire_deadline();
     }
     let first_budget = if phase.abortable() {
@@ -202,74 +350,91 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         assert_eq!(owner.task_count(), 0);
         assert_api_lifecycle_idle(&fixture.snapshot_state);
     } else {
-        assert!(!first.terminal, "started scanner owner must be retained");
-        assert_eq!(first.aborted, 0);
-        assert_eq!(first.joined, 0);
-        assert_eq!(first.retained.len(), 1);
-        assert_eq!(owner.task_count(), 1);
-        // A retained scanner is still reported in the shutdown diagnostics
-        // below, but it must not suppress session persistence: its only
-        // SessionManager access is a read-lock clone, so it cannot leave session
-        // state inconsistent.
-        assert!(
-            crate::shutdown_persistence_allowed(true, true),
-            "a retained snapshot scanner must not suppress session persistence"
-        );
-        let diagnostics = crate::combined_shutdown_retained_diagnostics_with_scanner(
-            first.retained.clone(),
-            Vec::new(),
-            Vec::new(),
-        );
-        assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].contains("owner=terminalSnapshotScanner"));
-        assert!(!diagnostics[0].contains(&request.request_id));
-        assert!(!diagnostics[0].contains(SCREEN_SENTINEL));
-        assert!(!diagnostics[0].contains('/'));
-        assert!(!diagnostics[0].contains('\\'));
-        if phase == ScannerShutdownPhase::FinalizerOwned {
-            assert!(first.retained[0].contains("terminal-snapshot-finalizer"));
-        } else {
-            assert!(first.retained[0].contains("terminal-snapshot-service"));
-        }
-        assert!(fixture
-            .app
-            .as_ref()
-            .expect("fixture app is alive")
-            .try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .is_some());
-        assert!(fixture
-            .app
-            .as_ref()
-            .expect("fixture app is alive")
-            .try_state::<Arc<std::sync::Mutex<PtyManager>>>()
-            .is_some());
-        match phase {
-            ScannerShutdownPhase::CancellationRace => assert_eq!(
-                api_lifecycle_counts(&fixture.snapshot_state),
-                ApiLifecycleCounts {
-                    ingress_available: SNAPSHOT_INGRESS_LIMIT - 1,
-                    requester_in_flight: 0,
-                    target_in_flight: 0,
-                    global_in_flight: 0,
-                }
-            ),
-            _ => assert_api_lifecycle_active(api_lifecycle_counts(&fixture.snapshot_state), true),
-        }
+        assert_retained_first_drain(phase, fixture, owner, request, &first);
     }
+}
 
-    if let Some(control) = &start_control {
+fn assert_retained_first_drain(
+    phase: ScannerShutdownPhase,
+    fixture: &AcceptanceFixture,
+    owner: &crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner,
+    request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    first: &crate::phone::terminal_snapshot::SnapshotScannerDrainResult,
+) {
+    assert!(!first.terminal, "started scanner owner must be retained");
+    assert_eq!(first.aborted, 0);
+    assert_eq!(first.joined, 0);
+    assert_eq!(first.retained.len(), 1);
+    assert_eq!(owner.task_count(), 1);
+    // A retained scanner is still reported in the shutdown diagnostics
+    // below, but it must not suppress session persistence: its only
+    // SessionManager access is a read-lock clone, so it cannot leave session
+    // state inconsistent.
+    assert!(
+        crate::shutdown_persistence_allowed(true, true),
+        "a retained snapshot scanner must not suppress session persistence"
+    );
+    let diagnostics = crate::combined_shutdown_retained_diagnostics_with_scanner(
+        first.retained.clone(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("owner=terminalSnapshotScanner"));
+    assert!(!diagnostics[0].contains(&request.request_id));
+    assert!(!diagnostics[0].contains(SCREEN_SENTINEL));
+    assert!(!diagnostics[0].contains('/'));
+    assert!(!diagnostics[0].contains('\\'));
+    if phase == ScannerShutdownPhase::FinalizerOwned {
+        assert!(first.retained[0].contains("terminal-snapshot-finalizer"));
+    } else {
+        assert!(first.retained[0].contains("terminal-snapshot-service"));
+    }
+    assert!(fixture
+        .app
+        .as_ref()
+        .expect("fixture app is alive")
+        .try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .is_some());
+    assert!(fixture
+        .app
+        .as_ref()
+        .expect("fixture app is alive")
+        .try_state::<Arc<std::sync::Mutex<PtyManager>>>()
+        .is_some());
+    match phase {
+        ScannerShutdownPhase::CancellationRace => assert_eq!(
+            api_lifecycle_counts(&fixture.snapshot_state),
+            ApiLifecycleCounts {
+                ingress_available: SNAPSHOT_INGRESS_LIMIT - 1,
+                requester_in_flight: 0,
+                target_in_flight: 0,
+                global_in_flight: 0,
+            }
+        ),
+        _ => assert_api_lifecycle_active(api_lifecycle_counts(&fixture.snapshot_state), true),
+    }
+}
+
+fn release_scanner_service_controls(
+    start_control: Option<&Arc<crate::phone::terminal_snapshot::SnapshotScannerTaskStartControl>>,
+    blocking_control: Option<&Arc<TerminalSnapshotBlockingControl>>,
+) {
+    if let Some(control) = start_control {
         control.release();
     }
-    if let Some(control) = &blocking_control {
+    if let Some(control) = blocking_control {
         control.release();
         control.wait_until_completed();
     }
-    if let Some((_, release)) = cancellation_barrier {
-        release
-            .send(())
-            .expect("release scanner cancellation barrier");
-    }
-    if let Some(control) = &finalizer_control {
+}
+
+async fn release_finalizer_and_drain_scanner(
+    finalizer_control: Option<&Arc<TerminalSnapshotHostFinalizerControl>>,
+    owner: &crate::phone::terminal_snapshot::SnapshotScannerShutdownOwner,
+    fixture: &AcceptanceFixture,
+) {
+    if let Some(control) = finalizer_control {
         control.release();
     }
     let terminal = owner
@@ -279,18 +444,29 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
     assert_eq!(owner.task_count(), 0);
     assert!(crate::shutdown_persistence_allowed(true, true));
     assert_api_lifecycle_idle(&fixture.snapshot_state);
+}
 
+fn assert_scanner_shutdown_response(
+    phase: ScannerShutdownPhase,
+    fixture: &AcceptanceFixture,
+    request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    target: &str,
+    response_path: &Path,
+) -> Option<TerminalSnapshotReasonCode> {
+    // The fixture only untracks the response artifact on non-Unix hosts.
+    #[cfg(unix)]
+    let _ = fixture;
     let mut response_reason = None;
     if phase.abortable() {
         assert!(!response_path.exists());
     } else {
-        let bytes = std::fs::read(&response_path).expect("shutdown metadata response");
+        let bytes = std::fs::read(response_path).expect("shutdown metadata response");
         assert!(!contains_raw(&bytes, SCREEN_SENTINEL.as_bytes()));
         let decoded = decode_host_response(
             &bytes,
             &request.request_id,
             &request.confirmation_tag,
-            &target,
+            target,
             TerminalSnapshotFormat::Json,
         )
         .expect("strict shutdown response");
@@ -298,35 +474,34 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         response_reason = decoded.error;
         assert!(response_reason.is_some());
         #[cfg(not(unix))]
-        let identity = crate::path_identity::verify_regular_file(&response_path)
+        let identity = crate::path_identity::verify_regular_file(response_path)
             .expect("shutdown response identity");
-        std::fs::remove_file(&response_path).expect("consume shutdown response");
+        std::fs::remove_file(response_path).expect("consume shutdown response");
         #[cfg(not(unix))]
         fixture.snapshot_state.untrack_artifact(&identity);
     }
+    response_reason
+}
 
-    if let Some((replacement_path, displaced)) = replacement {
-        assert_eq!(
-            std::fs::read(&replacement_path).expect("read processing replacement"),
-            b"foreign processing replacement"
-        );
-        assert!(displaced.exists());
-        std::fs::remove_file(replacement_path).expect("remove processing replacement");
-        std::fs::remove_file(displaced).expect("remove displaced scanner-owned file");
-        #[cfg(not(unix))]
-        fixture.snapshot_state.untrack_artifact(&original_identity);
-    }
-    assert!(!host_cancellation_marker(&request_directory, &request).exists());
+fn assert_scanner_shutdown_residue(
+    fixture: &AcceptanceFixture,
+    request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+    request_directory: &Path,
+    response_directory: &Path,
+    config: &Path,
+    response_reason: Option<TerminalSnapshotReasonCode>,
+) {
+    assert!(!host_cancellation_marker(request_directory, request).exists());
     fixture.snapshot_state.sweep_artifacts_for_test(false);
     assert_eq!(fixture.snapshot_state.test_artifact_counts(), (0, 0, 0));
     assert_eq!(
-        std::fs::read_dir(&request_directory)
+        std::fs::read_dir(request_directory)
             .expect("scanner request residue inventory")
             .count(),
         0
     );
     assert_eq!(
-        std::fs::read_dir(&response_directory)
+        std::fs::read_dir(response_directory)
             .expect("scanner response residue inventory")
             .count(),
         0
@@ -341,7 +516,7 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
         request.nonce.clone(),
         request.confirmation_tag.clone(),
     ];
-    let rows = snapshot_audit_rows(&config, &canaries);
+    let rows = snapshot_audit_rows(config, &canaries);
     assert_eq!(rows.len(), 1, "one scanner shutdown audit event");
     let row = &rows[0];
     assert_eq!(
