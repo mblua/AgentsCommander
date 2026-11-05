@@ -433,69 +433,7 @@ pub(super) fn expected_io_kind_from_literal_table(kind: std::io::ErrorKind) -> &
 #[test]
 fn settings_save_error_preserves_sources_and_separates_diagnostic_from_outward() {
     for raw in [5, 32] {
-        let target = std::path::PathBuf::from("C:/issue-1330/target.json");
-        let temporary = std::path::PathBuf::from("C:/issue-1330/settings.json.1.2.tmp");
-        let legacy = format!("legacy-only-sentinel-{raw}");
-        let error = super::super::SettingsSaveError::io(
-            super::super::SettingsSaveStage::PreserveDiskGate,
-            &target,
-            Some(&temporary),
-            std::io::Error::from_raw_os_error(raw),
-            super::super::SettingsSaveLegacyOutward::DiskRead(legacy.clone()),
-        );
-        let (source_raw, source_kind, source_display) = match &error.cause {
-            super::super::SettingsSaveCause::Io(source) => {
-                (source.raw_os_error(), source.kind(), source.to_string())
-            }
-            _ => panic!("expected retained I/O source"),
-        };
-        assert_eq!(source_raw, Some(raw));
-        if let super::super::SettingsSaveCause::Io(retained_source) = &error.cause {
-            let exposed_source = std::error::Error::source(&error).unwrap();
-            let exposed_io = exposed_source.downcast_ref::<std::io::Error>().unwrap();
-            assert!(std::ptr::eq(exposed_io, retained_source));
-        }
-        assert_eq!(
-            error.stage,
-            super::super::SettingsSaveStage::PreserveDiskGate
-        );
-        assert_eq!(error.target_path.as_path(), target.as_path());
-        assert_eq!(
-            error.temp_path.as_deref().map(std::path::PathBuf::as_path),
-            Some(temporary.as_path())
-        );
-        assert_eq!(error.pid, std::process::id());
-        assert_eq!(
-            error.general_settings_diagnostic_code(),
-            "settings_save_failed"
-        );
-        assert_eq!(error.to_string(), "settings_save_failed");
-
-        let (records, _capture_guard) = capture_settings_save_diagnostics();
-        let outward = super::super::report_settings_save_error(
-            error,
-            super::super::SettingsSaveReportSurface::GeneralSettings,
-        );
-        assert_eq!(outward, legacy);
-        let records = CapturedRecordsSnapshot::snapshot(&records);
-        assert_eq!(records.len(), 1);
-        assert!(!records[0].contains("legacy-only-sentinel"));
-        assert!(!records[0].contains(&source_display));
-        let fields = parse_settings_save_diagnostic(&records[0]);
-        assert_eq!(fields["code"], "settings_save_failed");
-        assert_eq!(fields["source_kind"], "io");
-        assert_eq!(fields["reason"], "none");
-        assert_eq!(fields["raw_os_error"], raw.to_string());
-        assert_eq!(
-            fields["io_kind"],
-            expected_io_kind_from_literal_table(source_kind)
-        );
-        assert_eq!(fields["pid"], std::process::id().to_string());
-        assert_eq!(fields["target_path"], "\"C:/issue-1330/target.json\"");
-        assert_eq!(
-            fields["temp_path"],
-            "\"C:/issue-1330/settings.json.1.2.tmp\""
-        );
+        assert_save_io_source_and_diagnostic(raw);
     }
 
     let lock_error = super::super::SettingsSaveError::io(
@@ -665,22 +603,6 @@ fn terminal_snapshot_setting_invalid_defensive_projection_is_closed() {
 
 #[test]
 fn general_settings_outward_compatibility_matrix() {
-    fn assert_general_outward(error: super::super::SettingsSaveError, expected: &str) {
-        let diagnostic_code = error.general_settings_diagnostic_code();
-        let (records, _capture_guard) = capture_settings_save_diagnostics();
-        let outward = super::super::report_settings_save_error(
-            error,
-            super::super::SettingsSaveReportSurface::GeneralSettings,
-        );
-        assert_eq!(outward, expected);
-        let records = records.borrow();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            parse_settings_save_diagnostic(&records[0])["code"],
-            diagnostic_code,
-        );
-    }
-
     let path = std::path::Path::new("C:/issue-1330/settings.json");
     assert_general_outward(
         super::super::SettingsSaveError::semantic(
@@ -702,67 +624,7 @@ fn general_settings_outward_compatibility_matrix() {
         ),
         "settings_save_failed",
     );
-    assert_general_outward(
-        super::super::SettingsSaveError::io(
-            super::super::SettingsSaveStage::PreserveDiskGate,
-            path,
-            None,
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "reader source"),
-            super::super::SettingsSaveLegacyOutward::DiskRead(
-                "Failed to read C:/issue-1330/settings.json for a project-preserving save \
-                        (aborting to avoid dropping a project): reader source"
-                    .to_string(),
-            ),
-        ),
-        "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to \
-                avoid dropping a project): reader source",
-    );
-    assert_general_outward(
-        super::super::SettingsSaveError::json(
-            super::super::SettingsSaveStage::PreserveDiskGate,
-            path,
-            None,
-            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
-            super::super::SettingsSaveLegacyOutward::DiskJson(
-                "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file \
-                        is not valid JSON (EOF while parsing an object at line 1 column \
-                        1)"
-                .to_string(),
-            ),
-        ),
-        "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not \
-                valid JSON (EOF while parsing an object at line 1 column 1)",
-    );
-    assert_general_outward(
-        super::super::SettingsSaveError::semantic(
-            super::super::SettingsSaveStage::PreserveDiskGate,
-            path,
-            None,
-            super::super::SettingsSaveReason::DiskJsonNotObject,
-            super::super::SettingsSaveLegacyOutward::DiskJsonNotObject(
-                "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root \
-                        is not a JSON object"
-                    .to_string(),
-            ),
-        ),
-        "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not \
-                a JSON object",
-    );
-    assert_general_outward(
-        super::super::SettingsSaveError::semantic(
-            super::super::SettingsSaveStage::ReconcileDiskGate,
-            path,
-            None,
-            super::super::SettingsSaveReason::DiskSettingsValidationRejected,
-            super::super::SettingsSaveLegacyOutward::DiskValidation(
-                "Refusing to overwrite present settings whose non-project fields are invalid: \
-                        invalid type: string \"invalid\", expected a boolean"
-                    .to_string(),
-            ),
-        ),
-        "Refusing to overwrite present settings whose non-project fields are invalid: invalid \
-                type: string \"invalid\", expected a boolean",
-    );
+    assert_general_disk_gate_outward(path);
     let serialize_source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
     assert_general_outward(
         super::super::SettingsSaveError::json(
@@ -889,4 +751,150 @@ fn settings_save_operation_ids_are_unique_across_concurrent_callers() {
     });
     let unique: std::collections::HashSet<_> = ids.into_iter().collect();
     assert_eq!(unique.len(), CALLERS * OPERATIONS);
+}
+
+fn assert_save_io_source_and_diagnostic(raw: i32) {
+    let target = std::path::PathBuf::from("C:/issue-1330/target.json");
+    let temporary = std::path::PathBuf::from("C:/issue-1330/settings.json.1.2.tmp");
+    let legacy = format!("legacy-only-sentinel-{raw}");
+    let error = super::super::SettingsSaveError::io(
+        super::super::SettingsSaveStage::PreserveDiskGate,
+        &target,
+        Some(&temporary),
+        std::io::Error::from_raw_os_error(raw),
+        super::super::SettingsSaveLegacyOutward::DiskRead(legacy.clone()),
+    );
+    let (source_raw, source_kind, source_display) = match &error.cause {
+        super::super::SettingsSaveCause::Io(source) => {
+            (source.raw_os_error(), source.kind(), source.to_string())
+        }
+        _ => panic!("expected retained I/O source"),
+    };
+    assert_eq!(source_raw, Some(raw));
+    if let super::super::SettingsSaveCause::Io(retained_source) = &error.cause {
+        let exposed_source = std::error::Error::source(&error).unwrap();
+        let exposed_io = exposed_source.downcast_ref::<std::io::Error>().unwrap();
+        assert!(std::ptr::eq(exposed_io, retained_source));
+    }
+    assert_eq!(
+        error.stage,
+        super::super::SettingsSaveStage::PreserveDiskGate
+    );
+    assert_eq!(error.target_path.as_path(), target.as_path());
+    assert_eq!(
+        error.temp_path.as_deref().map(std::path::PathBuf::as_path),
+        Some(temporary.as_path())
+    );
+    assert_eq!(error.pid, std::process::id());
+    assert_eq!(
+        error.general_settings_diagnostic_code(),
+        "settings_save_failed"
+    );
+    assert_eq!(error.to_string(), "settings_save_failed");
+
+    let (records, _capture_guard) = capture_settings_save_diagnostics();
+    let outward = super::super::report_settings_save_error(
+        error,
+        super::super::SettingsSaveReportSurface::GeneralSettings,
+    );
+    assert_eq!(outward, legacy);
+    let records = CapturedRecordsSnapshot::snapshot(&records);
+    assert_eq!(records.len(), 1);
+    assert!(!records[0].contains("legacy-only-sentinel"));
+    assert!(!records[0].contains(&source_display));
+    let fields = parse_settings_save_diagnostic(&records[0]);
+    assert_eq!(fields["code"], "settings_save_failed");
+    assert_eq!(fields["source_kind"], "io");
+    assert_eq!(fields["reason"], "none");
+    assert_eq!(fields["raw_os_error"], raw.to_string());
+    assert_eq!(
+        fields["io_kind"],
+        expected_io_kind_from_literal_table(source_kind)
+    );
+    assert_eq!(fields["pid"], std::process::id().to_string());
+    assert_eq!(fields["target_path"], "\"C:/issue-1330/target.json\"");
+    assert_eq!(
+        fields["temp_path"],
+        "\"C:/issue-1330/settings.json.1.2.tmp\""
+    );
+}
+
+fn assert_general_outward(error: super::super::SettingsSaveError, expected: &str) {
+    let diagnostic_code = error.general_settings_diagnostic_code();
+    let (records, _capture_guard) = capture_settings_save_diagnostics();
+    let outward = super::super::report_settings_save_error(
+        error,
+        super::super::SettingsSaveReportSurface::GeneralSettings,
+    );
+    assert_eq!(outward, expected);
+    let records = records.borrow();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        parse_settings_save_diagnostic(&records[0])["code"],
+        diagnostic_code,
+    );
+}
+
+fn assert_general_disk_gate_outward(path: &std::path::Path) {
+    assert_general_outward(
+        super::super::SettingsSaveError::io(
+            super::super::SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "reader source"),
+            super::super::SettingsSaveLegacyOutward::DiskRead(
+                "Failed to read C:/issue-1330/settings.json for a project-preserving save \
+                        (aborting to avoid dropping a project): reader source"
+                    .to_string(),
+            ),
+        ),
+        "Failed to read C:/issue-1330/settings.json for a project-preserving save (aborting to \
+                avoid dropping a project): reader source",
+    );
+    assert_general_outward(
+        super::super::SettingsSaveError::json(
+            super::super::SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+            super::super::SettingsSaveLegacyOutward::DiskJson(
+                "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file \
+                        is not valid JSON (EOF while parsing an object at line 1 column \
+                        1)"
+                .to_string(),
+            ),
+        ),
+        "Refusing to overwrite C:/issue-1330/settings.json: the existing settings file is not \
+                valid JSON (EOF while parsing an object at line 1 column 1)",
+    );
+    assert_general_outward(
+        super::super::SettingsSaveError::semantic(
+            super::super::SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            super::super::SettingsSaveReason::DiskJsonNotObject,
+            super::super::SettingsSaveLegacyOutward::DiskJsonNotObject(
+                "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root \
+                        is not a JSON object"
+                    .to_string(),
+            ),
+        ),
+        "Refusing to overwrite C:/issue-1330/settings.json: the existing settings root is not \
+                a JSON object",
+    );
+    assert_general_outward(
+        super::super::SettingsSaveError::semantic(
+            super::super::SettingsSaveStage::ReconcileDiskGate,
+            path,
+            None,
+            super::super::SettingsSaveReason::DiskSettingsValidationRejected,
+            super::super::SettingsSaveLegacyOutward::DiskValidation(
+                "Refusing to overwrite present settings whose non-project fields are invalid: \
+                        invalid type: string \"invalid\", expected a boolean"
+                    .to_string(),
+            ),
+        ),
+        "Refusing to overwrite present settings whose non-project fields are invalid: invalid \
+                type: string \"invalid\", expected a boolean",
+    );
 }
