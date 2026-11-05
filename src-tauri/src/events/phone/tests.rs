@@ -56,3 +56,28 @@ fn populated_optional_fields_and_reason_are_preserved() {
     let result = serde_json::from_value(expected.clone()).expect("populated result");
     assert_delivery(result, expected);
 }
+
+#[test]
+fn message_delivered_keeps_name_and_payload_bytes() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build phone event app");
+    let (sender, receiver) = mpsc::sync_channel(2);
+    app.listen_any("message_delivered", move |event| {
+        sender
+            .try_send(event.payload().to_string())
+            .expect("bounded event recorder");
+    });
+    let payload = serde_json::json!({
+        "id": "msg", "from": "sender", "to": "target", "mode": "wake",
+        "command": "/clear", "injected": true
+    });
+    let expected = serde_json::to_string(&payload).expect("payload JSON");
+    assert!(
+        app.handle().message_delivered(&payload),
+        "emission succeeded"
+    );
+    let actual = receiver.try_recv().expect("synchronous delivery arrival");
+    assert_eq!(actual, expected);
+    assert!(receiver.try_recv().is_err(), "exactly one delivery event");
+}
