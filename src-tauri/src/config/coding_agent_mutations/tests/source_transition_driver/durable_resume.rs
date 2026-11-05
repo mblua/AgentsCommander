@@ -377,58 +377,12 @@ fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
     }
 }
 
-fn install_registered_source(
-    fixture: &mut DriverFixture,
-    config: &std::path::Path,
-    matrix: &str,
-    registered: &serde_json::Value,
-) {
-    let mut settings_value = serde_json::to_value(&fixture.settings).unwrap();
-    settings_value["codingAgentProfiles"]["defaultProfileByAgent"][matrix] = serde_json::json!("B");
-    fixture.settings = serde_json::from_value(settings_value.clone()).unwrap();
-    std::fs::write(
-        config.join("settings.json"),
-        serde_json::to_vec(&settings_value).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(
-        config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
-        serde_json::to_vec(registered).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(
-        config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
-        serde_json::to_vec(
-            &serde_json::json!({"codingAgentProfiles":{"defaultProfileByAgent":{(matrix):"B"},
-            "profilesByAgent":{"K":{"B":{"command":"overlay-beta","env":{}}}}}}),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    fixture.context =
-        SourceReadContext::from_settings(&fixture.settings, &config.join("settings.json")).unwrap();
-    fixture.source = list_active_sources(&fixture.context)
-        .into_iter()
-        .find(|source| source.kind == SourceKind::RegisteredInstance)
-        .unwrap();
-}
-
 #[test]
 fn single_editor_registered_source_after_restores_original_groups_two_targets() {
     for matrix in ["N", "K"] {
         let mut fixture = DriverFixture::new();
-        let config = fixture._root.path().join("C");
-        let target = fixture.project.join(".ac").join(format!("_agent_{matrix}"));
-        std::fs::create_dir(&target).unwrap();
-        let mut registered = serde_json::json!({"agents":[
-            {"id":"K","label":"Own","color":"#123456","command":"own-base"},
-            {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
-            "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
-                "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
-                "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
-                "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
-        registered["codingAgentProfiles"]["defaultProfileByAgent"][matrix] = serde_json::json!("B");
-        install_registered_source(&mut fixture, &config, matrix, &registered);
+        let (_config, target, registered) =
+            super::driver::install_matrix_sources(&mut fixture, matrix);
         let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
         let identity =
             IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();

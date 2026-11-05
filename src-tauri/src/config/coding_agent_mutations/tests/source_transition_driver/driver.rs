@@ -524,7 +524,7 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
 
 /// Registers the own/other agents with a `B` default for `matrix` and points the fixture at
 /// the registered instance source. Returns the config dir, the Matrix target and the registry.
-fn install_matrix_sources(
+pub(super) fn install_matrix_sources(
     fixture: &mut DriverFixture,
     matrix: &str,
 ) -> (std::path::PathBuf, std::path::PathBuf, serde_json::Value) {
