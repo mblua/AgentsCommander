@@ -393,24 +393,7 @@ async fn configured_default_shell_invalid_input_leaves_no_session_state_native()
             "no output task may be attached for the rejected session"
         );
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let pending_empty = session_mgr
-            .read()
-            .await
-            .aggregate_snapshot()
-            .await
-            .pending_ids
-            .is_empty();
-        if pending_empty {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no pending session/metadata record may survive the rejection"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    assert_rejected_pending_sessions_drained(&session_mgr).await;
     close_test_coordinator(&app).await;
 }
 
@@ -795,4 +778,28 @@ async fn test_refused_inside_launch_spawn() {
     );
     let state = run.state.expect("managed");
     assert!(state.try_test(&run.cwd).is_ok());
+}
+
+#[cfg(windows)]
+async fn assert_rejected_pending_sessions_drained(
+    session_mgr: &tokio::sync::RwLock<SessionManager>,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let pending_empty = session_mgr
+            .read()
+            .await
+            .aggregate_snapshot()
+            .await
+            .pending_ids
+            .is_empty();
+        if pending_empty {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no pending session/metadata record may survive the rejection"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }

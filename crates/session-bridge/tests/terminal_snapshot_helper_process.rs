@@ -596,36 +596,7 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
     let parent = temporary.path().join(PATH_CANARY);
     std::fs::create_dir(&parent).unwrap();
 
-    let timeout_path = parent.join("deadline.png");
-    let timeout_text = timeout_path.to_string_lossy().into_owned();
-    let timeout_server = TestServer::start(|request, _| {
-        let body = success_body(request);
-        let head = png_timeout_response_head(body.len());
-        Reply::Trickle {
-            head,
-            first: body[..1].to_vec(),
-            delay: Duration::from_millis(5_300),
-            rest: body[1..].to_vec(),
-        }
-    });
-    let timeout = run_helper(
-        &timeout_server.url,
-        &[
-            "terminal-snapshot",
-            "--to",
-            TARGET,
-            "--format",
-            "png",
-            "--output",
-            &timeout_text,
-            "--timeout",
-            "5",
-        ],
-    );
-    let timeout_requests = timeout_server.finish();
-    assert_exact_failure(&timeout, TerminalSnapshotReasonCode::SnapshotTimeout);
-    assert_eq!(timeout_requests.len(), 1);
-    assert!(!timeout_path.exists());
+    assert_png_deadline_leaves_no_output(&parent);
 
     let collision_path = parent.join("collision.png");
     let collision_for_server = collision_path.clone();
@@ -704,4 +675,37 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
         &[collision_path.as_path(), completed_path.as_path()],
         &[BEARER_CANARY.as_bytes(), MALFORMED_CANARY.as_bytes()],
     );
+}
+
+fn assert_png_deadline_leaves_no_output(parent: &std::path::Path) {
+    let timeout_path = parent.join("deadline.png");
+    let timeout_text = timeout_path.to_string_lossy().into_owned();
+    let timeout_server = TestServer::start(|request, _| {
+        let body = success_body(request);
+        let head = png_timeout_response_head(body.len());
+        Reply::Trickle {
+            head,
+            first: body[..1].to_vec(),
+            delay: Duration::from_millis(5_300),
+            rest: body[1..].to_vec(),
+        }
+    });
+    let timeout = run_helper(
+        &timeout_server.url,
+        &[
+            "terminal-snapshot",
+            "--to",
+            TARGET,
+            "--format",
+            "png",
+            "--output",
+            &timeout_text,
+            "--timeout",
+            "5",
+        ],
+    );
+    let timeout_requests = timeout_server.finish();
+    assert_exact_failure(&timeout, TerminalSnapshotReasonCode::SnapshotTimeout);
+    assert_eq!(timeout_requests.len(), 1);
+    assert!(!timeout_path.exists());
 }

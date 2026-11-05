@@ -1,55 +1,7 @@
 use super::*;
 
 fn r3_ready_fixture() -> (DriverFixture, String) {
-    let fixture = DriverFixture::new();
-    let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
-    std::fs::remove_file(&target).unwrap();
-    let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
-    assert_eq!(snapshot.snapshot.revision, SourceRevision::Absent {});
-    assert!(!snapshot.snapshot.capabilities.editable_save);
-    assert!(!snapshot.snapshot.capabilities.editable_create);
-    // Current admission stays read-only. Historical recovery below does not
-    // grant absent creation to the coordinator or any application caller.
-    let publications = source_transition_publication_counts();
-    let effects = source_transition_effect_counts().1;
-    let native = crate::config::local_config_io::source_checkpoint_native_calls();
-    let uuids = fixture.controls.uuid_count();
-    let journal_before = read_own_source_journal(&fixture.context).unwrap();
-    let reloads = std::cell::Cell::new(0);
-    assert!(matches!(
-        commit_source_candidate_internal(
-            &fixture.settings,
-            &fixture.context,
-            &fixture.source,
-            "absent-admission",
-            &snapshot.snapshot.revision,
-            &DriverFixture::candidate(),
-            (
-                &|| {
-                    reloads.set(reloads.get() + 1);
-                    Ok(())
-                },
-                &fixture.controls
-            ),
-        ),
-        Err(SourceTransitionError::Preparation(
-            SourcePreparationError::ReadOnly
-        ))
-    ));
-    assert_eq!(
-        read_own_source_journal(&fixture.context).unwrap(),
-        journal_before
-    );
-    assert!(journal_before.1.intents.is_empty());
-    assert_eq!(source_transition_publication_counts(), publications);
-    assert_eq!(source_transition_effect_counts().1, effects);
-    assert_eq!(
-        crate::config::local_config_io::source_checkpoint_native_calls(),
-        native
-    );
-    assert_eq!(fixture.controls.uuid_count(), uuids);
-    assert_eq!(reloads.get(), 0);
-    assert!(!target.exists());
+    let (fixture, snapshot) = r3_absent_admission_fixture();
 
     // A historical absent-before candidate, not current admission. No
     // publication proof, stage or existing operation is supplied/rewritten.
@@ -147,15 +99,7 @@ fn r3_ready_fixture() -> (DriverFixture, String) {
     );
     assert!(fixture.controls.durable_cut_state().0.is_none());
     fixture.controls.configure_durable_cut(None);
-    let journal = read_own_source_journal(&fixture.context).unwrap().1;
-    assert!(journal.intents[&operation].before_bytes.is_none());
-    assert!(journal.progress[&operation].source_publication.is_none());
-    assert_eq!(
-        get_identity_transition(&fixture.context, &fixture.source, &operation)
-            .unwrap()
-            .state,
-        IdentityTransitionReadState::Prepared
-    );
+    r3_assert_unpublished_prepared(&fixture, &operation);
     drop(lease);
     drop(identity);
     r3_assert_pending(&fixture, &operation);
@@ -692,4 +636,70 @@ fn single_editor_r3_legacy_none_before_after() {
             );
         }
     }
+}
+
+fn r3_absent_admission_fixture() -> (DriverFixture, crate::config::settings::RawSourceSnapshot) {
+    let fixture = DriverFixture::new();
+    let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+    std::fs::remove_file(&target).unwrap();
+    let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
+    assert_eq!(snapshot.snapshot.revision, SourceRevision::Absent {});
+    assert!(!snapshot.snapshot.capabilities.editable_save);
+    assert!(!snapshot.snapshot.capabilities.editable_create);
+    // Current admission stays read-only. Historical recovery below does not
+    // grant absent creation to the coordinator or any application caller.
+    let publications = source_transition_publication_counts();
+    let effects = source_transition_effect_counts().1;
+    let native = crate::config::local_config_io::source_checkpoint_native_calls();
+    let uuids = fixture.controls.uuid_count();
+    let journal_before = read_own_source_journal(&fixture.context).unwrap();
+    let reloads = std::cell::Cell::new(0);
+    assert!(matches!(
+        commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "absent-admission",
+            &snapshot.snapshot.revision,
+            &DriverFixture::candidate(),
+            (
+                &|| {
+                    reloads.set(reloads.get() + 1);
+                    Ok(())
+                },
+                &fixture.controls
+            ),
+        ),
+        Err(SourceTransitionError::Preparation(
+            SourcePreparationError::ReadOnly
+        ))
+    ));
+    assert_eq!(
+        read_own_source_journal(&fixture.context).unwrap(),
+        journal_before
+    );
+    assert!(journal_before.1.intents.is_empty());
+    assert_eq!(source_transition_publication_counts(), publications);
+    assert_eq!(source_transition_effect_counts().1, effects);
+    assert_eq!(
+        crate::config::local_config_io::source_checkpoint_native_calls(),
+        native
+    );
+    assert_eq!(fixture.controls.uuid_count(), uuids);
+    assert_eq!(reloads.get(), 0);
+    assert!(!target.exists());
+
+    (fixture, snapshot)
+}
+
+fn r3_assert_unpublished_prepared(fixture: &DriverFixture, operation: &str) {
+    let journal = read_own_source_journal(&fixture.context).unwrap().1;
+    assert!(journal.intents[operation].before_bytes.is_none());
+    assert!(journal.progress[operation].source_publication.is_none());
+    assert_eq!(
+        get_identity_transition(&fixture.context, &fixture.source, operation)
+            .unwrap()
+            .state,
+        IdentityTransitionReadState::Prepared
+    );
 }
