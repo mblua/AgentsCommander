@@ -1,7 +1,7 @@
 use super::*;
 
 struct RootFullCtx<'a> {
-    app: &'a tauri::AppHandle<tauri::test::MockRuntime>,
+    app: &'a CellApp,
     state: &'a crate::api::message_store::MessageStoreState,
     store: &'a Arc<crate::api::message_store::MessageStore>,
     coordinator: &'a crate::session::selection::SelectionCoordinator,

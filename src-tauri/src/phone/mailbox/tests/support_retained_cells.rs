@@ -2,6 +2,7 @@ use super::*;
 
 mod root_full;
 pub(super) use root_full::retained_exited_respawn_root_full_cell;
+type CellApp = tauri::AppHandle<tauri::test::MockRuntime>;
 
 pub(super) async fn assert_retained_failure_close(
     coordinator: &crate::session::selection::SelectionCoordinator,
