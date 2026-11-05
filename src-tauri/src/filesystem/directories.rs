@@ -334,5 +334,13 @@ pub(crate) fn resolve_web_dist_candidate(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+pub(crate) fn cleanup_stale_instance_directories(instances_dir: &Path) -> io::Result<()> {
+    let entries = std::fs::read_dir(instances_dir)?;
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

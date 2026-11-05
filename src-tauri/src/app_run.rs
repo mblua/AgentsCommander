@@ -422,10 +422,7 @@ fn prepare_boot(
     let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
 
     // Clean up old instance dirs (from previous runs)
-    if let Ok(entries) = std::fs::read_dir(&instances_dir) {
-        for entry in entries.flatten() {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
+    if crate::filesystem::directories::cleanup_stale_instance_directories(&instances_dir).is_ok() {
         log::info!("[app-outbox] Cleaned stale instance directories");
     }
 
