@@ -246,7 +246,8 @@ impl HistoryRecord {
         check_optional_text("model", self.model.as_deref(), MAX_METADATA_BYTES)?;
         check_optional_text("effort", self.effort.as_deref(), MAX_METADATA_BYTES)?;
         check_value(self)?;
-        let json = serde_json::to_vec(self).map_err(|_| "record_not_serializable".to_string())?;
+        let json = serde_json::to_vec(self)
+            .map_err(|error| format!("record_not_serializable: {error}"))?;
         if json.len() > MAX_RECORD_JSON_BYTES {
             return Err("record_too_large".to_string());
         }

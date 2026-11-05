@@ -668,13 +668,14 @@ fn snapshot_rows(
     }
 }
 
-fn conversion(column: &str) -> rusqlite::Error {
-    rusqlite::Error::InvalidColumnType(0, column.to_string(), rusqlite::types::Type::Text)
+fn conversion(column: &str, error: &dyn std::fmt::Display) -> rusqlite::Error {
+    let detail = format!("{column}: {error}");
+    rusqlite::Error::InvalidColumnType(0, detail, rusqlite::types::Type::Text)
 }
 
 fn uuid_column(row: &Row<'_>, column: &str) -> rusqlite::Result<Uuid> {
     let text: String = row.get(column)?;
-    Uuid::parse_str(&text).map_err(|_| conversion(column))
+    Uuid::parse_str(&text).map_err(|error| conversion(column, &error))
 }
 
 fn enum_column<T>(
@@ -683,12 +684,12 @@ fn enum_column<T>(
     parse: fn(&str) -> Option<T>,
 ) -> rusqlite::Result<T> {
     let text: String = row.get(column)?;
-    parse(&text).ok_or_else(|| conversion(column))
+    parse(&text).ok_or_else(|| conversion(column, &"unknown value"))
 }
 
 fn u64_column(row: &Row<'_>, column: &str) -> rusqlite::Result<u64> {
     let value: i64 = row.get(column)?;
-    u64::try_from(value).map_err(|_| conversion(column))
+    u64::try_from(value).map_err(|error| conversion(column, &error))
 }
 
 fn read_row(row: &Row<'_>) -> rusqlite::Result<HistoryRecord> {
@@ -709,7 +710,9 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<HistoryRecord> {
         partial_start: row.get("partial_start")?,
         partial_end: row.get("partial_end")?,
         initial_record_id: initial_record_id
-            .map(|text| Uuid::parse_str(&text).map_err(|_| conversion("initial_record_id")))
+            .map(|text| {
+                Uuid::parse_str(&text).map_err(|error| conversion("initial_record_id", &error))
+            })
             .transpose()?,
         initial_kind: enum_column(row, "initial_kind", InitialKind::parse)?,
         continuity_known: row.get("continuity_known")?,
@@ -720,18 +723,22 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<HistoryRecord> {
         room: row.get("room")?,
         matrix_type: enum_column(row, "matrix_type", MatrixType::parse)?,
         team_attribution: enum_column(row, "team_attribution", TeamAttribution::parse)?,
-        team_ids: serde_json::from_str(&team_ids).map_err(|_| conversion("team_ids"))?,
+        team_ids: serde_json::from_str(&team_ids)
+            .map_err(|error| conversion("team_ids", &error))?,
         coding_agent_id: row.get("coding_agent_id")?,
         model: row.get("model")?,
         effort: row.get("effort")?,
         metadata_source: enum_column(row, "metadata_source", MetadataSource::parse)?,
         context_window: context_window
-            .map(|value| u64::try_from(value).map_err(|_| conversion("context_window")))
+            .map(|value| u64::try_from(value).map_err(|error| conversion("context_window", &error)))
             .transpose()?,
         kind: enum_column(row, "kind", RecordKind::parse)?,
         percent: row.get("percent")?,
         boundary_reason: boundary_reason
-            .map(|text| BoundaryReason::parse(&text).ok_or_else(|| conversion("boundary_reason")))
+            .map(|text| {
+                BoundaryReason::parse(&text)
+                    .ok_or_else(|| conversion("boundary_reason", &"unknown value"))
+            })
             .transpose()?,
     })
 }
