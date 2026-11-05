@@ -320,3 +320,68 @@ fn a_busy_database_fails_with_no_stdout() {
     let (code, _) = run_to_string(&args(&project, FROM, TO));
     assert_eq!(code, 0, "the same read succeeds once the lock is gone");
 }
+
+fn agents_of(project: &str) -> serde_json::Value {
+    let (code, output) = run_to_string(&args(project, FROM, TO));
+    assert_eq!(code, 0, "{project}");
+    let json: serde_json::Value = serde_json::from_str(&output).expect("pure json");
+    json["agents"].clone()
+}
+
+fn started_in_period() -> i64 {
+    parse_time("from", FROM).expect("from") + 1000
+}
+
+#[test]
+fn other_spellings_of_the_project_report_the_same_history() {
+    use crate::context_history::store::history_database_path;
+    let (tmp, project) = project();
+    let ac_root = tmp.path().join(".ac");
+    let started = started_in_period();
+    let mut writer = crate::context_history::store::HistoryWriter::open(
+        &ac_root,
+        &crate::context_history::config::HistoryConfig {
+            enabled: true,
+            retention_days: 30,
+        },
+    )
+    .expect("open");
+    let mut foreign = record(2, "C:/elsewhere/other", started);
+    foreign.sequence = 2;
+    writer
+        .append(&[record(1, &project, started), foreign], started)
+        .expect("append");
+    drop(writer);
+    let bytes = std::fs::read(history_database_path(&ac_root)).expect("read");
+    let exact = agents_of(&project);
+    assert_eq!(exact.as_array().map(Vec::len), Some(1), "only this project");
+    assert_eq!(exact[0]["recordsCount"], 1);
+    let mut spellings = vec![format!("{project}/.")];
+    if cfg!(windows) {
+        spellings.push(project.to_uppercase());
+        spellings.push(project.replace('\\', "/"));
+    }
+    for spelling in spellings {
+        assert_eq!(agents_of(&spelling), exact, "{spelling}");
+    }
+    let after = std::fs::read(history_database_path(&ac_root)).expect("read");
+    assert_eq!(after, bytes, "the database is never rewritten");
+}
+
+#[test]
+fn an_unverifiable_project_fails_instead_of_reporting_empty() {
+    let (tmp, project) = project();
+    let missing = tmp.path().join("missing");
+    let missing = missing.to_str().expect("utf-8");
+    let (code, output) = run_to_string(&args(missing, FROM, TO));
+    assert_eq!((code, output.as_str()), (1, ""));
+    let bare = tempfile::tempdir().expect("tempdir");
+    let bare = bare.path().to_str().expect("utf-8");
+    let (code, output) = run_to_string(&args(bare, FROM, TO));
+    assert_eq!((code, output.as_str()), (1, ""));
+    assert_eq!(
+        agents_of(&project),
+        serde_json::json!([]),
+        "missing DB stays empty"
+    );
+}

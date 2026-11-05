@@ -5,6 +5,7 @@
 //! agents as one schema 2 JSON document on stdout. Errors go to stderr with
 //! exit code 1 and never produce an empty successful result.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,7 @@ use crate::context_history::report::{
 };
 use crate::context_history::store::{read_history, ReadAttempt, StoreError};
 use crate::context_history::HistoryRecord;
+use crate::path_identity::{paths_equivalent, verify_directory};
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(after_help = "\
@@ -191,19 +193,60 @@ fn write_report(
     Ok(())
 }
 
-fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Result<(), CliError> {
-    let query = query_from_args(args)?;
-    let ac_root = existing_ac_root(&args.project).ok_or_else(|| {
+/// `text` without a Windows verbatim prefix, so both spellings compare alike.
+fn plain_path(text: &str) -> &str {
+    text.strip_prefix(r"\\?\")
+        .or_else(|| text.strip_prefix("//?/"))
+        .unwrap_or(text)
+}
+
+/// The verified project directory and its Project AC Root; an error, never an
+/// empty report, when either cannot be verified.
+fn verified_project(project: &Path) -> Result<(PathBuf, PathBuf), CliError> {
+    let identity = verify_directory(project).map_err(|why| {
         CliError::Usage(format!(
-            "--project '{}' has no .ac Project AC Root",
-            args.project.display()
+            "--project '{}' is not a verified directory: {why}",
+            project.display()
         ))
     })?;
+    let canonical = PathBuf::from(plain_path(&identity.canonical_path.to_string_lossy()));
+    let ac_root = existing_ac_root(&canonical).ok_or_else(|| {
+        CliError::Usage(format!(
+            "--project '{}' has no .ac Project AC Root",
+            project.display()
+        ))
+    })?;
+    Ok((canonical, ac_root))
+}
+
+/// Give every record captured under another spelling of the verified project
+/// the query's project text, in memory only. Other projects keep their text,
+/// so the core excludes them. Each distinct spelling is compared once.
+fn align_project_paths(records: &mut [HistoryRecord], canonical: &Path, project_text: &str) {
+    let mut equivalent: BTreeMap<String, bool> = BTreeMap::new();
+    for record in records {
+        let same = *equivalent
+            .entry(record.project_path.clone())
+            .or_insert_with_key(|text| paths_equivalent(Path::new(plain_path(text)), canonical));
+        if same {
+            record.project_path = project_text.to_string();
+        }
+    }
+}
+
+fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Result<(), CliError> {
+    let mut query = query_from_args(args)?;
+    let (canonical, ac_root) = verified_project(&args.project)?;
+    query.project_path = canonical
+        .to_str()
+        .ok_or_else(|| CliError::Usage("--project must be valid UTF-8".to_string()))?
+        .to_string();
     let context = ReportContext {
         retention_days: load_history_config(&ac_root).config.retention_days,
         generated_at_utc_ms: now_utc_ms,
     };
-    let records = read_records(&ac_root)?;
+    let mut records = read_records(&ac_root)?;
+    align_project_paths(&mut records, &canonical, &query.project_path);
     write_report(&records, &query, context, out)
 }
 
