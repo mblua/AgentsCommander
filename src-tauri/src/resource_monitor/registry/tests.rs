@@ -1,4 +1,5 @@
 use super::*;
+use crate::pty::spawn_diagnostics::{self as diagnostics, SpawnRecord, SpawnRegistry};
 use crate::resource_monitor::types::{ResourceGroupWarningLevel, ResourceOverallState};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -427,40 +428,6 @@ fn quarantined_group(
 
 #[test]
 fn spawn_owner_cross_component_stop_preserves_record_identity() {
-    use crate::pty::spawn_diagnostics::{self as diagnostics, SpawnRecord, SpawnRegistry};
-    struct StopBackend {
-        inner: Arc<FakeProcessTreeBackend>,
-        spawn: Arc<SpawnRegistry>,
-        record: Arc<SpawnRecord>,
-        seen: AtomicUsize,
-    }
-    impl ProcessTreeBackend for StopBackend {
-        fn observe_tree(
-            &self,
-            root: ProcessIdentity,
-        ) -> Result<ObservedProcessTree, ResourceError> {
-            self.inner.observe_tree(root)
-        }
-        fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
-            self.inner.observe_identity(pid)
-        }
-        fn terminate_verified(
-            &self,
-            process: &ObservedProcess,
-        ) -> Result<TerminateOutcome, ResourceError> {
-            let found = diagnostics::record_for(self.record.session_id(), &self.spawn).unwrap();
-            assert!(Arc::ptr_eq(&found, &self.record));
-            assert!(
-                found.stop_requested(),
-                "annotation must precede process termination"
-            );
-            self.seen.fetch_add(1, Ordering::SeqCst);
-            self.inner.terminate_verified(process)
-        }
-        fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
-            self.inner.current_process_memory()
-        }
-    }
     let spawn = Arc::new(SpawnRegistry::new());
     let backend_owner = Arc::clone(&spawn);
     let id = Uuid::new_v4();
@@ -537,4 +504,35 @@ fn spawn_owner_cross_component_stop_preserves_record_identity() {
         diagnostics::note_spawn_attempt(None, thresholds, &backend_owner).total,
         1
     );
+}
+
+struct StopBackend {
+    inner: Arc<FakeProcessTreeBackend>,
+    spawn: Arc<SpawnRegistry>,
+    record: Arc<SpawnRecord>,
+    seen: AtomicUsize,
+}
+impl ProcessTreeBackend for StopBackend {
+    fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError> {
+        self.inner.observe_tree(root)
+    }
+    fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+        self.inner.observe_identity(pid)
+    }
+    fn terminate_verified(
+        &self,
+        process: &ObservedProcess,
+    ) -> Result<TerminateOutcome, ResourceError> {
+        let found = diagnostics::record_for(self.record.session_id(), &self.spawn).unwrap();
+        assert!(Arc::ptr_eq(&found, &self.record));
+        assert!(
+            found.stop_requested(),
+            "annotation must precede process termination"
+        );
+        self.seen.fetch_add(1, Ordering::SeqCst);
+        self.inner.terminate_verified(process)
+    }
+    fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+        self.inner.current_process_memory()
+    }
 }
