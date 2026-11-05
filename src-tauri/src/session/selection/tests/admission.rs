@@ -110,21 +110,7 @@ async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacit
     use crate::pty::backend::SessionBackendKind;
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/critical-capacity".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
+    let session = create_critical_capacity_session(&manager).await;
     let backend = Arc::new(LifecycleTestBackend::default());
     backend.set_live(session.id, true);
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
@@ -132,16 +118,7 @@ async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacit
         .unwrap()
         .record_route(session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build critical-capacity app");
+    let app = build_critical_capacity_app(&manager, &pty);
     coordinator.start(app.handle().clone()).unwrap();
     let guard = coordinator.submit_restore_first().await.unwrap();
     let mut reservations = (0..COORDINATOR_QUEUE_CAPACITY)
@@ -192,14 +169,7 @@ async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacit
         CriticalAdmissionOutcome::Completed(())
     );
     // Completed is observed before the first waiter's admission guard drops.
-    await_state_eq(
-        "route-loss waiter releases every critical key",
-        Duration::from_secs(1),
-        || coordinator.inner.critical_keys.lock().unwrap().len(),
-        0,
-        String::new,
-    )
-    .await;
+    await_route_loss_critical_keys_released(&coordinator).await;
     assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
     assert_eq!(
         manager
@@ -220,6 +190,50 @@ async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacit
         CriticalAdmissionOutcome::Completed(())
     );
     // Completed is observed before the follow-up probe's admission guard drops.
+    await_route_loss_critical_keys_released(&coordinator).await;
+    assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
+    coordinator.close_and_join().await;
+}
+
+async fn create_critical_capacity_session(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> crate::session::session::Session {
+    use crate::pty::backend::SessionBackendKind;
+
+    manager
+        .read()
+        .await
+        .create_session(
+            "shell".to_string(),
+            Vec::new(),
+            "C:/critical-capacity".to_string(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap()
+}
+
+fn build_critical_capacity_app(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .manage(Arc::clone(manager))
+        .manage(Arc::clone(pty))
+        .manage(DetachedSessionsState::default())
+        .manage(WsBroadcaster::new())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build critical-capacity app")
+}
+
+async fn await_route_loss_critical_keys_released(coordinator: &SelectionCoordinator) {
     await_state_eq(
         "route-loss waiter releases every critical key",
         Duration::from_secs(1),
@@ -228,8 +242,6 @@ async fn full_queue_critical_route_waiter_is_deduplicated_and_runs_after_capacit
         String::new,
     )
     .await;
-    assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
-    coordinator.close_and_join().await;
 }
 
 #[tokio::test]

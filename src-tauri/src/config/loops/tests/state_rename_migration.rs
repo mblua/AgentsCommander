@@ -454,37 +454,7 @@ fn the_loop_scope_ignores_the_new_names_before_it_renames_anything() {
         );
     }
 
-    // Both orders with the registration writer: every AC row once.
-    for sweep_first in [true, false] {
-        let k = b4b_fixture();
-        std::fs::write(k.ac.join(".gitignore"), "user-line-2718\n").unwrap();
-        let dir = b4b_loop(&k.ac, "a", Some(B4B_STATE_A));
-        let writer = || {
-            crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&k.ac, &[])
-                .expect("writer");
-        };
-        if sweep_first {
-            drop(b4b_lock(&dir, Some(&k.cfg)));
-            writer();
-        } else {
-            writer();
-            drop(b4b_lock(&dir, Some(&k.cfg)));
-        }
-        let content = std::fs::read_to_string(k.ac.join(".gitignore")).unwrap();
-        let label = if sweep_first {
-            "sweep, writer"
-        } else {
-            "writer, sweep"
-        };
-        b4b_assert_rows_once(&content, label);
-        assert!(content.lines().any(|l| l == "user-line-2718"), "{label}");
-        let rules: Vec<&str> = content
-            .lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-            .collect();
-        let unique: std::collections::BTreeSet<&str> = rules.iter().copied().collect();
-        assert_eq!(unique.len(), rules.len(), "{label}: a row appears twice");
-    }
+    assert_both_writer_orders_keep_rows_once();
 
     // Interleaved: the writer and a user edit between the sweep's read and
     // its append. Nothing lost; a 4.3 row at most twice; nothing else twice.
@@ -534,6 +504,40 @@ fn the_loop_scope_ignores_the_new_names_before_it_renames_anything() {
             n <= if own { 2 } else { 1 },
             "interleaved: {rule} appears {n} times"
         );
+    }
+}
+
+fn assert_both_writer_orders_keep_rows_once() {
+    // Both orders with the registration writer: every AC row once.
+    for sweep_first in [true, false] {
+        let k = b4b_fixture();
+        std::fs::write(k.ac.join(".gitignore"), "user-line-2718\n").unwrap();
+        let dir = b4b_loop(&k.ac, "a", Some(B4B_STATE_A));
+        let writer = || {
+            crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&k.ac, &[])
+                .expect("writer");
+        };
+        if sweep_first {
+            drop(b4b_lock(&dir, Some(&k.cfg)));
+            writer();
+        } else {
+            writer();
+            drop(b4b_lock(&dir, Some(&k.cfg)));
+        }
+        let content = std::fs::read_to_string(k.ac.join(".gitignore")).unwrap();
+        let label = if sweep_first {
+            "sweep, writer"
+        } else {
+            "writer, sweep"
+        };
+        b4b_assert_rows_once(&content, label);
+        assert!(content.lines().any(|l| l == "user-line-2718"), "{label}");
+        let rules: Vec<&str> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .collect();
+        let unique: std::collections::BTreeSet<&str> = rules.iter().copied().collect();
+        assert_eq!(unique.len(), rules.len(), "{label}: a row appears twice");
     }
 }
 

@@ -153,31 +153,13 @@ fn perform_seeds_from_highest_present_tier_and_clean_replaces_dest() {
         let replica = ac_root.join("wg-1-team").join("__agent_x");
         let matrix = ac_root.join("_agent_x");
         std::fs::create_dir_all(&replica).unwrap();
-        write_file(&ac_root.join("default.claude").join("f.txt"), b"BASE");
-        if project_profile {
-            write_file(
-                &ac_root.join("default_profile_c.claude").join("f.txt"),
-                b"PROFILE",
-            );
-        }
-        if matrix_present {
-            // Bare live Matrix config must never become a template.
-            write_file(&matrix.join(".claude").join("live.txt"), b"LIVE_MATRIX");
-        }
-        if let Some(bytes) = matrix_base {
-            let base = matrix.join("default.claude");
-            std::fs::create_dir_all(&base).unwrap();
-            if !bytes.is_empty() {
-                write_file(&base.join("f.txt"), bytes);
-            }
-        }
-        if matrix_profile {
-            write_file(
-                &matrix.join("default_profile_c.claude").join("f.txt"),
-                b"MX_PROFILE",
-            );
-        }
-        write_file(&replica.join(".claude").join("stale.txt"), b"OLD");
+        write_seed_tiers(
+            &ac_root,
+            &matrix,
+            &replica,
+            [project_profile, matrix_present, matrix_profile],
+            matrix_base,
+        );
         let ctx = ctx_with(
             &replica,
             Some(&ac_root),
@@ -187,24 +169,62 @@ fn perform_seeds_from_highest_present_tier_and_clean_replaces_dest() {
         let publication = assert_published(perform_config_seed(&resolved, "sfx1"));
         assert_eq!(publication.tier, expected_tier);
         assert_eq!(publication.dest, replica.join(".claude"));
-        if expected_bytes.is_empty() {
-            assert_eq!(publication.files, CollectedSeedFiles::Exact(vec![]));
-            assert_eq!(std::fs::read_dir(&publication.dest).unwrap().count(), 0);
-        } else {
-            assert_eq!(
-                publication.files,
-                CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
-            );
-            assert_eq!(
-                std::fs::read(publication.dest.join("f.txt")).unwrap(),
-                expected_bytes
-            );
-        }
+        assert_seeded_files(&publication, expected_bytes);
         assert!(!publication.dest.join("live.txt").exists());
         assert!(!publication.dest.join("stale.txt").exists());
         assert!(!replica.join(".claude.acseed-tmp-sfx1").exists());
         assert!(!replica.join(".claude.acseed-old-sfx1").exists());
     }
+}
+
+fn assert_seeded_files(publication: &ConfigSeedPublication, expected_bytes: &[u8]) {
+    if expected_bytes.is_empty() {
+        assert_eq!(publication.files, CollectedSeedFiles::Exact(vec![]));
+        assert_eq!(std::fs::read_dir(&publication.dest).unwrap().count(), 0);
+    } else {
+        assert_eq!(
+            publication.files,
+            CollectedSeedFiles::Exact(vec![PathBuf::from("f.txt")])
+        );
+        assert_eq!(
+            std::fs::read(publication.dest.join("f.txt")).unwrap(),
+            expected_bytes
+        );
+    }
+}
+
+fn write_seed_tiers(
+    ac_root: &Path,
+    matrix: &Path,
+    replica: &Path,
+    [project_profile, matrix_present, matrix_profile]: [bool; 3],
+    matrix_base: Option<&[u8]>,
+) {
+    write_file(&ac_root.join("default.claude").join("f.txt"), b"BASE");
+    if project_profile {
+        write_file(
+            &ac_root.join("default_profile_c.claude").join("f.txt"),
+            b"PROFILE",
+        );
+    }
+    if matrix_present {
+        // Bare live Matrix config must never become a template.
+        write_file(&matrix.join(".claude").join("live.txt"), b"LIVE_MATRIX");
+    }
+    if let Some(bytes) = matrix_base {
+        let base = matrix.join("default.claude");
+        std::fs::create_dir_all(&base).unwrap();
+        if !bytes.is_empty() {
+            write_file(&base.join("f.txt"), bytes);
+        }
+    }
+    if matrix_profile {
+        write_file(
+            &matrix.join("default_profile_c.claude").join("f.txt"),
+            b"MX_PROFILE",
+        );
+    }
+    write_file(&replica.join(".claude").join("stale.txt"), b"OLD");
 }
 
 /// Replica config seeding still runs under the project gate, but its report and

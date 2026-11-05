@@ -41,22 +41,7 @@ const ROOM_ACCEPTANCE_TEST_NAME: &str = concat!(
 #[test]
 fn room_target_capture_and_cross_room_denial_use_the_discovered_fqn() {
     if std::env::var_os(ROOM_ACCEPTANCE_CHILD_ENV).is_none() {
-        let status = std::process::Command::new(
-            std::env::current_exe().expect("terminal snapshot acceptance test executable"),
-        )
-        .args([
-            "--exact",
-            ROOM_ACCEPTANCE_TEST_NAME,
-            "--test-threads=1",
-            "--nocapture",
-        ])
-        .env(ROOM_ACCEPTANCE_CHILD_ENV, "1")
-        .status()
-        .expect("spawn isolated room snapshot acceptance test");
-        assert!(
-            status.success(),
-            "isolated room snapshot acceptance test failed"
-        );
+        run_room_acceptance_parent();
         return;
     }
 
@@ -124,38 +109,61 @@ fn room_target_capture_and_cross_room_denial_use_the_discovered_fqn() {
             .copies;
         assert!(room_copies >= 1, "the room member viewport must be copied");
 
-        let other_room_coordinator = format!("{PROJECT}:{ROOM2}/coordinator");
-        let denial = host_request(&fixture.room2_coordinator, &other_room_coordinator, &target);
-        let denial_bytes = submit_host_request(
-            &fixture,
-            &mut scanner,
-            &fixture.paths.room2_coordinator,
-            &denial,
-        )
-        .await;
-        let denial_response = decode_host_response(
-            &denial_bytes,
-            &denial.request_id,
-            &denial.confirmation_tag,
-            &target,
-            TerminalSnapshotFormat::Json,
-        )
-        .expect("room cross-room denial envelope");
-        assert_eq!(
-            denial_response.error,
-            Some(TerminalSnapshotReasonCode::NotAuthorized)
-        );
-        assert!(denial_response.result.is_none());
-        assert!(!denial_bytes
-            .windows(SCREEN_SENTINEL.len())
-            .any(|window| window == SCREEN_SENTINEL.as_bytes()));
-        assert_eq!(
-            fixture
-                .local_backend
-                .counts(fixture.room_live_member.id)
-                .copies,
-            room_copies,
-            "cross-room denial must not read the room member viewport"
-        );
+        assert_cross_room_denial(&fixture, &mut scanner, &target, room_copies).await;
     });
+}
+
+fn run_room_acceptance_parent() {
+    let status = std::process::Command::new(
+        std::env::current_exe().expect("terminal snapshot acceptance test executable"),
+    )
+    .args([
+        "--exact",
+        ROOM_ACCEPTANCE_TEST_NAME,
+        "--test-threads=1",
+        "--nocapture",
+    ])
+    .env(ROOM_ACCEPTANCE_CHILD_ENV, "1")
+    .status()
+    .expect("spawn isolated room snapshot acceptance test");
+    assert!(
+        status.success(),
+        "isolated room snapshot acceptance test failed"
+    );
+}
+
+async fn assert_cross_room_denial(
+    fixture: &AcceptanceFixture,
+    scanner: &mut crate::phone::terminal_snapshot::SnapshotMailboxScanner,
+    target: &str,
+    room_copies: usize,
+) {
+    let other_room_coordinator = format!("{PROJECT}:{ROOM2}/coordinator");
+    let denial = host_request(&fixture.room2_coordinator, &other_room_coordinator, target);
+    let denial_bytes =
+        submit_host_request(fixture, scanner, &fixture.paths.room2_coordinator, &denial).await;
+    let denial_response = decode_host_response(
+        &denial_bytes,
+        &denial.request_id,
+        &denial.confirmation_tag,
+        target,
+        TerminalSnapshotFormat::Json,
+    )
+    .expect("room cross-room denial envelope");
+    assert_eq!(
+        denial_response.error,
+        Some(TerminalSnapshotReasonCode::NotAuthorized)
+    );
+    assert!(denial_response.result.is_none());
+    assert!(!denial_bytes
+        .windows(SCREEN_SENTINEL.len())
+        .any(|window| window == SCREEN_SENTINEL.as_bytes()));
+    assert_eq!(
+        fixture
+            .local_backend
+            .counts(fixture.room_live_member.id)
+            .copies,
+        room_copies,
+        "cross-room denial must not read the room member viewport"
+    );
 }
