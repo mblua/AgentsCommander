@@ -125,7 +125,7 @@ impl Drop for ChildGuard {
 }
 
 #[cfg(target_os = "windows")]
-struct ServerGuard(tokio::task::JoinHandle<()>);
+pub(super) struct ServerGuard(tokio::task::JoinHandle<()>);
 
 #[cfg(target_os = "windows")]
 impl Drop for ServerGuard {
@@ -146,7 +146,7 @@ fn fixture_tempdir(prefix: &str) -> tempfile::TempDir {
 }
 
 #[cfg(target_os = "windows")]
-async fn bind_listener() -> (tokio::net::TcpListener, std::net::SocketAddr) {
+pub(super) async fn bind_listener() -> (tokio::net::TcpListener, std::net::SocketAddr) {
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
         Err(error) => panic!("test API listener must bind: {error}"),
@@ -159,7 +159,7 @@ async fn bind_listener() -> (tokio::net::TcpListener, std::net::SocketAddr) {
 }
 
 #[cfg(target_os = "windows")]
-fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> ServerGuard {
+pub(super) fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> ServerGuard {
     ServerGuard(tokio::spawn(async move {
         let _ = axum::serve(
             listener,
@@ -261,21 +261,41 @@ async fn start_live_capture_request(
     token: &str,
     window_id: &str,
 ) -> tokio::net::TcpStream {
+    send_raw_screenshot_request(
+        address,
+        token,
+        window_id,
+        "keep-alive",
+        "interactive detached",
+    )
+    .await
+}
+
+/// Writes one raw screenshot GET without reading the response; `label` names
+/// the caller in panic messages.
+#[cfg(target_os = "windows")]
+pub(super) async fn send_raw_screenshot_request(
+    address: std::net::SocketAddr,
+    token: &str,
+    window_id: &str,
+    connection: &str,
+    label: &str,
+) -> tokio::net::TcpStream {
     use tokio::io::AsyncWriteExt;
 
     let mut stream = match tokio::net::TcpStream::connect(address).await {
         Ok(stream) => stream,
-        Err(error) => panic!("interactive detached client must connect: {error}"),
+        Err(error) => panic!("{label} client must connect: {error}"),
     };
     let request = format!(
         "GET /api/v1/windows/{window_id}/screenshot HTTP/1.1\r\nHost: \
-            {address}\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n"
+            {address}\r\nAuthorization: Bearer {token}\r\nConnection: {connection}\r\n\r\n"
     );
     if let Err(error) = stream.write_all(request.as_bytes()).await {
-        panic!("interactive detached request must write: {error}");
+        panic!("{label} request must write: {error}");
     }
     if let Err(error) = stream.flush().await {
-        panic!("interactive detached request must flush: {error}");
+        panic!("{label} request must flush: {error}");
     }
     stream
 }

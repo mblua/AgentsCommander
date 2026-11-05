@@ -8,14 +8,7 @@ type ScreenshotRoute = axum::routing::MethodRouter<crate::api::ApiState>;
 type RecordedCalls = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 #[cfg(target_os = "windows")]
-struct ServerGuard(tokio::task::JoinHandle<()>);
-
-#[cfg(target_os = "windows")]
-impl Drop for ServerGuard {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+use super::window_screenshot_router::{bind_listener, serve_router, ServerGuard};
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy)]
@@ -56,22 +49,8 @@ async fn serve_window_screenshot_route(
             route,
         )
         .with_state(state);
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-        Ok(listener) => listener,
-        Err(error) => panic!("test API listener must bind: {error}"),
-    };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => panic!("test API listener must expose its address: {error}"),
-    };
-    let server = ServerGuard(tokio::spawn(async move {
-        let _ = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await;
-    }));
-    (address, server)
+    let (listener, address) = bind_listener().await;
+    (address, serve_router(listener, router))
 }
 
 #[cfg(target_os = "windows")]
@@ -247,23 +226,14 @@ async fn open_detached_request(
     address: std::net::SocketAddr,
     token: &str,
 ) -> tokio::net::TcpStream {
-    use tokio::io::AsyncWriteExt;
-
-    let mut stream = match tokio::net::TcpStream::connect(address).await {
-        Ok(stream) => stream,
-        Err(error) => panic!("detached fresh-result client must connect: {error}"),
-    };
-    let request = format!(
-        "GET /api/v1/windows/1/screenshot HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer \
-            {token}\r\nConnection: close\r\n\r\n"
-    );
-    if let Err(error) = stream.write_all(request.as_bytes()).await {
-        panic!("detached fresh-result request must write: {error}");
-    }
-    if let Err(error) = stream.flush().await {
-        panic!("detached fresh-result request must flush: {error}");
-    }
-    stream
+    super::window_screenshot_router::send_raw_screenshot_request(
+        address,
+        token,
+        "1",
+        "close",
+        "detached fresh-result",
+    )
+    .await
 }
 
 #[cfg(target_os = "windows")]

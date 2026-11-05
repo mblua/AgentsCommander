@@ -2,14 +2,7 @@ use super::*;
 use crate::api::handlers::window_screenshot::WindowScreenshotCaptureFutureForTest;
 
 #[cfg(target_os = "windows")]
-struct ServerGuard(tokio::task::JoinHandle<()>);
-
-#[cfg(target_os = "windows")]
-impl Drop for ServerGuard {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+use super::window_screenshot_router::{bind_listener, serve_router, ServerGuard};
 
 #[cfg(target_os = "windows")]
 type CaptureFactoryForTest = std::sync::Arc<
@@ -83,22 +76,8 @@ async fn spawn_window_screenshot_server(
             ),
         )
         .with_state(state);
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-        Ok(listener) => listener,
-        Err(error) => panic!("test API listener must bind: {error}"),
-    };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => panic!("test API listener must expose its address: {error}"),
-    };
-    let server = ServerGuard(tokio::spawn(async move {
-        let _ = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await;
-    }));
-    (address, server)
+    let (listener, address) = bind_listener().await;
+    (address, serve_router(listener, router))
 }
 
 #[cfg(target_os = "windows")]
