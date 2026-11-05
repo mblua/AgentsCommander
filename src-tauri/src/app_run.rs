@@ -486,8 +486,8 @@ fn prepare_boot(
 
     // Persist master token and app outbox path so the CLI can use them
     if let Some(dir) = config::config_dir() {
-        let _ = std::fs::write(dir.join("master-token.txt"), master_token.value());
-        let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
+        let _ = crate::filesystem::master_token::publish(&dir, master_token.value());
+        let _ = crate::filesystem::app_outbox_pointer::publish(&dir, app_outbox.path());
     }
 
     // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
