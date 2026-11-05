@@ -443,6 +443,9 @@ fn assert_scanner_shutdown_response(
     target: &str,
     response_path: &Path,
 ) -> Option<TerminalSnapshotReasonCode> {
+    // The fixture only untracks the response artifact on non-Unix hosts.
+    #[cfg(unix)]
+    let _ = fixture;
     let mut response_reason = None;
     if phase.abortable() {
         assert!(!response_path.exists());

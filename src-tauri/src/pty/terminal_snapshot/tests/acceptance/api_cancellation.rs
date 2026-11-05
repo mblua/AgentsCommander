@@ -1,3 +1,6 @@
+use super::fixture::{
+    assert_capacity_reuse_request, run_isolated_child, CapacityReuseMessages, IsolatedChild,
+};
 use super::*;
 
 #[test]
@@ -67,55 +70,23 @@ fn api_async_cancellation_reclaims_authority_without_disclosure() {
 }
 
 fn run_api_cancellation_parent() {
-    let temporary_root = std::env::current_dir()
-        .expect("API cancellation parent current directory")
-        .join("target")
-        .join("terminal-snapshot-acceptance-temp");
-    std::fs::create_dir_all(&temporary_root).expect("API cancellation parent temporary root");
-    let evidence = tempfile::Builder::new()
-        .prefix("api-cancellation-evidence-")
-        .tempdir_in(temporary_root)
-        .expect("API cancellation evidence directory");
-    let canary_file = evidence.path().join("canaries.json");
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("API cancellation test executable"),
-    )
-    .args([
-        "--exact",
-        API_CANCELLATION_TEST_NAME,
-        "--test-threads=1",
-        "--nocapture",
-    ])
-    .env(API_CANCELLATION_CHILD_ENV, "1")
-    .env(API_CANCELLATION_CANARY_FILE_ENV, &canary_file)
-    .output()
-    .expect("spawn isolated API cancellation test");
-    let canaries: Vec<String> = std::fs::read(&canary_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            [
-                SCREEN_SENTINEL,
-                OSC_TITLE_SENTINEL,
-                OSC_HYPERLINK_SENTINEL,
-                OSC_CLIPBOARD_SENTINEL,
-                BODY_DISCONNECT_SENTINEL,
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        });
-    assert_canaries_absent_except(&output.stdout, &canaries, &[], "cancellation child stdout");
-    assert_canaries_absent_except(&output.stderr, &canaries, &[], "cancellation child stderr");
-    if !output.status.success() {
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        for canary in &canaries {
-            stdout = stdout.replace(canary, "<redacted-canary>");
-            stderr = stderr.replace(canary, "<redacted-canary>");
-        }
-        panic!("isolated API cancellation test failed; stdout={stdout:?}; stderr={stderr:?}");
-    }
+    run_isolated_child(&IsolatedChild {
+        parent: "API cancellation",
+        evidence_prefix: "api-cancellation-evidence-",
+        executable: "API cancellation",
+        failure: "API cancellation",
+        surface: "cancellation child",
+        test_name: API_CANCELLATION_TEST_NAME,
+        child_env: API_CANCELLATION_CHILD_ENV,
+        canary_file_env: API_CANCELLATION_CANARY_FILE_ENV,
+        fallback_canaries: &[
+            SCREEN_SENTINEL,
+            OSC_TITLE_SENTINEL,
+            OSC_HYPERLINK_SENTINEL,
+            OSC_CLIPBOARD_SENTINEL,
+            BODY_DISCONNECT_SENTINEL,
+        ],
+    });
 }
 
 async fn assert_disconnected_body_rejected(
@@ -316,42 +287,19 @@ async fn assert_capacity_reuse_success(
     canaries: &[String],
     target: &str,
 ) {
-    let success_id = Uuid::new_v4().to_string();
-    let success_response = tokio::time::timeout(
-        Duration::from_secs(10),
-        run_direct_api_request(
-            direct_api_state(fixture),
-            fixture.api_coordinator_token.secret.clone(),
-            direct_api_body(&success_id, target),
-        ),
-    )
-    .await
-    .expect("capacity-reuse API request did not finish");
-    let success_status = success_response.status();
-    let success_bytes = axum::body::to_bytes(
-        success_response.into_body(),
-        terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
-    )
-    .await
-    .expect("capacity-reuse API response");
-    assert_eq!(success_status, StatusCode::OK);
-    let success = decode_api_success(
-        &success_bytes,
-        &success_id,
+    assert_capacity_reuse_request(
+        fixture,
+        config,
+        canaries,
         target,
-        TerminalSnapshotFormat::Json,
+        &CapacityReuseMessages {
+            timeout: "capacity-reuse API request did not finish",
+            response: "capacity-reuse API response",
+            decode: "strict capacity-reuse API success",
+        },
+        3,
     )
-    .expect("strict capacity-reuse API success");
-    assert!(payload_has_sentinel(&success.result));
-    drop(success);
-    drop(success_bytes);
-    assert_api_lifecycle_idle(&fixture.snapshot_state);
-    assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 1);
-    assert_api_audit_row(config, canaries, 6, "succeeded", None, Some(&success_id));
-    assert_eq!(
-        fixture.local_backend.counts(fixture.live_member.id).copies,
-        3
-    );
+    .await;
     assert_eq!(fixture.local_backend.mutations(), 0);
     assert_no_api_test_hooks(&fixture.snapshot_state);
     assert_cleanup_and_secondary_surfaces(fixture, config, canaries);

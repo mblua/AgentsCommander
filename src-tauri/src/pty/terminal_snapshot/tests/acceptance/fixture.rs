@@ -540,3 +540,126 @@ impl AcceptanceFixture {
         }
     }
 }
+
+/// Labels and wiring for one isolated acceptance child test. Every label is
+/// spliced into the exact panic and surface messages the parent used inline.
+pub(super) struct IsolatedChild<'a> {
+    pub(super) parent: &'a str,
+    pub(super) evidence_prefix: &'a str,
+    pub(super) executable: &'a str,
+    pub(super) failure: &'a str,
+    pub(super) surface: &'a str,
+    pub(super) test_name: &'a str,
+    pub(super) child_env: &'a str,
+    pub(super) canary_file_env: &'a str,
+    pub(super) fallback_canaries: &'a [&'a str],
+}
+
+/// Runs the isolated child, then proves no canary reached its stdout/stderr.
+pub(super) fn run_isolated_child(child: &IsolatedChild<'_>) {
+    let parent = child.parent;
+    let temporary_root = std::env::current_dir()
+        .unwrap_or_else(|error| panic!("{parent} parent current directory: {error:?}"))
+        .join("target")
+        .join("terminal-snapshot-acceptance-temp");
+    std::fs::create_dir_all(&temporary_root)
+        .unwrap_or_else(|error| panic!("{parent} parent temporary root: {error:?}"));
+    let evidence = tempfile::Builder::new()
+        .prefix(child.evidence_prefix)
+        .tempdir_in(temporary_root)
+        .unwrap_or_else(|error| panic!("{parent} evidence directory: {error:?}"));
+    let canary_file = evidence.path().join("canaries.json");
+    let executable = child.executable;
+    let output = std::process::Command::new(
+        std::env::current_exe()
+            .unwrap_or_else(|error| panic!("{executable} test executable: {error:?}")),
+    )
+    .args([
+        "--exact",
+        child.test_name,
+        "--test-threads=1",
+        "--nocapture",
+    ])
+    .env(child.child_env, "1")
+    .env(child.canary_file_env, &canary_file)
+    .output()
+    .unwrap_or_else(|error| panic!("spawn isolated {executable} test: {error:?}"));
+    let canaries: Vec<String> = std::fs::read(&canary_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| {
+            child
+                .fallback_canaries
+                .iter()
+                .copied()
+                .map(str::to_string)
+                .collect()
+        });
+    let surface = child.surface;
+    assert_canaries_absent_except(&output.stdout, &canaries, &[], &format!("{surface} stdout"));
+    assert_canaries_absent_except(&output.stderr, &canaries, &[], &format!("{surface} stderr"));
+    if !output.status.success() {
+        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        for canary in &canaries {
+            stdout = stdout.replace(canary, "<redacted-canary>");
+            stderr = stderr.replace(canary, "<redacted-canary>");
+        }
+        let failure = child.failure;
+        panic!("isolated {failure} test failed; stdout={stdout:?}; stderr={stderr:?}");
+    }
+}
+
+/// Exact `expect` messages for one capacity-reuse success request.
+pub(super) struct CapacityReuseMessages<'a> {
+    pub(super) timeout: &'a str,
+    pub(super) response: &'a str,
+    pub(super) decode: &'a str,
+}
+
+/// Proves a released slot serves one more strict JSON success with its audit row.
+pub(super) async fn assert_capacity_reuse_request(
+    fixture: &AcceptanceFixture,
+    config: &Path,
+    canaries: &[String],
+    target: &str,
+    messages: &CapacityReuseMessages<'_>,
+    expected_copies: usize,
+) {
+    let success_id = Uuid::new_v4().to_string();
+    let success_response = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_direct_api_request(
+            direct_api_state(fixture),
+            fixture.api_coordinator_token.secret.clone(),
+            direct_api_body(&success_id, target),
+        ),
+    )
+    .await
+    .expect(messages.timeout);
+    let success_status = success_response.status();
+    let success_bytes = axum::body::to_bytes(
+        success_response.into_body(),
+        terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
+    )
+    .await
+    .expect(messages.response);
+    assert_eq!(success_status, StatusCode::OK);
+    let success = decode_api_success(
+        &success_bytes,
+        &success_id,
+        target,
+        TerminalSnapshotFormat::Json,
+    )
+    .expect(messages.decode);
+    assert!(payload_has_sentinel(&success.result));
+    drop(success);
+    drop(success_bytes);
+    assert_api_lifecycle_idle(&fixture.snapshot_state);
+    assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 1);
+    assert_api_audit_row(config, canaries, 6, "succeeded", None, Some(&success_id));
+    assert_eq!(
+        fixture.local_backend.counts(fixture.live_member.id).copies,
+        expected_copies
+    );
+}

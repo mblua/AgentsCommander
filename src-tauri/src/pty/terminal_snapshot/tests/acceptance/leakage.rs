@@ -1,3 +1,4 @@
+use super::fixture::{run_isolated_child, IsolatedChild};
 use super::*;
 
 #[test]
@@ -144,57 +145,25 @@ async fn run_leakage_scenarios(
 }
 
 fn run_isolated_leakage_child() {
-    let temporary_root = std::env::current_dir()
-        .expect("leakage parent current directory")
-        .join("target")
-        .join("terminal-snapshot-acceptance-temp");
-    std::fs::create_dir_all(&temporary_root).expect("leakage parent temporary root");
-    let evidence = tempfile::Builder::new()
-        .prefix("leakage-evidence-")
-        .tempdir_in(temporary_root)
-        .expect("leakage evidence directory");
-    let canary_file = evidence.path().join("canaries.json");
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("terminal snapshot leakage test executable"),
-    )
-    .args([
-        "--exact",
-        LEAKAGE_TEST_NAME,
-        "--test-threads=1",
-        "--nocapture",
-    ])
-    .env(LEAKAGE_CHILD_ENV, "1")
-    .env(LEAKAGE_CANARY_FILE_ENV, &canary_file)
-    .output()
-    .expect("spawn isolated terminal snapshot leakage test");
-    let canaries: Vec<String> = std::fs::read(&canary_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            [
-                SCREEN_SENTINEL,
-                OSC_TITLE_SENTINEL,
-                OSC_HYPERLINK_SENTINEL,
-                OSC_CLIPBOARD_SENTINEL,
-                MALFORMED_BODY_SENTINEL,
-                MALFORMED_TARGET_SENTINEL,
-                CALLER_PATH_SENTINEL,
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        });
-    assert_canaries_absent_except(&output.stdout, &canaries, &[], "child stdout");
-    assert_canaries_absent_except(&output.stderr, &canaries, &[], "child stderr");
-    if !output.status.success() {
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        for canary in &canaries {
-            stdout = stdout.replace(canary, "<redacted-canary>");
-            stderr = stderr.replace(canary, "<redacted-canary>");
-        }
-        panic!("isolated leakage test failed; stdout={stdout:?}; stderr={stderr:?}");
-    }
+    run_isolated_child(&IsolatedChild {
+        parent: "leakage",
+        evidence_prefix: "leakage-evidence-",
+        executable: "terminal snapshot leakage",
+        failure: "leakage",
+        surface: "child",
+        test_name: LEAKAGE_TEST_NAME,
+        child_env: LEAKAGE_CHILD_ENV,
+        canary_file_env: LEAKAGE_CANARY_FILE_ENV,
+        fallback_canaries: &[
+            SCREEN_SENTINEL,
+            OSC_TITLE_SENTINEL,
+            OSC_HYPERLINK_SENTINEL,
+            OSC_CLIPBOARD_SENTINEL,
+            MALFORMED_BODY_SENTINEL,
+            MALFORMED_TARGET_SENTINEL,
+            CALLER_PATH_SENTINEL,
+        ],
+    });
 }
 
 fn build_host_requests(

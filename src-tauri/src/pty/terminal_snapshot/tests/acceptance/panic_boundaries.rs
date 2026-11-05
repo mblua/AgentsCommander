@@ -1,60 +1,29 @@
+use super::fixture::{run_isolated_child, IsolatedChild};
 use super::*;
 
 fn run_panic_parent() {
-    let temporary_root = std::env::current_dir()
-        .expect("panic parent current directory")
-        .join("target")
-        .join("terminal-snapshot-acceptance-temp");
-    std::fs::create_dir_all(&temporary_root).expect("panic parent temporary root");
-    let evidence = tempfile::Builder::new()
-        .prefix("panic-evidence-")
-        .tempdir_in(temporary_root)
-        .expect("panic evidence directory");
-    let canary_file = evidence.path().join("canaries.json");
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("terminal snapshot panic test executable"),
-    )
-    .args([
-        "--exact",
-        PANIC_TEST_NAME,
-        "--test-threads=1",
-        "--nocapture",
-    ])
-    .env(PANIC_CHILD_ENV, "1")
-    .env(PANIC_CANARY_FILE_ENV, &canary_file)
-    .output()
-    .expect("spawn isolated terminal snapshot panic test");
-    let canaries: Vec<String> = std::fs::read(&canary_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            [
-                SCREEN_SENTINEL,
-                OSC_TITLE_SENTINEL,
-                OSC_HYPERLINK_SENTINEL,
-                OSC_CLIPBOARD_SENTINEL,
-                CALLER_PATH_SENTINEL,
-                API_PANIC_SENTINEL,
-                BLOCKING_PANIC_SENTINEL,
-                HOST_PANIC_SENTINEL,
-                PNG_PANIC_SENTINEL,
-                BASE64_PANIC_SENTINEL,
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        });
-    assert_canaries_absent_except(&output.stdout, &canaries, &[], "panic child stdout");
-    assert_canaries_absent_except(&output.stderr, &canaries, &[], "panic child stderr");
-    if !output.status.success() {
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        for canary in &canaries {
-            stdout = stdout.replace(canary, "<redacted-canary>");
-            stderr = stderr.replace(canary, "<redacted-canary>");
-        }
-        panic!("isolated panic test failed; stdout={stdout:?}; stderr={stderr:?}");
-    }
+    run_isolated_child(&IsolatedChild {
+        parent: "panic",
+        evidence_prefix: "panic-evidence-",
+        executable: "terminal snapshot panic",
+        failure: "panic",
+        surface: "panic child",
+        test_name: PANIC_TEST_NAME,
+        child_env: PANIC_CHILD_ENV,
+        canary_file_env: PANIC_CANARY_FILE_ENV,
+        fallback_canaries: &[
+            SCREEN_SENTINEL,
+            OSC_TITLE_SENTINEL,
+            OSC_HYPERLINK_SENTINEL,
+            OSC_CLIPBOARD_SENTINEL,
+            CALLER_PATH_SENTINEL,
+            API_PANIC_SENTINEL,
+            BLOCKING_PANIC_SENTINEL,
+            HOST_PANIC_SENTINEL,
+            PNG_PANIC_SENTINEL,
+            BASE64_PANIC_SENTINEL,
+        ],
+    });
 }
 
 fn write_child_panic_canaries(

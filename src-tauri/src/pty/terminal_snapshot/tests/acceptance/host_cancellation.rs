@@ -1,3 +1,4 @@
+use super::fixture::{run_isolated_child, IsolatedChild};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -21,65 +22,23 @@ struct ExpiredAfterBytesState {
 }
 
 fn run_host_cancellation_parent() {
-    let temporary_root = std::env::current_dir()
-        .expect("host cancellation parent current directory")
-        .join("target")
-        .join("terminal-snapshot-acceptance-temp");
-    std::fs::create_dir_all(&temporary_root).expect("host cancellation parent temporary root");
-    let evidence = tempfile::Builder::new()
-        .prefix("host-cancellation-evidence-")
-        .tempdir_in(temporary_root)
-        .expect("host cancellation evidence directory");
-    let canary_file = evidence.path().join("canaries.json");
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("host cancellation test executable"),
-    )
-    .args([
-        "--exact",
-        HOST_CANCELLATION_TEST_NAME,
-        "--test-threads=1",
-        "--nocapture",
-    ])
-    .env(HOST_CANCELLATION_CHILD_ENV, "1")
-    .env(HOST_CANCELLATION_CANARY_FILE_ENV, &canary_file)
-    .output()
-    .expect("spawn isolated host cancellation test");
-    let canaries: Vec<String> = std::fs::read(&canary_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            [
-                SCREEN_SENTINEL,
-                OSC_TITLE_SENTINEL,
-                OSC_HYPERLINK_SENTINEL,
-                OSC_CLIPBOARD_SENTINEL,
-                CALLER_PATH_SENTINEL,
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        });
-    assert_canaries_absent_except(
-        &output.stdout,
-        &canaries,
-        &[],
-        "host cancellation child stdout",
-    );
-    assert_canaries_absent_except(
-        &output.stderr,
-        &canaries,
-        &[],
-        "host cancellation child stderr",
-    );
-    if !output.status.success() {
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        for canary in &canaries {
-            stdout = stdout.replace(canary, "<redacted-canary>");
-            stderr = stderr.replace(canary, "<redacted-canary>");
-        }
-        panic!("isolated host cancellation test failed; stdout={stdout:?}; stderr={stderr:?}");
-    }
+    run_isolated_child(&IsolatedChild {
+        parent: "host cancellation",
+        evidence_prefix: "host-cancellation-evidence-",
+        executable: "host cancellation",
+        failure: "host cancellation",
+        surface: "host cancellation child",
+        test_name: HOST_CANCELLATION_TEST_NAME,
+        child_env: HOST_CANCELLATION_CHILD_ENV,
+        canary_file_env: HOST_CANCELLATION_CANARY_FILE_ENV,
+        fallback_canaries: &[
+            SCREEN_SENTINEL,
+            OSC_TITLE_SENTINEL,
+            OSC_HYPERLINK_SENTINEL,
+            OSC_CLIPBOARD_SENTINEL,
+            CALLER_PATH_SENTINEL,
+        ],
+    });
 }
 
 fn write_host_cancellation_canaries(

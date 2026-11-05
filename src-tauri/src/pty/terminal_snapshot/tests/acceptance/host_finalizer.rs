@@ -1,65 +1,24 @@
+use super::fixture::{run_isolated_child, IsolatedChild};
 use super::*;
 
 fn run_host_finalizer_parent() {
-    let temporary_root = std::env::current_dir()
-        .expect("host finalizer parent current directory")
-        .join("target")
-        .join("terminal-snapshot-acceptance-temp");
-    std::fs::create_dir_all(&temporary_root).expect("host finalizer parent temporary root");
-    let evidence = tempfile::Builder::new()
-        .prefix("host-finalizer-evidence-")
-        .tempdir_in(temporary_root)
-        .expect("host finalizer evidence directory");
-    let canary_file = evidence.path().join("canaries.json");
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("host finalizer test executable"),
-    )
-    .args([
-        "--exact",
-        HOST_FINALIZER_TEST_NAME,
-        "--test-threads=1",
-        "--nocapture",
-    ])
-    .env(HOST_FINALIZER_CHILD_ENV, "1")
-    .env(HOST_FINALIZER_CANARY_FILE_ENV, &canary_file)
-    .output()
-    .expect("spawn isolated host finalizer test");
-    let canaries: Vec<String> = std::fs::read(&canary_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            [
-                SCREEN_SENTINEL,
-                OSC_TITLE_SENTINEL,
-                OSC_HYPERLINK_SENTINEL,
-                OSC_CLIPBOARD_SENTINEL,
-                HOST_FINALIZER_PANIC_SENTINEL,
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        });
-    assert_canaries_absent_except(
-        &output.stdout,
-        &canaries,
-        &[],
-        "host finalizer child stdout",
-    );
-    assert_canaries_absent_except(
-        &output.stderr,
-        &canaries,
-        &[],
-        "host finalizer child stderr",
-    );
-    if !output.status.success() {
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        for canary in &canaries {
-            stdout = stdout.replace(canary, "<redacted-canary>");
-            stderr = stderr.replace(canary, "<redacted-canary>");
-        }
-        panic!("isolated host finalizer test failed; stdout={stdout:?}; stderr={stderr:?}");
-    }
+    run_isolated_child(&IsolatedChild {
+        parent: "host finalizer",
+        evidence_prefix: "host-finalizer-evidence-",
+        executable: "host finalizer",
+        failure: "host finalizer",
+        surface: "host finalizer child",
+        test_name: HOST_FINALIZER_TEST_NAME,
+        child_env: HOST_FINALIZER_CHILD_ENV,
+        canary_file_env: HOST_FINALIZER_CANARY_FILE_ENV,
+        fallback_canaries: &[
+            SCREEN_SENTINEL,
+            OSC_TITLE_SENTINEL,
+            OSC_HYPERLINK_SENTINEL,
+            OSC_CLIPBOARD_SENTINEL,
+            HOST_FINALIZER_PANIC_SENTINEL,
+        ],
+    });
 }
 
 async fn host_finalizer_deadline_case(

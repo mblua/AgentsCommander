@@ -1,3 +1,6 @@
+use super::fixture::{
+    assert_capacity_reuse_request, run_isolated_child, CapacityReuseMessages, IsolatedChild,
+};
 use super::*;
 
 type RetainedTask = tokio::task::JoinHandle<
@@ -5,66 +8,24 @@ type RetainedTask = tokio::task::JoinHandle<
 >;
 
 fn run_common_blocking_parent() {
-    let temporary_root = std::env::current_dir()
-        .expect("common blocking parent current directory")
-        .join("target")
-        .join("terminal-snapshot-acceptance-temp");
-    std::fs::create_dir_all(&temporary_root).expect("common blocking parent temporary root");
-    let evidence = tempfile::Builder::new()
-        .prefix("common-blocking-evidence-")
-        .tempdir_in(temporary_root)
-        .expect("common blocking evidence directory");
-    let canary_file = evidence.path().join("canaries.json");
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("common blocking test executable"),
-    )
-    .args([
-        "--exact",
-        COMMON_BLOCKING_TEST_NAME,
-        "--test-threads=1",
-        "--nocapture",
-    ])
-    .env(COMMON_BLOCKING_CHILD_ENV, "1")
-    .env(COMMON_BLOCKING_CANARY_FILE_ENV, &canary_file)
-    .output()
-    .expect("spawn isolated common blocking test");
-    let canaries: Vec<String> = std::fs::read(&canary_file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| {
-            [
-                SCREEN_SENTINEL,
-                OSC_TITLE_SENTINEL,
-                OSC_HYPERLINK_SENTINEL,
-                OSC_CLIPBOARD_SENTINEL,
-                LATE_BLOCKING_PANIC_SENTINEL,
-                BASE64_PANIC_SENTINEL,
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        });
-    assert_canaries_absent_except(
-        &output.stdout,
-        &canaries,
-        &[],
-        "common blocking child stdout",
-    );
-    assert_canaries_absent_except(
-        &output.stderr,
-        &canaries,
-        &[],
-        "common blocking child stderr",
-    );
-    if !output.status.success() {
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        for canary in &canaries {
-            stdout = stdout.replace(canary, "<redacted-canary>");
-            stderr = stderr.replace(canary, "<redacted-canary>");
-        }
-        panic!("isolated common blocking test failed; stdout={stdout:?}; stderr={stderr:?}");
-    }
+    run_isolated_child(&IsolatedChild {
+        parent: "common blocking",
+        evidence_prefix: "common-blocking-evidence-",
+        executable: "common blocking",
+        failure: "common blocking",
+        surface: "common blocking child",
+        test_name: COMMON_BLOCKING_TEST_NAME,
+        child_env: COMMON_BLOCKING_CHILD_ENV,
+        canary_file_env: COMMON_BLOCKING_CANARY_FILE_ENV,
+        fallback_canaries: &[
+            SCREEN_SENTINEL,
+            OSC_TITLE_SENTINEL,
+            OSC_HYPERLINK_SENTINEL,
+            OSC_CLIPBOARD_SENTINEL,
+            LATE_BLOCKING_PANIC_SENTINEL,
+            BASE64_PANIC_SENTINEL,
+        ],
+    });
 }
 
 fn write_common_blocking_canaries(fixture: &AcceptanceFixture) -> Vec<String> {
@@ -209,42 +170,19 @@ async fn assert_common_blocking_capacity_reuse(
     canaries: &[String],
     target: &str,
 ) {
-    let success_id = Uuid::new_v4().to_string();
-    let success_response = tokio::time::timeout(
-        Duration::from_secs(10),
-        run_direct_api_request(
-            direct_api_state(fixture),
-            fixture.api_coordinator_token.secret.clone(),
-            direct_api_body(&success_id, target),
-        ),
-    )
-    .await
-    .expect("common blocking capacity-reuse request did not finish");
-    let success_status = success_response.status();
-    let success_bytes = axum::body::to_bytes(
-        success_response.into_body(),
-        terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
-    )
-    .await
-    .expect("common blocking capacity-reuse response");
-    assert_eq!(success_status, StatusCode::OK);
-    let success = decode_api_success(
-        &success_bytes,
-        &success_id,
+    assert_capacity_reuse_request(
+        fixture,
+        config,
+        canaries,
         target,
-        TerminalSnapshotFormat::Json,
+        &CapacityReuseMessages {
+            timeout: "common blocking capacity-reuse request did not finish",
+            response: "common blocking capacity-reuse response",
+            decode: "strict common blocking capacity-reuse success",
+        },
+        6,
     )
-    .expect("strict common blocking capacity-reuse success");
-    assert!(payload_has_sentinel(&success.result));
-    drop(success);
-    drop(success_bytes);
-    assert_api_lifecycle_idle(&fixture.snapshot_state);
-    assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 1);
-    assert_api_audit_row(config, canaries, 6, "succeeded", None, Some(&success_id));
-    assert_eq!(
-        fixture.local_backend.counts(fixture.live_member.id).copies,
-        6
-    );
+    .await;
 }
 
 fn spawn_first_retained_maximum(
