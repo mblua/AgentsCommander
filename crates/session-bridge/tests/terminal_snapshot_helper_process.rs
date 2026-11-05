@@ -590,14 +590,25 @@ fn png_timeout_response_head(body_length: usize) -> Vec<u8> {
 }
 
 #[test]
-fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber(
-) {
+fn png_deadline_collision_corruption_and_output_failure_do_not_clobber() {
     let temporary = tempfile::tempdir().unwrap();
     let parent = temporary.path().join(PATH_CANARY);
     std::fs::create_dir(&parent).unwrap();
 
     assert_png_deadline_leaves_no_output(&parent);
 
+    let collision_path = assert_png_collision_preserves_output(&parent);
+    assert_corrupt_png_leaves_no_output(&parent);
+    let completed_path = assert_stdout_failure_preserves_png(&parent);
+
+    scan_regular_files(
+        temporary.path(),
+        &[collision_path.as_path(), completed_path.as_path()],
+        &[BEARER_CANARY.as_bytes(), MALFORMED_CANARY.as_bytes()],
+    );
+}
+
+fn assert_png_collision_preserves_output(parent: &std::path::Path) -> std::path::PathBuf {
     let collision_path = parent.join("collision.png");
     let collision_for_server = collision_path.clone();
     let collision_text = collision_path.to_string_lossy().into_owned();
@@ -621,7 +632,10 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
     assert_exact_failure(&collision, TerminalSnapshotReasonCode::UnsafePath);
     assert_eq!(collision_requests.len(), 1);
     assert_eq!(std::fs::read(&collision_path).unwrap(), COLLISION_CANARY);
+    collision_path
+}
 
+fn assert_corrupt_png_leaves_no_output(parent: &std::path::Path) {
     let corrupt_path = parent.join("corrupt.png");
     let corrupt_text = corrupt_path.to_string_lossy().into_owned();
     let corrupt_server = TestServer::start(|request, _| {
@@ -649,7 +663,9 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
     assert_exact_failure(&corrupt, TerminalSnapshotReasonCode::ResponseUnavailable);
     assert_eq!(corrupt_requests.len(), 1);
     assert!(!corrupt_path.exists());
+}
 
+fn assert_stdout_failure_preserves_png(parent: &std::path::Path) -> std::path::PathBuf {
     let completed_path = parent.join("completed-before-stdout-failure.png");
     let completed_text = completed_path.to_string_lossy().into_owned();
     let output_server = TestServer::start(|request, _| Reply::Bytes(success_response(request)));
@@ -669,12 +685,7 @@ fn terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output
     assert_exact_failure(&output_failed, TerminalSnapshotReasonCode::OutputFailed);
     assert_eq!(output_requests.len(), 1);
     assert_eq!(std::fs::read(&completed_path).unwrap(), PNG_BYTES);
-
-    scan_regular_files(
-        temporary.path(),
-        &[collision_path.as_path(), completed_path.as_path()],
-        &[BEARER_CANARY.as_bytes(), MALFORMED_CANARY.as_bytes()],
-    );
+    completed_path
 }
 
 fn assert_png_deadline_leaves_no_output(parent: &std::path::Path) {
