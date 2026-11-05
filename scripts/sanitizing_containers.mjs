@@ -174,6 +174,7 @@ function constantReferences(path, scan, c, exempt, contexts) {
     const chain = moduleChain(source.path, scope);
     const moduleScope = (identity, name) => {
       const choices = contexts.modules.get(identity) ?? [];
+      // If no module scope binds the name, keep the first scope as the fallback.
       return choices.find(s => s.bindings.has(name)) ?? choices[0];
     };
     if (['crate', 'self', 'super'].includes(first)) {
@@ -247,6 +248,7 @@ function constantReferences(path, scan, c, exempt, contexts) {
   const add = (t, r) => {
     if (exempt.has(t.start)) return;
     const candidate = relevant.has(r.path);
+    // The name suffix check only reports ambiguity; it never resolves a path.
     const ambiguous = r.ambiguous && (r.relevantAmbiguity || candidate ||
       settingsNames.includes(t.name) || settingsNames.includes(r.path?.split('::').at(-1)) ||
       [...relevant].some(p => p.endsWith('::' + t.name)));
