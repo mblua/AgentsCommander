@@ -613,10 +613,9 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         // drop any pending fresh intent (record + mirror). Bare logical action
         // text (/clear, Pi /new, or /compact) never reaches this line.
         crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
-        let _ = tauri::Emitter::emit(
+        let _ = crate::phone::events::MailboxDeliveryEvents::message_delivered(
             app,
-            "message_delivered",
-            serde_json::json!({
+            &serde_json::json!({
                 "id": msg.id,
                 "from": msg.from,
                 "to": msg.to,
@@ -831,10 +830,9 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
             crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
         }
 
-        let _ = tauri::Emitter::emit(
+        let _ = crate::phone::events::MailboxDeliveryEvents::message_delivered(
             app,
-            "message_delivered",
-            serde_json::json!({
+            &serde_json::json!({
                 "id": msg.id,
                 "from": msg.from,
                 "to": msg.to,
