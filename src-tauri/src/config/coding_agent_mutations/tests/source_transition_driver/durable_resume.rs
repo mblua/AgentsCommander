@@ -202,11 +202,8 @@ fn single_editor_all_authority_context_source_target_cas_failures() {
         "overlay-binding",
     ] {
         let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
-        let bound_settings_path = fixture
-            ._root
-            .path()
-            .join("C")
-            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        let bound_settings_path =
+            crate::config::settings::settings_fixture_path(&fixture._root.path().join("C"));
         let settings_before = if drift == "settings-binding" {
             let before = read_identity_reference_physical(&bound_settings_path).unwrap();
             assert_eq!(

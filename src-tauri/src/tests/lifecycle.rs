@@ -53,9 +53,7 @@ fn scanner_retained_owner_is_merged_without_request_content_or_paths() {
 async fn p51_open_owner(settings: AppSettings) -> (tempfile::TempDir, SettingsState) {
     tokio::task::spawn_blocking(move || {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        let path = crate::config::settings::settings_fixture_path(dir.path());
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let owner =
             crate::config::settings::SettingsOwner::open_active(&path, Duration::from_secs(5))
@@ -121,11 +119,7 @@ async fn e2992_p51_adapters_owner_denied() {
         assert!(watchers.resolve().await.is_none());
     }
     assert_eq!(
-        std::fs::read(
-            dir.path()
-                .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
-        )
-        .unwrap(),
+        std::fs::read(crate::config::settings::settings_fixture_path(dir.path())).unwrap(),
         b"{"
     );
     for settings in [
@@ -263,11 +257,7 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     assert!(messaging_files(&fixture.room_root).is_empty());
     assert!(queue_files(&fixture.room_root).is_empty());
     assert_eq!(
-        std::fs::read(
-            dir.path()
-                .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
-        )
-        .unwrap(),
+        std::fs::read(crate::config::settings::settings_fixture_path(dir.path())).unwrap(),
         b"{"
     );
     // A held demand makes the unavailable/global-off distinction observable.

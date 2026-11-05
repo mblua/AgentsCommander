@@ -14,9 +14,7 @@ fn fixture() -> (
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
     std::fs::create_dir(&project).unwrap();
-    let path = temp
-        .path()
-        .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(temp.path());
     let settings = AppSettings {
         project_paths: vec![project.to_string_lossy().into_owned()],
         ..AppSettings::default()

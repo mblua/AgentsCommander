@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use crate::config::settings::SettingsFileTarget;
 use std::time::Duration;
 use tauri::State;
 
@@ -154,8 +154,6 @@ use self::web_server::{
     MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
 };
 #[cfg(test)]
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
-#[cfg(test)]
 use crate::web::broadcast::WsBroadcaster;
 #[cfg(test)]
 use agent_file_source::finish_remember_agent_file_report;
@@ -240,23 +238,22 @@ pub struct AgentHelpOverlayPayload {
     pub local_error: Option<String>,
 }
 
-/// #2133 - the path-injectable overlay reader. Tests inject `settings_path`;
+/// #2133 - the target-injectable overlay reader. Tests inject a target;
 /// production resolves it. Mirrors `settings_snapshot_helper`'s seam.
 pub(crate) fn agent_help_overlay_payload(
-    settings_path: Option<PathBuf>,
+    target: Option<SettingsFileTarget>,
 ) -> AgentHelpOverlayPayload {
-    let Some(path) = settings_path.or_else(crate::config::settings::settings_path) else {
+    let Some(target) = target.or_else(crate::config::settings::instance_settings_target) else {
         return AgentHelpOverlayPayload {
             local: None,
             remote: None,
             local_error: None,
         };
     };
-    let (file, local_error) = crate::config::settings::load_local_agent_help_file(&path);
+    let (file, local_error, remote) = target.read_agent_help_layers();
     let has_content =
         file.general.is_some() || !file.by_command.is_empty() || !file.by_agent.is_empty();
     // #2133 (P6) - the downloaded layer, served under the same non-empty rule as `local`.
-    let remote = crate::config::settings::load_remote_agent_help_file(&path);
     let remote_has_content =
         remote.general.is_some() || !remote.by_command.is_empty() || !remote.by_agent.is_empty();
     AgentHelpOverlayPayload {

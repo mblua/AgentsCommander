@@ -9,10 +9,11 @@ fn now() -> DateTime<Utc> {
 async fn a_disabled_run_touches_no_disk_and_no_network() {
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let network = crate::network::OutboundNetwork::new_for_tests(4);
     let outcome = run_remote_agent_help_check(
         &network,
-        &settings_path,
+        &target,
         false,
         crate::config::settings::REMOTE_AGENT_HELP_URL,
         now(),
@@ -28,12 +29,13 @@ async fn a_disabled_run_touches_no_disk_and_no_network() {
 async fn a_not_due_run_does_not_fetch() {
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let network = crate::network::OutboundNetwork::new_for_tests(4);
     let stamped = now() - chrono::Duration::hours(23);
     crate::config::settings::write_remote_agent_help_check_stamp(&settings_path, stamped).unwrap();
     let outcome = run_remote_agent_help_check(
         &network,
-        &settings_path,
+        &target,
         true,
         crate::config::settings::REMOTE_AGENT_HELP_URL,
         now(),
@@ -55,6 +57,7 @@ async fn every_due_attempt_stamps_now() {
     for label in ["accepted", "rejected", "unreachable"] {
         let temp = tempfile::TempDir::new().unwrap();
         let settings_path = temp.path().join("settings.json");
+        let target = SettingsFileTarget::for_test_path(&settings_path);
         let network = crate::network::OutboundNetwork::new_for_tests(4);
         // A stamp older than 24 h: the attempt is due and must move it to `now`.
         crate::config::settings::write_remote_agent_help_check_stamp(
@@ -67,8 +70,7 @@ async fn every_due_attempt_stamps_now() {
             "rejected" => serve_once(200, by_agent.clone()).await,
             _ => offline_url().await,
         };
-        let outcome =
-            run_remote_agent_help_check(&network, &settings_path, true, &url, now()).await;
+        let outcome = run_remote_agent_help_check(&network, &target, true, &url, now()).await;
         match (label, &outcome) {
             ("accepted", RemoteAgentHelpCheck::Accepted) => {
                 let cached = crate::config::settings::load_remote_agent_help_file(&settings_path);

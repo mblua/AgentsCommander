@@ -11,7 +11,7 @@
 //! blocking-menu patterns (`run_remote_blocking_menus_startup`); that download never
 //! notifies and applies at the next start.
 
-use std::path::Path;
+use crate::config::settings::SettingsFileTarget;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -395,7 +395,7 @@ async fn fetch_remote_blocking_menus(
 /// stays literal and a retry storm is impossible.
 pub(crate) async fn run_remote_blocking_menus_check(
     network: &crate::network::OutboundNetwork,
-    settings_path: &Path,
+    target: &SettingsFileTarget,
     enabled: bool,
     url: &str,
     now: DateTime<Utc>,
@@ -403,10 +403,7 @@ pub(crate) async fn run_remote_blocking_menus_check(
     if !enabled {
         return RemoteMenusCheck::Disabled;
     }
-    if !interval_elapsed(
-        crate::config::settings::read_remote_blocking_menus_check_stamp(settings_path),
-        now,
-    ) {
+    if !interval_elapsed(target.read_remote_blocking_menus_check_stamp(), now) {
         return RemoteMenusCheck::NotDue;
     }
 
@@ -426,12 +423,7 @@ pub(crate) async fn run_remote_blocking_menus_check(
                 match crate::config::settings::accept_remote_blocking_menus_response(status, &body)
                 {
                     Err(reason) => RemoteMenusCheck::Rejected(reason),
-                    Ok(file) => match crate::config::settings::write_remote_blocking_menus_cache(
-                        settings_path,
-                        file,
-                        url,
-                        now,
-                    ) {
+                    Ok(file) => match target.write_remote_blocking_menus_cache(file, url, now) {
                         Ok(()) => RemoteMenusCheck::Accepted,
                         Err(error) => RemoteMenusCheck::WriteFailed(error),
                     },
@@ -440,9 +432,7 @@ pub(crate) async fn run_remote_blocking_menus_check(
         },
     };
 
-    if let Err(error) =
-        crate::config::settings::write_remote_blocking_menus_check_stamp(settings_path, now)
-    {
+    if let Err(error) = target.write_remote_blocking_menus_check_stamp(now) {
         log::debug!("[remote-menus] could not write the throttle stamp: {error}");
     }
     outcome
@@ -452,7 +442,7 @@ pub(crate) async fn run_remote_blocking_menus_check(
 /// flag, then hand the rest to `run_remote_blocking_menus_check`.
 pub(crate) async fn run_remote_blocking_menus_for_app<H: UpdateCheckHost>(
     app: &H,
-    settings_path: &Path,
+    target: &SettingsFileTarget,
     url: &str,
     now: DateTime<Utc>,
 ) -> RemoteMenusCheck {
@@ -462,19 +452,19 @@ pub(crate) async fn run_remote_blocking_menus_for_app<H: UpdateCheckHost>(
         settings.remote_blocking_menus_enabled
     };
     let network = app.outbound_network();
-    run_remote_blocking_menus_check(&network, settings_path, enabled, url, now).await
+    run_remote_blocking_menus_check(&network, target, enabled, url, now).await
 }
 
 /// #1925 - the detached startup wrapper. Fail-silent: an accepted download logs one info
 /// line, every other outcome logs at debug, and this never returns an error to the caller.
 pub async fn run_remote_blocking_menus_startup<H: UpdateCheckHost>(app: H) {
-    let Some(settings_path) = crate::config::settings::settings_path() else {
+    let Some(target) = crate::config::settings::instance_settings_target() else {
         log::debug!("[remote-menus] no settings path; skipping the remote download");
         return;
     };
     let outcome = run_remote_blocking_menus_for_app(
         &app,
-        &settings_path,
+        &target,
         crate::config::settings::REMOTE_BLOCKING_MENUS_URL,
         Utc::now(),
     )
@@ -542,7 +532,7 @@ async fn fetch_remote_agent_help(
 /// the 24 h throttle stays literal and a retry storm is impossible.
 pub(crate) async fn run_remote_agent_help_check(
     network: &crate::network::OutboundNetwork,
-    settings_path: &Path,
+    target: &SettingsFileTarget,
     enabled: bool,
     url: &str,
     now: DateTime<Utc>,
@@ -550,10 +540,7 @@ pub(crate) async fn run_remote_agent_help_check(
     if !enabled {
         return RemoteAgentHelpCheck::Disabled;
     }
-    if !interval_elapsed(
-        crate::config::settings::read_remote_agent_help_check_stamp(settings_path),
-        now,
-    ) {
+    if !interval_elapsed(target.read_remote_agent_help_check_stamp(), now) {
         return RemoteAgentHelpCheck::NotDue;
     }
 
@@ -564,12 +551,7 @@ pub(crate) async fn run_remote_agent_help_check(
             Ok((status, body)) => {
                 match crate::config::settings::accept_remote_agent_help_response(status, &body) {
                     Err(reason) => RemoteAgentHelpCheck::Rejected(reason),
-                    Ok(file) => match crate::config::settings::write_remote_agent_help_cache(
-                        settings_path,
-                        file,
-                        url,
-                        now,
-                    ) {
+                    Ok(file) => match target.write_remote_agent_help_cache(file, url, now) {
                         Ok(()) => RemoteAgentHelpCheck::Accepted,
                         Err(error) => RemoteAgentHelpCheck::WriteFailed(error),
                     },
@@ -578,9 +560,7 @@ pub(crate) async fn run_remote_agent_help_check(
         },
     };
 
-    if let Err(error) =
-        crate::config::settings::write_remote_agent_help_check_stamp(settings_path, now)
-    {
+    if let Err(error) = target.write_remote_agent_help_check_stamp(now) {
         log::debug!("[agent-help] could not write the throttle stamp: {error}");
     }
     outcome
@@ -589,7 +569,7 @@ pub(crate) async fn run_remote_agent_help_check(
 /// #2133 - the detached startup wrapper. Fail-silent: an accepted download logs one info line,
 /// every other outcome logs at debug, and this never returns an error to the caller.
 pub async fn run_remote_agent_help_startup<H: UpdateCheckHost>(app: H) {
-    let Some(settings_path) = crate::config::settings::settings_path() else {
+    let Some(target) = crate::config::settings::instance_settings_target() else {
         log::debug!("[agent-help] no settings path; skipping the remote download");
         return;
     };
@@ -601,7 +581,7 @@ pub async fn run_remote_agent_help_startup<H: UpdateCheckHost>(app: H) {
     let network = app.outbound_network();
     let outcome = run_remote_agent_help_check(
         &network,
-        &settings_path,
+        &target,
         enabled,
         crate::config::settings::REMOTE_AGENT_HELP_URL,
         Utc::now(),

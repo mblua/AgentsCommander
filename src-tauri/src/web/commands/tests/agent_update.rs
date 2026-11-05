@@ -691,10 +691,10 @@ async fn agent_update_cancel_transport_parity() {
 
 #[tokio::test]
 async fn e2432_p02_browser_routes_share_physical_source_flow() {
-    use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+    use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     use crate::config::settings::SettingsOwner;
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(temp.path());
     std::fs::write(&path, serde_json::to_vec(&AppSettings::default()).unwrap()).unwrap();
     std::fs::write(
         temp.path().join(AGENTS_INSTANCE_FILE_NAME),
@@ -745,12 +745,12 @@ async fn e2432_p02_browser_routes_share_physical_source_flow() {
 
 #[tokio::test]
 async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
-    use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+    use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     use crate::config::settings::{SettingsOwner, SourceKind};
     use std::time::Duration;
     use tauri::Listener;
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(temp.path());
     let project = temp.path().join("project");
     std::fs::create_dir(&project).unwrap();
     let initial = AppSettings {

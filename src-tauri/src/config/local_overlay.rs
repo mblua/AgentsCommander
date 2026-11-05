@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 use crate::filesystem::{context_templates, documents};
 
 /// The name of the JSON overlay file, read next to the base `settings.json`.
+#[cfg(test)]
 const SETTINGS_LOCAL_FILE_NAME: &str = "settings.50.personal.no-git.json";
 
 /// The suffix that turns `<name>.md` into its operator-owned override.
@@ -366,6 +367,7 @@ impl LocalSettingsOverlay {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn load_and_merge_paired(
         settings_path: &Path,
         base: &mut Value,
@@ -375,7 +377,26 @@ impl LocalSettingsOverlay {
         pairs: &[PairedLeaf],
     ) -> Self {
         let path = settings_path.with_file_name(SETTINGS_LOCAL_FILE_NAME);
-        let contents = match documents::read_config_document(&path) {
+        Self::load_and_merge_overlay_path_paired(
+            &path,
+            base,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            pairs,
+        )
+    }
+
+    /// Reads the supplied overlay pathname and records the displaced base values.
+    pub(crate) fn load_and_merge_overlay_path_paired(
+        overlay_path: &Path,
+        base: &mut Value,
+        ineligible_disk: &[&str],
+        ineligible_legacy: &[&str],
+        derived: &[DerivedIdClosure],
+        pairs: &[PairedLeaf],
+    ) -> Self {
+        let contents = match documents::read_config_document(overlay_path) {
             Ok(contents) => contents,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => return Self::rejected(OverlayRejection::Unreadable(e.to_string())),

@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
 use crate::config::settings::{
-    begin_project_paths_transaction_at_path, load_settings_for_cli_strict,
-    project_state_has_structural, resync_project_state_from_runtime, settings_path,
+    instance_settings_target, load_settings_for_cli_strict, project_state_has_structural,
+    resync_project_state_from_runtime,
 };
 
 #[derive(Args)]
@@ -50,11 +50,11 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
             return 1;
         }
     };
-    let Some(path) = settings_path() else {
+    let Some(target) = instance_settings_target() else {
         eprintln!("Error: Could not determine settings directory");
         return 1;
     };
-    let mut transaction = match begin_project_paths_transaction_at_path(&settings, &path) {
+    let mut transaction = match target.begin_project_paths(&settings) {
         Ok(token) => token,
         Err(error) => {
             eprintln!("Error: {error}");

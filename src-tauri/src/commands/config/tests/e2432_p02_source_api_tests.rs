@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 fn fixture() -> (tempfile::TempDir, SettingsState) {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(temp.path());
     let settings = AppSettings {
         root_token: Some("P02-TEST-SECRET".into()),
         ..AppSettings::default()
@@ -149,7 +149,7 @@ async fn e2432_p02_contextless_default_ticket_and_source_decoys() {
     // Same stable key AND BASE in another physical file cannot donate B or slots.
     let catalog_source = crate::config::settings::list_agent_files(
         &owner.current_snapshot().await.unwrap(),
-        &_temp.path().join(SETTINGS_FILE_NAME),
+        &crate::config::settings::settings_fixture_path(_temp.path()),
     )
     .unwrap()
     .sources[0]
@@ -264,7 +264,7 @@ async fn e2432_p02_project_personal_actual_save_and_primary_drift() {
     for dir in [&instance, &project, &second] {
         std::fs::create_dir(dir).unwrap();
     }
-    let path = instance.join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(&instance);
     let mut settings = AppSettings {
         project_paths: vec![project.to_string_lossy().into_owned()],
         ..AppSettings::default()
@@ -387,7 +387,7 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
     use crate::config::settings::{AgentFileSaveOutcome, SourceScope};
     use tauri::{Listener, Manager};
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(temp.path());
     let project = temp.path().join("project");
     std::fs::create_dir(&project).unwrap();
     let initial = AppSettings {

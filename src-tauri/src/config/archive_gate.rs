@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::settings::SettingsState;
 
 pub(crate) trait ArchiveGateHost {
@@ -139,7 +138,7 @@ where
     F: FnOnce(&crate::config::settings::AppSettings),
 {
     let settings = app.archive_settings();
-    let (mut s, permission, path) = loop {
+    let (mut s, permission, target) = loop {
         // Target acquisition never waits while a settings guard is held.
         prepare().await?;
         let s = tokio::time::timeout(Duration::from_secs(5), settings.write())
@@ -152,11 +151,10 @@ where
                  bug, not a slow disk."
                 )
             })?;
-        let path = crate::config::config_dir()
-            .ok_or("Could not determine settings directory")?
-            .join(SETTINGS_FILE_NAME);
+        let target = crate::config::settings::instance_settings_target()
+            .ok_or("Could not determine settings directory")?;
         if let Some(permission) = admit().await? {
-            break (s, permission, path);
+            break (s, permission, target);
         }
         drop(s);
         tokio::task::yield_now().await;
@@ -167,8 +165,7 @@ where
     // The managed guard stays owned by this future; the blocking closure owns
     // only the file token and captures, and releases it before the await ends.
     let (permission, written) = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let mut transaction =
-            crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
+        let mut transaction = target.begin_project_paths(&current)?;
         let mut candidate = transaction.fresh_settings().clone();
         if crate::config::settings::project_state_has_structural(&candidate) {
             return Err(format!(

@@ -142,6 +142,17 @@ fn instance_families_happy_path() {
         crate::config::naming_migration::ScopeStatus::Complete
     );
 
+    let ordered_steps: Vec<_> = record
+        .steps
+        .iter()
+        .map(|step| (step.from.as_str(), step.to.as_str()))
+        .collect();
+    assert_eq!(ordered_steps, INSTANCE_FAMILIES_FIXTURE);
+    assert!(record.steps.iter().all(|step| {
+        step.state == crate::config::naming_migration::StepState::Renamed
+            && step.set_aside.is_none()
+    }));
+
     let before = directory_snapshot(dir);
     crate::preflight_config_startup_in(&summary_owner, dir).expect("second run is a no-op");
     assert_eq!(

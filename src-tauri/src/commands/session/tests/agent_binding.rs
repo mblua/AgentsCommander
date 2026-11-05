@@ -1,7 +1,7 @@
 use super::*;
 
 fn physical_binding_test_settings(dir: &std::path::Path) -> AppSettings {
-    let path = dir.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(dir);
     std::fs::write(&path, serde_json::to_vec(&test_settings()).unwrap()).unwrap();
     crate::config::settings::load_settings_from_path(&path)
 }
@@ -110,9 +110,7 @@ async fn derived_agent_id_binding_creation_restart_and_plain_shell() {
 #[tokio::test]
 async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() {
     let physical = tempfile::tempdir().unwrap();
-    let path = physical
-        .path()
-        .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(physical.path());
     let current = physical_binding_test_settings(physical.path());
     let before = crate::config::settings::bootstrap_binding_revision(&current, "claude").unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -290,9 +288,7 @@ async fn derived_agent_id_binding_wake_restore_preserves_birth_seed_and_origin()
 async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compatibility() {
     for case in ["removed", "ambiguous", "unreadable", "missing-physical"] {
         let physical = tempfile::tempdir().unwrap();
-        let path = physical
-            .path()
-            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        let path = crate::config::settings::settings_fixture_path(physical.path());
         let mut raw = serde_json::to_value(test_settings()).unwrap();
         if case == "removed" {
             raw["agents"] = serde_json::json!([]);

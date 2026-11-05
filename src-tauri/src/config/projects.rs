@@ -19,11 +19,11 @@ use super::ac_root::{ac_root_for_project, existing_ac_root, has_ac_root};
 use super::settings::AppSettings;
 
 #[cfg(test)]
-pub(crate) use super::settings::project_path::{
+pub(crate) use super::settings::{
     decode_instance_relative, encode_instance_relative, resolve_registrations, CandidateResolver,
     DirectoryIdentity, FsCandidateResolver, RawPair, RelDecodeError, RepairKind, SideOutcome,
 };
-pub(crate) use super::settings::project_path::{
+pub(crate) use super::settings::{
     display_canonical, normalize_for_compare, IssueKind, ProjectPathPersistenceState,
     ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
@@ -195,21 +195,24 @@ impl NewProjectSettingsStore {
     fn begin(
         &self,
         settings: &AppSettings,
-    ) -> Result<Option<crate::config::settings::ProjectPathsWriteTransaction>, ProjectError> {
-        let path = match self {
+    ) -> Result<Option<crate::config::settings::SettingsProjectTransaction>, ProjectError> {
+        let target: crate::config::settings::SettingsFileTarget = match self {
             #[cfg(test)]
             Self::CallerOwned => return Ok(None),
             #[cfg(test)]
-            Self::Path(path) => path.clone(),
+            Self::Path(path) => crate::config::settings::SettingsFileTarget::for_test_path(path),
             #[cfg(not(test))]
-            Self::Production => crate::config::settings::settings_path().ok_or_else(|| {
-                ProjectError::ProjectSettingsFailed {
-                    operation: "refresh",
-                    error: "Could not determine settings directory".to_string(),
-                }
-            })?,
+            Self::Production => {
+                crate::config::settings::instance_settings_target().ok_or_else(|| {
+                    ProjectError::ProjectSettingsFailed {
+                        operation: "refresh",
+                        error: "Could not determine settings directory".to_string(),
+                    }
+                })?
+            }
         };
-        crate::config::settings::begin_project_paths_transaction_at_path(settings, &path)
+        target
+            .begin_project_paths(settings)
             .map(Some)
             .map_err(|error| ProjectError::ProjectSettingsFailed {
                 operation: "refresh",
@@ -231,9 +234,9 @@ fn register_new_project_with_store(
         )
     })?;
     let mut transaction = store.begin(settings)?;
-    let before_raw = transaction
+    let checkpoint: Option<crate::config::settings::SettingsProjectCheckpoint> = transaction
         .as_ref()
-        .map(crate::config::settings::ProjectPathsWriteTransaction::raw_project_projection)
+        .map(crate::config::settings::SettingsProjectTransaction::checkpoint)
         .transpose()
         .map_err(|error| ProjectError::ProjectSettingsFailed {
             operation: "refresh",
@@ -273,8 +276,8 @@ fn register_new_project_with_store(
     }
     if let Err(error) = prepared.revalidate() {
         if saved {
-            if let (Some(token), Some(raw)) = (&mut transaction, &before_raw) {
-                match token.restore_raw_project_projection(raw) {
+            if let (Some(token), Some(checkpoint)) = (&mut transaction, &checkpoint) {
+                match token.restore_checkpoint(checkpoint) {
                     Ok(written) => *settings = written,
                     Err(rollback_error) => {
                         *settings = token.fresh_settings().clone();
