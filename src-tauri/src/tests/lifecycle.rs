@@ -198,6 +198,18 @@ async fn e2992_p51_adapters_owner_denied() {
     p51_close_owner(denied).await;
 }
 
+fn p51_denied_app(denied: &SettingsState) -> tauri::App<tauri::test::MockRuntime> {
+    // Deliberately omit network and manager state: denied settings must return
+    // before touching either service, the detector, or any commit path.
+    tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .manage(Arc::clone(denied))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn e2992_p51_invalid_no_co_managed_budget() {
     use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
@@ -214,15 +226,7 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
         ..AppSettings::default()
     })
     .await;
-    // Deliberately omit network and manager state: denied settings must return
-    // before touching either service, the detector, or any commit path.
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&denied))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    let app = p51_denied_app(&denied);
     let (handle, _rx) =
         CoManagedSupervisorHandle::with_capture_state(fixture.owners.capture.clone());
     let id = uuid::Uuid::new_v4();
@@ -313,8 +317,16 @@ async fn e2992_p51_invalid_no_co_managed_budget() {
     .await;
     p51_close_owner(denied).await;
 
+    p51_ready_control_handles_secret(&fixture, endpoint, &hits).await;
+}
+
+async fn p51_ready_control_handles_secret(
+    fixture: &CoManagedFixture,
+    endpoint: String,
+    hits: &AtomicUsize,
+) {
     // Ready control: a secret is handled before any network request.
-    let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+    let (app, manager, registry) = co_managed_app(fixture, endpoint, true);
     let id = add_claude_session(
         &manager,
         &fixture.coordinator_cwd,
@@ -375,6 +387,62 @@ async fn p51_assert_restore_state(
         );
         assert!(owner.current_read().await.is_err());
     }
+}
+
+type P51Counter = Arc<std::sync::atomic::AtomicUsize>;
+type P51RestoreTask = Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send + 'static>;
+
+fn p51_restore_continuation(
+    mode: &'static str,
+    [body_entries, tail_entries, body_completions, tail_completions]: [&P51Counter; 4],
+    flag: &Arc<super::RestoreInProgress>,
+    observer: &Arc<RestoreObserverStartBarrier>,
+) -> P51RestoreTask {
+    let body_completions = Arc::clone(body_completions);
+    let tail_completions = Arc::clone(tail_completions);
+    let (body_entries, tail_entries, flag, observer) = (
+        Arc::clone(body_entries),
+        Arc::clone(tail_entries),
+        Arc::clone(flag),
+        Arc::clone(observer),
+    );
+    Box::new(move || -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(async move {
+            assert!(!flag.0.load(Ordering::SeqCst));
+            observer
+                .start("p51-independent", || {
+                    assert_eq!(tail_entries.fetch_add(1, Ordering::SeqCst), 0);
+                })
+                .unwrap();
+            p51_assert_restore_body_counts(mode, &body_entries, &body_completions);
+            assert_ne!(mode, "tail-panic", "tail panic control");
+            tail_completions.fetch_add(1, Ordering::SeqCst);
+        })
+    })
+}
+
+fn p51_assert_restore_counters(
+    mode: &str,
+    [body_entries, tail_entries, future_entries, body_completions, tail_completions]: [&P51Counter;
+        5],
+) {
+    assert_eq!(
+        body_entries.load(Ordering::SeqCst),
+        usize::from(mode != "invalid")
+    );
+    assert_eq!(tail_entries.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        future_entries.load(Ordering::SeqCst),
+        usize::from(!matches!(mode, "invalid" | "sync-panic"))
+    );
+    assert_eq!(
+        body_completions.load(Ordering::SeqCst),
+        usize::from(matches!(mode, "ready" | "tail-panic"))
+    );
+    assert_eq!(
+        tail_completions.load(Ordering::SeqCst),
+        usize::from(mode != "tail-panic")
+    );
 }
 
 // Production admission/lifecycle boundary; the concrete Wry body is not executed.
@@ -448,29 +516,17 @@ async fn p51_restore_lifecycle_case(mode: &'static str) {
             })
         })
     };
-    let continuation = {
-        let body_completions = Arc::clone(&body_completions);
-        let tail_completions = Arc::clone(&tail_completions);
-        let (body_entries, tail_entries, flag, observer) = (
-            Arc::clone(&body_entries),
-            Arc::clone(&tail_entries),
-            Arc::clone(&flag),
-            Arc::clone(&observer),
-        );
-        Box::new(move || -> futures::future::BoxFuture<'static, ()> {
-            Box::pin(async move {
-                assert!(!flag.0.load(Ordering::SeqCst));
-                observer
-                    .start("p51-independent", || {
-                        assert_eq!(tail_entries.fetch_add(1, Ordering::SeqCst), 0);
-                    })
-                    .unwrap();
-                p51_assert_restore_body_counts(mode, &body_entries, &body_completions);
-                assert_ne!(mode, "tail-panic", "tail panic control");
-                tail_completions.fetch_add(1, Ordering::SeqCst);
-            })
-        })
-    };
+    let continuation = p51_restore_continuation(
+        mode,
+        [
+            &body_entries,
+            &tail_entries,
+            &body_completions,
+            &tail_completions,
+        ],
+        &flag,
+        &observer,
+    );
     let restore = super::spawn_restore_startup::<tauri::async_runtime::JoinHandle<()>>(
         barrier,
         Arc::clone(&observer),
@@ -483,22 +539,15 @@ async fn p51_restore_lifecycle_case(mode: &'static str) {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        body_entries.load(Ordering::SeqCst),
-        usize::from(mode != "invalid")
-    );
-    assert_eq!(tail_entries.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        future_entries.load(Ordering::SeqCst),
-        usize::from(!matches!(mode, "invalid" | "sync-panic"))
-    );
-    assert_eq!(
-        body_completions.load(Ordering::SeqCst),
-        usize::from(matches!(mode, "ready" | "tail-panic"))
-    );
-    assert_eq!(
-        tail_completions.load(Ordering::SeqCst),
-        usize::from(mode != "tail-panic")
+    p51_assert_restore_counters(
+        mode,
+        [
+            &body_entries,
+            &tail_entries,
+            &future_entries,
+            &body_completions,
+            &tail_completions,
+        ],
     );
     assert!(!flag.0.load(Ordering::SeqCst));
     observer.start("p51-after-join", || {}).unwrap();
