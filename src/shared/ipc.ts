@@ -143,9 +143,8 @@ import type {
   CoManagedConfig,
   CoManagedState,
   AgentHelpFile,
-  PreflightTargetDescription,
-  PreflightTestSnapshot,
 } from "./types";
+import { createPreflightTestAPI } from "./preflightTestApi";
 import { decodeSessionSelection } from "./session-selection";
 
 export type { UiTerminalOperation };
@@ -569,18 +568,7 @@ export function assertCodingAgentMoveOrder(
 }
 
 /** #3516 - the saved preflight chain test; the same transport serves Tauri and WS. */
-export const PreflightTestAPI = {
-  describe: (agentId: string, profileLetter: string | null, replicaPath: string) =>
-    transport.invoke<PreflightTargetDescription>("describe_preflight_target",
-      { agentId, profileLetter, replicaPath }),
-  start: (agentId: string, profileLetter: string | null, replicaPath: string,
-          settingsRevision: string) =>
-    transport.invoke<string>("start_preflight_test",
-      { agentId, profileLetter, replicaPath, settingsRevision }),
-  get: (runId: string) => transport.invoke<PreflightTestSnapshot>("get_preflight_test", { runId }),
-  cancel: (runId: string) =>
-    transport.invoke<PreflightTestSnapshot>("cancel_preflight_test", { runId }),
-};
+export const PreflightTestAPI = createPreflightTestAPI(transport);
 
 export const SettingsAPI = {
   // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +
