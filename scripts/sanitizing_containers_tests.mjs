@@ -171,14 +171,16 @@ test('04 settings canonical references', t => {
     ['reference initializer', 'const N: &&str = &' + direct + ';'],
     ['relative import', 'use super::config::instance_artifacts::SETTINGS_FILE_NAME;'],
     ['relative renamed', 'use super::config::instance_artifacts::SETTINGS_FILE_NAME as N;'],
-    ['relative qualified', 'fn f() { let _ = super::config::instance_artifacts::SETTINGS_FILE_NAME; }'],
+    ['relative qualified', 'fn f() { let _ = ' +
+      'super::config::instance_artifacts::SETTINGS_FILE_NAME; }'],
   ];
   for (const [label, source] of cases) {
     const r = control(t, label, { [root + 'other.rs']: source }, 1, site('other.rs'));
     assert.ok(r.diagnostics.some(d => d.symbol?.includes('crate::config::instance_artifacts')));
   }
   for (const source of [
-    'mod config; use config::instance_artifacts::SETTINGS_FILE_NAME; fn f(){let _=SETTINGS_FILE_NAME;}',
+    'mod config; use config::instance_artifacts::SETTINGS_FILE_NAME; ' +
+      'fn f(){let _=SETTINGS_FILE_NAME;}',
     'mod config; fn f(){let _=config::instance_artifacts::SETTINGS_FILE_NAME;}',
   ]) control(t, 'bare crate root', { [root + 'lib.rs']: source }, 1, site('lib.rs'));
   for (const source of [
@@ -196,8 +198,10 @@ test('04 settings literal and homonyms', t => {
   control(t, 'exact filename', { [root + 'other.rs']:
     'const X: &str = "settings.30.instance.no-git.json";' }, 1, site('other.rs'));
   for (const [label, source] of [
-    ['comment', '// ' + direct], ['constant spelling string', 'const X: &str="SETTINGS_FILE_NAME";'],
-    ['unrelated homonym', 'const SETTINGS_FILE_NAME: &str="other"; fn f(){let _=SETTINGS_FILE_NAME;}'],
+    ['comment', '// ' + direct],
+    ['constant spelling string', 'const X: &str="SETTINGS_FILE_NAME";'],
+    ['unrelated homonym', 'const SETTINGS_FILE_NAME: &str="other"; ' +
+      'fn f(){let _=SETTINGS_FILE_NAME;}'],
     ['local shadow', 'use crate::config::instance_artifacts as a; ' +
       'fn f(a: Unrelated){let _=a::SETTINGS_FILE_NAME;}'],
     ['local let shadow', 'fn f(){let SETTINGS_FILE_NAME="other";let _=SETTINGS_FILE_NAME;}'],
@@ -283,7 +287,8 @@ test('04 settings immutable git and errors', t => {
   assert.ok(committed.diagnostics.some(d => d.path === root + 'other.rs' && d.line === 1));
   f.write(root + 'other.rs', ''); f.commit();
   assert.equal(containersGate(f.snapshot(base)).exit, 0);
-  t.diagnostic('Git snapshot sequence PASS/0 -> worktree PASS/0 -> commit FAIL/1 -> removal PASS/0');
+  t.diagnostic('Git snapshot sequence PASS/0 -> worktree PASS/0 -> ' +
+    'commit FAIL/1 -> removal PASS/0');
   const s = candidateSnapshot(), registryEntry = s.headTree.get('scripts/containers.json');
   const bytes = s.readBlob(registryEntry);
   const before = containersGate(s), settings = r => r.metrics.find(m => m.id === c.id);
@@ -299,7 +304,8 @@ test('04 settings immutable git and errors', t => {
   assert.equal(injected.headOid, s.headOid);
   assert.equal(injected.readBlob(registryEntry), bytes);
   t.diagnostic(JSON.stringify({ control: 'candidate HEAD memory injection', oid: s.headOid,
-    settingsBefore: settings(before), settingsAfter: settings(after), site: { path: root + 'lib.rs', line } }));
+    settingsBefore: settings(before), settingsAfter: settings(after),
+    site: { path: root + 'lib.rs', line } }));
   const without = snapshot => ({ ...snapshot, readBlob: e => e === registryEntry ?
     JSON.stringify({ version: 1, containers: parseRegistry(bytes).filter(p => p.id !== c.id) }) :
     snapshot.readBlob(e) });

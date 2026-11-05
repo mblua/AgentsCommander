@@ -5,10 +5,12 @@ import { scanRust, createRustScanner } from './sanitizing_rust_scan.mjs';
 import { qualified, resolveAlias } from './sanitizing_gate_support.mjs';
 
 const registryPath = 'scripts/containers.json';
-const writerPath = /^(?:(?:std|tokio)::fs::(?:write|File::create|OpenOptions::new)|(?:fs::)?write|(?:File::create|OpenOptions::new))$/;
+const writerPath = new RegExp('^(?:(?:std|tokio)::fs::(?:write|File::create|OpenOptions::new)|' +
+  '(?:fs::)?write|(?:File::create|OpenOptions::new))$');
 const rustSource = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 const validPath = p => typeof p === 'string' && /^src-tauri\/src\//.test(p) &&
-  !p.includes('..') && !p.includes(String.fromCharCode(92));
+  !p.includes('..') && !p.includes(String.fromCharCode(92)) &&
+  !p.includes('//') && !p.split('/').includes('.');
 export function parseRegistry(text) {
   let doc;
   try { doc = JSON.parse(text); } catch { throw new GateError('containers.json: invalid JSON'); }
@@ -22,9 +24,11 @@ export function parseRegistry(text) {
         !validPath(c.owner) || !c.owner.startsWith(c.scope) || !c.owner.endsWith('.rs') ||
         c.externalLiteralBaseline !== 0 ||
         !Number.isInteger(c.writerInventory?.files) || c.writerInventory.files < 0 ||
-        !Number.isInteger(c.writerInventory?.sites) || c.writerInventory.sites < c.writerInventory.files ||
+        !Number.isInteger(c.writerInventory?.sites) ||
+        c.writerInventory.sites < c.writerInventory.files ||
         names.has(c.scope + c.name))
-      throw new GateError('containers.json: invalid/duplicate identity, owner, zero baseline or inventory');
+      throw new GateError('containers.json: invalid/duplicate identity, owner, ' +
+        'zero baseline or inventory');
     validatePolicy(c);
     ids.add(c.id); names.add(c.scope + c.name);
   }
@@ -44,7 +48,8 @@ function validatePolicy(c) {
     throw new GateError('containers.json: constant policy requires ownerModule:true');
   if (c.constantPaths !== undefined && (!Array.isArray(c.constantPaths) ||
       !c.constantPaths.length || new Set(c.constantPaths).size !== c.constantPaths.length ||
-      c.constantPaths.some(p => typeof p !== 'string' || !p.startsWith('crate::') || !rustPath.test(p))))
+      c.constantPaths.some(p => typeof p !== 'string' ||
+        !p.startsWith('crate::') || !rustPath.test(p))))
     throw new GateError('containers.json: invalid constantPaths');
   if (c.metadataPolicy !== undefined && (c.metadataPolicy !== 'instance-settings-v1' ||
       c.id !== 'Instance/Settings' || c.name !== 'settings.30.instance.no-git.json' ||
@@ -76,11 +81,13 @@ function metadataExemptions(path, scan, c) {
   const items = scan.items.filter(i => !i.testOnly && i.scope === scan.root);
   const tokens = i => scan.tokens.slice(i.first, i.last + 1);
   const invalid = reason => { throw new GateError(path + ': metadata shape: ' + reason); };
-  const permit = ts => ts.filter(t => settingsNames.includes(t.name)).forEach(t => exempt.add(t.start));
+  const permit = ts => ts.filter(t => settingsNames.includes(t.name))
+    .forEach(t => exempt.add(t.start));
   if (path.endsWith('/names.rs')) {
     const shapes = [
       'const SETTINGS_FILE_NAME : & str = SETTINGS_TARGET_NAME ;',
-      'const SETTINGS_TARGET_NAME : & str = layered_name ! ( "settings" , instance , no_git , "json" ) ;',
+      'const SETTINGS_TARGET_NAME : & str = ' +
+        'layered_name ! ( "settings" , instance , no_git , "json" ) ;',
     ];
     for (const [n, name] of settingsNames.entries()) {
       const matches = items.filter(i => i.kind === 'const' && i.name === name);
@@ -94,7 +101,8 @@ function metadataExemptions(path, scan, c) {
   for (const item of imports) {
     const ts = tokens(item), scope = scan.tokens[item.first].scope;
     for (const leaf of scope.imports) {
-      if (!settingsNames.includes(leaf.name) && !settingsNames.some(n => leaf.target.endsWith('::' + n)))
+      if (!settingsNames.includes(leaf.name) &&
+          !settingsNames.some(n => leaf.target.endsWith('::' + n)))
         continue;
       // Scope imports include other use items; only inspect leaves actually occurring here.
       const sites = ts.filter(t => t.name === leaf.name);
@@ -120,8 +128,10 @@ function metadataExemptions(path, scan, c) {
     if (end < i) invalid('unbalanced row');
     const row = body.slice(i, end + 1);
     if (row.some(t => t.name === 'SETTINGS_FILE_NAME')) {
-      const shape = 'InstanceArtifact { name : SETTINGS_FILE_NAME , kind : ArtifactKind :: File , ' +
-        'disposition : Disposition :: Ignore , comment : "# AgentsCommander: application settings" , }';
+      const shape = 'InstanceArtifact { name : SETTINGS_FILE_NAME , ' +
+        'kind : ArtifactKind :: File , ' +
+        'disposition : Disposition :: Ignore , ' +
+        'comment : "# AgentsCommander: application settings" , }';
       if (tokenText(row) !== shape) invalid('settings row');
       rows++; permit(row);
     }
@@ -157,6 +167,13 @@ function constantReferences(path, scan, c, exempt) {
       if (b) { binding = b; bindingScope = s; break; }
       glob ||= s.globs.length > 0;
     }
+    if (binding?.ambiguous) {
+      for (let b = binding; b; b = b.previous) if (b.target) {
+        const candidate = canonical([b.target, ...parts.slice(1)].join('::'),
+          moduleChain(path, b.scope));
+        if (relevant.has(candidate)) return { path: candidate, ambiguous: true };
+      }
+    }
     const declared = scan.items.find(i => i.name === first && i.scope === bindingScope &&
       ['mod', 'const', 'static'].includes(i.kind));
     // Module declarations and module-level const/static names have canonical identity
@@ -185,7 +202,8 @@ function constantReferences(path, scan, c, exempt) {
   const add = (t, r) => {
     if (exempt.has(t.start)) return;
     const candidate = relevant.has(r.path);
-    const ambiguous = r.ambiguous && (candidate || settingsNames.includes(t.name) ||
+    const ambiguous = r.ambiguous && (r.relevantAmbiguity || candidate ||
+      settingsNames.includes(t.name) ||
       [...relevant].some(p => p.endsWith('::' + t.name)));
     if (candidate || ambiguous) references.push({ path, line: t.line, symbol: r.path,
       ambiguous: !!r.ambiguous, reason: r.ambiguous ? 'ambiguous relevant alias' : undefined });
@@ -201,7 +219,8 @@ function constantReferences(path, scan, c, exempt) {
       const site = scan.tokens.slice(item.first, item.last + 1).find(t =>
         t.name === leaf.target.split('::').at(-1) || leaf.glob && t.text === '*');
       if (site) add(site, { path: relevant.has(target) ? target : r.path,
-        ambiguous: r.ambiguous || leaf.glob && [...relevant].some(p =>
+        ambiguous: r.ambiguous || leaf.glob,
+        relevantAmbiguity: leaf.glob && [...relevant].some(p =>
           p.startsWith(target?.slice(0, -1))) });
     }
   }
@@ -228,7 +247,8 @@ export function measureSource(path, text, scan = scanRust(path, text)) {
       writers.push({ line: t.line, symbol: r.path, ambiguous: !!r.ambiguous });
     i = r.end - 1;
   }
-  return { literals: ts.filter(t => t.kind === 'string').map(t => ({ value: t.value, line: t.line })),
+  return { literals: ts.filter(t => t.kind === 'string')
+    .map(t => ({ value: t.value, line: t.line })),
     writers };
 }
 
@@ -243,6 +263,9 @@ export function runGate(snapshot) {
     for (const c of containers) if (c.ownerModule && ![...snapshot.headTree.keys()].some(p =>
       p.startsWith(c.owner.slice(0, -3) + '/')))
       throw new GateError('containers.json: owner subtree missing: ' + c.owner);
+    for (const c of containers) if (c.metadataPolicy)
+      for (const p of [artifactRoot + '.rs', artifactRoot + '/names.rs'])
+        if (!snapshot.headTree.has(p)) throw new GateError('metadata source missing: ' + p);
     const measurements = new Map();
     const scan = createRustScanner(snapshot.headTree, snapshot.readBlob);
     for (const p of [...snapshot.headTree.keys()].filter(rustSource).sort(codeOrder)) {
@@ -255,7 +278,8 @@ export function runGate(snapshot) {
       !registeredScopes.some(scope => p.startsWith(scope)));
     diagnostics.push({ gate: '04', status: 'WARN', rule: 'unclassified_writers',
       path: '<unclassified>', line: 1,
-      reason: 'Syntactic writers outside registered scopes need identity review; no global prohibition.',
+      reason: 'Syntactic writers outside registered scopes need identity review; ' +
+        'no global prohibition.',
       files: unknown.length, sites: unknown.reduce((n, [,m]) => n + m.writers.length, 0),
       paths: unknown.map(([p]) => p) });
     for (const c of containers) {
@@ -285,9 +309,11 @@ export function runGate(snapshot) {
         rule: 'external_container_constant', ...t, identity: c.id,
         reason: t.reason ?? 'Registered constant belongs to ' + c.owner,
         remedy: 'Use the typed owner API.' });
-      if (scopedWriters.files !== c.writerInventory.files || scopedWriters.sites !== c.writerInventory.sites)
+      if (scopedWriters.files !== c.writerInventory.files ||
+          scopedWriters.sites !== c.writerInventory.sites)
         diagnostics.push({ gate: '04', status: 'WARN', rule: 'writer_inventory_changed',
-          identity: c.id, path: c.scope, line: 1, reason: 'Review syntactic scope writers; other containers are not classified yet.' });
+          identity: c.id, path: c.scope, line: 1,
+          reason: 'Review syntactic scope writers; other containers are not classified yet.' });
     }
     snapshot.assertStableHead();
     const fail = diagnostics.some(d => d.status === 'FAIL');
@@ -295,7 +321,8 @@ export function runGate(snapshot) {
       baseOid: snapshot.baseOid, headOid: snapshot.headOid, inventory, metrics, diagnostics };
   } catch (e) {
     return { gate: '04', status: 'ERROR', exit: e.exit ?? 3,
-      diagnostics: [{ gate: '04', reason: e.message, remedy: 'Repair registry/Git input and rerun.' }] };
+      diagnostics: [{ gate: '04', reason: e.message,
+        remedy: 'Repair registry/Git input and rerun.' }] };
   }
 }
 if (isMain(import.meta.url)) process.exitCode = await gateCli(runGate);
