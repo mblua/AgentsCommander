@@ -468,9 +468,8 @@ fn tokenized_redirection_targets_stay_out_of_pi_command_positions() {
     }
 }
 
-#[test]
-fn tokenized_group_and_control_position_transitions_stay_frozen() {
-    let non_candidates = [
+fn frozen_transition_non_candidates() -> [(Vec<String>, Option<CodingAgentKind>); 18] {
+    [
         (
             strings(&["/C", ")", "pi", "claude"]),
             Some(CodingAgentKind::Claude),
@@ -543,7 +542,12 @@ fn tokenized_group_and_control_position_transitions_stay_frozen() {
             strings(&["/C", "echo&&)start(pi", "--model", "gemini-pro"]),
             None,
         ),
-    ];
+    ]
+}
+
+#[test]
+fn tokenized_group_and_control_position_transitions_stay_frozen() {
+    let non_candidates = frozen_transition_non_candidates();
     for (args, expected_kind) in non_candidates {
         assert_eq!(
             locate_pi_command("cmd.exe", &args),

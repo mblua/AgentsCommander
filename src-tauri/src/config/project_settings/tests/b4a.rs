@@ -666,9 +666,9 @@ fn b4a_assert_rows_once(content: &str, label: &str) {
     }
 }
 
-#[test]
-fn the_scope_ignores_the_new_names_before_it_renames_anything() {
-    // The pre-upgrade shape, a project that is never registered.
+/// The pre-upgrade shape, a project that is never registered. Returns the
+/// fixture so it lives as long as the calling test.
+fn b4a_assert_base_sweep_ignores_new_names() -> B4aFixture {
     let f = b4a_fixture();
     let ac = f.project.join(".ac");
     std::fs::write(
@@ -707,6 +707,69 @@ fn the_scope_ignores_the_new_names_before_it_renames_anything() {
             "{relative}: {source}"
         );
     }
+    f
+}
+
+/// Interleaved: the registration writer and a user edit land between the
+/// sweep's read and its append. Returns the fixture so it lives as long as
+/// the calling test.
+fn b4a_assert_interleaved_sweep_keeps_every_line() -> B4aFixture {
+    let expected_rules: Vec<String> = {
+        let fresh = b4a_fixture();
+        let fresh_ac = fresh.project.join(".ac");
+        crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&fresh_ac, &[])
+            .expect("writer");
+        b4a_gitignore(&fresh.project)
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect()
+    };
+    let m = b4a_fixture();
+    let ac = m.project.join(".ac");
+    let ac_root = b4a_ac_root(&m.project);
+    std::fs::write(ac.join(".gitignore"), "user-line-2717\n").unwrap();
+    std::fs::write(legacy_settings_path(&m.project), B4A_LEGACY_BYTES).unwrap();
+    let armed = naming_migration::pause::arm("before_gitignore_append", &ac_root);
+    let (project, cfg) = (m.project.clone(), m.cfg.clone());
+    let sweep = std::thread::spawn(move || load_workgroup_groups_in(&project, Some(&cfg)));
+    armed
+        .reached
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the sweep reached its append");
+    crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
+        .expect("writer in the window");
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(ac.join(".gitignore"))
+            .unwrap();
+        file.write_all(b"user-line-late\n").unwrap();
+    }
+    armed.release.send(()).unwrap();
+    sweep.join().unwrap().expect("the sweep completes");
+    let content = b4a_gitignore(&m.project);
+    let count = |rule: &str| content.lines().filter(|l| *l == rule).count();
+    for user in ["user-line-2717", "user-line-late"] {
+        assert_eq!(count(user), 1, "interleaved: the user line {user} was lost");
+    }
+    for rule in &expected_rules {
+        let n = count(rule);
+        let is_4_4 = B4A_ROWS.iter().any(|(pattern, _)| pattern == rule);
+        assert!(n >= 1, "interleaved: the writer's rule {rule} was lost");
+        assert!(
+            n <= if is_4_4 { 2 } else { 1 },
+            "interleaved: {rule} appears {n} times"
+        );
+    }
+    m
+}
+
+#[test]
+fn the_scope_ignores_the_new_names_before_it_renames_anything() {
+    // The pre-upgrade shape, a project that is never registered.
+    let _f = b4a_assert_base_sweep_ignores_new_names();
 
     // A failed sweep refuses and renames nothing.
     let g = b4a_fixture();
@@ -768,53 +831,5 @@ fn the_scope_ignores_the_new_names_before_it_renames_anything() {
     // Interleaved: the registration writer and a user edit land between the
     // sweep's read and its append. Nothing is lost; a 4.4 row may repeat
     // once; no other rule repeats.
-    let expected_rules: Vec<String> = {
-        let fresh = b4a_fixture();
-        let fresh_ac = fresh.project.join(".ac");
-        crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&fresh_ac, &[])
-            .expect("writer");
-        b4a_gitignore(&fresh.project)
-            .lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-            .map(str::to_string)
-            .collect()
-    };
-    let m = b4a_fixture();
-    let ac = m.project.join(".ac");
-    let ac_root = b4a_ac_root(&m.project);
-    std::fs::write(ac.join(".gitignore"), "user-line-2717\n").unwrap();
-    std::fs::write(legacy_settings_path(&m.project), B4A_LEGACY_BYTES).unwrap();
-    let armed = naming_migration::pause::arm("before_gitignore_append", &ac_root);
-    let (project, cfg) = (m.project.clone(), m.cfg.clone());
-    let sweep = std::thread::spawn(move || load_workgroup_groups_in(&project, Some(&cfg)));
-    armed
-        .reached
-        .recv_timeout(std::time::Duration::from_secs(60))
-        .expect("the sweep reached its append");
-    crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
-        .expect("writer in the window");
-    {
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(ac.join(".gitignore"))
-            .unwrap();
-        file.write_all(b"user-line-late\n").unwrap();
-    }
-    armed.release.send(()).unwrap();
-    sweep.join().unwrap().expect("the sweep completes");
-    let content = b4a_gitignore(&m.project);
-    let count = |rule: &str| content.lines().filter(|l| *l == rule).count();
-    for user in ["user-line-2717", "user-line-late"] {
-        assert_eq!(count(user), 1, "interleaved: the user line {user} was lost");
-    }
-    for rule in &expected_rules {
-        let n = count(rule);
-        let is_4_4 = B4A_ROWS.iter().any(|(pattern, _)| pattern == rule);
-        assert!(n >= 1, "interleaved: the writer's rule {rule} was lost");
-        assert!(
-            n <= if is_4_4 { 2 } else { 1 },
-            "interleaved: {rule} appears {n} times"
-        );
-    }
+    let _m = b4a_assert_interleaved_sweep_keeps_every_line();
 }

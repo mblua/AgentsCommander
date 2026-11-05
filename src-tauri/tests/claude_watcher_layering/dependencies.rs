@@ -257,6 +257,40 @@ impl DependencyVisitor<'_> {
         }
     }
 
+    fn bind_extern_crates(
+        &mut self,
+        local: &mut BTreeMap<String, BindingTarget>,
+        extern_crates: Vec<&ItemExternCrate>,
+    ) -> Result<(), GuardError> {
+        for item in extern_crates {
+            let crate_name = unraw(&item.ident);
+            let renamed = item.rename.as_ref().map(|(_, ident)| unraw(ident));
+            if crate_name == "self" {
+                let Some(binding) = renamed else {
+                    return Err(GuardError::new(
+                        "current-crate extern alias",
+                        format!(
+                            "unrenamed extern crate self has unresolved binding identity in {}",
+                            self.source
+                        ),
+                    ));
+                };
+                self.insert_binding(
+                    local,
+                    binding,
+                    BindingTarget::Internal(vec![self.crate_id.to_owned()]),
+                )?;
+            } else {
+                self.insert_binding(
+                    local,
+                    renamed.unwrap_or(crate_name),
+                    BindingTarget::External,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn build_scope(
         &mut self,
         items: &[&Item],
@@ -284,32 +318,7 @@ impl DependencyVisitor<'_> {
         }
 
         let mut local = BTreeMap::new();
-        for item in extern_crates {
-            let crate_name = unraw(&item.ident);
-            let renamed = item.rename.as_ref().map(|(_, ident)| unraw(ident));
-            if crate_name == "self" {
-                let Some(binding) = renamed else {
-                    return Err(GuardError::new(
-                        "current-crate extern alias",
-                        format!(
-                            "unrenamed extern crate self has unresolved binding identity in {}",
-                            self.source
-                        ),
-                    ));
-                };
-                self.insert_binding(
-                    &mut local,
-                    binding,
-                    BindingTarget::Internal(vec![self.crate_id.to_owned()]),
-                )?;
-            } else {
-                self.insert_binding(
-                    &mut local,
-                    renamed.unwrap_or(crate_name),
-                    BindingTarget::External,
-                )?;
-            }
-        }
+        self.bind_extern_crates(&mut local, extern_crates)?;
 
         let pending = leaves
             .iter()

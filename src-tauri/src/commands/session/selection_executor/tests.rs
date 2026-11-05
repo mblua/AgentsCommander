@@ -605,8 +605,8 @@ async fn port_native_wrong_payload_fixture() {
 async fn port_native_wrong_payload_fixture_body() {
     use crate::pty::backend::PtyBackend;
     use crate::session::selection::{
-        port_test_binding, OwnedReplacementWork, ReplacementAdmissionStep,
-        ReplacementFixtureControl, ReplacementFixtureOutcome, ResolvedReplacement,
+        port_test_binding, ReplacementAdmissionStep, ReplacementFixtureControl,
+        ReplacementFixtureOutcome,
     };
     let f = ProtectedFixture::new(false).await;
     tokio::time::timeout(std::time::Duration::from_secs(20), f.retire())
@@ -639,34 +639,8 @@ async fn port_native_wrong_payload_fixture_body() {
                 .find(|row| row.id == n.source)
                 .unwrap()
                 .clone();
-            let cwd = previous.working_directory.clone();
             let prepared = n.coordinator.prepare_owned_replacement(
-                ResolvedReplacement {
-                    target: f.route.target.canonical_fqn.clone(),
-                    directory: crate::config::config_dir().unwrap(),
-                    shell: previous.shell.clone(),
-                    shell_args: previous.shell_args.clone(),
-                    requested_agent_id: previous.agent_id.clone(),
-                    requested_profile: None,
-                    launch_recipe: serde_json::json!({"native-port": "inert"}),
-                    cwd_identity: crate::path_identity::verify_directory(std::path::Path::new(
-                        &cwd,
-                    ))
-                    .unwrap()
-                    .into(),
-                    replica_identity: Some(f.route.target.replica_identity.clone().into()),
-                    cwd,
-                    backend: previous.backend_kind,
-                    previous,
-                    carrier,
-                    work: OwnedReplacementWork::OrdinaryOwned {
-                        message_id: "native-port".into(),
-                        body: "inert".into(),
-                        payload: serde_json::Value::Null,
-                        recipient: f.route.target.canonical_fqn.clone(),
-                        request: serde_json::Value::Null,
-                    },
-                },
+                wrong_payload_resolved_replacement(&f, previous, carrier),
                 binding,
             );
             let ReplacementAdmissionStep::Accepted(continuation) = n
@@ -709,6 +683,39 @@ async fn port_native_wrong_payload_fixture_body() {
         "commands::session::selection_executor::tests::",
         "port_native_wrong_payload_fixture"
     ));
+}
+
+fn wrong_payload_resolved_replacement(
+    f: &ProtectedFixture,
+    previous: crate::session::session::Session,
+    carrier: crate::config::sessions_persistence::PublishedCarrier,
+) -> crate::session::selection::ResolvedReplacement {
+    use crate::session::selection::{OwnedReplacementWork, ResolvedReplacement};
+    let cwd = previous.working_directory.clone();
+    ResolvedReplacement {
+        target: f.route.target.canonical_fqn.clone(),
+        directory: crate::config::config_dir().unwrap(),
+        shell: previous.shell.clone(),
+        shell_args: previous.shell_args.clone(),
+        requested_agent_id: previous.agent_id.clone(),
+        requested_profile: None,
+        launch_recipe: serde_json::json!({"native-port": "inert"}),
+        cwd_identity: crate::path_identity::verify_directory(std::path::Path::new(&cwd))
+            .unwrap()
+            .into(),
+        replica_identity: Some(f.route.target.replica_identity.clone().into()),
+        cwd,
+        backend: previous.backend_kind,
+        previous,
+        carrier,
+        work: OwnedReplacementWork::OrdinaryOwned {
+            message_id: "native-port".into(),
+            body: "inert".into(),
+            payload: serde_json::Value::Null,
+            recipient: f.route.target.canonical_fqn.clone(),
+            request: serde_json::Value::Null,
+        },
+    }
 }
 
 async fn prepare_public_native_root(
