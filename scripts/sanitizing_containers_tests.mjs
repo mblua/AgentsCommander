@@ -37,6 +37,34 @@ test('04 accepts safe basenames and enforces their scoped owner', () => {
     assert.ok(result.diagnostics.some(d => d.rule === 'external_container_literal'), name);
   }
 });
+test('04 delegated Attempts writers remain global while scope inventory is zero', () => {
+  const documents = 'src-tauri/src/filesystem/documents.rs';
+  const files = {
+    [attemptsScope + 'storage.rs']: [
+      'const NAME: &str = "attempts.jsonl";',
+      'fn create_attempts() { documents::create_experiment_artifact(NAME); }',
+      'fn replace_attempts() { documents::replace_experiment_artifact(NAME); }',
+    ].join('\n'),
+    [documents]: [
+      'fn create_experiment_artifact(p: &str) { std::fs::OpenOptions::new().open(p); }',
+      'fn replace_experiment_artifact(p: &str) { std::fs::OpenOptions::new().open(p); }',
+    ].join('\n'),
+  };
+  const result = containersGate(containerTree(files));
+  assert.equal(result.exit, 0);
+  assert.deepEqual(result.metrics[0].writerInventory, { files: 0, sites: 0 });
+  assert.deepEqual(result.inventory, { files: 1, sites: 2 });
+  const unknown = result.diagnostics.find(d => d.rule === 'unclassified_writers');
+  assert.deepEqual(unknown.paths, [documents]);
+  assert.equal(unknown.sites, 2);
+  assert.ok(!result.diagnostics.some(d => d.rule === 'writer_inventory_changed'));
+  files[attemptsScope + 'resume.rs'] = 'const NAME: &str = "attempts.jsonl";';
+  const external = containersGate(containerTree(files));
+  assert.equal(external.exit, 1);
+  assert.ok(external.diagnostics.some(d => d.rule === 'external_container_literal' &&
+    d.identity === 'RoleExperiment/Attempts' && d.path === attemptsScope + 'resume.rs'));
+});
+
 test('04 rejects unsafe basenames and nonstrings', () => {
   for (const name of [
     '', '.', '..', '../Role.md', './Role.md', 'a/b', 'a\\b', 'C:Role.md',
