@@ -34,6 +34,7 @@ pub mod web;
 mod app_run;
 mod app_state;
 mod co_managed;
+mod history_runtime;
 mod pty_wiring;
 mod quit_gate;
 mod reader_demand;
@@ -76,9 +77,9 @@ pub(crate) use commands::quit_gate::{
     quit_gate_unregister,
 };
 pub(crate) use pty_wiring::{
-    codex_activity_factory, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns, ScraperPersist,
-    ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery, WatcherPatterns,
-    WatcherSink,
+    codex_activity_factory, HistorySessions, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns,
+    ScraperPersist, ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery,
+    WatcherPatterns, WatcherSink,
 };
 pub use startup::AppOutbox;
 
