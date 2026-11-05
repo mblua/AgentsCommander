@@ -376,6 +376,71 @@ fn invalid_direct_path_attributes_fail_with_named_diagnostics() {
     assert!(duplicate_message.contains("duplicate direct path attributes"));
 }
 
+fn assert_drop_writer_error_is_contained() {
+    let writer_fixture = Fixture::new("drop-writer-error-contract");
+    let writer_fixture_root = writer_fixture.root.clone();
+    let observed_writer_fixture_root = writer_fixture_root.clone();
+    let write_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let writer_fixture = writer_fixture.with_drop_cleanup(
+        move |observed_root| {
+            assert_eq!(observed_root, observed_writer_fixture_root.as_path());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated Windows sharing violation (os error 32)",
+            ))
+        },
+        FailingDiagnostic {
+            write_calls: std::rc::Rc::clone(&write_calls),
+        },
+    );
+    let writer_drop_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(writer_fixture)));
+    let writer_cleanup_result = fs::remove_dir_all(&writer_fixture_root);
+    assert!(
+        writer_drop_result.is_ok(),
+        "Fixture::drop must not panic when its diagnostic writer returns an error"
+    );
+    assert!(
+        write_calls.get() > 0,
+        "Fixture::drop did not exercise the injected failing diagnostic writer"
+    );
+    assert!(
+        writer_cleanup_result.is_ok(),
+        "could not remove {} after the injected writer failure: {writer_cleanup_result:?}",
+        writer_fixture_root.display()
+    );
+}
+
+fn assert_incomplete_report_lists_markers() {
+    let report = GuardReport {
+        sources: [TARGET_ROOT_SOURCE.to_owned()].into_iter().collect(),
+        dependencies: [DependencyObservation {
+            source: TARGET_ROOT_SOURCE.to_owned(),
+            module: "agentscommander_lib::telegram::bridge".to_owned(),
+        }]
+        .into_iter()
+        .collect(),
+    };
+    let message = require_exact_production_report(&report)
+        .expect_err("incomplete report must fail")
+        .to_string();
+    for marker in [
+        "CONTRACT:",
+        "missing expected source rows",
+        "unexpected observed dependency rows",
+        TARGET_ROOT_SOURCE,
+        "agentscommander_lib::telegram::bridge",
+        FOCUSED_RERUN,
+        "SCOPE:",
+        AUTHORITATIVE_TOPOLOGY,
+    ] {
+        assert!(
+            message.contains(marker),
+            "missing diagnostic marker {marker}"
+        );
+    }
+}
+
 #[test]
 fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
     let fixture = Fixture::new("drop-reporting-contract");
@@ -413,38 +478,7 @@ fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
         fixture_root.display()
     );
 
-    let writer_fixture = Fixture::new("drop-writer-error-contract");
-    let writer_fixture_root = writer_fixture.root.clone();
-    let observed_writer_fixture_root = writer_fixture_root.clone();
-    let write_calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let writer_fixture = writer_fixture.with_drop_cleanup(
-        move |observed_root| {
-            assert_eq!(observed_root, observed_writer_fixture_root.as_path());
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "simulated Windows sharing violation (os error 32)",
-            ))
-        },
-        FailingDiagnostic {
-            write_calls: std::rc::Rc::clone(&write_calls),
-        },
-    );
-    let writer_drop_result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(writer_fixture)));
-    let writer_cleanup_result = fs::remove_dir_all(&writer_fixture_root);
-    assert!(
-        writer_drop_result.is_ok(),
-        "Fixture::drop must not panic when its diagnostic writer returns an error"
-    );
-    assert!(
-        write_calls.get() > 0,
-        "Fixture::drop did not exercise the injected failing diagnostic writer"
-    );
-    assert!(
-        writer_cleanup_result.is_ok(),
-        "could not remove {} after the injected writer failure: {writer_cleanup_result:?}",
-        writer_fixture_root.display()
-    );
+    assert_drop_writer_error_is_contained();
 
     let drop_diagnostic = drop_diagnostic.borrow().clone();
     let drop_diagnostic = String::from_utf8(drop_diagnostic)
@@ -459,31 +493,5 @@ fn failure_messages_include_contract_diffs_rerun_scope_and_detector() {
         "Drop fallback must report the absolute fixture path and concrete cleanup error"
     );
 
-    let report = GuardReport {
-        sources: [TARGET_ROOT_SOURCE.to_owned()].into_iter().collect(),
-        dependencies: [DependencyObservation {
-            source: TARGET_ROOT_SOURCE.to_owned(),
-            module: "agentscommander_lib::telegram::bridge".to_owned(),
-        }]
-        .into_iter()
-        .collect(),
-    };
-    let message = require_exact_production_report(&report)
-        .expect_err("incomplete report must fail")
-        .to_string();
-    for marker in [
-        "CONTRACT:",
-        "missing expected source rows",
-        "unexpected observed dependency rows",
-        TARGET_ROOT_SOURCE,
-        "agentscommander_lib::telegram::bridge",
-        FOCUSED_RERUN,
-        "SCOPE:",
-        AUTHORITATIVE_TOPOLOGY,
-    ] {
-        assert!(
-            message.contains(marker),
-            "missing diagnostic marker {marker}"
-        );
-    }
+    assert_incomplete_report_lists_markers();
 }

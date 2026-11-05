@@ -97,10 +97,19 @@ pub(super) async fn assert_cancelled_critical_waiter_releases_key(
 
     drop(held_admission);
     drop(reservations);
+    assert_fresh_probe_releases_key(&coordinator, session.id, kind).await;
+    coordinator.close_and_join().await;
+}
+
+async fn assert_fresh_probe_releases_key(
+    coordinator: &SelectionCoordinator,
+    session_id: uuid::Uuid,
+    kind: CriticalAdmissionKind,
+) {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(1),
-            coordinator.critical_probe_for_test(session.id, kind),
+            coordinator.critical_probe_for_test(session_id, kind),
         )
         .await
         .expect("fresh same-kind submission completes")
@@ -111,13 +120,12 @@ pub(super) async fn assert_cancelled_critical_waiter_releases_key(
     await_state_eq(
         "fresh probe releases its critical admission key",
         Duration::from_secs(1),
-        || coordinator.critical_key_registered_for_test(session.id, kind),
+        || coordinator.critical_key_registered_for_test(session_id, kind),
         false,
         String::new,
     )
     .await;
-    assert!(!coordinator.critical_key_registered_for_test(session.id, kind));
-    coordinator.close_and_join().await;
+    assert!(!coordinator.critical_key_registered_for_test(session_id, kind));
 }
 
 // #1580 deterministic ordering detector. The worker needs `critical_keys` to free
