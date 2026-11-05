@@ -99,6 +99,25 @@
         "files": 0,
         "sites": 0
       }
+    },
+    {
+      "id": "Instance/Settings",
+      "name": "settings.30.instance.no-git.json",
+      "scope": "src-tauri/src/",
+      "owner": "src-tauri/src/config/settings.rs",
+      "ownerModule": true,
+      "constantPaths": [
+        "crate::config::instance_artifacts::SETTINGS_FILE_NAME",
+        "crate::config::instance_artifacts::SETTINGS_TARGET_NAME",
+        "crate::config::instance_artifacts::names::SETTINGS_FILE_NAME",
+        "crate::config::instance_artifacts::names::SETTINGS_TARGET_NAME"
+      ],
+      "metadataPolicy": "instance-settings-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
     }
   ]
 }
