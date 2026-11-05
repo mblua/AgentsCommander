@@ -324,18 +324,11 @@ impl MailboxPoller {
         }
 
         // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
-        let reservation = pending.reserve_legacy(session_id);
-        let newly_inserted = match reservation {
-            Ok(_) => true,
-            Err(MaintenanceError::AlreadyLegacy) => false,
+        let (newly_inserted, status) = match Self::reserve_legacy_status(&pending, session_id) {
+            Ok(reserved) => reserved,
             Err(error) => {
                 return self.reject_message(path, msg, &error.to_string()).await;
             }
-        };
-        let status = if newly_inserted {
-            "queued"
-        } else {
-            "already_queued"
         };
 
         // 4. Spawn the deferred two-phase sustained-idle gate (detached; never blocks the poller).
@@ -451,6 +444,25 @@ impl MailboxPoller {
         };
 
         Ok((session, session_id, clear_text))
+    }
+
+    /// Reserves the legacy self-clear slot. Returns whether it was newly inserted and the
+    /// matching queue-ack status; an existing legacy reservation is not an error.
+    fn reserve_legacy_status(
+        pending: &PendingSelfClear,
+        session_id: Uuid,
+    ) -> Result<(bool, &'static str), MaintenanceError> {
+        let newly_inserted = match pending.reserve_legacy(session_id) {
+            Ok(_) => true,
+            Err(MaintenanceError::AlreadyLegacy) => false,
+            Err(error) => return Err(error),
+        };
+        let status = if newly_inserted {
+            "queued"
+        } else {
+            "already_queued"
+        };
+        Ok((newly_inserted, status))
     }
 
     /// #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with

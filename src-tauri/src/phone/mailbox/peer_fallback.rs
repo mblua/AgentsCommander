@@ -251,12 +251,8 @@ impl MailboxPoller {
             }
         };
 
-        match created {
-            Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {}
-            Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
-                return Ok(OwnedPeerWakeStep::Retained)
-            }
-            Err(error) => return Err(error),
+        if let crate::commands::session::OwnedReplacementCreateStep::Retained = created? {
+            return Ok(OwnedPeerWakeStep::Retained);
         }
         let Some((info, id, effect)) =
             begin_replacement_work_transfer(continuation, &manager, &pty).await
