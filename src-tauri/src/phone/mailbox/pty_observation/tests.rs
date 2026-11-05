@@ -383,3 +383,32 @@ async fn readiness_restore_blocks_later_getters_and_absence_reaches_authority() 
     }
     assert!(heartbeat.finish().await);
 }
+
+#[test]
+fn wake_delivery_getters_keep_required_and_optional_registration() {
+    use tauri::Manager;
+
+    let app = crate::test_support::test_builder()
+        .manage(crate::MasterToken::new("master".to_string()))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build test app");
+    let handle = app.handle();
+    assert!(std::ptr::eq(
+        handle.selection(),
+        handle
+            .state::<crate::session::selection::SelectionCoordinator>()
+            .inner()
+    ));
+    assert!(handle
+        .master_token()
+        .is_some_and(|token| token.matches("master")));
+    assert!(handle.message_store().is_none());
+    assert!(handle.pty_routes_opt().is_none());
+    assert!(handle.pty_readiness_opt().is_none());
+
+    let readiness = IdleDetector::new(|_| {}, |_| {});
+    handle.manage(Arc::clone(&readiness));
+    assert!(handle
+        .pty_readiness_opt()
+        .is_some_and(|state| Arc::ptr_eq(state, &readiness)));
+}
