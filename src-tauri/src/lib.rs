@@ -795,6 +795,19 @@ fn start_remote_alerts(
     tauri::async_runtime::spawn(session::remote_alerts::run(ports, transitions, shutdown))
 }
 
+/// #3532: start the one context-history actor on the Tauri runtime and return
+/// its ingress. `history_runtime` stays free of Tauri; cancelling `shutdown`
+/// flushes the actor for at most its bounded window.
+fn start_context_history_runtime(
+    sessions: Arc<dyn history_runtime::SessionLaunchSource>,
+    env: Arc<dyn history_runtime::ProjectEnvironment>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> history_runtime::HistoryIngress {
+    let (ingress, actor) = history_runtime::HistoryRuntime::start(sessions, env, shutdown);
+    tauri::async_runtime::spawn(actor);
+    ingress
+}
+
 impl pty::container_backend::ContainerBackgroundTasks
     for pty::container_backend::ContainerTransportBackend
 {
