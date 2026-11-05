@@ -202,7 +202,6 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         execution: &mut OwnedPeerWakeExecution,
     ) -> Result<OwnedPeerWakeStep, String> {
-        use crate::session::selection::LifecycleEffectSlot;
         #[cfg(test)]
         let (fixture, fixture_continuation) = self.peer_replacement_fixture_context(execution);
 
@@ -259,16 +258,9 @@ impl MailboxPoller {
             }
             Err(error) => return Err(error),
         }
-        let Some(info) = continuation.refresh_completion_info(&manager, &pty).await else {
-            return Ok(OwnedPeerWakeStep::Retained);
-        };
-        let id = continuation.binding().map(PendingCreateBinding::session_id);
-        let Some(id) = id else {
-            return Ok(OwnedPeerWakeStep::Retained);
-        };
-        // Start the work receipt only after its initial current-B checks. A
-        // failed preflight has reached no bridge, settle or input effect.
-        let Some(effect) = continuation.start_effect(LifecycleEffectSlot::WorkTransfer) else {
+        let Some((info, id, effect)) =
+            begin_replacement_work_transfer(continuation, &manager, &pty).await
+        else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
         if info.telegram_bot_id.is_some() {
@@ -278,8 +270,7 @@ impl MailboxPoller {
         let settle = match self.wait_for_spawned_wake_idle(app, id).await {
             Ok(settle) => settle,
             Err(error) => {
-                effect.complete(Err(error.clone()));
-                continuation.note_retained_work(error);
+                retain_after_transfer_error(effect, continuation, error);
                 return Ok(OwnedPeerWakeStep::Retained);
             }
         };
@@ -304,8 +295,7 @@ impl MailboxPoller {
             )
             .await;
         if let Err(error) = injected {
-            effect.complete(Err(error.clone()));
-            continuation.note_retained_work(error);
+            retain_after_transfer_error(effect, continuation, error);
             return Ok(OwnedPeerWakeStep::Retained);
         }
         drop(execution.exact.take());
@@ -818,4 +808,36 @@ impl MailboxPoller {
         .await
         .map(|_| ())
     }
+}
+
+/// Refreshes the replacement's completion info, resolves its bound session id and
+/// starts the work-transfer receipt, in that order. `None` means retain.
+async fn begin_replacement_work_transfer(
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Option<(
+    crate::session::session::SessionInfo,
+    Uuid,
+    crate::session::selection::LifecycleEffectGuard,
+)> {
+    use crate::session::selection::LifecycleEffectSlot;
+    let info = continuation.refresh_completion_info(manager, pty).await?;
+    let id = continuation
+        .binding()
+        .map(PendingCreateBinding::session_id)?;
+    // Start the work receipt only after its initial current-B checks. A
+    // failed preflight has reached no bridge, settle or input effect.
+    let effect = continuation.start_effect(LifecycleEffectSlot::WorkTransfer)?;
+    Some((info, id, effect))
+}
+
+/// Completes the work-transfer receipt with `error` and records it as retained work.
+fn retain_after_transfer_error(
+    effect: crate::session::selection::LifecycleEffectGuard,
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    error: String,
+) {
+    effect.complete(Err(error.clone()));
+    continuation.note_retained_work(error);
 }
