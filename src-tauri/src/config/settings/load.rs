@@ -192,23 +192,7 @@ pub(crate) fn compose_settings_parts(
     }
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
     let main_profile_owner = value.as_object().expect("settings object").clone();
-    let physical_sidecar = agents
-        .as_ref()
-        .and_then(|read| read.as_ref().ok())
-        .and_then(Option::as_ref)
-        .cloned();
-    let physical_groups = agents
-        .as_ref()
-        .and_then(|read| read.as_ref().ok())
-        .and_then(Option::as_ref)
-        .map(|groups| {
-            groups
-                .keys()
-                .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let (physical_sidecar, physical_groups) = physical_agents_view(agents.as_ref());
     // #2716 (B3): the agents file is layer 30, under the layer-50 overlay, so it is
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
@@ -299,6 +283,39 @@ pub(crate) fn compose_settings_parts(
     };
     settings.project_path_state = Arc::new(state);
     settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
+    finalize_composed_settings(&mut settings, source, overlay, startup);
+    Ok((settings, legacy_profiles, agents_layer))
+}
+
+/// The physical agents sidecar and its recognized group keys, from a readable
+/// agents file; `None` and empty otherwise.
+fn physical_agents_view(
+    agents: Option<&AgentsInstanceRead>,
+) -> (Option<Map<String, Value>>, Vec<String>) {
+    let sidecar = agents
+        .and_then(|read| read.as_ref().ok())
+        .and_then(Option::as_ref);
+    let groups = sidecar
+        .map(|groups| {
+            groups
+                .keys()
+                .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (sidecar.cloned(), groups)
+}
+
+/// The tail of `compose_settings_parts`: order and id hashes, overlay
+/// diagnostics and state, and the startup rows reset when the overlay owns
+/// `agents`.
+fn finalize_composed_settings(
+    settings: &mut AppSettings,
+    source: &str,
+    overlay: LocalSettingsOverlay,
+    startup: Option<&mut Option<StartupAgentRows>>,
+) {
     // #2306 P1 - in-memory finalize over the merged view. It is deliberately not
     // part of `needs_save`: a legacy file with no ordinals must load without a
     // disk write or a backup rotation.
@@ -312,7 +329,6 @@ pub(crate) fn compose_settings_parts(
             *startup = None;
         }
     }
-    Ok((settings, legacy_profiles, agents_layer))
 }
 
 /// #2015: legacy pre-v2 codingAgentProfiles are no longer migrated. Detection only;
@@ -606,24 +622,12 @@ pub(crate) fn load_settings_from_path_with_blocking_menus_publish(
     }
     apply_loaded_window_migrations(&mut settings);
 
-    // The main-file diagnostic remains separate for its original-byte backup.
-    // A sidecar-owned legacy cause must be reachable without that diagnostic.
-    let (legacy_profile_work, profile_preview_rejected) = match startup_profile_legacy_work(
+    let (legacy_profile_work, profile_preview_rejected) = startup_legacy_profile_flags(
         &settings,
         path,
         legacy_profiles_contents.as_deref(),
         legacy_profiles_detected,
-    ) {
-        Ok(Some(actionable)) => (actionable, false),
-        Ok(None) => {
-            log::warn!("[profiles] legacy action awaits unambiguous owner routing");
-            (legacy_profiles_detected, false)
-        }
-        Err(reason) => {
-            log::warn!("[profiles] legacy action preview rejected: {reason}");
-            (false, true)
-        }
-    };
+    );
 
     // #248 migration — translates legacy startOnlyCoordinators (if present).
     // Track whether the legacy field was on disk so we can fire a single save
@@ -723,6 +727,33 @@ pub(crate) fn load_settings_from_path_with_blocking_menus_publish(
         .and_then(|(captured, _, _)| captured.coding_agent_identity_physical);
     refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
     settings
+}
+
+/// The startup legacy-profile work flag and whether its preview was rejected.
+fn startup_legacy_profile_flags(
+    settings: &AppSettings,
+    path: &Path,
+    legacy_profiles_contents: Option<&str>,
+    legacy_profiles_detected: bool,
+) -> (bool, bool) {
+    // The main-file diagnostic remains separate for its original-byte backup.
+    // A sidecar-owned legacy cause must be reachable without that diagnostic.
+    match startup_profile_legacy_work(
+        settings,
+        path,
+        legacy_profiles_contents,
+        legacy_profiles_detected,
+    ) {
+        Ok(Some(actionable)) => (actionable, false),
+        Ok(None) => {
+            log::warn!("[profiles] legacy action awaits unambiguous owner routing");
+            (legacy_profiles_detected, false)
+        }
+        Err(reason) => {
+            log::warn!("[profiles] legacy action preview rejected: {reason}");
+            (false, true)
+        }
+    }
 }
 
 #[cfg(test)]

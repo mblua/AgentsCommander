@@ -169,63 +169,15 @@ pub(crate) fn validate_registered_overlay_profile_edits(
         .local_overlay_state
         .reapply_from(raw, previous.as_object_mut().ok_or("invalidSource")?);
     // These copies are comparison data only, never physical publication inputs.
-    let normalize = |mut value: Value| -> Result<Value, String> {
-        restore_codex_home_carrier(
-            value.as_object_mut().ok_or("invalidSource")?,
-            profile_before.get("codingAgentProfiles"),
-        );
-        let mut agents: Vec<AgentConfig> = value
-            .get("agents")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_default();
-        let mut profiles: CodingAgentProfilesConfig = value
-            .get("codingAgentProfiles")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_default();
-        finalize_agent_order(&mut agents);
-        // Match only implicit empty-A repair; do not prune submitted values.
-        profiles
-            .profile_slots
-            .entry("A".into())
-            .or_insert_with(|| ProfileSlotConfig {
-                label: String::new(),
-            });
-        for agent in &agents {
-            profiles
-                .profiles_by_agent
-                .entry(agent.id.clone())
-                .or_default()
-                .entry("A".into())
-                .or_insert_with(empty_profile_cell);
-        }
-        refresh_agent_id_hashes(&mut agents);
-        refresh_pair_id_hashes(&agents, &mut profiles);
-        for cell in profiles
-            .profiles_by_agent
-            .values_mut()
-            .flat_map(|cells| cells.values_mut())
-        {
-            cell.id_hash = None;
-            cell.id_hash_debug = None;
-        }
-        profiles.identity_by_agent.clear();
-        let agents = agents
-            .iter()
-            .map(comparable_agent)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(serde_json::json!({"agents":agents,"codingAgentProfiles":profiles}))
-    };
-    let previous = normalize(previous)?;
-    let incoming = normalize(serde_json::json!({
-        "agents":&settings.agents,
-        "codingAgentProfiles":&settings.coding_agent_profiles
-    }))?;
+    let carrier = profile_before.get("codingAgentProfiles");
+    let previous = normalize_overlay_comparison(previous, carrier)?;
+    let incoming = normalize_overlay_comparison(
+        serde_json::json!({
+            "agents":&settings.agents,
+            "codingAgentProfiles":&settings.coding_agent_profiles
+        }),
+        carrier,
+    )?;
     for path in paths {
         let Some(key) = path
             .first()
@@ -244,6 +196,61 @@ pub(crate) fn validate_registered_overlay_profile_edits(
         }
     }
     Ok(())
+}
+
+/// Normalizes an agents/profiles comparison copy: HOME carrier, order, implicit
+/// empty-A repair and hashes, with id hashes and identities cleared.
+fn normalize_overlay_comparison(
+    mut value: Value,
+    carrier: Option<&Value>,
+) -> Result<Value, String> {
+    restore_codex_home_carrier(value.as_object_mut().ok_or("invalidSource")?, carrier);
+    let mut agents: Vec<AgentConfig> = value
+        .get("agents")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let mut profiles: CodingAgentProfilesConfig = value
+        .get("codingAgentProfiles")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    finalize_agent_order(&mut agents);
+    // Match only implicit empty-A repair; do not prune submitted values.
+    profiles
+        .profile_slots
+        .entry("A".into())
+        .or_insert_with(|| ProfileSlotConfig {
+            label: String::new(),
+        });
+    for agent in &agents {
+        profiles
+            .profiles_by_agent
+            .entry(agent.id.clone())
+            .or_default()
+            .entry("A".into())
+            .or_insert_with(empty_profile_cell);
+    }
+    refresh_agent_id_hashes(&mut agents);
+    refresh_pair_id_hashes(&agents, &mut profiles);
+    for cell in profiles
+        .profiles_by_agent
+        .values_mut()
+        .flat_map(|cells| cells.values_mut())
+    {
+        cell.id_hash = None;
+        cell.id_hash_debug = None;
+    }
+    profiles.identity_by_agent.clear();
+    let agents = agents
+        .iter()
+        .map(comparable_agent)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(serde_json::json!({"agents":agents,"codingAgentProfiles":profiles}))
 }
 
 pub(crate) fn retain_unknown_registered_agent_fields(
