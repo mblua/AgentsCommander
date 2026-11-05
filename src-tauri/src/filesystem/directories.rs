@@ -325,3 +325,14 @@ pub(crate) fn retained_prompt_directory_metadata(
 ) -> std::io::Result<std::fs::Metadata> {
     std::fs::metadata(path)
 }
+
+pub(crate) fn web_dist_candidate_is_directory(path: &Path) -> bool {
+    path.exists() && path.is_dir()
+}
+
+pub(crate) fn resolve_web_dist_candidate(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests;
