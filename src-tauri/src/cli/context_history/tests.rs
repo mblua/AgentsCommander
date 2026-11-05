@@ -385,3 +385,38 @@ fn an_unverifiable_project_fails_instead_of_reporting_empty() {
         "missing DB stays empty"
     );
 }
+
+#[test]
+fn verbatim_unc_paths_stay_absolute_unc_paths() {
+    assert_eq!(
+        plain_path(r"\\?\UNC\server\share\proj"),
+        r"\\server\share\proj"
+    );
+    assert_eq!(
+        plain_path("//?/UNC/server/share/proj"),
+        "//server/share/proj"
+    );
+    assert_eq!(plain_path(r"\\?\C:\proj"), r"C:\proj");
+    assert_eq!(plain_path(r"C:\proj"), r"C:\proj");
+}
+
+/// A `subst` drive canonicalizes to its real folder; a record captured under
+/// the drive spelling still matches the verified `--project` text.
+#[test]
+fn records_captured_under_the_typed_spelling_still_match() {
+    let (real, typed) = if cfg!(windows) {
+        (r"C:\real\proj", r"Q:\proj")
+    } else {
+        ("/real/proj", "/mnt/q/proj")
+    };
+    let spellings = [PathBuf::from(real), Path::new(typed).components().collect()];
+    let mut records = vec![
+        record(1, typed, 0),
+        record(2, &format!("{typed}/."), 0),
+        record(3, real, 0),
+        record(4, "C:/elsewhere/other", 0),
+    ];
+    align_project_paths(&mut records, &spellings, real);
+    let paths: Vec<&str> = records.iter().map(|r| r.project_path.as_str()).collect();
+    assert_eq!(paths, [real, real, real, "C:/elsewhere/other"]);
+}

@@ -193,16 +193,34 @@ fn write_report(
     Ok(())
 }
 
-/// `text` without a Windows verbatim prefix, so both spellings compare alike.
-fn plain_path(text: &str) -> &str {
+/// `text` without a Windows verbatim prefix, so both spellings compare alike;
+/// a verbatim UNC path (`\\?\UNC\server\share`) becomes `\\server\share`.
+fn plain_path(text: &str) -> String {
+    for (verbatim_unc, unc) in [(r"\\?\UNC\", r"\\"), ("//?/UNC/", "//")] {
+        if let Some(rest) = text.strip_prefix(verbatim_unc) {
+            return format!("{unc}{rest}");
+        }
+    }
     text.strip_prefix(r"\\?\")
         .or_else(|| text.strip_prefix("//?/"))
         .unwrap_or(text)
+        .to_string()
 }
 
-/// The verified project directory and its Project AC Root; an error, never an
-/// empty report, when either cannot be verified.
-fn verified_project(project: &Path) -> Result<(PathBuf, PathBuf), CliError> {
+/// The verified project: its canonical directory, the spellings a record of
+/// it may carry, and its Project AC Root.
+struct VerifiedProject {
+    canonical: PathBuf,
+    /// The canonical path and the verified `--project` text without `.`
+    /// components; a `subst` drive or junction captured as typed matches
+    /// only the latter.
+    spellings: [PathBuf; 2],
+    ac_root: PathBuf,
+}
+
+/// The verified project; an error, never an empty report, when the directory
+/// or its Project AC Root cannot be verified.
+fn verified_project(project: &Path) -> Result<VerifiedProject, CliError> {
     let identity = verify_directory(project).map_err(|why| {
         CliError::Usage(format!(
             "--project '{}' is not a verified directory: {why}",
@@ -216,18 +234,28 @@ fn verified_project(project: &Path) -> Result<(PathBuf, PathBuf), CliError> {
             project.display()
         ))
     })?;
-    Ok((canonical, ac_root))
+    let typed = project.components().collect::<PathBuf>();
+    Ok(VerifiedProject {
+        spellings: [canonical.clone(), typed],
+        canonical,
+        ac_root,
+    })
 }
 
 /// Give every record captured under another spelling of the verified project
 /// the query's project text, in memory only. Other projects keep their text,
 /// so the core excludes them. Each distinct spelling is compared once.
-fn align_project_paths(records: &mut [HistoryRecord], canonical: &Path, project_text: &str) {
+fn align_project_paths(records: &mut [HistoryRecord], spellings: &[PathBuf], project_text: &str) {
     let mut equivalent: BTreeMap<String, bool> = BTreeMap::new();
     for record in records {
         let same = *equivalent
             .entry(record.project_path.clone())
-            .or_insert_with_key(|text| paths_equivalent(Path::new(plain_path(text)), canonical));
+            .or_insert_with_key(|text| {
+                let path = PathBuf::from(plain_path(text));
+                spellings
+                    .iter()
+                    .any(|spelling| paths_equivalent(&path, spelling))
+            });
         if same {
             record.project_path = project_text.to_string();
         }
@@ -236,17 +264,18 @@ fn align_project_paths(records: &mut [HistoryRecord], canonical: &Path, project_
 
 fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Result<(), CliError> {
     let mut query = query_from_args(args)?;
-    let (canonical, ac_root) = verified_project(&args.project)?;
-    query.project_path = canonical
+    let project = verified_project(&args.project)?;
+    query.project_path = project
+        .canonical
         .to_str()
         .ok_or_else(|| CliError::Usage("--project must be valid UTF-8".to_string()))?
         .to_string();
     let context = ReportContext {
-        retention_days: load_history_config(&ac_root).config.retention_days,
+        retention_days: load_history_config(&project.ac_root).config.retention_days,
         generated_at_utc_ms: now_utc_ms,
     };
-    let mut records = read_records(&ac_root)?;
-    align_project_paths(&mut records, &canonical, &query.project_path);
+    let mut records = read_records(&project.ac_root)?;
+    align_project_paths(&mut records, &project.spellings, &query.project_path);
     write_report(&records, &query, context, out)
 }
 
