@@ -38,6 +38,41 @@ fn issue_3294_discovery_positive_control() {
         ]
     );
 
+    assert_observation_errors_are_skipped(&root);
+
+    let room = root.join("room-3-alpha");
+    fs::create_dir(room.join("__agent_z")).unwrap();
+    fs::create_dir(room.join("__agent_a")).unwrap();
+    fs::write(room.join("__agent_file"), "not a replica directory").unwrap();
+    let native: Vec<PathBuf> = fs::read_dir(&room)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(replica_candidates(&room).unwrap(), native);
+    let native: Vec<PathBuf> = fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            matches!(
+                path.file_name().unwrap().to_str().unwrap(),
+                "wg-1-alpha" | "room-3-alpha" | "room-0-alpha"
+            )
+        })
+        .collect();
+    assert_eq!(team_room_candidates(&root, "alpha"), native);
+    assert!(team_directory_present(&room));
+    assert!(!replica_role_present(&room.join("Role.md")));
+    fs::write(room.join("Role.md"), "role").unwrap();
+    assert!(replica_role_present(&room.join("Role.md")));
+    assert!(clone_target_present(&room.join("Role.md")));
+    assert!(!clone_target_present(&room.join("repo-missing")));
+}
+
+fn assert_observation_errors_are_skipped(root: &std::path::Path) {
     // Inject an entry error between observations without a global fake filesystem.
     let error = || io::Error::other("unreadable entry");
     assert_eq!(
@@ -82,35 +117,4 @@ fn issue_3294_discovery_positive_control() {
         ]),
         vec![root.join("__agent_z"), root.join("__agent_a")]
     );
-
-    let room = root.join("room-3-alpha");
-    fs::create_dir(room.join("__agent_z")).unwrap();
-    fs::create_dir(room.join("__agent_a")).unwrap();
-    fs::write(room.join("__agent_file"), "not a replica directory").unwrap();
-    let native: Vec<PathBuf> = fs::read_dir(&room)
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.path())
-        .collect();
-    assert_eq!(replica_candidates(&room).unwrap(), native);
-    let native: Vec<PathBuf> = fs::read_dir(&root)
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            matches!(
-                path.file_name().unwrap().to_str().unwrap(),
-                "wg-1-alpha" | "room-3-alpha" | "room-0-alpha"
-            )
-        })
-        .collect();
-    assert_eq!(team_room_candidates(&root, "alpha"), native);
-    assert!(team_directory_present(&room));
-    assert!(!replica_role_present(&room.join("Role.md")));
-    fs::write(room.join("Role.md"), "role").unwrap();
-    assert!(replica_role_present(&room.join("Role.md")));
-    assert!(clone_target_present(&room.join("Role.md")));
-    assert!(!clone_target_present(&room.join("repo-missing")));
 }

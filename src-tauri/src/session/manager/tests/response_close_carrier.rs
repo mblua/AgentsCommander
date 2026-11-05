@@ -135,87 +135,45 @@ async fn response_close_binder_waits_for_publication_before_exposing_identity_ch
         "updated"
     );
 }
+async fn carrier_version(manager: &SessionManager, id: Uuid) -> Option<u64> {
+    manager
+        .state
+        .read()
+        .await
+        .carrier_versions
+        .get(&id)
+        .copied()
+}
+
+fn repo(branch: Option<String>, dirty: Option<bool>) -> SessionRepo {
+    SessionRepo {
+        label: "repo".into(),
+        source_path: "path".into(),
+        branch,
+        dirty,
+    }
+}
+
 #[tokio::test]
 async fn response_close_carrier_versions_ignore_observations_noops_and_fail_closed_on_overflow() {
     let manager = SessionManager::new();
     let session = row(&manager, "row", false).await;
-    assert_eq!(
-        manager
-            .state
-            .read()
-            .await
-            .carrier_versions
-            .get(&session.id)
-            .copied(),
-        Some(1)
-    );
+    assert_eq!(carrier_version(&manager, session.id).await, Some(1));
     assert_eq!(manager.get_active().await, Some(session.id));
     let second = row(&manager, "second", false).await;
-    assert_eq!(
-        manager
-            .state
-            .read()
-            .await
-            .carrier_versions
-            .get(&second.id)
-            .copied(),
-        Some(1)
-    );
-    assert_eq!(
-        manager
-            .state
-            .read()
-            .await
-            .carrier_versions
-            .get(&session.id)
-            .copied(),
-        Some(1)
-    );
+    assert_eq!(carrier_version(&manager, second.id).await, Some(1));
+    assert_eq!(carrier_version(&manager, session.id).await, Some(1));
     assert_eq!(manager.get_active().await, Some(session.id));
     manager.mark_idle(session.id).await;
     manager.mark_idle(second.id).await;
-    assert_eq!(
-        manager
-            .state
-            .read()
-            .await
-            .carrier_versions
-            .get(&session.id)
-            .copied(),
-        Some(1)
-    );
-    assert_eq!(
-        manager
-            .state
-            .read()
-            .await
-            .carrier_versions
-            .get(&second.id)
-            .copied(),
-        Some(1)
-    );
+    assert_eq!(carrier_version(&manager, session.id).await, Some(1));
+    assert_eq!(carrier_version(&manager, second.id).await, Some(1));
     manager
-        .set_git_repos(
-            session.id,
-            vec![SessionRepo {
-                label: "repo".into(),
-                source_path: "path".into(),
-                branch: None,
-                dirty: None,
-            }],
-        )
+        .set_git_repos(session.id, vec![repo(None, None)])
         .await;
     let before = manager.state.read().await.carrier_versions[&session.id];
     manager
-        .set_git_repos(
-            session.id,
-            vec![SessionRepo {
-                label: "repo".into(),
-                source_path: "path".into(),
-                branch: Some("branch".into()),
-                dirty: Some(true),
-            }],
-        )
+        .set_git_repos(session.id, vec![repo(Some("branch".into()), Some(true))])
         .await;
     manager.set_context_percent(session.id, Some(20)).await;
     manager.set_last_prompt(session.id, "prompt".into()).await;
