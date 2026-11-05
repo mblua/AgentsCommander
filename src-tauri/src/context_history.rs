@@ -1,9 +1,9 @@
 //! Context history records (#3532): pure DTOs and their validation.
 //!
 //! This parent only declares its children. `config` owns `.ac/heatmap.json`,
-//! `store` owns `.ac/context-history/` and `observation` turns scrape outcomes
-//! into records; all of them import these DTOs, and this module never
-//! imports, calls or re-exports them.
+//! `store` owns `.ac/context-history/`, `observation` turns scrape outcomes
+//! into records and `report` builds reports from them; all of them import
+//! these DTOs, and this module never imports, calls or re-exports them.
 // Parts stay unused until the history IPC and views (#3532 P04+) read them.
 #![allow(dead_code)]
 
@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 pub(crate) mod config;
 pub(crate) mod observation;
+pub(crate) mod report;
 pub(crate) mod store;
 
 /// Record schema written by this build.
