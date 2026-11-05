@@ -5,6 +5,9 @@ import type {
   PreflightStageSource,
   PreflightTestSnapshot,
 } from "../../../shared/types";
+import type {
+  PreflightDraftStage, PreflightTestDraft, PreflightTestTarget,
+} from "../../../shared/preflightTypes";
 
 const MAX_TIMEOUT_SECONDS = 4294967295;
 
@@ -118,4 +121,87 @@ export function activeLine(snapshot: PreflightTestSnapshot, cancelSent: boolean)
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+export const NO_TARGETS_TEXT = "No compatible stopped agent is available. Create or stop an "
+  + "agent before testing.";
+export const ALL_RUNNING_TEXT = "Stop one of these agents before testing.";
+
+type DraftSource = { preflight?: string; preflightTimeoutSeconds?: number } | undefined;
+
+/** #3832 - one stage of the draft payload: only the command and its timeout. */
+function draftStage(source: DraftSource): PreflightDraftStage {
+  return {
+    command: source?.preflight ?? null,
+    timeoutSeconds: source?.preflightTimeoutSeconds ?? null,
+  };
+}
+
+/** #3832 - the unsaved preflight commands and timeouts of one Coding Agent. */
+export function buildPreflightDraft(settings: AppSettings, agentId: string): PreflightTestDraft {
+  const row = settings.agents.find((agent) => agent.id === agentId);
+  const cells = settings.codingAgentProfiles?.profilesByAgent?.[agentId] ?? {};
+  const profiles: Record<string, PreflightDraftStage> = {};
+  for (const letter of Object.keys(cells).sort()) profiles[letter] = draftStage(cells[letter]);
+  return { codingAgent: draftStage(row), profiles };
+}
+
+/** #3832 - stable text of a draft payload, to match a description to its request. */
+export function draftKey(draft: PreflightTestDraft): string {
+  return JSON.stringify(draft);
+}
+
+/** #3832 - the last path segment, for either slash style. */
+export function targetBasename(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/** #3832 - the Profile line of one picker row; fallback replaces the plain line. */
+export function targetProfileText(row: PreflightTestTarget): string {
+  return row.fallbackApplied
+    ? `Asks for Profile ${row.requestedProfile}, launches with Profile ${row.effectiveProfile}.`
+    : `Launches with Profile ${row.effectiveProfile}`;
+}
+
+/** #3832 - Profile-cell mode keeps rows that launch with `letter`; card mode keeps all. */
+export function rowsForLetter(
+  rows: readonly PreflightTestTarget[], letter: string | null,
+): PreflightTestTarget[] {
+  return letter === null ? [...rows] : rows.filter((row) => row.effectiveProfile === letter);
+}
+
+/** #3832 - case-insensitive substring match on the complete path; empty keeps all. */
+export function searchTargets(
+  rows: readonly PreflightTestTarget[], query: string,
+): PreflightTestTarget[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...rows];
+  return rows.filter((row) => row.replicaPath.toLowerCase().includes(needle));
+}
+
+/** #3832 - next enabled row after `from` in `step` direction, clamped at the ends.
+ *  With no active row, either key starts at the first enabled row. */
+export function nextEnabledIndex(
+  rows: readonly PreflightTestTarget[], from: number, step: 1 | -1,
+): number {
+  const dir = from < 0 ? 1 : step;
+  for (let i = from < 0 ? 0 : from + step; i >= 0 && i < rows.length; i += dir) {
+    if (!rows[i].running) return i;
+  }
+  return from >= 0 && from < rows.length && !rows[from].running ? from : -1;
+}
+
+/** #3832 - why no row can be chosen (empty or all running), or null when one can. */
+export function targetListText(
+  rows: readonly PreflightTestTarget[], letter: string | null,
+): string | null {
+  if (rows.length === 0) {
+    return letter === null
+      ? NO_TARGETS_TEXT
+      : `No agent launches with Profile ${letter}. Assign Profile ${letter} to an agent `
+        + "to test it here.";
+  }
+  if (rows.every((row) => row.running)) return ALL_RUNNING_TEXT;
+  return null;
 }
