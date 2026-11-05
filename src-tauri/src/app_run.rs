@@ -479,8 +479,9 @@ fn prepare_boot(
     log::info!("[app-outbox] {} (see stdout)", app_outbox.path());
 
     // Write web token to a file so external tools can read it
-    if let Some(token_path) = config::config_dir().map(|d| d.join("web-token.txt")) {
-        let _ = std::fs::write(&token_path, web_access_token.value());
+    if let Some(dir) = config::config_dir() {
+        let _ =
+            crate::filesystem::documents::publish_web_access_token(&dir, web_access_token.value());
     }
 
     // Persist master token and app outbox path so the CLI can use them
