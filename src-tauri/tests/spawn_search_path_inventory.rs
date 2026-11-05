@@ -222,9 +222,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/gitignore_rules.rs",
-        14,
+        13,
         0,
-        &[(TestOnly, 14)],
+        &[(TestOnly, 13)],
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/snapshot_null.rs",
