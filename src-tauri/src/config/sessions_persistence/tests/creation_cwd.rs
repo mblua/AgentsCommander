@@ -99,12 +99,16 @@ fn validate_session_creation_cwd_rejects_unregistered_and_missing() {
 /// clears A's key. The mark is set by the real loader, not a test setter.
 #[test]
 fn the_unreadable_mark_is_scoped_to_its_own_directory() {
-    use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+    use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     let settings_json = r#"{ "defaultShell": "test-shell", "defaultShellArgs": [] }"#;
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     for dir in [a.path(), b.path()] {
-        std::fs::write(dir.join(SETTINGS_FILE_NAME), settings_json).unwrap();
+        std::fs::write(
+            crate::config::settings::settings_fixture_path(&dir),
+            settings_json,
+        )
+        .unwrap();
     }
     std::fs::write(a.path().join(AGENTS_INSTANCE_FILE_NAME), "{ not json").unwrap();
     std::fs::write(
@@ -120,11 +124,13 @@ fn the_unreadable_mark_is_scoped_to_its_own_directory() {
     save_sessions_to_dir(a.path(), &[a_seed]).expect("seed A before the mark");
     let a_before = std::fs::read(a.path().join("sessions.json")).unwrap();
 
-    let a_settings =
-        crate::config::settings::load_settings_from_path(&a.path().join(SETTINGS_FILE_NAME));
+    let a_settings = crate::config::settings::load_settings_from_path(
+        &crate::config::settings::settings_fixture_path(&a.path()),
+    );
     assert!(a_settings.agents_layer.unreadable_path().is_some());
-    let b_settings =
-        crate::config::settings::load_settings_from_path(&b.path().join(SETTINGS_FILE_NAME));
+    let b_settings = crate::config::settings::load_settings_from_path(
+        &crate::config::settings::settings_fixture_path(&b.path()),
+    );
     assert!(b_settings.agents_layer.unreadable_path().is_none());
 
     let row = PersistedSession {
@@ -152,14 +158,16 @@ fn the_unreadable_mark_is_scoped_to_its_own_directory() {
 /// #2716 (B3) - marks `dir` through the real loader: a settings file plus an
 /// unparseable agents file, loaded by `load_settings_from_path`.
 fn b3_mark_dir_unreadable(dir: &std::path::Path) -> crate::config::settings::AppSettings {
-    use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+    use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     std::fs::write(
-        dir.join(SETTINGS_FILE_NAME),
+        crate::config::settings::settings_fixture_path(&dir),
         r#"{ "defaultShell": "test-shell", "defaultShellArgs": [] }"#,
     )
     .unwrap();
     std::fs::write(dir.join(AGENTS_INSTANCE_FILE_NAME), "{ not json").unwrap();
-    let settings = crate::config::settings::load_settings_from_path(&dir.join(SETTINGS_FILE_NAME));
+    let settings = crate::config::settings::load_settings_from_path(
+        &crate::config::settings::settings_fixture_path(&dir),
+    );
     assert!(settings.agents_layer.unreadable_path().is_some());
     settings
 }
@@ -252,7 +260,7 @@ async fn an_unreadable_sidecar_suppresses_every_session_file_write() {
 /// prompt; a write in start two lands and the exact key is gone.
 #[tokio::test]
 async fn the_restore_path_preserves_wake_eligibility_across_a_repair() {
-    use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+    use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
     let kept = project.join(".ac").join("wg-1").join("__agent_keep");
@@ -282,8 +290,9 @@ async fn the_restore_path_preserves_wake_eligibility_across_a_repair() {
         r#"{ "agents": [] }"#,
     )
     .unwrap();
-    let mut settings =
-        crate::config::settings::load_settings_from_path(&temp.path().join(SETTINGS_FILE_NAME));
+    let mut settings = crate::config::settings::load_settings_from_path(
+        &crate::config::settings::settings_fixture_path(&temp.path()),
+    );
     assert!(settings.agents_layer.unreadable_path().is_none());
     settings.restart_resume_wake_working_agents = true;
     settings.restart_resume_agent_prompt = "resume".to_string();

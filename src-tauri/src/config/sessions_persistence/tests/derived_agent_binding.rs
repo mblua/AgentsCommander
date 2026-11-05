@@ -326,9 +326,7 @@ fn derived_agent_id_binding_legacy_loader_captures_raw_origin_before_transform()
 #[tokio::test]
 async fn derived_agent_id_binding_legacy_seed_precedes_purge_publication() {
     let dir = tempfile::tempdir().unwrap();
-    let settings_path = dir
-        .path()
-        .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+    let settings_path = crate::config::settings::settings_fixture_path(&dir.path());
     std::fs::write(
         &settings_path,
         serde_json::to_vec(&serde_json::json!({
@@ -457,9 +455,7 @@ fn derived_agent_id_binding_unavailable_capture_keeps_raw_origin_and_recipe() {
     use sha2::{Digest, Sha256};
     for case in ["removed", "ambiguous", "unreadable"] {
         let dir = tempfile::tempdir().unwrap();
-        let settings_path = dir
-            .path()
-            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        let settings_path = crate::config::settings::settings_fixture_path(&dir.path());
         let row = serde_json::json!(
             {"id":"original","label":"Original","command":"claude","color":"red"}
         );
