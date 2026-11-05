@@ -256,141 +256,41 @@ async fn issue_1937_operation_turn_client_drop() {
     observer.await.unwrap().unwrap();
 }
 
-/// #1940 - coordinator-side restart failures (closed, admission-busy, dead
-/// worker channel) and a failed owned task all surface as explicit errors;
-/// the persisted subset stays, nothing late is queued, and the turn is
-/// released only after the failure classification.
-#[tokio::test]
-async fn issue_1937_operation_turn_restart_failure() {
-    fn restart_request(session_id: Uuid) -> crate::commands::session::RestartJobRequest {
-        crate::commands::session::RestartJobRequest {
-            session_id,
-            agent_id: None,
-            requested_profile: None,
-            skip_auto_resume: None,
-            activate_after: false,
-            intent: TrustedRestartIntent::Background,
-            communication_override: None,
-            enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
-        }
+fn restart_request(session_id: Uuid) -> crate::commands::session::RestartJobRequest {
+    crate::commands::session::RestartJobRequest {
+        session_id,
+        agent_id: None,
+        requested_profile: None,
+        skip_auto_resume: None,
+        activate_after: false,
+        intent: TrustedRestartIntent::Background,
+        communication_override: None,
+        enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
     }
+}
 
-    async fn panicking_operation() -> Result<(), String> {
-        panic!("simulated operation worker failure");
-    }
+async fn panicking_operation() -> Result<(), String> {
+    panic!("simulated operation worker failure");
+}
 
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    // (a) Coordinator closing: the phase gate rejects before any admission.
-    let closing = SelectionCoordinator::new(
+/// A fresh coordinator over an empty manager, forced into `phase`.
+fn coordinator_in_phase(phase: CoordinatorPhase) -> SelectionCoordinator {
+    let coordinator = SelectionCoordinator::new(
         Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
         CancellationToken::new(),
     );
-    closing
+    coordinator
         .inner
         .phase
-        .store(CoordinatorPhase::Closing as u8, Ordering::Release);
-    let persisted = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let persisted_a = Arc::clone(&persisted);
-    let closing_for_operation = closing.clone();
-    let restart_app = app.handle().clone();
-    let error = run_owned_selection_operation(move || {
-        let persisted = Arc::clone(&persisted_a);
-        async move {
-            persisted.lock().unwrap().push("a:publish");
-            let failure = closing_for_operation
-                .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
-                .await
-                .map(|_| ())
-                .unwrap_err();
-            assert!(
-                selection_operation_turn().try_write().is_err(),
-                "the failure classification must stay under the owned turn"
-            );
-            persisted.lock().unwrap().push("a:classified");
-            Err::<(), String>(failure)
-        }
-    })
-    .await
-    .unwrap_err();
-    assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
-    assert_eq!(
-        &*persisted.lock().unwrap(),
-        &["a:publish", "a:classified"],
-        "a failed restart must retain the persisted subset"
-    );
-    assert_eq!(
-        closing.inner.sender.capacity(),
-        COORDINATOR_QUEUE_CAPACITY,
-        "a rejected restart must not leave a late queued job"
-    );
+        .store(phase as u8, Ordering::Release);
+    coordinator
+}
 
-    // (b) Admission busy: every permit is taken, so no envelope is sent.
-    let busy = SelectionCoordinator::new(
-        Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
-        CancellationToken::new(),
-    );
-    busy.inner
-        .phase
-        .store(CoordinatorPhase::Running as u8, Ordering::Release);
-    let mut held_permits = Vec::new();
-    while let Ok(permit) = busy.inner.admission.clone().try_acquire_owned() {
-        held_permits.push(permit);
-    }
-    assert_eq!(held_permits.len(), COORDINATOR_ADMISSION_CAPACITY);
-    let busy_for_operation = busy.clone();
-    let restart_app = app.handle().clone();
-    let error = run_owned_selection_operation(move || async move {
-        busy_for_operation
-            .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
-            .await
-            .map(|_| ())
-    })
-    .await
-    .unwrap_err();
-    assert_eq!(error, SelectionCoordinatorError::Busy.to_string());
-    assert_eq!(
-        busy.inner.sender.capacity(),
-        COORDINATOR_QUEUE_CAPACITY,
-        "a busy admission must not consume a queue slot"
-    );
-    drop(held_permits);
-
-    // (c) Worker gone: phase still says Running, but the worker channel is
-    // closed, so the accepted-job channel reports Unavailable.
-    let orphaned = SelectionCoordinator::new(
-        Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
-        CancellationToken::new(),
-    );
-    orphaned
-        .inner
-        .phase
-        .store(CoordinatorPhase::Running as u8, Ordering::Release);
-    drop(orphaned.inner.receiver.lock().unwrap().take());
-    let orphaned_for_operation = orphaned.clone();
-    let restart_app = app.handle().clone();
-    let error = run_owned_selection_operation(move || async move {
-        orphaned_for_operation
-            .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
-            .await
-            .map(|_| ())
-    })
-    .await
-    .unwrap_err();
-    assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
-    assert_eq!(
-        orphaned.inner.sender.capacity(),
-        COORDINATOR_QUEUE_CAPACITY,
-        "a dead worker channel must not accept a late job"
-    );
-
-    // A real accepted entry releases its provisional capacity while the
-    // existing restore barrier is active. Saturation then belongs to the
-    // actual second probe, rather than an invented admission receipt.
+/// A real accepted entry releases its provisional capacity while the
+/// existing restore barrier is active. Saturation then belongs to the
+/// actual second probe, rather than an invented admission receipt.
+/// Returns the probe and its app, which the caller keeps alive.
+async fn restart_failure_second_probe() -> impl Sized {
     let second_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let second_probe = SelectionCoordinator::new(second_manager.clone(), CancellationToken::new());
     let second_app = tauri::test::mock_builder()
@@ -464,6 +364,106 @@ async fn issue_1937_operation_turn_restart_failure() {
     drop(occupied_slots);
     drop(saturation);
     second_probe.close_and_join().await;
+    // Kept alive by the caller until the end of the test, as before.
+    (second_probe, second_app)
+}
+
+/// #1940 - coordinator-side restart failures (closed, admission-busy, dead
+/// worker channel) and a failed owned task all surface as explicit errors;
+/// the persisted subset stays, nothing late is queued, and the turn is
+/// released only after the failure classification.
+#[tokio::test]
+async fn issue_1937_operation_turn_restart_failure() {
+    let app = tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    // (a) Coordinator closing: the phase gate rejects before any admission.
+    let closing = coordinator_in_phase(CoordinatorPhase::Closing);
+    let persisted = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let persisted_a = Arc::clone(&persisted);
+    let closing_for_operation = closing.clone();
+    let restart_app = app.handle().clone();
+    let error = run_owned_selection_operation(move || {
+        let persisted = Arc::clone(&persisted_a);
+        async move {
+            persisted.lock().unwrap().push("a:publish");
+            let failure = closing_for_operation
+                .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
+                .await
+                .map(|_| ())
+                .unwrap_err();
+            assert!(
+                selection_operation_turn().try_write().is_err(),
+                "the failure classification must stay under the owned turn"
+            );
+            persisted.lock().unwrap().push("a:classified");
+            Err::<(), String>(failure)
+        }
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
+    assert_eq!(
+        &*persisted.lock().unwrap(),
+        &["a:publish", "a:classified"],
+        "a failed restart must retain the persisted subset"
+    );
+    assert_eq!(
+        closing.inner.sender.capacity(),
+        COORDINATOR_QUEUE_CAPACITY,
+        "a rejected restart must not leave a late queued job"
+    );
+
+    // (b) Admission busy: every permit is taken, so no envelope is sent.
+    let busy = coordinator_in_phase(CoordinatorPhase::Running);
+    let mut held_permits = Vec::new();
+    while let Ok(permit) = busy.inner.admission.clone().try_acquire_owned() {
+        held_permits.push(permit);
+    }
+    assert_eq!(held_permits.len(), COORDINATOR_ADMISSION_CAPACITY);
+    let busy_for_operation = busy.clone();
+    let restart_app = app.handle().clone();
+    let error = run_owned_selection_operation(move || async move {
+        busy_for_operation
+            .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
+            .await
+            .map(|_| ())
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, SelectionCoordinatorError::Busy.to_string());
+    assert_eq!(
+        busy.inner.sender.capacity(),
+        COORDINATOR_QUEUE_CAPACITY,
+        "a busy admission must not consume a queue slot"
+    );
+    drop(held_permits);
+
+    // (c) Worker gone: phase still says Running, but the worker channel is
+    // closed, so the accepted-job channel reports Unavailable.
+    let orphaned = coordinator_in_phase(CoordinatorPhase::Running);
+    drop(orphaned.inner.receiver.lock().unwrap().take());
+    let orphaned_for_operation = orphaned.clone();
+    let restart_app = app.handle().clone();
+    let error = run_owned_selection_operation(move || async move {
+        orphaned_for_operation
+            .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
+            .await
+            .map(|_| ())
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, SelectionCoordinatorError::Unavailable.to_string());
+    assert_eq!(
+        orphaned.inner.sender.capacity(),
+        COORDINATOR_QUEUE_CAPACITY,
+        "a dead worker channel must not accept a late job"
+    );
+
+    let _second_probe = restart_failure_second_probe().await;
 
     // (d) Owned-task failure: a panicking operation maps to the explicit
     // join error, and the turn is not poisoned.
