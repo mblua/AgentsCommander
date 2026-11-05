@@ -100,34 +100,11 @@ async fn setup_pre_poll_cancel_case() -> PrePollCancelCase {
     )
     .await;
 
-    let tracker = ResponseCloseState::default();
-    assert!(app.manage(tracker.clone()));
-    let (coordinator_id, coordinator_token) =
-        seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running).await;
-    let manager = {
-        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let guard = state.read().await;
-        guard.clone()
-    };
-    let target_row = manager.get_session(session_id).await.unwrap();
-    let member = ResponseRouteIdentity {
-        target: CANONICAL_WAKE_TO.into(),
-        session_id,
-        token: target_row.token,
-        generation: 1,
-        carrier_version: 1,
-        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-    };
-    let coordinator = ResponseRouteIdentity {
-        target: CANONICAL_WAKE_FROM.into(),
-        session_id: coordinator_id,
-        token: coordinator_token,
-        generation: 2,
-        ..member.clone()
-    };
+    let (tracker, member, coordinator) =
+        wake_route_identities(&app, &fixture.sender_cwd, session_id).await;
 
     let now = std::time::Instant::now() + Duration::from_secs(3600);
-    prime_pre_poll_cancel_tracker(&tracker, &member, &coordinator, now);
+    prime_route_tracker(&tracker, &member, &coordinator, now);
 
     let hooks = MailboxTestHooks::default();
     hooks.pty_presence.lock().unwrap().insert(session_id, true);
@@ -153,7 +130,62 @@ async fn setup_pre_poll_cancel_case() -> PrePollCancelCase {
     }
 }
 
-fn prime_pre_poll_cancel_tracker(
+pub(super) struct RouteRefs<'a> {
+    pub(super) tracker: &'a ResponseCloseState,
+    pub(super) member: &'a ResponseRouteIdentity,
+    pub(super) coordinator: &'a ResponseRouteIdentity,
+    pub(super) now: std::time::Instant,
+}
+
+impl PrePollCancelCase {
+    fn refs(&self) -> RouteRefs<'_> {
+        RouteRefs {
+            tracker: &self.tracker,
+            member: &self.member,
+            coordinator: &self.coordinator,
+            now: self.now,
+        }
+    }
+}
+
+pub(super) async fn wake_route_identities(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    sender_cwd: &Path,
+    session_id: Uuid,
+) -> (
+    ResponseCloseState,
+    ResponseRouteIdentity,
+    ResponseRouteIdentity,
+) {
+    let tracker = ResponseCloseState::default();
+    assert!(app.manage(tracker.clone()));
+    let (coordinator_id, coordinator_token) =
+        seed_raise_hand_session(app, sender_cwd, true, SessionStatus::Running).await;
+    let manager = {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let guard = state.read().await;
+        guard.clone()
+    };
+    let target_row = manager.get_session(session_id).await.unwrap();
+    let member = ResponseRouteIdentity {
+        target: CANONICAL_WAKE_TO.into(),
+        session_id,
+        token: target_row.token,
+        generation: 1,
+        carrier_version: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+    };
+    let coordinator = ResponseRouteIdentity {
+        target: CANONICAL_WAKE_FROM.into(),
+        session_id: coordinator_id,
+        token: coordinator_token,
+        generation: 2,
+        ..member.clone()
+    };
+    (tracker, member, coordinator)
+}
+
+pub(super) fn prime_route_tracker(
     tracker: &ResponseCloseState,
     member: &ResponseRouteIdentity,
     coordinator: &ResponseRouteIdentity,
@@ -243,9 +275,34 @@ async fn run_pre_poll_cancel_case(cancelled: bool) {
     // First yield after abort; report construction lives inside the unpolled future.
     poller.settle_wake_workers().await;
     assert_pre_poll_settled_claim(cancelled, &poller, &source, hooks, session_id);
-    let (_retained, preservation_snapshot) =
-        assert_pre_poll_phase1_retention(&case, &mut poller, &source, &original, &content);
+    let (_retained, preservation_snapshot) = assert_phase1_retained(
+        &case.refs(),
+        hooks,
+        &mut poller,
+        &source,
+        &original,
+        &content,
+    );
 
+    discharge_and_probe(
+        &case.refs(),
+        &poller,
+        &source,
+        &original,
+        preservation_snapshot,
+    );
+}
+
+pub(super) fn discharge_and_probe(
+    refs: &RouteRefs<'_>,
+    poller: &MailboxPoller,
+    source: &Path,
+    original: &ResponseWakeWork,
+    preservation_snapshot: PreservationSnapshot,
+) {
+    let RouteRefs {
+        tracker, member, ..
+    } = *refs;
     let scenario_target = original.target.clone();
     let scenario_key = original.key.clone();
 
@@ -257,9 +314,9 @@ async fn run_pre_poll_cancel_case(cancelled: bool) {
     // A leaked dispatch/provisional counter is not changed by settle_terminal.
     // Each fresh probe uses the SAME tracker, target, generation and facts.
     for sensitivity in 0..5 {
-        probe_pre_poll_sensitivity(&case, &scenario_target, sensitivity);
+        probe_route_sensitivity(refs, &scenario_target, sensitivity);
     }
-    assert_pre_poll_retained_after(&poller, tracker, &source, preservation_snapshot);
+    assert_retained_after(poller, tracker, source, preservation_snapshot);
 }
 
 fn assert_pre_poll_settled_claim(
@@ -290,24 +347,22 @@ fn assert_pre_poll_settled_claim(
     }
 }
 
-type PreservationSnapshot = (String, String, String, Vec<u8>);
+pub(super) type PreservationSnapshot = (String, String, String, Vec<u8>);
 
-fn assert_pre_poll_phase1_retention(
-    case: &PrePollCancelCase,
+pub(super) fn assert_phase1_retained(
+    refs: &RouteRefs<'_>,
+    hooks: &MailboxTestHooks,
     poller: &mut MailboxPoller,
     source: &Path,
     original: &ResponseWakeWork,
     content: &str,
 ) -> (ResponseWakeWork, PreservationSnapshot) {
-    let PrePollCancelCase {
-        hooks,
-        now,
-        coordinator,
-        member,
+    let RouteRefs {
         tracker,
-        ..
-    } = case;
-    let now = *now;
+        member,
+        coordinator,
+        now,
+    } = *refs;
     // Phase 1: preservation before synthetic discharge. Exact pending proves
     // that the scenario target has a work entry; no counters are inferred here.
     let retained = poller
@@ -362,13 +417,13 @@ fn assert_pre_poll_phase1_retention(
     (retained, preservation_snapshot)
 }
 
-fn probe_pre_poll_sensitivity(case: &PrePollCancelCase, scenario_target: &str, sensitivity: u64) {
-    let PrePollCancelCase {
+fn probe_route_sensitivity(refs: &RouteRefs<'_>, scenario_target: &str, sensitivity: u64) {
+    let RouteRefs {
         coordinator,
         member,
         tracker,
         ..
-    } = case;
+    } = *refs;
     let dispatch = if sensitivity == 1 {
         Some(tracker.begin_delivery(scenario_target).unwrap())
     } else {
@@ -451,7 +506,7 @@ fn probe_pre_poll_sensitivity(case: &PrePollCancelCase, scenario_target: &str, s
     drop(provisional);
 }
 
-fn assert_pre_poll_retained_after(
+pub(super) fn assert_retained_after(
     poller: &MailboxPoller,
     tracker: &ResponseCloseState,
     source: &Path,
