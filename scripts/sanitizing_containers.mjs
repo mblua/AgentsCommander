@@ -156,8 +156,24 @@ function constantReferences(path, scan, c, exempt) {
   function resolve(raw, scope, token, seen = new Set()) {
     const parts = raw.replace(/^::/, '').split('::'), first = parts[0];
     const chain = moduleChain(path, scope);
-    if (['crate', 'self', 'super'].includes(first))
-      return { path: canonical(raw, chain), ambiguous: false };
+    if (first === 'crate') return { path: canonical(raw, chain), ambiguous: false };
+    if (first === 'self' || first === 'super') {
+      let moduleScope = scope;
+      while (moduleScope.parent && moduleScope.item?.kind !== 'mod')
+        moduleScope = moduleScope.parent;
+      const relative = [...parts];
+      if (relative[0] === 'self') relative.shift();
+      while (relative[0] === 'super') {
+        if (!moduleScope.parent)
+          return { path: canonical(raw, chain), ambiguous: false };
+        moduleScope = moduleScope.parent;
+        while (moduleScope.parent && moduleScope.item?.kind !== 'mod')
+          moduleScope = moduleScope.parent;
+        relative.shift();
+      }
+      // Explicit self/super paths bind in their module, not a function's locals.
+      return resolve(relative.join('::'), moduleScope, token, seen);
+    }
     if (seen.has(first)) return { path: canonical(raw, chain), ambiguous: true };
     const next = new Set([...seen, first]);
     let binding, bindingScope, glob = false;

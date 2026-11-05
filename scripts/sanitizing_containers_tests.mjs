@@ -163,6 +163,15 @@ test('04 settings canonical references', t => {
     ['renamed import', 'use ' + direct + ' as N; fn f() { let _ = N; }'],
     ['module alias', 'use crate::config::instance_artifacts as a; ' +
       'fn f() { let _ = a::SETTINGS_FILE_NAME; }'],
+    ['self qualified module alias', 'use crate::config::instance_artifacts as a; ' +
+      'fn f() { let _ = self::a::SETTINGS_FILE_NAME; }'],
+    ['inline self module alias', 'mod inner { use crate::config::instance_artifacts as a; ' +
+      'fn f(){let _=self::a::SETTINGS_FILE_NAME;} }'],
+    ['alias of alias', 'use crate::config::instance_artifacts as a; use self::a as b; ' +
+      'fn f(){let _=self::b::SETTINGS_FILE_NAME;}'],
+    ['self renamed import', 'use ' + direct + ' as N; fn f(){let _=self::N;}'],
+    ['inline parent module alias', 'use crate::config::instance_artifacts as a; ' +
+      'mod inner { fn f(){let _=super::a::SETTINGS_FILE_NAME;} }'],
     ['raw identifier', runtime.replace('SETTINGS_FILE_NAME', 'r#SETTINGS_FILE_NAME')],
     ['const alias', 'const N: &str = ' + direct + '; fn f() { let _ = N; }'],
     ['local alias', 'fn f() { let n = ' + direct + '; let _ = n; }'],
@@ -176,7 +185,7 @@ test('04 settings canonical references', t => {
   ];
   for (const [label, source] of cases) {
     const r = control(t, label, { [root + 'other.rs']: source }, 1, site('other.rs'));
-    assert.ok(r.diagnostics.some(d => d.symbol?.includes('crate::config::instance_artifacts')));
+    assert.ok(r.diagnostics.some(d => d.symbol === direct));
   }
   for (const source of [
     'mod config; use config::instance_artifacts::SETTINGS_FILE_NAME; ' +
