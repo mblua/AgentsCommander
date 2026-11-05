@@ -317,9 +317,16 @@ impl crate::loops::ipc_observer::IpcObserver {
         self: Arc<Self>,
         generated: F,
     ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+        // #3832 - one more route would push `invoke_handler` past its ceiling.
+        let list_targets: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool =
+            tauri::generate_handler![commands::session::list_preflight_test_targets];
         move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
             self.note_invoke(invoke.message.command());
-            generated(invoke)
+            if invoke.message.command() == "list_preflight_test_targets" {
+                list_targets(invoke)
+            } else {
+                generated(invoke)
+            }
         }
     }
 }
@@ -451,7 +458,6 @@ fn invoke_handler(
         commands::config::get_agent_update_status,
         commands::config::agent_update_answer,
         commands::config::agent_update_cancel,
-        commands::session::list_preflight_test_targets,
         commands::session::describe_preflight_target,
         commands::session::start_preflight_test,
         commands::session::get_preflight_test,
