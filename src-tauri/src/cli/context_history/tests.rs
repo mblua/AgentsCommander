@@ -266,3 +266,57 @@ fn every_store_failure_exits_1_and_is_never_an_empty_success() {
         assert_eq!(exit_code(Err(CliError::Store(failure))), 1, "{shown}");
     }
 }
+
+fn seeded_project(count: u128) -> (tempfile::TempDir, String, PathBuf) {
+    use crate::context_history::config::HistoryConfig;
+    use crate::context_history::store::HistoryWriter;
+    let (tmp, project) = project();
+    let ac_root = tmp.path().join(".ac");
+    let config = HistoryConfig {
+        enabled: true,
+        retention_days: 30,
+    };
+    let mut writer = HistoryWriter::open(&ac_root, &config).expect("open");
+    let batch: Vec<_> = (1..=count)
+        .map(|i| {
+            let mut record = record(i, &project, NOW);
+            record.sequence = u64::try_from(i).expect("sequence");
+            record
+        })
+        .collect();
+    writer.append(&batch, NOW).expect("append");
+    (tmp, project, ac_root)
+}
+
+#[test]
+fn a_snapshot_over_the_row_cap_fails_instead_of_returning_part() {
+    use crate::context_history::store::{read_history_with_limits, StoreLimits};
+    let (_tmp, _project, ac_root) = seeded_project(2);
+    let limits = StoreLimits {
+        max_rows: 1,
+        ..StoreLimits::PRODUCTION
+    };
+    for attempt in [ReadAttempt::ReadOnly, ReadAttempt::AllowRecovery] {
+        let result = read_history_with_limits(&ac_root, attempt, limits);
+        assert_eq!(result, Err(StoreError::TooManyRows(2)));
+    }
+}
+
+#[test]
+fn a_busy_database_fails_with_no_stdout() {
+    use crate::context_history::store::history_database_path;
+    let (_tmp, project, ac_root) = seeded_project(1);
+    let holder = rusqlite::Connection::open(history_database_path(&ac_root)).expect("holder");
+    holder
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("exclusive lock");
+    assert_eq!(
+        read_history(&ac_root, ReadAttempt::ReadOnly),
+        Err(StoreError::RetryableBusy)
+    );
+    let (code, output) = run_to_string(&args(&project, FROM, TO));
+    assert_eq!((code, output.as_str()), (1, ""));
+    holder.execute_batch("ROLLBACK").expect("release");
+    let (code, _) = run_to_string(&args(&project, FROM, TO));
+    assert_eq!(code, 0, "the same read succeeds once the lock is gone");
+}
