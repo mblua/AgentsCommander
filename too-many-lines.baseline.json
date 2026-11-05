@@ -36,21 +36,6 @@
       }
     },
     {
-      "id": "rust:crates/session-bridge/tests/terminal_snapshot_helper_process.rs::terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
-      "name": "terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
-      "anchor": "fe4aadec8f84",
-      "sites": {
-        "linux": {
-          "lines": 111,
-          "production": false
-        },
-        "macos": {
-          "lines": 111,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:crates/terminal-snapshot-renderer/src/json/tests.rs::borrowed_wire_debug_is_structural_and_non_disclosing",
       "name": "borrowed_wire_debug_is_structural_and_non_disclosing",
       "anchor": "7446725863fc",
