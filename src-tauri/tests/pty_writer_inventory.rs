@@ -764,7 +764,7 @@ fn capability_construction_and_privacy_inventory() {
 }
 
 fn field_visibility_mutations(valid: &str) -> usize {
-    let parsed = syn::parse_file(&valid).unwrap();
+    let parsed = syn::parse_file(valid).unwrap();
     let mut mutations = 0;
     for item in parsed.items {
         let syn::Item::Struct(item) = item else {
