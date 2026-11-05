@@ -364,14 +364,7 @@ async fn room_idle_confirmation_case(
         (success, expected_calls, usize::from(case == "hotkey-error")),
         "{writer}/{case}: save outcome, hotkey calls, refusal events"
     );
-    for error in hotkey_errors {
-        assert_eq!(
-            serde_json::from_str::<Value>(&error).unwrap(),
-            json!({
-                "message":"Screenshot hotkey was saved but could not be registered: fixture refusal"
-            })
-        );
-    }
+    assert_room_idle_confirmation_hotkey_errors(hotkey_errors);
     assert_room_idle_confirmation_events(
         rx.try_iter().collect(),
         receiver,
@@ -529,4 +522,16 @@ fn assert_room_idle_confirmation_persisted(
         "{writer}/{case}: isolated persisted settings"
     );
     assert_eq!(std::fs::read(fixture.join("sessions.json")).unwrap(), b"[]");
+}
+
+#[cfg(windows)]
+fn assert_room_idle_confirmation_hotkey_errors(hotkey_errors: Vec<String>) {
+    for error in hotkey_errors {
+        assert_eq!(
+            serde_json::from_str::<Value>(&error).unwrap(),
+            json!({
+                "message":"Screenshot hotkey was saved but could not be registered: fixture refusal"
+            })
+        );
+    }
 }
