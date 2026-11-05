@@ -352,15 +352,15 @@ fn build_attach_race_app(
     manager: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty: &Arc<Mutex<PtyManager>>,
 ) -> tauri::App<tauri::test::MockRuntime> {
+    let selection_executor =
+        crate::commands::session::selection_executor::state::<tauri::test::MockRuntime>();
     tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
+        .manage(WindowDestroyAudit::default())
+        .manage(selection_executor)
         .manage(Arc::clone(manager))
         .manage(Arc::clone(pty))
         .manage(DetachedSessionsState::default())
         .manage(WsBroadcaster::new())
-        .manage(WindowDestroyAudit::default())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build attach race app")
 }
