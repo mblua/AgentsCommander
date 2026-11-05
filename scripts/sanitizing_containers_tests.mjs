@@ -426,3 +426,94 @@ test('04 settings immutable git and errors', t => {
       .paths.includes(p));
   }
 });
+
+// #3919 stage 1: literalScope widens only the literal search; instance-artifacts-v1
+// exempts exact instance metadata shapes for the registered name.
+const sessionsScope = root + 'config/sessions_persistence/';
+const snapshotRegistry = (extra = {}) => ({ version: 1, containers: [{
+  id: 'Sessions/Snapshot', name: 'sessions.json', scope: sessionsScope,
+  owner: sessionsScope + 'store.rs', externalLiteralBaseline: 0,
+  writerInventory: { files: 0, sites: 0 }, ...extra }] });
+const widened = () => snapshotRegistry({ literalScope: root,
+  metadataPolicy: 'instance-artifacts-v1' });
+const snapshotNames = 'pub(crate) const SESSIONS_FILE_NAME: &str = "sessions.json";';
+const snapshotArtifacts = [
+  'const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[',
+  '    InstanceArtifact {',
+  '        name: "sessions.json",',
+  '        kind: ArtifactKind::File,',
+  '        disposition: Disposition::Ignore,',
+  '        comment: "# AgentsCommander: persisted session state",',
+  '    },',
+  '];',
+].join('\n');
+function snapshotTree(files = {}, registry = widened()) {
+  const blobs = { 'scripts/containers.json': JSON.stringify(registry),
+    [sessionsScope + 'store.rs']: 'fn load() {}', [namesPath]: snapshotNames,
+    [artifactsPath]: snapshotArtifacts, ...files };
+  const headTree = new Map(Object.keys(blobs).map(p => [p, p]));
+  return { headTree, readBlob: e => blobs[e], assertStableHead() {} };
+}
+const literalSites = r => r.diagnostics.filter(d => d.rule === 'external_container_literal')
+  .map(d => d.path + ':' + d.line);
+test('04 literalScope finds literals outside scope; unset scope is unchanged', () => {
+  const stray = { [root + 'probe.rs']: 'fn f() -> &\'static str { "sessions.json" }' };
+  assert.equal(containersGate(snapshotTree()).exit, 0);
+  assert.deepEqual(literalSites(containersGate(snapshotTree(stray))), [root + 'probe.rs:1']);
+  const narrow = snapshotRegistry();
+  assert.equal(containersGate(snapshotTree(stray, narrow)).exit, 0);
+  const inside = { [sessionsScope + 'other.rs']: 'const N: &str = "sessions.json";' };
+  assert.deepEqual(literalSites(containersGate(snapshotTree(inside, narrow))),
+    [sessionsScope + 'other.rs:1']);
+  const metrics = containersGate(snapshotTree(stray)).metrics[0];
+  assert.deepEqual(metrics.writerInventory, { files: 0, sites: 0 });
+  assert.equal(metrics.externalLiterals, 1);
+});
+test('04 instance-artifacts-v1 exempts only exact metadata shapes', () => {
+  const bad = [
+    [namesPath, snapshotNames.replace('"sessions.json"', 'concat!("sessions.json")'), 1],
+    [namesPath, snapshotNames + '\nfn f() -> &\'static str { "sessions.json" }', 2],
+    [namesPath, 'mod inner { const N: &str = "sessions.json"; }', 1],
+    [artifactsPath, snapshotArtifacts.replace('kind:', 'extra: 1,\n        kind:'), 3],
+    [artifactsPath, snapshotArtifacts.replace('comment: "#', 'comment: "sessions.json #'), 0],
+    [artifactsPath, snapshotArtifacts + '\nconst OTHER: &str = "sessions.json";', 9],
+  ];
+  for (const [p, text, line] of bad) {
+    const r = containersGate(snapshotTree({ [p]: text }));
+    assert.equal(r.exit, line ? 1 : 0, text);
+    if (line) assert.deepEqual(literalSites(r), [p + ':' + line], text);
+  }
+  const test = '#[cfg(test)]\nmod tests { const N: &str = "sessions.json"; }';
+  assert.equal(containersGate(snapshotTree({ [namesPath]: snapshotNames + '\n' + test })).exit, 0);
+});
+test('04 instance-artifacts-v1 registry contract', () => {
+  for (const change of [
+    c => delete c.literalScope, c => c.ownerModule = true, c => c.constantPaths = [direct],
+    c => c.literalScope = root + 'cli/', c => c.literalScope = 'src-tauri/src',
+    c => c.literalScope = '../', c => c.literalScope = 1,
+  ]) {
+    const registry = widened();
+    change(registry.containers[0]);
+    assert.throws(() => parseRegistry(JSON.stringify(registry)));
+    assert.equal(containersGate(snapshotTree({}, registry)).status, 'ERROR');
+  }
+  const missing = snapshotTree();
+  missing.headTree.delete(namesPath);
+  assert.equal(containersGate(missing).status, 'ERROR');
+});
+test('04 stage-1 containers scan all production sources on candidate HEAD', t => {
+  const s = candidateSnapshot();
+  const entries = parseRegistry(s.readBlob(s.headTree.get('scripts/containers.json')));
+  const ids = ['RoleExperiment/Attempts', 'Sessions/Snapshot', 'Sessions/OrphanArchive',
+    'TeamCreation/ConfigMutationLock', 'TeamCreation/Conventions', 'Screenshots/Native'];
+  for (const id of ids) {
+    const c = entries.find(e => e.id === id);
+    assert.equal(c.literalScope, root, id);
+    assert.equal(c.metadataPolicy, 'instance-artifacts-v1', id);
+  }
+  const result = containersGate(s);
+  assert.equal(result.exit, 0);
+  for (const id of ids)
+    assert.equal(result.metrics.find(m => m.id === id).externalLiterals, 0, id);
+  t.diagnostic(JSON.stringify(result.metrics.filter(m => ids.includes(m.id))));
+});
