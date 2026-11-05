@@ -185,6 +185,9 @@ test('04 settings canonical references', t => {
   ]) control(t, 'bare crate root', { [root + 'lib.rs']: source }, 1, site('lib.rs'));
   for (const source of [
     'mod instance_artifacts; fn f(){let _=instance_artifacts::SETTINGS_FILE_NAME;}',
+    'mod instance_artifacts; fn f(){let _=self::instance_artifacts::SETTINGS_FILE_NAME;}',
+    'mod instance_artifacts; use self::instance_artifacts::SETTINGS_FILE_NAME as N; ' +
+      'fn f(){let _=N;}',
     'mod instance_artifacts; use instance_artifacts::SETTINGS_FILE_NAME as N; fn f(){let _=N;}',
   ]) control(t, 'bare config module', { [root + 'config.rs']: source }, 1, site('config.rs'));
   control(t, 'bare names module', { [artifactsPath]: artifactsSource +
@@ -318,6 +321,10 @@ test('04 settings immutable git and errors', t => {
     const result = containersGate(writer);
     compareInventories(result, containersGate(without(writer)));
     assert.deepEqual(settings(result).writerInventory, { files: expected, sites: expected });
+    t.diagnostic(JSON.stringify({ control: expected ? 'owner writer' : 'non-owner writer',
+      status: result.status, exit: result.exit, inventory: result.inventory,
+      settings: settings(result),
+      unclassified: result.diagnostics.find(d => d.rule === 'unclassified_writers') }));
     if (!expected) assert.ok(result.diagnostics.find(d => d.rule === 'unclassified_writers')
       .paths.includes(p));
   }

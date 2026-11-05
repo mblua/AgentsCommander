@@ -192,8 +192,9 @@ function constantReferences(path, scan, c, exempt) {
       return { ...target, path: target.path && [target.path, ...parts.slice(1)].join('::'),
         ambiguous: target.ambiguous || !!binding.ambiguous };
     }
-    if (binding && !binding.ambiguous &&
-        (binding.kind === 'local' || binding.kind === 'shadow' && !declared))
+    const parameter = binding?.kind === 'shadow' && bindingScope?.item?.kind === 'fn' &&
+      !scan.items.some(i => i.name === first && i.scope === bindingScope);
+    if (binding && !binding.ambiguous && (binding.kind === 'local' || parameter))
       return { path: null, ambiguous: false };
     const fallback = resolveAlias(scan, raw, scope, pattern);
     return { path: canonical(fallback.path ?? raw, chain),
@@ -296,7 +297,8 @@ export function runGate(snapshot) {
         if (!owns(c, p)) for (const t of m.literals) if (t.value === c.name)
           external.push({ path: p, line: t.line });
       }
-      metrics.push({ id: c.id, externalFiles: new Set(external.map(t => t.path)).size,
+      metrics.push({ id: c.id,
+        externalFiles: new Set([...external, ...constants].map(t => t.path)).size,
         externalLiterals: external.length,
         ...(c.ownerModule ? { externalConstants: constants.length,
           externalUses: external.length + constants.length } : {}), writerInventory: scopedWriters,
