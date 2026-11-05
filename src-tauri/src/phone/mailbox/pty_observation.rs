@@ -25,5 +25,13 @@ pub(crate) trait PtyReadinessState: PtyTargetState {
     fn pty_menu(&self) -> Option<&Arc<crate::pty::menu_guard::MenuGuard>>;
 }
 
+/// Borrowed wake-delivery observations; optional registration remains optional.
+pub(crate) trait WakeDeliveryState: PtyReadinessState {
+    fn message_store(&self) -> Option<&crate::api::message_store::MessageStoreState>;
+    /// Security credential: compare with `matches()`; never log it.
+    fn master_token(&self) -> Option<&crate::MasterToken>;
+    fn selection(&self) -> &crate::session::selection::SelectionCoordinator;
+}
+
 #[cfg(test)]
 mod tests;

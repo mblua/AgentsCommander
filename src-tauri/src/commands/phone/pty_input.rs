@@ -1,7 +1,7 @@
 use crate::app_state::RestoreInProgress;
 use crate::config::settings::SettingsState;
 use crate::phone::mailbox::pty_observation::{
-    PtyAuthorityState, PtyReadinessState, PtyTargetState,
+    PtyAuthorityState, PtyReadinessState, PtyTargetState, WakeDeliveryState,
 };
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::manager::PtyManager;
@@ -45,6 +45,23 @@ impl<R: tauri::Runtime> PtyReadinessState for tauri::AppHandle<R> {
     fn pty_menu(&self) -> Option<&Arc<crate::pty::menu_guard::MenuGuard>> {
         self.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>()
             .map(|state| state.inner())
+    }
+}
+
+impl<R: tauri::Runtime> WakeDeliveryState for tauri::AppHandle<R> {
+    fn message_store(&self) -> Option<&crate::api::message_store::MessageStoreState> {
+        self.try_state::<crate::api::message_store::MessageStoreState>()
+            .map(|state| state.inner())
+    }
+
+    fn master_token(&self) -> Option<&crate::MasterToken> {
+        self.try_state::<crate::MasterToken>()
+            .map(|state| state.inner())
+    }
+
+    fn selection(&self) -> &crate::session::selection::SelectionCoordinator {
+        self.state::<crate::session::selection::SelectionCoordinator>()
+            .inner()
     }
 }
 
