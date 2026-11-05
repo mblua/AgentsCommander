@@ -199,49 +199,10 @@ fn code_only(body: &str) -> Result<String, &'static str> {
             }
         }
 
-        if character == '"' {
-            index += 1;
-            let mut closed = false;
-            while index < source.len() {
-                match source[index] {
-                    '\\' => index += 2,
-                    '"' => {
-                        index += 1;
-                        closed = true;
-                        break;
-                    }
-                    _ => index += 1,
-                }
-            }
-            if !closed {
-                return Err("a string literal is never closed, so the scan cannot be trusted");
-            }
+        if let Some(end) = literal_end(&source, index)? {
+            index = end;
             out.push(' ');
             continue;
-        }
-
-        // `'x'` and `'\n'` are literals; `'a` is a lifetime. Only a literal is
-        // consumed, so a lifetime cannot swallow the code that follows it.
-        if character == '\'' {
-            if source.get(index + 1) == Some(&'\\') {
-                let mut cursor = index + 3;
-                while cursor < source.len() && source[cursor] != '\'' {
-                    cursor += 1;
-                }
-                if cursor >= source.len() {
-                    return Err(
-                        "a character literal is never closed, so the scan cannot be trusted",
-                    );
-                }
-                index = cursor + 1;
-                out.push(' ');
-                continue;
-            }
-            if source.get(index + 2) == Some(&'\'') {
-                index += 3;
-                out.push(' ');
-                continue;
-            }
         }
 
         out.push(character);
@@ -455,32 +416,13 @@ fn no_loops_source_reaches_into_the_command_surface() {
     let mut unlisted_offenders: Vec<String> = Vec::new();
     let mut alias_offenders: Vec<String> = Vec::new();
 
-    for path in &files {
-        let relative = relative_of(path);
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("{relative}: cannot be read as UTF-8 text: {error}"));
-        let code = code_only(&source).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
-        let body = normalized(&code);
-        let children =
-            command_children(&body).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
-        if children
-            .iter()
-            .any(|child| child == FORBIDDEN_COMMAND_CHILD)
-        {
-            loops_offenders.push(relative.clone());
-        }
-        if children.iter().any(|child| {
-            !ALLOWED_COMMAND_REFERENCES
-                .iter()
-                .any(|(file, allowed)| *file == relative && allowed == child)
-        }) {
-            unlisted_offenders.push(relative.clone());
-        }
-        if aliases_the_command_group(&body) {
-            alias_offenders.push(relative.clone());
-        }
-        observed.extend(children.into_iter().map(|child| (relative.clone(), child)));
-    }
+    collect_command_references(
+        &files,
+        &mut observed,
+        &mut loops_offenders,
+        &mut unlisted_offenders,
+        &mut alias_offenders,
+    );
     observed.sort();
     observed.dedup();
 
@@ -561,4 +503,83 @@ fn no_loops_source_reaches_into_the_command_surface() {
          set.",
         unlisted_offenders.join(", ")
     );
+}
+
+fn literal_end(source: &[char], mut index: usize) -> Result<Option<usize>, &'static str> {
+    let character = source[index];
+    if character == '"' {
+        index += 1;
+        let mut closed = false;
+        while index < source.len() {
+            match source[index] {
+                '\\' => index += 2,
+                '"' => {
+                    index += 1;
+                    closed = true;
+                    break;
+                }
+                _ => index += 1,
+            }
+        }
+        if !closed {
+            return Err("a string literal is never closed, so the scan cannot be trusted");
+        }
+        return Ok(Some(index));
+    }
+
+    // `'x'` and `'\n'` are literals; `'a` is a lifetime. Only a literal is
+    // consumed, so a lifetime cannot swallow the code that follows it.
+    if character == '\'' {
+        if source.get(index + 1) == Some(&'\\') {
+            let mut cursor = index + 3;
+            while cursor < source.len() && source[cursor] != '\'' {
+                cursor += 1;
+            }
+            if cursor >= source.len() {
+                return Err("a character literal is never closed, so the scan cannot be trusted");
+            }
+            index = cursor + 1;
+            return Ok(Some(index));
+        }
+        if source.get(index + 2) == Some(&'\'') {
+            index += 3;
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
+fn collect_command_references(
+    files: &[PathBuf],
+    observed: &mut Vec<(String, String)>,
+    loops_offenders: &mut Vec<String>,
+    unlisted_offenders: &mut Vec<String>,
+    alias_offenders: &mut Vec<String>,
+) {
+    for path in files {
+        let relative = relative_of(path);
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{relative}: cannot be read as UTF-8 text: {error}"));
+        let code = code_only(&source).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
+        let body = normalized(&code);
+        let children =
+            command_children(&body).unwrap_or_else(|reason| panic!("{relative}: {reason}"));
+        if children
+            .iter()
+            .any(|child| child == FORBIDDEN_COMMAND_CHILD)
+        {
+            loops_offenders.push(relative.clone());
+        }
+        if children.iter().any(|child| {
+            !ALLOWED_COMMAND_REFERENCES
+                .iter()
+                .any(|(file, allowed)| *file == relative && allowed == child)
+        }) {
+            unlisted_offenders.push(relative.clone());
+        }
+        if aliases_the_command_group(&body) {
+            alias_offenders.push(relative.clone());
+        }
+        observed.extend(children.into_iter().map(|child| (relative.clone(), child)));
+    }
 }
