@@ -200,6 +200,7 @@ impl MailboxPoller {
     pub(crate) async fn execute_owned_peer_replacement<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
+        pty: &Arc<Mutex<PtyManager>>,
         execution: &mut OwnedPeerWakeExecution,
     ) -> Result<OwnedPeerWakeStep, String> {
         #[cfg(test)]
@@ -221,11 +222,10 @@ impl MailboxPoller {
             .read()
             .await
             .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
         if !continuation.validate_source().await {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        if !prepare_replacement_context(execution, continuation, &manager, &pty).await? {
+        if !prepare_replacement_context(execution, continuation, &manager, pty).await? {
             return Ok(OwnedPeerWakeStep::Retained);
         }
         #[cfg(test)]
@@ -255,7 +255,7 @@ impl MailboxPoller {
             return Ok(OwnedPeerWakeStep::Retained);
         }
         let Some((info, id, effect)) =
-            begin_replacement_work_transfer(continuation, &manager, &pty).await
+            begin_replacement_work_transfer(continuation, &manager, pty).await
         else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
@@ -271,7 +271,7 @@ impl MailboxPoller {
             }
         };
         if continuation
-            .refresh_completion_info(&manager, &pty)
+            .refresh_completion_info(&manager, pty)
             .await
             .is_none()
         {
@@ -297,7 +297,7 @@ impl MailboxPoller {
         drop(execution.exact.take());
         drop(execution.stripe.take());
         continuation
-            .finish_observed_work_transfer(&manager, &pty, effect, true)
+            .finish_observed_work_transfer(&manager, pty, effect, true)
             .await;
         Ok(OwnedPeerWakeStep::Delivered(replacement_delivery(
             execution,
