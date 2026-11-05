@@ -399,7 +399,7 @@ impl MailboxPoller {
         token_uuid: Uuid,
         path: &std::path::Path,
         msg: &OutboxMessage,
-    ) -> Result<(SessionInfo, Uuid, String), Result<(), String>> {
+    ) -> Result<(SessionInfo, Uuid, &'static str), Result<(), String>> {
         let session = {
             let mgr = session_mgr.read().await;
             mgr.find_by_token(token_uuid).await
@@ -493,7 +493,10 @@ impl MailboxPoller {
     /// leaves SELF-FORGET archived but uncleared; content is preserved in
     /// self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
     /// Returns the forgotten summary captured before archiving.
-    fn archive_self_forget(root: &std::path::Path, session_id: Uuid) -> String {
+    fn archive_self_forget(
+        root: &std::path::Path,
+        session_id: Uuid,
+    ) -> Option<super::handoff::ForgottenSummary> {
         let forgotten_summary = capture_self_forget_summary(root);
         let ts = chrono::Local::now()
             .format(ARCHIVE_TIMESTAMP_FORMAT)
