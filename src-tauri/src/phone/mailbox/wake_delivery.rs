@@ -809,18 +809,19 @@ impl MailboxPoller {
         }
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
-        let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
-            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
-            if !source.bind(&execution.continuation) {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
-            let result = delivery
-                .execute_owned_peer_replacement(&app, &mut execution)
-                .await;
-            source.returned(result.is_err());
-            result
-        })
-        .await;
+        let (result, pty) =
+            crate::config::sessions_persistence::run_owned_persist_core(async move {
+                let mut source = crate::session::selection::SourceExecutorGuard::unbound();
+                if !source.bind(&execution.continuation) {
+                    return (Ok(OwnedPeerWakeStep::Retained), pty);
+                }
+                let result = delivery
+                    .execute_owned_peer_replacement(&app, &pty, &mut execution)
+                    .await;
+                source.returned(result.is_err());
+                (result, pty)
+            })
+            .await;
         owned_peer_completion(result, &completion, &manager, &pty).await
     }
 }
