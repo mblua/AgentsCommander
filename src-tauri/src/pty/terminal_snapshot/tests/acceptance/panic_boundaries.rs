@@ -1,62 +1,180 @@
 use super::*;
 
+fn run_panic_parent() {
+    let temporary_root = std::env::current_dir()
+        .expect("panic parent current directory")
+        .join("target")
+        .join("terminal-snapshot-acceptance-temp");
+    std::fs::create_dir_all(&temporary_root).expect("panic parent temporary root");
+    let evidence = tempfile::Builder::new()
+        .prefix("panic-evidence-")
+        .tempdir_in(temporary_root)
+        .expect("panic evidence directory");
+    let canary_file = evidence.path().join("canaries.json");
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("terminal snapshot panic test executable"),
+    )
+    .args([
+        "--exact",
+        PANIC_TEST_NAME,
+        "--test-threads=1",
+        "--nocapture",
+    ])
+    .env(PANIC_CHILD_ENV, "1")
+    .env(PANIC_CANARY_FILE_ENV, &canary_file)
+    .output()
+    .expect("spawn isolated terminal snapshot panic test");
+    let canaries: Vec<String> = std::fs::read(&canary_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| {
+            [
+                SCREEN_SENTINEL,
+                OSC_TITLE_SENTINEL,
+                OSC_HYPERLINK_SENTINEL,
+                OSC_CLIPBOARD_SENTINEL,
+                CALLER_PATH_SENTINEL,
+                API_PANIC_SENTINEL,
+                BLOCKING_PANIC_SENTINEL,
+                HOST_PANIC_SENTINEL,
+                PNG_PANIC_SENTINEL,
+                BASE64_PANIC_SENTINEL,
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+        });
+    assert_canaries_absent_except(&output.stdout, &canaries, &[], "panic child stdout");
+    assert_canaries_absent_except(&output.stderr, &canaries, &[], "panic child stderr");
+    if !output.status.success() {
+        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        for canary in &canaries {
+            stdout = stdout.replace(canary, "<redacted-canary>");
+            stderr = stderr.replace(canary, "<redacted-canary>");
+        }
+        panic!("isolated panic test failed; stdout={stdout:?}; stderr={stderr:?}");
+    }
+}
+
+fn write_child_panic_canaries(
+    fixture: &AcceptanceFixture,
+    host_panic_request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+) -> Vec<String> {
+    let mut canaries = vec![
+        SCREEN_SENTINEL.to_string(),
+        OSC_TITLE_SENTINEL.to_string(),
+        OSC_HYPERLINK_SENTINEL.to_string(),
+        OSC_CLIPBOARD_SENTINEL.to_string(),
+        CALLER_PATH_SENTINEL.to_string(),
+        API_PANIC_SENTINEL.to_string(),
+        BLOCKING_PANIC_SENTINEL.to_string(),
+        HOST_PANIC_SENTINEL.to_string(),
+        PNG_PANIC_SENTINEL.to_string(),
+        BASE64_PANIC_SENTINEL.to_string(),
+        HOST_PANIC_NONCE.to_string(),
+        fixture.host_coordinator.token.to_string(),
+        fixture.api_coordinator_token.secret.clone(),
+        host_panic_request.confirmation_tag.clone(),
+    ];
+    canaries.sort();
+    canaries.dedup();
+    let canary_file =
+        PathBuf::from(std::env::var_os(PANIC_CANARY_FILE_ENV).expect("panic canary file path"));
+    std::fs::write(
+        canary_file,
+        serde_json::to_vec(&canaries).expect("panic canary manifest"),
+    )
+    .expect("write panic canary manifest");
+    canaries
+}
+
+async fn exercise_api_panic_boundary(
+    fixture: &AcceptanceFixture,
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    live_target: &str,
+    canaries: &[String],
+) {
+    let api_panic_payload = format!(
+        "{API_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
+        {}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
+        fixture.api_coordinator_token.secret
+    );
+    fixture
+        .snapshot_state
+        .install_api_final_handoff_hook(move || std::panic::panic_any(api_panic_payload));
+    let (_, api_status, api_headers, api_bytes) = post_api_snapshot(
+        client,
+        address,
+        &fixture.api_coordinator_token.secret,
+        live_target,
+    )
+    .await;
+    assert_eq!(api_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(api_headers[reqwest::header::CACHE_CONTROL], "no-store");
+    assert_eq!(api_headers[reqwest::header::PRAGMA], "no-cache");
+    assert_canaries_absent_except(&api_bytes, canaries, &[], "API panic error envelope");
+    assert_eq!(
+        decode_api_error(&api_bytes, api_status.as_u16())
+            .expect("API panic response")
+            .error,
+        TerminalSnapshotReasonCode::Internal
+    );
+}
+
+async fn exercise_blocking_panic_boundary(fixture: &AcceptanceFixture) {
+    let blocking_audit =
+        TerminalSnapshotAuditGuard::pre_admission(TerminalSnapshotSourcePlane::ContainerApi);
+    let blocking_permit = fixture
+        .snapshot_state
+        .admit_requester("panic-boundary-requester".to_string())
+        .expect("panic boundary permit");
+    let blocking_panic_payload = format!(
+        "{BLOCKING_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
+        {}|{CALLER_PATH_SENTINEL}|{OSC_TITLE_SENTINEL}",
+        fixture.host_coordinator.token
+    );
+    let blocking_result: Result<(), TerminalSnapshotReasonCode> = run_blocking_with_deadline(
+        &fixture.snapshot_state,
+        TerminalSnapshotBlockingStage::TestResourceRetention,
+        std::time::Instant::now() + Duration::from_secs(5),
+        &blocking_permit,
+        &blocking_audit,
+        move || std::panic::panic_any(blocking_panic_payload),
+    )
+    .await;
+    assert_eq!(blocking_result, Err(TerminalSnapshotReasonCode::Internal));
+    blocking_audit.finalize_failure(TerminalSnapshotReasonCode::Internal);
+    drop(blocking_permit);
+}
+
+async fn exercise_host_panic_boundary(
+    fixture: &AcceptanceFixture,
+    scanner: &mut crate::phone::terminal_snapshot::SnapshotMailboxScanner,
+    host_panic_request: &crate::phone::terminal_snapshot::HostTerminalSnapshotRequest,
+) {
+    let host_panic_payload = format!(
+        "{HOST_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
+        {}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
+        fixture.host_coordinator.token
+    );
+    fixture
+        .snapshot_state
+        .install_host_final_handoff_hook(move || std::panic::panic_any(host_panic_payload));
+    submit_host_request_expect_no_response(
+        fixture,
+        scanner,
+        &fixture.paths.coordinator,
+        host_panic_request,
+    )
+    .await;
+}
+
 #[test]
 fn snapshot_production_panic_boundaries_are_payload_free() {
     if std::env::var_os(PANIC_CHILD_ENV).is_none() {
-        let temporary_root = std::env::current_dir()
-            .expect("panic parent current directory")
-            .join("target")
-            .join("terminal-snapshot-acceptance-temp");
-        std::fs::create_dir_all(&temporary_root).expect("panic parent temporary root");
-        let evidence = tempfile::Builder::new()
-            .prefix("panic-evidence-")
-            .tempdir_in(temporary_root)
-            .expect("panic evidence directory");
-        let canary_file = evidence.path().join("canaries.json");
-        let output = std::process::Command::new(
-            std::env::current_exe().expect("terminal snapshot panic test executable"),
-        )
-        .args([
-            "--exact",
-            PANIC_TEST_NAME,
-            "--test-threads=1",
-            "--nocapture",
-        ])
-        .env(PANIC_CHILD_ENV, "1")
-        .env(PANIC_CANARY_FILE_ENV, &canary_file)
-        .output()
-        .expect("spawn isolated terminal snapshot panic test");
-        let canaries: Vec<String> = std::fs::read(&canary_file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_else(|| {
-                [
-                    SCREEN_SENTINEL,
-                    OSC_TITLE_SENTINEL,
-                    OSC_HYPERLINK_SENTINEL,
-                    OSC_CLIPBOARD_SENTINEL,
-                    CALLER_PATH_SENTINEL,
-                    API_PANIC_SENTINEL,
-                    BLOCKING_PANIC_SENTINEL,
-                    HOST_PANIC_SENTINEL,
-                    PNG_PANIC_SENTINEL,
-                    BASE64_PANIC_SENTINEL,
-                ]
-                .into_iter()
-                .map(str::to_string)
-                .collect()
-            });
-        assert_canaries_absent_except(&output.stdout, &canaries, &[], "panic child stdout");
-        assert_canaries_absent_except(&output.stderr, &canaries, &[], "panic child stderr");
-        if !output.status.success() {
-            let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            for canary in &canaries {
-                stdout = stdout.replace(canary, "<redacted-canary>");
-                stderr = stderr.replace(canary, "<redacted-canary>");
-            }
-            panic!("isolated panic test failed; stdout={stdout:?}; stderr={stderr:?}");
-        }
+        run_panic_parent();
         return;
     }
 
@@ -88,31 +206,7 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
             host_request(&fixture.host_coordinator, &coordinator_fqn, &live_target),
             HOST_PANIC_NONCE,
         );
-        let mut canaries = vec![
-            SCREEN_SENTINEL.to_string(),
-            OSC_TITLE_SENTINEL.to_string(),
-            OSC_HYPERLINK_SENTINEL.to_string(),
-            OSC_CLIPBOARD_SENTINEL.to_string(),
-            CALLER_PATH_SENTINEL.to_string(),
-            API_PANIC_SENTINEL.to_string(),
-            BLOCKING_PANIC_SENTINEL.to_string(),
-            HOST_PANIC_SENTINEL.to_string(),
-            PNG_PANIC_SENTINEL.to_string(),
-            BASE64_PANIC_SENTINEL.to_string(),
-            HOST_PANIC_NONCE.to_string(),
-            fixture.host_coordinator.token.to_string(),
-            fixture.api_coordinator_token.secret.clone(),
-            host_panic_request.confirmation_tag.clone(),
-        ];
-        canaries.sort();
-        canaries.dedup();
-        let canary_file =
-            PathBuf::from(std::env::var_os(PANIC_CANARY_FILE_ENV).expect("panic canary file path"));
-        std::fs::write(
-            canary_file,
-            serde_json::to_vec(&canaries).expect("panic canary manifest"),
-        )
-        .expect("write panic canary manifest");
+        let canaries = write_child_panic_canaries(&fixture, &host_panic_request);
         log::trace!(target: "vt100", "{OSC_TITLE_SENTINEL}");
         log::trace!(target: "vt100::parser", "{OSC_CLIPBOARD_SENTINEL}");
 
@@ -138,71 +232,11 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
             .expect("panic API client");
         let mut scanner = crate::phone::terminal_snapshot::SnapshotMailboxScanner::default();
 
-        let api_panic_payload = format!(
-            "{API_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
-                {}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
-            fixture.api_coordinator_token.secret
-        );
-        fixture
-            .snapshot_state
-            .install_api_final_handoff_hook(move || std::panic::panic_any(api_panic_payload));
-        let (_, api_status, api_headers, api_bytes) = post_api_snapshot(
-            &client,
-            address,
-            &fixture.api_coordinator_token.secret,
-            &live_target,
-        )
-        .await;
-        assert_eq!(api_status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(api_headers[reqwest::header::CACHE_CONTROL], "no-store");
-        assert_eq!(api_headers[reqwest::header::PRAGMA], "no-cache");
-        assert_canaries_absent_except(&api_bytes, &canaries, &[], "API panic error envelope");
-        assert_eq!(
-            decode_api_error(&api_bytes, api_status.as_u16())
-                .expect("API panic response")
-                .error,
-            TerminalSnapshotReasonCode::Internal
-        );
+        exercise_api_panic_boundary(&fixture, &client, address, &live_target, &canaries).await;
 
-        let blocking_audit =
-            TerminalSnapshotAuditGuard::pre_admission(TerminalSnapshotSourcePlane::ContainerApi);
-        let blocking_permit = fixture
-            .snapshot_state
-            .admit_requester("panic-boundary-requester".to_string())
-            .expect("panic boundary permit");
-        let blocking_panic_payload = format!(
-            "{BLOCKING_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
-                {}|{CALLER_PATH_SENTINEL}|{OSC_TITLE_SENTINEL}",
-            fixture.host_coordinator.token
-        );
-        let blocking_result: Result<(), TerminalSnapshotReasonCode> = run_blocking_with_deadline(
-            &fixture.snapshot_state,
-            TerminalSnapshotBlockingStage::TestResourceRetention,
-            std::time::Instant::now() + Duration::from_secs(5),
-            &blocking_permit,
-            &blocking_audit,
-            move || std::panic::panic_any(blocking_panic_payload),
-        )
-        .await;
-        assert_eq!(blocking_result, Err(TerminalSnapshotReasonCode::Internal));
-        blocking_audit.finalize_failure(TerminalSnapshotReasonCode::Internal);
-        drop(blocking_permit);
+        exercise_blocking_panic_boundary(&fixture).await;
 
-        let host_panic_payload = format!(
-            "{HOST_PANIC_SENTINEL}|{PNG_PANIC_SENTINEL}|{BASE64_PANIC_SENTINEL}|\
-                {}|{CALLER_PATH_SENTINEL}|{SCREEN_SENTINEL}",
-            fixture.host_coordinator.token
-        );
-        fixture
-            .snapshot_state
-            .install_host_final_handoff_hook(move || std::panic::panic_any(host_panic_payload));
-        submit_host_request_expect_no_response(
-            &fixture,
-            &mut scanner,
-            &fixture.paths.coordinator,
-            &host_panic_request,
-        )
-        .await;
+        exercise_host_panic_boundary(&fixture, &mut scanner, &host_panic_request).await;
 
         assert_eq!(fixture.local_backend.mutations(), 0);
         assert_panic_audit_inventory(&config, &canaries);

@@ -314,13 +314,25 @@ fn maximum_capture_evidence() -> (usize, AllocationStats) {
     (cells, stats)
 }
 
-fn run_resource_child() {
-    warm_renderer();
+struct JsonEvidence {
+    bytes: u64,
+    wire_len: usize,
+    stats: AllocationStats,
+}
 
-    let (capture_measure, capture_stats) = maximum_capture_evidence();
-    assert_eq!(capture_measure, MAX_CELLS);
-    assert_eq!(capture_stats.large_live_bytes, 0);
+struct PngEvidence {
+    rgb_bytes: usize,
+    png_len: usize,
+    base64_len: usize,
+    wire_len: usize,
+    render_peak: usize,
+    encode_peak: usize,
+    decode_peak: usize,
+    render_elapsed: Duration,
+    stats: AllocationStats,
+}
 
+fn json_resource_evidence() -> JsonEvidence {
     let epoch = AllocationEpoch::start();
     let json_model = maximum_json_model();
     let json_model_live = epoch.live_bytes();
@@ -355,7 +367,37 @@ fn run_resource_child() {
     drop(json_model);
     let json_stats = epoch.finish();
     assert_eq!(json_stats.large_live_bytes, 0);
+    JsonEvidence {
+        bytes: json_bytes,
+        wire_len: json_wire_len,
+        stats: json_stats,
+    }
+}
 
+fn prepared_png_len(
+    png_payload: &PreparedSnapshotPayload,
+    image: &terminal_snapshot_renderer::TerminalImageDimensions,
+) -> usize {
+    match png_payload {
+        PreparedSnapshotPayload::Png(payload) => match &**payload {
+            TerminalSnapshotPayload::Png { metadata, png } => {
+                assert_eq!(metadata.png.pixel_width, image.pixel_width);
+                assert_eq!(metadata.png.pixel_height, image.pixel_height);
+                assert!(
+                    png.capacity() <= MAX_PNG_BYTES,
+                    "PNG length {} retained capacity {}",
+                    png.len(),
+                    png.capacity()
+                );
+                png.len()
+            }
+            TerminalSnapshotPayload::Json { .. } => panic!("wrong prepared payload"),
+        },
+        PreparedSnapshotPayload::Json { .. } => panic!("wrong prepared format"),
+    }
+}
+
+fn png_resource_evidence() -> PngEvidence {
     let epoch = AllocationEpoch::start();
     let png_model = maximum_model(200, 200, "A");
     let image = png_model
@@ -386,23 +428,7 @@ fn run_resource_child() {
         + MAX_PNG_DECODER_ALLOCATION_BYTES;
     assert!(render_peak <= render_bound);
     assert!(render_elapsed <= MAXIMUM_MODEL_TEST_CEILING);
-    let png_len = match &png_payload {
-        PreparedSnapshotPayload::Png(payload) => match &**payload {
-            TerminalSnapshotPayload::Png { metadata, png } => {
-                assert_eq!(metadata.png.pixel_width, image.pixel_width);
-                assert_eq!(metadata.png.pixel_height, image.pixel_height);
-                assert!(
-                    png.capacity() <= MAX_PNG_BYTES,
-                    "PNG length {} retained capacity {}",
-                    png.len(),
-                    png.capacity()
-                );
-                png.len()
-            }
-            TerminalSnapshotPayload::Json { .. } => panic!("wrong prepared payload"),
-        },
-        PreparedSnapshotPayload::Json { .. } => panic!("wrong prepared format"),
-    };
+    let png_len = prepared_png_len(&png_payload, &image);
     let png_baseline = epoch.live_bytes();
     epoch.reset_peak();
     let png_wire = png_payload
@@ -451,7 +477,20 @@ fn run_resource_child() {
     drop(png_model);
     let png_stats = epoch.finish();
     assert_eq!(png_stats.large_live_bytes, 0);
+    PngEvidence {
+        rgb_bytes: image.rgb_bytes,
+        png_len,
+        base64_len,
+        wire_len: png_wire_len,
+        render_peak,
+        encode_peak: png_encode_peak,
+        decode_peak,
+        render_elapsed,
+        stats: png_stats,
+    }
+}
 
+fn concurrency_resource_evidence() -> (usize, AllocationStats) {
     let epoch = AllocationEpoch::start();
     let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
     let first_model = maximum_model(200, 200, "");
@@ -546,10 +585,23 @@ fn run_resource_child() {
             + MAX_PNG_DECODER_ALLOCATION_BYTES);
     assert!(concurrency_stats.peak_bytes <= concurrent_bound);
     assert!(concurrency_stats.large_peak_bytes >= 2 * MAX_RGB_BYTES);
+    (concurrent_live, concurrency_stats)
+}
+
+fn run_resource_child() {
+    warm_renderer();
+
+    let (capture_measure, capture_stats) = maximum_capture_evidence();
+    assert_eq!(capture_measure, MAX_CELLS);
+    assert_eq!(capture_stats.large_live_bytes, 0);
+
+    let json = json_resource_evidence();
+    let png = png_resource_evidence();
+    let (concurrent_live, concurrency_stats) = concurrency_resource_evidence();
 
     let live_tail = capture_stats.live_bytes
-        + json_stats.live_bytes
-        + png_stats.live_bytes
+        + json.stats.live_bytes
+        + png.stats.live_bytes
         + concurrency_stats.live_bytes;
     eprintln!(
         concat!(
@@ -560,17 +612,17 @@ fn run_resource_child() {
         ),
         capture_measure,
         capture_stats.peak_bytes,
-        json_bytes,
-        json_wire_len,
-        json_stats.peak_bytes,
-        image.rgb_bytes,
-        png_len,
-        base64_len,
-        png_wire_len,
-        render_peak,
-        png_encode_peak,
-        decode_peak,
-        render_elapsed.as_millis(),
+        json.bytes,
+        json.wire_len,
+        json.stats.peak_bytes,
+        png.rgb_bytes,
+        png.png_len,
+        png.base64_len,
+        png.wire_len,
+        png.render_peak,
+        png.encode_peak,
+        png.decode_peak,
+        png.render_elapsed.as_millis(),
         concurrent_live,
         concurrency_stats.peak_bytes,
         concurrency_stats.large_peak_bytes,
