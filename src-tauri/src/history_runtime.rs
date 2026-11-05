@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -37,8 +37,9 @@ pub(crate) const LIVE_STATE_CAPACITY: usize = 4096;
 pub(crate) const PENDING_CAPACITY: usize = 4096;
 /// How often `.ac/heatmap.json` is re-read; configuration, not sampling.
 pub(crate) const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// A busy batch is retried in FIFO order for at least this long...
-pub(crate) const BUSY_MIN_SPAN: Duration = Duration::from_secs(1);
+/// A busy batch is retried in FIFO order for at least this long, so a reader
+/// holding the database for 5 s still lets it commit once...
+pub(crate) const BUSY_MIN_SPAN: Duration = Duration::from_secs(5);
 /// ...in at most this many append calls, the first included.
 pub(crate) const BUSY_MAX_CALLS: u32 = 10;
 /// Shutdown flush budget; whatever is left afterwards is dropped and logged.
@@ -108,20 +109,19 @@ pub(crate) struct HistoryIngress {
     dropped: Arc<AtomicU64>,
     /// Set when samples were lost; the actor turns it into gap boundaries.
     gap: Arc<AtomicBool>,
+    /// Latest UTC stamp issued, and whether a backward jump was already logged.
+    last_utc_ms: Arc<AtomicI64>,
+    clock_back: Arc<AtomicBool>,
 }
 
 impl HistoryIngress {
     /// Stamp and offer one sample. A full mailbox drops it, counts it and
     /// signals a discontinuity; it never waits.
     pub(crate) fn offer(&self, session_id: Uuid, value: ObservedValue) {
-        let stamp = Stamp {
-            observed_at_utc_ms: now_utc_ms(),
-            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
-        };
         let sample = StampedSample {
             session_id,
             value,
-            stamp,
+            stamp: self.next_stamp(),
         };
         // A closed mailbox means the actor already stopped: the sample is moot.
         let message = IngressMessage::Sample(sample);
@@ -188,9 +188,18 @@ impl HistoryIngress {
         }
     }
 
+    /// Stamps keep the clock as read: a backward UTC jump is logged once per
+    /// episode and never rejected or corrected; only `sequence` orders.
     fn next_stamp(&self) -> Stamp {
+        let now = now_utc_ms();
+        let last = self.last_utc_ms.fetch_max(now, Ordering::Relaxed);
+        if now >= last {
+            self.clock_back.store(false, Ordering::Relaxed);
+        } else if !self.clock_back.swap(true, Ordering::Relaxed) {
+            log::warn!("[context-history] UTC clock went back {} ms", last - now);
+        }
         Stamp {
-            observed_at_utc_ms: now_utc_ms(),
+            observed_at_utc_ms: now,
             sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -598,6 +607,8 @@ impl HistoryRuntime {
             sequence: Arc::new(AtomicU64::new(0)),
             dropped: Arc::new(AtomicU64::new(0)),
             gap: Arc::new(AtomicBool::new(false)),
+            last_utc_ms: Arc::new(AtomicI64::new(i64::MIN)),
+            clock_back: Arc::new(AtomicBool::new(false)),
         };
         let actor = Actor {
             sessions,
@@ -951,38 +962,6 @@ impl Actor {
                 log::warn!("[context-history] shutdown flush timed out; pending records lost");
                 return;
             }
-        }
-    }
-}
-
-#[cfg(test)]
-impl HistoryIngress {
-    /// An ingress whose mailbox the test drains itself.
-    pub(crate) fn for_test(capacity: usize) -> (Self, mpsc::Receiver<IngressMessage>) {
-        let (sender, receiver) = mpsc::channel(capacity);
-        let ingress = Self {
-            sender,
-            sequence: Arc::new(AtomicU64::new(0)),
-            dropped: Arc::new(AtomicU64::new(0)),
-            gap: Arc::new(AtomicBool::new(false)),
-        };
-        (ingress, receiver)
-    }
-}
-
-#[cfg(test)]
-impl RestartNotice {
-    pub(crate) fn session_id(&self) -> Uuid {
-        self.session_id
-    }
-
-    pub(crate) fn closes(&self) -> bool {
-        self.phase == RestartPhase::Closing
-    }
-
-    pub(crate) fn acknowledge(mut self) {
-        if let Some(ack) = self.ack.take() {
-            let _ = ack.send(());
         }
     }
 }

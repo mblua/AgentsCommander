@@ -3,6 +3,38 @@ use std::sync::Mutex;
 use super::*;
 use crate::context_history::config::ConfigStatus;
 
+impl HistoryIngress {
+    /// An ingress whose mailbox the test drains itself.
+    pub(crate) fn for_test(capacity: usize) -> (Self, mpsc::Receiver<IngressMessage>) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        let ingress = Self {
+            sender,
+            sequence: Arc::new(AtomicU64::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            gap: Arc::new(AtomicBool::new(false)),
+            last_utc_ms: Arc::new(AtomicI64::new(i64::MIN)),
+            clock_back: Arc::new(AtomicBool::new(false)),
+        };
+        (ingress, receiver)
+    }
+}
+
+impl RestartNotice {
+    pub(crate) fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+
+    pub(crate) fn closes(&self) -> bool {
+        self.phase == RestartPhase::Closing
+    }
+
+    pub(crate) fn acknowledge(mut self) {
+        if let Some(ack) = self.ack.take() {
+            let _ = ack.send(());
+        }
+    }
+}
+
 const WD: &str = "/p/proj/.ac/room-1-x/__agent_dev";
 
 #[derive(Default)]
@@ -151,7 +183,7 @@ async fn persistent_busy_is_dropped_after_bounded_calls() {
     shared.busy_calls.store(100, Ordering::SeqCst);
     let (ingress, token, task) = start(&shared);
     ingress.offer(Uuid::new_v4(), ObservedValue::Reading(40));
-    tokio::time::sleep(Duration::from_millis(1_600)).await;
+    tokio::time::sleep(BUSY_MIN_SPAN + Duration::from_millis(1_000)).await;
     token.cancel();
     task.await.unwrap();
     assert!(shared.stored.lock().unwrap().is_empty());
@@ -163,13 +195,7 @@ async fn persistent_busy_is_dropped_after_bounded_calls() {
 
 #[tokio::test]
 async fn full_mailbox_drops_and_signals_a_gap_without_blocking() {
-    let (sender, _receiver) = mpsc::channel(1);
-    let ingress = HistoryIngress {
-        sender,
-        sequence: Arc::new(AtomicU64::new(0)),
-        dropped: Arc::new(AtomicU64::new(0)),
-        gap: Arc::new(AtomicBool::new(false)),
-    };
+    let (ingress, _receiver) = HistoryIngress::for_test(1);
     for _ in 0..3 {
         ingress.offer(Uuid::nil(), ObservedValue::Unavailable);
     }
@@ -352,5 +378,100 @@ async fn restart_boundary_never_waits_past_its_budget() {
     assert_eq!(
         full.restart_boundary(Uuid::nil(), Uuid::nil()).await,
         RestartAck::Closed
+    );
+}
+
+#[test]
+fn a_backward_utc_jump_is_flagged_once_and_never_corrected() {
+    let (ingress, _receiver) = HistoryIngress::for_test(1);
+    ingress.last_utc_ms.store(i64::MAX, Ordering::Relaxed);
+    let first = ingress.next_stamp();
+    assert!(
+        first.observed_at_utc_ms < i64::MAX,
+        "the clock reading is kept as is"
+    );
+    assert!(ingress.clock_back.load(Ordering::Relaxed));
+    let second = ingress.next_stamp();
+    assert!(second.sequence > first.sequence, "only the sequence orders");
+    assert!(ingress.clock_back.load(Ordering::Relaxed));
+    // Once the clock passes the last stamp again, a new jump is logged again.
+    ingress.last_utc_ms.store(0, Ordering::Relaxed);
+    ingress.next_stamp();
+    assert!(!ingress.clock_back.load(Ordering::Relaxed));
+}
+
+/// The real store under a project-shaped temporary AC root.
+struct DiskEnv {
+    ac_root: std::path::PathBuf,
+}
+
+impl ProjectEnvironment for DiskEnv {
+    fn load_config(&self, _ac_root: &Path) -> LoadedHistoryConfig {
+        LoadedHistoryConfig {
+            config: HistoryConfig {
+                enabled: true,
+                retention_days: 30,
+            },
+            status: ConfigStatus::Loaded,
+        }
+    }
+    fn authoritative_ac_root(&self, _ac_root: &Path) -> bool {
+        true
+    }
+    fn teams(&self, _project_path: &Path) -> Vec<TeamMembers> {
+        Vec::new()
+    }
+    fn open_writer(
+        &self,
+        _ac_root: &Path,
+        config: &HistoryConfig,
+    ) -> Result<Box<dyn HistoryAppend>, StoreError> {
+        Ok(Box::new(HistoryWriter::open(&self.ac_root, config)?))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_real_five_second_reader_delays_the_batch_which_then_commits_once() {
+    use crate::context_history::store::{history_database_path, read_history, ReadAttempt};
+    use rusqlite::{Connection, OpenFlags};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ac_root = tmp.path().join("proj").join(".ac");
+    std::fs::create_dir_all(&ac_root).unwrap();
+    let config = HistoryConfig {
+        enabled: true,
+        retention_days: 30,
+    };
+    // Create the database, then hold a shared lock on it for 5 s.
+    drop(HistoryWriter::open(&ac_root, &config).unwrap());
+    let path = history_database_path(&ac_root);
+    let reader = std::thread::spawn(move || {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        let _: i64 = conn
+            .query_row("SELECT count(*) FROM records", [], |row| row.get(0))
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(5));
+        conn.execute_batch("ROLLBACK").unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let token = CancellationToken::new();
+    let env = Arc::new(DiskEnv {
+        ac_root: ac_root.clone(),
+    });
+    let (ingress, actor) = HistoryRuntime::start(Arc::new(FakeSessions), env, token.clone());
+    let task = tokio::spawn(actor);
+    ingress.offer(Uuid::new_v4(), ObservedValue::Reading(40));
+    tokio::task::spawn_blocking(move || reader.join().unwrap())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    token.cancel();
+    task.await.unwrap();
+    let stored = read_history(&ac_root, ReadAttempt::ReadOnly).unwrap();
+    assert_eq!(
+        stored.len(),
+        1,
+        "committed exactly once after the reader left"
     );
 }
