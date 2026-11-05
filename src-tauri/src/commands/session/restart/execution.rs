@@ -54,7 +54,9 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     // Dormant rows skip teardown and remain retryable until replacement success.
     let old_was_dormant = matches!(next.old_status, SessionStatus::Exited(_));
     let observed = !old_was_dormant && !next.is_root_agent;
-    let teardown = teardown_with_history(transaction, uuid, old_was_dormant, observed).await;
+    let history = restart_history_boundary(transaction, uuid, observed).await;
+    let teardown = teardown_old_for_restart(transaction, uuid, old_was_dormant).await;
+    restart_history_teardown_failed(history.as_ref(), uuid, &teardown);
     complete_restart_retirement(retirement, &teardown);
     let old_lost =
         accept_restart_teardown(transaction, teardown, uuid, next.old_selected, next.intent)
@@ -414,15 +416,15 @@ async fn begin_restart_retirement<R: tauri::Runtime>(
     Ok(retirement)
 }
 
-/// #3532 P03: close the old observation before teardown (bounded, fail-soft),
-/// and reopen it as a partial segment if teardown fails. `observed` is false
-/// for dormant and Root sessions, which never notify history.
-async fn teardown_with_history<R: tauri::Runtime>(
+/// #3532 P03: close the old observation before teardown (bounded, fail-soft).
+/// `observed` is false for dormant and Root sessions, which never notify
+/// history. Returns the ingress and intent that
+/// [`restart_history_teardown_failed`] needs.
+async fn restart_history_boundary<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     uuid: uuid::Uuid,
-    old_was_dormant: bool,
     observed: bool,
-) -> Result<bool, super::settlement::RestartTeardownError> {
+) -> Option<(crate::history_runtime::HistoryIngress, uuid::Uuid)> {
     let history = observed
         .then(|| {
             transaction
@@ -430,16 +432,21 @@ async fn teardown_with_history<R: tauri::Runtime>(
                 .try_state::<crate::history_runtime::HistoryIngress>()
         })
         .flatten()
-        .map(|ingress| ingress.inner().clone());
+        .map(|ingress| ingress.inner().clone())?;
     let history_intent = uuid::Uuid::new_v4();
-    if let Some(history) = &history {
-        history.restart_boundary(uuid, history_intent).await;
+    history.restart_boundary(uuid, history_intent).await;
+    Some((history, history_intent))
+}
+
+/// #3532 P03: reopen the old observation as a partial segment if teardown failed.
+fn restart_history_teardown_failed(
+    history: Option<&(crate::history_runtime::HistoryIngress, uuid::Uuid)>,
+    uuid: uuid::Uuid,
+    teardown: &Result<bool, super::settlement::RestartTeardownError>,
+) {
+    if let (Some((history, history_intent)), Err(_)) = (history, teardown) {
+        history.restart_teardown_failed(uuid, *history_intent);
     }
-    let teardown = teardown_old_for_restart(transaction, uuid, old_was_dormant).await;
-    if let (Some(history), Err(_)) = (&history, &teardown) {
-        history.restart_teardown_failed(uuid, history_intent);
-    }
-    teardown
 }
 
 fn complete_restart_retirement(
