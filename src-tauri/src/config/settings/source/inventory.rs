@@ -570,6 +570,34 @@ fn original_default_matrix_name<'a>(
     })
 }
 
+fn inventory_membership_topology(
+    discovery: &SourceDiscoveryWitness,
+    objects: &InventoryDirectoryObjects,
+    discovered: &[SourceDiscoveredTargetEvidence],
+    links: Vec<(PathBuf, String, SourceRef, String)>,
+) -> SourceMembershipTopology {
+    SourceMembershipTopology {
+        registry: discovery.registry.clone(),
+        directories: objects.clone(),
+        slots: discovery.slots.clone(),
+        membership: discovery.membership.clone(),
+        targets: discovered
+            .iter()
+            .map(|e| {
+                let t = &e.target;
+                (
+                    t.root.clone(),
+                    t.root_object,
+                    t.decisions.clone(),
+                    t.state.clone(),
+                    t.reservation.clone(),
+                )
+            })
+            .collect(),
+        links,
+    }
+}
+
 impl SourceInventoryCapture {
     pub(crate) fn capture(
         discovery: SourceDiscoveryWitness,
@@ -654,26 +682,7 @@ impl SourceInventoryCapture {
                 originals.push(proof);
             }
         }
-        let topology = SourceMembershipTopology {
-            registry: discovery.registry.clone(),
-            directories: objects.clone(),
-            slots: discovery.slots.clone(),
-            membership: discovery.membership.clone(),
-            targets: discovered
-                .iter()
-                .map(|e| {
-                    let t = &e.target;
-                    (
-                        t.root.clone(),
-                        t.root_object,
-                        t.decisions.clone(),
-                        t.state.clone(),
-                        t.reservation.clone(),
-                    )
-                })
-                .collect(),
-            links,
-        };
+        let topology = inventory_membership_topology(&discovery, &objects, &discovered, links);
         Ok(Self {
             discovery,
             objects,

@@ -64,7 +64,7 @@ pub(crate) fn publish_source_intent_with_validation(
         None => IdentityReferencePhysicalState::Absent,
         Some(bytes) => IdentityReferencePhysicalState::from_bytes(bytes.clone()),
     };
-    let (mut private_revision, mut journal) = read_own_source_journal(context)?;
+    let (private_revision, journal) = read_own_source_journal(context)?;
     let progress = verify_publication_journal_entry(&journal, intent, lease)?;
     let already_published = progress.source_published;
     let initial_proof = progress.source_publication.clone();
@@ -98,48 +98,15 @@ pub(crate) fn publish_source_intent_with_validation(
         return Err(SourceCoordinationError::Stale);
     }
     if ownership_required {
-        let mut capability = match initial_proof.as_ref() {
-            Some(proof) => crate::config::local_config_io::reopen_source_publication(
-                &lease.parent,
-                &lease.source_path,
-                &intent.serialized_after,
-                proof,
-                &guard,
-            ),
-            None => crate::config::local_config_io::prepare_source_publication(
-                &lease.parent,
-                &lease.source_path,
-                &intent.serialized_after,
-                &intent_digest,
-                &guard,
-            ),
-        }
-        .map_err(coordination_publication_error)?;
-        if initial_proof.is_none() {
-            (private_revision, journal) = checkpoint_source_publication_proof(
-                lease,
-                context,
-                intent,
-                &capability,
-                &private_revision,
-                &journal,
-            )?;
-        }
-        let checkpoint_guard = || {
-            guard()?;
-            let (revision, current) =
-                read_own_source_journal(context).map_err(|_| IdentityReferenceError::Conflict)?;
-            if revision != private_revision || current != journal {
-                return Err(IdentityReferenceError::Conflict);
-            }
-            Ok(())
-        };
-        #[cfg(test)]
-        count_source_transition_publication(2);
-        capability
-            .commit(&checkpoint_guard)
-            .map_err(coordination_publication_error)?;
-        return Ok(SourcePublicationObservation { revision: after });
+        return publish_owned_source_intent(
+            lease,
+            context,
+            intent,
+            (initial_proof.as_ref(), &intent_digest),
+            (private_revision, journal),
+            after.clone(),
+            &guard,
+        );
     }
     #[cfg(test)]
     count_source_transition_publication(2);
@@ -160,6 +127,67 @@ pub(crate) fn publish_source_intent_with_validation(
         revision if revision == intent.expected_revision => Err(SourceCoordinationError::Stale),
         _ => Err(SourceCoordinationError::Stale),
     }
+}
+
+/// Prepares or reopens the owned publication capability, checkpoints a new
+/// proof, then commits under the journal-checking guard.
+fn publish_owned_source_intent<G>(
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    intent: &SourceStoredIntent,
+    (initial_proof, intent_digest): (
+        Option<&crate::config::local_config_io::PreparedSourcePublication>,
+        &str,
+    ),
+    (mut private_revision, mut journal): (SourceRevision, SourcePrivateJournal),
+    after: SourceRevision,
+    guard: &G,
+) -> Result<SourcePublicationObservation, SourceCoordinationError>
+where
+    G: Fn() -> Result<(), IdentityReferenceError>,
+{
+    let mut capability = match initial_proof {
+        Some(proof) => crate::config::local_config_io::reopen_source_publication(
+            &lease.parent,
+            &lease.source_path,
+            &intent.serialized_after,
+            proof,
+            guard,
+        ),
+        None => crate::config::local_config_io::prepare_source_publication(
+            &lease.parent,
+            &lease.source_path,
+            &intent.serialized_after,
+            intent_digest,
+            guard,
+        ),
+    }
+    .map_err(coordination_publication_error)?;
+    if initial_proof.is_none() {
+        (private_revision, journal) = checkpoint_source_publication_proof(
+            lease,
+            context,
+            intent,
+            &capability,
+            &private_revision,
+            &journal,
+        )?;
+    }
+    let checkpoint_guard = || {
+        guard()?;
+        let (revision, current) =
+            read_own_source_journal(context).map_err(|_| IdentityReferenceError::Conflict)?;
+        if revision != private_revision || current != journal {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        Ok(())
+    };
+    #[cfg(test)]
+    count_source_transition_publication(2);
+    capability
+        .commit(&checkpoint_guard)
+        .map_err(coordination_publication_error)?;
+    Ok(SourcePublicationObservation { revision: after })
 }
 
 fn verify_publication_journal_entry<'a>(
