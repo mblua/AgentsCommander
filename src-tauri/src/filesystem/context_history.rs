@@ -64,10 +64,14 @@ pub(crate) fn inspect_history_database(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     }
-    match fs::symlink_metadata(path) {
-        Ok(_) => {}
+    let entry = match fs::symlink_metadata(path) {
+        Ok(entry) => entry,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
+    };
+    // Reject links and non-regular entries (a FIFO would block `open`) before opening.
+    if !entry.is_file() || path_identity::is_link_or_reparse(&entry) {
+        return Err(unsafe_path("not_a_regular_file".to_string()));
     }
     let file = File::open(path)?;
     let identity =

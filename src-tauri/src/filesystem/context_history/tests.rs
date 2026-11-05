@@ -95,6 +95,18 @@ fn inspect_rejects_unreadable_file() {
 
 #[cfg(unix)]
 #[test]
+fn inspect_rejects_a_fifo_without_blocking() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("history.sqlite3");
+    let c_path = std::ffi::CString::new(database.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `c_path` is a valid NUL-terminated path that outlives the call.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    assert!(inspect_history_database(&database).is_err());
+}
+
+#[cfg(unix)]
+#[test]
 fn symlinks_are_rejected() {
     use std::os::unix::fs::symlink;
     let root = tempfile::tempdir().unwrap();
