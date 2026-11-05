@@ -105,7 +105,7 @@ fn the_unreadable_mark_is_scoped_to_its_own_directory() {
     let b = tempfile::tempdir().unwrap();
     for dir in [a.path(), b.path()] {
         std::fs::write(
-            crate::config::settings::settings_fixture_path(&dir),
+            crate::config::settings::settings_fixture_path(dir),
             settings_json,
         )
         .unwrap();
@@ -125,11 +125,11 @@ fn the_unreadable_mark_is_scoped_to_its_own_directory() {
     let a_before = std::fs::read(a.path().join("sessions.json")).unwrap();
 
     let a_settings = crate::config::settings::load_settings_from_path(
-        &crate::config::settings::settings_fixture_path(&a.path()),
+        &crate::config::settings::settings_fixture_path(a.path()),
     );
     assert!(a_settings.agents_layer.unreadable_path().is_some());
     let b_settings = crate::config::settings::load_settings_from_path(
-        &crate::config::settings::settings_fixture_path(&b.path()),
+        &crate::config::settings::settings_fixture_path(b.path()),
     );
     assert!(b_settings.agents_layer.unreadable_path().is_none());
 
@@ -160,13 +160,13 @@ fn the_unreadable_mark_is_scoped_to_its_own_directory() {
 fn b3_mark_dir_unreadable(dir: &std::path::Path) -> crate::config::settings::AppSettings {
     use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     std::fs::write(
-        crate::config::settings::settings_fixture_path(&dir),
+        crate::config::settings::settings_fixture_path(dir),
         r#"{ "defaultShell": "test-shell", "defaultShellArgs": [] }"#,
     )
     .unwrap();
     std::fs::write(dir.join(AGENTS_INSTANCE_FILE_NAME), "{ not json").unwrap();
     let settings = crate::config::settings::load_settings_from_path(
-        &crate::config::settings::settings_fixture_path(&dir),
+        &crate::config::settings::settings_fixture_path(dir),
     );
     assert!(settings.agents_layer.unreadable_path().is_some());
     settings
@@ -291,7 +291,7 @@ async fn the_restore_path_preserves_wake_eligibility_across_a_repair() {
     )
     .unwrap();
     let mut settings = crate::config::settings::load_settings_from_path(
-        &crate::config::settings::settings_fixture_path(&temp.path()),
+        &crate::config::settings::settings_fixture_path(temp.path()),
     );
     assert!(settings.agents_layer.unreadable_path().is_none());
     settings.restart_resume_wake_working_agents = true;
