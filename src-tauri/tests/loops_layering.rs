@@ -56,6 +56,7 @@
 //!      and the build fails instead of hiding anything.
 //!   8. (append here: one entry per spelling a reviewer proves still passes)
 
+use rust_source_scrub::{scrub, Literals};
 use std::path::{Path, PathBuf};
 
 /// Every `(file, child)` reference under `src/loops/` that is allowed to name a
@@ -119,97 +120,7 @@ const ANCHOR: &str = "commands::";
 /// result, for the same reason an unclosed group is: a scanner that cannot
 /// delimit what it is reading must say so.
 fn code_only(body: &str) -> Result<String, &'static str> {
-    let source: Vec<char> = body.chars().collect();
-    let mut out = String::with_capacity(body.len());
-    let mut index = 0usize;
-
-    while index < source.len() {
-        let character = source[index];
-        let preceded_by_identifier = index
-            .checked_sub(1)
-            .map(|previous| source[previous])
-            .is_some_and(|previous| previous.is_alphanumeric() || previous == '_');
-
-        if character == '/' && source.get(index + 1) == Some(&'/') {
-            while index < source.len() && source[index] != '\n' {
-                index += 1;
-            }
-            out.push(' ');
-            continue;
-        }
-
-        if character == '/' && source.get(index + 1) == Some(&'*') {
-            let mut depth = 0usize;
-            while index < source.len() {
-                if source[index] == '/' && source.get(index + 1) == Some(&'*') {
-                    depth += 1;
-                    index += 2;
-                } else if source[index] == '*' && source.get(index + 1) == Some(&'/') {
-                    depth -= 1;
-                    index += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    index += 1;
-                }
-            }
-            if depth != 0 {
-                return Err("a block comment is never closed, so the scan cannot be trusted");
-            }
-            out.push(' ');
-            continue;
-        }
-
-        // `r"..."`, `r#"..."#`, `br"..."` and `br#"..."#`, only at a token
-        // boundary so the `r` ending an identifier is not read as a prefix.
-        if (character == 'r' || character == 'b') && !preceded_by_identifier {
-            let mut cursor = index;
-            if source[cursor] == 'b' {
-                cursor += 1;
-            }
-            if source.get(cursor) == Some(&'r') {
-                cursor += 1;
-                let mut hashes = 0usize;
-                while source.get(cursor) == Some(&'#') {
-                    hashes += 1;
-                    cursor += 1;
-                }
-                if source.get(cursor) == Some(&'"') {
-                    cursor += 1;
-                    let closing: Vec<char> = std::iter::once('"')
-                        .chain(std::iter::repeat_n('#', hashes))
-                        .collect();
-                    let mut closed = false;
-                    while cursor < source.len() {
-                        if source[cursor..].starts_with(closing.as_slice()) {
-                            cursor += closing.len();
-                            closed = true;
-                            break;
-                        }
-                        cursor += 1;
-                    }
-                    if !closed {
-                        return Err("a raw string is never closed, so the scan cannot be trusted");
-                    }
-                    index = cursor;
-                    out.push(' ');
-                    continue;
-                }
-            }
-        }
-
-        if let Some(end) = literal_end(&source, index)? {
-            index = end;
-            out.push(' ');
-            continue;
-        }
-
-        out.push(character);
-        index += 1;
-    }
-
-    Ok(out)
+    scrub(body, Literals::Drop)
 }
 
 /// Collapse every run of ASCII whitespace (newlines included, so this is also
@@ -503,50 +414,6 @@ fn no_loops_source_reaches_into_the_command_surface() {
          set.",
         unlisted_offenders.join(", ")
     );
-}
-
-fn literal_end(source: &[char], mut index: usize) -> Result<Option<usize>, &'static str> {
-    let character = source[index];
-    if character == '"' {
-        index += 1;
-        let mut closed = false;
-        while index < source.len() {
-            match source[index] {
-                '\\' => index += 2,
-                '"' => {
-                    index += 1;
-                    closed = true;
-                    break;
-                }
-                _ => index += 1,
-            }
-        }
-        if !closed {
-            return Err("a string literal is never closed, so the scan cannot be trusted");
-        }
-        return Ok(Some(index));
-    }
-
-    // `'x'` and `'\n'` are literals; `'a` is a lifetime. Only a literal is
-    // consumed, so a lifetime cannot swallow the code that follows it.
-    if character == '\'' {
-        if source.get(index + 1) == Some(&'\\') {
-            let mut cursor = index + 3;
-            while cursor < source.len() && source[cursor] != '\'' {
-                cursor += 1;
-            }
-            if cursor >= source.len() {
-                return Err("a character literal is never closed, so the scan cannot be trusted");
-            }
-            index = cursor + 1;
-            return Ok(Some(index));
-        }
-        if source.get(index + 2) == Some(&'\'') {
-            index += 3;
-            return Ok(Some(index));
-        }
-    }
-    Ok(None)
 }
 
 fn collect_command_references(
