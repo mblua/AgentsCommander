@@ -1,9 +1,6 @@
 use super::*;
 
-fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open(path).unwrap();
-    conn.execute_batch(
-        r"
+const V2_MESSAGES_SQL: &str = r"
         CREATE TABLE IF NOT EXISTS api_message_schema(
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL
@@ -44,7 +41,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         INSERT INTO api_message_schema(version, applied_at)
 
         VALUES(1, '2026-08-30T00:00:00.000Z');
+";
 
+const V2_PTY_INPUT_OPERATIONS_SQL: &str = r"
         CREATE TABLE pty_input_operations(
             injection_id TEXT PRIMARY KEY,
             sender_fqn TEXT NOT NULL,
@@ -259,6 +258,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         );
         CREATE INDEX idx_pty_input_due
             ON pty_input_operations(source_plane, status, next_attempt_at, lease_until);
+";
+
+const V2_PTY_INPUT_AUDIT_SQL: &str = r"
         CREATE TABLE pty_input_audit(
             event_id TEXT PRIMARY KEY,
             injection_id TEXT NOT NULL,
@@ -289,6 +291,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
                 '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
                     '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')
         );
+";
+
+const V2_PTY_INPUT_TOMBSTONES_SQL: &str = r"
         CREATE TABLE pty_input_tombstones(
             injection_id TEXT PRIMARY KEY,
             sender_fqn TEXT NOT NULL,
@@ -414,35 +419,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         INSERT INTO api_message_schema(version, applied_at)
 
         VALUES(2, '2026-08-30T00:00:01.000Z');
-        ",
-    )
-    .unwrap();
-    conn
-}
+        ";
 
-fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
-    let sql = format!("SELECT * FROM {table} ORDER BY injection_id");
-    let mut statement = conn.prepare(&sql).unwrap();
-    let column_count = statement.column_count();
-    let rows = statement
-        .query_map([], |row| {
-            (0..column_count)
-                .map(|index| row.get(index))
-                .collect::<rusqlite::Result<Vec<_>>>()
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    rows
-}
-
-#[test]
-fn test_schema_v3_migration_rebuilds_check_constraints() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join(DB_FILENAME);
-    let conn = setup_v2_database(&path);
-    conn.execute_batch(
-        r"
+const V2_SEED_ROWS_SQL: &str = r"
         INSERT INTO pty_input_operations(
             injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
             request_fingerprint,confirmation_tag,version,enter_mode,
@@ -523,9 +502,95 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
             '2099-08-30T00:00:05.000Z','rejected','invalid_text',
             'The payload text contains prohibited control characters.'
         );
-        ",
-    )
-    .unwrap();
+        ";
+
+fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(V2_MESSAGES_SQL).unwrap();
+    conn.execute_batch(V2_PTY_INPUT_OPERATIONS_SQL).unwrap();
+    conn.execute_batch(V2_PTY_INPUT_AUDIT_SQL).unwrap();
+    conn.execute_batch(V2_PTY_INPUT_TOMBSTONES_SQL).unwrap();
+    conn
+}
+
+fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let sql = format!("SELECT * FROM {table} ORDER BY injection_id");
+    let mut statement = conn.prepare(&sql).unwrap();
+    let column_count = statement.column_count();
+    let rows = statement
+        .query_map([], |row| {
+            (0..column_count)
+                .map(|index| row.get(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    rows
+}
+
+fn assert_menu_guard_blocked_round_trip(store: &MessageStore) {
+    let id = Uuid::new_v4().to_string();
+    let enqueued = store.enqueue_pty_input(pty_request(&id, "hello")).unwrap();
+    assert_eq!(
+        enqueued.result.status,
+        crate::phone::types::PtyInputPublicStatus::Queued
+    );
+    store
+        .claim_pty_input(
+            crate::phone::types::PtyInputSourcePlane::ContainerApi,
+            Some(&id),
+            "lease-v3",
+            Utc::now(),
+        )
+        .unwrap()
+        .unwrap();
+    store
+        .retry_pty_input(
+            &id,
+            "lease-v3",
+            crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
+            Utc::now(),
+        )
+        .unwrap();
+    let retry = store.query_pty_input_by_injection(&id).unwrap().unwrap();
+    assert_eq!(
+        retry.reason.unwrap().code,
+        crate::phone::types::PtyInputReasonCode::MenuGuardBlocked
+    );
+
+    let terminal = store
+        .terminalize_pty_input(
+            &id,
+            crate::phone::types::PtyInputPublicStatus::Rejected,
+            Some(crate::phone::types::PtyInputReasonCode::MenuGuardBlocked),
+            Utc::now(),
+        )
+        .unwrap();
+    assert!(terminal.terminal);
+    assert_eq!(
+        terminal.reason.unwrap().code,
+        crate::phone::types::PtyInputReasonCode::MenuGuardBlocked
+    );
+    let tombstone: (String, String) = store
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT status,reason_code FROM pty_input_tombstones WHERE injection_id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(tombstone, ("rejected".into(), "menu_guard_blocked".into()));
+}
+
+#[test]
+fn test_schema_v3_migration_rebuilds_check_constraints() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let conn = setup_v2_database(&path);
+    conn.execute_batch(V2_SEED_ROWS_SQL).unwrap();
 
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM api_message_schema", [], |row| {
@@ -602,57 +667,5 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
     );
     drop(conn);
 
-    let id = Uuid::new_v4().to_string();
-    let enqueued = store.enqueue_pty_input(pty_request(&id, "hello")).unwrap();
-    assert_eq!(
-        enqueued.result.status,
-        crate::phone::types::PtyInputPublicStatus::Queued
-    );
-    store
-        .claim_pty_input(
-            crate::phone::types::PtyInputSourcePlane::ContainerApi,
-            Some(&id),
-            "lease-v3",
-            Utc::now(),
-        )
-        .unwrap()
-        .unwrap();
-    store
-        .retry_pty_input(
-            &id,
-            "lease-v3",
-            crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
-            Utc::now(),
-        )
-        .unwrap();
-    let retry = store.query_pty_input_by_injection(&id).unwrap().unwrap();
-    assert_eq!(
-        retry.reason.unwrap().code,
-        crate::phone::types::PtyInputReasonCode::MenuGuardBlocked
-    );
-
-    let terminal = store
-        .terminalize_pty_input(
-            &id,
-            crate::phone::types::PtyInputPublicStatus::Rejected,
-            Some(crate::phone::types::PtyInputReasonCode::MenuGuardBlocked),
-            Utc::now(),
-        )
-        .unwrap();
-    assert!(terminal.terminal);
-    assert_eq!(
-        terminal.reason.unwrap().code,
-        crate::phone::types::PtyInputReasonCode::MenuGuardBlocked
-    );
-    let tombstone: (String, String) = store
-        .conn
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT status,reason_code FROM pty_input_tombstones WHERE injection_id=?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(tombstone, ("rejected".into(), "menu_guard_blocked".into()));
+    assert_menu_guard_blocked_round_trip(&store);
 }
