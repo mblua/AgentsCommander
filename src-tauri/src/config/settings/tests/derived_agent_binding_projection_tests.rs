@@ -177,6 +177,48 @@ fn derived_agent_id_binding_projection_changes_for_execution_home_and_quota() {
     assert_ne!(bootstrap_identity_revision(&changed).unwrap(), revision);
 }
 
+fn run_narrow_save_mode(current: &AppSettings, path: &Path, mode: usize) -> AppSettings {
+    match mode {
+        0 => save_settings_to_path_preserving_project_paths(current, path).unwrap(),
+        1 => set_main_window_placement_at_path(
+            current,
+            path,
+            &WindowGeometry {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            MainWindowDisplayState::Normal,
+        )
+        .unwrap(),
+        2 => {
+            compare_and_set_terminal_snapshots_enabled_at_path(current, path, true, false).unwrap()
+        }
+        _ => {
+            compare_and_set_terminal_snapshots_enabled_at_path(current, path, false, false).unwrap()
+        }
+    }
+}
+
+fn assert_narrow_save_kept_binding(current: &AppSettings, path: &Path, baseline: &str) {
+    let fresh = load_settings_for_cli_from_path(path);
+    assert_eq!(
+        current.coding_agent_identity_physical,
+        fresh.coding_agent_identity_physical
+    );
+    assert_eq!(
+        bootstrap_binding_revision(current, "alpha").unwrap(),
+        baseline
+    );
+    let raw = current.coding_agent_identity_physical.as_ref().unwrap();
+    assert_eq!(raw["agents"][0]["unknownIdentity"]["keep"], 7);
+    assert!(raw["groupOwnership"]["overlayPaths"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!(["agents"])));
+}
+
 #[test]
 fn derived_agent_id_binding_save_narrow_and_cas_return_physical_revision() {
     let dir = tempfile::tempdir().unwrap();
@@ -215,25 +257,7 @@ fn derived_agent_id_binding_save_narrow_and_cas_return_physical_revision() {
             std::fs::read(agents_instance_path(&path)).unwrap(),
             std::fs::read(&overlay_path).unwrap(),
         );
-        current = match mode {
-            0 => save_settings_to_path_preserving_project_paths(&current, &path).unwrap(),
-            1 => set_main_window_placement_at_path(
-                &current,
-                &path,
-                &WindowGeometry {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 800.0,
-                    height: 600.0,
-                },
-                MainWindowDisplayState::Normal,
-            )
-            .unwrap(),
-            2 => compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, true, false)
-                .unwrap(),
-            _ => compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, false, false)
-                .unwrap(),
-        };
+        current = run_narrow_save_mode(&current, &path, mode);
         if mode == 3 {
             assert_eq!(
                 before_bytes,
@@ -244,21 +268,7 @@ fn derived_agent_id_binding_save_narrow_and_cas_return_physical_revision() {
                 )
             );
         }
-        let fresh = load_settings_for_cli_from_path(&path);
-        assert_eq!(
-            current.coding_agent_identity_physical,
-            fresh.coding_agent_identity_physical
-        );
-        assert_eq!(
-            bootstrap_binding_revision(&current, "alpha").unwrap(),
-            baseline
-        );
-        let raw = current.coding_agent_identity_physical.as_ref().unwrap();
-        assert_eq!(raw["agents"][0]["unknownIdentity"]["keep"], 7);
-        assert!(raw["groupOwnership"]["overlayPaths"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!(["agents"])));
+        assert_narrow_save_kept_binding(&current, &path, &baseline);
     }
     // A decode-invalid overlay uses the raw base, just as the live loader does.
     std::fs::write(
