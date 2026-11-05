@@ -428,21 +428,7 @@ const BENCH_ABORT_CHILD_TEST: &str = concat!(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn issue_2475_bench_drain_expiry_aborts_in_a_child_process() {
     if std::env::var_os(BENCH_ABORT_CHILD_MARKER).is_some() {
-        let bench = bench_fixture(1, 1);
-        let options = BenchOptions {
-            budget: Some(std::time::Duration::from_millis(50)),
-            grace: Some(std::time::Duration::from_millis(50)),
-            ..BenchOptions::default()
-        };
-        let deadline_at = bench_deadline_at(&options);
-        let serial = acquire_bench_serialization(deadline_at)
-            .await
-            .expect("serialization");
-        let _writer = crate::session::selection::acquire_selection_operation_turn()
-            .await
-            .expect("writer turn");
-        let _ = bench_batch_locked(serial, &bench, &options, deadline_at, async {}).await;
-        panic!("the drain expiry returned instead of aborting");
+        run_bench_drain_abort_child().await;
     }
 
     let child = std::process::Command::new(std::env::current_exe().expect("test exe"))
@@ -660,4 +646,22 @@ async fn issue_2475_concurrent_read_bodies_occupy_the_turn_simultaneously() {
         "read bodies must overlap: occupancy.max() = {}",
         run.occupancy_max
     );
+}
+
+async fn run_bench_drain_abort_child() {
+    let bench = bench_fixture(1, 1);
+    let options = BenchOptions {
+        budget: Some(std::time::Duration::from_millis(50)),
+        grace: Some(std::time::Duration::from_millis(50)),
+        ..BenchOptions::default()
+    };
+    let deadline_at = bench_deadline_at(&options);
+    let serial = acquire_bench_serialization(deadline_at)
+        .await
+        .expect("serialization");
+    let _writer = crate::session::selection::acquire_selection_operation_turn()
+        .await
+        .expect("writer turn");
+    let _ = bench_batch_locked(serial, &bench, &options, deadline_at, async {}).await;
+    panic!("the drain expiry returned instead of aborting");
 }

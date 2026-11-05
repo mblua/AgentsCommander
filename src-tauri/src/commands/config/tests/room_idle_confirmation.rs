@@ -298,17 +298,7 @@ async fn room_idle_confirmation_case(
 ) -> Vec<Value> {
     use tauri::Listener;
 
-    let (_, target, expected, success, count) = [
-        ("changed", 30, 30, true, 1),
-        ("unchanged", 30, 30, true, 0),
-        ("invalid-range", 0, 30, false, 0),
-        ("malformed-present", 60, 30, false, 0),
-        ("renewed-positive", 60, 60, true, 1),
-        ("hotkey-error", 90, 90, true, 1),
-    ]
-    .into_iter()
-    .find(|(id, ..)| *id == case)
-    .expect("unknown case");
+    let (target, expected, success, count) = room_idle_confirmation_expectation(case);
     let path = crate::config::settings::settings_path().expect("isolated settings path");
     let valid = std::fs::read(&path).unwrap();
     if case == "malformed-present" {
@@ -382,23 +372,13 @@ async fn room_idle_confirmation_case(
             })
         );
     }
-    let native: Vec<_> = rx.try_iter().collect();
-    assert_eq!(native.len(), count, "{writer}/{case}: tauri");
-    for (payload, adopted, sessions) in native {
-        assert_eq!(
-            (
-                serde_json::from_str::<Value>(&payload).unwrap(),
-                adopted,
-                sessions,
-            ),
-            (json!({}), Some(expected), b"[]".to_vec()),
-            "{writer}/{case}: payload, adopted state after lock release, sessions"
-        );
-    }
-    assert_eq!(
-        room_idle_confirmation_browser_events(receiver).len(),
+    assert_room_idle_confirmation_events(
+        rx.try_iter().collect(),
+        receiver,
         count,
-        "{writer}/{case}: browser"
+        expected,
+        writer,
+        case,
     );
     assert_eq!(
         settings.read().await.room_idle_confirmation_seconds,
@@ -415,17 +395,7 @@ async fn room_idle_confirmation_case(
         assert_eq!(std::fs::read(&path).unwrap(), b"{ malformed-present");
         std::fs::write(&path, valid).unwrap();
     }
-    let loaded = crate::config::settings::load_settings_from_path(&path);
-    assert_eq!(
-        (
-            loaded.room_idle_confirmation_seconds,
-            loaded.agents.is_empty(),
-            loaded.project_paths.is_empty(),
-        ),
-        (expected, true, true),
-        "{writer}/{case}: isolated persisted settings"
-    );
-    assert_eq!(std::fs::read(fixture.join("sessions.json")).unwrap(), b"[]");
+    assert_room_idle_confirmation_persisted(&path, fixture, expected, writer, case);
     ["tauri", "browser"].into_iter().map(|transport| json!({
         "module":"commands::config", "writer":writer, "case":case, "transport":transport,
         "eventCount":count, "success":success, "diskSeconds":expected, "stateSeconds":expected
@@ -494,4 +464,69 @@ async fn room_idle_confirmation_routes_child() {
         serde_json::to_vec_pretty(&receipts).unwrap(),
     )
     .unwrap();
+}
+
+#[cfg(windows)]
+fn room_idle_confirmation_expectation(case: &str) -> (u32, u32, bool, usize) {
+    let (_, target, expected, success, count) = [
+        ("changed", 30, 30, true, 1),
+        ("unchanged", 30, 30, true, 0),
+        ("invalid-range", 0, 30, false, 0),
+        ("malformed-present", 60, 30, false, 0),
+        ("renewed-positive", 60, 60, true, 1),
+        ("hotkey-error", 90, 90, true, 1),
+    ]
+    .into_iter()
+    .find(|(id, ..)| *id == case)
+    .expect("unknown case");
+    (target, expected, success, count)
+}
+
+#[cfg(windows)]
+fn assert_room_idle_confirmation_events(
+    native: Vec<(String, Option<u32>, Vec<u8>)>,
+    receiver: &mut tokio::sync::mpsc::Receiver<crate::web::broadcast::WsOutMsg>,
+    count: usize,
+    expected: u32,
+    writer: &str,
+    case: &str,
+) {
+    assert_eq!(native.len(), count, "{writer}/{case}: tauri");
+    for (payload, adopted, sessions) in native {
+        assert_eq!(
+            (
+                serde_json::from_str::<Value>(&payload).unwrap(),
+                adopted,
+                sessions,
+            ),
+            (json!({}), Some(expected), b"[]".to_vec()),
+            "{writer}/{case}: payload, adopted state after lock release, sessions"
+        );
+    }
+    assert_eq!(
+        room_idle_confirmation_browser_events(receiver).len(),
+        count,
+        "{writer}/{case}: browser"
+    );
+}
+
+#[cfg(windows)]
+fn assert_room_idle_confirmation_persisted(
+    path: &std::path::Path,
+    fixture: &std::path::Path,
+    expected: u32,
+    writer: &str,
+    case: &str,
+) {
+    let loaded = crate::config::settings::load_settings_from_path(path);
+    assert_eq!(
+        (
+            loaded.room_idle_confirmation_seconds,
+            loaded.agents.is_empty(),
+            loaded.project_paths.is_empty(),
+        ),
+        (expected, true, true),
+        "{writer}/{case}: isolated persisted settings"
+    );
+    assert_eq!(std::fs::read(fixture.join("sessions.json")).unwrap(), b"[]");
 }
