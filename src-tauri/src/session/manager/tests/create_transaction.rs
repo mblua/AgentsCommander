@@ -375,7 +375,7 @@ struct P44Context {
     pty: Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>,
     backend: Arc<P44WriteBackend>,
     route: crate::config::teams::VerifiedPtyInputRoute,
-    owner: crate::config::settings::SettingsOwner,
+    owner: std::sync::Arc<crate::config::settings::SettingsOwner>,
     paths: Vec<std::path::PathBuf>,
     manager: SessionManager,
     sender: uuid::Uuid,

@@ -235,12 +235,11 @@ fn assert_windows_host_rules_delta() -> usize {
         super::super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
         NEW_WINDOWS_HOST_RULES
     );
-    let host_allowance = if cfg!(target_os = "windows") {
+    if cfg!(target_os = "windows") {
         WINDOWS_HOST_RULES_DELTA_BYTES
     } else {
         0
-    };
-    host_allowance
+    }
 }
 
 fn assert_memory_layout_and_task_verbs(
