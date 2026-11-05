@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 
 async fn issue_3145_pending(
     manager: &SessionManager,
@@ -469,7 +470,7 @@ async fn p44_fixture() -> (
         project_paths: vec![collection.to_string_lossy().into_owned()],
         ..AppSettings::default()
     };
-    let settings_path = temp.path().join("settings.30.instance.no-git.json");
+    let settings_path = temp.path().join(SETTINGS_FILE_NAME);
     std::fs::write(&settings_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
     let owner = tokio::task::spawn_blocking(move || {
         SettingsOwner::open_active(&settings_path, Duration::from_secs(5)).unwrap()
