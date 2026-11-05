@@ -5,11 +5,42 @@ import {
   type Component, For, Show, createEffect, createSignal, createUniqueId, on, onMount,
 } from "solid-js";
 import type { PreflightTestTarget } from "../../../shared/preflightTypes";
-import {
-  nextEnabledIndex, searchTargets, targetBasename, targetProfileText,
-} from "./preflightModel";
 
 const NO_MATCH = "No agents match your search.";
+
+/** #3832 - the last path segment, for either slash style. */
+export function targetBasename(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/** #3832 - the Profile line of one picker row; fallback replaces the plain line. */
+export function targetProfileText(row: PreflightTestTarget): string {
+  return row.fallbackApplied
+    ? `Asks for Profile ${row.requestedProfile}, launches with Profile ${row.effectiveProfile}.`
+    : `Launches with Profile ${row.effectiveProfile}`;
+}
+
+/** #3832 - case-insensitive substring match on the complete path; empty keeps all. */
+export function searchTargets(
+  rows: readonly PreflightTestTarget[], query: string,
+): PreflightTestTarget[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...rows];
+  return rows.filter((row) => row.replicaPath.toLowerCase().includes(needle));
+}
+
+/** #3832 - next enabled row after `from` in `step` direction, clamped at the ends.
+ *  With no active row, either key starts at the first enabled row. */
+export function nextEnabledIndex(
+  rows: readonly PreflightTestTarget[], from: number, step: 1 | -1,
+): number {
+  const dir = from < 0 ? 1 : step;
+  for (let i = from < 0 ? 0 : from + step; i >= 0 && i < rows.length; i += dir) {
+    if (!rows[i].running) return i;
+  }
+  return from >= 0 && from < rows.length && !rows[from].running ? from : -1;
+}
 
 /** Lets the panel read and set the list's open state (Escape arbitration). */
 export interface PreflightTargetPickerControl {

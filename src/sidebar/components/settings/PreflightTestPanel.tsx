@@ -490,7 +490,10 @@ export const PreflightTestPanel: Component<PreflightTestPanelProps> = (props) =>
           hint={filterHint()}
           onChoose={choose}
           onSearchEdit={clearSelection}
-          onControl={(control) => { picker = control; }}
+          onControl={(control) => {
+            picker = control;
+            onCleanup(() => { if (picker === control) picker = undefined; });
+          }}
         />
       </Show>
       <Show when={description()}>{(d) => <TargetInfo d={d()} />}</Show>

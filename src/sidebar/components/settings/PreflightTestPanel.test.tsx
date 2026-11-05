@@ -267,6 +267,9 @@ describe("PreflightTestPanel (#3516/#3832)", () => {
   it("shows the draft chain, the notes and progress, then the result", async () => {
     h = await mount();
     expect(status(h)).toBe("Which stopped agent should run this test?");
+    const lists = h.fake.callsFor("list_preflight_test_targets");
+    expect(lists[lists.length - 1]?.args).toEqual({
+      agentId: "codex", replicaPaths: [TARGET, OTHER] });
     await select(h);
     const info = q(h.root, ".info")!.textContent!;
     expect(info).toContain(`Folder: ${TARGET}`);
@@ -600,6 +603,30 @@ describe("PreflightTestPanel (#3516/#3832)", () => {
     } finally {
       document.removeEventListener("keydown", spy);
     }
+  });
+
+  it("closes the panel on the first Escape after an open picker unmounts", async () => {
+    let reply: () => Reply<PreflightTestTarget[]> = () => [row(TARGET)];
+    h = await mount({ list: () => reply() });
+    input(h).focus();
+    expect(list(h).hidden).toBe(false);
+    reply = () => [];
+    const other = "C:\\Other";
+    const room = `${other}\\.ac\\room-2-dev`;
+    const more = () => discovery({
+      workgroups: [{
+        name: "room-2-dev", path: room, task: null,
+        agents: [{ name: "ops", path: `${room}\\__agent_ops`, repoPaths: [],
+          isCoordinator: false }],
+      }],
+    });
+    h.fake.onInvoke("open_project", () => ({ path: other, ...more() }));
+    h.fake.onInvoke("discover_project", () => more());
+    await projectStore.loadProject(other);
+    await settle();
+    expect(q(h.root, ".target")).toBeNull();
+    h.root.dispatchEvent(escape());
+    expect(h.closed()).toBe(1);
   });
 
   it("lets an IME composition Escape pass, then handles normal Escapes", async () => {

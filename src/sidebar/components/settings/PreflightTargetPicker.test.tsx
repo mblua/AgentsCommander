@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import {
-  PreflightTargetPicker, type PreflightTargetPickerControl,
+  PreflightTargetPicker, type PreflightTargetPickerControl, nextEnabledIndex, searchTargets,
+  targetBasename, targetProfileText,
 } from "./PreflightTargetPicker";
 import type { PreflightTestTarget } from "../../../shared/preflightTypes";
 
@@ -210,5 +211,49 @@ describe("PreflightTargetPicker (#3832)", () => {
     expect(activeId(p)).not.toBeNull();
     p.setRows([row(DEV)]);
     expect(activeId(p)).toBeNull();
+  });
+});
+
+function target(path: string, over: Partial<PreflightTestTarget> = {}): PreflightTestTarget {
+  return { ...row(path, false), ...over };
+}
+
+describe("picker helpers (#3832)", () => {
+  it.each([
+    ["C:\\p\\.ac\\room\\__agent_dev", "__agent_dev"],
+    ["/home/p/.ac/room/__agent_qa/", "__agent_qa"],
+    ["C:/p\\mixed/__agent_ops", "__agent_ops"],
+    ["solo", "solo"],
+  ])("basename of %s", (path, name) => {
+    expect(targetBasename(path)).toBe(name);
+  });
+
+  it("labels the launch Profile, or the fallback in its place", () => {
+    expect(targetProfileText(target("x", { effectiveProfile: "B" })))
+      .toBe("Launches with Profile B");
+    expect(targetProfileText(target("x", {
+      requestedProfile: "C", effectiveProfile: "A", fallbackApplied: true,
+    }))).toBe("Asks for Profile C, launches with Profile A.");
+  });
+
+  it("searches the complete path case-insensitively", () => {
+    const rows = [target("C:\\P\\Room\\__agent_Dev"), target("c:/p/room/__agent_qa")];
+    expect(searchTargets(rows, "  ROOM\\__AGENT_d ")).toEqual([rows[0]]);
+    expect(searchTargets(rows, "p/room")).toEqual([rows[1]]);
+    expect(searchTargets(rows, "")).toEqual(rows);
+    expect(searchTargets(rows, "zzz")).toEqual([]);
+  });
+
+  it("steps over running rows and clamps at both ends", () => {
+    const rows = [target("a", { running: true }), target("b"), target("c", { running: true }),
+      target("d")];
+    expect(nextEnabledIndex(rows, -1, 1)).toBe(1);
+    expect(nextEnabledIndex(rows, -1, -1)).toBe(1);
+    expect(nextEnabledIndex(rows, 1, 1)).toBe(3);
+    expect(nextEnabledIndex(rows, 3, 1)).toBe(3);
+    expect(nextEnabledIndex(rows, 3, -1)).toBe(1);
+    expect(nextEnabledIndex(rows, 1, -1)).toBe(1);
+    expect(nextEnabledIndex([target("x", { running: true })], -1, 1)).toBe(-1);
+    expect(nextEnabledIndex([], -1, 1)).toBe(-1);
   });
 });
