@@ -46,66 +46,8 @@ fn key_of(value: &Value) -> Option<IntervalKey> {
 
 fn reduce(stream: &str) -> ReducerReport {
     let mut report = ReducerReport::default();
-    let mut records: Vec<Value> = Vec::new();
-    for line in stream.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(line) {
-            Ok(value)
-                if value.get("v").is_some()
-                    && field(&value, "runId").is_some()
-                    && field(&value, "event").is_some()
-                    && moment(&value).is_some() =>
-            {
-                records.push(value);
-            }
-            _ => report.unparseable_lines += 1,
-        }
-    }
-
-    // Rule 3 and rule 4 candidates, collected first because both are stated
-    // by records that can appear anywhere in the stream.
-    let mut recovery: HashMap<String, DateTime<Utc>> = HashMap::new();
-    let mut heartbeat: HashMap<IntervalKey, DateTime<Utc>> = HashMap::new();
-    for value in &records {
-        match field(value, "event").unwrap_or_default() {
-            EVENT_APP_START => {
-                let Some(previous) = value.get("previousRun") else {
-                    continue;
-                };
-                // `anchorSeen` is deliberately not consulted.
-                if previous.get("clean").and_then(Value::as_bool) != Some(false)
-                    || value.get("concurrentInstancePid").is_some()
-                {
-                    continue;
-                }
-                let Some(run) = field(previous, "runId") else {
-                    continue;
-                };
-                let Some(last) = field(previous, "lastRecordAt")
-                    .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
-                else {
-                    continue;
-                };
-                recovery.insert(run.to_string(), last.with_timezone(&Utc));
-            }
-            "app_alive" => {
-                let (Some(run), Some(at)) = (field(value, "runId"), moment(value)) else {
-                    continue;
-                };
-                let listed = value
-                    .get("workingSessionIds")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                for id in listed.iter().filter_map(Value::as_str) {
-                    heartbeat.insert((run.to_string(), id.to_string()), at);
-                }
-            }
-            _ => {}
-        }
-    }
+    let records = parse_records(stream, &mut report);
+    let (recovery, heartbeat) = collect_close_candidates(&records);
 
     let mut open: HashMap<IntervalKey, DateTime<Utc>> = HashMap::new();
     let mut cwd_of: HashMap<IntervalKey, String> = HashMap::new();
@@ -171,6 +113,78 @@ fn reduce(stream: &str) -> ReducerReport {
         }
     }
     report
+}
+
+fn parse_records(stream: &str, report: &mut ReducerReport) -> Vec<Value> {
+    let mut records: Vec<Value> = Vec::new();
+    for line in stream.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(value)
+                if value.get("v").is_some()
+                    && field(&value, "runId").is_some()
+                    && field(&value, "event").is_some()
+                    && moment(&value).is_some() =>
+            {
+                records.push(value);
+            }
+            _ => report.unparseable_lines += 1,
+        }
+    }
+    records
+}
+
+fn collect_close_candidates(
+    records: &[Value],
+) -> (
+    HashMap<String, DateTime<Utc>>,
+    HashMap<IntervalKey, DateTime<Utc>>,
+) {
+    // Rule 3 and rule 4 candidates, collected first because both are stated
+    // by records that can appear anywhere in the stream.
+    let mut recovery: HashMap<String, DateTime<Utc>> = HashMap::new();
+    let mut heartbeat: HashMap<IntervalKey, DateTime<Utc>> = HashMap::new();
+    for value in records {
+        match field(value, "event").unwrap_or_default() {
+            EVENT_APP_START => {
+                let Some(previous) = value.get("previousRun") else {
+                    continue;
+                };
+                // `anchorSeen` is deliberately not consulted.
+                if previous.get("clean").and_then(Value::as_bool) != Some(false)
+                    || value.get("concurrentInstancePid").is_some()
+                {
+                    continue;
+                }
+                let Some(run) = field(previous, "runId") else {
+                    continue;
+                };
+                let Some(last) = field(previous, "lastRecordAt")
+                    .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+                else {
+                    continue;
+                };
+                recovery.insert(run.to_string(), last.with_timezone(&Utc));
+            }
+            "app_alive" => {
+                let (Some(run), Some(at)) = (field(value, "runId"), moment(value)) else {
+                    continue;
+                };
+                let listed = value
+                    .get("workingSessionIds")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for id in listed.iter().filter_map(Value::as_str) {
+                    heartbeat.insert((run.to_string(), id.to_string()), at);
+                }
+            }
+            _ => {}
+        }
+    }
+    (recovery, heartbeat)
 }
 
 fn close(

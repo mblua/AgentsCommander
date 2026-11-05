@@ -272,6 +272,10 @@ fn issue_3294_rollback_positive_control() {
         );
     }
 
+    assert_occupied_staged_rollback_is_reported();
+}
+
+fn assert_occupied_staged_rollback_is_reported() {
     let tmp = create_test_ac_root();
     let base = test_base(&tmp);
     let original_path = base.join("_agent_dev");

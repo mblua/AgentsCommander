@@ -290,57 +290,58 @@ fn project_settings_primary_only_and_direct_instance_matrix() {
     );
 }
 
-#[test]
-fn project_nonregular_and_read_errors_degrade_only_project() {
-    fn inventory(
-        root: &std::path::Path,
-    ) -> Vec<(
+fn inventory(
+    root: &std::path::Path,
+) -> Vec<(
+    std::path::PathBuf,
+    bool,
+    u64,
+    bool,
+    std::time::SystemTime,
+    Vec<u8>,
+)> {
+    #[cfg(test)]
+    type TreeInventoryRows = Vec<(
         std::path::PathBuf,
         bool,
         u64,
         bool,
         std::time::SystemTime,
         Vec<u8>,
-    )> {
-        #[cfg(test)]
-        type TreeInventoryRows = Vec<(
-            std::path::PathBuf,
-            bool,
-            u64,
-            bool,
-            std::time::SystemTime,
-            Vec<u8>,
-        )>;
-        fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
-            let metadata = std::fs::symlink_metadata(path).unwrap();
-            assert!(!metadata.file_type().is_symlink());
-            rows.push((
-                path.strip_prefix(root).unwrap().to_path_buf(),
-                metadata.is_dir(),
-                metadata.len(),
-                metadata.permissions().readonly(),
-                metadata.modified().unwrap(),
-                if metadata.is_file() {
-                    std::fs::read(path).unwrap()
-                } else {
-                    Vec::new()
-                },
-            ));
-            if metadata.is_dir() {
-                let mut entries: Vec<_> = std::fs::read_dir(path)
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path())
-                    .collect();
-                entries.sort();
-                for entry in entries {
-                    visit(root, &entry, rows);
-                }
+    )>;
+    fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
+        let metadata = std::fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        rows.push((
+            path.strip_prefix(root).unwrap().to_path_buf(),
+            metadata.is_dir(),
+            metadata.len(),
+            metadata.permissions().readonly(),
+            metadata.modified().unwrap(),
+            if metadata.is_file() {
+                std::fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            },
+        ));
+        if metadata.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                visit(root, &entry, rows);
             }
         }
-        let mut rows = Vec::new();
-        visit(root, root, &mut rows);
-        rows
     }
+    let mut rows = Vec::new();
+    visit(root, root, &mut rows);
+    rows
+}
+
+#[test]
+fn project_nonregular_and_read_errors_degrade_only_project() {
     let dir = seed_dir();
     ensure_seeded(dir.path(), None);
     let baseline = project_report(dir.path());
