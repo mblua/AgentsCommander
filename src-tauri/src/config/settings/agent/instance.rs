@@ -398,6 +398,29 @@ pub(crate) fn save_agents_instance_file(
             .owns_top_level("codingAgentProfiles");
     let rejected =
         |reason: String| agents_instance_rejected(disk_gate_stage, &sidecar_path, reason);
+    let target = finalize_agents_target(
+        target,
+        &before,
+        existing.as_ref(),
+        base_profiles,
+        (prepared_duplicate_agents, prepared_profiles),
+        (editable_agents, editable_profiles),
+        &rejected,
+    )?;
+    finish_agents_instance_write(existing.as_ref(), target, &sidecar_path)
+}
+
+/// Applies the prepared groups and retention rules to the agents-file target,
+/// then validates the physical identity delta.
+fn finalize_agents_target(
+    target: Map<String, Value>,
+    before: &Map<String, Value>,
+    existing: Option<&Map<String, Value>>,
+    base_profiles: Option<&Value>,
+    (prepared_duplicate_agents, prepared_profiles): (Option<&Value>, Option<&Value>),
+    (editable_agents, editable_profiles): (bool, bool),
+    rejected: &impl Fn(String) -> SettingsSaveError,
+) -> Result<Map<String, Value>, SettingsSaveError> {
     let mut retained = Value::Object(target);
     if editable_agents {
         if let Some(prepared) = prepared_duplicate_agents {
@@ -412,13 +435,13 @@ pub(crate) fn save_agents_instance_file(
         editable_agents && prepared_duplicate_agents.is_none(),
         editable_profiles,
     )
-    .map_err(&rejected)?;
+    .map_err(rejected)?;
     let mut target = retained
         .as_object()
         .expect("retained settings object")
         .clone();
     if editable_profiles {
-        refresh_target_pair_id_hashes(&mut target, &before, editable_agents).map_err(&rejected)?;
+        refresh_target_pair_id_hashes(&mut target, before, editable_agents).map_err(rejected)?;
     }
     if let Some(prepared) = prepared_profiles {
         apply_prepared_agents_groups(&mut target, prepared, editable_agents, editable_profiles);
@@ -426,7 +449,7 @@ pub(crate) fn save_agents_instance_file(
     // Prepared packets may retain original raw rows. Derive metadata from the
     // final physical rows, after insertion, without changing protected rows.
     if editable_agents {
-        refresh_registered_agent_row_metadata(&mut target).map_err(&rejected)?;
+        refresh_registered_agent_row_metadata(&mut target).map_err(rejected)?;
     }
     // Prepared canonical profiles cannot replace the physical owner's HOME carrier.
     restore_codex_home_carrier(&mut target, base_profiles);
@@ -440,7 +463,7 @@ pub(crate) fn save_agents_instance_file(
             // main. Moving their packet must not turn them into new duplicates.
             before.clone()
         } else {
-            existing.clone().unwrap_or_default()
+            existing.cloned().unwrap_or_default()
         };
         validate_physical_identity_delta(
             &physical_before,
@@ -450,7 +473,7 @@ pub(crate) fn save_agents_instance_file(
         )
         .map_err(rejected)?;
     }
-    finish_agents_instance_write(existing.as_ref(), target, &sidecar_path)
+    Ok(target)
 }
 
 /// Reads the physical agents file for a save; an unreadable file refuses the
