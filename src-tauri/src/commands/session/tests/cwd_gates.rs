@@ -76,6 +76,12 @@ async fn create_session_inner_gate_blocks_unregistered_cwd() {
     );
     close_test_coordinator(&app).await;
 
+    assert_registered_root_passes_creation_gate(&temp).await;
+}
+
+async fn assert_registered_root_passes_creation_gate(temp: &tempfile::TempDir) {
+    use crate::config::sessions_persistence::CreationGateEnforcement;
+
     // Registered existing root with Enforce -> Ok and a row is created.
     let project_root = temp.path().join("project");
     let reg_cwd = temp

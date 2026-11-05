@@ -124,38 +124,7 @@ async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply
         move || {
             let settings = settings_for_holder;
             let replica = replica_for_holder;
-            async move {
-                let snapshot = settings.read().await.clone();
-                let enumeration = super::enumerate_profile_assignment_targets(
-                    &snapshot,
-                    &replica,
-                    &super::ProfileAssignmentScope::Replica,
-                    &[],
-                )
-                .expect("enumerate");
-                let target = &enumeration.candidates[0].target;
-                let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
-                    configuration_ref: None,
-                    profile_override_source: None,
-                    identity: target.identity_path.clone(),
-                    pair: super::target_pair(target),
-                    locked: false,
-                };
-                crate::config::coding_agent_profiles::write_replica_selection(
-                    &snapshot,
-                    &replica,
-                    &crate::config::coding_agent_profiles::ReplicaSelectionPair {
-                        coding_agent_id: "agent-0".to_string(),
-                        requested_profile: "B".to_string(),
-                    },
-                    SelectionWriteIntent::IndividualAssignLock,
-                    &expected,
-                )
-                .expect("publish the lock");
-                entered_tx.send(()).expect("signal entered");
-                release_rx.await.expect("release the publication span");
-                Ok::<(), String>(())
-            }
+            hold_published_selection(settings, replica, entered_tx, release_rx)
         },
     ));
     entered_rx.await.expect("holder entered");
@@ -232,4 +201,42 @@ async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply
             requested_profile: Some("B".to_string()),
         })
     );
+}
+
+async fn hold_published_selection(
+    settings: SettingsState,
+    replica: PathBuf,
+    entered_tx: oneshot::Sender<()>,
+    release_rx: oneshot::Receiver<()>,
+) -> Result<(), String> {
+    let snapshot = settings.read().await.clone();
+    let enumeration = super::enumerate_profile_assignment_targets(
+        &snapshot,
+        &replica,
+        &super::ProfileAssignmentScope::Replica,
+        &[],
+    )
+    .expect("enumerate");
+    let target = &enumeration.candidates[0].target;
+    let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+        configuration_ref: None,
+        profile_override_source: None,
+        identity: target.identity_path.clone(),
+        pair: super::target_pair(target),
+        locked: false,
+    };
+    crate::config::coding_agent_profiles::write_replica_selection(
+        &snapshot,
+        &replica,
+        &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+            coding_agent_id: "agent-0".to_string(),
+            requested_profile: "B".to_string(),
+        },
+        SelectionWriteIntent::IndividualAssignLock,
+        &expected,
+    )
+    .expect("publish the lock");
+    entered_tx.send(()).expect("signal entered");
+    release_rx.await.expect("release the publication span");
+    Ok::<(), String>(())
 }
