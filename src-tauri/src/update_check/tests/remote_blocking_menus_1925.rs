@@ -247,6 +247,33 @@ enum RemoteMenusReply {
     Http(u16, Vec<u8>),
 }
 
+fn assert_previous_cache_kept(
+    label: &str,
+    settings_path: &std::path::Path,
+    seed: &[u8],
+    now: DateTime<Utc>,
+) {
+    assert_eq!(
+        std::fs::read(crate::config::settings::blocking_menus_remote_path(
+            settings_path
+        ))
+        .unwrap(),
+        seed,
+        "{label}: the previous cache must stay byte-equal"
+    );
+    let store = crate::config::settings::BlockingMenusStore::load_from_settings_path(settings_path);
+    assert_eq!(
+        store.resolve("grok-1", "grok"),
+        vec![seeded_grok()],
+        "{label}: the previous cache still resolves"
+    );
+    assert_eq!(
+        crate::config::settings::read_remote_blocking_menus_check_stamp(settings_path),
+        Some(now),
+        "{label}: the failed attempt still stamps now"
+    );
+}
+
 #[tokio::test]
 async fn every_failure_keeps_the_previous_cache() {
     let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
@@ -342,26 +369,7 @@ async fn every_failure_keeps_the_previous_cache() {
             (_, other) => panic!("{label}: expected a failure, got {other:?}"),
         }
 
-        assert_eq!(
-            std::fs::read(crate::config::settings::blocking_menus_remote_path(
-                &settings_path
-            ))
-            .unwrap(),
-            seed,
-            "{label}: the previous cache must stay byte-equal"
-        );
-        let store =
-            crate::config::settings::BlockingMenusStore::load_from_settings_path(&settings_path);
-        assert_eq!(
-            store.resolve("grok-1", "grok"),
-            vec![seeded_grok()],
-            "{label}: the previous cache still resolves"
-        );
-        assert_eq!(
-            crate::config::settings::read_remote_blocking_menus_check_stamp(&settings_path),
-            Some(now),
-            "{label}: the failed attempt still stamps now"
-        );
+        assert_previous_cache_kept(label, &settings_path, &seed, now);
     }
 }
 

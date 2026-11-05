@@ -58,13 +58,103 @@ impl crate::pty::backend::PtyBackend for SourceCarrierBackend {
     }
 }
 
+fn decoy_binding_seed(
+    f_bytes: &[u8],
+    base: &str,
+    f_path: &std::path::Path,
+) -> CodingAgentBindingSeed {
+    use crate::config::settings::{SourceFamily, SourceKind, SourceRef, SourceRole, SourceScope};
+    use sha2::{Digest, Sha256};
+    let mut f_cell = crate::config::settings::empty_profile_cell();
+    f_cell.command = "F-cell".into();
+    f_cell.env.insert("SOURCE".into(), "F-cell".into());
+    CodingAgentBindingSeed {
+        identity_revision: format!("s1:{:x}:{base}", Sha256::digest(f_bytes)),
+        original_agent_id: "original".into(),
+        configuration_ref: Some(crate::config::settings::ConfigurationRef {
+            version: 1,
+            source: SourceRef {
+                family: SourceFamily::Agents,
+                role: SourceRole::Catalog,
+                scope: SourceScope::Project,
+                kind: SourceKind::CatalogProject,
+                context_root: f_path.to_string_lossy().into_owned(),
+            },
+            calculated_id: base.to_owned(),
+            requested_profile: None,
+            profile_calculated_id: Some(crate::config::settings::pair_identity(
+                "codex",
+                &[],
+                &f_cell,
+            )),
+            legacy_entry_hint: Some("original".into()),
+        }),
+    }
+}
+
+fn decoy_mock_app(
+    manager: Arc<tokio::sync::RwLock<SessionManager>>,
+) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .manage(manager)
+        .manage(crate::DetachedSessionsState::default())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap()
+}
+
+async fn failed_recipe_snapshot(failed: &PersistedSession) -> Vec<PersistedSession> {
+    let failed_manager = SessionManager::new();
+    failed_manager
+        .enroll_failed_binding_recipe_for_test(
+            failed.coding_agent_binding_id.clone().unwrap(),
+            serde_json::to_value(failed).unwrap(),
+        )
+        .await;
+    // Recipe JSON omits origin; retain its RAM witness through the same
+    // binding metadata API used by production failed-recipe refresh.
+    failed_manager
+        .refresh_failed_binding_recipes(vec![(
+            failed.binding_metadata().unwrap().unwrap(),
+            serde_json::to_value(failed).unwrap(),
+        )])
+        .await;
+    snapshot_sessions(&failed_manager).await
+}
+
+fn assert_binding_kept(
+    row: &PersistedSession,
+    seed: &CodingAgentBindingSeed,
+    original: &PersistedSession,
+    origin: &Option<serde_json::Value>,
+) {
+    assert_eq!(row.coding_agent_binding_seed.as_ref(), Some(seed));
+    assert_eq!(
+        row.coding_agent_binding_id,
+        original.coding_agent_binding_id
+    );
+    assert_eq!(&row.coding_agent_binding_origin, origin);
+}
+
+fn assert_decoy_origin(origin: &Option<serde_json::Value>, raw: &[u8], path: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        origin.as_ref().unwrap()["rawFileSHA256"],
+        format!("{:x}", Sha256::digest(raw))
+    );
+    assert_eq!(
+        origin.as_ref().unwrap()["sessionsPath"],
+        path.to_string_lossy().as_ref()
+    );
+    assert_eq!(origin.as_ref().unwrap()["originalOrdinal"], 0);
+}
+
 #[tokio::test]
 async fn e2432_source_seed_roundtrip_decoy() {
-    use crate::config::settings::{
-        configuration_identity, SourceFamily, SourceKind, SourceRef, SourceRole, SourceScope,
-    };
+    use crate::config::settings::configuration_identity;
     use crate::session::selection::{DormantRestoreRequest, SelectionCoordinator};
-    use sha2::{Digest, Sha256};
     use tauri::Manager;
     let dir = tempfile::tempdir().unwrap();
     let f_path = dir.path().join("F.json");
@@ -84,31 +174,7 @@ async fn e2432_source_seed_roundtrip_decoy() {
     let f_bytes = file("F-cell");
     std::fs::write(&f_path, &f_bytes).unwrap();
     std::fs::write(&g_path, file("G-cell")).unwrap();
-    let mut f_cell = crate::config::settings::empty_profile_cell();
-    f_cell.command = "F-cell".into();
-    f_cell.env.insert("SOURCE".into(), "F-cell".into());
-    let seed = CodingAgentBindingSeed {
-        identity_revision: format!("s1:{:x}:{base}", Sha256::digest(&f_bytes)),
-        original_agent_id: "original".into(),
-        configuration_ref: Some(crate::config::settings::ConfigurationRef {
-            version: 1,
-            source: SourceRef {
-                family: SourceFamily::Agents,
-                role: SourceRole::Catalog,
-                scope: SourceScope::Project,
-                kind: SourceKind::CatalogProject,
-                context_root: f_path.to_string_lossy().into_owned(),
-            },
-            calculated_id: base.clone(),
-            requested_profile: None,
-            profile_calculated_id: Some(crate::config::settings::pair_identity(
-                "codex",
-                &[],
-                &f_cell,
-            )),
-            legacy_entry_hint: Some("original".into()),
-        }),
-    };
+    let seed = decoy_binding_seed(&f_bytes, &base, &f_path);
     let mut original = recipe("F recipe", dir.path().to_str().unwrap());
     original.coding_agent_binding_id = Some(Uuid::new_v4().to_string());
     original.coding_agent_binding_seed = Some(seed.clone());
@@ -120,36 +186,16 @@ async fn e2432_source_seed_roundtrip_decoy() {
     assert!(crate::config::settings::bootstrap_binding_revision(&settings, "original").is_err());
     let mut loaded = load_sessions_from_path_with_settings(&path, Some(&settings)).remove(0);
     let origin = loaded.coding_agent_binding_origin.clone();
-    assert_eq!(
-        origin.as_ref().unwrap()["rawFileSHA256"],
-        format!("{:x}", Sha256::digest(&raw))
-    );
-    assert_eq!(
-        origin.as_ref().unwrap()["sessionsPath"],
-        path.to_string_lossy().as_ref()
-    );
-    assert_eq!(origin.as_ref().unwrap()["originalOrdinal"], 0);
+    assert_decoy_origin(&origin, &raw, &path);
     std::fs::write(&g_path, file("G-edited-cell")).unwrap();
     loaded.capture_binding_seed(&settings).unwrap();
-    assert_eq!(loaded.coding_agent_binding_seed.as_ref(), Some(&seed));
-    assert_eq!(
-        loaded.coding_agent_binding_id,
-        original.coding_agent_binding_id
-    );
-    assert_eq!(loaded.coding_agent_binding_origin, origin);
+    assert_binding_kept(&loaded, &seed, &original, &origin);
     assert_eq!(std::fs::read(&f_path).unwrap(), f_bytes);
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let coordinator =
         SelectionCoordinator::new(manager.clone(), tokio_util::sync::CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(manager.clone())
-        .manage(crate::DetachedSessionsState::default())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    let app = decoy_mock_app(manager.clone());
     let pty = Arc::new(std::sync::Mutex::new(
         crate::pty::manager::PtyManager::new_for_test(Arc::new(SourceCarrierBackend)),
     ));
@@ -172,30 +218,10 @@ async fn e2432_source_seed_roundtrip_decoy() {
         .iter()
         .find(|row| row.id.as_deref() == Some(info.id.as_str()))
         .unwrap();
-    assert_eq!(live.coding_agent_binding_seed.as_ref(), Some(&seed));
-    assert_eq!(
-        live.coding_agent_binding_id,
-        original.coding_agent_binding_id
-    );
-    assert_eq!(live.coding_agent_binding_origin, origin);
+    assert_binding_kept(live, &seed, &original, &origin);
     let failed = sanitize_failed_recoverable(live);
     assert_eq!(failed.coding_agent_binding_seed.as_ref(), Some(&seed));
-    let failed_manager = SessionManager::new();
-    failed_manager
-        .enroll_failed_binding_recipe_for_test(
-            failed.coding_agent_binding_id.clone().unwrap(),
-            serde_json::to_value(&failed).unwrap(),
-        )
-        .await;
-    // Recipe JSON omits origin; retain its RAM witness through the same
-    // binding metadata API used by production failed-recipe refresh.
-    failed_manager
-        .refresh_failed_binding_recipes(vec![(
-            failed.binding_metadata().unwrap().unwrap(),
-            serde_json::to_value(&failed).unwrap(),
-        )])
-        .await;
-    let failed_snapshot = snapshot_sessions(&failed_manager).await;
+    let failed_snapshot = failed_recipe_snapshot(&failed).await;
     assert_eq!(failed_snapshot.len(), 1);
     assert_eq!(
         failed_snapshot[0].coding_agent_binding_seed.as_ref(),
