@@ -451,6 +451,7 @@ fn invoke_handler(
         commands::config::get_agent_update_status,
         commands::config::agent_update_answer,
         commands::config::agent_update_cancel,
+        commands::session::list_preflight_test_targets,
         commands::session::describe_preflight_target,
         commands::session::start_preflight_test,
         commands::session::get_preflight_test,
