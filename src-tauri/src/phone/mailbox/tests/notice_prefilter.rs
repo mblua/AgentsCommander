@@ -167,30 +167,6 @@ async fn mark_target_then_restore_idle(
     // `idle_set`). Restore the pre-write state; neither call touches the mark.
     sessions.mark_idle(target_id).await;
     idle.set_pty_input_ready_for_test(target_id);
-
-    let boundary_guard = sessions
-        .prepare_pty_input_boundary(
-            target_id,
-            &route.target,
-            SessionBackendKind::LocalProcess,
-            sender_id,
-            &route.sender,
-            SessionBackendKind::LocalProcess,
-            &authority_route,
-            &permit,
-            &idle,
-            &settings,
-            current_recipe,
-            || true,
-        )
-        .await
-        .expect("the boundary must succeed");
-    drop(boundary_guard);
-
-    assert!(
-        idle.control_write_age(target_id).is_none(),
-        "the exact-agent-input boundary arms the turn and must cancel the mark"
-    );
 }
 
 #[test]

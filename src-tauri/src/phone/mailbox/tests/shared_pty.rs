@@ -107,7 +107,7 @@ async fn assert_shared_engine_injects_exact_text(
         )
         .unwrap(),
     );
-    let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(store));
+    let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
     let injection_id =
         enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"exact shared input");
 
