@@ -27,7 +27,6 @@ use crate::session::session::SessionStatus;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 mod admission;
