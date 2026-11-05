@@ -1,41 +1,44 @@
 #[cfg(windows)]
 use super::*;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(windows)]
-#[test]
-fn injected_replace_error_matrix_retains_raw_code_and_never_retries() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+#[derive(Clone, Copy, Debug)]
+enum Mutation {
+    StableNames,
+    RemoveCanonical,
+    RenameCanonical,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+enum ExpectedError {
+    StableFailure,
+    RecoveryRequired,
+    Partial(WindowsReplacePartial),
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+struct Case {
+    label: &'static str,
+    raw_error: u32,
+    mutation: Mutation,
+    expected: ExpectedError,
+    canonical_present: bool,
+    temp_present: bool,
+    renamed_old_present: bool,
+}
+
+#[cfg(windows)]
+fn replace_error_cases() -> [Case; 8] {
     use windows_sys::Win32::Foundation::{
         ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_UNABLE_TO_MOVE_REPLACEMENT,
         ERROR_UNABLE_TO_MOVE_REPLACEMENT_2, ERROR_UNABLE_TO_REMOVE_REPLACED,
     };
 
-    #[derive(Clone, Copy, Debug)]
-    enum Mutation {
-        StableNames,
-        RemoveCanonical,
-        RenameCanonical,
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    enum ExpectedError {
-        StableFailure,
-        RecoveryRequired,
-        Partial(WindowsReplacePartial),
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct Case {
-        label: &'static str,
-        raw_error: u32,
-        mutation: Mutation,
-        expected: ExpectedError,
-        canonical_present: bool,
-        temp_present: bool,
-        renamed_old_present: bool,
-    }
-
-    let cases = [
+    [
         Case {
             label: "1175 documented stable names",
             raw_error: ERROR_UNABLE_TO_REMOVE_REPLACED,
@@ -116,53 +119,153 @@ fn injected_replace_error_matrix_retains_raw_code_and_never_retries() {
             temp_present: true,
             renamed_old_present: false,
         },
-    ];
+    ]
+}
 
-    for case in cases {
-        let (_temp, project) = setup_project();
-        let activation = ManifestActivationToken::for_test();
-        let mut initial = ProjectSeedManifestGuard::acquire(&project).unwrap();
+#[cfg(windows)]
+fn record_initial_manifest(project: &Path, case: Case) {
+    let activation = ManifestActivationToken::for_test();
+    let mut initial = ProjectSeedManifestGuard::acquire(project).unwrap();
+    assert_eq!(
+        initial.publication_permit().record_file(
+            &activation,
+            context_row(
+                "Context.AgentsCommander.md",
+                "context:agentscommander",
+                "2026-07-16T19:40:07.123Z",
+            )
+            .unwrap(),
+        ),
+        ManifestRecordOutcome::Recorded,
+        "{}",
+        case.label
+    );
+    initial.release();
+}
+
+#[cfg(windows)]
+fn replace_hooks(
+    case: Case,
+    call_count: &Arc<AtomicUsize>,
+    renamed_old: &Path,
+) -> TestFilesystemHooks {
+    TestFilesystemHooks {
+        windows_namespace_call: Some(Arc::new({
+            let call_count = Arc::clone(call_count);
+            let renamed_old = renamed_old.to_path_buf();
+            move |operation, _temp, canonical| {
+                assert_eq!(operation, WindowsNamespaceOperation::ReplaceFile);
+                call_count.fetch_add(1, Ordering::SeqCst);
+                match case.mutation {
+                    Mutation::StableNames => {}
+                    Mutation::RemoveCanonical => {
+                        std::fs::remove_file(canonical).unwrap();
+                    }
+                    Mutation::RenameCanonical => {
+                        std::fs::rename(canonical, &renamed_old).unwrap();
+                    }
+                }
+                Err(case.raw_error)
+            }
+        })),
+        ..TestFilesystemHooks::default()
+    }
+}
+
+#[cfg(windows)]
+fn observed_raw_error(error: &SeedManifestError, case: Case) -> u32 {
+    match error {
+        SeedManifestError::WindowsNamespaceFailure {
+            raw_error,
+            canonical_state,
+            temp_state,
+            ..
+        } => {
+            assert!(matches!(case.expected, ExpectedError::StableFailure));
+            assert!(matches!(
+                canonical_state.as_ref(),
+                WindowsPathState::Same {
+                    bytes_match: true,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                temp_state.as_ref(),
+                WindowsPathState::Same {
+                    bytes_match: true,
+                    ..
+                }
+            ));
+            *raw_error
+        }
+        SeedManifestError::WindowsReplaceRecoveryRequired { raw_error, .. } => {
+            assert!(matches!(case.expected, ExpectedError::RecoveryRequired));
+            *raw_error
+        }
+        SeedManifestError::WindowsReplacePartial {
+            raw_error, partial, ..
+        } => {
+            let ExpectedError::Partial(expected_partial) = case.expected else {
+                panic!("{} returned an unexpected partial error", case.label);
+            };
+            assert_eq!(*partial, expected_partial);
+            *raw_error
+        }
+        other => panic!("{} returned unexpected error {other:?}", case.label),
+    }
+}
+
+#[cfg(windows)]
+fn assert_final_paths(
+    project: &Path,
+    canonical: &Path,
+    renamed_old: &Path,
+    original: &[u8],
+    case: Case,
+) {
+    assert_eq!(canonical.exists(), case.canonical_present, "{}", case.label);
+    if case.canonical_present {
         assert_eq!(
-            initial.publication_permit().record_file(
-                &activation,
-                context_row(
-                    "Context.AgentsCommander.md",
-                    "context:agentscommander",
-                    "2026-07-16T19:40:07.123Z",
-                )
-                .unwrap(),
-            ),
-            ManifestRecordOutcome::Recorded,
+            std::fs::read(canonical).unwrap(),
+            original,
             "{}",
             case.label
         );
-        initial.release();
+    }
+    assert_eq!(
+        exact_temp_paths(project).len(),
+        usize::from(case.temp_present),
+        "{}",
+        case.label
+    );
+    assert_eq!(
+        renamed_old.exists(),
+        case.renamed_old_present,
+        "{}",
+        case.label
+    );
+    if case.renamed_old_present {
+        assert_eq!(
+            std::fs::read(renamed_old).unwrap(),
+            original,
+            "{}",
+            case.label
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn injected_replace_error_matrix_retains_raw_code_and_never_retries() {
+    for case in replace_error_cases() {
+        let (_temp, project) = setup_project();
+        record_initial_manifest(&project, case);
 
         let canonical = canonical_path(&project);
         let original = std::fs::read(&canonical).unwrap();
         let renamed_old = project.join(".ac").join("renamed-old-destination");
         let call_count = Arc::new(AtomicUsize::new(0));
-        let hooks = TestFilesystemHooks {
-            windows_namespace_call: Some(Arc::new({
-                let call_count = Arc::clone(&call_count);
-                let renamed_old = renamed_old.clone();
-                move |operation, _temp, canonical| {
-                    assert_eq!(operation, WindowsNamespaceOperation::ReplaceFile);
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    match case.mutation {
-                        Mutation::StableNames => {}
-                        Mutation::RemoveCanonical => {
-                            std::fs::remove_file(canonical).unwrap();
-                        }
-                        Mutation::RenameCanonical => {
-                            std::fs::rename(canonical, &renamed_old).unwrap();
-                        }
-                    }
-                    Err(case.raw_error)
-                }
-            })),
-            ..TestFilesystemHooks::default()
-        };
+        let hooks = replace_hooks(case, &call_count, &renamed_old);
         let mut guard =
             ProjectSeedManifestGuard::acquire_with_hooks(&project, Duration::from_secs(1), hooks)
                 .unwrap();
@@ -180,45 +283,7 @@ fn injected_replace_error_matrix_retains_raw_code_and_never_retries() {
             .unwrap_err();
         assert_eq!(call_count.load(Ordering::SeqCst), 1, "{}", case.label);
 
-        let observed_raw = match &error {
-            SeedManifestError::WindowsNamespaceFailure {
-                raw_error,
-                canonical_state,
-                temp_state,
-                ..
-            } => {
-                assert!(matches!(case.expected, ExpectedError::StableFailure));
-                assert!(matches!(
-                    canonical_state.as_ref(),
-                    WindowsPathState::Same {
-                        bytes_match: true,
-                        ..
-                    }
-                ));
-                assert!(matches!(
-                    temp_state.as_ref(),
-                    WindowsPathState::Same {
-                        bytes_match: true,
-                        ..
-                    }
-                ));
-                *raw_error
-            }
-            SeedManifestError::WindowsReplaceRecoveryRequired { raw_error, .. } => {
-                assert!(matches!(case.expected, ExpectedError::RecoveryRequired));
-                *raw_error
-            }
-            SeedManifestError::WindowsReplacePartial {
-                raw_error, partial, ..
-            } => {
-                let ExpectedError::Partial(expected_partial) = case.expected else {
-                    panic!("{} returned an unexpected partial error", case.label);
-                };
-                assert_eq!(*partial, expected_partial);
-                *raw_error
-            }
-            other => panic!("{} returned unexpected error {other:?}", case.label),
-        };
+        let observed_raw = observed_raw_error(&error, case);
         assert_eq!(observed_raw, case.raw_error, "{}", case.label);
         let display = format!("{error}");
         assert!(
@@ -233,35 +298,7 @@ fn injected_replace_error_matrix_retains_raw_code_and_never_retries() {
         );
         guard.release();
 
-        assert_eq!(canonical.exists(), case.canonical_present, "{}", case.label);
-        if case.canonical_present {
-            assert_eq!(
-                std::fs::read(&canonical).unwrap(),
-                original,
-                "{}",
-                case.label
-            );
-        }
-        assert_eq!(
-            exact_temp_paths(&project).len(),
-            usize::from(case.temp_present),
-            "{}",
-            case.label
-        );
-        assert_eq!(
-            renamed_old.exists(),
-            case.renamed_old_present,
-            "{}",
-            case.label
-        );
-        if case.renamed_old_present {
-            assert_eq!(
-                std::fs::read(&renamed_old).unwrap(),
-                original,
-                "{}",
-                case.label
-            );
-        }
+        assert_final_paths(&project, &canonical, &renamed_old, &original, case);
     }
 }
 

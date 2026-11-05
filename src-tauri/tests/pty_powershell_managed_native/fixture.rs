@@ -150,11 +150,7 @@ fn config_dir_for_test() -> PathBuf {
     ))
 }
 
-pub(crate) fn make_fixture() -> Fixture {
-    let env_lock = TEST_CONFIG_ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let temp = tempfile::TempDir::new().expect("create temp dir");
+fn prepare_fixture_dirs(temp: &tempfile::TempDir) -> (PathBuf, PathBuf) {
     let repo_root = temp.path().join("repo-1271-native");
     let config_dir = config_dir_for_test();
     std::fs::create_dir_all(&repo_root).expect("create repo root");
@@ -167,12 +163,10 @@ pub(crate) fn make_fixture() -> Fixture {
     }
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(repo_root.join(".gitignore"), "*\r\n").expect("seed repo file");
+    (repo_root, config_dir)
+}
 
-    let env_guard = TestConfigEnvGuard::set(&config_dir);
-    assert_eq!(
-        agentscommander_lib::config::config_dir().expect("config dir override"),
-        config_dir
-    );
+fn seed_and_verify_settings(repo_root: &Path, config_dir: &Path) {
     let root = config_dir.join(agentscommander_lib::config::ROOT_AGENT_DIR_NAME);
     std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
     let mut settings = AppSettings::default();
@@ -198,7 +192,7 @@ pub(crate) fn make_fixture() -> Fixture {
     }
     let project_paths_before = std::fs::read(&project_paths_path).expect("read seeded authority");
     let saved = save_settings(&settings).expect("seed isolated settings");
-    let canonical_repo_root = std::fs::canonicalize(&repo_root)
+    let canonical_repo_root = std::fs::canonicalize(repo_root)
         .unwrap_or_else(|error| panic!("canonicalize {}: {error}", repo_root.display()));
     let canonical_repo_root = canonical_repo_root.to_str().unwrap_or_else(|| {
         panic!(
@@ -248,19 +242,14 @@ pub(crate) fn make_fixture() -> Fixture {
             "managed settings retained {key}"
         );
     }
+}
 
-    let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let owners = agentscommander_lib::AppOwners::new();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(
-        SessionManager::with_activity_coalescer(owners.activity.clone()),
-    ));
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
-        TelegramBridgeManager::new(Arc::clone(&output_senders)),
-    ));
+fn build_settings_git_watcher_and_pty(
+    owners: &agentscommander_lib::AppOwners,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    output_senders: OutputSenderMap,
+    repo_root: &Path,
+) -> (SettingsState, Arc<GitWatcher>, Arc<Mutex<PtyManager>>) {
     let idle_detector = IdleDetector::new(|_| {}, |_| {});
     let settings: SettingsState = agentscommander_lib::config::settings::new_settings_state({
         let mut s = AppSettings::default();
@@ -275,7 +264,7 @@ pub(crate) fn make_fixture() -> Fixture {
             .expect("build git watcher handle app"),
     ));
     let git_watcher = GitWatcher::with_state(
-        Arc::clone(&session_mgr),
+        Arc::clone(session_mgr),
         git_app.handle().clone(),
         owners.git.clone(),
     );
@@ -289,6 +278,79 @@ pub(crate) fn make_fixture() -> Fixture {
         owners.git_guard.clone(),
         owners.spawn.clone(),
     )));
+    (settings, git_watcher, pty_mgr)
+}
+
+fn bootstrap_selection(selection_coordinator: &SelectionCoordinator, app: &tauri::App) {
+    selection_coordinator
+        .start(app.handle().clone())
+        .expect("start selection coordinator");
+    let bootstrap = selection_coordinator.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async move {
+            bootstrap
+                .submit_restore_first()
+                .await
+                .expect("open selection coordinator")
+                .finish();
+        });
+    })
+    .join()
+    .expect("join selection bootstrap");
+}
+
+fn listen_pty_output(
+    app: &tauri::App,
+    deliveries: Arc<Mutex<HashMap<String, usize>>>,
+    error_capture: Arc<Mutex<Vec<String>>>,
+) {
+    app.listen_any("pty_output", move |event| {
+        let raw = event.payload().to_string();
+        match serde_json::from_str::<TestPtyOutputDelivery>(&raw) {
+            Ok(TestPtyOutputDelivery::Data { session_id, .. })
+            | Ok(TestPtyOutputDelivery::ResyncRequired { session_id, .. }) => {
+                deliveries
+                    .lock()
+                    .unwrap()
+                    .entry(session_id)
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+            }
+            Err(err) => error_capture.lock().unwrap().push(format!(
+                "failed to parse pty_output payload: {err}; raw={raw}"
+            )),
+        }
+    });
+}
+
+pub(crate) fn make_fixture() -> Fixture {
+    let env_lock = TEST_CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    let (repo_root, config_dir) = prepare_fixture_dirs(&temp);
+
+    let env_guard = TestConfigEnvGuard::set(&config_dir);
+    assert_eq!(
+        agentscommander_lib::config::config_dir().expect("config dir override"),
+        config_dir
+    );
+    seed_and_verify_settings(&repo_root, &config_dir);
+
+    let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let listener_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let owners = agentscommander_lib::AppOwners::new();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_activity_coalescer(owners.activity.clone()),
+    ));
+    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
+        TelegramBridgeManager::new(Arc::clone(&output_senders)),
+    ));
+    let (settings, git_watcher, pty_mgr) =
+        build_settings_git_watcher_and_pty(&owners, &session_mgr, output_senders, &repo_root);
 
     let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
     let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
@@ -332,39 +394,9 @@ pub(crate) fn make_fixture() -> Fixture {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build pty powershell native test app");
 
-    selection_coordinator
-        .start(app.handle().clone())
-        .expect("start selection coordinator");
-    let bootstrap = selection_coordinator.clone();
-    std::thread::spawn(move || {
-        tauri::async_runtime::block_on(async move {
-            bootstrap
-                .submit_restore_first()
-                .await
-                .expect("open selection coordinator")
-                .finish();
-        });
-    })
-    .join()
-    .expect("join selection bootstrap");
+    bootstrap_selection(&selection_coordinator, &app);
 
-    app.listen_any("pty_output", move |event| {
-        let raw = event.payload().to_string();
-        match serde_json::from_str::<TestPtyOutputDelivery>(&raw) {
-            Ok(TestPtyOutputDelivery::Data { session_id, .. })
-            | Ok(TestPtyOutputDelivery::ResyncRequired { session_id, .. }) => {
-                deliveries
-                    .lock()
-                    .unwrap()
-                    .entry(session_id)
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
-            }
-            Err(err) => error_capture.lock().unwrap().push(format!(
-                "failed to parse pty_output payload: {err}; raw={raw}"
-            )),
-        }
-    });
+    listen_pty_output(&app, deliveries, error_capture);
 
     Fixture {
         spawn: owners.spawn.clone(),

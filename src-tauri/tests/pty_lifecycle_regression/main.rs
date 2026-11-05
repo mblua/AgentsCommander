@@ -3,16 +3,18 @@
 mod fixture;
 mod process;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agentscommander_lib::commands::pty::{get_screen_snapshot, PtyScreenSnapshotPayload};
 use agentscommander_lib::commands::session::{
     create_session_inner, destroy_session_inner, restart_session_inner, CreateSelectionIntent,
 };
-use agentscommander_lib::config::sessions_persistence::load_sessions;
+use agentscommander_lib::config::sessions_persistence::{load_sessions, PersistedSession};
 use agentscommander_lib::config::settings::SettingsState;
 use agentscommander_lib::pty::manager::PtyManager;
 use agentscommander_lib::session::manager::SessionManager;
+use agentscommander_lib::session::session::SessionInfo;
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -20,7 +22,7 @@ use fixture::{
     assert_active_session, assert_has_pty, assert_no_pty, assert_persisted_contains,
     assert_persisted_missing, assert_session_missing, last_strictly_increasing_sequence,
     make_lifecycle_fixture, make_test_app, parse_session_id, persist_sessions,
-    wait_for_snapshot_contains,
+    wait_for_snapshot_contains, LifecycleFixture,
 };
 use process::{
     path_to_string, process_exists, script_args, wait_for_pid_change, wait_for_pid_file,
@@ -72,192 +74,200 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
         .build()
         .expect("build tokio runtime");
     runtime.block_on(async {
-        let pid_a = fixture.pid_path("a");
-        let session_a = fixture
-            .create_session("PTY lifecycle A", &pid_a)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Phase A create failed: {e}\n{}",
-                    fixture.dump("Phase A", &[], std::slice::from_ref(&pid_a))
-                )
-            });
-        let id_a = parse_session_id(&session_a);
-        fixture.cleanup.record_session(&fixture.pty_mgr, id_a);
-        assert_has_pty(&fixture.pty_mgr, id_a, "Phase A", &fixture);
-        wait_for_snapshot_contains(&fixture, &fixture.app, &id_a, "AC_READY", "Phase A")
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
-                )
-            });
-        {
-            let last_event_sequence =
-                last_strictly_increasing_sequence(&fixture, &session_a.id, "Phase A");
-            let snapshot = get_screen_snapshot(
-                fixture.app.state::<Arc<Mutex<PtyManager>>>(),
-                session_a.id.clone(),
-            )
-            .expect("snapshot command succeeds")
-            .expect("screen snapshot exists after PTY output");
-            let snapshot_text = String::from_utf8_lossy(&snapshot.data);
-            assert_eq!(snapshot.session_id, session_a.id);
-            assert!(snapshot.rows.is_some(), "Phase A snapshot rows missing");
-            assert!(snapshot.cols.is_some(), "Phase A snapshot cols missing");
-            assert!(
-                snapshot.sequence >= last_event_sequence,
-                "Phase A snapshot sequence {} should cover last event sequence {}",
-                snapshot.sequence,
-                last_event_sequence
-            );
-            assert!(
-                snapshot_text.contains("AC_READY"),
-                "Phase A snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
-                fixture.dump("Phase A snapshot", &[id_a], std::slice::from_ref(&pid_a))
-            );
-        }
-        let pid_a_value = wait_for_pid_file(&pid_a, PID_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
-                )
-            });
-        fixture.cleanup.record_pid(pid_a_value);
-        assert!(
-            process_exists(pid_a_value),
-            "Phase A process not alive\n{}",
-            fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
-        );
-
-        {
-            let permit = PtyManager::acquire_input_writer(&fixture.pty_mgr, id_a)
-                .await
-                .expect("acquire pty writer");
-            PtyManager::write_with_permit(&permit, b"AC_ECHO hello-from-pty-lifecycle\r\n")
-                .expect("write to pty");
-        }
-        wait_for_snapshot_contains(
+        let (pid_a, id_a, pid_a_value) = phase_a_create_and_snapshot(&mut fixture).await;
+        phase_b_to_e_io_resize_persist_destroy(&fixture, id_a, pid_a, pid_a_value).await;
+        let (pid_restart, restart_old_id, restart_old_pid) = phase_f_create(&mut fixture).await;
+        let (pid_restart, restart_old_id, restart_new_id, restart_new_pid, restarted) =
+            phase_f_restart(&fixture, pid_restart, restart_old_id, restart_old_pid).await;
+        phase_f_verify_and_destroy(
             &fixture,
-            &fixture.app,
-            &id_a,
-            "AC_ECHOED hello-from-pty-lifecycle",
-            "Phase B",
-        )
-        .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "{e}\n{}",
-                fixture.dump("Phase B", &[id_a], std::slice::from_ref(&pid_a))
-            )
-        });
-        assert_has_pty(&fixture.pty_mgr, id_a, "Phase B", &fixture);
-        assert!(process_exists(pid_a_value));
-
-        {
-            fixture
-                .pty_mgr
-                .lock()
-                .unwrap()
-                .resize(id_a, 80, 24)
-                .expect("resize pty");
-        }
-        let size = { fixture.pty_mgr.lock().unwrap().get_pty_size(id_a) };
-        assert_eq!(
-            size,
-            Some((24, 80)),
-            "Phase C resize mismatch\n{}",
-            fixture.dump("Phase C", &[id_a], std::slice::from_ref(&pid_a))
-        );
-        assert_has_pty(&fixture.pty_mgr, id_a, "Phase C", &fixture);
-        assert!(process_exists(pid_a_value));
-
-        persist_sessions(&fixture.session_mgr).await;
-        assert_persisted_contains(&fixture, "PTY lifecycle A", "Phase D");
-
-        destroy_session_inner(fixture.app.handle(), id_a)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Phase E destroy failed: {e}\n{}",
-                    fixture.dump("Phase E", &[id_a], std::slice::from_ref(&pid_a))
-                )
-            });
-        wait_for_process_exit(pid_a_value, EXIT_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump("Phase E", &[id_a], std::slice::from_ref(&pid_a))
-                )
-            });
-        assert_no_pty(&fixture.pty_mgr, id_a, "Phase E", &fixture);
-        assert_session_missing(&fixture.session_mgr, id_a).await;
-        assert_persisted_missing(&fixture, "PTY lifecycle A", "Phase E");
-
-        let pid_restart = fixture.pid_path("restart");
-        let restart_session = fixture
-            .create_session("PTY lifecycle restart", &pid_restart)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Phase F create failed: {e}\n{}",
-                    fixture.dump("Phase F", &[], std::slice::from_ref(&pid_restart))
-                )
-            });
-        let restart_old_id = parse_session_id(&restart_session);
-        fixture
-            .cleanup
-            .record_session(&fixture.pty_mgr, restart_old_id);
-        wait_for_snapshot_contains(
-            &fixture,
-            &fixture.app,
-            &restart_old_id,
-            "AC_READY",
-            "Phase F",
-        )
-        .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "{e}\n{}",
-                fixture.dump(
-                    "Phase F",
-                    &[restart_old_id],
-                    std::slice::from_ref(&pid_restart)
-                )
-            )
-        });
-        let restart_old_pid = wait_for_pid_file(&pid_restart, PID_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_old_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
-                )
-            });
-        fixture.cleanup.record_pid(restart_old_pid);
-
-        let restarted = restart_session_inner(
-            fixture.app.handle(),
-            &fixture.session_mgr,
-            &fixture.pty_mgr,
-            fixture.app.state::<SettingsState>().inner(),
+            pid_restart,
             restart_old_id,
-            None,
-            None,
-            Some(true),
+            restart_new_id,
+            restart_new_pid,
+            restarted,
         )
+        .await;
+        let (pid_persisted, persisted_id, persisted_old_pid) =
+            phase_g_persist_and_kill(&mut fixture).await;
+        phase_g_restore_and_destroy(&fixture, pid_persisted, persisted_id, persisted_old_pid).await;
+    });
+}
+
+async fn phase_a_create_and_snapshot(fixture: &mut LifecycleFixture) -> (PathBuf, Uuid, u32) {
+    let pid_a = fixture.pid_path("a");
+    let session_a = fixture
+        .create_session("PTY lifecycle A", &pid_a)
         .await
         .unwrap_or_else(|e| {
             panic!(
-                "Phase F restart failed: {e}\n{}",
+                "Phase A create failed: {e}\n{}",
+                fixture.dump("Phase A", &[], std::slice::from_ref(&pid_a))
+            )
+        });
+    let id_a = parse_session_id(&session_a);
+    fixture.cleanup.record_session(&fixture.pty_mgr, id_a);
+    assert_has_pty(&fixture.pty_mgr, id_a, "Phase A", fixture);
+    wait_for_snapshot_contains(fixture, &fixture.app, &id_a, "AC_READY", "Phase A")
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
+            )
+        });
+    {
+        let last_event_sequence =
+            last_strictly_increasing_sequence(fixture, &session_a.id, "Phase A");
+        let snapshot = get_screen_snapshot(
+            fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+            session_a.id.clone(),
+        )
+        .expect("snapshot command succeeds")
+        .expect("screen snapshot exists after PTY output");
+        let snapshot_text = String::from_utf8_lossy(&snapshot.data);
+        assert_eq!(snapshot.session_id, session_a.id);
+        assert!(snapshot.rows.is_some(), "Phase A snapshot rows missing");
+        assert!(snapshot.cols.is_some(), "Phase A snapshot cols missing");
+        assert!(
+            snapshot.sequence >= last_event_sequence,
+            "Phase A snapshot sequence {} should cover last event sequence {}",
+            snapshot.sequence,
+            last_event_sequence
+        );
+        assert!(
+            snapshot_text.contains("AC_READY"),
+            "Phase A snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
+            fixture.dump("Phase A snapshot", &[id_a], std::slice::from_ref(&pid_a))
+        );
+    }
+    let pid_a_value = wait_for_pid_file(&pid_a, PID_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
+            )
+        });
+    fixture.cleanup.record_pid(pid_a_value);
+    assert!(
+        process_exists(pid_a_value),
+        "Phase A process not alive\n{}",
+        fixture.dump("Phase A", &[id_a], std::slice::from_ref(&pid_a))
+    );
+    (pid_a, id_a, pid_a_value)
+}
+
+async fn phase_b_to_e_io_resize_persist_destroy(
+    fixture: &LifecycleFixture,
+    id_a: Uuid,
+    pid_a: PathBuf,
+    pid_a_value: u32,
+) {
+    {
+        let permit = PtyManager::acquire_input_writer(&fixture.pty_mgr, id_a)
+            .await
+            .expect("acquire pty writer");
+        PtyManager::write_with_permit(&permit, b"AC_ECHO hello-from-pty-lifecycle\r\n")
+            .expect("write to pty");
+    }
+    wait_for_snapshot_contains(
+        fixture,
+        &fixture.app,
+        &id_a,
+        "AC_ECHOED hello-from-pty-lifecycle",
+        "Phase B",
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "{e}\n{}",
+            fixture.dump("Phase B", &[id_a], std::slice::from_ref(&pid_a))
+        )
+    });
+    assert_has_pty(&fixture.pty_mgr, id_a, "Phase B", fixture);
+    assert!(process_exists(pid_a_value));
+
+    {
+        fixture
+            .pty_mgr
+            .lock()
+            .unwrap()
+            .resize(id_a, 80, 24)
+            .expect("resize pty");
+    }
+    let size = { fixture.pty_mgr.lock().unwrap().get_pty_size(id_a) };
+    assert_eq!(
+        size,
+        Some((24, 80)),
+        "Phase C resize mismatch\n{}",
+        fixture.dump("Phase C", &[id_a], std::slice::from_ref(&pid_a))
+    );
+    assert_has_pty(&fixture.pty_mgr, id_a, "Phase C", fixture);
+    assert!(process_exists(pid_a_value));
+
+    persist_sessions(&fixture.session_mgr).await;
+    assert_persisted_contains(fixture, "PTY lifecycle A", "Phase D");
+
+    destroy_session_inner(fixture.app.handle(), id_a)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Phase E destroy failed: {e}\n{}",
+                fixture.dump("Phase E", &[id_a], std::slice::from_ref(&pid_a))
+            )
+        });
+    wait_for_process_exit(pid_a_value, EXIT_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump("Phase E", &[id_a], std::slice::from_ref(&pid_a))
+            )
+        });
+    assert_no_pty(&fixture.pty_mgr, id_a, "Phase E", fixture);
+    assert_session_missing(&fixture.session_mgr, id_a).await;
+    assert_persisted_missing(fixture, "PTY lifecycle A", "Phase E");
+}
+
+async fn phase_f_create(fixture: &mut LifecycleFixture) -> (PathBuf, Uuid, u32) {
+    let pid_restart = fixture.pid_path("restart");
+    let restart_session = fixture
+        .create_session("PTY lifecycle restart", &pid_restart)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Phase F create failed: {e}\n{}",
+                fixture.dump("Phase F", &[], std::slice::from_ref(&pid_restart))
+            )
+        });
+    let restart_old_id = parse_session_id(&restart_session);
+    fixture
+        .cleanup
+        .record_session(&fixture.pty_mgr, restart_old_id);
+    wait_for_snapshot_contains(
+        fixture,
+        &fixture.app,
+        &restart_old_id,
+        "AC_READY",
+        "Phase F",
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "{e}\n{}",
+            fixture.dump(
+                "Phase F",
+                &[restart_old_id],
+                std::slice::from_ref(&pid_restart)
+            )
+        )
+    });
+    let restart_old_pid = wait_for_pid_file(&pid_restart, PID_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
                 fixture.dump(
                     "Phase F",
                     &[restart_old_id],
@@ -265,44 +275,43 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                 )
             )
         });
-        let restart_new_id = parse_session_id(&restarted);
-        fixture
-            .cleanup
-            .record_session(&fixture.pty_mgr, restart_new_id);
-        assert_ne!(restart_old_id, restart_new_id);
-        wait_for_process_exit(restart_old_pid, EXIT_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_old_id, restart_new_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
-                )
-            });
-        let restart_new_pid = wait_for_pid_change(&pid_restart, restart_old_pid, PID_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_old_id, restart_new_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
-                )
-            });
-        fixture.cleanup.record_pid(restart_new_pid);
-        assert!(process_exists(restart_new_pid));
-        wait_for_snapshot_contains(
-            &fixture,
-            &fixture.app,
-            &restart_new_id,
-            "AC_READY",
-            "Phase F",
+    fixture.cleanup.record_pid(restart_old_pid);
+    (pid_restart, restart_old_id, restart_old_pid)
+}
+
+async fn phase_f_restart(
+    fixture: &LifecycleFixture,
+    pid_restart: PathBuf,
+    restart_old_id: Uuid,
+    restart_old_pid: u32,
+) -> (PathBuf, Uuid, Uuid, u32, SessionInfo) {
+    let restarted = restart_session_inner(
+        fixture.app.handle(),
+        &fixture.session_mgr,
+        &fixture.pty_mgr,
+        fixture.app.state::<SettingsState>().inner(),
+        restart_old_id,
+        None,
+        None,
+        Some(true),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "Phase F restart failed: {e}\n{}",
+            fixture.dump(
+                "Phase F",
+                &[restart_old_id],
+                std::slice::from_ref(&pid_restart)
+            )
         )
+    });
+    let restart_new_id = parse_session_id(&restarted);
+    fixture
+        .cleanup
+        .record_session(&fixture.pty_mgr, restart_new_id);
+    assert_ne!(restart_old_id, restart_new_id);
+    wait_for_process_exit(restart_old_pid, EXIT_TIMEOUT)
         .await
         .unwrap_or_else(|e| {
             panic!(
@@ -314,173 +323,134 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                 )
             )
         });
-        {
-            let last_event_sequence =
-                last_strictly_increasing_sequence(&fixture, &restarted.id, "Phase F");
-            let snapshot = get_screen_snapshot(
-                fixture.app.state::<Arc<Mutex<PtyManager>>>(),
-                restarted.id.clone(),
-            )
-            .expect("restarted snapshot command succeeds")
-            .expect("restarted screen snapshot exists after PTY output");
-            let snapshot_text = String::from_utf8_lossy(&snapshot.data);
-            assert_eq!(snapshot.session_id, restarted.id);
-            assert!(snapshot.rows.is_some(), "Phase F snapshot rows missing");
-            assert!(snapshot.cols.is_some(), "Phase F snapshot cols missing");
-            assert!(
-                snapshot.sequence >= last_event_sequence,
-                "Phase F snapshot sequence {} should cover last event sequence {}",
-                snapshot.sequence,
-                last_event_sequence
-            );
-            assert!(
-                snapshot_text.contains("AC_READY"),
-                "Phase F snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
-                fixture.dump(
-                    "Phase F snapshot",
-                    &[restart_new_id],
-                    std::slice::from_ref(&pid_restart)
-                )
-            );
-        }
-        assert_no_pty(&fixture.pty_mgr, restart_old_id, "Phase F", &fixture);
-        assert_has_pty(&fixture.pty_mgr, restart_new_id, "Phase F", &fixture);
-        assert_active_session(&fixture.session_mgr, restart_new_id).await;
-
-        destroy_session_inner(fixture.app.handle(), restart_new_id)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Phase F destroy failed: {e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_new_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
-                )
-            });
-        wait_for_process_exit(restart_new_pid, EXIT_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase F",
-                        &[restart_new_id],
-                        std::slice::from_ref(&pid_restart)
-                    )
-                )
-            });
-
-        let pid_persisted = fixture.pid_path("persisted");
-        let persisted_session = fixture
-            .create_session("PTY lifecycle persisted", &pid_persisted)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Phase G create failed: {e}\n{}",
-                    fixture.dump("Phase G", &[], std::slice::from_ref(&pid_persisted))
-                )
-            });
-        let persisted_id = parse_session_id(&persisted_session);
-        fixture
-            .cleanup
-            .record_session(&fixture.pty_mgr, persisted_id);
-        wait_for_snapshot_contains(&fixture, &fixture.app, &persisted_id, "AC_READY", "Phase G")
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[persisted_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
-                )
-            });
-        let persisted_old_pid = wait_for_pid_file(&pid_persisted, PID_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[persisted_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
-                )
-            });
-        fixture.cleanup.record_pid(persisted_old_pid);
-        persist_sessions(&fixture.session_mgr).await;
-        assert_persisted_contains(&fixture, "PTY lifecycle persisted", "Phase G");
-
-        {
-            fixture
-                .pty_mgr
-                .lock()
-                .unwrap()
-                .kill(persisted_id)
-                .expect("kill persisted pty");
-        }
-        wait_for_process_exit(persisted_old_pid, EXIT_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[persisted_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
-                )
-            });
-        assert_persisted_contains(&fixture, "PTY lifecycle persisted", "Phase G");
-
-        let persisted_row = load_sessions()
-            .into_iter()
-            .find(|row| row.name == "PTY lifecycle persisted")
-            .expect("persisted recipe row");
-        let second_owners = agentscommander_lib::AppOwners::new();
-        let second_session_mgr = Arc::new(tokio::sync::RwLock::new(
-            SessionManager::with_activity_coalescer(second_owners.activity.clone()),
-        ));
-        let second_captured = Arc::clone(&fixture.captured_output);
-        let second_sequences = Arc::clone(&fixture.captured_sequences);
-        let second_deliveries = Arc::clone(&fixture.captured_deliveries);
-        let second_errors = Arc::clone(&fixture.listener_errors);
-        let (second_app, second_mgr, second_pty_mgr) = make_test_app(
-            &fixture.repo_root,
-            &second_captured,
-            &second_sequences,
-            &second_deliveries,
-            &second_errors,
-            &fixture.cleanup,
-            Some(second_session_mgr),
-            second_owners,
-        );
-
-        let restored = create_session_inner(
-            second_app.handle(),
-            &second_mgr,
-            &second_pty_mgr,
-            persisted_row.shell,
-            persisted_row.shell_args,
-            persisted_row.working_directory,
-            Some(persisted_row.name),
-            persisted_row.agent_id,
-            persisted_row.agent_label,
-            true,
-            persisted_row.git_repos,
-            false,
-            None,
-            None,
-            None, // #973 - no view in this test: 120x30
-            CreateSelectionIntent::User,
-        )
+    let restart_new_pid = wait_for_pid_change(&pid_restart, restart_old_pid, PID_TIMEOUT)
         .await
         .unwrap_or_else(|e| {
             panic!(
-                "Phase G restore failed: {e}\n{}",
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase F",
+                    &[restart_old_id, restart_new_id],
+                    std::slice::from_ref(&pid_restart)
+                )
+            )
+        });
+    fixture.cleanup.record_pid(restart_new_pid);
+    (
+        pid_restart,
+        restart_old_id,
+        restart_new_id,
+        restart_new_pid,
+        restarted,
+    )
+}
+
+async fn phase_f_verify_and_destroy(
+    fixture: &LifecycleFixture,
+    pid_restart: PathBuf,
+    restart_old_id: Uuid,
+    restart_new_id: Uuid,
+    restart_new_pid: u32,
+    restarted: SessionInfo,
+) {
+    assert!(process_exists(restart_new_pid));
+    wait_for_snapshot_contains(
+        fixture,
+        &fixture.app,
+        &restart_new_id,
+        "AC_READY",
+        "Phase F",
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "{e}\n{}",
+            fixture.dump(
+                "Phase F",
+                &[restart_old_id, restart_new_id],
+                std::slice::from_ref(&pid_restart)
+            )
+        )
+    });
+    {
+        let last_event_sequence =
+            last_strictly_increasing_sequence(fixture, &restarted.id, "Phase F");
+        let snapshot = get_screen_snapshot(
+            fixture.app.state::<Arc<Mutex<PtyManager>>>(),
+            restarted.id.clone(),
+        )
+        .expect("restarted snapshot command succeeds")
+        .expect("restarted screen snapshot exists after PTY output");
+        let snapshot_text = String::from_utf8_lossy(&snapshot.data);
+        assert_eq!(snapshot.session_id, restarted.id);
+        assert!(snapshot.rows.is_some(), "Phase F snapshot rows missing");
+        assert!(snapshot.cols.is_some(), "Phase F snapshot cols missing");
+        assert!(
+            snapshot.sequence >= last_event_sequence,
+            "Phase F snapshot sequence {} should cover last event sequence {}",
+            snapshot.sequence,
+            last_event_sequence
+        );
+        assert!(
+            snapshot_text.contains("AC_READY"),
+            "Phase F snapshot missing AC_READY; snapshot={snapshot_text:?}\n{}",
+            fixture.dump(
+                "Phase F snapshot",
+                &[restart_new_id],
+                std::slice::from_ref(&pid_restart)
+            )
+        );
+    }
+    assert_no_pty(&fixture.pty_mgr, restart_old_id, "Phase F", fixture);
+    assert_has_pty(&fixture.pty_mgr, restart_new_id, "Phase F", fixture);
+    assert_active_session(&fixture.session_mgr, restart_new_id).await;
+
+    destroy_session_inner(fixture.app.handle(), restart_new_id)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Phase F destroy failed: {e}\n{}",
+                fixture.dump(
+                    "Phase F",
+                    &[restart_new_id],
+                    std::slice::from_ref(&pid_restart)
+                )
+            )
+        });
+    wait_for_process_exit(restart_new_pid, EXIT_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase F",
+                    &[restart_new_id],
+                    std::slice::from_ref(&pid_restart)
+                )
+            )
+        });
+}
+
+async fn phase_g_persist_and_kill(fixture: &mut LifecycleFixture) -> (PathBuf, Uuid, u32) {
+    let pid_persisted = fixture.pid_path("persisted");
+    let persisted_session = fixture
+        .create_session("PTY lifecycle persisted", &pid_persisted)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Phase G create failed: {e}\n{}",
+                fixture.dump("Phase G", &[], std::slice::from_ref(&pid_persisted))
+            )
+        });
+    let persisted_id = parse_session_id(&persisted_session);
+    fixture
+        .cleanup
+        .record_session(&fixture.pty_mgr, persisted_id);
+    wait_for_snapshot_contains(fixture, &fixture.app, &persisted_id, "AC_READY", "Phase G")
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
                 fixture.dump(
                     "Phase G",
                     &[persisted_id],
@@ -488,61 +458,161 @@ fn real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup()
                 )
             )
         });
-        let restored_id = parse_session_id(&restored);
-        fixture.cleanup.record_session(&second_pty_mgr, restored_id);
-        wait_for_snapshot_contains(&fixture, &second_app, &restored_id, "AC_READY", "Phase G")
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[persisted_id, restored_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
+    let persisted_old_pid = wait_for_pid_file(&pid_persisted, PID_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase G",
+                    &[persisted_id],
+                    std::slice::from_ref(&pid_persisted)
                 )
-            });
-        let restored_pid = wait_for_pid_change(&pid_persisted, persisted_old_pid, PID_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[persisted_id, restored_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
-                )
-            });
-        fixture.cleanup.record_pid(restored_pid);
-        assert!(process_exists(restored_pid));
-        assert_has_pty(&second_pty_mgr, restored_id, "Phase G", &fixture);
+            )
+        });
+    fixture.cleanup.record_pid(persisted_old_pid);
+    persist_sessions(&fixture.session_mgr).await;
+    assert_persisted_contains(fixture, "PTY lifecycle persisted", "Phase G");
 
-        destroy_session_inner(second_app.handle(), restored_id)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Phase G restored destroy failed: {e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[restored_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
+    {
+        fixture
+            .pty_mgr
+            .lock()
+            .unwrap()
+            .kill(persisted_id)
+            .expect("kill persisted pty");
+    }
+    wait_for_process_exit(persisted_old_pid, EXIT_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase G",
+                    &[persisted_id],
+                    std::slice::from_ref(&pid_persisted)
                 )
-            });
-        wait_for_process_exit(restored_pid, EXIT_TIMEOUT)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "{e}\n{}",
-                    fixture.dump(
-                        "Phase G",
-                        &[restored_id],
-                        std::slice::from_ref(&pid_persisted)
-                    )
-                )
-            });
+            )
+        });
+    assert_persisted_contains(fixture, "PTY lifecycle persisted", "Phase G");
+    (pid_persisted, persisted_id, persisted_old_pid)
+}
+
+fn second_session_owners() -> (
+    PersistedSession,
+    agentscommander_lib::AppOwners,
+    Arc<tokio::sync::RwLock<SessionManager>>,
+) {
+    let persisted_row = load_sessions()
+        .into_iter()
+        .find(|row| row.name == "PTY lifecycle persisted")
+        .expect("persisted recipe row");
+    let second_owners = agentscommander_lib::AppOwners::new();
+    let second_session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_activity_coalescer(second_owners.activity.clone()),
+    ));
+    (persisted_row, second_owners, second_session_mgr)
+}
+
+async fn phase_g_restore_and_destroy(
+    fixture: &LifecycleFixture,
+    pid_persisted: PathBuf,
+    persisted_id: Uuid,
+    persisted_old_pid: u32,
+) {
+    let (persisted_row, second_owners, second_session_mgr) = second_session_owners();
+    let second_captured = Arc::clone(&fixture.captured_output);
+    let second_sequences = Arc::clone(&fixture.captured_sequences);
+    let second_deliveries = Arc::clone(&fixture.captured_deliveries);
+    let second_errors = Arc::clone(&fixture.listener_errors);
+    let (second_app, second_mgr, second_pty_mgr) = make_test_app(
+        &fixture.repo_root,
+        &second_captured,
+        &second_sequences,
+        &second_deliveries,
+        &second_errors,
+        &fixture.cleanup,
+        Some(second_session_mgr),
+        second_owners,
+    );
+
+    let restored = create_session_inner(
+        second_app.handle(),
+        &second_mgr,
+        &second_pty_mgr,
+        persisted_row.shell,
+        persisted_row.shell_args,
+        persisted_row.working_directory,
+        Some(persisted_row.name),
+        persisted_row.agent_id,
+        persisted_row.agent_label,
+        true,
+        persisted_row.git_repos,
+        false,
+        None,
+        None,
+        None, // #973 - no view in this test: 120x30
+        CreateSelectionIntent::User,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "Phase G restore failed: {e}\n{}",
+            fixture.dump(
+                "Phase G",
+                &[persisted_id],
+                std::slice::from_ref(&pid_persisted)
+            )
+        )
     });
+    let restored_id = parse_session_id(&restored);
+    fixture.cleanup.record_session(&second_pty_mgr, restored_id);
+    wait_for_snapshot_contains(fixture, &second_app, &restored_id, "AC_READY", "Phase G")
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase G",
+                    &[persisted_id, restored_id],
+                    std::slice::from_ref(&pid_persisted)
+                )
+            )
+        });
+    let restored_pid = wait_for_restored_pid(
+        fixture,
+        pid_persisted.clone(),
+        persisted_old_pid,
+        persisted_id,
+        restored_id,
+    )
+    .await;
+    assert_has_pty(&second_pty_mgr, restored_id, "Phase G", fixture);
+
+    destroy_session_inner(second_app.handle(), restored_id)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Phase G restored destroy failed: {e}\n{}",
+                fixture.dump(
+                    "Phase G",
+                    &[restored_id],
+                    std::slice::from_ref(&pid_persisted)
+                )
+            )
+        });
+    wait_for_process_exit(restored_pid, EXIT_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase G",
+                    &[restored_id],
+                    std::slice::from_ref(&pid_persisted)
+                )
+            )
+        });
 }
 
 #[test]
@@ -623,4 +693,28 @@ fn claude_launch_materializes_context_without_prompt_file_arg() {
             .await
             .unwrap_or_else(|e| panic!("{e}"));
     });
+}
+
+async fn wait_for_restored_pid(
+    fixture: &LifecycleFixture,
+    pid_persisted: PathBuf,
+    persisted_old_pid: u32,
+    persisted_id: Uuid,
+    restored_id: Uuid,
+) -> u32 {
+    let restored_pid = wait_for_pid_change(&pid_persisted, persisted_old_pid, PID_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "{e}\n{}",
+                fixture.dump(
+                    "Phase G",
+                    &[persisted_id, restored_id],
+                    std::slice::from_ref(&pid_persisted)
+                )
+            )
+        });
+    fixture.cleanup.record_pid(restored_pid);
+    assert!(process_exists(restored_pid));
+    restored_pid
 }

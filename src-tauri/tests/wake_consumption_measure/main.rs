@@ -78,8 +78,12 @@ use tauri::Manager;
 use uuid::Uuid;
 
 mod pi_logical_clear;
+mod signal_trial;
 
 use pi_logical_clear::{prepare_pi_logical_clear_mode, run_pi_logical_clear};
+use signal_trial::{
+    poll_signals, print_signal_results, redeliver_after_drop, wait_for_inject_point,
+};
 
 // ─────────────────────────── env-driven config ───────────────────────────
 
@@ -712,11 +716,43 @@ async fn run_live_reuse(cfg: &HarnessConfig, ctx: &HarnessCtx) {
     println!("=== end ===\n");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "on-demand real-agent measurement; needs an installed+authed coding agent on \
-    Windows/ConPTY"]
-async fn measure_wake_consumption_signals() {
-    let cfg = HarnessConfig::from_env();
+async fn spawn_signal_trial(
+    cfg: &HarnessConfig,
+    ctx: &HarnessCtx,
+    trial: usize,
+    trial_dir: &Path,
+) -> Option<Uuid> {
+    // Cold-spawn a fresh agent session at the trial dir.
+    let info = match create_session_inner(
+        ctx.app.handle(),
+        &ctx.session_mgr,
+        &ctx.pty_mgr,
+        cfg.shell.clone(),
+        cfg.args.clone(),
+        trial_dir.to_string_lossy().to_string(),
+        Some(format!("wake-harness-{trial}")),
+        None,
+        Some(cfg.agent_label.clone()),
+        true,
+        Vec::new(),
+        true,
+        None,
+        None,
+        None,
+        CreateSelectionIntent::User,
+    )
+    .await
+    {
+        Ok(info) => info,
+        Err(e) => {
+            println!("trial {trial}: spawn failed: {e}");
+            return None;
+        }
+    };
+    Some(Uuid::parse_str(&info.id).expect("uuid"))
+}
+
+fn print_harness_header(cfg: &HarnessConfig) {
     println!("\n=== #1001 wake-consumption measurement harness ===");
     println!(
         "agent='{}' shell='{}' args={:?} trials={} inject_mode='{}' redeliver_mode='{}' \
@@ -730,6 +766,31 @@ async fn measure_wake_consumption_signals() {
         cfg.signal_window,
         cfg.gt_timeout
     );
+}
+
+async fn run_pi_logical_clear_mode(cfg: &HarnessConfig) {
+    let (mut config_guard, _version) = prepare_pi_logical_clear_mode(cfg)
+        .unwrap_or_else(|error| panic!("pi_logical_clear precondition failed: {error}"));
+    let repo_root = std::env::current_dir().expect("cwd");
+    let ctx = make_ctx(&repo_root);
+    let run_result = run_pi_logical_clear(cfg, &ctx).await;
+    let config_cleanup = config_guard.cleanup();
+    match (run_result, config_cleanup) {
+        (Ok(()), Ok(())) => {}
+        (Err(run_error), Ok(())) => panic!("{run_error}"),
+        (Ok(()), Err(cleanup_error)) => panic!("{cleanup_error}"),
+        (Err(run_error), Err(cleanup_error)) => {
+            panic!("{run_error}; global cleanup: {cleanup_error}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "on-demand real-agent measurement; needs an installed+authed coding agent on \
+    Windows/ConPTY"]
+async fn measure_wake_consumption_signals() {
+    let cfg = HarnessConfig::from_env();
+    print_harness_header(&cfg);
 
     if !agent_available(&cfg.shell) {
         println!(
@@ -741,20 +802,8 @@ async fn measure_wake_consumption_signals() {
     }
 
     if cfg.inject_mode == "pi_logical_clear" {
-        let (mut config_guard, _version) = prepare_pi_logical_clear_mode(&cfg)
-            .unwrap_or_else(|error| panic!("pi_logical_clear precondition failed: {error}"));
-        let repo_root = std::env::current_dir().expect("cwd");
-        let ctx = make_ctx(&repo_root);
-        let run_result = run_pi_logical_clear(&cfg, &ctx).await;
-        let config_cleanup = config_guard.cleanup();
-        match (run_result, config_cleanup) {
-            (Ok(()), Ok(())) => return,
-            (Err(run_error), Ok(())) => panic!("{run_error}"),
-            (Ok(()), Err(cleanup_error)) => panic!("{cleanup_error}"),
-            (Err(run_error), Err(cleanup_error)) => {
-                panic!("{run_error}; global cleanup: {cleanup_error}")
-            }
-        }
+        run_pi_logical_clear_mode(&cfg).await;
+        return;
     }
 
     let repo_root = std::env::current_dir().expect("cwd");
@@ -782,62 +831,11 @@ async fn measure_wake_consumption_signals() {
         std::fs::create_dir_all(&trial_dir).expect("trial dir");
         let gt_file = trial_dir.join("marks.txt");
 
-        // Cold-spawn a fresh agent session at the trial dir.
-        let info = match create_session_inner(
-            ctx.app.handle(),
-            &ctx.session_mgr,
-            &ctx.pty_mgr,
-            cfg.shell.clone(),
-            cfg.args.clone(),
-            trial_dir.to_string_lossy().to_string(),
-            Some(format!("wake-harness-{trial}")),
-            None,
-            Some(cfg.agent_label.clone()),
-            true,
-            Vec::new(),
-            true,
-            None,
-            None,
-            None,
-            CreateSelectionIntent::User,
-        )
-        .await
-        {
-            Ok(info) => info,
-            Err(e) => {
-                println!("trial {trial}: spawn failed: {e}");
-                continue;
-            }
+        let Some(id) = spawn_signal_trial(&cfg, &ctx, trial, &trial_dir).await else {
+            continue;
         };
-        let id = Uuid::parse_str(&info.id).expect("uuid");
 
-        // Boot/inject timing per mode. The #1001 drop lives in the fresh-idle
-        // window BEFORE the TUI is paste-ready, so "ready" (settle first) tends
-        // to consume cleanly while "first_idle"/"immediate" reproduce the race.
-        let boot_deadline = Instant::now() + Duration::from_secs(45);
-        match cfg.inject_mode.as_str() {
-            "immediate" => {
-                // Fixed short delay, then inject regardless of readiness: the
-                // most aggressive reproduction of the not-paste-ready race.
-                tokio::time::sleep(cfg.immediate_delay).await;
-            }
-            "first_idle" => {
-                // Inject the instant the watcher first reports idle, with no
-                // paste-ready settle (the fresh-idle danger window B targets).
-                while !watcher_idle(&ctx.idle, id) && Instant::now() < boot_deadline {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-            _ => {
-                // "ready" (default): sustained idle AND rendered content.
-                while !(watcher_idle(&ctx.idle, id)
-                    && nonblank_lines(&screen_text(&ctx.app, id)) > 0)
-                    && Instant::now() < boot_deadline
-                {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-            }
-        }
+        wait_for_inject_point(&cfg, &ctx, id).await;
         let idle_at_inject = watcher_idle(&ctx.idle, id);
         let pre_lines = nonblank_lines(&screen_text(&ctx.app, id));
 
@@ -849,29 +847,16 @@ async fn measure_wake_consumption_signals() {
         let submit_completed_at = Instant::now();
 
         // ── poll the three signals over the signal window ──
-        let mut s1 = false;
-        let mut s2 = false;
-        let mut s3 = false;
-        let win_deadline = submit_completed_at + cfg.signal_window;
-        while Instant::now() < win_deadline {
-            if idle_at_inject && !watcher_idle(&ctx.idle, id) {
-                s1 = true; // bare flip: idle -> busy after inject
-            }
-            if idle_at_inject
-                && ctx
-                    .idle
-                    .has_printable_activity_since(id, submit_completed_at)
-            {
-                s2 = true;
-            }
-            if idle_at_inject {
-                let post = screen_text(&ctx.app, id);
-                if screen_consumed(pre_lines, &post, &body_token) {
-                    s3 = true;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        let (s1, s2, s3) = poll_signals(
+            &cfg,
+            &ctx,
+            id,
+            idle_at_inject,
+            pre_lines,
+            &body_token,
+            submit_completed_at,
+        )
+        .await;
 
         // ── ground truth: did the agent actually run the tool? ──
         let gt_deadline = Instant::now() + cfg.gt_timeout;
@@ -900,64 +885,29 @@ async fn measure_wake_consumption_signals() {
         // Ctrl-U clear. Only meaningful when attempt 1 dropped. ──
         if !gt1 {
             redeliver_measured += 1;
-            if cfg.redeliver_mode == "settled" {
-                let settle_deadline = Instant::now() + Duration::from_secs(30);
-                if !wait_for_settle(&ctx, id, cfg.settle_hold, settle_deadline).await {
-                    println!("trial {trial}: redeliver(settled) gave up waiting for paste-ready");
-                }
-            }
-            let body2 = wake_body(&gt_file, trial, 2);
-            let _ = inject_text_into_session(ctx.app.handle(), id, &body2).await;
-            let deadline = Instant::now() + cfg.gt_timeout;
-            while gt_marker_count(&gt_file) < 1 && Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            let count = gt_marker_count(&gt_file);
+            let count = redeliver_after_drop(&cfg, &ctx, id, &gt_file, trial).await;
             if count >= 1 {
                 redeliver_recovered += 1;
             }
             if count > 1 {
                 redeliver_duplicated += 1;
             }
-            println!(
-                "trial {trial}: redeliver({}) -> markers={count} recovered={} duplicated={}",
-                cfg.redeliver_mode,
-                count >= 1,
-                count > 1
-            );
         }
 
         let _ = destroy_session_inner(ctx.app.handle(), id).await;
     }
 
     // ───────────────────────────── report ────────────────────────────────
-    println!("\n--- RESULTS (agent='{}') ---", cfg.agent_label);
-    let rate = |n: usize, d: usize| if d == 0 { 0.0 } else { n as f64 / d as f64 };
-    for (name, t) in [
-        ("bare waiting_for_input flip", bare),
-        ("post-submit activity gate (14.1)", ts_gate),
-        ("screen-state (16.1 #3)", screen),
-    ] {
-        println!(
-            "signal '{name}': trials={} FP={} ({:.0}%) FN={} ({:.0}%)",
-            t.total,
-            t.fp,
-            rate(t.fp, t.total) * 100.0,
-            t.fn_,
-            rate(t.fn_, t.total) * 100.0,
-        );
-    }
-    println!(
-        "cold-spawn first-attempt drop rate (raw #1001 bug): {}/{}",
-        cold_drops, cfg.trials
-    );
-    println!(
-        "redeliver mode '{}': recovered {}/{} drops, duplicated {}/{} drops",
-        cfg.redeliver_mode,
+    print_signal_results(
+        &cfg,
+        [
+            ("bare waiting_for_input flip", bare),
+            ("post-submit activity gate (14.1)", ts_gate),
+            ("screen-state (16.1 #3)", screen),
+        ],
+        cold_drops,
         redeliver_recovered,
         redeliver_measured,
         redeliver_duplicated,
-        redeliver_measured
     );
-    println!("=== end ===\n");
 }
