@@ -146,11 +146,6 @@ describe("activeLine (#3516)", () => {
   });
 });
 
-describe("formatDuration (#3516)", () => {
-  it.each([[0, "0 ms"], [999, "999 ms"], [1000, "1.0 s"], [1250, "1.3 s"], [61000, "61.0 s"]])(
-    "formats %d", (ms, text) => expect(formatDuration(ms)).toBe(text));
-});
-
 function target(path: string, over: Partial<PreflightTestTarget> = {}): PreflightTestTarget {
   return {
     replicaPath: path, requestedProfile: "A", effectiveProfile: "A", fallbackApplied: false,
@@ -245,4 +240,9 @@ describe("picker helpers (#3832)", () => {
     expect(targetListText([target("a", { running: true })], "A")).toBe(ALL_RUNNING_TEXT);
     expect(targetListText([target("a", { running: true }), target("b")], "A")).toBeNull();
   });
+});
+
+describe("formatDuration (#3516)", () => {
+  it.each([[0, "0 ms"], [999, "999 ms"], [1000, "1.0 s"], [1250, "1.3 s"], [61000, "61.0 s"]])(
+    "formats %d", (ms, text) => expect(formatDuration(ms)).toBe(text));
 });
