@@ -756,6 +756,12 @@ fn listen_route_settings_events(
     events
 }
 
+async fn read_route(state: &WsState, source: &Value) -> Value {
+    dispatch_inner(state, "read_agent_file_source", &json!({"source":source}))
+        .await
+        .unwrap()
+}
+
 /// Dispatches `save_agent_file_source` for `source` against the revisions of
 /// `snapshot` with the given `edits`.
 async fn save_route(state: &WsState, source: &Value, snapshot: &Value, edits: Value) -> Value {
@@ -899,18 +905,11 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         })
         .unwrap()["source"]
         .clone();
-    let before = dispatch_inner(&state, "read_agent_file_source", &json!({"source":source}))
-        .await
-        .unwrap();
+    let before = read_route(&state, &source).await;
     let epoch = state.settings.identity().epoch;
     let ram = serde_json::to_value(state.settings.current_snapshot().await.unwrap()).unwrap();
-    let reply = save_route(
-        &state,
-        &source,
-        &before,
-        upsert_route_edits("own", "Edited"),
-    )
-    .await;
+    let edited_edits = upsert_route_edits("own", "Edited");
+    let reply = save_route(&state, &source, &before, edited_edits).await;
     assert_eq!(reply["outcome"], json!("committed"));
     assert!(reply["diagnostics"]
         .as_array()
@@ -920,9 +919,7 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
     assert_eq!(reply["effectiveSettings"], ram);
     let actual: Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
     assert_eq!(actual["agents"][0]["label"], json!("Edited"));
-    let fresh = dispatch_inner(&state, "read_agent_file_source", &json!({"source":source}))
-        .await
-        .unwrap();
+    let fresh = read_route(&state, &source).await;
     assert_eq!(fresh["rows"][0]["raw"]["label"], json!("Edited"));
     assert_eq!(fresh["revision"], reply["snapshot"]["revision"]);
     assert_ne!(fresh["revision"], before["revision"]);
@@ -944,13 +941,7 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         .find(|s| s["source"]["kind"] == json!("registeredInstance"))
         .unwrap()["source"]
         .clone();
-    let snapshot = dispatch_inner(
-        &state,
-        "read_agent_file_source",
-        &json!({"source":registered}),
-    )
-    .await
-    .unwrap();
+    let snapshot = read_route(&state, &registered).await;
     let adopted_edits = upsert_route_edits("registered", "Adopted");
     let adopted = save_route(&state, &registered, &snapshot, adopted_edits).await;
     assert_eq!(adopted["outcome"], json!("committed"));
