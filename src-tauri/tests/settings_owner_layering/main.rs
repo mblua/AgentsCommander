@@ -92,19 +92,63 @@ fn owner_stays_in_staged_compatibility() {
     assert!(text.contains("StagedCompatibility forwarding:"));
 }
 
+const SETTINGS_NAME: &str = "settings.30.instance.no-git.json";
+
+fn registry_is_permitted(registry: &serde_json::Value) -> bool {
+    let Some(entries) = registry["containers"].as_array() else {
+        return false;
+    };
+    if entries.is_empty() {
+        return false;
+    }
+    let settings: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["name"] == SETTINGS_NAME)
+        .collect();
+    // P10 has no settings declaration; P11 may add exactly this owner declaration.
+    settings.len() <= 1
+        && entries.iter().all(|entry| {
+            entry["externalLiteralBaseline"] == 0
+                && entry["name"] != "settings.json"
+                && entry["name"] != "settings.30.instance.json"
+        })
+        && settings.iter().all(|entry| {
+            entry["scope"] == "src-tauri/src/"
+                && entry["owner"] == "src-tauri/src/config/settings.rs"
+        })
+}
+
 #[test]
 fn registry_does_not_assign_settings_to_an_external_owner() {
     let registry: serde_json::Value =
         serde_json::from_str(&source("../scripts/containers.json")).unwrap();
-    for entry in registry["containers"].as_array().unwrap() {
-        let name = entry["name"].as_str().unwrap();
-        if name == "settings.json" || name == "settings.30.instance.json" {
-            assert_eq!(entry["scope"], "src-tauri/src/config/settings/");
-            assert!(entry["owner"]
-                .as_str()
-                .unwrap()
-                .starts_with("src-tauri/src/config/settings/"));
-            assert_eq!(entry["externalLiteralBaseline"], 0);
-        }
-    }
+    assert!(registry_is_permitted(&registry));
+    // Exercise the optional P11 declaration even while it is absent in P10.
+    let mut future = registry.clone();
+    future["containers"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|entry| entry["name"] != SETTINGS_NAME);
+    future["containers"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": SETTINGS_NAME,
+            "scope": "src-tauri/src/",
+            "owner": "src-tauri/src/config/settings.rs",
+            "externalLiteralBaseline": 0
+        }));
+    assert!(registry_is_permitted(&future));
+    let entries = future["containers"].as_array_mut().unwrap();
+    let entry = entries.last_mut().unwrap();
+    entry["owner"] = serde_json::json!("src-tauri/src/commands/x.rs");
+    assert!(!registry_is_permitted(&future));
+    let entry = future["containers"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    entry["owner"] = serde_json::json!("src-tauri/src/config/settings.rs");
+    entry["externalLiteralBaseline"] = serde_json::json!(5);
+    assert!(!registry_is_permitted(&future));
 }
