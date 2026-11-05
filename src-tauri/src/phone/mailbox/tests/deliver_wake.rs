@@ -800,16 +800,8 @@ fn rejection_inventory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     rows.sort();
     rows
 }
-fn rejection_case(id: &str, raw: bool, failure: u8) {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let inbox = root.join("inbox");
-    let rejected = inbox.join("rejected");
-    std::fs::create_dir_all(&rejected).unwrap();
-    std::fs::write(root.join("sentinel"), b"unchanged").unwrap();
-    let ads_file = root.join("ads-file");
-    std::fs::write(&ads_file, b"regular-file").unwrap();
-    let id = match id {
+fn resolve_rejection_id(id: &str, root: &Path, ads_file: &Path) -> String {
+    match id {
         "@absolute" => root.join("absolute").to_string_lossy().into_owned(),
         "@drive-absolute" => {
             root.to_string_lossy()
@@ -820,7 +812,39 @@ fn rejection_case(id: &str, raw: bool, failure: u8) {
         "@verbatim" => root.to_string_lossy().into_owned() + r"\verbatim",
         "@ads" => ads_file.to_string_lossy().into_owned() + ":stream",
         other => other.to_owned(),
-    };
+    }
+}
+fn insert_rejection_work(
+    poller: &MailboxPoller,
+    source: &Path,
+    state: crate::pty::manager::ResponseCloseState,
+    msg: &OutboxMessage,
+) {
+    poller.response_sources.lock().unwrap().insert(
+        source.to_path_buf(),
+        ResponseWakeWork {
+            diagnostic_message_id: None,
+            state,
+            target: msg.to.clone(),
+            key: "rejection-work".into(),
+            digest: "digest".into(),
+            attempt: Arc::default(),
+            return_context: None,
+            return_routes: None,
+            delivery_context: None,
+        },
+    );
+}
+fn rejection_case(id: &str, raw: bool, failure: u8) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let inbox = root.join("inbox");
+    let rejected = inbox.join("rejected");
+    std::fs::create_dir_all(&rejected).unwrap();
+    std::fs::write(root.join("sentinel"), b"unchanged").unwrap();
+    let ads_file = root.join("ads-file");
+    std::fs::write(&ads_file, b"regular-file").unwrap();
+    let id = resolve_rejection_id(id, &root, &ads_file);
     #[cfg(windows)]
     if id.contains(":stream") {
         for suffix in [".json", ".reason.txt"] {
@@ -844,20 +868,7 @@ fn rejection_case(id: &str, raw: bool, failure: u8) {
     let mut admission = state.reserve_work(&msg.to, "rejection-work").unwrap();
     admission.accept_durable("digest").unwrap();
     drop(admission);
-    poller.response_sources.lock().unwrap().insert(
-        source.clone(),
-        ResponseWakeWork {
-            diagnostic_message_id: None,
-            state,
-            target: msg.to.clone(),
-            key: "rejection-work".into(),
-            digest: "digest".into(),
-            attempt: Arc::default(),
-            return_context: None,
-            return_routes: None,
-            delivery_context: None,
-        },
-    );
+    insert_rejection_work(&poller, &source, state, &msg);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()

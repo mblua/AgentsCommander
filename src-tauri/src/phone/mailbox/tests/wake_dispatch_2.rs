@@ -370,39 +370,14 @@ fn assert_reclaimed_response_work(
     }
 }
 
-/// (#1399 T3) Reclamation, all four branches: an unowned claim with no
-/// receipt is returned; a claim whose receipt exists is deleted without
-/// recreating the message (the no-double-delivery assertion, for both
-/// `delivered/` and `rejected/`); a claim in `live_claims` is untouched.
-#[test]
-fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let outbox = temp.path().join("outbox");
-    std::fs::create_dir_all(outbox.join("delivered")).unwrap();
-    std::fs::create_dir_all(outbox.join("rejected")).unwrap();
-
-    let unowned = outbox.join("m-unowned.json.in-flight");
-    let delivered = outbox.join("m-delivered.json.in-flight");
-    let rejected = outbox.join("m-rejected.json.in-flight");
-    let live = outbox.join("m-live.json.in-flight");
-    for claim in [&unowned, &delivered, &rejected, &live] {
-        std::fs::write(claim, "{}").unwrap();
-    }
-    std::fs::write(outbox.join("delivered").join("m-delivered.json"), "{}").unwrap();
-    std::fs::write(outbox.join("rejected").join("m-rejected.json"), "{}").unwrap();
-
-    let mut poller = MailboxPoller::default();
-    poller.live_claims.insert(live.clone());
-    let claims = vec![
-        unowned.clone(),
-        delivered.clone(),
-        rejected.clone(),
-        live.clone(),
-    ];
-
-    // C: the same healthy tracker backs all four existing reclaim cases.
+fn healthy_reclaim_tracker(
+    now: std::time::Instant,
+) -> (
+    crate::pty::manager::ResponseCloseState,
+    crate::pty::manager::ResponseRouteIdentity,
+    crate::pty::manager::ResponseRouteIdentity,
+) {
     use crate::pty::manager::{ResponseClosePublisher, ResponseCloseState, ResponseRouteIdentity};
-    let now = std::time::Instant::now() + Duration::from_secs(3600);
     let tracker = ResponseCloseState::default();
     for publisher in [
         ResponseClosePublisher::Manager,
@@ -448,6 +423,15 @@ fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
     tracker.observe_detector(member.session_id, false, now);
     tracker.publish_menu(member.session_id, Some(false), now);
     tracker.publish_hold(member.session_id, None, true, now);
+    (tracker, member, coordinator)
+}
+
+fn arm_positive_reclaim_ticket(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+    now: std::time::Instant,
+) {
     // Positive control only: this healthy fixture can arm a real pure ticket.
     // No receipt/reclaim branch receives or manufactures this success proof.
     let mut positive = tracker
@@ -478,8 +462,8 @@ fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
         .unwrap();
     let context = tracker
         .admit_return(
-            &member,
-            &coordinator,
+            member,
+            coordinator,
             "positive-return".into(),
             "positive-return-body".into(),
             now,
@@ -491,6 +475,42 @@ fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
     assert!(tracker
         .select_ticket(member.session_id, now + Duration::from_secs(30))
         .is_ok());
+}
+
+/// (#1399 T3) Reclamation, all four branches: an unowned claim with no
+/// receipt is returned; a claim whose receipt exists is deleted without
+/// recreating the message (the no-double-delivery assertion, for both
+/// `delivered/` and `rejected/`); a claim in `live_claims` is untouched.
+#[test]
+fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let outbox = temp.path().join("outbox");
+    std::fs::create_dir_all(outbox.join("delivered")).unwrap();
+    std::fs::create_dir_all(outbox.join("rejected")).unwrap();
+
+    let unowned = outbox.join("m-unowned.json.in-flight");
+    let delivered = outbox.join("m-delivered.json.in-flight");
+    let rejected = outbox.join("m-rejected.json.in-flight");
+    let live = outbox.join("m-live.json.in-flight");
+    for claim in [&unowned, &delivered, &rejected, &live] {
+        std::fs::write(claim, "{}").unwrap();
+    }
+    std::fs::write(outbox.join("delivered").join("m-delivered.json"), "{}").unwrap();
+    std::fs::write(outbox.join("rejected").join("m-rejected.json"), "{}").unwrap();
+
+    let mut poller = MailboxPoller::default();
+    poller.live_claims.insert(live.clone());
+    let claims = vec![
+        unowned.clone(),
+        delivered.clone(),
+        rejected.clone(),
+        live.clone(),
+    ];
+
+    // C: the same healthy tracker backs all four existing reclaim cases.
+    let now = std::time::Instant::now() + Duration::from_secs(3600);
+    let (tracker, member, coordinator) = healthy_reclaim_tracker(now);
+    arm_positive_reclaim_ticket(&tracker, &member, &coordinator, now);
     for claim in &claims {
         let origin = wake_claim_origin(claim).unwrap();
         let key = format!("fs:{}", origin.display());
