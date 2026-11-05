@@ -121,6 +121,12 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         // naming migration sets a displaced project file aside in `.ac/`.
         project_settings_lock_row,
         set_aside_row,
+        // #3532 - the context history store owns this directory: its SQLite
+        // database and rollback journals. `heatmap.json` stays visible.
+        (
+            "/context-history/",
+            "# AgentsCommander: exclude the context history database and journals.",
+        ),
     ];
     required_entries.extend(agent_runtime_ignore_entries());
     required_entries.extend(catalog_ignore_entries(&catalog));
