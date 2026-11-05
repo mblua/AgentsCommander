@@ -546,37 +546,45 @@ async fn get_agent_update_overview_route_reports_unavailable_catalog_as_error() 
     assert!(error.contains("baseUnavailable"), "{error}");
 }
 
+async fn next_text(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> String {
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("event timeout")
+        .expect("event frame");
+    match frame {
+        WsOutMsg::Text(text) => text,
+        WsOutMsg::Binary(_) => panic!("unexpected binary event"),
+    }
+}
+
+/// Reads the next desktop and web frames, asserts they are byte-identical
+/// and decodes the desktop one.
+async fn next_parity_event(
+    desktop: &mut tokio::sync::mpsc::Receiver<WsOutMsg>,
+    web: &mut tokio::sync::mpsc::Receiver<WsOutMsg>,
+) -> Value {
+    let desktop_text = next_text(desktop).await;
+    let web_text = next_text(web).await;
+    assert_eq!(desktop_text, web_text);
+    serde_json::from_str(&desktop_text).expect("event json")
+}
+
+fn retain(gate: &crate::agent_update::AgentUpdateGate, commands: &[(&str, &str)]) {
+    gate.mark_started_with_nodes(
+        commands
+            .iter()
+            .map(|(command, label)| crate::agent_update::AgentUpdateNode {
+                command: (*command).to_string(),
+                label: (*label).to_string(),
+                update_commands: vec!["exit 0".to_string()],
+                install_before: None,
+            })
+            .collect(),
+    );
+}
+
 #[tokio::test]
 async fn agent_update_cancel_transport_parity() {
-    async fn next_text(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> String {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("event timeout")
-            .expect("event frame");
-        match frame {
-            WsOutMsg::Text(text) => text,
-            WsOutMsg::Binary(_) => panic!("unexpected binary event"),
-        }
-    }
-
-    fn decode(text: &str) -> Value {
-        serde_json::from_str(text).expect("event json")
-    }
-
-    fn retain(gate: &crate::agent_update::AgentUpdateGate, commands: &[(&str, &str)]) {
-        gate.mark_started_with_nodes(
-            commands
-                .iter()
-                .map(|(command, label)| crate::agent_update::AgentUpdateNode {
-                    command: (*command).to_string(),
-                    label: (*label).to_string(),
-                    update_commands: vec!["exit 0".to_string()],
-                    install_before: None,
-                })
-                .collect(),
-        );
-    }
-
     let (_desktop, mut desktop_events, desktop_gate, desktop_handle) =
         ws_state_with_agent_update_and_handle(AppSettings::default(), false, false);
     let (web, mut web_events, web_gate) =
@@ -602,10 +610,7 @@ async fn agent_update_cancel_transport_parity() {
         web_response,
         json!({ "command": "claude", "disposition": "requested" })
     );
-    let desktop_event_text = next_text(&mut desktop_events).await;
-    let web_event_text = next_text(&mut web_events).await;
-    assert_eq!(desktop_event_text, web_event_text);
-    let desktop_event = decode(&desktop_event_text);
+    let desktop_event = next_parity_event(&mut desktop_events, &mut web_events).await;
     assert_eq!(desktop_event["event"], "agent_update_cancellation_changed");
     assert_eq!(
         desktop_event["payload"],
@@ -641,10 +646,7 @@ async fn agent_update_cancel_transport_parity() {
     );
     assert_eq!(web_response["requested"][0]["command"], "claude");
     assert_eq!(web_response["requested"][1]["command"], "codex");
-    let desktop_event_text = next_text(&mut desktop_events).await;
-    let web_event_text = next_text(&mut web_events).await;
-    assert_eq!(desktop_event_text, web_event_text);
-    let desktop_event = decode(&desktop_event_text);
+    let desktop_event = next_parity_event(&mut desktop_events, &mut web_events).await;
     assert_eq!(desktop_event["payload"]["cancelAllRequested"], true);
     assert_eq!(
         desktop_event["payload"]["cancelRequested"],
@@ -656,20 +658,14 @@ async fn agent_update_cancel_transport_parity() {
 
     crate::agent_update::emit_agent_update_transport_contract_for_test(&desktop_handle);
     crate::agent_update::emit_agent_update_transport_contract_for_test(&web_handle);
-    let desktop_verifying = next_text(&mut desktop_events).await;
-    let web_verifying = next_text(&mut web_events).await;
-    assert_eq!(desktop_verifying, web_verifying);
-    let verifying = decode(&desktop_verifying);
+    let verifying = next_parity_event(&mut desktop_events, &mut web_events).await;
     assert_eq!(verifying["event"], "agent_update_command_verifying");
     assert_eq!(
         verifying["payload"],
         json!({ "command": "claude", "label": "Claude" })
     );
 
-    let desktop_terminal = next_text(&mut desktop_events).await;
-    let web_terminal = next_text(&mut web_events).await;
-    assert_eq!(desktop_terminal, web_terminal);
-    let terminal = decode(&desktop_terminal);
+    let terminal = next_parity_event(&mut desktop_events, &mut web_events).await;
     assert_eq!(terminal["event"], "agent_update_command_finished");
     assert_eq!(
         terminal["payload"],
@@ -743,12 +739,119 @@ async fn e2432_p02_browser_routes_share_physical_source_flow() {
     assert!(remembered.get("picker").is_none());
 }
 
+fn listen_route_settings_events(
+    app_handle: &tauri::AppHandle,
+) -> std::sync::mpsc::Receiver<&'static str> {
+    use tauri::Listener;
+    let (tx, events) = std::sync::mpsc::channel();
+    for event in [
+        "coding_agent_settings_updated",
+        "coding_agent_profiles_updated",
+    ] {
+        let tx = tx.clone();
+        app_handle.listen_any(event, move |_| {
+            tx.send(event).unwrap();
+        });
+    }
+    events
+}
+
+/// Dispatches `save_agent_file_source` for `source` against the revisions of
+/// `snapshot` with the given `edits`.
+async fn save_route(state: &WsState, source: &Value, snapshot: &Value, edits: Value) -> Value {
+    dispatch_inner(
+        state,
+        "save_agent_file_source",
+        &json!({
+            "source": source,
+            "expectedRevision": snapshot["revision"],
+            "contextRevision": snapshot["contextRevision"],
+            "edits": edits
+        }),
+    )
+    .await
+    .unwrap()
+}
+
+fn upsert_route_edits(entry_hint: &str, label: &str) -> Value {
+    json!({
+        "rows": [{"entryHint": entry_hint, "action": "upsert", "patch": {"label": label}}],
+        "profileSets": []
+    })
+}
+
+fn assert_routes_emit_nothing(
+    events: &std::sync::mpsc::Receiver<&str>,
+    ws: &mut tokio::sync::mpsc::Receiver<WsOutMsg>,
+) {
+    assert!(events
+        .recv_timeout(std::time::Duration::from_millis(50))
+        .is_err());
+    assert!(matches!(
+        ws.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[cfg(windows)]
+async fn assert_held_catalog_route_is_uncertain(
+    state: &WsState,
+    source: &Value,
+    fresh: &Value,
+    catalog: &std::path::Path,
+    events: &std::sync::mpsc::Receiver<&str>,
+    ws: &mut tokio::sync::mpsc::Receiver<WsOutMsg>,
+) {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    let bytes = std::fs::read(catalog).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(catalog)
+        .unwrap();
+    let uncertain = save_route(state, source, fresh, upsert_route_edits("own", "Uncertain")).await;
+    assert_eq!(uncertain["outcome"], json!("partialOrUnknown"));
+    assert_eq!(uncertain["snapshot"]["revision"], fresh["revision"]);
+    assert_eq!(std::fs::read(catalog).unwrap(), bytes);
+    assert_routes_emit_nothing(events, ws);
+    drop(held);
+}
+
+fn assert_route_settings_events_live(
+    events: &std::sync::mpsc::Receiver<&str>,
+    ws: &mut tokio::sync::mpsc::Receiver<WsOutMsg>,
+) {
+    for expected in [
+        "coding_agent_settings_updated",
+        "coding_agent_profiles_updated",
+    ] {
+        assert_eq!(
+            events
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            expected
+        );
+        match ws.try_recv().expect("managed WS sink must be live") {
+            crate::web::broadcast::WsOutMsg::Text(text) => assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap()["event"],
+                json!(expected)
+            ),
+            other @ WsOutMsg::Binary(_) => panic!("unexpected WS message {other:?}"),
+        }
+    }
+    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        ws.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
 #[tokio::test]
 async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
     use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
     use crate::config::settings::{SettingsOwner, SourceKind};
     use std::time::Duration;
-    use tauri::Listener;
     let temp = tempfile::tempdir().unwrap();
     let path = crate::config::settings::settings_fixture_path(temp.path());
     let project = temp.path().join("project");
@@ -783,16 +886,7 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
     let (mut state, mut ws, app_handle) = ws_state_for_with_handle(initial);
     state.settings = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
     assert!(app_handle.manage(state.broadcaster.clone()));
-    let (tx, events) = std::sync::mpsc::channel();
-    for event in [
-        "coding_agent_settings_updated",
-        "coding_agent_profiles_updated",
-    ] {
-        let tx = tx.clone();
-        app_handle.listen_any(event, move |_| {
-            tx.send(event).unwrap();
-        });
-    }
+    let events = listen_route_settings_events(&app_handle);
     let list = dispatch_inner(&state, "list_agent_file_sources", &json!({}))
         .await
         .unwrap();
@@ -810,21 +904,13 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
         .unwrap();
     let epoch = state.settings.identity().epoch;
     let ram = serde_json::to_value(state.settings.current_snapshot().await.unwrap()).unwrap();
-    let reply = dispatch_inner(
+    let reply = save_route(
         &state,
-        "save_agent_file_source",
-        &json!({
-            "source": source,
-            "expectedRevision": before["revision"],
-            "contextRevision": before["contextRevision"],
-            "edits": {
-                "rows": [{"entryHint": "own", "action": "upsert", "patch": {"label": "Edited"}}],
-                "profileSets": []
-            }
-        }),
+        &source,
+        &before,
+        upsert_route_edits("own", "Edited"),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(reply["outcome"], json!("committed"));
     assert!(reply["diagnostics"]
         .as_array()
@@ -840,68 +926,14 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
     assert_eq!(fresh["rows"][0]["raw"]["label"], json!("Edited"));
     assert_eq!(fresh["revision"], reply["snapshot"]["revision"]);
     assert_ne!(fresh["revision"], before["revision"]);
-    assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-    assert!(matches!(
-        ws.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
-    let stale = dispatch_inner(
-        &state,
-        "save_agent_file_source",
-        &json!({
-            "source": source,
-            "expectedRevision": before["revision"],
-            "contextRevision": before["contextRevision"],
-            "edits": {"rows": [], "profileSets": []}
-        }),
-    )
-    .await
-    .unwrap();
+    assert_routes_emit_nothing(&events, &mut ws);
+    let empty_edits = json!({"rows": [], "profileSets": []});
+    let stale = save_route(&state, &source, &before, empty_edits).await;
     assert_eq!(stale["outcome"], json!("rejected"));
-    assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-    assert!(matches!(
-        ws.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
+    assert_routes_emit_nothing(&events, &mut ws);
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
-        let bytes = std::fs::read(&catalog).unwrap();
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .open(&catalog)
-            .unwrap();
-        let uncertain = dispatch_inner(
-            &state,
-            "save_agent_file_source",
-            &json!({
-                "source": source,
-                "expectedRevision": fresh["revision"],
-                "contextRevision": fresh["contextRevision"],
-                "edits": {
-                    "rows": [{
-                        "entryHint": "own",
-                        "action": "upsert",
-                        "patch": {"label": "Uncertain"}
-                    }],
-                    "profileSets": []
-                }
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(uncertain["outcome"], json!("partialOrUnknown"));
-        assert_eq!(uncertain["snapshot"]["revision"], fresh["revision"]);
-        assert_eq!(std::fs::read(&catalog).unwrap(), bytes);
-        assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-        assert!(matches!(
-            ws.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        drop(held);
-    }
+    assert_held_catalog_route_is_uncertain(&state, &source, &fresh, &catalog, &events, &mut ws)
+        .await;
     assert_eq!(state.settings.identity().epoch, epoch);
     assert_eq!(
         serde_json::to_value(state.settings.current_snapshot().await.unwrap()).unwrap(),
@@ -919,46 +951,9 @@ async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
     )
     .await
     .unwrap();
-    let adopted = dispatch_inner(
-        &state,
-        "save_agent_file_source",
-        &json!({
-            "source": registered,
-            "expectedRevision": snapshot["revision"],
-            "contextRevision": snapshot["contextRevision"],
-            "edits": {
-                "rows": [{
-                    "entryHint": "registered",
-                    "action": "upsert",
-                    "patch": {"label": "Adopted"}
-                }],
-                "profileSets": []
-            }
-        }),
-    )
-    .await
-    .unwrap();
+    let adopted_edits = upsert_route_edits("registered", "Adopted");
+    let adopted = save_route(&state, &registered, &snapshot, adopted_edits).await;
     assert_eq!(adopted["outcome"], json!("committed"));
     assert!(state.settings.identity().epoch > epoch);
-    for expected in [
-        "coding_agent_settings_updated",
-        "coding_agent_profiles_updated",
-    ] {
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(1)).unwrap(),
-            expected
-        );
-        match ws.try_recv().expect("managed WS sink must be live") {
-            crate::web::broadcast::WsOutMsg::Text(text) => assert_eq!(
-                serde_json::from_str::<Value>(&text).unwrap()["event"],
-                json!(expected)
-            ),
-            other @ WsOutMsg::Binary(_) => panic!("unexpected WS message {other:?}"),
-        }
-    }
-    assert!(events.try_recv().is_err());
-    assert!(matches!(
-        ws.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
+    assert_route_settings_events_live(&events, &mut ws);
 }
