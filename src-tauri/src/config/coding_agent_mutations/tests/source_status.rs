@@ -1,5 +1,18 @@
 use super::*;
 
+fn catalog_personal_source(project: &std::path::Path) -> crate::config::settings::SourceRef {
+    crate::config::settings::SourceRef {
+        family: crate::config::settings::SourceFamily::Agents,
+        role: crate::config::settings::SourceRole::Catalog,
+        scope: crate::config::settings::SourceScope::Project,
+        kind: crate::config::settings::SourceKind::CatalogPersonal,
+        context_root: std::fs::canonicalize(project)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
 #[test]
 fn single_editor_inactive_gate() {
     use crate::config::settings::{
@@ -16,16 +29,7 @@ fn single_editor_inactive_gate() {
     };
     let context =
         SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
-    let source = crate::config::settings::SourceRef {
-        family: crate::config::settings::SourceFamily::Agents,
-        role: crate::config::settings::SourceRole::Catalog,
-        scope: crate::config::settings::SourceScope::Project,
-        kind: crate::config::settings::SourceKind::CatalogPersonal,
-        context_root: std::fs::canonicalize(&project)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned(),
-    };
+    let source = catalog_personal_source(&project);
     let before = source_transition_effect_counts();
     let controls = IdentityTransitionTestControls::default();
     let uuids = controls.uuid_count();

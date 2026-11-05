@@ -75,6 +75,18 @@ fn calibrate_source_native_b(after: &[u8]) -> (usize, usize) {
     (pre.get(), post.get())
 }
 
+/// Creates `path` exclusively, writes `bytes`, syncs and closes it.
+fn write_new_synced_file(path: &std::path::Path, bytes: &[u8]) {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .unwrap();
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+}
+
 #[test]
 fn source_native_b_collision_and_foreign_identical_preserve_target_and_cleanup_owned_stage() {
     let after: &[u8] = br#"{"native":true}"#;
@@ -100,14 +112,7 @@ fn source_native_b_collision_and_foreign_identical_preserve_target_and_cleanup_o
                 assert_eq!(stages[0].1, after);
                 let identity = parent.verify_regular_file(&stages[0].0).unwrap();
                 *owned.borrow_mut() = Some((stages[0].0.clone(), identity.clone()));
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&target)
-                    .unwrap();
-                file.write_all(foreign).unwrap();
-                file.sync_all().unwrap();
-                drop(file);
+                write_new_synced_file(&target, foreign);
                 let foreign_object = parent.verify_regular_file(&target).unwrap();
                 assert!(!crate::path_identity::same_object(
                     &identity,
@@ -130,14 +135,7 @@ fn source_native_b_collision_and_foreign_identical_preserve_target_and_cleanup_o
                 assert!(owned.borrow().as_ref().unwrap().0.exists());
             } else if ordinal == post_move + 2 {
                 phases.borrow_mut().push("cleanupOwnedIdentity");
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&sentinel)
-                    .unwrap();
-                file.write_all(b"foreign sentinel").unwrap();
-                file.sync_all().unwrap();
-                drop(file);
+                write_new_synced_file(&sentinel, b"foreign sentinel");
                 *sentinel_identity.borrow_mut() =
                     Some(parent.verify_regular_file(&sentinel).unwrap());
             } else {

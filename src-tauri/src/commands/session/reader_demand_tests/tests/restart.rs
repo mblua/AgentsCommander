@@ -1,5 +1,43 @@
 use super::*;
 
+fn bot_and_room() -> std::collections::BTreeSet<ReaderConsumer> {
+    [ReaderConsumer::Bot, ReaderConsumer::Room]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+}
+
+fn write_old_preamble(old_path: &std::path::Path) {
+    std::fs::write(
+        old_path,
+        format!(
+            "{}\n",
+            claude_line(
+                "old preamble",
+                chrono::Utc::now() - chrono::Duration::seconds(1)
+            )
+        ),
+    )
+    .expect("old transcript");
+}
+
+/// Points the harness at a fresh Claude config dir and plants the backdated
+/// `session.jsonl` decoy there; returns the replacement projects dir.
+async fn stage_replacement_projects_dir(
+    h: &RestartHarness,
+    fixture: &RoomFixture,
+    cwd: &std::path::Path,
+) -> PathBuf {
+    let new_dir = fixture.temp_path().join("claude-home-b");
+    std::fs::create_dir_all(&new_dir).expect("new config dir");
+    h.set_claude_config_dir(&new_dir).await;
+    let new_projects = h.claude_projects_dir(&new_dir, cwd);
+    std::fs::create_dir_all(&new_projects).expect("new transcript dir");
+    let decoy = new_projects.join("session.jsonl");
+    large_claude_transcript(&decoy, "decoy above the tail window");
+    backdate(&decoy, 120);
+    new_projects
+}
+
 /// Test 9 (Claude, changed path): the restart mints a new session UUID and
 /// transfers reader ownership to it. The old id's reader, pump and slot are
 /// gone before the replacement is delivered; the replacement gets a fresh
@@ -25,17 +63,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     let old_dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
     std::fs::create_dir_all(&old_dir).expect("old transcript dir");
     let old_path = old_dir.join(format!("{minted_old}.jsonl"));
-    std::fs::write(
-        &old_path,
-        format!(
-            "{}\n",
-            claude_line(
-                "old preamble",
-                chrono::Utc::now() - chrono::Duration::seconds(1)
-            )
-        ),
-    )
-    .expect("old transcript");
+    write_old_preamble(&old_path);
     let old_slot = h.captures.slot(&old_key).expect("old endpoints open");
     // The cold bind offers the recent tail to the sink: that proves the
     // reader is bound before the append below can race the scan.
@@ -53,12 +81,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     // nothing left to send.
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     let (old_reader_id, old_demands) = h.snapshot(old).await;
-    assert_eq!(
-        old_demands,
-        [ReaderConsumer::Bot, ReaderConsumer::Room]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    );
+    assert_eq!(old_demands, bot_and_room());
 
     // The replacement resolves a different transcript directory: a >64 KiB
     // Claude file whose only final answer sits above the 64 KiB tail
@@ -66,14 +89,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     // the restart, named from the replacement's minted id (#2454); the
     // pre-restart `session.jsonl` is a backdated decoy that is never the
     // newest, so only the pin can choose the minted file.
-    let new_dir = fixture.temp_path().join("claude-home-b");
-    std::fs::create_dir_all(&new_dir).expect("new config dir");
-    h.set_claude_config_dir(&new_dir).await;
-    let new_projects = h.claude_projects_dir(&new_dir, cwd);
-    std::fs::create_dir_all(&new_projects).expect("new transcript dir");
-    let decoy = new_projects.join("session.jsonl");
-    large_claude_transcript(&decoy, "decoy above the tail window");
-    backdate(&decoy, 120);
+    let new_projects = stage_replacement_projects_dir(&h, &fixture, cwd).await;
 
     let restarted = h.restart_fresh(old).await.expect("restart succeeds");
     let new = Uuid::parse_str(&restarted.id).expect("replacement id");
@@ -111,12 +127,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     let (new_reader_id, new_demands) = h.snapshot(new).await;
     assert!(new_reader_id.is_some());
     assert_ne!(new_reader_id, old_reader_id, "a new reader identity");
-    assert_eq!(
-        new_demands,
-        [ReaderConsumer::Bot, ReaderConsumer::Room]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    );
+    assert_eq!(new_demands, bot_and_room());
     let new_key = new.to_string();
     let new_slot = h.captures.slot(&new_key).expect("new endpoints open");
     // A fresh slot has no cut at all; if a demand join recorded one, its

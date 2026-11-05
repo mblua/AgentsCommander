@@ -115,6 +115,19 @@ fn issue_2859_preflight_save_path_validates_dormant_profile_cells_before_save() 
     );
 }
 
+fn update_stable(settings: &mut AppSettings, patch: AgentPatch) -> AgentConfig {
+    apply_coding_agent_op(
+        settings,
+        &CodingAgentOp::Update {
+            id: "stable".into(),
+            patch,
+        },
+    )
+    .unwrap()
+    .agent
+    .unwrap()
+}
+
 #[test]
 fn id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions() {
     let mut settings = AppSettings::default();
@@ -138,16 +151,7 @@ fn id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions() {
         isolated_home: Some(true),
         ..Default::default()
     };
-    let changed = apply_coding_agent_op(
-        &mut settings,
-        &CodingAgentOp::Update {
-            id: "stable".into(),
-            patch: metadata,
-        },
-    )
-    .unwrap()
-    .agent
-    .unwrap();
+    let changed = update_stable(&mut settings, metadata);
     assert_eq!(changed.id_hash, original_hash);
     assert_eq!(changed.id_hash_debug, Some(vec!["codex".into()]));
     let disabled = CodingAgentEnv {
@@ -156,20 +160,14 @@ fn id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions() {
         source: CodingAgentEnvSource::User,
         enabled: false,
     };
-    let updated = apply_coding_agent_op(
+    let updated = update_stable(
         &mut settings,
-        &CodingAgentOp::Update {
-            id: "stable".into(),
-            patch: AgentPatch {
-                command: Some("codex x".into()),
-                envs: Some(vec![disabled]),
-                ..Default::default()
-            },
+        AgentPatch {
+            command: Some("codex x".into()),
+            envs: Some(vec![disabled]),
+            ..Default::default()
         },
-    )
-    .unwrap()
-    .agent
-    .unwrap();
+    );
     assert_eq!(updated.id, "stable");
     assert_eq!(
         updated.id_hash,
@@ -185,34 +183,19 @@ fn id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions() {
     );
     let disabled_hash = updated.id_hash;
     settings.agents[0].envs[0].value = "two".into();
-    let updated = apply_coding_agent_op(
-        &mut settings,
-        &CodingAgentOp::Update {
-            id: "stable".into(),
-            patch: AgentPatch::default(),
-        },
-    )
-    .unwrap()
-    .agent
-    .unwrap();
+    let updated = update_stable(&mut settings, AgentPatch::default());
     assert_ne!(updated.id_hash, disabled_hash);
     assert_eq!(
         updated.id_hash_debug,
         Some(vec!["codex x".into(), "MODE".into(), "two".into()])
     );
-    let cleared = apply_coding_agent_op(
+    let cleared = update_stable(
         &mut settings,
-        &CodingAgentOp::Update {
-            id: "stable".into(),
-            patch: AgentPatch {
-                envs: Some(vec![]),
-                ..Default::default()
-            },
+        AgentPatch {
+            envs: Some(vec![]),
+            ..Default::default()
         },
-    )
-    .unwrap()
-    .agent
-    .unwrap();
+    );
     assert!(cleared.envs.is_empty());
     assert_eq!(cleared.id_hash_debug, Some(vec!["codex x".into()]));
     assert_eq!(

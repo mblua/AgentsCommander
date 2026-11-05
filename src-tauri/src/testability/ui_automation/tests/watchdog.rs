@@ -280,22 +280,12 @@ async fn unsupported_backend_reports_disabled_and_never_kills() {
     );
 }
 
-// #1151 (A3) - the automation `killResults` contract for the two split outcomes.
-// `alreadyPending` keeps its value and type byte-identical so no existing automation
-// breaks; `reason` is the additive discriminator that makes the split observable.
-#[tokio::test]
-async fn watchdog_kill_results_preserve_already_pending_contract() {
+async fn create_kill_results_session(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> crate::session::session::Session {
     use crate::pty::backend::SessionBackendKind;
 
-    let backend = Arc::new(AutomationProcessBackend::default());
-    let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
-        backend.clone() as Arc<dyn ProcessTreeBackend>,
-    ));
-    let cfg = automation_settings();
-    let limits = crate::resource_monitor::ResourceLimits::from(&cfg);
-
-    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let live = manager
+    manager
         .read()
         .await
         .create_session(
@@ -309,7 +299,41 @@ async fn watchdog_kill_results_preserve_already_pending_contract() {
             SessionBackendKind::LocalProcess,
         )
         .await
-        .unwrap();
+        .unwrap()
+}
+
+fn build_kill_results_app(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    monitor: &Arc<crate::resource_monitor::ResourceMonitorState>,
+    coordinator: &SelectionCoordinator,
+) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .manage(Arc::clone(manager))
+        .manage(Arc::clone(monitor))
+        .manage(coordinator.clone())
+        .manage(DetachedSessionsState::default())
+        .manage(WsBroadcaster::new())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build kill-results automation app")
+}
+
+// #1151 (A3) - the automation `killResults` contract for the two split outcomes.
+// `alreadyPending` keeps its value and type byte-identical so no existing automation
+// breaks; `reason` is the additive discriminator that makes the split observable.
+#[tokio::test]
+async fn watchdog_kill_results_preserve_already_pending_contract() {
+    let backend = Arc::new(AutomationProcessBackend::default());
+    let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::with_backend(
+        backend.clone() as Arc<dyn ProcessTreeBackend>,
+    ));
+    let cfg = automation_settings();
+    let limits = crate::resource_monitor::ResourceLimits::from(&cfg);
+
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let live = create_kill_results_session(&manager).await;
 
     // One group whose public row exists (the in-flight case) and one whose row never
     // did (the orphan case). Both are Running with private bytes over the kill limit,
@@ -319,17 +343,7 @@ async fn watchdog_kill_results_preserve_already_pending_contract() {
     register_automation_group(&monitor, limits, orphan_id, 5_200);
 
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&monitor))
-        .manage(coordinator.clone())
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build kill-results automation app");
+    let app = build_kill_results_app(&manager, &monitor, &coordinator);
     coordinator.start(app.handle().clone()).unwrap();
     let restore = coordinator.submit_restore_first().await.unwrap();
 
