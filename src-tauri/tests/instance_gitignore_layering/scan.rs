@@ -67,9 +67,42 @@ pub(crate) fn scrub(body: &str, literals: Literals) -> Result<String, &'static s
             continue;
         }
 
-        // Raw strings are recognized only at a token boundary.
-        if scrub_raw_string(&source, &mut index, &mut out, &emit, preceded_by_identifier)? {
-            continue;
+        // `r"..."`, `r#"..."#`, `br"..."` and `br#"..."#`, only at a token
+        // boundary so the `r` ending an identifier is not read as a prefix.
+        if (character == 'r' || character == 'b') && !preceded_by_identifier {
+            let mut cursor = index;
+            if source[cursor] == 'b' {
+                cursor += 1;
+            }
+            if source.get(cursor) == Some(&'r') {
+                cursor += 1;
+                let mut hashes = 0usize;
+                while source.get(cursor) == Some(&'#') {
+                    hashes += 1;
+                    cursor += 1;
+                }
+                if source.get(cursor) == Some(&'"') {
+                    cursor += 1;
+                    let closing: Vec<char> = std::iter::once('"')
+                        .chain(std::iter::repeat_n('#', hashes))
+                        .collect();
+                    let mut closed = false;
+                    while cursor < source.len() {
+                        if source[cursor..].starts_with(closing.as_slice()) {
+                            cursor += closing.len();
+                            closed = true;
+                            break;
+                        }
+                        cursor += 1;
+                    }
+                    if !closed {
+                        return Err("a raw string is never closed, so the scan cannot be trusted");
+                    }
+                    emit(&mut out, &source[index..cursor]);
+                    index = cursor;
+                    continue;
+                }
+            }
         }
 
         if character == '"' {
@@ -375,50 +408,4 @@ pub(crate) fn defines_the_constant(body: &str) -> bool {
         }
     }
     false
-}
-
-fn scrub_raw_string(
-    source: &[char],
-    index: &mut usize,
-    out: &mut String,
-    emit: &impl Fn(&mut String, &[char]),
-    preceded_by_identifier: bool,
-) -> Result<bool, &'static str> {
-    let character = source[*index];
-    if (character == 'r' || character == 'b') && !preceded_by_identifier {
-        let mut cursor = *index;
-        if source[cursor] == 'b' {
-            cursor += 1;
-        }
-        if source.get(cursor) == Some(&'r') {
-            cursor += 1;
-            let mut hashes = 0usize;
-            while source.get(cursor) == Some(&'#') {
-                hashes += 1;
-                cursor += 1;
-            }
-            if source.get(cursor) == Some(&'"') {
-                cursor += 1;
-                let closing: Vec<char> = std::iter::once('"')
-                    .chain(std::iter::repeat_n('#', hashes))
-                    .collect();
-                let mut closed = false;
-                while cursor < source.len() {
-                    if source[cursor..].starts_with(closing.as_slice()) {
-                        cursor += closing.len();
-                        closed = true;
-                        break;
-                    }
-                    cursor += 1;
-                }
-                if !closed {
-                    return Err("a raw string is never closed, so the scan cannot be trusted");
-                }
-                emit(out, &source[*index..cursor]);
-                *index = cursor;
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
 }

@@ -37,10 +37,38 @@ pub(crate) fn scrub(body: &str, literals: Literals) -> Result<String, &'static s
 
     while index < source.len() {
         let character = source[index];
-        let preceded_by_identifier = follows_identifier(&source, index);
+        let preceded_by_identifier = index
+            .checked_sub(1)
+            .map(|previous| source[previous])
+            .is_some_and(|previous| previous.is_alphanumeric() || previous == '_');
 
-        if let Some(end) = comment_end(&source, index)? {
-            index = end;
+        if character == '/' && source.get(index + 1) == Some(&'/') {
+            while index < source.len() && source[index] != '\n' {
+                index += 1;
+            }
+            out.push(' ');
+            continue;
+        }
+
+        if character == '/' && source.get(index + 1) == Some(&'*') {
+            let mut depth = 0usize;
+            while index < source.len() {
+                if source[index] == '/' && source.get(index + 1) == Some(&'*') {
+                    depth += 1;
+                    index += 2;
+                } else if source[index] == '*' && source.get(index + 1) == Some(&'/') {
+                    depth -= 1;
+                    index += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+            if depth != 0 {
+                return Err("a block comment is never closed, so the scan cannot be trusted");
+            }
             out.push(' ');
             continue;
         }
@@ -282,44 +310,4 @@ pub(crate) fn children_under(body: &str, anchor: &str) -> Result<Vec<String>, &'
         }
     }
     Ok(children)
-}
-
-fn comment_end(source: &[char], mut index: usize) -> Result<Option<usize>, &'static str> {
-    let character = source[index];
-    if character == '/' && source.get(index + 1) == Some(&'/') {
-        while index < source.len() && source[index] != '\n' {
-            index += 1;
-        }
-        return Ok(Some(index));
-    }
-
-    if character == '/' && source.get(index + 1) == Some(&'*') {
-        let mut depth = 0usize;
-        while index < source.len() {
-            if source[index] == '/' && source.get(index + 1) == Some(&'*') {
-                depth += 1;
-                index += 2;
-            } else if source[index] == '*' && source.get(index + 1) == Some(&'/') {
-                depth -= 1;
-                index += 2;
-                if depth == 0 {
-                    break;
-                }
-            } else {
-                index += 1;
-            }
-        }
-        if depth != 0 {
-            return Err("a block comment is never closed, so the scan cannot be trusted");
-        }
-        return Ok(Some(index));
-    }
-    Ok(None)
-}
-
-fn follows_identifier(source: &[char], index: usize) -> bool {
-    index
-        .checked_sub(1)
-        .map(|previous| source[previous])
-        .is_some_and(|previous| previous.is_alphanumeric() || previous == '_')
 }
