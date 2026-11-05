@@ -157,6 +157,7 @@ test('04 settings metadata occurrences', t => {
   }, 3);
 });
 test('04 settings canonical references', t => {
+  aliasClassControls(t);
   const cases = [
     ['direct qualified', runtime],
     ['grouped import', 'use crate::config::instance_artifacts::{SETTINGS_FILE_NAME};'],
@@ -206,6 +207,65 @@ test('04 settings canonical references', t => {
     '\nfn f(){let _=SETTINGS_TARGET_NAME;}' }, 1,
   { path: namesPath, line: namesSource.split('\n').length + 1 });
 });
+function aliasClassControls(t) {
+  const expand = s => s.replace(/\bIA\b/g, 'crate::config::instance_artifacts')
+    .replace(/\bX\b/g, 'SETTINGS_FILE_NAME').replace(/ fn f/g, '\nfn f');
+  const cases = [
+    ['R0', 'use IA as a; fn f(){ let _ = self::a::X; }'],
+    ['R1', 'mod m { use IA as a; fn f(){ let _ = self::a::X; } }'],
+    ['R2', 'use IA as a; mod m { fn f(){ let _ = super::a::X; } }'],
+    ['R3', 'use IA as a; mod m { mod n { fn f(){ let _ = super::super::a::X; } } }'],
+    ['R5', 'use IA as a; use a as b; fn f(){ let _ = b::X; }'],
+    ['R6', 'use IA as a; use self::a as b; fn f(){ let _ = b::X; }'],
+    ['R7', 'use IA as a; fn f(){ let _ = crate::other::a::X; }'],
+    ['R8', 'use IA as a; use self::a::X as N; fn f(){ let _ = N; }'],
+    ['R9', 'use IA as a; use self::a::X; fn f(){ let _ = X; }'],
+    ['R10', 'use IA as a; mod m { use super::a::X; fn f(){ let _ = X; } }'],
+    ['R11', 'use crate::config as cfg; fn f(){ let _ = self::cfg::instance_artifacts::X; }'],
+    ['R12', 'use IA as a; use self::a::*; fn f(){ let _ = X; }'],
+    ['R15', 'use IA as a; use a as b; use b as c; fn f(){ let _ = c::X; }'],
+    ['R16', 'use IA::names as n; fn f(){ let _ = self::n::X; }'],
+    ['R17', 'fn f(){ use IA as a; let _ = a::X; }'],
+    ['R18', 'pub(crate) mod m { pub(crate) use IA as a; } ' +
+      'fn f(){ let _ = crate::other::m::a::X; }'],
+    ['R19', 'mod m { pub(crate) use IA as a; } fn f(){ let _ = self::m::a::X; }'],
+  ].map(([id, source]) => [id, { [root + 'other.rs']: expand(source) },
+    root + 'other.rs', id === 'R16' ? direct.replace('::SETTINGS', '::names::SETTINGS') : direct]);
+  const child = 'fn f(){ let _ = super::a::X; }';
+  cases.push(['R4', {
+    [root + 'other.rs']: expand('pub(crate) use IA as a; mod c;'),
+    [root + 'other/c.rs']: expand(child),
+  }, root + 'other/c.rs', direct]);
+  cases.push(['R13', {
+    [root + 'config.rs']: 'mod instance_artifacts; mod settings; mod x; ' +
+      'use instance_artifacts as ia;',
+    [root + 'config/x.rs']: expand('fn f(){ let _ = super::ia::X; }'),
+  }, root + 'config/x.rs', direct]);
+  cases.push(['R14', {
+    [root + 'config.rs']: expand('mod instance_artifacts; mod settings; ' +
+      'use self::instance_artifacts as ia; fn f(){ let _ = self::ia::X; }'),
+  }, root + 'config.rs', direct]);
+  cases.push(['b-1', {
+    [artifactsPath]: artifactsSource + '\npub(crate) use names as n;',
+    [root + 'other.rs']: expand('fn f(){ let _ = IA::n::X; }'),
+  }, root + 'other.rs', direct.replace('::SETTINGS', '::names::SETTINGS')]);
+  cases.push(['b-2', {
+    [root + 'config.rs']: 'mod instance_artifacts; mod settings; mod y;',
+    [root + 'config/y.rs']: expand('pub(crate) use IA as ia2;'),
+    [root + 'other.rs']: expand('fn f(){ let _ = crate::config::y::ia2::X; }'),
+  }, root + 'other.rs', direct]);
+  for (const [id, files, path, symbol] of cases) {
+    const source = files[path], line = source.slice(0, source.indexOf('let _')).split('\n').length;
+    const result = control(t, 'AC-3843-003 ' + id,
+      { [root + 'lib.rs']: 'mod config; mod other;', ...files }, 1, { path, line });
+    assert.ok(result.diagnostics.some(d => d.status === 'FAIL' && d.path === path &&
+      d.line === line && d.symbol === symbol), id + ': canonical use site');
+  }
+  control(t, 'module alias declaration alone', {
+    [root + 'other.rs']: expand('pub(crate) use IA as a;'),
+  }, 0);
+}
+
 test('04 settings literal and homonyms', t => {
   control(t, 'exact filename', { [root + 'other.rs']:
     'const X: &str = "settings.30.instance.no-git.json";' }, 1, site('other.rs'));

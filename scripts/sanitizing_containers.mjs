@@ -146,7 +146,22 @@ function metadataExemptions(path, scan, c) {
 
 // The scanner resolves lexical aliases. This adapter supplies Rust module identity,
 // which matters for mod shadows, module-root constants and relative import targets.
-function constantReferences(path, scan, c, exempt) {
+function moduleContexts(paths, scanner) {
+  const scopes = new WeakMap(), modules = new Map();
+  for (const path of paths) {
+    const scan = scanner(path);
+    for (const scope of scan.scopes) {
+      scopes.set(scope, { path, scan });
+      if (!scan.productionTokens.length ||
+          scope !== scan.root && (scope.item?.kind !== 'mod' || scope.item.testOnly)) continue;
+      const identity = ['crate', ...moduleChain(path, scope)].join('::');
+      if (!modules.has(identity)) modules.set(identity, []);
+      modules.get(identity).push(scope);
+    }
+  }
+  return { scopes, modules };
+}
+function constantReferences(path, scan, c, exempt, contexts) {
   const references = [], relevant = new Set(c.constantPaths ?? []);
   if (!relevant.size) return references;
   const pattern = new RegExp('^(?:' + [...relevant].join('|') + ')$');
@@ -155,72 +170,85 @@ function constantReferences(path, scan, c, exempt) {
     i.kind === 'use');
   function resolve(raw, scope, token, seen = new Set()) {
     const parts = raw.replace(/^::/, '').split('::'), first = parts[0];
-    const chain = moduleChain(path, scope);
-    if (first === 'crate') return { path: canonical(raw, chain), ambiguous: false };
-    if (first === 'self' || first === 'super') {
-      let moduleScope = scope;
-      while (moduleScope.parent && moduleScope.item?.kind !== 'mod')
-        moduleScope = moduleScope.parent;
-      const relative = [...parts];
-      if (relative[0] === 'self') relative.shift();
-      while (relative[0] === 'super') {
-        if (!moduleScope.parent)
-          return { path: canonical(raw, chain), ambiguous: false };
-        moduleScope = moduleScope.parent;
-        while (moduleScope.parent && moduleScope.item?.kind !== 'mod')
-          moduleScope = moduleScope.parent;
-        relative.shift();
-      }
-      // Explicit self/super paths bind in their module, not a function's locals.
-      return resolve(relative.join('::'), moduleScope, token, seen);
+    const source = contexts.scopes.get(scope) ?? { path, scan };
+    const chain = moduleChain(source.path, scope);
+    const moduleScope = (identity, name) => {
+      const choices = contexts.modules.get(identity) ?? [];
+      return choices.find(s => s.bindings.has(name)) ?? choices[0];
+    };
+    if (['crate', 'self', 'super'].includes(first)) {
+      const absolute = canonical(raw, chain);
+      if (relevant.has(absolute)) return { path: absolute, ambiguous: false };
+      const remainder = absolute?.split('::').slice(1);
+      const root = remainder?.length && moduleScope('crate', remainder[0]);
+      if (!root) return { path: absolute, ambiguous: false };
+      return resolve(remainder.join('::'), root, token, seen);
     }
-    if (seen.has(first)) return { path: canonical(raw, chain), ambiguous: true };
-    const next = new Set([...seen, first]);
-    let binding, bindingScope, glob = false;
+    let binding, bindingScope; const globs = [];
     for (let s = scope; s; s = s.parent) {
       let b = s.bindings.get(first);
       while (b && b.start > token.start) b = b.previous;
       if (b) { binding = b; bindingScope = s; break; }
-      glob ||= s.globs.length > 0;
+      globs.push(...s.globs.map(g => ({ ...g, scope: s })));
     }
+    const key = binding?.target ? binding : source.path + ':' + scope.id + ':' + raw;
+    if (seen.has(key)) return { path: canonical(raw, chain), ambiguous: true };
+    const next = new Set([...seen, key]);
     if (binding?.ambiguous) {
       for (let b = binding; b; b = b.previous) if (b.target) {
         const candidate = canonical([b.target, ...parts.slice(1)].join('::'),
-          moduleChain(path, b.scope));
+          moduleChain(contexts.scopes.get(b.scope).path, b.scope));
         if (relevant.has(candidate)) return { path: candidate, ambiguous: true };
       }
     }
-    const declared = scan.items.find(i => i.name === first && i.scope === bindingScope &&
+    const declared = source.scan.items.find(i => i.name === first && i.scope === bindingScope &&
       ['mod', 'const', 'static'].includes(i.kind));
     // Module declarations and module-level const/static names have canonical identity
     // independently of their initializer (which is inspected as its own occurrence).
-    if (declared && (declared.kind === 'mod' || bindingScope === scan.root ||
+    if (declared?.kind === 'mod' && parts.length > 1) {
+      const destination = declared.bodyScope ?? moduleScope(canonical(first, chain), parts[1]);
+      if (destination) return resolve(parts.slice(1).join('::'), destination, token, next);
+    }
+    if (declared && (declared.kind === 'mod' || bindingScope === source.scan.root ||
         bindingScope?.item?.kind === 'mod'))
-      return { path: canonical(raw, moduleChain(path, declared.scope)),
+      return { path: canonical(raw, moduleChain(source.path, declared.scope)),
         ambiguous: !!binding?.ambiguous };
     if (binding?.kind === 'import') {
       const target = resolve(binding.target, binding.scope, token, next);
-      return { ...target, path: target.path && [target.path, ...parts.slice(1)].join('::'),
-        ambiguous: target.ambiguous || !!binding.ambiguous };
+      const expanded = target.path && parts.length > 1 ?
+        resolve([target.path, ...parts.slice(1)].join('::'), binding.scope, token, next) : target;
+      return { ...expanded,
+        ambiguous: target.ambiguous || expanded.ambiguous || !!binding.ambiguous };
     }
     if (binding?.target) {
       const target = resolve(binding.target, binding.scope, token, next);
-      return { ...target, path: target.path && [target.path, ...parts.slice(1)].join('::'),
-        ambiguous: target.ambiguous || !!binding.ambiguous };
+      const expanded = target.path && parts.length > 1 ?
+        resolve([target.path, ...parts.slice(1)].join('::'), binding.scope, token, next) : target;
+      return { ...expanded,
+        ambiguous: target.ambiguous || expanded.ambiguous || !!binding.ambiguous };
     }
     const parameter = binding?.kind === 'shadow' && bindingScope?.item?.kind === 'fn' &&
-      !scan.items.some(i => i.name === first && i.scope === bindingScope);
+      !source.scan.items.some(i => i.name === first && i.scope === bindingScope);
     if (binding && !binding.ambiguous && (binding.kind === 'local' || parameter))
       return { path: null, ambiguous: false };
-    const fallback = resolveAlias(scan, raw, scope, pattern);
+    if (!binding) for (const glob of globs) {
+      const target = resolve(glob.target.slice(0, -3), glob.scope, token, next);
+      const candidate = target.path && target.path + '::' + raw;
+      if (relevant.has(candidate)) return { path: candidate, ambiguous: true };
+    }
+    if (!binding && parts.length > 1) {
+      const destination = moduleScope(canonical(first, chain), parts[1]);
+      if (destination) return resolve(parts.slice(1).join('::'), destination, token, next);
+    }
+    const fallback = resolveAlias(source.scan, raw, scope, pattern);
     return { path: canonical(fallback.path ?? raw, chain),
-      ambiguous: glob || !!binding?.ambiguous || fallback.ambiguous };
+      ambiguous: globs.length > 0 || !!binding?.ambiguous || fallback.ambiguous };
   }
   const add = (t, r) => {
     if (exempt.has(t.start)) return;
     const candidate = relevant.has(r.path);
     const ambiguous = r.ambiguous && (r.relevantAmbiguity || candidate ||
-      settingsNames.includes(t.name) ||
+      settingsNames.includes(t.name) || settingsNames.includes(r.path?.split('::').at(-1)) ||
       [...relevant].some(p => p.endsWith('::' + t.name)));
     if (candidate || ambiguous) references.push({ path, line: t.line, symbol: r.path,
       ambiguous: !!r.ambiguous, reason: r.ambiguous ? 'ambiguous relevant alias' : undefined });
@@ -235,10 +263,13 @@ function constantReferences(path, scan, c, exempt) {
       const r = resolve(leaf.target, scope, scan.tokens[item.first]);
       const site = scan.tokens.slice(item.first, item.last + 1).find(t =>
         t.name === leaf.target.split('::').at(-1) || leaf.glob && t.text === '*');
-      if (site) add(site, { path: relevant.has(target) ? target : r.path,
-        ambiguous: r.ambiguous || leaf.glob,
-        relevantAmbiguity: leaf.glob && [...relevant].some(p =>
-          p.startsWith(target?.slice(0, -1))) });
+      if (site) {
+        const globCandidates = leaf.glob ? [...relevant].filter(p =>
+          p.startsWith(r.path?.slice(0, -1))) : [];
+        if (globCandidates.length) add(site, { path: globCandidates[0], ambiguous: true });
+        else add(site, { path: relevant.has(target) ? target : r.path,
+          ambiguous: r.ambiguous || leaf.glob });
+      }
     }
   }
   for (let i = 0; i < ts.length; i++) {
@@ -290,6 +321,7 @@ export function runGate(snapshot) {
       measurements.set(p, m);
       if (m.writers.length) { inventory.files++; inventory.sites += m.writers.length; }
     }
+    const contexts = moduleContexts(measurements.keys(), scan);
     const registeredScopes = containers.filter(c => !c.ownerModule).map(c => c.scope);
     const unknown = [...measurements].filter(([p, m]) => m.writers.length &&
       !registeredScopes.some(scope => p.startsWith(scope)));
@@ -308,7 +340,7 @@ export function runGate(snapshot) {
         }
         if (c.constantPaths || c.metadataPolicy) {
           const source = scan(p), exempt = metadataExemptions(p, source, c);
-          if (!owns(c, p)) constants.push(...constantReferences(p, source, c, exempt));
+          if (!owns(c, p)) constants.push(...constantReferences(p, source, c, exempt, contexts));
         }
         if (!owns(c, p)) for (const t of m.literals) if (t.value === c.name)
           external.push({ path: p, line: t.line });
