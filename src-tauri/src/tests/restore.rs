@@ -1,4 +1,5 @@
 use super::*;
+use crate::restore::{RestoreWakeOptions, RestoreWakeSettings};
 
 #[test]
 fn setting_off_always_defers() {
@@ -60,20 +61,28 @@ fn coord_unknown_status_fails_open_when_on() {
 #[test]
 fn archived_project_session_is_forced_dormant_on_restore_decision() {
     assert!(!restore_session_should_wake(
-        true,
-        true,
-        false,
-        true,
-        Some(&SessionStatus::Running),
-        false
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: false
+            },
+            archived_session: true,
+            is_coord: true,
+            persisted_working: false
+        },
+        Some(&SessionStatus::Running)
     ));
     assert!(restore_session_should_wake(
-        false,
-        true,
-        false,
-        true,
-        Some(&SessionStatus::Running),
-        false
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: false
+            },
+            archived_session: false,
+            is_coord: true,
+            persisted_working: false
+        },
+        Some(&SessionStatus::Running)
     ));
 }
 
@@ -101,30 +110,42 @@ fn should_wake_working_agent_on_restore_truth_table() {
 #[test]
 fn restore_session_should_wake_wakes_a_working_replica_only_when_opted_in() {
     assert!(!restore_session_should_wake(
-        false,
-        true,
-        false,
-        false,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: false
+            },
+            archived_session: false,
+            is_coord: false,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
     assert!(restore_session_should_wake(
-        false,
-        true,
-        true,
-        false,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: true
+            },
+            archived_session: false,
+            is_coord: false,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
     // The two arms are independent: the replica arm fires with the
     // coordinator setting OFF.
     assert!(restore_session_should_wake(
-        false,
-        false,
-        true,
-        false,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: false,
+                resume_agents_on: true
+            },
+            archived_session: false,
+            is_coord: false,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
 }
 
@@ -136,7 +157,18 @@ fn restore_session_should_wake_never_wakes_an_idle_replica() {
         None,
     ] {
         assert!(
-            !restore_session_should_wake(false, true, true, false, status.as_ref(), false),
+            !restore_session_should_wake(
+                RestoreWakeOptions {
+                    settings: RestoreWakeSettings {
+                        setting_on: true,
+                        resume_agents_on: true
+                    },
+                    archived_session: false,
+                    is_coord: false,
+                    persisted_working: false
+                },
+                status.as_ref()
+            ),
             "an idle replica must never wake, status={status:?}"
         );
     }
@@ -147,24 +179,32 @@ fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
     // Coordinator: wakes through the #248 arm, and the replica arm is false
     // for it.
     assert!(restore_session_should_wake(
-        false,
-        true,
-        true,
-        true,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: true
+            },
+            archived_session: false,
+            is_coord: true,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
     assert!(!should_wake_working_agent_on_restore(true, true, true));
 
     // Non-coordinator: wakes through the new arm, and the #248 arm is false
     // for it.
     assert!(restore_session_should_wake(
-        false,
-        true,
-        true,
-        false,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: true
+            },
+            archived_session: false,
+            is_coord: false,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
     assert!(!should_wake_on_restore(
         true,
@@ -174,20 +214,28 @@ fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
 
     // Archived beats both arms.
     assert!(!restore_session_should_wake(
-        true,
-        true,
-        true,
-        true,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: true
+            },
+            archived_session: true,
+            is_coord: true,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
     assert!(!restore_session_should_wake(
-        true,
-        true,
-        true,
-        false,
-        Some(&SessionStatus::Running),
-        true
+        RestoreWakeOptions {
+            settings: RestoreWakeSettings {
+                setting_on: true,
+                resume_agents_on: true
+            },
+            archived_session: true,
+            is_coord: false,
+            persisted_working: true
+        },
+        Some(&SessionStatus::Running)
     ));
 }
 

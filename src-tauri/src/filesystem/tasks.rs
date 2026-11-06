@@ -6,6 +6,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
+pub(crate) const TASK_FILE_NAME: &str = "TASK.md";
+
 pub(crate) fn read_task_title_text(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }

@@ -15,6 +15,7 @@ use super::VariantMetadata;
 use crate::cli::workgroup;
 use crate::commands::entity_creation::sanitize_name;
 use crate::filesystem::projects::entities::roles;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::filesystem::{directories, documents};
 use serde::Deserialize;
 use serde::Serialize;
@@ -413,7 +414,7 @@ pub(super) fn create_run_workgroup_dirs(
         )]
     })?;
     atomic_write_bytes(
-        &path.join("TASK.md"),
+        &path.join(TASK_FILE_NAME),
         format!("# Role Experiment Run\n\nExperiment: {experiment}\nRun: {run_id}\n").as_bytes(),
     )?;
     for variant in variants {

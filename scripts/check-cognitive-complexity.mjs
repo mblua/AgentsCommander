@@ -2253,6 +2253,71 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
 }
 
 /** The `--baseline-diff` mode, in the order of phase 4 section 3. */
+// #3965: an id names the file that declares the module, not the file that
+// holds the function. `mod x;` items are resolved to their out-of-line files
+// so a removal is credited when the pull request touched the real file.
+const OUT_OF_LINE_MOD_RE =
+  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+const PATH_ATTRIBUTE_RE = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
+
+function stripRustComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/** Maps each `mod x;` of `file` to the workspace file it loads. */
+function outOfLineModules(file, readWorkspace, existsWorkspace) {
+  let source;
+  try {
+    source = readWorkspace(file);
+  } catch {
+    return new Map();
+  }
+  const directory = path.posix.dirname(file);
+  const ownsDirectory = ['mod.rs', 'lib.rs', 'main.rs'].includes(path.posix.basename(file));
+  const moduleDirectory = ownsDirectory ? directory : file.slice(0, -'.rs'.length);
+  const children = new Map();
+  for (const match of stripRustComments(source).matchAll(OUT_OF_LINE_MOD_RE)) {
+    const name = match[2];
+    const pathAttribute = PATH_ATTRIBUTE_RE.exec(match[1]);
+    const candidates = pathAttribute
+      ? [path.posix.normalize(path.posix.join(directory, pathAttribute[1]))]
+      : [`${moduleDirectory}/${name}.rs`, `${moduleDirectory}/${name}/mod.rs`];
+    const found = candidates.find((candidate) => existsWorkspace(candidate));
+    if (found !== undefined) children.set(name, found);
+  }
+  return children;
+}
+
+/** The id's file plus every out-of-line module file that may hold its function. */
+function sourceFilesOfId(id, readWorkspace, existsWorkspace) {
+  const file = filePathOfId(id);
+  const segments = id.split('::').slice(1);
+  let current = file;
+  let resolved = true;
+  for (const segment of segments) {
+    if (!segment.startsWith('mod:')) break;
+    const child = outOfLineModules(current, readWorkspace, existsWorkspace)
+      .get(segment.slice('mod:'.length));
+    if (child === undefined) {
+      resolved = false;
+      break;
+    }
+    current = child;
+  }
+  const files = new Set([file, current]);
+  if (!resolved) return files;
+  const pending = [current];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    for (const child of outOfLineModules(next, readWorkspace, existsWorkspace).values()) {
+      if (files.has(child)) continue;
+      files.add(child);
+      pending.push(child);
+    }
+  }
+  return files;
+}
+
 export function runBaselineDiff(options, io = {}) {
   const baseRef = options.baseRef;
   const stdout = io.stdout ?? ((text) => console.log(text));
@@ -2367,7 +2432,9 @@ export function runBaselineDiff(options, io = {}) {
     if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) return false;
     if (historical && removal.id === HISTORICAL_3319_ID) return false;
     const file = filePathOfId(removal.id);
-    return !diffSet.has(file) && existsWorkspace(file);
+    if (!existsWorkspace(file)) return false;
+    const sources = sourceFilesOfId(removal.id, readWorkspace, existsWorkspace);
+    return ![...sources].some((source) => diffSet.has(source));
   });
   if (blocked.length > 0) {
     for (const removal of blocked) {
@@ -2925,6 +2992,7 @@ function baselineDiffFixture({
   workingFiles = [],
   historical = null,
   historical3527 = null,
+  sources = {},
 } = {}) {
   const stdoutLines = [];
   const stderrLines = [];
@@ -2965,6 +3033,7 @@ function baselineDiffFixture({
     runGit,
     readWorkspace: (file) => {
       if (file === BASELINE_FILE && head !== null) return head;
+      if (Object.hasOwn(sources, file)) return sources[file];
       if (historical3527 !== null && HISTORICAL_3527_PINS.some(([name]) => name === file)) {
         if (historical3527.readFailure === file) throw new Error('source unreadable');
         return 'unchanged historical source';
@@ -4494,6 +4563,44 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       }
       const gone = baselineDiffFixture({ base, head, diffPaths: [], workingFiles: [] });
       expectEqual(gone.run(), 0, 'a removal whose file is gone passes');
+    }],
+    ['case 3965a: a removal is credited to the out-of-line module file that holds it', () => {
+      const id = 'rust:src/a.rs::mod:tests::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const head = baselineJson([]);
+      const sources = {
+        'src/a.rs': '#[cfg(test)]\nmod tests;\n',
+        'src/a/tests.rs': 'mod frozen; // mod ignored;\n#[path = "../extra.rs"]\nmod extra;\n',
+        'src/a/tests/frozen/mod.rs': 'fn heavy() {}\n',
+      };
+      const children = ['src/a/tests.rs', 'src/a/tests/frozen/mod.rs', 'src/extra.rs'];
+      const workingFiles = ['src/a.rs', ...children];
+      for (const touched of children) {
+        const diffPaths = [touched];
+        const run = baselineDiffFixture({ base, head, sources, workingFiles, diffPaths });
+        expectEqual(run.run(), 0, `a removal passes when ${touched} is touched`);
+        if (!stdoutText(run).includes(`baseline removal accepted: ${id}#${A12} (windows)`)) {
+          throw new Error(`expected the removal record, got ${stdoutText(run)}`);
+        }
+      }
+    }],
+    ['case 3965b: a removal whose real file is untouched still fails', () => {
+      const id = 'rust:src/a.rs::mod:tests::heavy';
+      const base = baselineJson([{ id, sites: { windows: [A12] } }]);
+      const head = baselineJson([]);
+      const sources = {
+        'src/a.rs': 'mod tests;\nmod other;\n',
+        'src/a/tests.rs': 'fn heavy() {}\n',
+        'src/a/other.rs': '',
+      };
+      const workingFiles = ['src/a.rs', 'src/a/tests.rs', 'src/a/other.rs', 'src/b.rs'];
+      for (const diffPaths of [[], ['src/a/other.rs', 'src/b.rs']]) {
+        const run = baselineDiffFixture({ base, head, sources, workingFiles, diffPaths });
+        expectEqual(run.run(), 1, `an untouched real file fails with [${diffPaths}]`);
+        if (!stderrText(run).includes(`Baseline entry removed without touching its file: ${id}`)) {
+          throw new Error(`expected the removal failure, got ${stderrText(run)}`);
+        }
+      }
     }],
     ['case 41: a base ref without a baseline is adoption', () => {
       const id = 'rust:src/a.rs::heavy';

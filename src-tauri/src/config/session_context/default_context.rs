@@ -303,8 +303,8 @@ Nothing else under the `.ac` root becomes readable or writable.
 /// #1795 entry 6. `TASK.md` is a READ grant only; the four protections its CLI
 /// verbs enforce are named so an agent does not try a direct write and bypass all
 /// of them at once. `TASK.md` is deliberately NOT a constant in
-/// `config::shared_locations`: it is owned by `cli::task_ops`, and importing that
-/// name into `config` would add a `config -> cli` layering inversion.
+/// `config::shared_locations`: its name is owned by
+/// `crate::filesystem::tasks::TASK_FILE_NAME`, which this entry uses directly.
 pub(crate) fn render_room_shared_entry(room_root: &std::path::Path) -> String {
     format!(
         concat!(
@@ -362,7 +362,7 @@ Direct filesystem access (reads/writes/deletes/renames) is forbidden for TASK-st
 "#
         ),
         shared = display_path(&room_root.join(crate::config::shared_locations::ROOM_SHARED_DIR)),
-        task = display_path(&room_root.join("TASK.md")),
+        task = display_path(&room_root.join(crate::filesystem::tasks::TASK_FILE_NAME)),
         status = display_path(&room_root.join("TASK-status.jsonl")),
     )
 }
