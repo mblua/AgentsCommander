@@ -254,6 +254,68 @@ fn planned_destroy_ids(ids: &[Uuid]) -> std::collections::HashSet<Uuid> {
     ids.iter().copied().collect()
 }
 
+/// First live fallback for a manual close, skipping planned, exited, detached and PTY-less
+/// candidates with the same diagnostics as before.
+async fn manual_close_fallback_decision<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    planned: &std::collections::HashSet<Uuid>,
+) -> CommitDecision {
+    let final_snapshot = transaction.aggregate_snapshot().await;
+    let mut fallback = None;
+    for candidate_id in &final_snapshot.order {
+        let Some(candidate) = final_snapshot
+            .sessions
+            .iter()
+            .find(|candidate| candidate.id == *candidate_id)
+        else {
+            continue;
+        };
+        if planned.contains(&candidate.id) {
+            log::info!(
+                "[selection] fallback candidate={} status={:?} hasPty=false \
+                 detached=false excluded=true reason=plannedForDestruction",
+                candidate.id,
+                candidate.status
+            );
+            continue;
+        }
+        if matches!(candidate.status, SessionStatus::Exited(_)) {
+            log::info!(
+                "[selection] fallback candidate={} status={:?} hasPty=false \
+                 detached=false excluded=false reason=exited",
+                candidate.id,
+                candidate.status
+            );
+            continue;
+        }
+        let runtime = transaction.runtime_snapshot(candidate.id);
+        if runtime.detached {
+            log::info!(
+                "[selection] fallback candidate={} status={:?} hasPty={} detached=true \
+                 excluded=false reason=detached",
+                candidate.id,
+                candidate.status,
+                runtime.has_pty
+            );
+            continue;
+        }
+        if !runtime.has_pty {
+            log::info!(
+                "[selection] fallback candidate={} status={:?} hasPty=false \
+                 detached=false excluded=false reason=missingPty",
+                candidate.id,
+                candidate.status
+            );
+            continue;
+        }
+        fallback = transaction.live_decision(candidate.id);
+        if fallback.is_some() {
+            break;
+        }
+    }
+    fallback.unwrap_or(CommitDecision::Clear)
+}
+
 pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: DestroyRequest,
@@ -288,60 +350,7 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
     let decision = if selected_was_torn_down {
         match request.source {
             DestructionSource::ManualClose => {
-                let final_snapshot = transaction.aggregate_snapshot().await;
-                let mut fallback = None;
-                for candidate_id in &final_snapshot.order {
-                    let Some(candidate) = final_snapshot
-                        .sessions
-                        .iter()
-                        .find(|candidate| candidate.id == *candidate_id)
-                    else {
-                        continue;
-                    };
-                    if planned.contains(&candidate.id) {
-                        log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty=false \
-                             detached=false excluded=true reason=plannedForDestruction",
-                            candidate.id,
-                            candidate.status
-                        );
-                        continue;
-                    }
-                    if matches!(candidate.status, SessionStatus::Exited(_)) {
-                        log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty=false \
-                             detached=false excluded=false reason=exited",
-                            candidate.id,
-                            candidate.status
-                        );
-                        continue;
-                    }
-                    let runtime = transaction.runtime_snapshot(candidate.id);
-                    if runtime.detached {
-                        log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty={} detached=true \
-                             excluded=false reason=detached",
-                            candidate.id,
-                            candidate.status,
-                            runtime.has_pty
-                        );
-                        continue;
-                    }
-                    if !runtime.has_pty {
-                        log::info!(
-                            "[selection] fallback candidate={} status={:?} hasPty=false \
-                             detached=false excluded=false reason=missingPty",
-                            candidate.id,
-                            candidate.status
-                        );
-                        continue;
-                    }
-                    fallback = transaction.live_decision(candidate.id);
-                    if fallback.is_some() {
-                        break;
-                    }
-                }
-                fallback.unwrap_or(CommitDecision::Clear)
+                manual_close_fallback_decision(transaction, &planned).await
             }
             DestructionSource::AutoClose
             | DestructionSource::SpawnRollback

@@ -488,6 +488,62 @@ pub(crate) struct NativeFixture {
     pub(crate) backend: Arc<PortTestBackend>,
 }
 
+/// Child-process identity and designated test configuration every native fixture requires.
+fn assert_native_fixture_environment() {
+    let marker = std::env::var("AC_P17_CARRIER_CHILD").unwrap();
+    let identity = std::env::var("AC_P17_CARRIER_IDENTITY").unwrap();
+    let (id, name) = identity.split_once('\n').unwrap();
+    assert_eq!(name, marker);
+    assert!(!Uuid::parse_str(id).unwrap().is_nil());
+    let configured = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+        .expect("native fixtures require designated test configuration");
+    assert_eq!(
+        crate::config::config_dir().unwrap(),
+        PathBuf::from(configured)
+    );
+}
+
+async fn archived_source_session(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    cwd: &tempfile::TempDir,
+) -> Uuid {
+    manager
+        .read()
+        .await
+        .create_session(
+            "shell".into(),
+            Vec::new(),
+            cwd.path().to_string_lossy().into_owned(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+fn native_message_store() -> (
+    tempfile::TempDir,
+    crate::api::message_store::PtyInputTargetGateState,
+    Arc<crate::api::message_store::MessageStore>,
+) {
+    let store_dir = tempfile::tempdir().unwrap();
+    let store_root = crate::path_utils::normalize_windows_verbatim_path_buf(
+        &std::fs::canonicalize(store_dir.path()).unwrap(),
+    );
+    let gate = crate::api::message_store::PtyInputTargetGateState::for_root(store_root.clone());
+    let store = Arc::new(
+        crate::api::message_store::MessageStore::open(
+            store_root.join(crate::api::message_store::DB_FILENAME),
+        )
+        .unwrap(),
+    );
+    (store_dir, gate, store)
+}
+
 impl NativeFixture {
     pub(crate) fn receipt_records(&self) -> Vec<NativeReceiptRecord> {
         self.records.lock().unwrap().clone()
@@ -496,39 +552,14 @@ impl NativeFixture {
         Self::build(true).await
     }
     pub(crate) async fn build(archived: bool) -> Self {
-        let marker = std::env::var("AC_P17_CARRIER_CHILD").unwrap();
-        let identity = std::env::var("AC_P17_CARRIER_IDENTITY").unwrap();
-        let (id, name) = identity.split_once('\n').unwrap();
-        assert_eq!(name, marker);
-        assert!(!Uuid::parse_str(id).unwrap().is_nil());
-        let configured = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
-            .expect("native fixtures require designated test configuration");
-        assert_eq!(
-            crate::config::config_dir().unwrap(),
-            PathBuf::from(configured)
-        );
+        assert_native_fixture_environment();
         let cwd = tempfile::tempdir().unwrap();
         let owners = crate::app_state::AppOwners::new();
         let manager = Arc::new(tokio::sync::RwLock::new(
             SessionManager::with_activity_coalescer(owners.activity.clone()),
         ));
         let source = if archived {
-            manager
-                .read()
-                .await
-                .create_session(
-                    "shell".into(),
-                    Vec::new(),
-                    cwd.path().to_string_lossy().into_owned(),
-                    None,
-                    None,
-                    Vec::new(),
-                    false,
-                    crate::pty::backend::SessionBackendKind::LocalProcess,
-                )
-                .await
-                .unwrap()
-                .id
+            archived_source_session(&manager, &cwd).await
         } else {
             Uuid::nil()
         };
@@ -563,17 +594,7 @@ impl NativeFixture {
                     captures.clone(),
                 ),
             ));
-        let store_dir = tempfile::tempdir().unwrap();
-        let store_root = crate::path_utils::normalize_windows_verbatim_path_buf(
-            &std::fs::canonicalize(store_dir.path()).unwrap(),
-        );
-        let gate = crate::api::message_store::PtyInputTargetGateState::for_root(store_root.clone());
-        let store = Arc::new(
-            crate::api::message_store::MessageStore::open(
-                store_root.join(crate::api::message_store::DB_FILENAME),
-            )
-            .unwrap(),
-        );
+        let (store_dir, gate, store) = native_message_store();
         let app = tauri::test::mock_builder()
             .manage(owners)
             .manage(manager.clone())
