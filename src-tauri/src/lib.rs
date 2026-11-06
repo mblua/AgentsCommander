@@ -327,7 +327,7 @@ impl crate::loops::ipc_observer::IpcObserver {
             if invoke.message.command() == "list_preflight_test_targets" {
                 list_targets(invoke)
             } else {
-                generated(invoke)
+                commands::context_history::dispatch(invoke, &generated)
             }
         }
     }

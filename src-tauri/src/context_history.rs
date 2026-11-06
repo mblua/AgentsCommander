@@ -4,7 +4,8 @@
 //! `store` owns `.ac/context-history/`, `observation` turns scrape outcomes
 //! into records and `report` builds reports from them; all of them import
 //! these DTOs, and this module never imports, calls or re-exports them.
-// Parts stay unused until the history IPC and views (#3532 P04+) read them.
+// The CLI (P04) and the IPC (P05) read the report; parts stay unused until
+// the history views (#3532 P06+) read them.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
