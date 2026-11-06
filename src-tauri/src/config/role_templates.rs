@@ -17,6 +17,7 @@ use crate::filesystem::agency_templates::{
     read_agency_text, write_agency_text,
 };
 
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 
 use crate::config::instance_artifacts::AGENT_TEMPLATES_DIR_NAME;
@@ -623,7 +624,7 @@ pub(crate) fn collect_agency_templates_from_dir(
                 let child_name = child.file_name().to_string_lossy().to_string();
                 let child_meta =
                     lstat_no_links(&child.path()).map_err(|()| "cacheInvalid".to_string())?;
-                if child_name != "Role.md" || !child_meta.is_file() {
+                if child_name != roles::ROLE_FILE_NAME || !child_meta.is_file() {
                     return Err("cacheInvalid".into());
                 }
                 role_seen = true;
@@ -631,7 +632,7 @@ pub(crate) fn collect_agency_templates_from_dir(
             if !role_seen {
                 return Err("cacheInvalid".into());
             }
-            let role_path = stem_entry.path().join("Role.md");
+            let role_path = roles::role_path(&stem_entry.path());
             let raw = read_agency_text(&role_path).map_err(|_| "cacheInvalid".to_string())?;
             let fm = parse_agency_template_frontmatter(&raw);
             let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
@@ -714,7 +715,7 @@ fn collect_local_templates(dir: &Path) -> Vec<RoleTemplateMeta> {
             return ControlFlow::Continue(());
         }
         // Role.md must be a REAL file (not a symlink) for the template to count.
-        let role_md = path.join("Role.md");
+        let role_md = roles::role_path(&path);
         match local_template_no_links(&role_md) {
             Ok(m) if m.is_file() => {}
             _ => return ControlFlow::Continue(()),
@@ -844,7 +845,7 @@ pub fn resolve_role_template(
             // Role.md must be a REAL file. A symlinked Role.md could exfiltrate
             // an arbitrary file's contents into the new agent's Role.md.
             let selected = (|| {
-                let role_md = path.join("Role.md");
+                let role_md = roles::role_path(&path);
                 let role_meta = local_template_no_links(&role_md).map_err(|()| {
                     format!("Template \"{folder}\" Role.md is missing, unreadable, or a symlink")
                 })?;

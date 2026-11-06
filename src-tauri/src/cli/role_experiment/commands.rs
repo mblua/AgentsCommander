@@ -65,6 +65,7 @@ use crate::commands::entity_creation::create_agent_matrix_from_role;
 use crate::commands::entity_creation::resolve_agent_ref;
 use crate::commands::entity_creation::validate_existing_name;
 use crate::commands::entity_creation::CreateAgentMatrixFromRoleArgs;
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 use std::collections::HashSet;
 use std::path::Path;
@@ -139,7 +140,7 @@ pub(super) fn init_for_project_path(
             source_agent: source_agent.clone(),
             agent_name: agent_name.clone(),
             matrix_path: format!("../../../_agent_{agent_name}"),
-            role_path: format!("../../../_agent_{agent_name}/Role.md"),
+            role_path: format!("../../../_agent_{agent_name}/{}", roles::ROLE_FILE_NAME),
             role_sha256: role_sha.clone(),
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -365,7 +366,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         &loaded.experiment.source_agent,
         &args.variant,
     );
-    let expected_role = expected_matrix.join("Role.md");
+    let expected_role = roles::role_path(&expected_matrix);
     reject_link_or_reparse(
         &expected_matrix,
         "variant_role_link_or_reparse",
@@ -467,18 +468,16 @@ pub(super) fn variant_diff_loaded(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let left_role = variant_matrix_path(
+    let left_role = roles::role_path(&variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.against,
-    )
-    .join("Role.md");
-    let right_role = variant_matrix_path(
+    ));
+    let right_role = roles::role_path(&variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.variant,
-    )
-    .join("Role.md");
+    ));
     let left_text = map_err(
         documents::read_experiment_document(&left_role),
         "variant_role_missing",
@@ -874,7 +873,7 @@ fn init_source_paths(
     let source_agent = agent_ref_bare_name(&source_ref);
     validate_slug_identity(&source_agent, "Source agent", "source_agent_invalid")?;
     let source_matrix = source_matrix_path(ac_root, &source_agent);
-    let source_role = source_matrix.join("Role.md");
+    let source_role = roles::role_path(&source_matrix);
     reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
     reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
     if !directories::experiment_path_is_file(&source_role) {
@@ -946,12 +945,11 @@ fn dry_run_variant_artifact(
         name: variant.name.clone(),
         agent_name: variant.agent_name.clone(),
         role_sha256: variant.role_sha256.clone(),
-        role_path: variant_matrix_path(
+        role_path: roles::role_path(&variant_matrix_path(
             &loaded.ac_root,
             &loaded.experiment.source_agent,
             &variant.name,
-        )
-        .join("Role.md")
+        ))
         .to_string_lossy()
         .to_string(),
     }
@@ -970,7 +968,7 @@ fn init_experiment_metadata(
         project: args.project.clone(),
         source_agent: source_agent.to_string(),
         source_matrix_path: format!("../../_agent_{source_agent}"),
-        source_role_path: format!("../../_agent_{source_agent}/Role.md"),
+        source_role_path: format!("../../_agent_{source_agent}/{}", roles::ROLE_FILE_NAME),
         source_role_sha256: role_sha.to_string(),
         created_at: now.clone(),
         updated_at: now,

@@ -3,12 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{directories, documents};
-
-const ROLE_FILE_NAME: &str = "Role.md";
-
-fn role_path(replica_dir: &Path) -> PathBuf {
-    replica_dir.join(ROLE_FILE_NAME)
-}
+use crate::filesystem::projects::entities::roles::{role_path, ROLE_FILE_NAME};
 
 pub(crate) fn write(
     replica_dir: &Path,
