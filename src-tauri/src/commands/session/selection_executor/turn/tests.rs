@@ -146,8 +146,45 @@ impl SelectionTasks for ScriptedTasks {
     }
 }
 
+struct ImmediateFailure(BoxFuture<'static, ()>);
+
+impl Future for ImmediateFailure {
+    type Output = Result<(), String>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        // Keep the sender alive and unpolled while the native join has failed.
+        let _retained_body = &self.0;
+        Poll::Ready(Err("early native join failure".into()))
+    }
+}
+
+impl SelectionTask for ImmediateFailure {
+    fn abort(&self) {}
+}
+
+struct ImmediateFailureTasks;
+
+impl SelectionTasks for ImmediateFailureTasks {
+    fn spawn(&self, future: BoxFuture<'static, ()>) -> Pin<Box<dyn SelectionTask>> {
+        Box::pin(ImmediateFailure(future))
+    }
+}
+
 #[tokio::test]
 async fn issue_3950_turn_panic() {
+    let mut immediate = Box::pin(run_owned_selection_operation_with_tasks(
+        &ImmediateFailureTasks,
+        || async { Ok(()) },
+    ));
+    let first_poll = immediate
+        .as_mut()
+        .poll(&mut Context::from_waker(futures::task::noop_waker_ref()));
+    assert!(
+        matches!(first_poll, Poll::Ready(Err(ref error))
+            if error == "selectionOperationTurnJoinFailed"),
+        "native join must be polled before typed receiver"
+    );
+
     let panic =
         super::run_owned_selection_operation::<_, _, ()>(|| async { panic!("owned body panic") });
     assert_eq!(
