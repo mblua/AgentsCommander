@@ -2,8 +2,6 @@
 use crate::filesystem::projects::entities::roles;
 use std::path::{Path, PathBuf};
 
-pub(crate) const ROLE_FILE_NAME: &str = roles::ROLE_FILE_NAME;
-
 pub(crate) struct RoleProfileRef<'a> {
     pub id: &'a str,
     pub body: &'a str,

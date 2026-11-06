@@ -15,6 +15,7 @@ use crate::config::settings::SettingsState;
 use crate::filesystem::ac_discovery::{
     discovery_directory_entries, discovery_path_is_dir, discovery_role_exists,
 };
+use crate::filesystem::projects::entities::roles;
 use crate::session::manager::SessionManager;
 use std::collections::HashMap;
 use std::path::Path;
@@ -305,7 +306,7 @@ fn discover_agent_matrix(
     cfg: &crate::config::settings::AppSettings,
 ) -> AcAgentMatrix {
     let display_name = agent_display_name(project_folder, dir_name);
-    let role_exists = discovery_role_exists(&path.join("Role.md"));
+    let role_exists = discovery_role_exists(&roles::role_path(path));
 
     let preferred_agent_id = read_preferred_agent_id(path, cfg);
 
