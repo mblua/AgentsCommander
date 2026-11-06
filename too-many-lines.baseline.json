@@ -910,25 +910,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/commands/session/destroy.rs::execute_destroy_transaction_common",
-      "name": "execute_destroy_transaction_common",
-      "anchor": "8dcb58494f91",
-      "sites": {
-        "linux": {
-          "lines": 108,
-          "production": true
-        },
-        "macos": {
-          "lines": 108,
-          "production": true
-        },
-        "windows": {
-          "lines": 108,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/commands/session/destroy.rs::teardown_legacy_destroy_runtime",
       "name": "teardown_legacy_destroy_runtime",
       "anchor": "630b07efa486",
@@ -944,25 +925,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/commands/session/destroy/response_close.rs::commit_response_close",
-      "name": "commit_response_close",
-      "anchor": "2313cadebc3e",
-      "sites": {
-        "linux": {
-          "lines": 105,
-          "production": true
-        },
-        "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
-          "lines": 105,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/commands/session/destroy/response_close.rs::run_response_close_auxiliary",
       "name": "run_response_close_auxiliary",
       "anchor": "d3472245dda8",
@@ -973,25 +935,6 @@
         },
         "macos": {
           "lines": 103,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/session/destroy/response_close.rs::settle_response_close_result",
-      "name": "settle_response_close_result",
-      "anchor": "3b0ff37baf78",
-      "sites": {
-        "linux": {
-          "lines": 111,
-          "production": true
-        },
-        "macos": {
-          "lines": 111,
-          "production": true
-        },
-        "windows": {
-          "lines": 111,
           "production": true
         }
       }
@@ -1097,25 +1040,6 @@
         },
         "macos": {
           "lines": 108,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/session/selection_executor/tests/native_fixture.rs::impl:NativeFixture::build",
-      "name": "build",
-      "anchor": "b4715c6cecd5",
-      "sites": {
-        "linux": {
-          "lines": 122,
-          "production": false
-        },
-        "macos": {
-          "lines": 122,
-          "production": false
-        },
-        "windows": {
-          "lines": 122,
           "production": false
         }
       }
