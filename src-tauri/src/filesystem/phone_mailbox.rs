@@ -24,6 +24,10 @@ pub(crate) fn mailbox_path_exists(path: &Path) -> bool {
     path.exists()
 }
 
+pub(crate) fn mailbox_path_try_exists(path: &Path) -> io::Result<bool> {
+    path.try_exists()
+}
+
 pub(crate) fn mailbox_path_is_file(path: &Path) -> bool {
     path.is_file()
 }
@@ -217,3 +221,6 @@ pub(crate) fn write_plain_mailbox_receipt_chunk(
 ) -> io::Result<usize> {
     Write::write(file, bytes)
 }
+
+#[cfg(test)]
+mod tests;

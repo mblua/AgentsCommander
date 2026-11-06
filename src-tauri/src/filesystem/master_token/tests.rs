@@ -72,3 +72,41 @@ fn each_call_reads_the_current_file() {
     assert!(!matches(Some(dir.path()), "first"));
     assert!(matches(Some(dir.path()), "second"));
 }
+
+#[test]
+fn publish_master_token_exact_bytes() {
+    let config = tempfile::tempdir().unwrap();
+    let value = "exact-é";
+    publish(config.path(), value).unwrap();
+    assert_eq!(
+        std::fs::read(config.path().join(FILE_NAME)).unwrap(),
+        value.as_bytes()
+    );
+}
+
+#[test]
+fn publish_master_token_truncates() {
+    let config = tempfile::tempdir().unwrap();
+    publish(config.path(), "long-existing-value").unwrap();
+    publish(config.path(), "short").unwrap();
+    assert_eq!(
+        std::fs::read(config.path().join(FILE_NAME)).unwrap(),
+        b"short"
+    );
+}
+
+#[test]
+fn publish_master_token_missing_directory() {
+    let config = tempfile::tempdir().unwrap();
+    let missing = config.path().join("missing");
+    assert!(publish(&missing, "value").is_err());
+    assert!(!missing.exists());
+}
+
+#[test]
+fn publish_master_token_round_trip() {
+    let config = tempfile::tempdir().unwrap();
+    let value = "round-trip-token";
+    publish(config.path(), value).unwrap();
+    assert!(matches(Some(config.path()), "round-trip-token"));
+}

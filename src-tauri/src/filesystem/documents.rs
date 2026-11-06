@@ -423,3 +423,10 @@ pub(crate) fn append_config_ignore_rows(
         .open(path)
         .and_then(|mut file| file.write_all(format!("{separator}{rows}").as_bytes()))
 }
+
+pub(crate) fn publish_web_access_token(config_dir: &Path, token: &str) -> io::Result<()> {
+    std::fs::write(config_dir.join("web-token.txt"), token)
+}
+
+#[cfg(test)]
+mod tests;
