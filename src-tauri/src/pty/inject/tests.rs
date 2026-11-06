@@ -3,6 +3,7 @@ use crate::config::settings::{new_settings_state, AppSettings, SettingsState};
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use chrono::Utc;
 use std::collections::VecDeque;
+use tauri::Manager;
 
 mod capability;
 mod clear_watch;
@@ -504,4 +505,121 @@ async fn capture_watch_route(replace: bool, remove: bool, poison: bool) -> bool 
             .clear_route_registry_poison_for_test();
     }
     rows.is_some()
+}
+
+fn injection_order(source: &str) -> Result<(), &'static str> {
+    let scrubbed = rust_source_scrub::scrub(source, rust_source_scrub::Literals::Drop)?;
+    let start = scrubbed
+        .find("async fn inject_text_into_session_impl<")
+        .ok_or("missing injector")?;
+    let rest = &scrubbed[start..];
+    let open = rest.find('{').ok_or("missing injector body")?;
+    let mut depth = 1usize;
+    let close = rest[open + 1..]
+        .char_indices()
+        .find_map(|(index, ch)| {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(open + 1 + index)
+        })
+        .ok_or("unclosed injector body")?;
+    let body: String = rest[open + 1..close]
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let anchors = [
+        "PtyManager::acquire_input_writer(",
+        "check_injection_hold(",
+        "write_injected_text_checked(",
+        "manager.arm_agent_turn(",
+        "drop(permit)",
+        "watch.finish()",
+    ];
+    let mut positions = Vec::new();
+    for anchor in anchors {
+        let matches: Vec<_> = body.match_indices(anchor).collect();
+        if matches.len() != 1 {
+            return Err("missing or duplicate injection anchor");
+        }
+        positions.push(matches[0].0);
+    }
+    if positions[1] < positions[0] {
+        return Err("hold must follow writer");
+    }
+    if positions[5] < positions[4] {
+        return Err("watch must follow permit drop");
+    }
+    if !positions.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err("injection order changed");
+    }
+    Ok(())
+}
+
+fn injection_order_mutant(source: &str, row: usize) -> String {
+    let (moving, before) = match row {
+        1 => (
+            "    check_injection_hold(app, session_id, &hold_policy).await?;\n",
+            "    let permit = PtyManager::acquire_input_writer",
+        ),
+        2 => (
+            "        watch.finish().await.into_result()?;\n",
+            "    drop(permit);",
+        ),
+        _ => panic!("unknown injection mutation"),
+    };
+    assert_eq!(
+        source.matches(moving).count(),
+        1,
+        "missing mutation statement"
+    );
+    assert_eq!(
+        source.matches(before).count(),
+        1,
+        "missing mutation destination"
+    );
+    let without = source.replacen(moving, "", 1);
+    let at = without.find(before).unwrap();
+    let mut mutant = without;
+    mutant.insert_str(at, moving);
+    mutant
+}
+
+fn verify_injection_order_row(source: &str, row: usize) {
+    assert_eq!(injection_order(source), Ok(()));
+    let reason = match row {
+        1 => "hold must follow writer",
+        2 => "watch must follow permit drop",
+        _ => panic!("unknown injection mutation"),
+    };
+    assert_eq!(
+        injection_order(&injection_order_mutant(source, row)),
+        Err(reason)
+    );
+}
+
+#[test]
+fn issue_3946_injection_order() {
+    let source = include_str!("../inject.rs");
+    for row in 1..=2 {
+        verify_injection_order_row(source, row);
+    }
+}
+
+#[test]
+fn issue_3946_injection_order_base() {
+    let Some(dir) = std::env::var_os("ISSUE_3946_BASE_DIR") else {
+        println!("ISSUE3946 P06 BASE_NOT_REQUESTED");
+        return;
+    };
+    assert!(!dir.is_empty(), "empty base directory");
+    let source = std::fs::read_to_string(std::path::PathBuf::from(dir).join("pty/inject.rs"))
+        .expect("read pinned injection source");
+    for row in 1..=2 {
+        verify_injection_order_row(&source, row);
+        println!("ISSUE3946 P06 BASE_PASS {row}");
+        println!("ISSUE3946 P06 MUTANT_REJECTED {row}");
+    }
 }
