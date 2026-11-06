@@ -3,12 +3,16 @@ use super::read_agent_file_source_inner;
 mod wire;
 pub use wire::{
     ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult,
-    ApplySelectionLockRemovalRequest, ApplySelectionLockRemovalResult, AssignmentMode,
-    ConflictDecision, GetReplicaSelectionDefaultRequest, PreviewCodingAgentProfileSelectionRequest,
-    PreviewCodingAgentProfileSelectionResult, PreviewSelectionLockRemovalRequest,
-    PreviewSelectionLockRemovalResult, ProfileAssignmentError, ProfileAssignmentScope,
-    ProfileAssignmentTarget, ReplicaSelectionDefaultResult, SavedPair, SelectionDecisionProjection,
-    SelectionDecisions, SelectionDefault, SelectionState, SetReplicaSelectionDefaultRequest,
+    ApplySelectionLockRemovalRequest, GetReplicaSelectionDefaultRequest,
+    PreviewCodingAgentProfileSelectionRequest, PreviewSelectionLockRemovalRequest,
+    SetReplicaSelectionDefaultRequest,
+};
+#[cfg(test)]
+pub(crate) use wire::{
+    ApplySelectionLockRemovalResult, AssignmentMode, ConflictDecision,
+    PreviewCodingAgentProfileSelectionResult, PreviewSelectionLockRemovalResult,
+    ProfileAssignmentScope, ProfileAssignmentTarget, ReplicaSelectionDefaultResult, SavedPair,
+    SelectionDefault, SelectionState,
 };
 
 mod assignment;
@@ -23,13 +27,13 @@ pub(crate) use assignment::{
 };
 
 mod target;
+pub use target::ScopeFault;
 pub(crate) use target::{
     canonical_compare_key, classify_restart_failure, enumerate_profile_assignment_targets,
     normalize_profile_letter_for_assignment, prevalidate_profile_assignment_restarts,
     profile_assignment_requires_explicit_confirmation, validate_assignment_decision_scope,
     validate_profile_assignment_confirmation, validate_profile_assignment_request,
 };
-pub use target::{ScopeFault, ScopeFaultCode};
 
 mod fingerprint;
 pub(crate) use fingerprint::{
@@ -68,5 +72,5 @@ pub(crate) use target::build_profile_assignment_target;
 #[cfg(test)]
 pub(crate) use target::{
     canonical_real_dir, collect_kind_replica_dirs, collect_replica_dirs_in_workgroup, target_pair,
-    CandidateDirs, ProfileCandidate, ProfileTargetEnumeration,
+    CandidateDirs, ProfileCandidate, ProfileTargetEnumeration, ScopeFaultCode,
 };
