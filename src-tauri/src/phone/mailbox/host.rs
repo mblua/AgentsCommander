@@ -66,16 +66,13 @@ pub(crate) trait MailboxHost:
     #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn begin_coordinator_create(&self, cwd: &str) -> Option<Self::CoordinatorTicket>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn master_required(&self) -> &MasterToken;
 
     #[cfg_attr(not(test), allow(dead_code, reason = "3946 phased consumer migration"))]
     fn selection_opt(&self) -> Option<&SelectionCoordinator>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn restore_required(&self) -> &Arc<RestoreInProgress>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn purge_required(&self) -> &Arc<PurgeGuard>;
 
     fn pending_clear(&self) -> &Arc<PendingSelfClear>;
@@ -186,7 +183,6 @@ pub(crate) trait MailboxHost:
         session_id: Uuid,
     ) -> impl Future<Output = BoundaryMetadataOutcome> + Send + 'a;
 
-    #[cfg_attr(test, allow(dead_code))]
     fn spawn_background(&self, future: BoxFuture<'static, ()>);
 }
 
