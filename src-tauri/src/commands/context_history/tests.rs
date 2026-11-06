@@ -129,12 +129,17 @@ impl Project {
     }
 
     fn seed(&self, records: &[HistoryRecord]) {
+        self.seed_at(records, now_utc_ms());
+    }
+
+    /// Seed with an explicit append clock, so retention keeps old fixtures.
+    fn seed_at(&self, records: &[HistoryRecord], now: i64) {
         let config = HistoryConfig {
             enabled: true,
             retention_days: 30,
         };
         let mut writer = HistoryWriter::open(&self.dir.path().join(".ac"), &config).expect("open");
-        writer.append(records, now_utc_ms()).expect("append");
+        writer.append(records, now).expect("append");
     }
 }
 
@@ -425,6 +430,56 @@ fn report_detail_and_changes_share_one_snapshot_contract() {
         h.error_code(NAMES[2], by_runtime),
         "InvalidQuery",
         "runtime id is not logical"
+    );
+    assert_eq!(h.fallbacks(), 0);
+}
+
+/// The common wire fixture of `changes` (plan v18, AC-3532-017); TS uses the same Q and L.
+const WIRE_L: &str = "11111111-1111-4111-8111-111111111111";
+
+fn wire_q(project: &str) -> Value {
+    let q = r#"{"projectPath":"__PROJECT__","fromUtcMs":0,"toUtcMs":86400000,"agentKey":"dev",
+        "teamId":null,"codingAgentId":{"kind":"any"},"model":{"kind":"any"},
+        "effort":{"kind":"any"},"cursor":null}"#;
+    let mut q: Value = serde_json::from_str(q).expect("Q");
+    q["projectPath"] = json!(project);
+    q
+}
+
+fn flat(q: &Value, logical: &str) -> Value {
+    let mut flat = q.clone();
+    flat["logicalSessionId"] = json!(logical);
+    flat
+}
+
+#[test]
+fn changes_wire_fixture_is_nested_and_the_flat_shape_is_refused() {
+    let project = Project::new();
+    let logical = Uuid::parse_str(WIRE_L).expect("L");
+    let mut session = record(&project.text, "dev", "team-a", 7, HOUR_MS);
+    session.logical_session_id = logical;
+    session.initial_record_id = Some(session.record_id);
+    session.runtime_session_id = Uuid::from_u128(0xabc);
+    session.sequence = 1;
+    project.seed_at(&[session], 2 * HOUR_MS);
+    let h = harness(&[&project.text], Vec::new(), false);
+    let q = wire_q(&project.text);
+
+    let nested = json!({ "query": q, "logicalSessionId": WIRE_L });
+    let page = h.invoke(NAMES[2], nested).expect("nested changes");
+    assert_eq!(page["logicalSessionId"], json!(WIRE_L));
+    assert_eq!(page["agentKey"], "dev");
+    let records = page["recordsPage"].as_array().expect("records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["logicalSessionId"], json!(WIRE_L));
+
+    assert_eq!(h.error_code(NAMES[2], flat(&q, WIRE_L)), "InvalidQuery");
+    let stranger = Project::new();
+    let unregistered = flat(&wire_q(&stranger.text), WIRE_L);
+    assert_eq!(
+        h.error_code(NAMES[2], unregistered),
+        "InvalidQuery",
+        "shape before project"
     );
     assert_eq!(h.fallbacks(), 0);
 }

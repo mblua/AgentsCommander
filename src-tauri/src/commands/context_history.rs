@@ -136,10 +136,10 @@ async fn registered_paths(settings: &SettingsState, project: &str) -> IpcResult<
     if !requested.is_absolute() {
         return Err(invalid_project());
     }
-    let snapshot = settings
-        .current_snapshot()
-        .await
-        .map_err(|_| read_failed())?;
+    let snapshot = settings.current_snapshot().await.map_err(|_error| {
+        log::warn!("[context-history] settings snapshot unavailable for a history query");
+        read_failed()
+    })?;
     let requested = PathBuf::from(plain_path(project));
     let mut paths: Vec<PathBuf> = snapshot
         .project_paths
@@ -185,7 +185,10 @@ where
         build(canonical, retention_days, records)
     })
     .await
-    .map_err(|_| read_failed())?
+    .map_err(|_error| {
+        log::warn!("[context-history] history read task failed");
+        read_failed()
+    })?
 }
 
 fn now_utc_ms() -> i64 {
