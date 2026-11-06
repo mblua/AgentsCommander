@@ -346,8 +346,8 @@ where
     }));
     handle
         .await
-        .map_err(|_| "selectionOperationTurnJoinFailed".to_string())?;
+        .map_err(|_join_error| "selectionOperationTurnJoinFailed".to_string())?;
     receive
         .await
-        .map_err(|_| "selectionOperationTurnJoinFailed".to_string())?
+        .map_err(|_channel_error| "selectionOperationTurnJoinFailed".to_string())?
 }
