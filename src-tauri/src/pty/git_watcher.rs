@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::stream::StreamExt;
-use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use crate::config::settings::AppSettings;
@@ -404,22 +403,22 @@ pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
     }
 }
 
+/// #3948 - typed, core-owned transport for `GitWatcher` badge notifications.
+/// Called synchronously after a successful CAS write, before the cache insert;
+/// no watcher lock is held across the call. The edge adapter owns event naming.
+pub trait GitEvents: Send + Sync + 'static {
+    fn session_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>);
+}
+
 pub struct GitWatcher {
     git_state: Arc<GitState>,
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     /// `None` only for the #2683 headless test constructor; production always
     /// stores `Some` through `with_state`.
-    app_handle: Option<AppHandle>,
+    events: Option<Arc<dyn GitEvents>>,
     /// Last-emitted per-repo state keyed by session id. Equality gate for `session_git_repos`.
     /// `Vec` equality is order-sensitive; callers preserve replica config.json `repos` order.
     cache: Mutex<HashMap<Uuid, Vec<SessionRepo>>>,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GitReposPayload {
-    session_id: String,
-    repos: Vec<SessionRepo>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -431,28 +430,29 @@ pub(crate) struct CoordinatorChangedPayload {
 
 impl GitWatcher {
     #[cfg(test)]
-    pub fn new(
+    pub fn new<E: GitEvents>(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-        app_handle: AppHandle,
+        events: E,
     ) -> Arc<Self> {
-        Self::with_state(session_manager, app_handle, Arc::new(GitState::new()))
+        Self::with_state(session_manager, events, Arc::new(GitState::new()))
     }
 
-    pub fn with_state(
+    pub fn with_state<E: GitEvents>(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-        app_handle: AppHandle,
+        events: E,
         git_state: Arc<GitState>,
     ) -> Arc<Self> {
+        let events: Arc<dyn GitEvents> = Arc::new(events);
         Arc::new(Self {
             session_manager,
             git_state,
-            app_handle: Some(app_handle),
+            events: Some(events),
             cache: Mutex::new(HashMap::new()),
         })
     }
 
-    /// #2683 - a watcher with no `AppHandle`, for the unix `spawn_sync` tests
-    /// that cannot build a `tauri::App` on a headless runner. It never emits.
+    /// #2683 - a watcher with no event transport, for the unix `spawn_sync` tests
+    /// that cannot build a desktop app on a headless runner. It never notifies.
     #[cfg(test)]
     pub(crate) fn new_headless_for_tests(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -460,7 +460,7 @@ impl GitWatcher {
         Arc::new(Self {
             session_manager,
             git_state: Arc::new(GitState::new()),
-            app_handle: None,
+            events: None,
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -560,14 +560,8 @@ impl GitWatcher {
                 };
 
                 if wrote {
-                    if let Some(app_handle) = &self.app_handle {
-                        let _ = app_handle.emit(
-                            "session_git_repos",
-                            GitReposPayload {
-                                session_id: id.to_string(),
-                                repos: refreshed.clone(),
-                            },
-                        );
+                    if let Some(events) = &self.events {
+                        events.session_git_repos(id, refreshed.clone());
                     }
                     self.cache.lock().unwrap().insert(id, refreshed);
                 } else {
@@ -700,8 +694,8 @@ pub(super) fn build_work_list(
 /// #1298 - the single global POLLING producer of per-repo git state. Both watchers
 /// read the snapshot it publishes instead of spawning `git` themselves.
 ///
-/// Takes `SettingsState` rather than an `AppHandle` on purpose: the sweeper emits
-/// nothing, so it must not acquire a Tauri transport dependency it does not need.
+/// Takes `SettingsState` rather than an event transport on purpose: the sweeper
+/// emits nothing, so it must not acquire a transport dependency it does not need.
 /// It unifies DETECTION, not EMISSION (INV-4): the two watchers keep their own
 /// events, keys, cadences and emission gates.
 pub struct GitSweeper {
