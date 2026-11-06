@@ -6,7 +6,7 @@ use super::payload::SelectionCoordinatorError;
 use super::timing_probe;
 
 tokio::task_local! {
-    pub(super) static IN_SELECTION_WORKER: ();
+    pub(crate) static IN_SELECTION_WORKER: ();
 }
 
 #[cfg(test)]

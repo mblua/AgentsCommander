@@ -16,7 +16,7 @@ use std::time::Instant;
 #[cfg(test)]
 pub(crate) use turn::BENCH_CONTEXT;
 #[cfg(test)]
-use turn::TEST_SELECTION_TURN;
+pub(crate) use turn::TEST_SELECTION_TURN;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -663,14 +663,14 @@ mod continuation_runtime;
 pub(crate) mod task;
 mod turn;
 use envelope::CoordinatorEnvelope;
+#[cfg(test)]
+pub(crate) use turn::acquire_selection_read_turn;
 pub(crate) use turn::IN_SELECTION_WORKER;
 pub(crate) use turn::{
     acquire_selection_operation_turn, run_owned_selection_operation,
     run_owned_selection_operation_with_tasks, run_owned_selection_read_timed,
     run_owned_selection_read_timed_with_tasks,
 };
-#[cfg(test)]
-pub(crate) use turn::{acquire_selection_read_turn, TEST_SELECTION_TURN};
 #[cfg(test)]
 pub(crate) use turn::{
     run_owned_selection_operation_timed, run_owned_selection_operation_timed_with_tasks,
