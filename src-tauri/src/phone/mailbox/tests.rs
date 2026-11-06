@@ -824,10 +824,7 @@ fn issue_3189_adapter_wiring() {
 fn issue_3946_handoff_order() {
     let source = include_str!("self_handoff.rs");
     assert!(issue_3946_handoff_contract(source));
-    let mutant = source.replace(
-        "flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action",
-        "false",
-    );
+    let mutant = source.replace("if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action", "");
     assert_ne!(mutant, source);
     assert!(!issue_3946_handoff_contract(&mutant));
     assert!(!issue_3946_handoff_contract(
@@ -845,10 +842,7 @@ fn issue_3946_handoff_order_base() {
         std::fs::read_to_string(std::path::Path::new(&dir).join("phone/mailbox/self_handoff.rs"))
             .unwrap();
     assert!(issue_3946_handoff_contract(&source));
-    let mutant = source.replace(
-        "flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action",
-        "false",
-    );
+    let mutant = source.replace("if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action", "");
     assert_ne!(mutant, source);
     assert!(!issue_3946_handoff_contract(&mutant));
     println!("ISSUE3946 P10 BASE_PASS 1");
