@@ -45,7 +45,6 @@ pub(crate) trait CoordinatorTicket {
 }
 
 /// Native capabilities available to captured mailbox work.
-#[allow(dead_code, reason = "3946 phased consumer migration")]
 pub(crate) trait MailboxHost:
     WakeDeliveryState
     + ResponseAdmissionState
@@ -70,7 +69,7 @@ pub(crate) trait MailboxHost:
     #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn master_required(&self) -> &MasterToken;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
+    #[cfg_attr(not(test), allow(dead_code, reason = "3946 phased consumer migration"))]
     fn selection_opt(&self) -> Option<&SelectionCoordinator>;
 
     #[allow(dead_code, reason = "3946 phased consumer migration")]
