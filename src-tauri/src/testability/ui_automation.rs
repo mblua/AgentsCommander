@@ -375,7 +375,7 @@ impl UiAutomationState {
 
         for pending in expired {
             let response = expired_response_for_request(&pending.request);
-            if !pending.response_path.exists() {
+            if !crate::filesystem::directories::ui_automation_path_exists(&pending.response_path) {
                 let _ = write_json_atomic_new(&pending.response_path, &response);
             }
             let _ = retry_remove_file(&pending.inflight_path);

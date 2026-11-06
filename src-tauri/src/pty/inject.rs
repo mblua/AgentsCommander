@@ -1,16 +1,25 @@
 mod clear_watch;
+pub(crate) mod host;
 mod preflight;
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use tauri::Manager;
 use uuid::Uuid;
+
+pub(crate) use self::host::InjectionHost;
 
 use crate::pty::backend::PTY_INPUT_MAX_BYTES;
 use crate::pty::manager::{PtyInputPermit, PtyManager, PtyRouteWriteGuard};
 use crate::session::manager::{CarrierSnapshot, SessionManager};
 use crate::session::session::{Session, SessionStatus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryMetadataOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+}
 
 // Internal mailbox suspension, consumed only after the writer/lifecycle guards
 // have returned. It is never a delivered outcome or public status.
@@ -404,8 +413,8 @@ pub async fn submit_exact_agent_input_with_permit(
 /// This is the ONLY function that should be used for text-block injection.
 /// Direct keystrokes from xterm.js bypass this and call `PtyManager::write()`
 /// directly via the `pty_write` Tauri command.
-pub async fn inject_text_into_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub async fn inject_text_into_session<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: Uuid,
     text: &str,
 ) -> Result<(), String> {
@@ -425,8 +434,8 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
         reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
     )
 )]
-pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_peer_wake_text_into_session<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     message_id: &str,
@@ -452,8 +461,8 @@ pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
         reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
     )
 )]
-pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     message_id: &str,
@@ -461,7 +470,7 @@ pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<R, F
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session) -> Result<(), String>,
 {
     inject_peer_wake_with_current_facts(
@@ -478,8 +487,8 @@ where
 
 /// Internal extension of the same peer boundary: upper policy admission sees
 /// the interior snapshot already held by the injector, without manager reentry.
-pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_peer_wake_with_current_facts<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     message_id: &str,
@@ -488,7 +497,7 @@ pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session, &crate::session::manager::CarrierSnapshot) -> Result<(), String>,
 {
     let observe_codex_clear = codex_clear_observation.is_some();
@@ -518,19 +527,19 @@ where
     if result.is_ok() {
         // The message left the deferred set the moment its text was written; a
         // repeated clear is a no-op.
-        crate::commands::pty::clear_held_wake(app, session_id, message_id);
+        app.clear_held_wake(session_id, message_id);
     }
     result
 }
 
-pub(crate) async fn inject_text_into_session_with_pre_write_check<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_text_into_session_with_pre_write_check<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce() -> Result<(), String>,
 {
     inject_text_into_session_impl(
@@ -574,14 +583,14 @@ fn validate_supported_agent_session(session: &Session, session_id: Uuid) -> Resu
     Ok(())
 }
 
-pub(crate) async fn inject_text_into_supported_agent_session_with_pre_write_check<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_text_into_supported_agent_session_with_pre_write_check<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session) -> Result<(), String>,
 {
     inject_text_into_session_impl(
@@ -609,11 +618,11 @@ enum HoldPolicy<'a> {
 }
 
 /// Read-only preflight; the injector repeats this under the writer permit.
-pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn internal_notice_block_reason<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: Uuid,
 ) -> Option<String> {
-    if let Some(menu) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+    if let Some(menu) = app.menu() {
         if menu.is_blocked(session_id) {
             return Some(format!(
                 "{}: session {} is blocked by interactive menu",
@@ -622,7 +631,7 @@ pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
             ));
         }
     }
-    if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
+    if app.typing_hold_defers_injection(session_id).await {
         return Some(format!(
             "{}: session {} is holding internal notice injection while the user is typing",
             crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
@@ -632,14 +641,14 @@ pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
     None
 }
 
-pub(crate) async fn inject_internal_notice_into_supported_agent_session<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_internal_notice_into_supported_agent_session<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session) -> Result<(), String>,
 {
     inject_text_into_session_impl(
@@ -708,12 +717,12 @@ where
     }
 }
 
-async fn check_injection_hold<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn check_injection_hold<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: uuid::Uuid,
     hold_policy: &HoldPolicy<'_>,
 ) -> Result<(), String> {
-    if let Some(menu_guard) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+    if let Some(menu_guard) = app.menu() {
         if menu_guard.is_blocked(session_id) {
             return Err(format!(
                 "{}: session {} is blocked by interactive menu",
@@ -728,8 +737,8 @@ async fn check_injection_hold<R: tauri::Runtime>(
     // Peer wakes record their IDs; internal notices defer without registering
     // an ID. Plain, restart-resume and logical follow-up writes remain exempt.
     if let HoldPolicy::PeerWake(message_id) = hold_policy {
-        if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
-            crate::commands::pty::note_held_wake(app, session_id, message_id);
+        if app.typing_hold_defers_injection(session_id).await {
+            app.note_held_wake(session_id, message_id);
             return Err(format!(
                 "{}: session {} is holding peer wake injection while the user is typing",
                 crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
@@ -746,8 +755,8 @@ async fn check_injection_hold<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn inject_text_into_session_impl<R: tauri::Runtime, F>(
-    app: &tauri::AppHandle<R>,
+async fn inject_text_into_session_impl<S: InjectionHost + ?Sized, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     hold_policy: HoldPolicy<'_>,
@@ -760,7 +769,7 @@ where
 {
     // Resolve one public snapshot without retaining a manager guard across an await.
     let manager = {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let manager = session_mgr.read().await.clone();
         manager
     };
@@ -771,7 +780,7 @@ where
     // serialized write boundary (plan 7.5). The permit is held across the whole
     // text-then-Enter seam, which gives legacy/logical injection writer
     // serialization (invariant 3) without changing its public byte sequence.
-    let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let pty_manager = app.routes().clone();
     let permit = PtyManager::acquire_input_writer(&pty_manager, session_id)
         .await
         .map_err(|error| error.to_string())?;
@@ -811,7 +820,8 @@ where
     )
     .await;
     finish_injected_text_write(written, session_id, text.len())?;
-    crate::commands::pty::mark_successful_pty_write_busy(app, session_id, text.len()).await;
+    app.mark_successful_pty_write_busy(session_id, text.len())
+        .await;
 
     // Supported interactive agent CLIs receive two staggered Enters. The
     // second is nonfatal because the first may already have submitted the text.
@@ -828,14 +838,14 @@ where
     // `mark_successful_pty_write_busy` call above so an early `Err` return
     // leaves the session unarmed. NOT "an undelivered message never arms": R8.
     {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let manager = session_mgr.read().await.clone();
         manager.arm_agent_turn(session_id).await;
         // #1682 - the text write above marked this session through
         // `mark_successful_pty_write_busy` (`:388`); this clear cancels that mark.
         // It keys on ARMING, not on proven delivery: R8 arms and clears with
         // nothing submitted. Self-cancelling here, so no caller needs its own site.
-        crate::commands::pty::clear_control_write_mark(app, session_id);
+        app.clear_control_write_mark(session_id);
     }
 
     drop(permit);

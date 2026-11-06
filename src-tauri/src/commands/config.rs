@@ -16,11 +16,7 @@ pub use diagnostics::{
 
 mod settings_snapshot;
 pub(crate) use settings_snapshot::settings_snapshot_helper;
-pub use settings_snapshot::{
-    __cmd__get_settings, __tauri_command_name_get_settings, get_settings, IssueSource,
-    ProjectPathIssue, ProjectPathReconciliationError, ProjectPathResolution, RawJsonFieldState,
-    RawStringFieldState, ReconciliationStage, SettingsSnapshot,
-};
+pub use settings_snapshot::{__cmd__get_settings, __tauri_command_name_get_settings, get_settings};
 
 mod coding_agent_catalog;
 pub use coding_agent_catalog::{
@@ -82,13 +78,8 @@ pub use profile_selection::{
     preview_coding_agent_profile_selection, preview_selection_lock_removal,
     set_replica_selection_default, ApplyCodingAgentProfileSelectionRequest,
     ApplyCodingAgentProfileSelectionResult, ApplySelectionLockRemovalRequest,
-    ApplySelectionLockRemovalResult, AssignmentMode, ConflictDecision,
     GetReplicaSelectionDefaultRequest, PreviewCodingAgentProfileSelectionRequest,
-    PreviewCodingAgentProfileSelectionResult, PreviewSelectionLockRemovalRequest,
-    PreviewSelectionLockRemovalResult, ProfileAssignmentError, ProfileAssignmentScope,
-    ProfileAssignmentTarget, ReplicaSelectionDefaultResult, SavedPair, ScopeFault, ScopeFaultCode,
-    SelectionDecisionProjection, SelectionDecisions, SelectionDefault, SelectionState,
-    SetReplicaSelectionDefaultRequest,
+    PreviewSelectionLockRemovalRequest, SetReplicaSelectionDefaultRequest,
 };
 pub(crate) use profile_selection::{
     apply_coding_agent_profile_selection_inner, apply_selection_lock_removal_inner,
@@ -109,8 +100,7 @@ pub use self::web_server::{
     __tauri_command_name_start_web_server, __tauri_command_name_stop_api_server,
     __tauri_command_name_stop_web_server, api_server_status, get_web_server_owned_status,
     get_web_server_status, list_web_server_interfaces, mint_api_client, open_web_remote,
-    start_api_server, start_web_server, stop_api_server, stop_web_server, MintApiClientResponse,
-    WebServerBindFailure, WebServerInterfaceInfo, WebServerOwnedStatus, WebServerOwnershipState,
+    start_api_server, start_web_server, stop_api_server, stop_web_server,
 };
 
 mod preferences;
@@ -151,7 +141,8 @@ use self::web_server::{
     ensure_web_remote_open_allowed, is_tcp_listening, is_tcp_socket_listening,
     map_web_server_interfaces, mint_api_client_with_path, resolve_web_server_owned_status,
     select_current_bind_failure, stop_web_server_handle, web_remote_url, web_server_probe_addr,
-    MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
+    WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
+    MINT_API_CLIENT_NOTE,
 };
 #[cfg(test)]
 use crate::web::broadcast::WsBroadcaster;
@@ -194,16 +185,25 @@ use profile_selection::build_profile_assignment_target;
 #[cfg(all(test, windows))]
 pub(crate) use profile_selection::canonical_compare_key;
 #[cfg(test)]
+pub(crate) use profile_selection::ProfileAssignmentScope;
+#[cfg(test)]
 use profile_selection::{
     assignment_fingerprint, canonical_real_dir, classify_restart_failure,
     collect_kind_replica_dirs, collect_replica_dirs_in_workgroup,
     enumerate_profile_assignment_targets, profile_assignment_requires_explicit_confirmation,
     selection_default_fingerprint, selection_error_code, source_selection_fingerprint, target_pair,
-    validate_profile_assignment_confirmation, CandidateDirs, ProfileCandidate,
-    ProfileTargetEnumeration,
+    validate_profile_assignment_confirmation, ApplySelectionLockRemovalResult, AssignmentMode,
+    CandidateDirs, ConflictDecision, PreviewCodingAgentProfileSelectionResult,
+    PreviewSelectionLockRemovalResult, ProfileAssignmentTarget, ProfileCandidate,
+    ProfileTargetEnumeration, ReplicaSelectionDefaultResult, SavedPair, ScopeFaultCode,
+    SelectionDefault, SelectionState,
 };
 #[cfg(test)]
 pub(crate) use settings_snapshot::settings_snapshot_from;
+#[cfg(test)]
+use settings_snapshot::{
+    ProjectPathIssue, ProjectPathResolution, ReconciliationStage, SettingsSnapshot,
+};
 #[cfg(test)]
 pub(crate) use settings_update::{
     persist_protected_settings_update, persist_settings_draft_update,

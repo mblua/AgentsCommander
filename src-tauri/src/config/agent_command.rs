@@ -50,6 +50,60 @@ pub use profile_hash::{
     raw_merged_profile_env,
 };
 
+pub(crate) fn resolve_configured_agent_spawn_for_cwd(
+    settings: &AppSettings,
+    agent_id: &str,
+    cwd: &str,
+    requested_profile: Option<&str>,
+    requested_profile_authoritative: bool,
+) -> Result<Option<AgentSpawnCommand>, String> {
+    // #2716 (B3, option C): the agents layer could not be read, so the list is not
+    // the user's; refuse rather than fall through to a plain terminal.
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    crate::config::agent_command::resolve_agent_spawn_command(
+        settings,
+        agent_id,
+        Some(std::path::Path::new(&cwd)),
+        requested_profile,
+        requested_profile_authoritative,
+    )
+    .map(Some)
+}
+
+pub(crate) fn build_configured_agent_spawn_for_cwd(
+    settings: &AppSettings,
+    agent_id: &str,
+    cwd: &str,
+    requested_profile: Option<&str>,
+) -> Result<Option<AgentSpawnCommand>, String> {
+    // #2716 (B3, option C): the same refusal as the resolver above; each builder
+    // carries its own, so no entry point can reach a spawn past either one.
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    crate::config::agent_command::build_agent_spawn_command(
+        settings,
+        agent_id,
+        Some(std::path::Path::new(&cwd)),
+        requested_profile,
+    )
+    .map(Some)
+}
+
 /// #1551 - true when `token` is a bare program name (no path separator, not absolute):
 /// the only form resolved through PATH, and the only form the version probe executes.
 pub fn is_bare_program_token(token: &str) -> bool {
@@ -288,7 +342,7 @@ fn stringify_agent_command_token(token: &str) -> String {
     out
 }
 
-fn executable_basename(s: &str) -> String {
+pub(crate) fn executable_basename(s: &str) -> String {
     std::path::Path::new(s)
         .file_stem()
         .and_then(|s| s.to_str())

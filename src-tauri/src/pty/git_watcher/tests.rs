@@ -1,5 +1,7 @@
 use super::*;
 
+mod events;
+
 /// CAS semantic guard (validation #18): a stale `expected_gen` must fail and leave state untouched.
 #[tokio::test]
 async fn set_git_repos_if_gen_rejects_stale_gen() {

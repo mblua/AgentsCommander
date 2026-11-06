@@ -1,5 +1,6 @@
 #[macro_use]
 mod diagnostics;
+pub(crate) mod browser;
 mod clear_attempt;
 mod handoff;
 mod internal_delivery;
@@ -13,6 +14,7 @@ mod pty_claim;
 mod pty_dispatch;
 pub(crate) mod pty_observation;
 mod pty_validation;
+pub(crate) mod refresh;
 mod request_polling;
 pub(crate) mod response_observation;
 mod response_source;

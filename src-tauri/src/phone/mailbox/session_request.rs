@@ -279,55 +279,13 @@ impl MailboxPoller {
                     .await;
             }
         };
-        let session = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            mgr.find_by_token(token_uuid).await
-        };
-        let session = match session {
-            Some(s) => s,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-clear: no live session owns this token; restart or respawn the \
-                        session",
-                    )
-                    .await;
-            }
-        };
-        let session_id = match Uuid::parse_str(&session.id) {
-            Ok(u) => u,
-            Err(_) => {
-                return self
-                    .reject_message(path, msg, "self-clear: internal error resolving session id")
-                    .await;
-            }
-        };
-
-        // Resolve before the handoff existence gate so an unsupported source
-        // cannot archive or queue self-maintenance state.
-        let clear_text = match crate::pty::inject::resolve_logical_command_text(
-            &session.shell,
-            LogicalPtyCommand::Clear,
-        ) {
-            Some(text) => text,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        &format!(
-                            "self-handoff-and-clear: session shell '{}' has no verified \
-                            logical-clear mapping. Claude / Codex / Antigravity / Cursor agent \
-                            direct shells use /clear; exact Pi uses /new. cmd / pwsh outer \
-                            wrappers remain unsupported.",
-                            session.shell
-                        ),
-                    )
-                    .await;
-            }
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let (session, session_id, clear_text) = match self
+            .resolve_self_clear_target(&session_mgr, token_uuid, path, msg)
+            .await
+        {
+            Ok(target) => target,
+            Err(outcome) => return outcome,
         };
 
         let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
@@ -361,43 +319,16 @@ impl MailboxPoller {
                 .await;
         }
 
-        // 2b. #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing
-        // with
-        // no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
-        // read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
-        //     read-time safety net is the handoff prompt's "if missing or empty, wait" clause
-        //     (self_clear_handoff_base_prompt). Use .is_file() so a stray directory named
-        //     SELF-HANDOFF.md does not pass. Runs BEFORE the idempotency insert and the archive, so
-        //     nothing is queued/archived with nothing to resume.
-        let handoff_path =
-            std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
-        if !mailbox_disk::mailbox_path_is_file(&handoff_path) {
-            return self
-                .reject_message(
-                    path,
-                    msg,
-                    &format!(
-                        "self-handoff-and-clear: SELF-HANDOFF.md not found in your root ({}); \
-                         write it before requesting self-handoff-and-clear.",
-                        session.working_directory
-                    ),
-                )
-                .await;
+        if let Some(outcome) = self.reject_missing_handoff(path, msg, &session).await {
+            return outcome;
         }
 
         // 3. Idempotency - atomic check-and-set. insert() returns false if already present.
-        let reservation = pending.reserve_legacy(session_id);
-        let newly_inserted = match reservation {
-            Ok(_) => true,
-            Err(MaintenanceError::AlreadyLegacy) => false,
+        let (newly_inserted, status) = match Self::reserve_legacy_status(&pending, session_id) {
+            Ok(reserved) => reserved,
             Err(error) => {
                 return self.reject_message(path, msg, &error.to_string()).await;
             }
-        };
-        let status = if newly_inserted {
-            "queued"
-        } else {
-            "already_queued"
         };
 
         // 4. Spawn the deferred two-phase sustained-idle gate (detached; never blocks the poller).
@@ -406,29 +337,8 @@ impl MailboxPoller {
         //    decision policy is covered separately by the pure `self_clear_gate_advance` tests.
         //    Durations are passed in so a future integration test can drive it fast.
         if newly_inserted {
-            // #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
-            // must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
-            // (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
-            // runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
-            // assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
-            // leaves SELF-FORGET archived but uncleared; content is preserved in
-            // self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
             let root = std::path::Path::new(&session.working_directory);
-            let forgotten_summary = capture_self_forget_summary(root);
-            let ts = chrono::Local::now()
-                .format(ARCHIVE_TIMESTAMP_FORMAT)
-                .to_string();
-            match archive_root_md(root, "SELF-FORGET", &ts) {
-                Ok(Some(p)) => log::info!(
-                    "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
-                    p.display()
-                ),
-                Ok(None) => {} // no SELF-FORGET.md; nothing to archive
-                Err(e) => log::warn!(
-                    "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
-                        {session_id} (non-fatal): {e}"
-                ),
-            }
+            let forgotten_summary = Self::archive_self_forget(root, session_id);
 
             #[cfg(not(test))]
             {
@@ -472,6 +382,149 @@ impl MailboxPoller {
         // 5. Write the queue-ack response, then move the message to delivered/.
         self.write_self_clear_response(app, path, msg, session_id, status, is_app_outbox)
             .await
+    }
+
+    /// Resolves the self-clear target session, its id and the logical-clear text.
+    /// On any refusal it rejects the message and returns the reject outcome as `Err`.
+    async fn resolve_self_clear_target(
+        &self,
+        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+        token_uuid: Uuid,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+    ) -> Result<(SessionInfo, Uuid, &'static str), Result<(), String>> {
+        let session = {
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        };
+        let session = match session {
+            Some(s) => s,
+            None => {
+                return Err(self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear: no live session owns this token; restart or respawn the \
+                        session",
+                    )
+                    .await);
+            }
+        };
+        let session_id = match Uuid::parse_str(&session.id) {
+            Ok(u) => u,
+            Err(_) => {
+                return Err(self
+                    .reject_message(path, msg, "self-clear: internal error resolving session id")
+                    .await);
+            }
+        };
+
+        // Resolve before the handoff existence gate so an unsupported source
+        // cannot archive or queue self-maintenance state.
+        let clear_text = match crate::pty::inject::resolve_logical_command_text(
+            &session.shell,
+            LogicalPtyCommand::Clear,
+        ) {
+            Some(text) => text,
+            None => {
+                return Err(self
+                    .reject_message(
+                        path,
+                        msg,
+                        &format!(
+                            "self-handoff-and-clear: session shell '{}' has no verified \
+                            logical-clear mapping. Claude / Codex / Antigravity / Cursor agent \
+                            direct shells use /clear; exact Pi uses /new. cmd / pwsh outer \
+                            wrappers remain unsupported.",
+                            session.shell
+                        ),
+                    )
+                    .await);
+            }
+        };
+
+        Ok((session, session_id, clear_text))
+    }
+
+    /// Reserves the legacy self-clear slot. Returns whether it was newly inserted and the
+    /// matching queue-ack status; an existing legacy reservation is not an error.
+    fn reserve_legacy_status(
+        pending: &PendingSelfClear,
+        session_id: Uuid,
+    ) -> Result<(bool, &'static str), MaintenanceError> {
+        let newly_inserted = match pending.reserve_legacy(session_id) {
+            Ok(_) => true,
+            Err(MaintenanceError::AlreadyLegacy) => false,
+            Err(error) => return Err(error),
+        };
+        let status = if newly_inserted {
+            "queued"
+        } else {
+            "already_queued"
+        };
+        Ok((newly_inserted, status))
+    }
+
+    /// #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
+    /// no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
+    /// read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
+    /// read-time safety net is the handoff prompt's "if missing or empty, wait" clause
+    /// (self_clear_handoff_base_prompt). Use .is_file() so a stray directory named
+    /// SELF-HANDOFF.md does not pass. Runs BEFORE the idempotency insert and the archive, so
+    /// nothing is queued/archived with nothing to resume. Returns the reject outcome, if any.
+    async fn reject_missing_handoff(
+        &self,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        session: &SessionInfo,
+    ) -> Option<Result<(), String>> {
+        let handoff_path =
+            std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
+        if mailbox_disk::mailbox_path_is_file(&handoff_path) {
+            return None;
+        }
+        Some(
+            self.reject_message(
+                path,
+                msg,
+                &format!(
+                    "self-handoff-and-clear: SELF-HANDOFF.md not found in your root ({}); \
+                     write it before requesting self-handoff-and-clear.",
+                    session.working_directory
+                ),
+            )
+            .await,
+        )
+    }
+
+    /// #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
+    /// must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
+    /// (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
+    /// runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
+    /// assertion can pass. Decoupled from clear success (queue-time): an abandoned cycle
+    /// leaves SELF-FORGET archived but uncleared; content is preserved in
+    /// self-clear/<ts>_SELF-FORGET.md, re-issue continues normally.
+    /// Returns the forgotten summary captured before archiving.
+    fn archive_self_forget(
+        root: &std::path::Path,
+        session_id: Uuid,
+    ) -> Option<super::handoff::ForgottenSummary> {
+        let forgotten_summary = capture_self_forget_summary(root);
+        let ts = chrono::Local::now()
+            .format(ARCHIVE_TIMESTAMP_FORMAT)
+            .to_string();
+        match archive_root_md(root, "SELF-FORGET", &ts) {
+            Ok(Some(p)) => log::info!(
+                "[mailbox] self-handoff-and-clear: archived SELF-FORGET.md -> {}",
+                p.display()
+            ),
+            Ok(None) => {} // no SELF-FORGET.md; nothing to archive
+            Err(e) => log::warn!(
+                "[mailbox] self-handoff-and-clear: SELF-FORGET.md archive failed for session \
+                    {session_id} (non-fatal): {e}"
+            ),
+        }
+        forgotten_summary
     }
 
     fn session_has_visible_raise_hand_slot(session: &SessionInfo) -> bool {

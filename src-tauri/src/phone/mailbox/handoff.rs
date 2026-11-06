@@ -179,38 +179,40 @@ pub(crate) fn prune_retry_tracker(
     live_claims: &std::collections::HashSet<PathBuf>,
     #[cfg(test)] probe_barrier: Option<&RetryPruneProbeBarrier>,
 ) {
-    retry_tracker.retain(|path, _| match path.try_exists() {
-        Ok(true) => true,
-        Ok(false) => {
-            let claim = wake_claim_path(path);
-            #[cfg(test)]
-            if let Some(probe_barrier) = probe_barrier {
-                probe_barrier.origin_absent.wait();
-                probe_barrier.restore_complete.wait();
-            }
-            if live_claims.contains(&claim) {
-                true
-            } else {
-                match claim.try_exists() {
-                    Ok(claim_present) => claim_present,
-                    Err(error) => {
-                        log::warn!(
+    retry_tracker.retain(
+        |path, _| match mailbox_disk::mailbox_path_try_exists(path) {
+            Ok(true) => true,
+            Ok(false) => {
+                let claim = wake_claim_path(path);
+                #[cfg(test)]
+                if let Some(probe_barrier) = probe_barrier {
+                    probe_barrier.origin_absent.wait();
+                    probe_barrier.restore_complete.wait();
+                }
+                if live_claims.contains(&claim) {
+                    true
+                } else {
+                    match mailbox_disk::mailbox_path_try_exists(&claim) {
+                        Ok(claim_present) => claim_present,
+                        Err(error) => {
+                            log::warn!(
                             "[mailbox] #1399 could not inspect retry claim {claim:?}: {error}; \
                             retaining retry state"
                         );
-                        true
+                            true
+                        }
                     }
                 }
             }
-        }
-        Err(error) => {
-            log::warn!(
-                "[mailbox] #1399 could not inspect retry origin {path:?}: {error}; \
+            Err(error) => {
+                log::warn!(
+                    "[mailbox] #1399 could not inspect retry origin {path:?}: {error}; \
                 retaining retry state"
-            );
-            true
-        }
-    });
+                );
+                true
+            }
+        },
+    );
 }
 
 /// (#1399 R1) The worker's outcome report, as a guard. `live_claims` is

@@ -422,10 +422,7 @@ fn prepare_boot(
     let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
 
     // Clean up old instance dirs (from previous runs)
-    if let Ok(entries) = std::fs::read_dir(&instances_dir) {
-        for entry in entries.flatten() {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
+    if crate::filesystem::directories::cleanup_stale_instance_directories(&instances_dir).is_ok() {
         log::info!("[app-outbox] Cleaned stale instance directories");
     }
 
@@ -482,14 +479,15 @@ fn prepare_boot(
     log::info!("[app-outbox] {} (see stdout)", app_outbox.path());
 
     // Write web token to a file so external tools can read it
-    if let Some(token_path) = config::config_dir().map(|d| d.join("web-token.txt")) {
-        let _ = std::fs::write(&token_path, web_access_token.value());
+    if let Some(dir) = config::config_dir() {
+        let _ =
+            crate::filesystem::documents::publish_web_access_token(&dir, web_access_token.value());
     }
 
     // Persist master token and app outbox path so the CLI can use them
     if let Some(dir) = config::config_dir() {
-        let _ = std::fs::write(dir.join("master-token.txt"), master_token.value());
-        let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
+        let _ = crate::filesystem::master_token::publish(&dir, master_token.value());
+        let _ = crate::filesystem::app_outbox_pointer::publish(&dir, app_outbox.path());
     }
 
     // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.

@@ -325,3 +325,22 @@ pub(crate) fn retained_prompt_directory_metadata(
 ) -> std::io::Result<std::fs::Metadata> {
     std::fs::metadata(path)
 }
+
+pub(crate) fn web_dist_candidate_is_directory(path: &Path) -> bool {
+    path.exists() && path.is_dir()
+}
+
+pub(crate) fn resolve_web_dist_candidate(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+pub(crate) fn cleanup_stale_instance_directories(instances_dir: &Path) -> io::Result<()> {
+    let entries = std::fs::read_dir(instances_dir)?;
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

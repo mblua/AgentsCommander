@@ -186,7 +186,8 @@ impl MailboxPoller {
             if settled {
                 // Preserve pending if an origin remains or its observation fails.
                 // Receipt recovery has no authenticated full-return delivery proof.
-                let origin_absent = matches!(origin.try_exists(), Ok(false));
+                let origin_absent =
+                    matches!(mailbox_disk::mailbox_path_try_exists(&origin), Ok(false));
                 // (#1399 R6) Keep the Result: `remove_file` fails under exactly
                 // the locked-handle condition that is ordinary on Windows, and
                 // a log line reporting an action that did not happen costs an
@@ -351,11 +352,9 @@ impl MailboxPoller {
             // metadata/access failure into `false`, release the ledger, and either
             // count against an absent origin or resurrect an unreadable receipt.
             let settlement = (|| -> Result<(bool, bool, bool), String> {
-                let claim_present = claim
-                    .try_exists()
+                let claim_present = mailbox_disk::mailbox_path_try_exists(&claim)
                     .map_err(|error| format!("could not inspect owned claim {claim:?}: {error}"))?;
-                let origin_present = path
-                    .try_exists()
+                let origin_present = mailbox_disk::mailbox_path_try_exists(&path)
                     .map_err(|error| format!("could not inspect owned origin {path:?}: {error}"))?;
                 let payload_receipt_present = wake_claim_has_settled_receipt(&path)?;
                 let claim_has_receipt = claim_present && payload_receipt_present;

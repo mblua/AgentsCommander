@@ -57,6 +57,15 @@ mod root_agent;
 pub(crate) mod selection_executor;
 mod telegram;
 #[cfg(test)]
+pub(crate) use crate::session::create_contracts::fixture::{
+    FixturePtyCutLease, FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
+};
+pub use crate::session::create_contracts::CreateSelectionIntent;
+pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
+pub(crate) use crate::session::create_contracts::{
+    OwnedReplacementCreateRequest, OwnedReplacementCreateStep,
+};
+#[cfg(test)]
 use agent_command::coding_agent_descriptor;
 pub(crate) use agent_command::executable_basename;
 #[cfg(test)]
@@ -107,12 +116,9 @@ use create::with_create_resource_region;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
-pub use create::CreateSelectionIntent;
 use create::InitialLastPrompt;
 #[cfg(test)]
 use create::OwnedCreateAdmission;
-pub(crate) use create::PtyTargetCreateStep;
-pub(crate) use create::{OwnedReplacementCreateRequest, OwnedReplacementCreateStep};
 pub(crate) use destroy::background_destroy_session_inner;
 use destroy::count_working_members;
 pub use destroy::destroy_session_inner;
@@ -135,8 +141,8 @@ pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
 pub(crate) use preflight::test_run::{
     cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
-    start_preflight_test_inner, PreflightTargetDescription, PreflightTestDeps,
-    PreflightTestSnapshot,
+    list_preflight_test_targets_inner, start_preflight_test_inner, PreflightTargetDescription,
+    PreflightTestDeps, PreflightTestDraft, PreflightTestSnapshot, PreflightTestTarget,
 };
 pub(crate) use preflight::PreflightState;
 pub(crate) use restart::carry_communication_for_restart;
@@ -208,53 +214,6 @@ pub(crate) mod coordinator_create_seam;
 /// deterministic instead of timing-dependent.
 #[cfg(test)]
 pub(crate) mod restart_reader_seam;
-
-/// Owns the original locks only across the admitted test create cut. These
-/// values never enter the retained operation record.
-#[cfg(test)]
-pub(crate) struct FixturePtyCutLease {
-    pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
-    pub(crate) target: String,
-    pub(crate) exact: crate::api::message_store::PtyInputTargetGuard,
-    pub(crate) stripe: crate::api::message_store::PtyInputStripeGuard,
-}
-
-#[cfg(test)]
-pub(crate) enum FixtureReplacementLease {
-    OrdinaryMoved(FixturePtyCutLease),
-    PtyCutShared(Arc<FixturePtyCutLease>),
-}
-
-#[cfg(test)]
-pub(crate) struct FixtureReplacementInput {
-    pub(crate) request: OwnedReplacementCreateRequest,
-    pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
-    pub(crate) lease: FixtureReplacementLease,
-}
-
-#[cfg(test)]
-pub(crate) struct FixtureReplacementResult {
-    pub(crate) outcome: Result<OwnedReplacementCreateStep, String>,
-    pub(crate) ordinary_lease: Option<FixturePtyCutLease>,
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for FixtureReplacementResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixtureReplacementResult")
-            .field("outcome", &self.outcome)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for FixtureReplacementInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixtureReplacementInput")
-            .field("continuation", &self.continuation)
-            .finish_non_exhaustive()
-    }
-}
 
 #[cfg(test)]
 pub(crate) async fn execute_inline_replacement_fixture<R: tauri::Runtime>(
@@ -912,16 +871,28 @@ fn preflight_deps(app: &AppHandle) -> Result<PreflightTestDeps, String> {
     })
 }
 
-/// #3516 - the saved preflight chain of a stopped agent folder.
+/// #3832 - the given folders of one agent that a preflight test can target.
+#[tauri::command]
+pub(crate) async fn list_preflight_test_targets(
+    app: AppHandle,
+    agent_id: String,
+    replica_paths: Vec<String>,
+) -> Result<Vec<PreflightTestTarget>, String> {
+    let deps = preflight_deps(&app)?;
+    list_preflight_test_targets_inner(&deps, agent_id, replica_paths).await
+}
+
+/// #3516 - the saved preflight chain of a stopped agent folder; #3832 optional draft.
 #[tauri::command]
 pub(crate) async fn describe_preflight_target(
     app: AppHandle,
     agent_id: String,
     profile_letter: Option<String>,
     replica_path: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<PreflightTargetDescription, String> {
     let deps = preflight_deps(&app)?;
-    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path).await
+    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path, draft).await
 }
 
 /// #3516 - starts a preflight test run; returns its id.
@@ -932,9 +903,10 @@ pub(crate) async fn start_preflight_test(
     profile_letter: Option<String>,
     replica_path: String,
     settings_revision: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<String, String> {
-    let d = preflight_deps(&app)?;
-    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, settings_revision).await
+    let (d, revision) = (preflight_deps(&app)?, settings_revision);
+    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, revision, draft).await
 }
 
 #[tauri::command]

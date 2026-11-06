@@ -190,7 +190,8 @@ mod source_text;
 use module_sources::{
     crate_sources, every_file_under, manifest_dir, relative_of, scrubbed, sources_of,
 };
-use source_text::{aliases_a_module_group, children_under, normalized, Literals};
+use rust_source_scrub::Literals;
+use source_text::{aliases_a_module_group, children_under, normalized};
 
 /// Every `(file, child)` reference the guarded module is allowed to make into a
 /// child of `crate::web`, sorted.

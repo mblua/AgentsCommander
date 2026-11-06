@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::settings::read_terminal_snapshot_security_settings_strict_offloaded;
 
 const P44_CANARY: &str = "P44_SCREEN_CANARY";
@@ -147,7 +148,7 @@ impl P44Fixture {
             .tempdir_in(&config)
             .unwrap();
         let (collection, mut roots) = write_p44_project(temporary.path());
-        let settings_path = config.join("settings.30.instance.no-git.json");
+        let settings_path = config.join(SETTINGS_FILE_NAME);
         let settings = AppSettings {
             terminal_snapshots_enabled: true,
             project_paths: vec![collection.to_string_lossy().into_owned()],

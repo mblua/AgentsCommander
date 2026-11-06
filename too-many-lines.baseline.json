@@ -36,21 +36,6 @@
       }
     },
     {
-      "id": "rust:crates/session-bridge/tests/terminal_snapshot_helper_process.rs::terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
-      "name": "terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
-      "anchor": "fe4aadec8f84",
-      "sites": {
-        "linux": {
-          "lines": 111,
-          "production": false
-        },
-        "macos": {
-          "lines": 111,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:crates/terminal-snapshot-renderer/src/json/tests.rs::borrowed_wire_debug_is_structural_and_non_disclosing",
       "name": "borrowed_wire_debug_is_structural_and_non_disclosing",
       "anchor": "7446725863fc",
@@ -5271,25 +5256,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/tests/instance_gitignore_layering/scan.rs::scrub",
-      "name": "scrub",
-      "anchor": "1869d863852b",
-      "sites": {
-        "linux": {
-          "lines": 126,
-          "production": false
-        },
-        "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
-          "lines": 126,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/tests/issue_1850_default_root/main.rs::issue_1850_admission_gate_table",
       "name": "issue_1850_admission_gate_table",
       "anchor": "29fdfb4e1f84",
@@ -5320,21 +5286,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/tests/loops_layering.rs::code_only",
-      "name": "code_only",
-      "anchor": "e43e4e71b74c",
-      "sites": {
-        "linux": {
-          "lines": 118,
-          "production": false
-        },
-        "macos": {
-          "lines": 118,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/tests/loops_layering.rs::no_loops_source_reaches_into_the_command_surface",
       "name": "no_loops_source_reaches_into_the_command_surface",
       "anchor": "75498fee010f",
@@ -5345,25 +5296,6 @@
         },
         "macos": {
           "lines": 113,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/project_settings_layering/source_text.rs::scrub",
-      "name": "scrub",
-      "anchor": "1869d863852b",
-      "sites": {
-        "linux": {
-          "lines": 126,
-          "production": false
-        },
-        "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
-          "lines": 126,
           "production": false
         }
       }

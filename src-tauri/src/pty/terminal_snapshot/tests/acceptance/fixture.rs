@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 
 pub(super) struct ConfigEnvGuard {
     pub(super) previous: Option<OsString>,
@@ -451,7 +452,7 @@ impl AcceptanceFixture {
         let paths = ReplicaPaths::create(temporary.path());
         let config = temporary.path().join("config");
         std::fs::create_dir_all(&config).expect("config directory");
-        let settings_path = config.join("settings.30.instance.no-git.json");
+        let settings_path = config.join(SETTINGS_FILE_NAME);
         write_security_settings(&settings_path, &paths.collection, true);
 
         let app_settings = crate::config::settings::AppSettings {

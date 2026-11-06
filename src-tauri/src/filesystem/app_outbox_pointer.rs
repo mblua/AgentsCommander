@@ -19,5 +19,9 @@ pub(crate) fn directory(config_dir: Option<&Path>, agent_dir: &Path) -> PathBuf 
     get(config_dir).unwrap_or_else(|| agent_dir.join("outbox"))
 }
 
+pub(crate) fn publish(config_dir: &std::path::Path, value: &str) -> std::io::Result<()> {
+    std::fs::write(config_dir.join(BASENAME), value)
+}
+
 #[cfg(test)]
 mod tests;

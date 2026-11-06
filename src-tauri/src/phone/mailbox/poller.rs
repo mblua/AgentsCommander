@@ -223,13 +223,33 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let Some(member_route) = response_request_member_route(&pty, member, work) else {
+    reserve_with_routes(
+        &pty,
+        &settings,
+        prepared,
+        work,
+        attempt,
+        (member, coordinator),
+    );
+}
+
+/// Verifies the member and coordinator routes, holds the coordinator authority
+/// lock and publishes the response-request candidate while that lock is held.
+fn reserve_with_routes(
+    pty: &Arc<Mutex<PtyManager>>,
+    settings: &crate::config::settings::AppSettings,
+    prepared: &PreparedResponseRequest,
+    work: &ResponseWakeWork,
+    attempt: &ResponseCandidateAttempt,
+    (member, coordinator): (&Session, &Session),
+) {
+    let Some(member_route) = response_request_member_route(pty, member, work) else {
         return;
     };
     let Some(replica) = member_route.saved_replica() else {
         return;
     };
-    let Ok(coordinator_route) = PtyManager::snapshot_route_proof(&pty, coordinator.id) else {
+    let Ok(coordinator_route) = PtyManager::snapshot_route_proof(pty, coordinator.id) else {
         response_diag_local!(
             "prewrite_reserve",
             "coordinator_route_missing",
@@ -237,7 +257,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     };
-    let Ok(authority) = PtyManager::authority_route_proof(&pty, coordinator.id) else {
+    let Ok(authority) = PtyManager::authority_route_proof(pty, coordinator.id) else {
         response_diag_local!(
             "prewrite_reserve",
             "coordinator_authority_missing",
@@ -281,7 +301,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         member,
         coordinator,
         replica,
-        &settings,
+        settings,
     );
 }
 

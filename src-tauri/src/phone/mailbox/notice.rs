@@ -1,3 +1,5 @@
+pub(crate) use super::refresh::{ProjectRefreshEventPayload, ProjectRefreshPollBatch};
+
 use crate::config::injected_messages::render;
 use crate::config::injected_messages::BRANCH_STALE_MESSAGE_ID;
 use crate::config::injected_messages::CI_FINISHED_MESSAGE_ID;
@@ -23,7 +25,6 @@ use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::inject::LogicalPtyCommand;
 use crate::pty::manager::PtyManager;
-use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -662,22 +663,6 @@ pub(crate) fn is_container_backend_session<R: tauri::Runtime>(
         .lock()
         .map_err(|e| format!("PTY lock failed: {e}"))?;
     Ok(mgr.backend_kind(session_id) == Some(SessionBackendKind::ContainerTransport))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProjectRefreshEventPayload {
-    pub(crate) id: String,
-    pub(crate) project_path: String,
-    pub(crate) changed_path: Option<String>,
-    pub(crate) changed_name: Option<String>,
-    pub(crate) reason: String,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ProjectRefreshPollBatch {
-    pub(crate) payloads: Vec<ProjectRefreshEventPayload>,
-    pub(crate) processed_paths: Vec<PathBuf>,
 }
 
 pub(crate) fn canonical_project_refresh_path(path: &str) -> String {

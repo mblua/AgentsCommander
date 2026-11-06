@@ -10,17 +10,17 @@ use super::poller::{
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{ResponseWakeWork, WakeDelivery};
-use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::phone::mailbox::pty_observation::{
+    PtyAuthorityState, PtyTargetState, WakeDeliveryState,
+};
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::MasterToken;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 fn owned_replacement_work(
@@ -365,14 +365,13 @@ impl MailboxPoller {
             WakeDelivery::Peer { message, .. } => message.to.as_str(),
             WakeDelivery::InternalSystem { target, .. } => target.fqn(),
         };
-        let _response_delivery =
-            match app.try_state::<crate::api::message_store::MessageStoreState>() {
-                Some(state) => match &state.store {
-                    Ok(store) => Some(store.begin_response_delivery(target_fqn)?),
-                    Err(_) => None,
-                },
-                None => None,
-            };
+        let _response_delivery = match app.message_store() {
+            Some(state) => match &state.store {
+                Ok(store) => Some(store.begin_response_delivery(target_fqn)?),
+                Err(_) => None,
+            },
+            None => None,
+        };
         match delivery {
             WakeDelivery::Peer {
                 message,
@@ -444,8 +443,7 @@ impl MailboxPoller {
         //   The inline API send that used to map this to a rejected outcome no
         //   longer exists (#1177), so the DB dispatcher is now the only other
         //   caller, and it is exactly the one F-5 must keep out of this window.
-        if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
-        {
+        if let Some(g) = app.pty_purge() {
             if g.blocks_agent(&msg.to) {
                 return Err(format!(
                     "purge-room in progress for '{}'; wake deferred",
@@ -512,11 +510,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         previous: Uuid,
     ) -> bool {
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
+        let manager = app.pty_sessions().read().await.clone();
         let Some(row) = manager.get_session(previous).await else {
             return false;
         };
@@ -544,14 +538,14 @@ impl MailboxPoller {
         physical: &crate::path_identity::VerifiedPathIdentity,
     ) -> bool {
         if app
-            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .pty_purge()
             .is_some_and(|purge| purge.blocks_agent(&msg.to))
         {
             return false;
         }
-        let settings = app.state::<SettingsState>().read().await.clone();
+        let settings = app.pty_settings().read().await.clone();
         let master = msg.token.as_deref().is_some_and(|token| {
-            app.try_state::<MasterToken>()
+            app.master_token()
                 .is_some_and(|master| master.matches(token))
                 || settings.root_token.as_deref() == Some(token)
         });
@@ -560,11 +554,7 @@ impl MailboxPoller {
                 let Ok(token) = Uuid::parse_str(token) else {
                     return false;
                 };
-                let manager = app
-                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                    .read()
-                    .await
-                    .clone();
+                let manager = app.pty_sessions().read().await.clone();
                 let Some(sender) = manager.find_by_token(token).await else {
                     return false;
                 };
@@ -652,15 +642,11 @@ impl MailboxPoller {
             }
         }
         use crate::session::selection::{ReplacementAdmissionStep, ResolvedReplacement};
-        let coordinator = app.state::<crate::session::selection::SelectionCoordinator>();
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let coordinator = app.selection();
+        let manager = app.pty_sessions().read().await.clone();
+        let pty = app.pty_routes().clone();
         let gate = app
-            .try_state::<crate::api::message_store::MessageStoreState>()
+            .message_store()
             .and_then(|state| state.target_gate.as_ref().ok().cloned())
             .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
         let directory =
@@ -813,12 +799,8 @@ impl MailboxPoller {
             stripe: Some(target.stripe),
         };
         let completion = execution.continuation.clone();
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let manager = app.pty_sessions().read().await.clone();
+        let pty = app.pty_routes().clone();
         let app = app.clone();
         let delivery = self.delivery_poller();
         #[cfg(test)]
@@ -827,18 +809,19 @@ impl MailboxPoller {
         }
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
-        let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
-            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
-            if !source.bind(&execution.continuation) {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
-            let result = delivery
-                .execute_owned_peer_replacement(&app, &mut execution)
-                .await;
-            source.returned(result.is_err());
-            result
-        })
-        .await;
+        let (result, pty) =
+            crate::config::sessions_persistence::run_owned_persist_core(async move {
+                let mut source = crate::session::selection::SourceExecutorGuard::unbound();
+                if !source.bind(&execution.continuation) {
+                    return (Ok(OwnedPeerWakeStep::Retained), pty);
+                }
+                let result = delivery
+                    .execute_owned_peer_replacement(&app, &pty, &mut execution)
+                    .await;
+                source.returned(result.is_err());
+                (result, pty)
+            })
+            .await;
         owned_peer_completion(result, &completion, &manager, &pty).await
     }
 }

@@ -108,3 +108,45 @@ fn absent_pointer_selects_fallback_without_creating_it() {
     assert_eq!(directory(Some(config.path()), agent.path()), fallback);
     assert!(!fallback.exists());
 }
+
+#[test]
+fn publish_app_outbox_pointer_exact_bytes() {
+    let config = tempfile::tempdir().unwrap();
+    let value = "exact-é";
+    publish(config.path(), value).unwrap();
+    assert_eq!(
+        std::fs::read(config.path().join(BASENAME)).unwrap(),
+        value.as_bytes()
+    );
+}
+
+#[test]
+fn publish_app_outbox_pointer_truncates() {
+    let config = tempfile::tempdir().unwrap();
+    publish(config.path(), "long-existing-value").unwrap();
+    publish(config.path(), "short").unwrap();
+    assert_eq!(
+        std::fs::read(config.path().join(BASENAME)).unwrap(),
+        b"short"
+    );
+}
+
+#[test]
+fn publish_app_outbox_pointer_missing_directory() {
+    let config = tempfile::tempdir().unwrap();
+    let missing = config.path().join("missing");
+    assert!(publish(&missing, "value").is_err());
+    assert!(!missing.exists());
+}
+
+#[test]
+fn publish_app_outbox_pointer_round_trip() {
+    let config = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let value = destination.path().to_str().unwrap();
+    publish(config.path(), value).unwrap();
+    assert_eq!(
+        get(Some(config.path())),
+        Some(destination.path().to_owned())
+    );
+}
