@@ -78,7 +78,6 @@ pub(crate) trait MailboxHost:
     #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn purge_required(&self) -> &Arc<PurgeGuard>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn pending_clear(&self) -> &Arc<PendingSelfClear>;
 
     #[allow(dead_code, reason = "3946 phased consumer migration")]
@@ -154,7 +153,6 @@ pub(crate) trait MailboxHost:
         uuid: Uuid,
     ) -> impl Future<Output = Result<(), String>> + Send + 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     #[allow(clippy::too_many_arguments)]
     fn restart_session_inner_with_intent<'a>(
         &'a self,
@@ -178,19 +176,16 @@ pub(crate) trait MailboxHost:
         bot_id: Option<&'a str>,
     ) -> impl Future<Output = ()> + Send + 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn stamp_fresh_boundary_to_session<'a>(
         &'a self,
         session_id: Uuid,
     ) -> impl Future<Output = BoundaryMetadataOutcome> + Send + 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn note_post_boundary_content_to_session<'a>(
         &'a self,
         session_id: Uuid,
     ) -> impl Future<Output = BoundaryMetadataOutcome> + Send + 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn spawn_background(&self, future: BoxFuture<'static, ()>);
 }
 
