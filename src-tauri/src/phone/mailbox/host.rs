@@ -186,6 +186,7 @@ pub(crate) trait MailboxHost:
         session_id: Uuid,
     ) -> impl Future<Output = BoundaryMetadataOutcome> + Send + 'a;
 
+    #[cfg_attr(test, allow(dead_code))]
     fn spawn_background(&self, future: BoxFuture<'static, ()>);
 }
 
