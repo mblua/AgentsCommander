@@ -8,6 +8,7 @@ use crate::pty::manager::PtyManager;
 use crate::voice::tracker::VoiceTrackingState;
 
 mod boundary;
+mod injection;
 mod typing_hold;
 mod watcher_reach;
 

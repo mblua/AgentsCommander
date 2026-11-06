@@ -3,14 +3,7 @@ use crate::config::settings::AppSettings;
 use crate::session::session::SessionCommunication;
 use crate::session::session::SessionCommunicationKind;
 
-/// Extract the basename (without extension) from a path or command token.
-pub(crate) fn executable_basename(s: &str) -> String {
-    std::path::Path::new(s)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(s)
-        .to_lowercase()
-}
+pub(crate) use crate::config::agent_command::executable_basename;
 
 pub(crate) type ResolvedRootAgentCommand = (String, Vec<String>, Option<String>, Option<String>);
 
