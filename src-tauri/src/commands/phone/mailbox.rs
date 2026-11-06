@@ -173,7 +173,7 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         .await
     }
 
-    async fn background_destroy_session_inner<'a>(&'a self, uuid: Uuid) -> Result<(), String> {
+    async fn background_destroy_session_inner(&self, uuid: Uuid) -> Result<(), String> {
         crate::commands::session::background_destroy_session_inner(self, uuid).await
     }
 
@@ -213,20 +213,17 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         &'a self,
         session_id: Uuid,
         bot_id: Option<&'a str>,
-    ) -> () {
+    ) {
         crate::commands::session::attach_persisted_telegram_if_configured(self, session_id, bot_id)
             .await
     }
 
-    async fn stamp_fresh_boundary_to_session<'a>(
-        &'a self,
-        session_id: Uuid,
-    ) -> BoundaryMetadataOutcome {
+    async fn stamp_fresh_boundary_to_session(&self, session_id: Uuid) -> BoundaryMetadataOutcome {
         crate::commands::pty::stamp_fresh_boundary_to_session(self, session_id).await
     }
 
-    async fn note_post_boundary_content_to_session<'a>(
-        &'a self,
+    async fn note_post_boundary_content_to_session(
+        &self,
         session_id: Uuid,
     ) -> BoundaryMetadataOutcome {
         crate::commands::pty::note_post_boundary_content_to_session(self, session_id).await
