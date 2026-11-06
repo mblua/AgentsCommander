@@ -261,7 +261,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
         data-session-id={session.logicalSessionId}
         onClick={() => void state.selectSession(session.logicalSessionId)}
       >
-        <span class="ch-session-start">{formatTime(session.logicalStartedAtUtcMs)}</span>
+        <span>{formatTime(session.logicalStartedAtUtcMs)}</span>
         <span class="ch-provenance">{session.room ?? session.instanceFqn}</span>
         <span class="ch-metric" data-metric="count">
           {formatCount(session.recordsCount)} registros
@@ -368,7 +368,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
             {status()}
           </p>
           <Show when={state.report().error}>
-            <button type="button" class="ch-retry" onClick={load}>
+            <button type="button" data-ac-testid="contextHistory.retry" onClick={load}>
               {TEXT.retry}
             </button>
           </Show>
@@ -376,7 +376,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
             <section ref={listRef} class="ch-list" aria-label="Agentes" tabIndex={-1}>
               <Show when={state.report().data}>
                 {(report) => (
-                  <p class="ch-total" data-metric="total-agents">
+                  <p data-metric="total-agents">
                     {formatCount(report().totalAgents)} agentes
                   </p>
                 )}
@@ -412,7 +412,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                 </Show>
                 <Show when={state.detail().data}>
                   {(detail) => (
-                    <p class="ch-total">
+                    <p>
                       <span data-metric="count">
                         {formatCount(detail().recordsCount)} registros
                       </span>
@@ -423,7 +423,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                     </p>
                   )}
                 </Show>
-                <ul class="ch-sessions">
+                <ul>
                   <For each={sessions()}>{SessionRow}</For>
                 </ul>
                 <Show when={state.detail().data?.nextSessionCursor}>
@@ -432,7 +432,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                   </button>
                 </Show>
                 <Show when={state.selectedSession()}>
-                  <section class="ch-timeline" aria-label="Línea de tiempo">
+                  <section aria-label="Línea de tiempo">
                     <Show when={state.changes().loading}>
                       <p class="ch-status">{TEXT.loading}</p>
                     </Show>

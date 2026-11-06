@@ -246,7 +246,7 @@ describe("ContextHistoryApp", () => {
     cleanup = view.cleanup;
     await waitFor(() => expect(must(view.root, "[role='status']").textContent).toBe(TEXT.error));
     fake.resolve("get_context_history_report", reportResponse([]));
-    click(must(view.root, ".ch-retry"));
+    click(must(view.root, '[data-ac-testid="contextHistory.retry"]'));
     await waitFor(() => expect(must(view.root, "[role='status']").textContent).toBe(TEXT.empty));
     expect(fake.calls.filter((c) => c.cmd === "get_context_history_report")).toHaveLength(2);
   });

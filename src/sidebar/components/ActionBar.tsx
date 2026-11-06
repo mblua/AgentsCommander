@@ -334,7 +334,7 @@ const ActionBar: Component = () => {
             </button>
             {/* #3532 — context history in the central pane; desktop app only. */}
             <button
-              class={`toolbar-gear-btn context-history-btn ${activeClass(centralViewStore.isContextHistory)}`}
+              class={`toolbar-gear-btn ${activeClass(centralViewStore.isContextHistory)}`}
               onClick={() => centralViewStore.toggleContextHistory()}
               title="Historial de contexto"
               aria-label="Historial de contexto"
