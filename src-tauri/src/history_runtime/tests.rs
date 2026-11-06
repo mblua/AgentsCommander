@@ -1,7 +1,11 @@
 use std::sync::Mutex;
 
+use futures::future::BoxFuture;
+
 use super::*;
-use crate::context_history::config::ConfigStatus;
+use crate::context_history::config::{ConfigStatus, LoadedHistoryConfig};
+use crate::context_history::observation::TeamMembers;
+use crate::context_history::store::{AppendOutcome, HistoryWriter};
 
 impl HistoryIngress {
     /// An ingress whose mailbox the test drains itself.
@@ -94,33 +98,62 @@ impl ProjectEnvironment for FakeEnv {
     }
 }
 
-struct FakeSessions;
+/// Every session is present and live unless marked `absent`.
+#[derive(Default)]
+struct FakeSessions {
+    absent: Mutex<HashSet<Uuid>>,
+}
 
-impl SessionLaunchSource for FakeSessions {
-    fn launch(&self, session_id: Uuid) -> BoxFuture<'_, Option<SessionLaunch>> {
-        Box::pin(async move {
-            Some(SessionLaunch {
-                session_id,
-                working_directory: WD.to_string(),
-                shell: "claude".to_string(),
-                effective_shell_args: Some(vec!["--model".to_string(), "opus".to_string()]),
-                is_root_agent: false,
-            })
+impl FakeSessions {
+    fn fact(&self, session_id: Uuid) -> Option<SessionLaunch> {
+        (!self.absent.lock().unwrap().contains(&session_id)).then(|| SessionLaunch {
+            session_id,
+            working_directory: WD.to_string(),
+            shell: "claude".to_string(),
+            effective_shell_args: Some(vec!["--model".to_string(), "opus".to_string()]),
+            is_root_agent: false,
+            exited: false,
         })
     }
 }
 
-fn start(
-    shared: &Arc<Shared>,
-) -> (
+impl SessionLaunchSource for FakeSessions {
+    fn launches<'a>(
+        &'a self,
+        ids: &'a [Uuid],
+    ) -> BoxFuture<'a, Option<Vec<Option<SessionLaunch>>>> {
+        Box::pin(async move { Some(ids.iter().map(|id| self.fact(*id)).collect()) })
+    }
+
+    fn live_ids<'a>(&'a self, ids: &'a [Uuid]) -> BoxFuture<'a, Option<HashSet<Uuid>>> {
+        Box::pin(async move {
+            let absent = self.absent.lock().unwrap();
+            Some(
+                ids.iter()
+                    .filter(|id| !absent.contains(id))
+                    .copied()
+                    .collect(),
+            )
+        })
+    }
+}
+
+type Started = (
     HistoryIngress,
     CancellationToken,
     tokio::task::JoinHandle<()>,
-) {
+);
+
+fn start_with(shared: &Arc<Shared>, sessions: Arc<dyn SessionLaunchSource>) -> Started {
     let token = CancellationToken::new();
     let env = Arc::new(FakeEnv(Arc::clone(shared)));
-    let (ingress, actor) = HistoryRuntime::start(Arc::new(FakeSessions), env, token.clone());
+    let scopes = Arc::new(HistoryScopeState::new(sessions, env));
+    let (ingress, actor) = HistoryRuntime::start(scopes, token.clone());
     (ingress, token, tokio::spawn(actor))
+}
+
+fn start(shared: &Arc<Shared>) -> Started {
+    start_with(shared, Arc::new(FakeSessions::default()))
 }
 
 async fn settle() {
@@ -226,22 +259,6 @@ async fn shutdown_flush_is_bounded() {
     token.cancel();
     task.await.unwrap();
     assert!(began.elapsed() < SHUTDOWN_FLUSH + Duration::from_millis(500));
-}
-
-#[test]
-fn sidebar_scopes_work_without_capture() {
-    let shared = Arc::new(Shared::default());
-    let env = FakeEnv(shared);
-    let launch = |wd: &str, root| SessionLaunch {
-        session_id: Uuid::new_v4(),
-        working_directory: wd.to_string(),
-        shell: "claude".to_string(),
-        effective_shell_args: None,
-        is_root_agent: root,
-    };
-    let scopes = snapshot_sidebar_scopes(&[launch(WD, false), launch(WD, true)], &env);
-    assert!(matches!(scopes[0].1, ScopeResolution::Scoped(_)));
-    assert_eq!(scopes[1].1, ScopeResolution::Excluded("root_agent"));
 }
 
 fn kinds(
@@ -459,7 +476,8 @@ async fn a_real_five_second_reader_delays_the_batch_which_then_commits_once() {
     let env = Arc::new(DiskEnv {
         ac_root: ac_root.clone(),
     });
-    let (ingress, actor) = HistoryRuntime::start(Arc::new(FakeSessions), env, token.clone());
+    let scopes = HistoryScopeState::new(Arc::new(FakeSessions::default()), env);
+    let (ingress, actor) = HistoryRuntime::start(Arc::new(scopes), token.clone());
     let task = tokio::spawn(actor);
     ingress.offer(Uuid::new_v4(), ObservedValue::Reading(40));
     tokio::task::spawn_blocking(move || reader.join().unwrap())
@@ -474,4 +492,198 @@ async fn a_real_five_second_reader_delays_the_batch_which_then_commits_once() {
         1,
         "committed exactly once after the reader left"
     );
+}
+
+use std::path::PathBuf;
+
+use tauri::Manager;
+
+// ---- #3532 P14: live-state pruning, pending sessions and composition ----------------------
+
+/// Wait until `count` records are stored, at most ten seconds.
+async fn stored_at_least(shared: &Shared, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while shared.stored.lock().unwrap().len() < count && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Offer one positive sample per id in mailbox-sized chunks.
+async fn fill(ingress: &HistoryIngress, shared: &Shared, ids: &[Uuid]) {
+    let mut expected = shared.stored.lock().unwrap().len();
+    for chunk in ids.chunks(512) {
+        for id in chunk {
+            ingress.offer(*id, ObservedValue::Reading(10));
+        }
+        expected += chunk.len();
+        stored_at_least(shared, expected).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absent_sessions_free_live_state_with_a_gap_and_a_live_one_is_admitted() {
+    let shared = Arc::new(Shared::default());
+    shared.enabled.store(true, Ordering::SeqCst);
+    let sessions = Arc::new(FakeSessions::default());
+    let (ingress, token, task) = start_with(&shared, sessions.clone());
+    let filled: Vec<Uuid> = (0..LIVE_STATE_CAPACITY).map(|_| Uuid::new_v4()).collect();
+    fill(&ingress, &shared, &filled).await;
+    sessions
+        .absent
+        .lock()
+        .unwrap()
+        .extend(filled.iter().copied());
+    let fresh = Uuid::new_v4();
+    ingress.offer(fresh, ObservedValue::Reading(55));
+    stored_at_least(&shared, 2 * LIVE_STATE_CAPACITY + 1).await;
+    token.cancel();
+    task.await.unwrap();
+    let stored = shared.stored.lock().unwrap();
+    let (firsts, rest) = stored.split_at(LIVE_STATE_CAPACITY);
+    let gaps: Vec<&HistoryRecord> = rest
+        .iter()
+        .filter(|record| record.runtime_session_id != fresh)
+        .collect();
+    assert_eq!(gaps.len(), LIVE_STATE_CAPACITY, "one gap per open session");
+    for gap in &gaps {
+        assert_eq!(gap.percent, None, "no fabricated value");
+        assert_eq!(
+            gap.boundary_reason,
+            Some(crate::context_history::BoundaryReason::ObservationGap)
+        );
+        let first = firsts
+            .iter()
+            .find(|record| record.runtime_session_id == gap.runtime_session_id)
+            .expect("first record drained before the gap");
+        assert_eq!(gap.logical_session_id, first.logical_session_id);
+    }
+    let admitted: Vec<Option<u8>> = rest
+        .iter()
+        .filter(|record| record.runtime_session_id == fresh)
+        .map(|record| record.percent)
+        .collect();
+    assert_eq!(admitted, [Some(55)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_state_full_of_live_sessions_admits_nothing_until_one_leaves() {
+    let shared = Arc::new(Shared::default());
+    shared.enabled.store(true, Ordering::SeqCst);
+    let sessions = Arc::new(FakeSessions::default());
+    let (ingress, token, task) = start_with(&shared, sessions.clone());
+    let filled: Vec<Uuid> = (0..LIVE_STATE_CAPACITY).map(|_| Uuid::new_v4()).collect();
+    fill(&ingress, &shared, &filled).await;
+    let fresh = Uuid::new_v4();
+    for percent in [20, 30] {
+        ingress.offer(fresh, ObservedValue::Reading(percent));
+    }
+    settle().await;
+    assert_eq!(shared.stored.lock().unwrap().len(), LIVE_STATE_CAPACITY);
+    sessions.absent.lock().unwrap().insert(filled[0]);
+    ingress.offer(fresh, ObservedValue::Reading(40));
+    stored_at_least(&shared, LIVE_STATE_CAPACITY + 2).await;
+    token.cancel();
+    task.await.unwrap();
+    let stored = shared.stored.lock().unwrap();
+    let fresh_values: Vec<Option<u8>> = stored
+        .iter()
+        .filter(|record| record.runtime_session_id == fresh)
+        .map(|record| record.percent)
+        .collect();
+    assert_eq!(
+        fresh_values,
+        [Some(40)],
+        "admitted after one left, no eviction"
+    );
+}
+
+#[tokio::test]
+async fn a_pending_session_is_captured_once_finished_without_any_memo() {
+    let shared = Arc::new(Shared::default());
+    shared.enabled.store(true, Ordering::SeqCst);
+    let manager = Arc::new(tokio::sync::RwLock::new(
+        crate::session::manager::SessionManager::new(),
+    ));
+    let id = manager
+        .read()
+        .await
+        .insert_pending_session_for_test(WD.to_string())
+        .await;
+    let sessions = Arc::new(crate::pty_wiring::HistorySessions {
+        session_mgr: Arc::clone(&manager),
+    });
+    let env = Arc::new(FakeEnv(Arc::clone(&shared)));
+    let scopes = Arc::new(HistoryScopeState::new(sessions, env));
+    let token = CancellationToken::new();
+    let (ingress, actor) = HistoryRuntime::start(Arc::clone(&scopes), token.clone());
+    let task = tokio::spawn(actor);
+    let project = [PathBuf::from("/p/proj")];
+    ingress.offer(id, ObservedValue::Reading(30));
+    settle().await;
+    assert!(
+        shared.stored.lock().unwrap().is_empty(),
+        "pending writes nothing"
+    );
+    let pending = scopes.snapshot_sidebar_scopes(&project, &[id]).await;
+    assert!(pending.unwrap()[0].1.is_none(), "pending is unknown");
+    manager
+        .read()
+        .await
+        .finish_pending_create_for_test(id)
+        .await;
+    ingress.offer(id, ObservedValue::Reading(40));
+    stored_at_least(&shared, 1).await;
+    let known = scopes
+        .snapshot_sidebar_scopes(&project, &[id])
+        .await
+        .unwrap();
+    assert!(known[0].1.is_some(), "known once finished");
+    token.cancel();
+    task.await.unwrap();
+    let stored = shared.stored.lock().unwrap();
+    let values: Vec<Option<u8>> = stored.iter().map(|record| record.percent).collect();
+    assert_eq!(values, [Some(40)]);
+}
+
+#[test]
+fn context_history_state_is_registered_once_by_the_lib_helper() {
+    let app = tauri::test::mock_app();
+    let shared = Arc::new(Shared::default());
+    let scopes = |shared: &Arc<Shared>| {
+        let env = Arc::new(FakeEnv(Arc::clone(shared)));
+        Arc::new(HistoryScopeState::new(
+            Arc::new(FakeSessions::default()),
+            env,
+        ))
+    };
+    let (ingress, _receiver) = HistoryIngress::for_test(4);
+    let first = scopes(&shared);
+    crate::register_context_history_state(&app, ingress.clone(), Arc::clone(&first))
+        .expect("first registration");
+    let (other, _other_receiver) = HistoryIngress::for_test(4);
+    let duplicate = crate::register_context_history_state(&app, other, scopes(&shared));
+    assert!(duplicate.is_err(), "a duplicate is refused");
+    let managed = app.state::<Arc<HistoryScopeState>>();
+    assert!(Arc::ptr_eq(managed.inner(), &first));
+    assert!(app
+        .state::<HistoryIngress>()
+        .sender
+        .same_channel(&ingress.sender));
+
+    let partial = tauri::test::mock_app();
+    partial.manage(ingress.clone());
+    let refused = crate::register_context_history_state(&partial, ingress, scopes(&shared));
+    assert!(refused.is_err());
+    assert!(partial.try_state::<Arc<HistoryScopeState>>().is_none());
+}
+
+#[test]
+fn session_observers_register_the_state_once_before_the_scraper_gets_the_ingress() {
+    let setup = include_str!("../app_run/setup.rs");
+    let call = "crate::register_context_history_state(";
+    assert_eq!(setup.matches(call).count(), 1);
+    let registered = setup.find(call).unwrap();
+    let observers = setup.find("fn start_session_observers(").unwrap();
+    let handed = setup.find("history: Some(history_ingress)").unwrap();
+    assert!(observers < registered && registered < handed);
 }

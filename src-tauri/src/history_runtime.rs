@@ -16,20 +16,24 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures::future::BoxFuture;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::context_history::config::{load_history_config, HistoryConfig, LoadedHistoryConfig};
+use crate::context_history::config::HistoryConfig;
 use crate::context_history::observation::{
-    parse_history_layout, parse_launch_metadata, resolve_history_scope, InstanceContext,
-    InstanceState, ObservedValue, ScopeInput, ScopeResolution, Stamp, TeamMembers,
+    InstanceContext, InstanceState, ObservedValue, ScopeResolution, Stamp,
 };
-use crate::context_history::store::{AppendOutcome, HistoryWriter, StoreError, MAX_APPEND_BATCH};
+use crate::context_history::store::{StoreError, MAX_APPEND_BATCH};
 use crate::context_history::HistoryRecord;
 
-pub mod project;
+pub(crate) mod project;
+pub(crate) mod scopes;
+
+pub(crate) use scopes::{
+    DiskProjectEnvironment, HistoryAppend, HistoryScopeState, ProjectEnvironment, ScopeLookup,
+    SessionLaunch, SessionLaunchSource,
+};
 
 /// Bounded ingress mailbox between the scraper bridge and the actor.
 pub(crate) const MAILBOX_CAPACITY: usize = 4096;
@@ -205,135 +209,6 @@ impl HistoryIngress {
             sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
         }
     }
-}
-
-// ---- Collaborators -----------------------------------------------------------------------
-
-/// The launch facts of one live session, copied out of the session manager.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionLaunch {
-    pub(crate) session_id: Uuid,
-    pub(crate) working_directory: String,
-    pub(crate) shell: String,
-    pub(crate) effective_shell_args: Option<Vec<String>>,
-    pub(crate) is_root_agent: bool,
-}
-
-/// Where the runtime reads a session's launch facts. The implementation copies
-/// them and releases its lock before returning.
-pub(crate) trait SessionLaunchSource: Send + Sync {
-    fn launch(&self, session_id: Uuid) -> BoxFuture<'_, Option<SessionLaunch>>;
-}
-
-/// Project-level reads: configuration, team snapshot, AC-root authority and
-/// the writer. Every method may touch disk and runs off the async workers.
-pub(crate) trait ProjectEnvironment: Send + Sync + 'static {
-    fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig;
-    fn authoritative_ac_root(&self, ac_root: &Path) -> bool;
-    fn teams(&self, project_path: &Path) -> Vec<TeamMembers>;
-    fn open_writer(
-        &self,
-        ac_root: &Path,
-        config: &HistoryConfig,
-    ) -> Result<Box<dyn HistoryAppend>, StoreError>;
-}
-
-/// The append half of the store, boxed so tests can script outcomes.
-pub(crate) trait HistoryAppend: Send {
-    fn append(
-        &mut self,
-        records: &[HistoryRecord],
-        now_utc_ms: i64,
-    ) -> Result<AppendOutcome, StoreError>;
-}
-
-impl HistoryAppend for HistoryWriter {
-    fn append(
-        &mut self,
-        records: &[HistoryRecord],
-        now_utc_ms: i64,
-    ) -> Result<AppendOutcome, StoreError> {
-        HistoryWriter::append(self, records, now_utc_ms)
-    }
-}
-
-/// Production environment: the real config owner, team discovery and store.
-pub(crate) struct DiskProjectEnvironment;
-
-impl ProjectEnvironment for DiskProjectEnvironment {
-    fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig {
-        load_history_config(ac_root)
-    }
-
-    fn authoritative_ac_root(&self, ac_root: &Path) -> bool {
-        crate::config::ac_root::ensure_authoritative_ac_root(ac_root).is_ok()
-    }
-
-    fn teams(&self, project_path: &Path) -> Vec<TeamMembers> {
-        let mut teams = Vec::new();
-        crate::config::teams::discover_teams_in_project_filtered(project_path, &mut teams, |_| {
-            true
-        });
-        teams
-            .into_iter()
-            .map(|team| TeamMembers {
-                team_id: team.name,
-                member_paths: team
-                    .agent_paths
-                    .into_iter()
-                    .flatten()
-                    .chain(team.coordinator_path)
-                    .filter_map(|path| path.to_str().map(str::to_string))
-                    .collect(),
-            })
-            .collect()
-    }
-
-    fn open_writer(
-        &self,
-        ac_root: &Path,
-        config: &HistoryConfig,
-    ) -> Result<Box<dyn HistoryAppend>, StoreError> {
-        Ok(Box::new(HistoryWriter::open(ac_root, config)?))
-    }
-}
-
-fn is_root_session(launch: &SessionLaunch) -> bool {
-    launch.is_root_agent
-        || crate::config::root_agent::is_root_agent_dir_name(&launch.working_directory)
-        || crate::config::root_agent::is_root_agent_path(&launch.working_directory)
-}
-
-/// Resolve the scope of one session from an already-copied launch snapshot.
-fn resolve_launch(launch: &SessionLaunch, env: &dyn ProjectEnvironment) -> ScopeResolution {
-    let is_root_agent = is_root_session(launch);
-    let (authoritative_ac_root, teams) = match parse_history_layout(&launch.working_directory) {
-        Ok(layout) if !is_root_agent => (
-            env.authoritative_ac_root(Path::new(&layout.ac_root)),
-            env.teams(Path::new(&layout.project_path)),
-        ),
-        _ => (false, Vec::new()),
-    };
-    resolve_history_scope(&ScopeInput {
-        working_directory: &launch.working_directory,
-        is_root_agent,
-        authoritative_ac_root,
-        teams: &teams,
-    })
-}
-
-/// The scopes the sidebar shows, from the same resolver capture uses. Works
-/// whether or not capture is enabled and never reads history or private files.
-// Consumed by the history IPC (#3532 P05); only tests call it until then.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn snapshot_sidebar_scopes(
-    sessions: &[SessionLaunch],
-    env: &dyn ProjectEnvironment,
-) -> Vec<(Uuid, ScopeResolution)> {
-    sessions
-        .iter()
-        .map(|launch| (launch.session_id, resolve_launch(launch, env)))
-        .collect()
 }
 
 // ---- Project writer ----------------------------------------------------------------------
@@ -599,8 +474,7 @@ impl HistoryRuntime {
     /// on its async runtime. `shutdown` cancellation triggers a flush bounded
     /// by [`SHUTDOWN_FLUSH`].
     pub(crate) fn start(
-        sessions: Arc<dyn SessionLaunchSource>,
-        env: Arc<dyn ProjectEnvironment>,
+        scopes: Arc<HistoryScopeState>,
         shutdown: CancellationToken,
     ) -> (HistoryIngress, impl Future<Output = ()> + Send + 'static) {
         let (sender, receiver) = mpsc::channel(MAILBOX_CAPACITY);
@@ -613,8 +487,9 @@ impl HistoryRuntime {
             clock_back: Arc::new(AtomicBool::new(false)),
         };
         let actor = Actor {
-            sessions,
-            env,
+            env: Arc::clone(scopes.env()),
+            scopes,
+            saturated: false,
             ingress: ingress.clone(),
             app_run_id: Uuid::new_v4(),
             projects: HashMap::new(),
@@ -628,8 +503,10 @@ impl HistoryRuntime {
 }
 
 struct Actor {
-    sessions: Arc<dyn SessionLaunchSource>,
+    scopes: Arc<HistoryScopeState>,
     env: Arc<dyn ProjectEnvironment>,
+    /// Live state is full of live sessions; warned once until an admission.
+    saturated: bool,
     ingress: HistoryIngress,
     app_run_id: Uuid,
     projects: HashMap<String, Project>,
@@ -673,6 +550,9 @@ impl Actor {
 
     async fn handle(&mut self, sample: StampedSample) {
         self.note_losses();
+        if sample.value == ObservedValue::SessionOver {
+            self.scopes.retire(sample.session_id);
+        }
         if self.restart_closed.contains(&sample.session_id) {
             if sample.value != ObservedValue::SessionOver {
                 return;
@@ -772,26 +652,30 @@ impl Actor {
 
     async fn track(&mut self, session_id: Uuid) {
         if self.tracked.len() >= LIVE_STATE_CAPACITY {
-            log::warn!("[context-history] live-state capacity reached; session not tracked");
-            return;
+            self.prune_tracked().await;
+            if self.tracked.len() >= LIVE_STATE_CAPACITY {
+                if !std::mem::replace(&mut self.saturated, true) {
+                    log::warn!(
+                        "[context-history] live-state capacity reached; session not tracked"
+                    );
+                }
+                return;
+            }
         }
-        let Some(launch) = self.sessions.launch(session_id).await else {
-            self.tracked.insert(session_id, Tracked::Excluded);
+        // Absent or pending: keep nothing, so the next sample reads it again.
+        let ScopeLookup::Resolved(resolved) = self.scopes.resolve(session_id).await else {
             return;
         };
-        let env = Arc::clone(&self.env);
-        let resolved = tokio::task::spawn_blocking(move || {
-            let scope = resolve_launch(&launch, env.as_ref());
-            let args = launch.effective_shell_args.as_deref();
-            (scope, parse_launch_metadata(&launch.shell, args))
-        })
-        .await;
-        let Ok((ScopeResolution::Scoped(scope), launch)) = resolved else {
-            self.tracked.insert(session_id, Tracked::Excluded);
+        let ScopeResolution::Scoped(scope) = resolved.scope.clone() else {
+            self.admit(session_id, Tracked::Excluded);
             return;
         };
+        let launch = resolved.launch.clone();
         let ac_root = scope.layout.ac_root.clone();
         self.ensure_project(&ac_root).await;
+        if !self.is_live(session_id).await {
+            return;
+        }
         let project = self.projects.get(&ac_root);
         let epoch = project.map_or(0, |project| project.epoch);
         let enabled = project.is_some_and(|project| project.config.enabled);
@@ -808,7 +692,48 @@ impl Actor {
             state,
             epoch,
         };
+        self.admit(session_id, tracked);
+    }
+
+    fn admit(&mut self, session_id: Uuid, tracked: Tracked) {
         self.tracked.insert(session_id, tracked);
+        self.saturated = false;
+    }
+
+    async fn is_live(&self, session_id: Uuid) -> bool {
+        let live = self.scopes.sessions().live_ids(&[session_id]).await;
+        live.is_some_and(|live| live.contains(&session_id))
+    }
+
+    /// Retire tracked sessions the manager no longer shows (absent, pending or
+    /// exited), never a live one. An open session first gets its gap boundary;
+    /// queues, epochs and projects stay untouched.
+    async fn prune_tracked(&mut self) {
+        let candidates: Vec<Uuid> = self
+            .tracked
+            .keys()
+            .take(LIVE_STATE_CAPACITY)
+            .copied()
+            .collect();
+        let Some(live) = self.scopes.sessions().live_ids(&candidates).await else {
+            return;
+        };
+        for session_id in candidates.into_iter().filter(|id| !live.contains(id)) {
+            if let Some(Tracked::Scoped {
+                ac_root,
+                context,
+                state: Some(state),
+                epoch,
+            }) = self.tracked.get_mut(&session_id)
+            {
+                let stamp = self.ingress.next_stamp();
+                if let Some(record) = state.observe_gap(context, stamp, &mut Uuid::new_v4) {
+                    let (ac_root, epoch) = (ac_root.clone(), *epoch);
+                    self.send(&ac_root, epoch, vec![record]);
+                }
+            }
+            self.tracked.remove(&session_id);
+        }
     }
 
     async fn load_config(&self, ac_root: &str) -> HistoryConfig {

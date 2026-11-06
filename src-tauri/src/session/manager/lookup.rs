@@ -542,3 +542,86 @@ impl SessionManager {
         }
     }
 }
+
+/// #3532 - the launch facts context history reads for one session, copied under
+/// one manager read. `None` in a batch means absent or still pending create.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HistoryLaunchFact {
+    pub(crate) id: Uuid,
+    pub(crate) working_directory: String,
+    pub(crate) status: SessionStatus,
+    pub(crate) is_root_agent: bool,
+    pub(crate) shell: String,
+    pub(crate) effective_shell_args: Option<Vec<String>>,
+}
+
+impl HistoryLaunchFact {
+    pub(crate) fn exited(&self) -> bool {
+        matches!(self.status, SessionStatus::Exited(_))
+    }
+}
+
+/// Largest batch of [`SessionManager::history_launch_facts`].
+pub(crate) const HISTORY_LAUNCH_BATCH_MAX: usize = 100;
+/// Largest request of [`SessionManager::history_live_ids`].
+pub(crate) const HISTORY_LIVE_IDS_MAX: usize = 4_096;
+
+fn unique_ids(ids: &[Uuid], max: usize) -> bool {
+    ids.len() <= max && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len()
+}
+
+impl SessionManager {
+    /// Facts of 1..=100 unique ids, in request order, under one read; `None`
+    /// for an absent or pending session. An invalid request is refused before
+    /// the lock. No IO and no `SessionInfo`.
+    pub(crate) async fn history_launch_facts(
+        &self,
+        ids: &[Uuid],
+    ) -> Option<Vec<Option<HistoryLaunchFact>>> {
+        if ids.is_empty() || !unique_ids(ids, HISTORY_LAUNCH_BATCH_MAX) {
+            return None;
+        }
+        let state = self.state.read().await;
+        let fact = |id: &Uuid| {
+            let session = state.sessions.get(id)?;
+            (!state.pending_create.contains_key(id)).then(|| HistoryLaunchFact {
+                id: *id,
+                working_directory: session.working_directory.clone(),
+                status: session.status.clone(),
+                is_root_agent: session.is_root_agent,
+                shell: session.shell.clone(),
+                effective_shell_args: session.effective_shell_args.clone(),
+            })
+        };
+        Some(ids.iter().map(fact).collect())
+    }
+
+    /// The ids among 0..=4096 unique `ids` that are present, visible and not
+    /// exited, under one read. An invalid request is refused before the lock.
+    pub(crate) async fn history_live_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Option<std::collections::HashSet<Uuid>> {
+        if !unique_ids(ids, HISTORY_LIVE_IDS_MAX) {
+            return None;
+        }
+        if ids.is_empty() {
+            return Some(std::collections::HashSet::new());
+        }
+        let state = self.state.read().await;
+        let live = |id: &&Uuid| {
+            !state.pending_create.contains_key(id)
+                && state
+                    .sessions
+                    .get(id)
+                    .is_some_and(|session| !matches!(session.status, SessionStatus::Exited(_)))
+        };
+        Some(ids.iter().filter(live).copied().collect())
+    }
+
+    /// #3532 test seam: finish a pending create as the commit path would.
+    #[cfg(test)]
+    pub(crate) async fn finish_pending_create_for_test(&self, id: Uuid) {
+        self.state.write().await.pending_create.remove(&id);
+    }
+}

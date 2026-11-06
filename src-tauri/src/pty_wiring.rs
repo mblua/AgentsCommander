@@ -407,25 +407,34 @@ pub(crate) struct HistorySessions {
 }
 
 impl SessionLaunchSource for HistorySessions {
-    fn launch(
-        &self,
-        session_id: uuid::Uuid,
-    ) -> futures::future::BoxFuture<'_, Option<SessionLaunch>> {
+    fn launches<'a>(
+        &'a self,
+        ids: &'a [uuid::Uuid],
+    ) -> futures::future::BoxFuture<'a, Option<Vec<Option<SessionLaunch>>>> {
         Box::pin(async move {
-            let session = self
-                .session_mgr
-                .read()
-                .await
-                .get_session(session_id)
-                .await?;
-            Some(SessionLaunch {
-                session_id,
-                working_directory: session.working_directory,
-                shell: session.shell,
-                effective_shell_args: session.effective_shell_args,
-                is_root_agent: session.is_root_agent,
-            })
+            let facts = {
+                let manager = self.session_mgr.read().await;
+                manager.history_launch_facts(ids).await
+            }?;
+            let launches = facts.into_iter().map(|fact| {
+                fact.map(|fact| SessionLaunch {
+                    session_id: fact.id,
+                    exited: fact.exited(),
+                    working_directory: fact.working_directory,
+                    shell: fact.shell,
+                    effective_shell_args: fact.effective_shell_args,
+                    is_root_agent: fact.is_root_agent,
+                })
+            });
+            Some(launches.collect())
         })
+    }
+
+    fn live_ids<'a>(
+        &'a self,
+        ids: &'a [uuid::Uuid],
+    ) -> futures::future::BoxFuture<'a, Option<std::collections::HashSet<uuid::Uuid>>> {
+        Box::pin(async move { self.session_mgr.read().await.history_live_ids(ids).await })
     }
 }
 

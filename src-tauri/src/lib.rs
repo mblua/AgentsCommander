@@ -799,13 +799,32 @@ fn start_remote_alerts(
 /// its ingress. `history_runtime` stays free of Tauri; cancelling `shutdown`
 /// flushes the actor for at most its bounded window.
 fn start_context_history_runtime(
-    sessions: Arc<dyn history_runtime::SessionLaunchSource>,
-    env: Arc<dyn history_runtime::ProjectEnvironment>,
+    scopes: Arc<history_runtime::HistoryScopeState>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> history_runtime::HistoryIngress {
-    let (ingress, actor) = history_runtime::HistoryRuntime::start(sessions, env, shutdown);
+    let (ingress, actor) = history_runtime::HistoryRuntime::start(scopes, shutdown);
     tauri::async_runtime::spawn(actor);
     ingress
+}
+
+/// #3532: manage the history ingress (restart) and the shared scope state
+/// (history IPC) together. Refuses, registering neither, when either is
+/// already managed, so the first registration always stays intact.
+pub(crate) fn register_context_history_state<R: tauri::Runtime, M: tauri::Manager<R>>(
+    app: &M,
+    ingress: history_runtime::HistoryIngress,
+    scopes: Arc<history_runtime::HistoryScopeState>,
+) -> Result<(), String> {
+    let ingress_managed = app.try_state::<history_runtime::HistoryIngress>().is_some();
+    let scopes_managed = app
+        .try_state::<Arc<history_runtime::HistoryScopeState>>()
+        .is_some();
+    if ingress_managed || scopes_managed {
+        return Err("context-history state is already registered".to_string());
+    }
+    app.manage(ingress);
+    app.manage(scopes);
+    Ok(())
 }
 
 impl pty::container_backend::ContainerBackgroundTasks

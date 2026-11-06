@@ -526,13 +526,21 @@ fn start_session_observers(
     // #3532 context history. Its ingress is an independent fanout of the same
     // bounded sample bridge; shutdown cancels the actor, which flushes for at most
     // `SHUTDOWN_FLUSH` and never blocks quit.
-    let history_ingress = crate::start_context_history_runtime(
+    let history_scopes = Arc::new(crate::history_runtime::HistoryScopeState::new(
         Arc::new(HistorySessions {
             session_mgr: Arc::clone(&session_mgr_for_scraper),
         }),
         Arc::new(crate::history_runtime::DiskProjectEnvironment),
+    ));
+    let history_ingress = crate::start_context_history_runtime(
+        Arc::clone(&history_scopes),
         shutdown_for_setup.token().child_token(),
     );
+    let registered =
+        crate::register_context_history_state(&*app, history_ingress.clone(), history_scopes);
+    if let Err(error) = registered {
+        log::error!("[context-history] {error}; keeping the first registration");
+    }
     // #1032 context scrape. Must be after `.manage(settings)` above, since the
     // pattern adapter reads settings back out of managed state. Mirrors GitWatcher.
     let context_scraper = ContextScraper::new(
