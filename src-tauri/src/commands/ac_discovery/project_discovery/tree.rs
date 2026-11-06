@@ -15,6 +15,7 @@ use crate::filesystem::ac_discovery::{
     canonical_discovery_repo, discovery_directory_entries, discovery_path_is_dir,
     discovery_role_exists,
 };
+use crate::filesystem::projects::entities::roles;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -54,7 +55,7 @@ pub(crate) async fn discover_project_tree(
         // Agent matrices: _agent_*
         if dir_name.starts_with("_agent_") {
             let display_name = agent_display_name(project_folder, &dir_name);
-            let role_exists = discovery_role_exists(&entry_path.join("Role.md"));
+            let role_exists = discovery_role_exists(&roles::role_path(&entry_path));
 
             let preferred_agent_id = read_preferred_agent_id(&entry_path, cfg);
 

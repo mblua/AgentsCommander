@@ -6,6 +6,7 @@ use super::status::{build_session_index, compute_peer_status, CandidateSession};
 use super::{extract_role_section, read_role, PeerInfo};
 use crate::config::ac_root::existing_ac_root;
 use crate::config::agent_config::read_agent_local_config;
+use crate::filesystem::projects::entities::roles;
 
 pub(super) struct WgReplicaInfo {
     pub(super) my_agent_name: String,
@@ -74,7 +75,7 @@ pub(super) fn read_wg_role(replica_dir: &Path) -> String {
             return "Room replica agent.".to_string();
         }
     };
-    let role_path = matrix_dir.join("Role.md");
+    let role_path = roles::role_path(&matrix_dir);
     match crate::filesystem::documents::read_repository_role(&role_path) {
         Ok(content) => extract_role_section(&content, 3, "Room replica agent."),
         Err(_) => read_role(&matrix_dir.to_string_lossy()),
