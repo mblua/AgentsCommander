@@ -142,3 +142,75 @@ fn inner_matched_selection_loads_once() {
     h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new-b");
     call(tmp.path(), "via-new-b");
 }
+
+// ---- #3532 P14: context-history state registration (Tauri edge harness) -------------------
+
+/// A scope state over the production session adapter and environment.
+fn context_history_scopes() -> Arc<crate::history_runtime::HistoryScopeState> {
+    let sessions = crate::pty_wiring::HistorySessions {
+        session_mgr: Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+    };
+    Arc::new(crate::history_runtime::HistoryScopeState::new(
+        Arc::new(sessions),
+        Arc::new(crate::history_runtime::DiskProjectEnvironment),
+    ))
+}
+
+/// Whether the ingress `app` manages feeds `receiver`.
+fn feeds(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    receiver: &mut tokio::sync::mpsc::Receiver<crate::history_runtime::IngressMessage>,
+) -> bool {
+    let ingress = app.state::<crate::history_runtime::HistoryIngress>();
+    let id = Uuid::new_v4();
+    ingress.offer(
+        id,
+        crate::context_history::observation::ObservedValue::Reading(5),
+    );
+    matches!(
+        receiver.try_recv(),
+        Ok(crate::history_runtime::IngressMessage::Sample(sample)) if sample.session_id == id
+    )
+}
+
+#[test]
+fn context_history_state_is_registered_once_by_the_lib_helper() {
+    use crate::history_runtime::{HistoryIngress, HistoryScopeState};
+    let app = tauri::test::mock_app();
+    let (ingress, mut receiver) = HistoryIngress::for_test(4);
+    let first = context_history_scopes();
+    crate::register_context_history_state(&app, ingress.clone(), Arc::clone(&first))
+        .expect("first registration");
+    assert!(app.try_state::<HistoryIngress>().is_some());
+    assert!(
+        feeds(&app, &mut receiver),
+        "the managed clone shares the channel"
+    );
+
+    let (other, _other_receiver) = HistoryIngress::for_test(4);
+    let duplicate = crate::register_context_history_state(&app, other, context_history_scopes());
+    assert!(duplicate.is_err(), "a duplicate is refused without panic");
+    let managed = app.state::<Arc<HistoryScopeState>>();
+    assert!(
+        Arc::ptr_eq(managed.inner(), &first),
+        "the first service stays"
+    );
+    assert!(feeds(&app, &mut receiver), "the first channel stays");
+
+    let partial = tauri::test::mock_app();
+    partial.manage(ingress.clone());
+    let refused = crate::register_context_history_state(&partial, ingress, first);
+    assert!(refused.is_err());
+    assert!(partial.try_state::<Arc<HistoryScopeState>>().is_none());
+}
+
+#[test]
+fn session_observers_register_the_state_once_before_the_scraper_gets_the_ingress() {
+    let setup = include_str!("../../app_run/setup.rs");
+    let call = "crate::register_context_history_state(";
+    assert_eq!(setup.matches(call).count(), 1);
+    let registered = setup.find(call).unwrap();
+    let observers = setup.find("fn start_session_observers(").unwrap();
+    let handed = setup.find("history: Some(history_ingress)").unwrap();
+    assert!(observers < registered && registered < handed);
+}
