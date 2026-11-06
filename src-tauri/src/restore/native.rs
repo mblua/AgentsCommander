@@ -52,6 +52,7 @@ pub(crate) fn start_native_restore_startup(
     messages: Arc<crate::config::injected_messages::MessageWarnings>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let lifecycle_owner = Arc::clone(&settings_state);
+    let watchdog_settings = Arc::clone(&settings_state);
     let lifecycle_observer = Arc::clone(&restore_observer_barrier);
     let pty_mgr_clone = pty_mgr.clone();
     let session_mgr_clone = session_mgr;
@@ -89,6 +90,7 @@ pub(crate) fn start_native_restore_startup(
                 git_watcher,
                 discovery_branch_watcher,
                 resource_monitor,
+                watchdog_settings,
                 selection_coordinator,
                 pty_mgr,
                 messages,
@@ -427,6 +429,7 @@ struct RestoreObservers {
     git_watcher: Arc<GitWatcher>,
     discovery_branch_watcher: Arc<DiscoveryBranchWatcher>,
     resource_monitor: Arc<resource_monitor::ResourceMonitorState>,
+    watchdog_settings: SettingsState,
     selection_coordinator: crate::session::selection::SelectionCoordinator,
     pty_mgr: Arc<Mutex<PtyManager>>,
     messages: Arc<crate::config::injected_messages::MessageWarnings>,
@@ -446,6 +449,7 @@ impl RestoreObservers {
             git_watcher,
             discovery_branch_watcher,
             resource_monitor,
+            watchdog_settings,
             selection_coordinator,
             pty_mgr,
             messages,
@@ -501,7 +505,7 @@ impl RestoreObservers {
 
         resource_monitor::watchdog::start(
             (*resource_monitor).clone(),
-            app.state::<SettingsState>().inner().clone(),
+            watchdog_settings,
             selection_coordinator.clone(),
             shutdown.clone(),
         );
