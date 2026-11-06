@@ -67,20 +67,19 @@ pub(crate) async fn accept_restart_deferred_completion<R: tauri::Runtime>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "Preserve restart settlement inputs for rollback, selection and prompt transfer"
-)]
+pub(crate) struct RestartFinalizeOptions {
+    pub(crate) old_lost: bool,
+    pub(crate) old_selected: bool,
+    pub(crate) activate_after: bool,
+    pub(crate) restart_start_fresh: bool,
+}
+
 pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     deferred: &DeferredCreateOutput,
     uuid: uuid::Uuid,
-    old_lost: bool,
-    old_selected: bool,
-    activate_after: bool,
     intent: TrustedRestartIntent,
-    restart_start_fresh: bool,
+    options: RestartFinalizeOptions,
 ) -> Result<
     (
         uuid::Uuid,
@@ -89,6 +88,12 @@ pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     ),
     String,
 > {
+    let RestartFinalizeOptions {
+        old_lost,
+        old_selected,
+        activate_after,
+        restart_start_fresh,
+    } = options;
     let new_uuid = match Uuid::parse_str(&deferred.info.id) {
         Ok(id) => id,
         Err(error) => {

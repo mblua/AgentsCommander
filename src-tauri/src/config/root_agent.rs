@@ -6,6 +6,7 @@ mod skill_files;
 mod skill_snapshots;
 
 pub use crate::config::ROOT_AGENT_DIR_NAME;
+use crate::filesystem::projects::entities::roles;
 #[cfg(test)]
 pub(crate) use context_snapshots::frozen_root_context_snapshots;
 #[cfg(test)]
@@ -58,7 +59,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
 
@@ -66,13 +67,16 @@ pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
 /// Canonical Root context order. The selected file owns all instructional prose.
-const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", "Role.md"];
+const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", roles::ROLE_FILE_NAME];
 /// Frozen pre-979 default, kept for exact legacy recognition during migration.
-const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] =
-    &[CONTEXT_TOKEN_GLOBAL, "../Context.root-agent.md", "Role.md"];
+const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
+    CONTEXT_TOKEN_GLOBAL,
+    "../Context.root-agent.md",
+    roles::ROLE_FILE_NAME,
+];
 /// Older default, kept because it must still upgrade to the new default (and so
 /// gain the Root supplement) rather than degrade to a bare `["Role.md"]`.
-const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, "Role.md"];
+const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, roles::ROLE_FILE_NAME];
 const ROOT_AGENT_SKILLS_DIR: &str = "skills";
 const SKILL_MD_FILENAME: &str = "SKILL.md";
 /// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing
@@ -198,16 +202,9 @@ Use the AgentsCommander CLI only for commands that are valid from this root-agen
 });
 
 pub fn root_agent_dir() -> Result<String, String> {
-    static ROOT_DIR: OnceLock<String> = OnceLock::new();
-    if let Some(cached) = ROOT_DIR.get() {
-        return Ok(cached.clone());
-    }
-
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let root_dir = display_path(&config_dir.join(ROOT_AGENT_DIR_NAME));
-    let _ = ROOT_DIR.set(root_dir.clone());
-    Ok(root_dir)
+    Ok(display_path(&config_dir.join(ROOT_AGENT_DIR_NAME)))
 }
 
 /// One WARN per path per process; `debug!` thereafter.

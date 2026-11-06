@@ -21,6 +21,7 @@ use crate::config::remote_activity_cache::{
 };
 #[cfg(test)]
 use crate::config::sessions_persistence::PersistedSession;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 
 #[cfg(test)]
 use crate::commands::entity_creation::create_workgroup_on_disk;
@@ -235,7 +236,7 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
                     &path.join(crate::phone::messaging::MESSAGING_DIR_NAME),
                 ),
                 has_task: crate::filesystem::directories::cli_discovery_is_file(
-                    &path.join("TASK.md"),
+                    &path.join(TASK_FILE_NAME),
                 ),
                 replicas,
             })

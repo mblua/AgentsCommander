@@ -115,11 +115,13 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         transaction,
         &deferred,
         uuid,
-        old_lost,
-        next.old_selected,
-        next.activate_after,
         next.intent,
-        prepared.restart_start_fresh,
+        super::settlement::RestartFinalizeOptions {
+            old_lost,
+            old_selected: next.old_selected,
+            activate_after: next.activate_after,
+            restart_start_fresh: prepared.restart_start_fresh,
+        },
     )
     .await?;
     publish_restart(

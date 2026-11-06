@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use crate::config::ac_root::{ensure_authoritative_ac_root, find_ac_root_ancestor};
 use crate::filesystem::config_locations;
+use crate::filesystem::projects::entities::roles;
 
-pub const ROLE_MD_FILENAME: &str = "Role.md";
+pub const ROLE_MD_FILENAME: &str = roles::ROLE_FILE_NAME;
 pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
 const DEPRECATED_REPOS_INFO_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
 

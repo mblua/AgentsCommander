@@ -7,76 +7,6 @@
   "capturedAt": "2026-09-22T08:35:09.139Z",
   "entries": [
     {
-      "id": "rust:src-tauri/src/agent_update.rs::mod:tests::agent_update_result_contract",
-      "sites": {
-        "windows": [
-          "75668b3ada4d"
-        ],
-        "linux": [
-          "75668b3ada4d"
-        ],
-        "macos": [
-          "75668b3ada4d"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/resource_monitor.rs::mod:tests::assert_serialized_resource_kills",
-      "sites": {
-        "windows": [
-          "ca1a701fe5fe"
-        ],
-        "linux": [
-          "ca1a701fe5fe"
-        ],
-        "macos": [
-          "ca1a701fe5fe"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/config/root_agent.rs::mod:tests::ensure_root_agent_dir_at_creates_layout_role_and_config",
-      "sites": {
-        "windows": [
-          "856575bd7902"
-        ],
-        "linux": [
-          "856575bd7902"
-        ],
-        "macos": [
-          "856575bd7902"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/config/session_context/tests/token_accounting.rs::summarized_default_context_meets_size_budget",
-      "sites": {
-        "windows": [
-          "24924aced08a"
-        ],
-        "linux": [
-          "24924aced08a"
-        ],
-        "macos": [
-          "24924aced08a"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/config/settings/tests.rs::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
-      "sites": {
-        "windows": [
-          "826617b3bb4f"
-        ],
-        "linux": [
-          "826617b3bb4f"
-        ],
-        "macos": [
-          "826617b3bb4f"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/lib.rs::fn:run::{closure}",
       "sites": {
         "windows": [
@@ -108,104 +38,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/pty/docker_runtime.rs::mod:tests::run_command_is_detached_labeled_and_has_expected_env_without_interactive_flags",
-      "sites": {
-        "windows": [
-          "f8134bd5fb6d"
-        ],
-        "linux": [
-          "f8134bd5fb6d"
-        ],
-        "macos": [
-          "f8134bd5fb6d"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/inject.rs::mod:tests::direct_shell_capability_matrix",
-      "sites": {
-        "windows": [
-          "3f7dd75374cc"
-        ],
-        "linux": [
-          "3f7dd75374cc"
-        ],
-        "macos": [
-          "3f7dd75374cc"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs::run_composed_scanner_shutdown_phase",
-      "sites": {
-        "windows": [
-          "54c3e1498939"
-        ],
-        "linux": [
-          "54c3e1498939"
-        ],
-        "macos": [
-          "54c3e1498939"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/resource_tests.rs::run_resource_child",
-      "sites": {
-        "windows": [
-          "e82d3852dd26"
-        ],
-        "linux": [
-          "e82d3852dd26"
-        ],
-        "macos": [
-          "e82d3852dd26"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/profile.rs::mod:tests::muse_serde_profile_detection_and_submission_boundary_are_stable",
-      "sites": {
-        "windows": [
-          "db5b2c3aa862"
-        ],
-        "linux": [
-          "db5b2c3aa862"
-        ],
-        "macos": [
-          "db5b2c3aa862"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection.rs::mod:tests::assert_pending_container_shutdown_waits_for_stop",
-      "sites": {
-        "windows": [
-          "baf671e2fa4e"
-        ],
-        "linux": [
-          "baf671e2fa4e"
-        ],
-        "macos": [
-          "baf671e2fa4e"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection.rs::mod:tests::assert_real_pending_container_start_shutdown_waits_for_stop",
-      "sites": {
-        "windows": [
-          "c1c6c13921ef"
-        ],
-        "linux": [
-          "c1c6c13921ef"
-        ],
-        "macos": [
-          "c1c6c13921ef"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::drain_after_shutdown",
       "sites": {
         "windows": [
@@ -230,14 +62,6 @@
         ],
         "macos": [
           "185e15600ecd"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/cli_powershell_capture.rs::issue_1867_isolation_source_contract",
-      "sites": {
-        "windows": [
-          "ad9bd7fafaee"
         ]
       }
     }

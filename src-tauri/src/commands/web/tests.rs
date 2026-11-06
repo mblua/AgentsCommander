@@ -783,21 +783,8 @@ async fn ws_preflight_draft_parity(
     replica: &str,
     path: &str,
 ) {
-    use crate::commands::session::{
-        describe_preflight_target_inner, list_preflight_test_targets_inner,
-        start_preflight_test_inner, PreflightTestDeps, PreflightTestDraft,
-    };
-    let candidates = vec![replica.to_string(), replica.to_string(), path.to_string()];
-    let list_args = json!({"agentId": "claude", "replicaPaths": candidates});
-    let claude = || "claude".to_string();
-    let inner = list_preflight_test_targets_inner(deps, claude(), candidates.clone()).await;
-    let inner = inner.expect("list");
-    assert_eq!(inner.len(), 1);
-    let ws = dispatch(state, 5, "list_preflight_test_targets", &list_args).await;
-    assert_eq!(
-        ws,
-        json!({"id": 5, "result": serde_json::to_value(inner).unwrap()})
-    );
+    use crate::commands::session::PreflightTestDraft;
+    ws_preflight_list_parity(state, deps, replica, path).await;
 
     let script = if cfg!(windows) {
         "cmd.exe /D /C \"exit 0\""
@@ -808,6 +795,47 @@ async fn ws_preflight_draft_parity(
     let draft = json!({"codingAgent": stage, "profiles": {}});
     let typed: PreflightTestDraft = serde_json::from_value(draft.clone()).unwrap();
     let drafted = json!({"agentId": "claude", "replicaPath": replica, "draft": draft});
+    let revision = ws_preflight_describe_parity(state, deps, replica, &drafted, &typed).await;
+
+    let mut start = drafted.clone();
+    start["settingsRevision"] = revision.clone().into();
+    ws_preflight_run_parity(state, deps, backend, replica, &start, revision, typed).await;
+    ws_preflight_malformed_drafts_rejected(state, &start, &stage).await;
+    assert_eq!(backend.preflight.lock().unwrap().len(), 2);
+}
+
+/// #3832 - target listing over WS matches the shared core.
+async fn ws_preflight_list_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    replica: &str,
+    path: &str,
+) {
+    use crate::commands::session::list_preflight_test_targets_inner;
+    let candidates = vec![replica.to_string(), replica.to_string(), path.to_string()];
+    let list_args = json!({"agentId": "claude", "replicaPaths": candidates});
+    let claude = "claude".to_string();
+    let inner = list_preflight_test_targets_inner(deps, claude, candidates.clone()).await;
+    let inner = inner.expect("list");
+    assert_eq!(inner.len(), 1);
+    let ws = dispatch(state, 5, "list_preflight_test_targets", &list_args).await;
+    assert_eq!(
+        ws,
+        json!({"id": 5, "result": serde_json::to_value(inner).unwrap()})
+    );
+}
+
+/// #3832 - saved and draft describe over WS match the shared core; returns the
+/// draft's settings revision.
+async fn ws_preflight_describe_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    replica: &str,
+    drafted: &Value,
+    typed: &crate::commands::session::PreflightTestDraft,
+) -> String {
+    use crate::commands::session::describe_preflight_target_inner;
+    let claude = || "claude".to_string();
     let replica = replica.to_string();
     let inner = describe_preflight_target_inner(deps, claude(), None, replica.clone(), None);
     let saved = serde_json::to_value(inner.await.expect("describe")).unwrap();
@@ -816,19 +844,29 @@ async fn ws_preflight_draft_parity(
     let ws = dispatch(state, 6, "describe_preflight_target", &null_draft).await;
     assert_eq!(ws, json!({"id": 6, "result": saved}));
     let typed_draft = Some(typed.clone());
-    let inner = describe_preflight_target_inner(deps, claude(), None, replica.clone(), typed_draft);
+    let inner = describe_preflight_target_inner(deps, claude(), None, replica, typed_draft);
     let inner = inner.await.expect("describe");
     assert_eq!(inner.stages.len(), 1);
-    let ws = dispatch(state, 7, "describe_preflight_target", &drafted).await;
+    let ws = dispatch(state, 7, "describe_preflight_target", drafted).await;
     assert_eq!(
         ws,
         json!({"id": 7, "result": serde_json::to_value(&inner).unwrap()})
     );
+    inner.settings_revision
+}
 
-    let revision = inner.settings_revision.clone();
-    let mut start = drafted.clone();
-    start["settingsRevision"] = revision.clone().into();
-    let ws = dispatch(state, 8, "start_preflight_test", &start).await;
+/// #3832 - a real draft run over WS finishes like the same run started in the core.
+async fn ws_preflight_run_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    backend: &TestBackend,
+    replica: &str,
+    start: &Value,
+    revision: String,
+    typed: crate::commands::session::PreflightTestDraft,
+) {
+    use crate::commands::session::{start_preflight_test_inner, PreflightTestDeps};
+    let ws = dispatch(state, 8, "start_preflight_test", start).await;
     let run_id = ws["result"].as_str().expect("run id").to_string();
     let via_ws = finished_run(deps, &run_id).await;
     assert_eq!(via_ws["outcome"], "passed", "{via_ws}");
@@ -838,14 +876,19 @@ async fn ws_preflight_draft_parity(
         pty_mgr: deps.pty_mgr.clone(),
         state: deps.state.clone(),
     };
+    let claude = "claude".to_string();
+    let replica = replica.to_string();
     let started =
-        start_preflight_test_inner(deps_again, claude(), None, replica, revision, Some(typed));
+        start_preflight_test_inner(deps_again, claude, None, replica, revision, Some(typed));
     let run_id = started.await.expect("inner start");
     assert_eq!(finished_run(deps, &run_id).await, via_ws);
     let requests = backend.preflight.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     assert!(requests.iter().all(|r| r.args.join(" ").contains("exit 0")));
+}
 
+/// #3832 - malformed drafts and target lists are rejected over WS.
+async fn ws_preflight_malformed_drafts_rejected(state: &WsState, start: &Value, stage: &Value) {
     let malformed = [
         (
             "describe_preflight_target",
@@ -882,5 +925,4 @@ async fn ws_preflight_draft_parity(
     let numbers = json!({"agentId": "claude", "replicaPaths": [1]});
     let reply = dispatch(state, 11, "list_preflight_test_targets", &numbers).await;
     assert!(reply["error"].is_string(), "{reply}");
-    assert_eq!(backend.preflight.lock().unwrap().len(), 2);
 }
