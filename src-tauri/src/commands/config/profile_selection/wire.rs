@@ -134,6 +134,11 @@ pub struct ApplyCodingAgentProfileSelectionRequest {
     pub scope: ProfileAssignmentScope,
     pub restart_sessions: bool,
     pub confirmed_target_fingerprint: Option<String>,
+    // Legacy typedConfirmation stays accepted and ignored for compatibility.
+    #[expect(
+        dead_code,
+        reason = "legacy wire input intentionally accepted and ignored"
+    )]
     pub typed_confirmation: Option<String>,
     /// #1941 - absent keeps the legacy ordinary semantics.
     #[serde(default)]

@@ -48,6 +48,7 @@ use super::RunArtifact;
 use super::RunExecutionArtifact;
 use super::RunSuiteArtifact;
 use super::RunVariantArtifact;
+use crate::filesystem::projects::entities::roles;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -473,7 +474,7 @@ pub(super) fn collect_experiment_validation(loaded: &LoadedExperiment) -> Experi
 
     if source_metadata_valid {
         let source_matrix = source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
-        let source_role = source_matrix.join("Role.md");
+        let source_role = roles::role_path(&source_matrix);
         if !source_matrix.is_dir() {
             errors.push(err(
                 "source_agent_missing",

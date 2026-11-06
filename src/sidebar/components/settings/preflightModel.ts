@@ -5,6 +5,9 @@ import type {
   PreflightStageSource,
   PreflightTestSnapshot,
 } from "../../../shared/types";
+import type {
+  PreflightDraftStage, PreflightTestDraft, PreflightTestTarget,
+} from "../../../shared/preflightTypes";
 
 const MAX_TIMEOUT_SECONDS = 4294967295;
 
@@ -118,4 +121,53 @@ export function activeLine(snapshot: PreflightTestSnapshot, cancelSent: boolean)
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+export const NO_TARGETS_TEXT = "No compatible stopped agent is available. Create or stop an "
+  + "agent before testing.";
+export const ALL_RUNNING_TEXT = "Stop one of these agents before testing.";
+
+type DraftSource = { preflight?: string; preflightTimeoutSeconds?: number } | undefined;
+
+/** #3832 - one stage of the draft payload: only the command and its timeout. */
+function draftStage(source: DraftSource): PreflightDraftStage {
+  return {
+    command: source?.preflight ?? null,
+    timeoutSeconds: source?.preflightTimeoutSeconds ?? null,
+  };
+}
+
+/** #3832 - the unsaved preflight commands and timeouts of one Coding Agent. */
+export function buildPreflightDraft(settings: AppSettings, agentId: string): PreflightTestDraft {
+  const row = settings.agents.find((agent) => agent.id === agentId);
+  const cells = settings.codingAgentProfiles?.profilesByAgent?.[agentId] ?? {};
+  const profiles: Record<string, PreflightDraftStage> = {};
+  for (const letter of Object.keys(cells).sort()) profiles[letter] = draftStage(cells[letter]);
+  return { codingAgent: draftStage(row), profiles };
+}
+
+/** #3832 - stable text of a draft payload, to match a description to its request. */
+export function draftKey(draft: PreflightTestDraft): string {
+  return JSON.stringify(draft);
+}
+
+/** #3832 - Profile-cell mode keeps rows that launch with `letter`; card mode keeps all. */
+export function rowsForLetter(
+  rows: readonly PreflightTestTarget[], letter: string | null,
+): PreflightTestTarget[] {
+  return letter === null ? [...rows] : rows.filter((row) => row.effectiveProfile === letter);
+}
+
+/** #3832 - why no row can be chosen (empty or all running), or null when one can. */
+export function targetListText(
+  rows: readonly PreflightTestTarget[], letter: string | null,
+): string | null {
+  if (rows.length === 0) {
+    return letter === null
+      ? NO_TARGETS_TEXT
+      : `No agent launches with Profile ${letter}. Assign Profile ${letter} to an agent `
+        + "to test it here.";
+  }
+  if (rows.every((row) => row.running)) return ALL_RUNNING_TEXT;
+  return null;
 }

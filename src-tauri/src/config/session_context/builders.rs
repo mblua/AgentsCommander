@@ -563,7 +563,7 @@ pub(crate) fn build_root_agent_context_at(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("Failed to read {}: {}", config_path.display(), e)),
         };
-    let defaults = serde_json::json!(["../Context.root-agent.md", "Role.md"]);
+    let defaults = serde_json::json!(["../Context.root-agent.md", roles::ROLE_FILE_NAME]);
     super::super::root_agent::ensure_default_root_agent_skills_at(cwd_path)?;
     let entries = config
         .as_ref()

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  activeLine, formatDuration, isStale, isTimeoutKeyOfAgent, parseTimeoutInput,
+  ALL_RUNNING_TEXT, NO_TARGETS_TEXT, activeLine, buildPreflightDraft, draftKey, formatDuration,
+  isStale, isTimeoutKeyOfAgent, parseTimeoutInput, rowsForLetter, targetListText,
   preflightFingerprint, stageStatusText, timeoutKey,
 } from "./preflightModel";
 import { baseSettings } from "../../../shared/testing/base-settings";
 import type {
-  PreflightStageReport, PreflightStageStatus, PreflightTestSnapshot,
+  PreflightStageReport, PreflightStageStatus, PreflightTestSnapshot, PreflightTestTarget,
 } from "../../../shared/types";
 
 function report(over: Partial<PreflightStageReport> = {}): PreflightStageReport {
@@ -141,6 +142,64 @@ describe("activeLine (#3516)", () => {
     const none = [report({ status: "pending" })];
     expect(activeLine(snapshot({ stages: none }), false)).toBe("Preparing test context…");
     expect(activeLine(snapshot({ phase: "finished", outcome: "passed" }), false)).toBeNull();
+  });
+});
+
+function target(path: string, over: Partial<PreflightTestTarget> = {}): PreflightTestTarget {
+  return {
+    replicaPath: path, requestedProfile: "A", effectiveProfile: "A", fallbackApplied: false,
+    running: false, ...over,
+  };
+}
+
+describe("buildPreflightDraft (#3832)", () => {
+  it("keeps only preflight commands and timeouts, with null for undefined", () => {
+    const settings = baseSettings({
+      agents: [{
+        id: "codex", label: "Codex", command: "codex", color: "#000", envs: [],
+        isolatedHome: false, preflight: "agent-check", preflightTimeoutSeconds: 5,
+      }],
+    });
+    settings.codingAgentProfiles.profilesByAgent.codex = {
+      B: { enabled: false, command: "b", env: { K: "v" }, notes: "", preflight: "b-check" },
+      A: { enabled: true, command: "a", env: {}, notes: "", preflightTimeoutSeconds: 9 },
+    };
+    const draft = buildPreflightDraft(settings, "codex");
+    expect(draft).toEqual({
+      codingAgent: { command: "agent-check", timeoutSeconds: 5 },
+      profiles: {
+        A: { command: null, timeoutSeconds: 9 },
+        B: { command: "b-check", timeoutSeconds: null },
+      },
+    });
+    expect(Object.keys(draft.profiles)).toEqual(["A", "B"]);
+    expect(draftKey(draft)).toBe(draftKey(buildPreflightDraft(settings, "codex")));
+  });
+
+  it("uses null stages for an unknown agent", () => {
+    expect(buildPreflightDraft(baseSettings(), "nope")).toEqual({
+      codingAgent: { command: null, timeoutSeconds: null }, profiles: {},
+    });
+  });
+});
+
+describe("picker helpers (#3832)", () => {
+  it("filters by launch Profile after fallback; card mode keeps every row", () => {
+    const rows = [
+      target("a"), target("b", { effectiveProfile: "B" }),
+      target("c", { requestedProfile: "B", effectiveProfile: "A", fallbackApplied: true }),
+    ];
+    expect(rowsForLetter(rows, "A").map((r) => r.replicaPath)).toEqual(["a", "c"]);
+    expect(rowsForLetter(rows, "B").map((r) => r.replicaPath)).toEqual(["b"]);
+    expect(rowsForLetter(rows, null)).toHaveLength(3);
+  });
+
+  it("explains empty and all-running lists", () => {
+    expect(targetListText([], null)).toBe(NO_TARGETS_TEXT);
+    expect(targetListText([], "B")).toBe(
+      "No agent launches with Profile B. Assign Profile B to an agent to test it here.");
+    expect(targetListText([target("a", { running: true })], "A")).toBe(ALL_RUNNING_TEXT);
+    expect(targetListText([target("a", { running: true }), target("b")], "A")).toBeNull();
   });
 });
 

@@ -144,8 +144,8 @@ pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
 pub(crate) use preflight::test_run::{
     cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
-    start_preflight_test_inner, PreflightTargetDescription, PreflightTestDeps,
-    PreflightTestSnapshot,
+    list_preflight_test_targets_inner, start_preflight_test_inner, PreflightTargetDescription,
+    PreflightTestDeps, PreflightTestDraft, PreflightTestSnapshot, PreflightTestTarget,
 };
 pub(crate) use preflight::PreflightState;
 pub(crate) use restart::carry_communication_for_restart;
@@ -874,16 +874,28 @@ fn preflight_deps(app: &AppHandle) -> Result<PreflightTestDeps, String> {
     })
 }
 
-/// #3516 - the saved preflight chain of a stopped agent folder.
+/// #3832 - the given folders of one agent that a preflight test can target.
+#[tauri::command]
+pub(crate) async fn list_preflight_test_targets(
+    app: AppHandle,
+    agent_id: String,
+    replica_paths: Vec<String>,
+) -> Result<Vec<PreflightTestTarget>, String> {
+    let deps = preflight_deps(&app)?;
+    list_preflight_test_targets_inner(&deps, agent_id, replica_paths).await
+}
+
+/// #3516 - the saved preflight chain of a stopped agent folder; #3832 optional draft.
 #[tauri::command]
 pub(crate) async fn describe_preflight_target(
     app: AppHandle,
     agent_id: String,
     profile_letter: Option<String>,
     replica_path: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<PreflightTargetDescription, String> {
     let deps = preflight_deps(&app)?;
-    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path).await
+    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path, draft).await
 }
 
 /// #3516 - starts a preflight test run; returns its id.
@@ -894,9 +906,10 @@ pub(crate) async fn start_preflight_test(
     profile_letter: Option<String>,
     replica_path: String,
     settings_revision: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<String, String> {
-    let d = preflight_deps(&app)?;
-    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, settings_revision).await
+    let (d, revision) = (preflight_deps(&app)?, settings_revision);
+    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, revision, draft).await
 }
 
 #[tauri::command]

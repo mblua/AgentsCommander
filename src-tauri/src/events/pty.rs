@@ -1,11 +1,12 @@
 //! PTY event transport and task scheduling at the Tauri edge.
 
 use crate::config::settings::SettingsState;
+use crate::pty::git_watcher::GitEvents;
 use crate::pty::manager::PtyManager;
 use crate::pty::menu_guard::{MenuGuard, MenuGuardEvents};
 use crate::pty::output::{PtyOutputEmitError, PtyOutputTarget, PtyOutputTask};
 use crate::session::manager::SessionManager;
-use crate::session::session::SessionCommunication;
+use crate::session::session::{SessionCommunication, SessionRepo};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -37,6 +38,25 @@ fn spawn_output_task(task: PtyOutputTask) {
 impl<R: tauri::Runtime> MenuGuardEvents for AppHandle<R> {
     fn publish(&self, id: Uuid, communication: Option<&SessionCommunication>) {
         crate::session::selection::publish_session_communication(self, id, communication);
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitReposPayload {
+    session_id: String,
+    repos: Vec<SessionRepo>,
+}
+
+impl<R: tauri::Runtime> GitEvents for AppHandle<R> {
+    fn session_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
+        let _ = self.emit(
+            "session_git_repos",
+            GitReposPayload {
+                session_id: id.to_string(),
+                repos,
+            },
+        );
     }
 }
 

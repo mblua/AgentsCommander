@@ -21,12 +21,13 @@ use crate::config::entity_creation::directories::{
     self, clone_target_present, replica_role_present,
 };
 use crate::config::replica_identity::{
-    normalize_wg_replica_context_entries, repair_wg_replica_config_value, ROLE_MD_FILENAME,
+    normalize_wg_replica_context_entries, repair_wg_replica_config_value,
     WG_REPLICA_REQUIRED_CONTEXT,
 };
 use crate::config::seed_manifest::{
     ManifestActivationToken, ManifestLifecycleFilter, ProjectSeedManifestGuard, SeedManifestError,
 };
+use crate::filesystem::projects::entities::roles;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -269,7 +270,7 @@ pub(super) fn initialize_replica_config_on_disk(
             &existing_context,
             &["$AGENTSCOMMANDER_CONTEXT"],
             &identity.identity,
-            replica_role_present(&identity.matrix_dir.join(ROLE_MD_FILENAME)),
+            replica_role_present(&roles::role_path(&identity.matrix_dir)),
         ));
         if !had_config {
             if let Some(default) = read_replica_selection_default(&identity.matrix_dir)? {

@@ -10,6 +10,7 @@ use super::{
 };
 use crate::config::ROOT_AGENT_DIR_NAME;
 use crate::filesystem::agent_files;
+use crate::filesystem::projects::entities::roles;
 use std::path::Path;
 
 pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r"# Role
@@ -146,7 +147,7 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
         )
     })?;
 
-    let role_path = root_dir.join("Role.md");
+    let role_path = roles::role_path(root_dir);
     migrate_root_role(&role_path)?;
 
     merge_root_agent_config(&root_dir.join("config.json"))?;

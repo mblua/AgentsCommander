@@ -1,0 +1,85 @@
+/* #3832 - preflight test panel: unsaved-draft warning and the "Test on" picker.
+   Every warning use passes the same --sidebar-warning fallback. */
+
+.settings-preflight-panel.preflight-test-unsaved {
+  border-left: 3px solid var(--sidebar-warning, #e0a83a);
+}
+
+.preflight-test-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preflight-test-unsaved-badge {
+  border: 1px solid var(--sidebar-warning, #e0a83a);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-surface);
+  color: var(--sidebar-warning, #e0a83a);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.preflight-test-unsaved-line {
+  color: var(--sidebar-warning, #e0a83a);
+}
+
+.preflight-test-retry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.preflight-target-list {
+  max-height: 200px;
+  overflow: auto;
+  margin-top: 2px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-surface);
+}
+
+.preflight-target-list[hidden] {
+  display: none;
+}
+
+.preflight-target-option {
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.preflight-target-option:hover,
+.preflight-target-option[aria-selected="true"] {
+  background: var(--sidebar-active);
+  color: var(--sidebar-accent);
+}
+
+.preflight-target-option[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.preflight-target-option[aria-disabled="true"]:hover {
+  background: transparent;
+  color: inherit;
+}
+
+.preflight-target-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.preflight-target-path,
+.preflight-target-profile {
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.preflight-target-empty {
+  padding: 6px 12px;
+  color: var(--sidebar-fg-dim);
+}
