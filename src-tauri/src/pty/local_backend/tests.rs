@@ -25,7 +25,8 @@ mod adapter;
 mod adapter_spawn_sync;
 /// #2683 T5: the search path is applied before the env-removal and
 /// configured-env loops in `spawn_sync`, so explicit configuration still wins.
-/// #2683 T6: the production `GitWatcher::new` still demands a real `AppHandle`.
+/// #2683 T6: the production `GitWatcher::new` accepts the native `AppHandle`
+/// as its `GitEvents` implementation.
 mod issue_2683_search_path_order;
 /// #2413 T17: the local backend marks the launch witness only once a child
 /// exists, so a `spawn_command` failure stays restorable.
