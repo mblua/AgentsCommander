@@ -828,6 +828,7 @@ fn issue_3946_handoff_order() {
         "flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action",
         "false",
     );
+    assert_ne!(mutant, source);
     assert!(!issue_3946_handoff_contract(&mutant));
     assert!(!issue_3946_handoff_contract(
         &source.replace("consume_outcome(", "removed(")
@@ -848,6 +849,7 @@ fn issue_3946_handoff_order_base() {
         "flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action",
         "false",
     );
+    assert_ne!(mutant, source);
     assert!(!issue_3946_handoff_contract(&mutant));
     println!("ISSUE3946 P10 BASE_PASS 1");
     println!("ISSUE3946 P10 MUTANT_REJECTED 1");
