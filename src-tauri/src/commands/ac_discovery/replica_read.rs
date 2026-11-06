@@ -1,5 +1,6 @@
 use super::model::AcReplicaSavedPair;
 use crate::config::ac_root::find_ac_root_segment;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use std::path::{Path, PathBuf};
 
 /// Resolve the preferred coding agent for a directory from its config.json
@@ -229,7 +230,7 @@ pub(crate) fn projected_path_string(p: &Path) -> String {
 pub(crate) type TaskFields = (Option<String>, Option<String>);
 
 pub(crate) fn read_task_fields(wg_path: &Path) -> TaskFields {
-    let task_path = wg_path.join("TASK.md");
+    let task_path = wg_path.join(TASK_FILE_NAME);
     let Ok(content) = crate::filesystem::tasks::read_task_title_text(&task_path) else {
         return (None, None);
     };
