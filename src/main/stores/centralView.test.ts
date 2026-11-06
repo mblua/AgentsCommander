@@ -62,6 +62,40 @@ describe("centralViewStore", () => {
     expect(centralViewStore.isResourceMonitor).toBe(false);
   });
 
+  it("showContextHistory from the terminal never persists", () => {
+    centralViewStore.showContextHistory();
+    expect(centralViewStore.view).toBe("contextHistory");
+    expect(centralViewStore.isContextHistory).toBe(true);
+    centralViewStore.showTerminal();
+    expect(setAttached()).not.toHaveBeenCalled();
+  });
+
+  it("showContextHistory from RM persists the detach exactly once", () => {
+    centralViewStore.showResourceMonitor();
+    setAttached().mockClear();
+    centralViewStore.showContextHistory();
+    centralViewStore.showContextHistory();
+    expect(centralViewStore.isResourceMonitor).toBe(false);
+    expect(setAttached()).toHaveBeenCalledTimes(1);
+    expect(setAttached()).toHaveBeenCalledWith(false);
+  });
+
+  it("toggleContextHistory alternates with the terminal", () => {
+    centralViewStore.toggleContextHistory();
+    expect(centralViewStore.isContextHistory).toBe(true);
+    centralViewStore.toggleContextHistory();
+    expect(centralViewStore.view).toBe("terminal");
+  });
+
+  it("history and browser replace each other without passing through RM", () => {
+    centralViewStore.showBrowser();
+    centralViewStore.showContextHistory();
+    expect(centralViewStore.isBrowser).toBe(false);
+    centralViewStore.showBrowser();
+    expect(centralViewStore.isContextHistory).toBe(false);
+    expect(setAttached()).not.toHaveBeenCalled();
+  });
+
   it("setInitialView sets the signal WITHOUT persisting (restore-only)", () => {
     centralViewStore.setInitialView("resourceMonitor");
     expect(centralViewStore.isResourceMonitor).toBe(true);
