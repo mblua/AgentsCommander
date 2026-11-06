@@ -56,6 +56,11 @@ mod resume_probe;
 mod root_agent;
 pub(crate) mod selection_executor;
 mod telegram;
+pub use crate::session::create_contracts::CreateSelectionIntent;
+pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
+pub(crate) use crate::session::create_contracts::{
+    OwnedReplacementCreateRequest, OwnedReplacementCreateStep,
+};
 #[cfg(test)]
 use agent_command::coding_agent_descriptor;
 pub(crate) use agent_command::executable_basename;
@@ -107,12 +112,9 @@ use create::with_create_resource_region;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
-pub use create::CreateSelectionIntent;
 use create::InitialLastPrompt;
 #[cfg(test)]
 use create::OwnedCreateAdmission;
-pub(crate) use create::PtyTargetCreateStep;
-pub(crate) use create::{OwnedReplacementCreateRequest, OwnedReplacementCreateStep};
 pub(crate) use destroy::background_destroy_session_inner;
 use destroy::count_working_members;
 pub use destroy::destroy_session_inner;
