@@ -1780,6 +1780,25 @@
       }
     },
     {
+      "id": "rust:src-tauri/src/config/session_context.rs::legacy_rendered_default_context_for_generation",
+      "name": "legacy_rendered_default_context_for_generation",
+      "anchor": "4a221d65b426",
+      "sites": {
+        "linux": {
+          "lines": 210,
+          "production": true
+        },
+        "macos": {
+          "lines": 210,
+          "production": true
+        },
+        "windows": {
+          "lines": 183,
+          "production": true
+        }
+      }
+    },
+    {
       "id": "rust:src-tauri/src/config/session_context/skill_sections.rs::render_skills_section",
       "name": "render_skills_section",
       "anchor": "fd4c6e9500e6",
