@@ -1,7 +1,8 @@
 //! #3516 - the preflight test: runs the SAVED chain on a stopped agent folder without a CLI
 //! or a session. Describe, start, snapshot and cancel; the UI polls snapshots. Tauri-free.
+//! #3832 - lists saved-context targets and runs an optional request-only draft chain.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,8 +16,13 @@ use super::{
 use crate::commands::session::create::{
     build_configured_agent_spawn_for_cwd, resolve_create_session_cwd,
 };
-use crate::config::agent_command::{PreflightStage, PreflightStageSource};
-use crate::config::settings::{AppSettings, SettingsState};
+use crate::config::agent_command::{
+    resolve_preflight_stages, PreflightStage, PreflightStageSource,
+};
+use crate::config::coding_agent_profiles::{
+    resolve_profile, ProfileResolution, ProfileResolutionRequest,
+};
+use crate::config::settings::{AgentConfig, AppSettings, SettingsState};
 use crate::pty::backend::{ResolvedAgentHostShell, SessionBackendKind};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -25,6 +31,9 @@ const MAX_STORED_RUNS: usize = 16;
 const UNKNOWN_RUN: &str = "Unknown preflight test run.";
 const STOP_FIRST: &str = "Stop this agent before testing its preflights.";
 const NOT_FOUND: &str = "Coding Agent not found.";
+const CONTAINER: &str = "Preflights cannot run for container agents.";
+const NOT_AGENT: &str = "This folder is not an AgentsCommander agent.";
+const STALE: &str = "Saved settings changed. Refresh the test context and try again.";
 
 /// The saved inputs of one agent's chain: first 16 hex chars of their SHA-256.
 pub(crate) fn preflight_revision(cfg: &AppSettings, agent_id: &str) -> String {
@@ -38,6 +47,60 @@ pub(crate) fn preflight_revision(cfg: &AppSettings, agent_id: &str) -> String {
     let bytes = serde_json::to_vec(&inputs).unwrap_or_default();
     let digest = format!("{:x}", Sha256::digest(&bytes));
     digest[..16].to_string()
+}
+
+/// Present-but-nullable: unlike a plain `Option` field, omission is an error.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(deserializer)
+}
+
+/// #3832 - one unsaved stage: null or blank command means no stage; null timeout means 60 s.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PreflightDraftStage {
+    #[serde(deserialize_with = "required_nullable")]
+    pub command: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub timeout_seconds: Option<u32>,
+}
+
+/// #3832 - the unsaved preflight fields of one request; never persisted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PreflightTestDraft {
+    pub coding_agent: PreflightDraftStage,
+    pub profiles: BTreeMap<String, PreflightDraftStage>,
+}
+
+/// Shared by both transports: Profile keys are one letter A-Z; timeouts are nonzero.
+fn validate_draft(draft: &PreflightTestDraft) -> Result<(), String> {
+    if let Some(key) = draft
+        .profiles
+        .keys()
+        .find(|key| !(key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase()))
+    {
+        return Err(format!("Invalid draft Profile key: {key:?}."));
+    }
+    let mut stages = std::iter::once(&draft.coding_agent).chain(draft.profiles.values());
+    if stages.any(|stage| stage.timeout_seconds == Some(0)) {
+        return Err("Draft preflight timeout must be at least 1 second.".to_string());
+    }
+    Ok(())
+}
+
+/// #3832 - one candidate folder of the agent, resolved from saved settings only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreflightTestTarget {
+    pub replica_path: String,
+    pub requested_profile: String,
+    pub effective_profile: String,
+    pub fallback_applied: bool,
+    pub running: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -188,11 +251,34 @@ async fn session_at(deps: &PreflightTestDeps, key: &str) -> bool {
     dirs.iter().any(|dir| destination_key(dir) == key)
 }
 
+fn is_agent_folder(cwd: &str) -> bool {
+    crate::config::teams::verify_pty_input_replica_cwd(Path::new(cwd)).is_ok()
+        || crate::config::root_agent::is_root_agent_path(cwd)
+}
+
+/// #3832 - the draft chain, on local clones of the saved agent row and resolution only.
+fn draft_stages(
+    agent: &AgentConfig,
+    resolution: &ProfileResolution,
+    draft: &PreflightTestDraft,
+    cwd: &str,
+) -> Result<Vec<PreflightStage>, String> {
+    let mut agent = agent.clone();
+    agent.preflight.clone_from(&draft.coding_agent.command);
+    agent.preflight_timeout_seconds = draft.coding_agent.timeout_seconds;
+    let mut resolution = resolution.clone();
+    let stage = draft.profiles.get(&resolution.effective_profile);
+    resolution.cell.preflight = stage.and_then(|stage| stage.command.clone());
+    resolution.cell.preflight_timeout_seconds = stage.and_then(|stage| stage.timeout_seconds);
+    resolve_preflight_stages(&agent, &resolution, Some(Path::new(cwd)), None)
+}
+
 /// Fills `description` from the saved agent; `None` when the target is unavailable.
 fn resolve_target(
     cfg: &AppSettings,
     agent_id: &str,
     profile_letter: Option<&str>,
+    draft: Option<&PreflightTestDraft>,
     description: &mut PreflightTargetDescription,
 ) -> Option<(Vec<PreflightStage>, PreflightChainEnv)> {
     let Some(agent) = cfg.agents.iter().find(|agent| agent.id == agent_id) else {
@@ -200,14 +286,12 @@ fn resolve_target(
         return None;
     };
     if agent.backend.kind == SessionBackendKind::ContainerTransport {
-        unavailable(description, "Preflights cannot run for container agents.");
+        unavailable(description, CONTAINER);
         return None;
     }
     let cwd = description.cwd.clone();
-    let is_agent = crate::config::teams::verify_pty_input_replica_cwd(Path::new(&cwd)).is_ok()
-        || crate::config::root_agent::is_root_agent_path(&cwd);
-    if !is_agent {
-        unavailable(description, "This folder is not an AgentsCommander agent.");
+    if !is_agent_folder(&cwd) {
+        unavailable(description, NOT_AGENT);
         return None;
     }
     let spawn = match build_configured_agent_spawn_for_cwd(cfg, agent_id, &cwd, None) {
@@ -226,12 +310,16 @@ fn resolve_target(
     description.requested_profile = resolution.requested_profile.clone();
     description.effective_profile = resolution.effective_profile.clone();
     description.fallback_applied = resolution.fallback_applied;
-    let stages = match &spawn.preflight_stages {
+    let stages = match draft {
+        Some(draft) => draft_stages(agent, resolution, draft, &cwd),
+        None => spawn.preflight_stages.clone(),
+    };
+    let stages = match stages {
         Err(e) => {
-            unavailable(description, e.clone());
+            unavailable(description, e);
             return None;
         }
-        Ok(stages) => stages.clone(),
+        Ok(stages) => stages,
     };
     if let Some(letter) = profile_letter.filter(|l| *l != resolution.effective_profile) {
         let effective = &resolution.effective_profile;
@@ -259,7 +347,9 @@ async fn resolve(
     agent_id: String,
     profile_letter: Option<String>,
     replica_path: String,
+    draft: Option<&PreflightTestDraft>,
 ) -> Result<Resolution, String> {
+    draft.map(validate_draft).transpose()?;
     let cfg = deps
         .settings
         .current_snapshot()
@@ -283,6 +373,7 @@ async fn resolve(
         &cfg,
         &description.agent_id.clone(),
         profile_letter.as_deref(),
+        draft,
         &mut description,
     );
     let key = destination_key(&description.cwd);
@@ -304,10 +395,63 @@ pub(crate) async fn describe_preflight_target_inner(
     agent_id: String,
     profile_letter: Option<String>,
     replica_path: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<PreflightTargetDescription, String> {
-    Ok(resolve(deps, agent_id, profile_letter, replica_path)
-        .await?
-        .description)
+    let resolved = resolve(deps, agent_id, profile_letter, replica_path, draft.as_ref());
+    Ok(resolved.await?.description)
+}
+
+/// #3832 - the given candidate folders that are this agent's, from one saved snapshot.
+/// Never scans, seeds or parses commands; the caller filters by `effective_profile`.
+pub(crate) async fn list_preflight_test_targets_inner(
+    deps: &PreflightTestDeps,
+    agent_id: String,
+    replica_paths: Vec<String>,
+) -> Result<Vec<PreflightTestTarget>, String> {
+    let cfg = deps
+        .settings
+        .current_snapshot()
+        .await
+        .map_err(|e| format!("Settings are unavailable: {e}"))?;
+    let agent = cfg.agents.iter().find(|agent| agent.id == agent_id);
+    let agent = agent.ok_or_else(|| NOT_FOUND.to_string())?;
+    if agent.backend.kind == SessionBackendKind::ContainerTransport {
+        return Err(CONTAINER.to_string());
+    }
+    let dirs = deps
+        .session_mgr
+        .read()
+        .await
+        .working_dirs_including_pending()
+        .await;
+    let running: HashSet<String> = dirs.iter().map(|dir| destination_key(dir)).collect();
+    let mut seen = HashSet::new();
+    let mut targets = Vec::new();
+    for replica_path in replica_paths {
+        let cwd = resolve_create_session_cwd(Some(replica_path.clone()));
+        let key = destination_key(&cwd);
+        if !seen.insert(key.clone()) || !is_agent_folder(&cwd) {
+            continue;
+        }
+        let resolution = resolve_profile(
+            &cfg,
+            ProfileResolutionRequest {
+                coding_agent_id: &agent_id,
+                launch_path: Some(Path::new(&cwd)),
+                agent_matrix_name: None,
+                requested_profile: None,
+                requested_profile_authoritative: false,
+            },
+        );
+        targets.push(PreflightTestTarget {
+            replica_path,
+            requested_profile: resolution.requested_profile,
+            effective_profile: resolution.effective_profile,
+            fallback_applied: resolution.fallback_applied,
+            running: running.contains(&key),
+        });
+    }
+    Ok(targets)
 }
 
 fn pending_snapshot(
@@ -341,15 +485,22 @@ pub(crate) async fn prepare_preflight_test(
     profile_letter: Option<String>,
     replica_path: String,
     settings_revision: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<(String, PreflightTestTask), String> {
-    let resolution = resolve(&deps, agent_id, profile_letter, replica_path).await?;
+    let resolved = resolve(
+        &deps,
+        agent_id,
+        profile_letter,
+        replica_path,
+        draft.as_ref(),
+    );
     let Resolution {
         description,
         stages,
         env,
-    } = resolution;
+    } = resolved.await?;
     if description.settings_revision != settings_revision {
-        return Err("Save your changes before testing preflights.".to_string());
+        return Err(STALE.to_string());
     }
     if let Some(reason) = description.unavailable_reason.clone() {
         return Err(reason);
@@ -461,6 +612,7 @@ pub(crate) async fn start_preflight_test_inner(
     profile_letter: Option<String>,
     replica_path: String,
     settings_revision: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<String, String> {
     let (run_id, task) = prepare_preflight_test(
         deps,
@@ -468,6 +620,7 @@ pub(crate) async fn start_preflight_test_inner(
         profile_letter,
         replica_path,
         settings_revision,
+        draft,
     )
     .await?;
     tokio::spawn(task);
