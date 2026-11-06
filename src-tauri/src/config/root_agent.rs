@@ -59,7 +59,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
 
@@ -202,16 +202,9 @@ Use the AgentsCommander CLI only for commands that are valid from this root-agen
 });
 
 pub fn root_agent_dir() -> Result<String, String> {
-    static ROOT_DIR: OnceLock<String> = OnceLock::new();
-    if let Some(cached) = ROOT_DIR.get() {
-        return Ok(cached.clone());
-    }
-
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let root_dir = display_path(&config_dir.join(ROOT_AGENT_DIR_NAME));
-    let _ = ROOT_DIR.set(root_dir.clone());
-    Ok(root_dir)
+    Ok(display_path(&config_dir.join(ROOT_AGENT_DIR_NAME)))
 }
 
 /// One WARN per path per process; `debug!` thereafter.
