@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub(crate) mod fixture;
+
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::ResolvedAgentHostShell;
 use crate::session::selection::TrustedCreateIntent;
