@@ -147,12 +147,16 @@ fn session_wake_decision(
     let persisted_working =
         crate::session::session::persisted_is_working(ps.status.as_ref(), ps.waiting_for_input);
     let wake = restore_session_should_wake(
-        archived_session,
-        setting_on,
-        settings_snapshot.restart_resume_wake_working_agents,
-        is_coord,
+        crate::restore::RestoreWakeOptions {
+            settings: crate::restore::RestoreWakeSettings {
+                setting_on,
+                resume_agents_on: settings_snapshot.restart_resume_wake_working_agents,
+            },
+            archived_session,
+            is_coord,
+            persisted_working,
+        },
         ps.status.as_ref(),
-        persisted_working,
     );
     (
         agent_name,
