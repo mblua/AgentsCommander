@@ -654,7 +654,7 @@ impl Actor {
         if self.tracked.len() >= LIVE_STATE_CAPACITY {
             self.prune_tracked().await;
             if self.tracked.len() >= LIVE_STATE_CAPACITY {
-                if !std::mem::replace(&mut self.saturated, true) {
+                if scopes::first_in_episode(&mut self.saturated) {
                     log::warn!(
                         "[context-history] live-state capacity reached; session not tracked"
                     );

@@ -150,6 +150,12 @@ fn resolve_launch(launch: &SessionLaunch, env: &dyn ProjectEnvironment) -> Scope
     })
 }
 
+/// Whether this saturation starts a new episode, the only one that warns;
+/// an admission resets `saturated`.
+pub(crate) fn first_in_episode(saturated: &mut bool) -> bool {
+    !std::mem::replace(saturated, true)
+}
+
 /// One session's resolution: its scope and the immutable launch facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedScope {
@@ -294,7 +300,7 @@ impl HistoryScopeState {
 
     /// The scopes the sidebar shows for 1..=100 unique runtime ids of one
     /// project, from the same owner capture uses; `None` is unknown. Any
-    /// present session outside `project_paths` refuses the whole request
+    /// present session outside `project_paths`, Root included, refuses the whole request
     /// before discovery, teams or store. Works with capture disabled.
     // P05 consumer; retained scoped compatibility allowance
     #[cfg_attr(not(test), allow(dead_code))]
@@ -318,7 +324,7 @@ impl HistoryScopeState {
             })
         };
         let mut present = launches.iter().flatten();
-        if let Some(launch) = present.find(|launch| !is_root_session(launch) && !local(launch)) {
+        if let Some(launch) = present.find(|launch| !local(launch)) {
             return Err(SidebarScopeError::ForeignSession(launch.session_id));
         }
         let mut scopes = Vec::with_capacity(ids.len());

@@ -247,9 +247,3 @@ async fn capacity_retires_only_absent_sessions_and_never_a_live_one() {
     ));
     assert_eq!(state.len(), 1, "absent entries retired under pressure");
 }
-
-#[tokio::test]
-async fn live_ids_accepts_an_empty_request() {
-    let (source, _env, _state) = state();
-    assert_eq!(source.live_ids(&[]).await, Some(HashSet::new()));
-}

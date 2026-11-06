@@ -46,6 +46,10 @@ struct Shared {
     enabled: AtomicBool,
     busy_calls: AtomicU64,
     calls: AtomicU64,
+    /// Team discoveries: one per resolved session.
+    teams: AtomicU64,
+    /// While set, the writer thread blocks inside `append`.
+    hold: AtomicBool,
     stored: Mutex<Vec<HistoryRecord>>,
 }
 
@@ -59,6 +63,9 @@ impl HistoryAppend for FakeWriter {
         records: &[HistoryRecord],
         _now: i64,
     ) -> Result<AppendOutcome, StoreError> {
+        while self.0.hold.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         self.0.calls.fetch_add(1, Ordering::SeqCst);
         if self.0.busy_calls.load(Ordering::SeqCst) > 0 {
             self.0.busy_calls.fetch_sub(1, Ordering::SeqCst);
@@ -87,6 +94,7 @@ impl ProjectEnvironment for FakeEnv {
         true
     }
     fn teams(&self, _project_path: &Path) -> Vec<TeamMembers> {
+        self.0.teams.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     }
     fn open_writer(
@@ -102,6 +110,7 @@ impl ProjectEnvironment for FakeEnv {
 #[derive(Default)]
 struct FakeSessions {
     absent: Mutex<HashSet<Uuid>>,
+    roots: Mutex<HashSet<Uuid>>,
 }
 
 impl FakeSessions {
@@ -111,7 +120,7 @@ impl FakeSessions {
             working_directory: WD.to_string(),
             shell: "claude".to_string(),
             effective_shell_args: Some(vec!["--model".to_string(), "opus".to_string()]),
-            is_root_agent: false,
+            is_root_agent: self.roots.lock().unwrap().contains(&session_id),
             exited: false,
         })
     }
@@ -496,7 +505,7 @@ async fn a_real_five_second_reader_delays_the_batch_which_then_commits_once() {
 
 use std::path::PathBuf;
 
-use tauri::Manager;
+use tauri::Manager as _;
 
 // ---- #3532 P14: live-state pruning, pending sessions and composition ----------------------
 
@@ -526,43 +535,284 @@ async fn absent_sessions_free_live_state_with_a_gap_and_a_live_one_is_admitted()
     shared.enabled.store(true, Ordering::SeqCst);
     let sessions = Arc::new(FakeSessions::default());
     let (ingress, token, task) = start_with(&shared, sessions.clone());
-    let filled: Vec<Uuid> = (0..LIVE_STATE_CAPACITY).map(|_| Uuid::new_v4()).collect();
-    fill(&ingress, &shared, &filled).await;
-    sessions
-        .absent
-        .lock()
-        .unwrap()
-        .extend(filled.iter().copied());
+    let roots: Vec<Uuid> = (0..96).map(|_| Uuid::new_v4()).collect();
+    sessions.roots.lock().unwrap().extend(roots.iter().copied());
+    let scoped: Vec<Uuid> = (0..LIVE_STATE_CAPACITY - roots.len())
+        .map(|_| Uuid::new_v4())
+        .collect();
+    fill(&ingress, &shared, &scoped).await;
+    // Excluded entries, seeded while visible; they never write.
+    for id in &roots {
+        ingress.offer(*id, ObservedValue::Reading(10));
+    }
+    settle().await;
+    assert_eq!(shared.stored.lock().unwrap().len(), scoped.len());
+    // Hold the writer so these changes are still queued when pruning runs.
+    shared.hold.store(true, Ordering::SeqCst);
+    for id in &scoped[..100] {
+        ingress.offer(*id, ObservedValue::Reading(20));
+    }
+    let gone = &scoped[..3000];
+    let mut absent = sessions.absent.lock().unwrap().clone();
+    absent.extend(gone.iter().chain(&roots).copied());
+    *sessions.absent.lock().unwrap() = absent;
     let fresh = Uuid::new_v4();
     ingress.offer(fresh, ObservedValue::Reading(55));
-    stored_at_least(&shared, 2 * LIVE_STATE_CAPACITY + 1).await;
+    settle().await;
+    shared.hold.store(false, Ordering::SeqCst);
+    let expected = scoped.len() + 100 + gone.len() + 1;
+    stored_at_least(&shared, expected).await;
     token.cancel();
     task.await.unwrap();
     let stored = shared.stored.lock().unwrap();
-    let (firsts, rest) = stored.split_at(LIVE_STATE_CAPACITY);
+    assert_eq!(
+        stored.len(),
+        expected,
+        "queued records drained, nothing extra"
+    );
+    let (firsts, rest) = stored.split_at(scoped.len());
+    let changes = rest
+        .iter()
+        .filter(|record| record.percent == Some(20))
+        .count();
+    assert_eq!(changes, 100, "records queued before pruning are kept");
+    let gap = Some(crate::context_history::BoundaryReason::ObservationGap);
     let gaps: Vec<&HistoryRecord> = rest
         .iter()
-        .filter(|record| record.runtime_session_id != fresh)
+        .filter(|record| record.boundary_reason == gap)
         .collect();
-    assert_eq!(gaps.len(), LIVE_STATE_CAPACITY, "one gap per open session");
-    for gap in &gaps {
-        assert_eq!(gap.percent, None, "no fabricated value");
-        assert_eq!(
-            gap.boundary_reason,
-            Some(crate::context_history::BoundaryReason::ObservationGap)
-        );
+    assert_eq!(gaps.len(), gone.len(), "one gap per open absent session");
+    for record in &gaps {
+        assert_eq!(record.percent, None, "no fabricated value");
+        assert!(gone.contains(&record.runtime_session_id));
         let first = firsts
             .iter()
-            .find(|record| record.runtime_session_id == gap.runtime_session_id)
-            .expect("first record drained before the gap");
-        assert_eq!(gap.logical_session_id, first.logical_session_id);
+            .find(|first| first.runtime_session_id == record.runtime_session_id)
+            .expect("first record of the session");
+        assert_eq!(record.logical_session_id, first.logical_session_id);
     }
+    assert!(stored
+        .iter()
+        .all(|record| !roots.contains(&record.runtime_session_id)));
     let admitted: Vec<Option<u8>> = rest
         .iter()
         .filter(|record| record.runtime_session_id == fresh)
         .map(|record| record.percent)
         .collect();
     assert_eq!(admitted, [Some(55)]);
+}
+
+#[test]
+fn saturation_warns_once_per_episode() {
+    let mut saturated = false;
+    let warned: Vec<bool> = (0..3)
+        .map(|_| scopes::first_in_episode(&mut saturated))
+        .collect();
+    assert_eq!(warned, [true, false, false]);
+    saturated = false; // an admission ends the episode
+    assert!(scopes::first_in_episode(&mut saturated));
+}
+
+#[tokio::test]
+async fn a_cached_scope_of_a_vanished_session_is_not_tracked() {
+    let shared = Arc::new(Shared::default());
+    shared.enabled.store(true, Ordering::SeqCst);
+    let sessions = Arc::new(FakeSessions::default());
+    let env = Arc::new(FakeEnv(Arc::clone(&shared)));
+    let scopes = Arc::new(HistoryScopeState::new(sessions.clone(), env));
+    let token = CancellationToken::new();
+    let (ingress, actor) = HistoryRuntime::start(Arc::clone(&scopes), token.clone());
+    let task = tokio::spawn(actor);
+    let id = Uuid::new_v4();
+    assert!(matches!(scopes.resolve(id).await, ScopeLookup::Resolved(_)));
+    sessions.absent.lock().unwrap().insert(id);
+    ingress.offer(id, ObservedValue::Reading(30));
+    settle().await;
+    assert!(shared.stored.lock().unwrap().is_empty(), "no late capture");
+    sessions.absent.lock().unwrap().remove(&id);
+    ingress.offer(id, ObservedValue::Reading(45));
+    stored_at_least(&shared, 1).await;
+    token.cancel();
+    task.await.unwrap();
+    let values: Vec<Option<u8>> = shared
+        .stored
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|record| record.percent)
+        .collect();
+    assert_eq!(values, [Some(45)], "not memoized as excluded");
+}
+
+// ---- Real manager and HistorySessions -----------------------------------------------------
+
+type SharedManager = Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>;
+
+fn real_manager() -> (SharedManager, Arc<crate::pty_wiring::HistorySessions>) {
+    let manager = Arc::new(tokio::sync::RwLock::new(
+        crate::session::manager::SessionManager::new(),
+    ));
+    let sessions = Arc::new(crate::pty_wiring::HistorySessions {
+        session_mgr: Arc::clone(&manager),
+    });
+    (manager, sessions)
+}
+
+async fn running(manager: &SharedManager, working_directory: &str) -> Uuid {
+    let backend = crate::pty::backend::SessionBackendKind::LocalProcess;
+    let session = manager
+        .read()
+        .await
+        .create_session(
+            "claude".to_string(),
+            Vec::new(),
+            working_directory.to_string(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            backend,
+        )
+        .await
+        .expect("create session");
+    session.id
+}
+
+#[tokio::test]
+async fn real_batches_refuse_malformed_requests() {
+    let (manager, sessions) = real_manager();
+    let id = running(&manager, WD).await;
+    let ids = |count: usize| -> Vec<Uuid> { (0..count).map(|_| Uuid::new_v4()).collect() };
+    assert!(sessions.launches(&[]).await.is_none());
+    assert!(sessions.launches(&ids(101)).await.is_none());
+    assert!(sessions.launches(&[id, id]).await.is_none());
+    assert_eq!(
+        sessions.launches(&ids(100)).await.map(|all| all.len()),
+        Some(100)
+    );
+    assert_eq!(sessions.live_ids(&[]).await, Some(HashSet::new()));
+    let mut most = ids(4095);
+    most.push(id);
+    assert_eq!(sessions.live_ids(&most).await, Some(HashSet::from([id])));
+    assert!(sessions.live_ids(&ids(4097)).await.is_none());
+    assert!(sessions.live_ids(&[id, id]).await.is_none());
+}
+
+#[tokio::test]
+async fn real_facts_show_exited_removed_and_root_sessions() {
+    let (manager, sessions) = real_manager();
+    let exited = running(&manager, WD).await;
+    let removed = running(&manager, WD).await;
+    let root = running(&manager, WD).await;
+    manager.read().await.mark_exited(exited, 0).await;
+    manager.read().await.destroy_session(removed).await.unwrap();
+    manager.read().await.set_is_root_agent(root, true).await;
+    let facts = sessions.launches(&[exited, removed, root]).await.unwrap();
+    assert!(facts[0].as_ref().is_some_and(|launch| launch.exited));
+    assert!(facts[1].is_none(), "removed is absent");
+    assert!(facts[2].as_ref().is_some_and(|launch| launch.is_root_agent));
+    let live = sessions.live_ids(&[exited, removed, root]).await.unwrap();
+    assert_eq!(
+        live,
+        HashSet::from([root]),
+        "exited is present but not live"
+    );
+    let shared = Arc::new(Shared::default());
+    let env = Arc::new(FakeEnv(Arc::clone(&shared)));
+    let scopes = HistoryScopeState::new(sessions, env);
+    let project = [PathBuf::from("/p/proj")];
+    let view = scopes
+        .snapshot_sidebar_scopes(&project, &[exited, removed, root])
+        .await
+        .unwrap();
+    assert!(view.iter().all(|(_, scope)| scope.is_none()), "all unknown");
+    assert_eq!(shared.teams.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn real_mixed_local_and_foreign_sessions_are_refused_before_teams() {
+    let (manager, sessions) = real_manager();
+    let local = running(&manager, WD).await;
+    let foreign = running(&manager, "/q/other/.ac/room-1-x/__agent_dev").await;
+    let shared = Arc::new(Shared::default());
+    let env = Arc::new(FakeEnv(Arc::clone(&shared)));
+    let scopes = HistoryScopeState::new(sessions, env);
+    let project = [PathBuf::from("/p/proj")];
+    let refused = scopes
+        .snapshot_sidebar_scopes(&project, &[local, foreign])
+        .await;
+    assert_eq!(
+        refused,
+        Err(scopes::SidebarScopeError::ForeignSession(foreign))
+    );
+    assert_eq!(shared.teams.load(Ordering::SeqCst), 0);
+    // A Root of another project is foreign too; only a local Root is unknown.
+    let root = running(&manager, "/q/other/.ac/room-1-x/__agent_root").await;
+    manager.read().await.set_is_root_agent(root, true).await;
+    let refused = scopes
+        .snapshot_sidebar_scopes(&project, &[local, root])
+        .await;
+    assert_eq!(
+        refused,
+        Err(scopes::SidebarScopeError::ForeignSession(root))
+    );
+    assert_eq!(shared.teams.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_deferred_restart_replacement_is_captured_only_once_finished() {
+    let shared = Arc::new(Shared::default());
+    shared.enabled.store(true, Ordering::SeqCst);
+    let (manager, sessions) = real_manager();
+    let old = running(&manager, WD).await;
+    let env = Arc::new(FakeEnv(Arc::clone(&shared)));
+    let scopes = Arc::new(HistoryScopeState::new(sessions, env));
+    let token = CancellationToken::new();
+    let (ingress, actor) = HistoryRuntime::start(Arc::clone(&scopes), token.clone());
+    let task = tokio::spawn(actor);
+    ingress.offer(old, ObservedValue::Reading(40));
+    stored_at_least(&shared, 1).await;
+    assert_eq!(
+        ingress.restart_boundary(old, Uuid::new_v4()).await,
+        RestartAck::Acked
+    );
+    // The replacement waits in pending_create until restart settles.
+    let new = manager
+        .read()
+        .await
+        .insert_pending_session_for_test(WD.to_string())
+        .await;
+    ingress.offer(new, ObservedValue::Reading(30));
+    settle().await;
+    let project = [PathBuf::from("/p/proj")];
+    let pending = scopes.snapshot_sidebar_scopes(&project, &[new]).await;
+    assert!(pending.unwrap()[0].1.is_none(), "pending is unknown");
+    assert_eq!(
+        shared.stored.lock().unwrap().len(),
+        2,
+        "pending writes nothing"
+    );
+    manager
+        .read()
+        .await
+        .finish_pending_create_for_test(new)
+        .await;
+    ingress.offer(new, ObservedValue::Reading(45));
+    stored_at_least(&shared, 3).await;
+    let known = scopes
+        .snapshot_sidebar_scopes(&project, &[new])
+        .await
+        .unwrap();
+    assert!(known[0].1.is_some(), "known once settled");
+    token.cancel();
+    task.await.unwrap();
+    let stored = shared.stored.lock().unwrap();
+    let lifecycle = Some(crate::context_history::BoundaryReason::Lifecycle);
+    assert_eq!(
+        kinds(&stored),
+        vec![(Some(40), None), (None, lifecycle), (Some(45), None)]
+    );
+    assert_eq!(stored[2].runtime_session_id, new);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
