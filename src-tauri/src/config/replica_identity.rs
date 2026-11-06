@@ -410,7 +410,7 @@ pub fn read_wg_replica_config_read_only_classified(
 ) -> Result<(Value, WgReplicaIdentity), (ReplicaConfigFault, String)> {
     #[cfg(test)]
     strict_read_probe::record(replica_dir);
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(replica_dir);
     let (bytes, _) = crate::path_identity::read_bounded_regular(&config_path, 1024 * 1024)
         .map_err(|_| {
             (
@@ -442,7 +442,7 @@ pub fn read_and_repair_wg_replica_config(
     required_context_prefix: &[&str],
 ) -> Result<(Value, WgReplicaIdentity), String> {
     expected_wg_replica_identity(replica_dir)?;
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(replica_dir);
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
     // #2816 (C3) - the returned value is the decisions object as published,
     // captured inside the guard: no re-read and no state overlay.
