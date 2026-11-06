@@ -29,6 +29,8 @@ use crate::context_history::observation::{
 use crate::context_history::store::{AppendOutcome, HistoryWriter, StoreError, MAX_APPEND_BATCH};
 use crate::context_history::HistoryRecord;
 
+pub mod project;
+
 /// Bounded ingress mailbox between the scraper bridge and the actor.
 pub(crate) const MAILBOX_CAPACITY: usize = 4096;
 /// Maximum tracked instances (scoped or excluded) at once.

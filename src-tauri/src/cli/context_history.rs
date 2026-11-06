@@ -5,20 +5,18 @@
 //! agents as one schema 2 JSON document on stdout. Errors go to stderr with
 //! exit code 1 and never produce an empty successful result.
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-use crate::config::ac_root::existing_ac_root;
 use crate::context_history::config::load_history_config;
 use crate::context_history::report::{
     build_report, LaunchFilter, ReportContext, ReportError, ReportQuery,
 };
 use crate::context_history::store::{read_history, ReadAttempt, StoreError};
 use crate::context_history::HistoryRecord;
-use crate::path_identity::{paths_equivalent, verify_directory};
+use crate::history_runtime::project::{self as identity, align_project_paths, VerifiedProject};
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(after_help = "\
@@ -36,6 +34,10 @@ was not captured; it is not the same as omitting the filter.\n\n\
 COVERAGE: Retention, storage caps and observation gaps can remove data. \
 coverage.incomplete and per-session flags mark retained data of incomplete \
 sessions; totals are never extrapolated.\n\n\
+PROJECT: Query with the same --project path that was used while capturing. \
+Records match the verified canonical path or the typed path; physical aliases \
+such as a subst drive against its real folder are not treated as the same \
+project unless the query uses the captured spelling.\n\n\
 OUTPUT: One JSON object, schemaVersion 2, with requestedPeriod, generatedAtUtcMs, \
 coverage, totalAgents and agents. A missing history database prints an empty \
 report. Times are RFC3339 with an explicit timezone; the period is at most 31 days.\n\n\
@@ -193,73 +195,11 @@ fn write_report(
     Ok(())
 }
 
-/// `text` without a Windows verbatim prefix, so both spellings compare alike;
-/// a verbatim UNC path (`\\?\UNC\server\share`) becomes `\\server\share`.
-fn plain_path(text: &str) -> String {
-    for (verbatim_unc, unc) in [(r"\\?\UNC\", r"\\"), ("//?/UNC/", "//")] {
-        if let Some(rest) = text.strip_prefix(verbatim_unc) {
-            return format!("{unc}{rest}");
-        }
-    }
-    text.strip_prefix(r"\\?\")
-        .or_else(|| text.strip_prefix("//?/"))
-        .unwrap_or(text)
-        .to_string()
-}
-
-/// The verified project: its canonical directory, the spellings a record of
-/// it may carry, and its Project AC Root.
-struct VerifiedProject {
-    canonical: PathBuf,
-    /// The canonical path and the verified `--project` text without `.`
-    /// components; a `subst` drive or junction captured as typed matches
-    /// only the latter.
-    spellings: [PathBuf; 2],
-    ac_root: PathBuf,
-}
-
-/// The verified project; an error, never an empty report, when the directory
-/// or its Project AC Root cannot be verified.
+/// The verified project; the CLI accepts any verified project, registered
+/// in Settings or not.
 fn verified_project(project: &Path) -> Result<VerifiedProject, CliError> {
-    let identity = verify_directory(project).map_err(|why| {
-        CliError::Usage(format!(
-            "--project '{}' is not a verified directory: {why}",
-            project.display()
-        ))
-    })?;
-    let canonical = PathBuf::from(plain_path(&identity.canonical_path.to_string_lossy()));
-    let ac_root = existing_ac_root(&canonical).ok_or_else(|| {
-        CliError::Usage(format!(
-            "--project '{}' has no .ac Project AC Root",
-            project.display()
-        ))
-    })?;
-    let typed = project.components().collect::<PathBuf>();
-    Ok(VerifiedProject {
-        spellings: [canonical.clone(), typed],
-        canonical,
-        ac_root,
-    })
-}
-
-/// Give every record captured under another spelling of the verified project
-/// the query's project text, in memory only. Other projects keep their text,
-/// so the core excludes them. Each distinct spelling is compared once.
-fn align_project_paths(records: &mut [HistoryRecord], spellings: &[PathBuf], project_text: &str) {
-    let mut equivalent: BTreeMap<String, bool> = BTreeMap::new();
-    for record in records {
-        let same = *equivalent
-            .entry(record.project_path.clone())
-            .or_insert_with_key(|text| {
-                let path = PathBuf::from(plain_path(text));
-                spellings
-                    .iter()
-                    .any(|spelling| paths_equivalent(&path, spelling))
-            });
-        if same {
-            record.project_path = project_text.to_string();
-        }
-    }
+    identity::verified_project(project)
+        .map_err(|error| CliError::Usage(format!("--project {error}")))
 }
 
 fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Result<(), CliError> {
