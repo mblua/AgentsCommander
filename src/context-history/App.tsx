@@ -137,9 +137,16 @@ function meanBarWidth(mean: number | null): string {
 const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
   const state = createHistoryState(props.projectPath, props.now);
   let rootRef: HTMLDivElement | undefined;
+  let detailRef: HTMLElement | undefined;
+  let listRef: HTMLElement | undefined;
+
+  // Desktop-only: outside Tauri the view never reaches the history IPC.
+  const load = () => {
+    if (isTauri) void state.refresh();
+  };
 
   onMount(() => {
-    void state.refresh();
+    load();
     rootRef?.focus();
   });
   createEffect(
@@ -147,7 +154,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
       () => props.projectPath,
       (projectPath) => {
         state.setProject(projectPath);
-        void state.refresh();
+        load();
       },
       { defer: true },
     ),
@@ -160,7 +167,30 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
 
   const applyFilter = (patch: Partial<HistoryFilters>) => {
     state.setFilters(patch);
-    void state.refresh();
+    load();
+  };
+
+  // Narrow layout hides the list while an agent is open, so focus follows
+  // the visible pane: into the detail on select, back to the row on return.
+  const narrow = () =>
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(max-width: 720px)").matches;
+
+  const openAgent = async (agentKey: string) => {
+    const moveFocus = narrow();
+    const pending = state.selectAgent(agentKey);
+    if (moveFocus) queueMicrotask(() => detailRef?.focus());
+    await pending;
+  };
+
+  const backToAgents = () => {
+    const agentKey = state.selectedAgent();
+    void state.selectAgent(null);
+    queueMicrotask(() => {
+      const rows = listRef?.querySelectorAll<HTMLElement>("[data-agent-key]") ?? [];
+      const row = [...rows].find((candidate) => candidate.dataset.agentKey === agentKey);
+      (row ?? listRef)?.focus();
+    });
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -202,7 +232,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
         classList={{ "ch-selected": state.selectedAgent() === agent.agentKey }}
         aria-pressed={state.selectedAgent() === agent.agentKey}
         data-agent-key={agent.agentKey}
-        onClick={() => void state.selectAgent(agent.agentKey)}
+        onClick={() => void openAgent(agent.agentKey)}
       >
         <span class="ch-agent-name">{agent.agentName}</span>
         <span class="ch-metric" data-metric="count">
@@ -277,8 +307,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
     <div
       ref={rootRef}
       class="ch-overlay"
-      role="dialog"
-      aria-modal="true"
+      role="region"
       aria-labelledby="ch-title"
       tabIndex={-1}
       onKeyDown={onKeyDown}
@@ -288,7 +317,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
           <h2 id="ch-title">{TEXT.title}</h2>
           <div class="ch-actions">
             <Show when={isTauri}>
-              <button type="button" onClick={() => void state.refresh()}>
+              <button type="button" onClick={load}>
                 {TEXT.refresh}
               </button>
             </Show>
@@ -339,12 +368,12 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
             {status()}
           </p>
           <Show when={state.report().error}>
-            <button type="button" class="ch-retry" onClick={() => void state.refresh()}>
+            <button type="button" class="ch-retry" onClick={load}>
               {TEXT.retry}
             </button>
           </Show>
           <div class="ch-body">
-            <section class="ch-list" aria-label="Agentes">
+            <section ref={listRef} class="ch-list" aria-label="Agentes" tabIndex={-1}>
               <Show when={state.report().data}>
                 {(report) => (
                   <p class="ch-total" data-metric="total-agents">
@@ -362,11 +391,16 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
               </Show>
             </section>
             <Show when={state.selectedAgent()}>
-              <section class="ch-detail" aria-label="Detalle del agente">
+              <section
+                ref={detailRef}
+                class="ch-detail"
+                aria-label="Detalle del agente"
+                tabIndex={-1}
+              >
                 <button
                   type="button"
                   class="ch-back"
-                  onClick={() => void state.selectAgent(null)}
+                  onClick={backToAgents}
                 >
                   {TEXT.back}
                 </button>

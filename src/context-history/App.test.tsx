@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
+import { readFileSync } from "node:fs";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import { click, renderWithFakeTransport, waitFor } from "../shared/testing/ui-harness";
 import type {
@@ -12,7 +14,16 @@ import type {
 } from "../shared/context-history";
 import ContextHistoryApp, { BOUNDARY_TEXT, TEXT } from "./App";
 
-vi.mock("../shared/platform", () => ({ isTauri: true, isBrowser: false, isWindows: false }));
+const platform = vi.hoisted(() => ({ isTauri: true }));
+vi.mock("../shared/platform", () => ({
+  get isTauri() {
+    return platform.isTauri;
+  },
+  get isBrowser() {
+    return !platform.isTauri;
+  },
+  isWindows: false,
+}));
 
 // #3532 P06 - the history view renders backend numbers as served, separates
 // loading, empty and error, and keeps keyboard and narrow-layout affordances.
@@ -129,9 +140,89 @@ const must = (root: Element, selector: string): HTMLElement => {
   return el;
 };
 
+function stubNarrow(matches: boolean): void {
+  window.matchMedia = ((query: string) =>
+    ({ matches, media: query }) as MediaQueryList) as typeof window.matchMedia;
+}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe("ContextHistoryApp", () => {
   let cleanup: (() => void) | undefined;
-  afterEach(() => cleanup?.());
+  afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+    platform.isTauri = true;
+  });
+
+  it("never invokes the history IPC outside Tauri, even when the project changes", async () => {
+    platform.isTauri = false;
+    const fake = new FakeTransport();
+    const [project, setProject] = createSignal("C:/a");
+    const view = renderWithFakeTransport(
+      () => <ContextHistoryApp projectPath={project()} onClose={() => {}} now={() => NOW} />,
+      fake,
+    );
+    cleanup = view.cleanup;
+    setProject("C:/b");
+    await flush();
+    expect(fake.calls).toEqual([]);
+    expect(view.root.textContent).toContain(TEXT.desktopOnly);
+  });
+
+  it("is a central-pane region, not a global modal", () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([]));
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    const host = must(view.root, ".ch-overlay");
+    expect(host.getAttribute("role")).toBe("region");
+    expect(host.hasAttribute("aria-modal")).toBe(false);
+    // Variable base keeps the file: URL under jsdom (see browser/App.compact.test).
+    const moduleUrl = import.meta.url;
+    const css = readFileSync(new URL("./styles.css", moduleUrl), "utf8")
+      .split("\r\n")
+      .join("\n");
+    expect(css.length).toBeGreaterThan(0);
+    const rule = /\.ch-overlay \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toContain("position: absolute;");
+    expect(css).not.toMatch(/position:\s*fixed/);
+    expect(css).not.toMatch(/\d+v[wh]\b/);
+  });
+
+  it("moves focus to the detail on select and back to the row in a narrow layout", async () => {
+    stubNarrow(true);
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([agent]));
+    fake.resolve("get_context_history_agent_detail", detailResponse);
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    const row = must(view.root, "[data-agent-key='dev']");
+    row.focus();
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    click(row);
+    await waitFor(() => expect(document.activeElement).toBe(must(view.root, ".ch-detail")));
+    click(must(view.root, ".ch-back"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(must(view.root, "[data-agent-key='dev']")),
+    );
+  });
+
+  it("keeps focus on the list row when selecting in a wide layout", async () => {
+    stubNarrow(false);
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([agent]));
+    fake.resolve("get_context_history_agent_detail", detailResponse);
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    const row = must(view.root, "[data-agent-key='dev']");
+    row.focus();
+    click(row);
+    await waitFor(() => void must(view.root, `[data-session-id='${L}']`));
+    expect(document.activeElement).toBe(row);
+  });
 
   it("renders the title, notes and backend count and mean", async () => {
     const fake = new FakeTransport();
