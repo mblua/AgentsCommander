@@ -1045,6 +1045,44 @@
       }
     },
     {
+      "id": "rust:src-tauri/src/commands/session/selection_executor/tests/protected_carrier.rs::impl:ProtectedFixture::new",
+      "name": "new",
+      "anchor": "8329dfd0fe9d",
+      "sites": {
+        "linux": {
+          "lines": 130,
+          "production": false
+        },
+        "macos": {
+          "lines": 130,
+          "production": false
+        },
+        "windows": {
+          "lines": 130,
+          "production": false
+        }
+      }
+    },
+    {
+      "id": "rust:src-tauri/src/commands/session/selection_executor/tests/protected_carrier.rs::impl:ProtectedFixture::retire",
+      "name": "retire",
+      "anchor": "f76d5bb922e0",
+      "sites": {
+        "linux": {
+          "lines": 123,
+          "production": false
+        },
+        "macos": {
+          "lines": 123,
+          "production": false
+        },
+        "windows": {
+          "lines": 123,
+          "production": false
+        }
+      }
+    },
+    {
       "id": "rust:src-tauri/src/commands/session/tests/admission.rs::create_protected_owner_is_exclusive_and_failed_tracker_cannot_use_e2",
       "name": "create_protected_owner_is_exclusive_and_failed_tracker_cannot_use_e2",
       "anchor": "3a91209fba3e",
