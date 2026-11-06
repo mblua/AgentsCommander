@@ -39,6 +39,7 @@ pub(crate) use admission::CreateResourceAdmission;
 pub(crate) use admission::OwnedCreateAdmission;
 pub(crate) use launch::build_configured_agent_spawn_for_cwd;
 pub(crate) use launch::compute_profile_outdated;
+#[cfg(test)]
 pub(crate) use launch::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use launch::resolve_create_session_cwd;
 #[cfg(test)]

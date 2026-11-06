@@ -102,6 +102,7 @@ pub(crate) use create::purge_session_side_state;
 #[cfg(test)]
 pub(crate) use create::register_session_samplers;
 use create::reset_substantive_input;
+#[cfg(test)]
 pub(crate) use create::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use create::resolve_create_session_cwd;
 #[cfg(test)]
