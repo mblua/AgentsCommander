@@ -660,6 +660,7 @@ mod coordinator_runtime;
 pub use coordinator_runtime::RestoreBarrierGuard;
 mod continuation_runtime;
 
+pub(crate) mod task;
 mod turn;
 use envelope::CoordinatorEnvelope;
 #[cfg(test)]
