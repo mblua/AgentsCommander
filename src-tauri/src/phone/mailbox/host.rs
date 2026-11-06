@@ -36,6 +36,14 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// Settlement of the native coordinator create ticket used by mailbox tests.
+#[cfg(test)]
+#[allow(dead_code, reason = "3946 phased consumer migration")]
+pub(crate) trait CoordinatorTicket {
+    fn succeeded(self);
+    fn failed(self);
+}
+
 /// Native capabilities available to captured mailbox work.
 #[allow(dead_code, reason = "3946 phased consumer migration")]
 pub(crate) trait MailboxHost:
@@ -52,6 +60,13 @@ pub(crate) trait MailboxHost:
     + Sync
     + 'static
 {
+    #[cfg(test)]
+    type CoordinatorTicket: CoordinatorTicket;
+
+    #[cfg(test)]
+    #[allow(dead_code, reason = "3946 phased consumer migration")]
+    fn begin_coordinator_create(&self, cwd: &str) -> Option<Self::CoordinatorTicket>;
+
     #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn master_required(&self) -> &MasterToken;
 

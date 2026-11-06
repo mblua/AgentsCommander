@@ -114,6 +114,8 @@ use create::try_acquire_create_publication_region;
 #[cfg(target_os = "windows")]
 use create::with_create_resource_region;
 #[cfg(test)]
+pub(crate) use create::CoordinatorCreateTicket;
+#[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
 use create::InitialLastPrompt;

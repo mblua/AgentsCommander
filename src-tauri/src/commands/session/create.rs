@@ -31,6 +31,8 @@ pub(crate) use admission::try_acquire_create_publication_region;
 #[cfg(target_os = "windows")]
 pub(crate) use admission::with_create_resource_region;
 #[cfg(test)]
+pub(crate) use admission::CoordinatorCreateTicket;
+#[cfg(test)]
 #[cfg(target_os = "windows")]
 pub(crate) use admission::CreateResourceAdmission;
 #[cfg(test)]

@@ -30,6 +30,14 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
+    #[cfg(test)]
+    type CoordinatorTicket = crate::commands::session::CoordinatorCreateTicket<R>;
+
+    #[cfg(test)]
+    fn begin_coordinator_create(&self, cwd: &str) -> Option<Self::CoordinatorTicket> {
+        crate::commands::session::note_coordinator_create_on_app(self, cwd)
+    }
+
     fn master_required(&self) -> &MasterToken {
         self.state::<MasterToken>().inner()
     }
@@ -245,5 +253,18 @@ impl<R: tauri::Runtime> BrowserHost for tauri::AppHandle<R> {
 
     fn snapshot(&self) -> WebBrowserSnapshot {
         crate::commands::web_browser::snapshot(self)
+    }
+}
+
+#[cfg(test)]
+impl<R: tauri::Runtime> crate::phone::mailbox::host::CoordinatorTicket
+    for crate::commands::session::CoordinatorCreateTicket<R>
+{
+    fn succeeded(self) {
+        crate::commands::session::CoordinatorCreateTicket::succeeded(self);
+    }
+
+    fn failed(self) {
+        crate::commands::session::CoordinatorCreateTicket::failed(self);
     }
 }
