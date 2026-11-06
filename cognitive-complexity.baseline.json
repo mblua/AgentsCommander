@@ -7,20 +7,6 @@
   "capturedAt": "2026-09-22T08:35:09.139Z",
   "entries": [
     {
-      "id": "rust:src-tauri/src/config/root_agent.rs::mod:tests::ensure_root_agent_dir_at_creates_layout_role_and_config",
-      "sites": {
-        "windows": [
-          "856575bd7902"
-        ],
-        "linux": [
-          "856575bd7902"
-        ],
-        "macos": [
-          "856575bd7902"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/lib.rs::fn:run::{closure}",
       "sites": {
         "windows": [
@@ -48,20 +34,6 @@
         ],
         "macos": [
           "dff40736a7a2"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/docker_runtime.rs::mod:tests::run_command_is_detached_labeled_and_has_expected_env_without_interactive_flags",
-      "sites": {
-        "windows": [
-          "f8134bd5fb6d"
-        ],
-        "linux": [
-          "f8134bd5fb6d"
-        ],
-        "macos": [
-          "f8134bd5fb6d"
         ]
       }
     },

@@ -26,12 +26,7 @@ fn request() -> ContainerStartRequest {
     }
 }
 
-#[test]
-fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flags() {
-    let runtime = DockerRuntime::with_program("docker-test");
-    let spec = runtime.build_run_command(&request()).unwrap();
-    let joined = spec.args.join(" ");
-
+fn assert_detached_labeled_without_interactive_flags(spec: &DockerCommandSpec, joined: &str) {
     assert_eq!(spec.program, "docker-test");
     assert!(spec.args.iter().any(|arg| arg == "-d"));
     assert!(joined.contains("--name agentscommander-11111111111141118111111111111111"));
@@ -43,6 +38,9 @@ fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flag
     assert!(joined.contains(&format!(
         "{SESSION_LABEL}=11111111-1111-4111-8111-111111111111"
     )));
+}
+
+fn assert_session_env_passes_secrets_by_name(spec: &DockerCommandSpec, joined: &str) {
     assert!(joined.contains("AGENTSCOMMANDER_API_URL=http://host.docker.internal:8765"));
     assert!(joined.contains("--env AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN"));
     assert!(joined.contains("--env AGENTSCOMMANDER_API_TOKEN"));
@@ -68,6 +66,9 @@ fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flag
             .map(String::as_str),
         Some("C:/project/.ac/wg-1-team/__agent_dev")
     );
+}
+
+fn assert_bridge_env_passes_secrets_by_name(spec: &DockerCommandSpec, joined: &str) {
     assert!(joined.contains(&format!(
         "AGENTSCOMMANDER_BINARY_PATH={DEFAULT_API_HELPER_PATH}"
     )));
@@ -95,6 +96,9 @@ fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flag
         Some("[[\"CODEX_HOME\",\"/workspace/.codex\"]]")
     );
     assert!(joined.contains("AGENTSCOMMANDER_BRIDGE_ENV_UNSET_JSON=[\"CLAUDE_CONFIG_DIR\"]"));
+}
+
+fn assert_bind_mount_and_image_args(spec: &DockerCommandSpec, joined: &str) {
     assert!(
         joined.contains("type=bind,source=C:/project/.ac/wg-1-team/__agent_dev,target=/workspace")
     );
@@ -108,6 +112,18 @@ fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flag
     assert!(!joined.contains("docker.sock"));
     assert!(!joined.contains("messaging"));
     assert!(!joined.contains("api-clients.json"));
+}
+
+#[test]
+fn run_command_is_detached_labeled_and_has_expected_env_without_interactive_flags() {
+    let runtime = DockerRuntime::with_program("docker-test");
+    let spec = runtime.build_run_command(&request()).unwrap();
+    let joined = spec.args.join(" ");
+
+    assert_detached_labeled_without_interactive_flags(&spec, &joined);
+    assert_session_env_passes_secrets_by_name(&spec, &joined);
+    assert_bridge_env_passes_secrets_by_name(&spec, &joined);
+    assert_bind_mount_and_image_args(&spec, &joined);
 }
 
 #[test]
