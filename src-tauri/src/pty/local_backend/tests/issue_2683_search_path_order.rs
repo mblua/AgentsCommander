@@ -35,7 +35,7 @@ fn issue_2683_spawn_sync_applies_the_search_path_before_the_env_loops() {
 }
 
 #[test]
-fn issue_2683_git_watcher_production_constructor_accepts_the_native_app_handle() {
+fn issue_2683_git_watcher_constructor_accepts_the_native_app_handle() {
     let _: fn(Arc<tokio::sync::RwLock<SessionManager>>, tauri::AppHandle) -> Arc<GitWatcher> =
         GitWatcher::new;
 }
