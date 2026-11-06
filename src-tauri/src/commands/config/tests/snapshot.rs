@@ -1,4 +1,5 @@
 use super::super::{settings_snapshot_from, ProjectPathIssue};
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::projects::{
     DirectoryIdentity, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
     RawStringField, RepairKind, ResolvedPair, SideOutcome, SideStatus, StructuralIssue,
@@ -186,11 +187,7 @@ fn snapshot_carries_the_instance_settings_file_path() {
     let snap = settings_snapshot_from(&AppSettings::default(), None);
     match (crate::config::config_dir(), snap.settings_file_path) {
         (Some(dir), Some(path)) => {
-            assert_eq!(
-                path,
-                dir.join("settings.30.instance.no-git.json")
-                    .to_string_lossy()
-            );
+            assert_eq!(path, dir.join(SETTINGS_FILE_NAME).to_string_lossy());
         }
         (None, None) => {}
         (dir, path) => {

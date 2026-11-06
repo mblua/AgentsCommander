@@ -479,6 +479,32 @@ fn e2432_round7_empty_presence_blocks_main_donors() {
     }
 }
 
+fn apply_round7_collision_difference(source: &mut serde_json::Value, difference: &str) {
+    match difference {
+        "label" => {
+            source["codingAgentProfiles"]["profileLabelsByAgent"]["beta"]["A"] =
+                serde_json::json!("different");
+        }
+        "letter" => {
+            source["codingAgentProfiles"]["profilesByAgent"]["beta"]["B"] = serde_json::json!({});
+        }
+        "destination" => {
+            let hash = super::super::configuration_identity("claude", &[]);
+            source["codingAgentProfiles"]["profilesByBaseHash"] =
+                serde_json::json!({(hash):{"A":{"notes":"prospective destination"}}});
+        }
+        field => {
+            let value = match field {
+                "enabled" => serde_json::json!(false),
+                "env" => serde_json::json!({"KEY":"different"}),
+                "unknown" => serde_json::json!([null, 7]),
+                _ => serde_json::json!("different"),
+            };
+            source["codingAgentProfiles"]["profilesByAgent"]["beta"]["A"][field] = value;
+        }
+    }
+}
+
 #[test]
 fn e2432_round7_complete_collision_matrix_leaves_every_id_and_publisher_untouched() {
     for difference in [
@@ -507,30 +533,7 @@ fn e2432_round7_complete_collision_matrix_leaves_every_id_and_publisher_untouche
             serde_json::json!({"alpha":cells.clone(),"beta":cells.clone()});
         source["codingAgentProfiles"]["profileLabelsByAgent"] =
             serde_json::json!({"alpha":{"A":"same"},"beta":{"A":"same"}});
-        match difference {
-            "label" => {
-                source["codingAgentProfiles"]["profileLabelsByAgent"]["beta"]["A"] =
-                    serde_json::json!("different");
-            }
-            "letter" => {
-                source["codingAgentProfiles"]["profilesByAgent"]["beta"]["B"] =
-                    serde_json::json!({});
-            }
-            "destination" => {
-                let hash = super::super::configuration_identity("claude", &[]);
-                source["codingAgentProfiles"]["profilesByBaseHash"] =
-                    serde_json::json!({(hash):{"A":{"notes":"prospective destination"}}});
-            }
-            field => {
-                let value = match field {
-                    "enabled" => serde_json::json!(false),
-                    "env" => serde_json::json!({"KEY":"different"}),
-                    "unknown" => serde_json::json!([null, 7]),
-                    _ => serde_json::json!("different"),
-                };
-                source["codingAgentProfiles"]["profilesByAgent"]["beta"]["A"][field] = value;
-            }
-        }
+        apply_round7_collision_difference(&mut source, difference);
         b3_write(&sidecar, &source);
         let mut main = serde_json::Value::Object(b3_object(&path));
         main["projectPaths"] = serde_json::json!([]);

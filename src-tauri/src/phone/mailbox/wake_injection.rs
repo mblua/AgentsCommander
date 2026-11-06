@@ -10,6 +10,7 @@ use super::poller::{reserve_response_request_at_write, MailboxPoller};
 use super::pty_claim::{response_diag_debug_only, ResponseWakeWork};
 #[cfg(test)]
 use super::pty_claim::{MailboxSpawnCall, MailboxTestEvent};
+use super::pty_observation::{PtyAuthorityState, PtyReadinessState, WakeDeliveryState};
 use super::settle::{
     classify_injection_error, live_settle_action, live_wake_route, settle_tick, wake_settle_ready,
     LiveWakeRoute, STARTUP_SETTLE_THRESHOLD,
@@ -19,7 +20,6 @@ use super::tests::CodexClearScannerFixture;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::SettleReadiness;
 use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 #[cfg(test)]
 use crate::session::session::SessionRepo;
@@ -27,7 +27,6 @@ use crate::session::session::SessionStatus;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 mod admission;
@@ -104,7 +103,7 @@ impl MailboxPoller {
             if let Some(t) = ticket {
                 t.succeeded();
             }
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let mgr = session_mgr.read().await;
             let session = mgr
                 .create_session(
@@ -135,12 +134,12 @@ impl MailboxPoller {
             return Ok(SessionInfo::from(&inserted));
         }
 
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        let session_mgr = app.pty_sessions();
+        let pty_mgr = app.pty_routes();
         crate::commands::session::create_session_inner(
             app,
-            session_mgr.inner(),
-            pty_mgr.inner(),
+            session_mgr,
+            pty_mgr,
             spawn_shell,
             spawn_args,
             cwd,
@@ -202,7 +201,7 @@ impl MailboxPoller {
     ) -> Result<SettleReadiness, String> {
         #[cfg(test)]
         if self.test_hooks.is_some() {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let mgr = session_mgr.read().await;
             mgr.mark_idle(session_id).await;
             // #2586 - the hooked path never runs the settle loop, so it has no
@@ -252,16 +251,16 @@ impl MailboxPoller {
         initial_idle_since: Option<std::time::Instant>,
     ) -> Result<SettleReadiness, String> {
         let start = std::time::Instant::now();
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.pty_sessions();
         let mut idle_since = initial_idle_since;
 
         loop {
             // #1388: first condition, read in its own scope so the std Mutex guard is
             // dropped before the await below - the guard is not Send, so this is enforced
-            // by the compiler rather than by convention. `try_state` (not `state`) mirrors
-            // the IdleDetector read in `settle_live_before_inject` (:7719): a missing
-            // manager is "no claim", not "not rendered", and must not gate.
-            let rendered = match app.try_state::<Arc<Mutex<PtyManager>>>() {
+            // by the compiler rather than by convention. `pty_routes_opt` (not `pty_routes`)
+            // mirrors the optional IdleDetector read in `settle_live_before_inject`: a
+            // missing manager is "no claim", not "not rendered", and must not gate.
+            let rendered = match app.pty_routes_opt() {
                 Some(pty_mgr) => match pty_mgr.lock() {
                     Ok(pty) => pty.has_rendered_visible_content(session_id),
                     Err(_) => true,
@@ -293,9 +292,7 @@ impl MailboxPoller {
                     }
                 }
             };
-            let menu_blocked = app
-                .try_state::<Arc<crate::pty::menu_guard::MenuGuard>>()
-                .is_some_and(|g| g.is_blocked(session_id));
+            let menu_blocked = app.pty_menu().is_some_and(|g| g.is_blocked(session_id));
             let ready = !menu_blocked && wake_settle_ready(waiting, rendered);
 
             let was_settling = idle_since.is_some();
@@ -379,7 +376,7 @@ impl MailboxPoller {
                 .unwrap()
                 .remove(&session_id);
             if remove_session {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let session_mgr = app.pty_sessions();
                 let mgr = session_mgr.read().await;
                 mgr.destroy_session(session_id)
                     .await
@@ -389,8 +386,7 @@ impl MailboxPoller {
             return SettleReadiness::Unknown;
         }
 
-        let Some(idle) = app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
-        else {
+        let Some(idle) = app.pty_readiness_opt() else {
             // #2586 - no detector means no settle gate ran.
             return SettleReadiness::Unknown;
         };
@@ -430,7 +426,7 @@ impl MailboxPoller {
         let max_wait = std::time::Duration::from_secs(10);
         let poll = std::time::Duration::from_millis(500);
         let start = std::time::Instant::now();
-        let menu_guard = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>();
+        let menu_guard = app.pty_menu();
 
         loop {
             if menu_guard
@@ -530,7 +526,7 @@ impl MailboxPoller {
         ),
     ) -> Result<(), String> {
         let (_, owned_replacement) = context;
-        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        let pty_mgr = app.pty_routes();
 
         // Logical actions precede standard message handling.
         if let Some(command) = msg.command.as_ref() {
@@ -541,7 +537,7 @@ impl MailboxPoller {
                     msg,
                     command,
                     (owned_replacement, settle),
-                    pty_mgr.inner(),
+                    pty_mgr,
                 )
                 .await;
         }
@@ -553,7 +549,7 @@ impl MailboxPoller {
                 msg,
                 (interactive, origin, comanaged, settle),
                 context,
-                pty_mgr.inner(),
+                pty_mgr,
             )
             .await
     }
@@ -615,10 +611,9 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         // drop any pending fresh intent (record + mirror). Bare logical action
         // text (/clear, Pi /new, or /compact) never reaches this line.
         crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
-        let _ = tauri::Emitter::emit(
+        let _ = crate::phone::events::MailboxDeliveryEvents::message_delivered(
             app,
-            "message_delivered",
-            serde_json::json!({
+            &serde_json::json!({
                 "id": msg.id,
                 "from": msg.from,
                 "to": msg.to,
@@ -732,8 +727,8 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         let app = self.app;
         let (owned_replacement, settle) = context;
         let (shell, waiting_for_input) = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            logical_session_snapshot(session_mgr.inner().as_ref(), session_id, command).await?
+            let session_mgr = app.pty_sessions();
+            logical_session_snapshot(session_mgr.as_ref(), session_id, command).await?
         };
         let resolved = resolve_remote_pty_command(&shell, command)?;
         if !waiting_for_input {
@@ -833,10 +828,9 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
             crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
         }
 
-        let _ = tauri::Emitter::emit(
+        let _ = crate::phone::events::MailboxDeliveryEvents::message_delivered(
             app,
-            "message_delivered",
-            serde_json::json!({
+            &serde_json::json!({
                 "id": msg.id,
                 "from": msg.from,
                 "to": msg.to,
@@ -957,7 +951,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
             }
             tokio::time::sleep(poll).await;
 
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let mgr = session_mgr.read().await;
             let sessions = mgr.list_sessions().await;
             match sessions.iter().find(|s| s.id == session_id.to_string()) {

@@ -2,11 +2,13 @@
 members = [
     "src-tauri",
     "crates/session-bridge",
+    "crates/rust-source-scrub",
     "crates/terminal-snapshot-renderer",
 ]
 default-members = [
     "src-tauri",
     "crates/session-bridge",
+    "crates/rust-source-scrub",
     "crates/terminal-snapshot-renderer",
 ]
 resolver = "2"

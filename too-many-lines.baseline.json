@@ -17,10 +17,6 @@
         "macos": {
           "lines": 158,
           "production": true
-        },
-        "windows": {
-          "lines": 158,
-          "production": true
         }
       }
     },
@@ -36,29 +32,6 @@
         "macos": {
           "lines": 115,
           "production": false
-        },
-        "windows": {
-          "lines": 115,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:crates/session-bridge/tests/terminal_snapshot_helper_process.rs::terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
-      "name": "terminal_snapshot_helper_process_png_deadline_collision_corruption_and_output_failure_do_not_clobber",
-      "anchor": "fe4aadec8f84",
-      "sites": {
-        "linux": {
-          "lines": 111,
-          "production": false
-        },
-        "macos": {
-          "lines": 111,
-          "production": false
-        },
-        "windows": {
-          "lines": 111,
-          "production": false
         }
       }
     },
@@ -72,10 +45,6 @@
           "production": false
         },
         "macos": {
-          "lines": 103,
-          "production": false
-        },
-        "windows": {
           "lines": 103,
           "production": false
         }
@@ -93,10 +62,6 @@
         "macos": {
           "lines": 133,
           "production": true
-        },
-        "windows": {
-          "lines": 133,
-          "production": true
         }
       }
     },
@@ -110,10 +75,6 @@
           "production": false
         },
         "macos": {
-          "lines": 118,
-          "production": false
-        },
-        "windows": {
           "lines": 118,
           "production": false
         }
@@ -131,10 +92,6 @@
         "macos": {
           "lines": 158,
           "production": true
-        },
-        "windows": {
-          "lines": 158,
-          "production": true
         }
       }
     },
@@ -148,10 +105,6 @@
           "production": false
         },
         "macos": {
-          "lines": 132,
-          "production": false
-        },
-        "windows": {
           "lines": 132,
           "production": false
         }
@@ -169,10 +122,6 @@
         "macos": {
           "lines": 113,
           "production": true
-        },
-        "windows": {
-          "lines": 113,
-          "production": true
         }
       }
     },
@@ -188,21 +137,6 @@
         "macos": {
           "lines": 135,
           "production": false
-        },
-        "windows": {
-          "lines": 135,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/agent_update/tests/admission.rs::rejected_spawn_cleanup_dominates_adapters_and_final_result",
-      "name": "rejected_spawn_cleanup_dominates_adapters_and_final_result",
-      "anchor": "d2b3ea771ea1",
-      "sites": {
-        "windows": {
-          "lines": 171,
-          "production": false
         }
       }
     },
@@ -216,10 +150,6 @@
           "production": false
         },
         "macos": {
-          "lines": 143,
-          "production": false
-        },
-        "windows": {
           "lines": 143,
           "production": false
         }
@@ -237,10 +167,6 @@
         "macos": {
           "lines": 107,
           "production": false
-        },
-        "windows": {
-          "lines": 107,
-          "production": false
         }
       }
     },
@@ -254,10 +180,6 @@
           "production": false
         },
         "macos": {
-          "lines": 136,
-          "production": false
-        },
-        "windows": {
           "lines": 136,
           "production": false
         }
@@ -275,10 +197,6 @@
         "macos": {
           "lines": 107,
           "production": false
-        },
-        "windows": {
-          "lines": 107,
-          "production": false
         }
       }
     },
@@ -292,10 +210,6 @@
           "production": false
         },
         "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
           "lines": 126,
           "production": false
         }
@@ -313,10 +227,6 @@
         "macos": {
           "lines": 118,
           "production": false
-        },
-        "windows": {
-          "lines": 118,
-          "production": false
         }
       }
     },
@@ -330,10 +240,6 @@
           "production": false
         },
         "macos": {
-          "lines": 134,
-          "production": false
-        },
-        "windows": {
           "lines": 134,
           "production": false
         }
@@ -351,10 +257,6 @@
         "macos": {
           "lines": 129,
           "production": false
-        },
-        "windows": {
-          "lines": 129,
-          "production": false
         }
       }
     },
@@ -368,10 +270,6 @@
           "production": true
         },
         "macos": {
-          "lines": 103,
-          "production": true
-        },
-        "windows": {
           "lines": 103,
           "production": true
         }
@@ -389,10 +287,6 @@
         "macos": {
           "lines": 106,
           "production": true
-        },
-        "windows": {
-          "lines": 106,
-          "production": true
         }
       }
     },
@@ -406,10 +300,6 @@
           "production": true
         },
         "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
           "lines": 105,
           "production": true
         }
@@ -427,10 +317,6 @@
         "macos": {
           "lines": 107,
           "production": true
-        },
-        "windows": {
-          "lines": 107,
-          "production": true
         }
       }
     },
@@ -444,10 +330,6 @@
           "production": false
         },
         "macos": {
-          "lines": 108,
-          "production": false
-        },
-        "windows": {
           "lines": 108,
           "production": false
         }
@@ -465,10 +347,6 @@
         "macos": {
           "lines": 143,
           "production": false
-        },
-        "windows": {
-          "lines": 143,
-          "production": false
         }
       }
     },
@@ -482,10 +360,6 @@
           "production": false
         },
         "macos": {
-          "lines": 411,
-          "production": false
-        },
-        "windows": {
           "lines": 411,
           "production": false
         }
@@ -503,10 +377,6 @@
         "macos": {
           "lines": 208,
           "production": false
-        },
-        "windows": {
-          "lines": 208,
-          "production": false
         }
       }
     },
@@ -520,10 +390,6 @@
           "production": false
         },
         "macos": {
-          "lines": 117,
-          "production": false
-        },
-        "windows": {
           "lines": 117,
           "production": false
         }
@@ -543,7 +409,7 @@
           "production": true
         },
         "windows": {
-          "lines": 280,
+          "lines": 279,
           "production": true
         }
       }
@@ -558,10 +424,6 @@
           "production": true
         },
         "macos": {
-          "lines": 129,
-          "production": true
-        },
-        "windows": {
           "lines": 129,
           "production": true
         }
@@ -579,10 +441,6 @@
         "macos": {
           "lines": 438,
           "production": true
-        },
-        "windows": {
-          "lines": 438,
-          "production": true
         }
       }
     },
@@ -596,10 +454,6 @@
           "production": true
         },
         "macos": {
-          "lines": 103,
-          "production": true
-        },
-        "windows": {
           "lines": 103,
           "production": true
         }
@@ -617,10 +471,6 @@
         "macos": {
           "lines": 108,
           "production": true
-        },
-        "windows": {
-          "lines": 108,
-          "production": true
         }
       }
     },
@@ -634,10 +484,6 @@
           "production": true
         },
         "macos": {
-          "lines": 111,
-          "production": true
-        },
-        "windows": {
           "lines": 111,
           "production": true
         }
@@ -655,10 +501,6 @@
         "macos": {
           "lines": 104,
           "production": true
-        },
-        "windows": {
-          "lines": 104,
-          "production": true
         }
       }
     },
@@ -672,10 +514,6 @@
           "production": false
         },
         "macos": {
-          "lines": 137,
-          "production": false
-        },
-        "windows": {
           "lines": 137,
           "production": false
         }
@@ -693,10 +531,6 @@
         "macos": {
           "lines": 106,
           "production": true
-        },
-        "windows": {
-          "lines": 106,
-          "production": true
         }
       }
     },
@@ -710,10 +544,6 @@
           "production": true
         },
         "macos": {
-          "lines": 103,
-          "production": true
-        },
-        "windows": {
           "lines": 103,
           "production": true
         }
@@ -731,10 +561,6 @@
         "macos": {
           "lines": 121,
           "production": false
-        },
-        "windows": {
-          "lines": 121,
-          "production": false
         }
       }
     },
@@ -748,10 +574,6 @@
           "production": false
         },
         "macos": {
-          "lines": 144,
-          "production": false
-        },
-        "windows": {
           "lines": 144,
           "production": false
         }
@@ -769,10 +591,6 @@
         "macos": {
           "lines": 150,
           "production": false
-        },
-        "windows": {
-          "lines": 150,
-          "production": false
         }
       }
     },
@@ -786,10 +604,6 @@
           "production": false
         },
         "macos": {
-          "lines": 136,
-          "production": false
-        },
-        "windows": {
           "lines": 136,
           "production": false
         }
@@ -807,10 +621,6 @@
         "macos": {
           "lines": 102,
           "production": true
-        },
-        "windows": {
-          "lines": 102,
-          "production": true
         }
       }
     },
@@ -824,10 +634,6 @@
           "production": false
         },
         "macos": {
-          "lines": 103,
-          "production": false
-        },
-        "windows": {
           "lines": 103,
           "production": false
         }
@@ -845,10 +651,6 @@
         "macos": {
           "lines": 212,
           "production": false
-        },
-        "windows": {
-          "lines": 212,
-          "production": false
         }
       }
     },
@@ -862,10 +664,6 @@
           "production": false
         },
         "macos": {
-          "lines": 141,
-          "production": false
-        },
-        "windows": {
           "lines": 141,
           "production": false
         }
@@ -883,21 +681,6 @@
         "macos": {
           "lines": 106,
           "production": false
-        },
-        "windows": {
-          "lines": 106,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/config/tests/room_idle_confirmation.rs::room_idle_confirmation_case",
-      "name": "room_idle_confirmation_case",
-      "anchor": "9126f9ce24d2",
-      "sites": {
-        "windows": {
-          "lines": 135,
-          "production": false
         }
       }
     },
@@ -911,10 +694,6 @@
           "production": false
         },
         "macos": {
-          "lines": 118,
-          "production": false
-        },
-        "windows": {
           "lines": 118,
           "production": false
         }
@@ -932,10 +711,6 @@
         "macos": {
           "lines": 243,
           "production": false
-        },
-        "windows": {
-          "lines": 243,
-          "production": false
         }
       }
     },
@@ -949,10 +724,6 @@
           "production": false
         },
         "macos": {
-          "lines": 101,
-          "production": false
-        },
-        "windows": {
           "lines": 101,
           "production": false
         }
@@ -970,10 +741,6 @@
         "macos": {
           "lines": 148,
           "production": false
-        },
-        "windows": {
-          "lines": 148,
-          "production": false
         }
       }
     },
@@ -987,10 +754,6 @@
           "production": false
         },
         "macos": {
-          "lines": 111,
-          "production": false
-        },
-        "windows": {
           "lines": 111,
           "production": false
         }
@@ -1008,10 +771,6 @@
         "macos": {
           "lines": 105,
           "production": false
-        },
-        "windows": {
-          "lines": 105,
-          "production": false
         }
       }
     },
@@ -1025,10 +784,6 @@
           "production": false
         },
         "macos": {
-          "lines": 105,
-          "production": false
-        },
-        "windows": {
           "lines": 105,
           "production": false
         }
@@ -1046,10 +801,6 @@
         "macos": {
           "lines": 113,
           "production": false
-        },
-        "windows": {
-          "lines": 113,
-          "production": false
         }
       }
     },
@@ -1063,10 +814,6 @@
           "production": false
         },
         "macos": {
-          "lines": 200,
-          "production": false
-        },
-        "windows": {
           "lines": 200,
           "production": false
         }
@@ -1084,10 +831,6 @@
         "macos": {
           "lines": 105,
           "production": false
-        },
-        "windows": {
-          "lines": 105,
-          "production": false
         }
       }
     },
@@ -1101,10 +844,6 @@
           "production": false
         },
         "macos": {
-          "lines": 150,
-          "production": false
-        },
-        "windows": {
           "lines": 150,
           "production": false
         }
@@ -1122,10 +861,6 @@
         "macos": {
           "lines": 125,
           "production": false
-        },
-        "windows": {
-          "lines": 125,
-          "production": false
         }
       }
     },
@@ -1139,10 +874,6 @@
           "production": true
         },
         "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
           "lines": 105,
           "production": true
         }
@@ -1160,10 +891,6 @@
         "macos": {
           "lines": 104,
           "production": true
-        },
-        "windows": {
-          "lines": 104,
-          "production": true
         }
       }
     },
@@ -1177,10 +904,6 @@
           "production": true
         },
         "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
           "lines": 105,
           "production": true
         }
@@ -1217,10 +940,6 @@
         "macos": {
           "lines": 101,
           "production": true
-        },
-        "windows": {
-          "lines": 101,
-          "production": true
         }
       }
     },
@@ -1253,10 +972,6 @@
           "production": true
         },
         "macos": {
-          "lines": 103,
-          "production": true
-        },
-        "windows": {
           "lines": 103,
           "production": true
         }
@@ -1293,10 +1008,6 @@
         "macos": {
           "lines": 109,
           "production": true
-        },
-        "windows": {
-          "lines": 109,
-          "production": true
         }
       }
     },
@@ -1310,10 +1021,6 @@
           "production": true
         },
         "macos": {
-          "lines": 108,
-          "production": true
-        },
-        "windows": {
           "lines": 108,
           "production": true
         }
@@ -1331,10 +1038,6 @@
         "macos": {
           "lines": 112,
           "production": true
-        },
-        "windows": {
-          "lines": 112,
-          "production": true
         }
       }
     },
@@ -1348,10 +1051,6 @@
           "production": false
         },
         "macos": {
-          "lines": 119,
-          "production": false
-        },
-        "windows": {
           "lines": 119,
           "production": false
         }
@@ -1369,10 +1068,6 @@
         "macos": {
           "lines": 105,
           "production": true
-        },
-        "windows": {
-          "lines": 105,
-          "production": true
         }
       }
     },
@@ -1388,10 +1083,6 @@
         "macos": {
           "lines": 111,
           "production": true
-        },
-        "windows": {
-          "lines": 111,
-          "production": true
         }
       }
     },
@@ -1405,10 +1096,6 @@
           "production": false
         },
         "macos": {
-          "lines": 108,
-          "production": false
-        },
-        "windows": {
           "lines": 108,
           "production": false
         }
@@ -1483,10 +1170,6 @@
         "macos": {
           "lines": 143,
           "production": false
-        },
-        "windows": {
-          "lines": 143,
-          "production": false
         }
       }
     },
@@ -1500,10 +1183,6 @@
           "production": false
         },
         "macos": {
-          "lines": 104,
-          "production": false
-        },
-        "windows": {
           "lines": 104,
           "production": false
         }
@@ -1521,10 +1200,6 @@
         "macos": {
           "lines": 187,
           "production": false
-        },
-        "windows": {
-          "lines": 187,
-          "production": false
         }
       }
     },
@@ -1538,10 +1213,6 @@
           "production": false
         },
         "macos": {
-          "lines": 101,
-          "production": false
-        },
-        "windows": {
           "lines": 101,
           "production": false
         }
@@ -1559,10 +1230,6 @@
         "macos": {
           "lines": 111,
           "production": false
-        },
-        "windows": {
-          "lines": 111,
-          "production": false
         }
       }
     },
@@ -1578,21 +1245,6 @@
         "macos": {
           "lines": 120,
           "production": false
-        },
-        "windows": {
-          "lines": 120,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/session/tests/default_shell.rs::configured_default_shell_invalid_input_leaves_no_session_state_native",
-      "name": "configured_default_shell_invalid_input_leaves_no_session_state_native",
-      "anchor": "0436500be873",
-      "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
         }
       }
     },
@@ -1606,10 +1258,6 @@
           "production": false
         },
         "macos": {
-          "lines": 125,
-          "production": false
-        },
-        "windows": {
           "lines": 125,
           "production": false
         }
@@ -1627,10 +1275,6 @@
         "macos": {
           "lines": 135,
           "production": false
-        },
-        "windows": {
-          "lines": 135,
-          "production": false
         }
       }
     },
@@ -1644,10 +1288,6 @@
           "production": false
         },
         "macos": {
-          "lines": 149,
-          "production": false
-        },
-        "windows": {
           "lines": 149,
           "production": false
         }
@@ -1680,10 +1320,6 @@
         "macos": {
           "lines": 114,
           "production": false
-        },
-        "windows": {
-          "lines": 114,
-          "production": false
         }
       }
     },
@@ -1697,10 +1333,6 @@
           "production": false
         },
         "macos": {
-          "lines": 144,
-          "production": false
-        },
-        "windows": {
           "lines": 144,
           "production": false
         }
@@ -1718,10 +1350,6 @@
         "macos": {
           "lines": 103,
           "production": false
-        },
-        "windows": {
-          "lines": 103,
-          "production": false
         }
       }
     },
@@ -1735,10 +1363,6 @@
           "production": false
         },
         "macos": {
-          "lines": 113,
-          "production": false
-        },
-        "windows": {
           "lines": 113,
           "production": false
         }
@@ -1756,10 +1380,6 @@
         "macos": {
           "lines": 118,
           "production": false
-        },
-        "windows": {
-          "lines": 118,
-          "production": false
         }
       }
     },
@@ -1773,10 +1393,6 @@
           "production": false
         },
         "macos": {
-          "lines": 120,
-          "production": false
-        },
-        "windows": {
           "lines": 120,
           "production": false
         }
@@ -1794,10 +1410,6 @@
         "macos": {
           "lines": 122,
           "production": false
-        },
-        "windows": {
-          "lines": 122,
-          "production": false
         }
       }
     },
@@ -1811,10 +1423,6 @@
           "production": false
         },
         "macos": {
-          "lines": 156,
-          "production": false
-        },
-        "windows": {
           "lines": 156,
           "production": false
         }
@@ -1832,10 +1440,6 @@
         "macos": {
           "lines": 101,
           "production": true
-        },
-        "windows": {
-          "lines": 101,
-          "production": true
         }
       }
     },
@@ -1849,10 +1453,6 @@
           "production": true
         },
         "macos": {
-          "lines": 102,
-          "production": true
-        },
-        "windows": {
           "lines": 102,
           "production": true
         }
@@ -1870,10 +1470,6 @@
         "macos": {
           "lines": 105,
           "production": false
-        },
-        "windows": {
-          "lines": 105,
-          "production": false
         }
       }
     },
@@ -1887,10 +1483,6 @@
           "production": false
         },
         "macos": {
-          "lines": 104,
-          "production": false
-        },
-        "windows": {
           "lines": 104,
           "production": false
         }
@@ -1908,10 +1500,6 @@
         "macos": {
           "lines": 105,
           "production": false
-        },
-        "windows": {
-          "lines": 105,
-          "production": false
         }
       }
     },
@@ -1925,10 +1513,6 @@
           "production": false
         },
         "macos": {
-          "lines": 258,
-          "production": false
-        },
-        "windows": {
           "lines": 258,
           "production": false
         }
@@ -1946,10 +1530,6 @@
         "macos": {
           "lines": 115,
           "production": false
-        },
-        "windows": {
-          "lines": 115,
-          "production": false
         }
       }
     },
@@ -1963,10 +1543,6 @@
           "production": false
         },
         "macos": {
-          "lines": 129,
-          "production": false
-        },
-        "windows": {
           "lines": 129,
           "production": false
         }
@@ -1984,10 +1560,6 @@
         "macos": {
           "lines": 102,
           "production": false
-        },
-        "windows": {
-          "lines": 102,
-          "production": false
         }
       }
     },
@@ -2001,10 +1573,6 @@
           "production": false
         },
         "macos": {
-          "lines": 154,
-          "production": false
-        },
-        "windows": {
           "lines": 154,
           "production": false
         }
@@ -2022,10 +1590,6 @@
         "macos": {
           "lines": 103,
           "production": true
-        },
-        "windows": {
-          "lines": 103,
-          "production": true
         }
       }
     },
@@ -2039,10 +1603,6 @@
           "production": false
         },
         "macos": {
-          "lines": 119,
-          "production": false
-        },
-        "windows": {
           "lines": 119,
           "production": false
         }
@@ -2060,10 +1620,6 @@
         "macos": {
           "lines": 105,
           "production": false
-        },
-        "windows": {
-          "lines": 105,
-          "production": false
         }
       }
     },
@@ -2077,10 +1633,6 @@
           "production": false
         },
         "macos": {
-          "lines": 131,
-          "production": false
-        },
-        "windows": {
           "lines": 131,
           "production": false
         }
@@ -2098,10 +1650,6 @@
         "macos": {
           "lines": 104,
           "production": true
-        },
-        "windows": {
-          "lines": 104,
-          "production": true
         }
       }
     },
@@ -2115,10 +1663,6 @@
           "production": true
         },
         "macos": {
-          "lines": 112,
-          "production": true
-        },
-        "windows": {
           "lines": 112,
           "production": true
         }
@@ -2136,10 +1680,6 @@
         "macos": {
           "lines": 110,
           "production": true
-        },
-        "windows": {
-          "lines": 110,
-          "production": true
         }
       }
     },
@@ -2153,10 +1693,6 @@
           "production": false
         },
         "macos": {
-          "lines": 115,
-          "production": false
-        },
-        "windows": {
           "lines": 115,
           "production": false
         }
@@ -2174,10 +1710,6 @@
         "macos": {
           "lines": 113,
           "production": false
-        },
-        "windows": {
-          "lines": 113,
-          "production": false
         }
       }
     },
@@ -2191,10 +1723,6 @@
           "production": false
         },
         "macos": {
-          "lines": 107,
-          "production": false
-        },
-        "windows": {
           "lines": 107,
           "production": false
         }
@@ -2212,10 +1740,6 @@
         "macos": {
           "lines": 106,
           "production": true
-        },
-        "windows": {
-          "lines": 106,
-          "production": true
         }
       }
     },
@@ -2229,10 +1753,6 @@
           "production": false
         },
         "macos": {
-          "lines": 151,
-          "production": false
-        },
-        "windows": {
           "lines": 151,
           "production": false
         }
@@ -2250,10 +1770,6 @@
         "macos": {
           "lines": 104,
           "production": false
-        },
-        "windows": {
-          "lines": 104,
-          "production": false
         }
       }
     },
@@ -2267,10 +1783,6 @@
           "production": false
         },
         "macos": {
-          "lines": 112,
-          "production": false
-        },
-        "windows": {
           "lines": 112,
           "production": false
         }
@@ -2288,10 +1800,6 @@
         "macos": {
           "lines": 137,
           "production": false
-        },
-        "windows": {
-          "lines": 137,
-          "production": false
         }
       }
     },
@@ -2306,21 +1814,6 @@
         },
         "macos": {
           "lines": 145,
-          "production": false
-        },
-        "windows": {
-          "lines": 145,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/config/seed_manifest/tests.rs::windows_protect_existing_dacl",
-      "name": "windows_protect_existing_dacl",
-      "anchor": "b2f61697170d",
-      "sites": {
-        "windows": {
-          "lines": 103,
           "production": false
         }
       }
@@ -2337,21 +1830,6 @@
         "macos": {
           "lines": 107,
           "production": false
-        },
-        "windows": {
-          "lines": 107,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/config/seed_manifest/tests/windows_replace_matrix.rs::injected_replace_error_matrix_retains_raw_code_and_never_retries",
-      "name": "injected_replace_error_matrix_retains_raw_code_and_never_retries",
-      "anchor": "01e39140e90f",
-      "sites": {
-        "windows": {
-          "lines": 251,
-          "production": false
         }
       }
     },
@@ -2365,10 +1843,6 @@
           "production": true
         },
         "macos": {
-          "lines": 101,
-          "production": true
-        },
-        "windows": {
           "lines": 101,
           "production": true
         }
@@ -2386,10 +1860,6 @@
         "macos": {
           "lines": 101,
           "production": true
-        },
-        "windows": {
-          "lines": 101,
-          "production": true
         }
       }
     },
@@ -2405,10 +1875,6 @@
         "macos": {
           "lines": 103,
           "production": false
-        },
-        "windows": {
-          "lines": 103,
-          "production": false
         }
       }
     },
@@ -2422,10 +1888,6 @@
           "production": false
         },
         "macos": {
-          "lines": 108,
-          "production": false
-        },
-        "windows": {
           "lines": 108,
           "production": false
         }
@@ -2445,7 +1907,7 @@
           "production": true
         },
         "windows": {
-          "lines": 210,
+          "lines": 183,
           "production": true
         }
       }
@@ -2460,10 +1922,6 @@
           "production": true
         },
         "macos": {
-          "lines": 101,
-          "production": true
-        },
-        "windows": {
           "lines": 101,
           "production": true
         }
@@ -2481,10 +1939,6 @@
         "macos": {
           "lines": 119,
           "production": false
-        },
-        "windows": {
-          "lines": 119,
-          "production": false
         }
       }
     },
@@ -2498,10 +1952,6 @@
           "production": false
         },
         "macos": {
-          "lines": 148,
-          "production": false
-        },
-        "windows": {
           "lines": 148,
           "production": false
         }
@@ -2519,10 +1969,6 @@
         "macos": {
           "lines": 118,
           "production": false
-        },
-        "windows": {
-          "lines": 118,
-          "production": false
         }
       }
     },
@@ -2536,10 +1982,6 @@
           "production": false
         },
         "macos": {
-          "lines": 330,
-          "production": false
-        },
-        "windows": {
           "lines": 330,
           "production": false
         }
@@ -2557,10 +1999,6 @@
         "macos": {
           "lines": 116,
           "production": false
-        },
-        "windows": {
-          "lines": 116,
-          "production": false
         }
       }
     },
@@ -2574,10 +2012,6 @@
           "production": true
         },
         "macos": {
-          "lines": 103,
-          "production": true
-        },
-        "windows": {
           "lines": 103,
           "production": true
         }
@@ -2595,10 +2029,6 @@
         "macos": {
           "lines": 110,
           "production": true
-        },
-        "windows": {
-          "lines": 110,
-          "production": true
         }
       }
     },
@@ -2612,10 +2042,6 @@
           "production": true
         },
         "macos": {
-          "lines": 104,
-          "production": true
-        },
-        "windows": {
           "lines": 104,
           "production": true
         }
@@ -2633,10 +2059,6 @@
         "macos": {
           "lines": 129,
           "production": false
-        },
-        "windows": {
-          "lines": 129,
-          "production": false
         }
       }
     },
@@ -2650,10 +2072,6 @@
           "production": false
         },
         "macos": {
-          "lines": 153,
-          "production": false
-        },
-        "windows": {
           "lines": 153,
           "production": false
         }
@@ -2671,10 +2089,6 @@
         "macos": {
           "lines": 117,
           "production": false
-        },
-        "windows": {
-          "lines": 117,
-          "production": false
         }
       }
     },
@@ -2688,10 +2102,6 @@
           "production": false
         },
         "macos": {
-          "lines": 105,
-          "production": false
-        },
-        "windows": {
           "lines": 105,
           "production": false
         }
@@ -2709,10 +2119,6 @@
         "macos": {
           "lines": 242,
           "production": false
-        },
-        "windows": {
-          "lines": 242,
-          "production": false
         }
       }
     },
@@ -2726,10 +2132,6 @@
           "production": true
         },
         "macos": {
-          "lines": 151,
-          "production": true
-        },
-        "windows": {
           "lines": 151,
           "production": true
         }
@@ -2747,10 +2149,6 @@
         "macos": {
           "lines": 143,
           "production": true
-        },
-        "windows": {
-          "lines": 143,
-          "production": true
         }
       }
     },
@@ -2764,10 +2162,6 @@
           "production": true
         },
         "macos": {
-          "lines": 219,
-          "production": true
-        },
-        "windows": {
           "lines": 219,
           "production": true
         }
@@ -2787,7 +2181,7 @@
           "production": true
         },
         "windows": {
-          "lines": 168,
+          "lines": 105,
           "production": true
         }
       }
@@ -2802,10 +2196,6 @@
           "production": true
         },
         "macos": {
-          "lines": 109,
-          "production": true
-        },
-        "windows": {
           "lines": 109,
           "production": true
         }
@@ -2823,10 +2213,6 @@
         "macos": {
           "lines": 158,
           "production": true
-        },
-        "windows": {
-          "lines": 158,
-          "production": true
         }
       }
     },
@@ -2840,10 +2226,6 @@
           "production": true
         },
         "macos": {
-          "lines": 112,
-          "production": true
-        },
-        "windows": {
           "lines": 112,
           "production": true
         }
@@ -2880,10 +2262,6 @@
         "macos": {
           "lines": 104,
           "production": true
-        },
-        "windows": {
-          "lines": 104,
-          "production": true
         }
       }
     },
@@ -2897,10 +2275,6 @@
           "production": true
         },
         "macos": {
-          "lines": 107,
-          "production": true
-        },
-        "windows": {
           "lines": 107,
           "production": true
         }
@@ -2918,10 +2292,6 @@
         "macos": {
           "lines": 243,
           "production": true
-        },
-        "windows": {
-          "lines": 243,
-          "production": true
         }
       }
     },
@@ -2935,10 +2305,6 @@
           "production": true
         },
         "macos": {
-          "lines": 125,
-          "production": true
-        },
-        "windows": {
           "lines": 125,
           "production": true
         }
@@ -2956,10 +2322,6 @@
         "macos": {
           "lines": 210,
           "production": true
-        },
-        "windows": {
-          "lines": 210,
-          "production": true
         }
       }
     },
@@ -2973,10 +2335,6 @@
           "production": true
         },
         "macos": {
-          "lines": 140,
-          "production": true
-        },
-        "windows": {
           "lines": 140,
           "production": true
         }
@@ -2994,10 +2352,6 @@
         "macos": {
           "lines": 314,
           "production": true
-        },
-        "windows": {
-          "lines": 314,
-          "production": true
         }
       }
     },
@@ -3011,10 +2365,6 @@
           "production": true
         },
         "macos": {
-          "lines": 155,
-          "production": true
-        },
-        "windows": {
           "lines": 155,
           "production": true
         }
@@ -3034,7 +2384,7 @@
           "production": true
         },
         "windows": {
-          "lines": 184,
+          "lines": 104,
           "production": true
         }
       }
@@ -3049,10 +2399,6 @@
           "production": true
         },
         "macos": {
-          "lines": 109,
-          "production": true
-        },
-        "windows": {
           "lines": 109,
           "production": true
         }
@@ -3070,10 +2416,6 @@
         "macos": {
           "lines": 105,
           "production": true
-        },
-        "windows": {
-          "lines": 105,
-          "production": true
         }
       }
     },
@@ -3089,10 +2431,6 @@
         "macos": {
           "lines": 105,
           "production": true
-        },
-        "windows": {
-          "lines": 105,
-          "production": true
         }
       }
     },
@@ -3106,10 +2444,6 @@
           "production": true
         },
         "macos": {
-          "lines": 166,
-          "production": true
-        },
-        "windows": {
           "lines": 166,
           "production": true
         }
@@ -3129,7 +2463,7 @@
           "production": true
         },
         "windows": {
-          "lines": 182,
+          "lines": 124,
           "production": true
         }
       }
@@ -3144,10 +2478,6 @@
           "production": true
         },
         "macos": {
-          "lines": 205,
-          "production": true
-        },
-        "windows": {
           "lines": 205,
           "production": true
         }
@@ -3165,10 +2495,6 @@
         "macos": {
           "lines": 169,
           "production": true
-        },
-        "windows": {
-          "lines": 169,
-          "production": true
         }
       }
     },
@@ -3182,10 +2508,6 @@
           "production": false
         },
         "macos": {
-          "lines": 114,
-          "production": false
-        },
-        "windows": {
           "lines": 114,
           "production": false
         }
@@ -3203,10 +2525,6 @@
         "macos": {
           "lines": 104,
           "production": false
-        },
-        "windows": {
-          "lines": 104,
-          "production": false
         }
       }
     },
@@ -3220,10 +2538,6 @@
           "production": false
         },
         "macos": {
-          "lines": 124,
-          "production": false
-        },
-        "windows": {
           "lines": 124,
           "production": false
         }
@@ -3241,10 +2555,6 @@
         "macos": {
           "lines": 106,
           "production": false
-        },
-        "windows": {
-          "lines": 106,
-          "production": false
         }
       }
     },
@@ -3258,10 +2568,6 @@
           "production": false
         },
         "macos": {
-          "lines": 160,
-          "production": false
-        },
-        "windows": {
           "lines": 160,
           "production": false
         }
@@ -3279,10 +2585,6 @@
         "macos": {
           "lines": 108,
           "production": false
-        },
-        "windows": {
-          "lines": 108,
-          "production": false
         }
       }
     },
@@ -3296,10 +2598,6 @@
           "production": false
         },
         "macos": {
-          "lines": 145,
-          "production": false
-        },
-        "windows": {
           "lines": 145,
           "production": false
         }
@@ -3317,10 +2615,6 @@
         "macos": {
           "lines": 162,
           "production": false
-        },
-        "windows": {
-          "lines": 162,
-          "production": false
         }
       }
     },
@@ -3334,10 +2628,6 @@
           "production": false
         },
         "macos": {
-          "lines": 134,
-          "production": false
-        },
-        "windows": {
           "lines": 134,
           "production": false
         }
@@ -3355,10 +2645,6 @@
         "macos": {
           "lines": 131,
           "production": false
-        },
-        "windows": {
-          "lines": 131,
-          "production": false
         }
       }
     },
@@ -3374,10 +2660,6 @@
         "macos": {
           "lines": 102,
           "production": false
-        },
-        "windows": {
-          "lines": 102,
-          "production": false
         }
       }
     },
@@ -3391,10 +2673,6 @@
           "production": true
         },
         "macos": {
-          "lines": 101,
-          "production": true
-        },
-        "windows": {
           "lines": 101,
           "production": true
         }
@@ -3431,10 +2709,6 @@
         "macos": {
           "lines": 102,
           "production": true
-        },
-        "windows": {
-          "lines": 102,
-          "production": true
         }
       }
     },
@@ -3448,10 +2722,6 @@
           "production": false
         },
         "macos": {
-          "lines": 108,
-          "production": false
-        },
-        "windows": {
           "lines": 108,
           "production": false
         }
@@ -3469,10 +2739,6 @@
         "macos": {
           "lines": 104,
           "production": true
-        },
-        "windows": {
-          "lines": 104,
-          "production": true
         }
       }
     },
@@ -3486,10 +2752,6 @@
           "production": false
         },
         "macos": {
-          "lines": 131,
-          "production": false
-        },
-        "windows": {
           "lines": 131,
           "production": false
         }
@@ -3506,17 +2768,6 @@
         },
         "macos": {
           "lines": 108,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/path_identity/terminal_output.rs::validate_windows_snapshot_output_path",
-      "name": "validate_windows_snapshot_output_path",
-      "anchor": "57f000e836af",
-      "sites": {
-        "windows": {
-          "lines": 101,
           "production": true
         }
       }
@@ -3571,10 +2822,6 @@
         "macos": {
           "lines": 101,
           "production": true
-        },
-        "windows": {
-          "lines": 101,
-          "production": true
         }
       }
     },
@@ -3588,10 +2835,6 @@
           "production": true
         },
         "macos": {
-          "lines": 106,
-          "production": true
-        },
-        "windows": {
           "lines": 106,
           "production": true
         }
@@ -3609,10 +2852,6 @@
         "macos": {
           "lines": 105,
           "production": true
-        },
-        "windows": {
-          "lines": 105,
-          "production": true
         }
       }
     },
@@ -3626,10 +2865,6 @@
           "production": true
         },
         "macos": {
-          "lines": 104,
-          "production": true
-        },
-        "windows": {
           "lines": 104,
           "production": true
         }
@@ -3647,10 +2882,6 @@
         "macos": {
           "lines": 110,
           "production": true
-        },
-        "windows": {
-          "lines": 110,
-          "production": true
         }
       }
     },
@@ -3664,10 +2895,6 @@
           "production": true
         },
         "macos": {
-          "lines": 102,
-          "production": true
-        },
-        "windows": {
           "lines": 102,
           "production": true
         }
@@ -3685,10 +2912,6 @@
         "macos": {
           "lines": 110,
           "production": true
-        },
-        "windows": {
-          "lines": 110,
-          "production": true
         }
       }
     },
@@ -3702,10 +2925,6 @@
           "production": true
         },
         "macos": {
-          "lines": 107,
-          "production": true
-        },
-        "windows": {
           "lines": 107,
           "production": true
         }
@@ -3723,10 +2942,6 @@
         "macos": {
           "lines": 109,
           "production": true
-        },
-        "windows": {
-          "lines": 109,
-          "production": true
         }
       }
     },
@@ -3740,10 +2955,6 @@
           "production": false
         },
         "macos": {
-          "lines": 120,
-          "production": false
-        },
-        "windows": {
           "lines": 120,
           "production": false
         }
@@ -3761,10 +2972,6 @@
         "macos": {
           "lines": 108,
           "production": true
-        },
-        "windows": {
-          "lines": 108,
-          "production": true
         }
       }
     },
@@ -3778,10 +2985,6 @@
           "production": true
         },
         "macos": {
-          "lines": 221,
-          "production": true
-        },
-        "windows": {
           "lines": 221,
           "production": true
         }
@@ -3801,7 +3004,7 @@
           "production": true
         },
         "windows": {
-          "lines": 174,
+          "lines": 172,
           "production": true
         }
       }
@@ -3816,10 +3019,6 @@
           "production": false
         },
         "macos": {
-          "lines": 360,
-          "production": false
-        },
-        "windows": {
           "lines": 360,
           "production": false
         }
@@ -3837,10 +3036,6 @@
         "macos": {
           "lines": 107,
           "production": false
-        },
-        "windows": {
-          "lines": 107,
-          "production": false
         }
       }
     },
@@ -3854,10 +3049,6 @@
           "production": false
         },
         "macos": {
-          "lines": 110,
-          "production": false
-        },
-        "windows": {
           "lines": 110,
           "production": false
         }
@@ -3875,10 +3066,6 @@
         "macos": {
           "lines": 128,
           "production": false
-        },
-        "windows": {
-          "lines": 128,
-          "production": false
         }
       }
     },
@@ -3892,10 +3079,6 @@
           "production": false
         },
         "macos": {
-          "lines": 129,
-          "production": false
-        },
-        "windows": {
           "lines": 129,
           "production": false
         }
@@ -3913,10 +3096,6 @@
         "macos": {
           "lines": 142,
           "production": false
-        },
-        "windows": {
-          "lines": 142,
-          "production": false
         }
       }
     },
@@ -3932,32 +3111,6 @@
         "macos": {
           "lines": 667,
           "production": false
-        },
-        "windows": {
-          "lines": 667,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/physical_cwd.rs::response_pair_physical_cwd_boundary",
-      "name": "response_pair_physical_cwd_boundary",
-      "anchor": "e97029a6ff76",
-      "sites": {
-        "windows": {
-          "lines": 210,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/physical_cwd.rs::response_request_physical_cwd_boundary",
-      "name": "response_request_physical_cwd_boundary",
-      "anchor": "11d180f16df7",
-      "sites": {
-        "windows": {
-          "lines": 230,
-          "production": false
         }
       }
     },
@@ -3971,10 +3124,6 @@
           "production": false
         },
         "macos": {
-          "lines": 161,
-          "production": false
-        },
-        "windows": {
           "lines": 161,
           "production": false
         }
@@ -3992,10 +3141,6 @@
         "macos": {
           "lines": 128,
           "production": false
-        },
-        "windows": {
-          "lines": 128,
-          "production": false
         }
       }
     },
@@ -4009,10 +3154,6 @@
           "production": false
         },
         "macos": {
-          "lines": 105,
-          "production": false
-        },
-        "windows": {
           "lines": 105,
           "production": false
         }
@@ -4030,10 +3171,6 @@
         "macos": {
           "lines": 140,
           "production": false
-        },
-        "windows": {
-          "lines": 140,
-          "production": false
         }
       }
     },
@@ -4047,10 +3184,6 @@
           "production": false
         },
         "macos": {
-          "lines": 297,
-          "production": false
-        },
-        "windows": {
           "lines": 297,
           "production": false
         }
@@ -4068,10 +3201,6 @@
         "macos": {
           "lines": 108,
           "production": false
-        },
-        "windows": {
-          "lines": 108,
-          "production": false
         }
       }
     },
@@ -4085,10 +3214,6 @@
           "production": false
         },
         "macos": {
-          "lines": 108,
-          "production": false
-        },
-        "windows": {
           "lines": 108,
           "production": false
         }
@@ -4106,10 +3231,6 @@
         "macos": {
           "lines": 237,
           "production": false
-        },
-        "windows": {
-          "lines": 237,
-          "production": false
         }
       }
     },
@@ -4123,10 +3244,6 @@
           "production": false
         },
         "macos": {
-          "lines": 192,
-          "production": false
-        },
-        "windows": {
           "lines": 192,
           "production": false
         }
@@ -4144,10 +3261,6 @@
         "macos": {
           "lines": 190,
           "production": false
-        },
-        "windows": {
-          "lines": 190,
-          "production": false
         }
       }
     },
@@ -4161,10 +3274,6 @@
           "production": false
         },
         "macos": {
-          "lines": 182,
-          "production": false
-        },
-        "windows": {
           "lines": 182,
           "production": false
         }
@@ -4182,10 +3291,6 @@
         "macos": {
           "lines": 393,
           "production": false
-        },
-        "windows": {
-          "lines": 393,
-          "production": false
         }
       }
     },
@@ -4199,10 +3304,6 @@
           "production": false
         },
         "macos": {
-          "lines": 236,
-          "production": false
-        },
-        "windows": {
           "lines": 236,
           "production": false
         }
@@ -4220,10 +3321,6 @@
         "macos": {
           "lines": 101,
           "production": false
-        },
-        "windows": {
-          "lines": 101,
-          "production": false
         }
       }
     },
@@ -4237,10 +3334,6 @@
           "production": false
         },
         "macos": {
-          "lines": 379,
-          "production": false
-        },
-        "windows": {
           "lines": 379,
           "production": false
         }
@@ -4258,10 +3351,6 @@
         "macos": {
           "lines": 204,
           "production": false
-        },
-        "windows": {
-          "lines": 204,
-          "production": false
         }
       }
     },
@@ -4275,10 +3364,6 @@
           "production": false
         },
         "macos": {
-          "lines": 144,
-          "production": false
-        },
-        "windows": {
           "lines": 144,
           "production": false
         }
@@ -4296,10 +3381,6 @@
         "macos": {
           "lines": 153,
           "production": false
-        },
-        "windows": {
-          "lines": 153,
-          "production": false
         }
       }
     },
@@ -4313,10 +3394,6 @@
           "production": false
         },
         "macos": {
-          "lines": 159,
-          "production": false
-        },
-        "windows": {
           "lines": 159,
           "production": false
         }
@@ -4334,10 +3411,6 @@
         "macos": {
           "lines": 117,
           "production": false
-        },
-        "windows": {
-          "lines": 117,
-          "production": false
         }
       }
     },
@@ -4351,10 +3424,6 @@
           "production": false
         },
         "macos": {
-          "lines": 105,
-          "production": false
-        },
-        "windows": {
           "lines": 105,
           "production": false
         }
@@ -4372,10 +3441,6 @@
         "macos": {
           "lines": 368,
           "production": false
-        },
-        "windows": {
-          "lines": 368,
-          "production": false
         }
       }
     },
@@ -4389,10 +3454,6 @@
           "production": false
         },
         "macos": {
-          "lines": 188,
-          "production": false
-        },
-        "windows": {
           "lines": 188,
           "production": false
         }
@@ -4410,10 +3471,6 @@
         "macos": {
           "lines": 150,
           "production": false
-        },
-        "windows": {
-          "lines": 150,
-          "production": false
         }
       }
     },
@@ -4427,10 +3484,6 @@
           "production": false
         },
         "macos": {
-          "lines": 517,
-          "production": false
-        },
-        "windows": {
           "lines": 517,
           "production": false
         }
@@ -4448,10 +3501,6 @@
         "macos": {
           "lines": 110,
           "production": false
-        },
-        "windows": {
-          "lines": 110,
-          "production": false
         }
       }
     },
@@ -4465,10 +3514,6 @@
           "production": false
         },
         "macos": {
-          "lines": 209,
-          "production": false
-        },
-        "windows": {
           "lines": 209,
           "production": false
         }
@@ -4486,10 +3531,6 @@
         "macos": {
           "lines": 101,
           "production": false
-        },
-        "windows": {
-          "lines": 101,
-          "production": false
         }
       }
     },
@@ -4503,10 +3544,6 @@
           "production": false
         },
         "macos": {
-          "lines": 150,
-          "production": false
-        },
-        "windows": {
           "lines": 150,
           "production": false
         }
@@ -4524,10 +3561,6 @@
         "macos": {
           "lines": 179,
           "production": false
-        },
-        "windows": {
-          "lines": 179,
-          "production": false
         }
       }
     },
@@ -4541,10 +3574,6 @@
           "production": false
         },
         "macos": {
-          "lines": 140,
-          "production": false
-        },
-        "windows": {
           "lines": 140,
           "production": false
         }
@@ -4562,10 +3591,6 @@
         "macos": {
           "lines": 103,
           "production": false
-        },
-        "windows": {
-          "lines": 103,
-          "production": false
         }
       }
     },
@@ -4579,10 +3604,6 @@
           "production": false
         },
         "macos": {
-          "lines": 144,
-          "production": false
-        },
-        "windows": {
           "lines": 144,
           "production": false
         }
@@ -4600,10 +3621,6 @@
         "macos": {
           "lines": 118,
           "production": false
-        },
-        "windows": {
-          "lines": 118,
-          "production": false
         }
       }
     },
@@ -4617,10 +3634,6 @@
           "production": false
         },
         "macos": {
-          "lines": 162,
-          "production": false
-        },
-        "windows": {
           "lines": 162,
           "production": false
         }
@@ -4638,10 +3651,6 @@
         "macos": {
           "lines": 114,
           "production": true
-        },
-        "windows": {
-          "lines": 114,
-          "production": true
         }
       }
     },
@@ -4655,10 +3664,6 @@
           "production": true
         },
         "macos": {
-          "lines": 102,
-          "production": true
-        },
-        "windows": {
           "lines": 102,
           "production": true
         }
@@ -4676,10 +3681,6 @@
         "macos": {
           "lines": 284,
           "production": true
-        },
-        "windows": {
-          "lines": 284,
-          "production": true
         }
       }
     },
@@ -4693,10 +3694,6 @@
           "production": true
         },
         "macos": {
-          "lines": 167,
-          "production": true
-        },
-        "windows": {
           "lines": 167,
           "production": true
         }
@@ -4714,10 +3711,6 @@
         "macos": {
           "lines": 106,
           "production": true
-        },
-        "windows": {
-          "lines": 106,
-          "production": true
         }
       }
     },
@@ -4731,10 +3724,6 @@
           "production": true
         },
         "macos": {
-          "lines": 103,
-          "production": true
-        },
-        "windows": {
           "lines": 103,
           "production": true
         }
@@ -4752,10 +3741,6 @@
         "macos": {
           "lines": 111,
           "production": true
-        },
-        "windows": {
-          "lines": 111,
-          "production": true
         }
       }
     },
@@ -4769,10 +3754,6 @@
           "production": true
         },
         "macos": {
-          "lines": 104,
-          "production": true
-        },
-        "windows": {
           "lines": 104,
           "production": true
         }
@@ -4790,10 +3771,6 @@
         "macos": {
           "lines": 107,
           "production": true
-        },
-        "windows": {
-          "lines": 107,
-          "production": true
         }
       }
     },
@@ -4807,10 +3784,6 @@
           "production": true
         },
         "macos": {
-          "lines": 115,
-          "production": true
-        },
-        "windows": {
           "lines": 115,
           "production": true
         }
@@ -4828,10 +3801,6 @@
         "macos": {
           "lines": 110,
           "production": true
-        },
-        "windows": {
-          "lines": 110,
-          "production": true
         }
       }
     },
@@ -4845,10 +3814,6 @@
           "production": true
         },
         "macos": {
-          "lines": 105,
-          "production": true
-        },
-        "windows": {
           "lines": 105,
           "production": true
         }
@@ -4866,10 +3831,6 @@
         "macos": {
           "lines": 144,
           "production": false
-        },
-        "windows": {
-          "lines": 144,
-          "production": false
         }
       }
     },
@@ -4883,10 +3844,6 @@
           "production": false
         },
         "macos": {
-          "lines": 119,
-          "production": false
-        },
-        "windows": {
           "lines": 119,
           "production": false
         }
@@ -4904,10 +3861,6 @@
         "macos": {
           "lines": 102,
           "production": true
-        },
-        "windows": {
-          "lines": 102,
-          "production": true
         }
       }
     },
@@ -4921,10 +3874,6 @@
           "production": false
         },
         "macos": {
-          "lines": 133,
-          "production": false
-        },
-        "windows": {
           "lines": 133,
           "production": false
         }
@@ -4942,10 +3891,6 @@
         "macos": {
           "lines": 148,
           "production": false
-        },
-        "windows": {
-          "lines": 148,
-          "production": false
         }
       }
     },
@@ -4959,10 +3904,6 @@
           "production": false
         },
         "macos": {
-          "lines": 138,
-          "production": false
-        },
-        "windows": {
           "lines": 138,
           "production": false
         }
@@ -4980,43 +3921,6 @@
         "macos": {
           "lines": 106,
           "production": true
-        },
-        "windows": {
-          "lines": 106,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/local_backend/tests/conpty.rs::git_guard_sequence_shared_unique_and_noop",
-      "name": "git_guard_sequence_shared_unique_and_noop",
-      "anchor": "e1e58690fef7",
-      "sites": {
-        "windows": {
-          "lines": 105,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/local_backend/tests/conpty.rs::issue_3029_cursor_query_positive_control",
-      "name": "issue_3029_cursor_query_positive_control",
-      "anchor": "867bb83da015",
-      "sites": {
-        "windows": {
-          "lines": 147,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/local_backend/tests/conpty.rs::issue_3029_cursor_reply_order_and_failure",
-      "name": "issue_3029_cursor_reply_order_and_failure",
-      "anchor": "1475cef6f673",
-      "sites": {
-        "windows": {
-          "lines": 163,
-          "production": false
         }
       }
     },
@@ -5030,10 +3934,6 @@
           "production": false
         },
         "macos": {
-          "lines": 137,
-          "production": false
-        },
-        "windows": {
           "lines": 137,
           "production": false
         }
@@ -5051,10 +3951,6 @@
         "macos": {
           "lines": 110,
           "production": false
-        },
-        "windows": {
-          "lines": 110,
-          "production": false
         }
       }
     },
@@ -5068,10 +3964,6 @@
           "production": false
         },
         "macos": {
-          "lines": 496,
-          "production": false
-        },
-        "windows": {
           "lines": 496,
           "production": false
         }
@@ -5089,10 +3981,6 @@
         "macos": {
           "lines": 102,
           "production": true
-        },
-        "windows": {
-          "lines": 102,
-          "production": true
         }
       }
     },
@@ -5106,10 +3994,6 @@
           "production": false
         },
         "macos": {
-          "lines": 153,
-          "production": false
-        },
-        "windows": {
           "lines": 153,
           "production": false
         }
@@ -5127,10 +4011,6 @@
         "macos": {
           "lines": 102,
           "production": true
-        },
-        "windows": {
-          "lines": 102,
-          "production": true
         }
       }
     },
@@ -5144,10 +4024,6 @@
           "production": false
         },
         "macos": {
-          "lines": 117,
-          "production": false
-        },
-        "windows": {
           "lines": 117,
           "production": false
         }
@@ -5165,10 +4041,6 @@
         "macos": {
           "lines": 208,
           "production": false
-        },
-        "windows": {
-          "lines": 208,
-          "production": false
         }
       }
     },
@@ -5182,10 +4054,6 @@
           "production": false
         },
         "macos": {
-          "lines": 149,
-          "production": false
-        },
-        "windows": {
           "lines": 149,
           "production": false
         }
@@ -5203,10 +4071,6 @@
         "macos": {
           "lines": 186,
           "production": false
-        },
-        "windows": {
-          "lines": 186,
-          "production": false
         }
       }
     },
@@ -5220,10 +4084,6 @@
           "production": false
         },
         "macos": {
-          "lines": 101,
-          "production": false
-        },
-        "windows": {
           "lines": 101,
           "production": false
         }
@@ -5241,10 +4101,6 @@
         "macos": {
           "lines": 146,
           "production": false
-        },
-        "windows": {
-          "lines": 146,
-          "production": false
         }
       }
     },
@@ -5258,10 +4114,6 @@
           "production": false
         },
         "macos": {
-          "lines": 166,
-          "production": false
-        },
-        "windows": {
           "lines": 166,
           "production": false
         }
@@ -5279,10 +4131,6 @@
         "macos": {
           "lines": 139,
           "production": false
-        },
-        "windows": {
-          "lines": 139,
-          "production": false
         }
       }
     },
@@ -5296,10 +4144,6 @@
           "production": true
         },
         "macos": {
-          "lines": 111,
-          "production": true
-        },
-        "windows": {
           "lines": 111,
           "production": true
         }
@@ -5317,10 +4161,6 @@
         "macos": {
           "lines": 111,
           "production": true
-        },
-        "windows": {
-          "lines": 111,
-          "production": true
         }
       }
     },
@@ -5334,10 +4174,6 @@
           "production": true
         },
         "macos": {
-          "lines": 109,
-          "production": true
-        },
-        "windows": {
           "lines": 109,
           "production": true
         }
@@ -5355,10 +4191,6 @@
         "macos": {
           "lines": 309,
           "production": false
-        },
-        "windows": {
-          "lines": 309,
-          "production": false
         }
       }
     },
@@ -5372,10 +4204,6 @@
           "production": false
         },
         "macos": {
-          "lines": 389,
-          "production": false
-        },
-        "windows": {
           "lines": 389,
           "production": false
         }
@@ -5393,10 +4221,6 @@
         "macos": {
           "lines": 219,
           "production": false
-        },
-        "windows": {
-          "lines": 219,
-          "production": false
         }
       }
     },
@@ -5410,10 +4234,6 @@
           "production": false
         },
         "macos": {
-          "lines": 250,
-          "production": false
-        },
-        "windows": {
           "lines": 250,
           "production": false
         }
@@ -5431,10 +4251,6 @@
         "macos": {
           "lines": 429,
           "production": false
-        },
-        "windows": {
-          "lines": 429,
-          "production": false
         }
       }
     },
@@ -5448,10 +4264,6 @@
           "production": false
         },
         "macos": {
-          "lines": 353,
-          "production": false
-        },
-        "windows": {
           "lines": 353,
           "production": false
         }
@@ -5469,10 +4281,6 @@
         "macos": {
           "lines": 427,
           "production": false
-        },
-        "windows": {
-          "lines": 427,
-          "production": false
         }
       }
     },
@@ -5486,10 +4294,6 @@
           "production": false
         },
         "macos": {
-          "lines": 214,
-          "production": false
-        },
-        "windows": {
           "lines": 214,
           "production": false
         }
@@ -5507,10 +4311,6 @@
         "macos": {
           "lines": 114,
           "production": false
-        },
-        "windows": {
-          "lines": 114,
-          "production": false
         }
       }
     },
@@ -5526,120 +4326,6 @@
         "macos": {
           "lines": 290,
           "production": false
-        },
-        "windows": {
-          "lines": 290,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_factory.rs::window_screenshot_each_request_uses_a_fresh_local_result",
-      "name": "window_screenshot_each_request_uses_a_fresh_local_result",
-      "anchor": "19830abef0f8",
-      "sites": {
-        "windows": {
-          "lines": 182,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_factory.rs::window_screenshot_full_flow_authenticated_raw_path_validation_is_uncaptured",
-      "name": "window_screenshot_full_flow_authenticated_raw_path_validation_is_uncaptured",
-      "anchor": "ad408ea101c8",
-      "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_factory.rs::window_screenshot_route_local_factory_auth_and_raw_path_order_is_audited",
-      "name": "window_screenshot_route_local_factory_auth_and_raw_path_order_is_audited",
-      "anchor": "318967595e21",
-      "sites": {
-        "windows": {
-          "lines": 122,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_factory.rs::window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_retains_lease",
-      "name": "window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_retains_lease",
-      "anchor": "25415720a7cd",
-      "sites": {
-        "windows": {
-          "lines": 175,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_factory.rs::window_screenshot_route_local_factory_result_mappings_are_audited_and_released",
-      "name": "window_screenshot_route_local_factory_result_mappings_are_audited_and_released",
-      "anchor": "a71e91bc36f2",
-      "sites": {
-        "windows": {
-          "lines": 131,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_queue.rs::window_screenshot_fresh_guard_is_released_before_queue_wait",
-      "name": "window_screenshot_fresh_guard_is_released_before_queue_wait",
-      "anchor": "ad776c65c9e3",
-      "sites": {
-        "windows": {
-          "lines": 152,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_queue.rs::window_screenshot_queued_revocation_blocks_launch_revalidation",
-      "name": "window_screenshot_queued_revocation_blocks_launch_revalidation",
-      "anchor": "cd803e9240e9",
-      "sites": {
-        "windows": {
-          "lines": 178,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_router.rs::authenticated_live_window_png_capture",
-      "name": "authenticated_live_window_png_capture",
-      "anchor": "c0dfec1a16f1",
-      "sites": {
-        "windows": {
-          "lines": 420,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_router.rs::window_screenshot_revocation_after_launch_does_not_cancel_in_flight_capture",
-      "name": "window_screenshot_revocation_after_launch_does_not_cancel_in_flight_capture",
-      "anchor": "00d90e952194",
-      "sites": {
-        "windows": {
-          "lines": 113,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_router.rs::window_screenshot_route_local_factory_success_is_raw_png_and_audited",
-      "name": "window_screenshot_route_local_factory_success_is_raw_png_and_audited",
-      "anchor": "3bdbe1750fb4",
-      "sites": {
-        "windows": {
-          "lines": 117,
-          "production": false
         }
       }
     },
@@ -5653,10 +4339,6 @@
           "production": false
         },
         "macos": {
-          "lines": 104,
-          "production": false
-        },
-        "windows": {
           "lines": 104,
           "production": false
         }
@@ -5674,10 +4356,6 @@
         "macos": {
           "lines": 254,
           "production": false
-        },
-        "windows": {
-          "lines": 254,
-          "production": false
         }
       }
     },
@@ -5691,10 +4369,6 @@
           "production": false
         },
         "macos": {
-          "lines": 110,
-          "production": false
-        },
-        "windows": {
           "lines": 110,
           "production": false
         }
@@ -5712,10 +4386,6 @@
         "macos": {
           "lines": 619,
           "production": true
-        },
-        "windows": {
-          "lines": 619,
-          "production": true
         }
       }
     },
@@ -5729,10 +4399,6 @@
           "production": false
         },
         "macos": {
-          "lines": 104,
-          "production": false
-        },
-        "windows": {
           "lines": 104,
           "production": false
         }
@@ -5761,10 +4427,6 @@
         "macos": {
           "lines": 126,
           "production": false
-        },
-        "windows": {
-          "lines": 126,
-          "production": false
         }
       }
     },
@@ -5778,10 +4440,6 @@
           "production": true
         },
         "macos": {
-          "lines": 109,
-          "production": true
-        },
-        "windows": {
           "lines": 109,
           "production": true
         }
@@ -5799,10 +4457,6 @@
         "macos": {
           "lines": 111,
           "production": true
-        },
-        "windows": {
-          "lines": 111,
-          "production": true
         }
       }
     },
@@ -5816,10 +4470,6 @@
           "production": false
         },
         "macos": {
-          "lines": 117,
-          "production": false
-        },
-        "windows": {
           "lines": 117,
           "production": false
         }
@@ -5837,10 +4487,6 @@
         "macos": {
           "lines": 382,
           "production": false
-        },
-        "windows": {
-          "lines": 382,
-          "production": false
         }
       }
     },
@@ -5854,10 +4500,6 @@
           "production": false
         },
         "macos": {
-          "lines": 110,
-          "production": false
-        },
-        "windows": {
           "lines": 110,
           "production": false
         }
@@ -5875,10 +4517,6 @@
         "macos": {
           "lines": 134,
           "production": false
-        },
-        "windows": {
-          "lines": 134,
-          "production": false
         }
       }
     },
@@ -5892,10 +4530,6 @@
           "production": false
         },
         "macos": {
-          "lines": 101,
-          "production": false
-        },
-        "windows": {
           "lines": 101,
           "production": false
         }
@@ -5913,10 +4547,6 @@
         "macos": {
           "lines": 109,
           "production": true
-        },
-        "windows": {
-          "lines": 109,
-          "production": true
         }
       }
     },
@@ -5930,10 +4560,6 @@
           "production": true
         },
         "macos": {
-          "lines": 106,
-          "production": true
-        },
-        "windows": {
           "lines": 106,
           "production": true
         }
@@ -5951,10 +4577,6 @@
         "macos": {
           "lines": 110,
           "production": true
-        },
-        "windows": {
-          "lines": 110,
-          "production": true
         }
       }
     },
@@ -5968,10 +4590,6 @@
           "production": true
         },
         "macos": {
-          "lines": 107,
-          "production": true
-        },
-        "windows": {
           "lines": 107,
           "production": true
         }
@@ -5989,10 +4607,6 @@
         "macos": {
           "lines": 101,
           "production": true
-        },
-        "windows": {
-          "lines": 101,
-          "production": true
         }
       }
     },
@@ -6006,10 +4620,6 @@
           "production": true
         },
         "macos": {
-          "lines": 108,
-          "production": true
-        },
-        "windows": {
           "lines": 108,
           "production": true
         }
@@ -6027,10 +4637,6 @@
         "macos": {
           "lines": 107,
           "production": true
-        },
-        "windows": {
-          "lines": 107,
-          "production": true
         }
       }
     },
@@ -6044,10 +4650,6 @@
           "production": true
         },
         "macos": {
-          "lines": 108,
-          "production": true
-        },
-        "windows": {
           "lines": 108,
           "production": true
         }
@@ -6067,7 +4669,7 @@
           "production": true
         },
         "windows": {
-          "lines": 113,
+          "lines": 111,
           "production": true
         }
       }
@@ -6082,10 +4684,6 @@
           "production": true
         },
         "macos": {
-          "lines": 113,
-          "production": true
-        },
-        "windows": {
           "lines": 113,
           "production": true
         }
@@ -6103,10 +4701,6 @@
         "macos": {
           "lines": 118,
           "production": false
-        },
-        "windows": {
-          "lines": 118,
-          "production": false
         }
       }
     },
@@ -6120,10 +4714,6 @@
           "production": false
         },
         "macos": {
-          "lines": 257,
-          "production": false
-        },
-        "windows": {
           "lines": 257,
           "production": false
         }
@@ -6141,10 +4731,6 @@
         "macos": {
           "lines": 363,
           "production": false
-        },
-        "windows": {
-          "lines": 363,
-          "production": false
         }
       }
     },
@@ -6160,21 +4746,6 @@
         "macos": {
           "lines": 104,
           "production": false
-        },
-        "windows": {
-          "lines": 104,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection/tests/response_registration.rs::response_registration_physical_cwd_boundary",
-      "name": "response_registration_physical_cwd_boundary",
-      "anchor": "8e58f67a1d37",
-      "sites": {
-        "windows": {
-          "lines": 372,
-          "production": false
         }
       }
     },
@@ -6188,10 +4759,6 @@
           "production": false
         },
         "macos": {
-          "lines": 128,
-          "production": false
-        },
-        "windows": {
           "lines": 128,
           "production": false
         }
@@ -6209,10 +4776,6 @@
         "macos": {
           "lines": 107,
           "production": false
-        },
-        "windows": {
-          "lines": 107,
-          "production": false
         }
       }
     },
@@ -6226,10 +4789,6 @@
           "production": false
         },
         "macos": {
-          "lines": 124,
-          "production": false
-        },
-        "windows": {
           "lines": 124,
           "production": false
         }
@@ -6247,10 +4806,6 @@
         "macos": {
           "lines": 126,
           "production": false
-        },
-        "windows": {
-          "lines": 126,
-          "production": false
         }
       }
     },
@@ -6264,10 +4819,6 @@
           "production": false
         },
         "macos": {
-          "lines": 103,
-          "production": false
-        },
-        "windows": {
           "lines": 103,
           "production": false
         }
@@ -6285,10 +4836,6 @@
         "macos": {
           "lines": 194,
           "production": false
-        },
-        "windows": {
-          "lines": 194,
-          "production": false
         }
       }
     },
@@ -6302,10 +4849,6 @@
           "production": true
         },
         "macos": {
-          "lines": 168,
-          "production": true
-        },
-        "windows": {
           "lines": 168,
           "production": true
         }
@@ -6323,10 +4866,6 @@
         "macos": {
           "lines": 412,
           "production": true
-        },
-        "windows": {
-          "lines": 412,
-          "production": true
         }
       }
     },
@@ -6340,10 +4879,6 @@
           "production": true
         },
         "macos": {
-          "lines": 104,
-          "production": true
-        },
-        "windows": {
           "lines": 104,
           "production": true
         }
@@ -6361,10 +4896,6 @@
         "macos": {
           "lines": 107,
           "production": false
-        },
-        "windows": {
-          "lines": 107,
-          "production": false
         }
       }
     },
@@ -6378,10 +4909,6 @@
           "production": false
         },
         "macos": {
-          "lines": 128,
-          "production": false
-        },
-        "windows": {
           "lines": 128,
           "production": false
         }
@@ -6399,10 +4926,6 @@
         "macos": {
           "lines": 139,
           "production": false
-        },
-        "windows": {
-          "lines": 139,
-          "production": false
         }
       }
     },
@@ -6416,10 +4939,6 @@
           "production": false
         },
         "macos": {
-          "lines": 136,
-          "production": false
-        },
-        "windows": {
           "lines": 136,
           "production": false
         }
@@ -6448,10 +4967,6 @@
         "macos": {
           "lines": 109,
           "production": false
-        },
-        "windows": {
-          "lines": 109,
-          "production": false
         }
       }
     },
@@ -6465,10 +4980,6 @@
           "production": false
         },
         "macos": {
-          "lines": 132,
-          "production": false
-        },
-        "windows": {
           "lines": 132,
           "production": false
         }
@@ -6486,10 +4997,6 @@
         "macos": {
           "lines": 216,
           "production": false
-        },
-        "windows": {
-          "lines": 216,
-          "production": false
         }
       }
     },
@@ -6503,10 +5010,6 @@
           "production": false
         },
         "macos": {
-          "lines": 104,
-          "production": false
-        },
-        "windows": {
           "lines": 104,
           "production": false
         }
@@ -6524,10 +5027,6 @@
         "macos": {
           "lines": 273,
           "production": false
-        },
-        "windows": {
-          "lines": 273,
-          "production": false
         }
       }
     },
@@ -6541,10 +5040,6 @@
           "production": false
         },
         "macos": {
-          "lines": 105,
-          "production": false
-        },
-        "windows": {
           "lines": 105,
           "production": false
         }
@@ -6562,10 +5057,6 @@
         "macos": {
           "lines": 103,
           "production": false
-        },
-        "windows": {
-          "lines": 103,
-          "production": false
         }
       }
     },
@@ -6579,10 +5070,6 @@
           "production": false
         },
         "macos": {
-          "lines": 159,
-          "production": false
-        },
-        "windows": {
           "lines": 159,
           "production": false
         }
@@ -6604,17 +5091,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/tests/cli_powershell_capture.rs::issue_1867_isolation_source_contract",
-      "name": "issue_1867_isolation_source_contract",
-      "anchor": "ad9bd7fafaee",
-      "sites": {
-        "windows": {
-          "lines": 473,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/tests/cli_project_registration/catalog.rs::cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents",
       "name": "cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents",
       "anchor": "e4b897c0a6a7",
@@ -6624,10 +5100,6 @@
           "production": false
         },
         "macos": {
-          "lines": 104,
-          "production": false
-        },
-        "windows": {
           "lines": 104,
           "production": false
         }
@@ -6645,10 +5117,6 @@
         "macos": {
           "lines": 156,
           "production": false
-        },
-        "windows": {
-          "lines": 156,
-          "production": false
         }
       }
     },
@@ -6662,10 +5130,6 @@
           "production": false
         },
         "macos": {
-          "lines": 162,
-          "production": false
-        },
-        "windows": {
           "lines": 162,
           "production": false
         }
@@ -6683,10 +5147,6 @@
         "macos": {
           "lines": 127,
           "production": false
-        },
-        "windows": {
-          "lines": 127,
-          "production": false
         }
       }
     },
@@ -6700,10 +5160,6 @@
           "production": false
         },
         "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
           "lines": 126,
           "production": false
         }
@@ -6721,10 +5177,6 @@
         "macos": {
           "lines": 147,
           "production": false
-        },
-        "windows": {
-          "lines": 147,
-          "production": false
         }
       }
     },
@@ -6738,10 +5190,6 @@
           "production": false
         },
         "macos": {
-          "lines": 165,
-          "production": false
-        },
-        "windows": {
           "lines": 165,
           "production": false
         }
@@ -6759,10 +5207,6 @@
         "macos": {
           "lines": 116,
           "production": false
-        },
-        "windows": {
-          "lines": 116,
-          "production": false
         }
       }
     },
@@ -6776,10 +5220,6 @@
           "production": false
         },
         "macos": {
-          "lines": 115,
-          "production": false
-        },
-        "windows": {
           "lines": 115,
           "production": false
         }
@@ -6797,10 +5237,6 @@
         "macos": {
           "lines": 160,
           "production": false
-        },
-        "windows": {
-          "lines": 160,
-          "production": false
         }
       }
     },
@@ -6816,29 +5252,6 @@
         "macos": {
           "lines": 129,
           "production": false
-        },
-        "windows": {
-          "lines": 129,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/instance_gitignore_layering/scan.rs::scrub",
-      "name": "scrub",
-      "anchor": "1869d863852b",
-      "sites": {
-        "linux": {
-          "lines": 126,
-          "production": false
-        },
-        "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
-          "lines": 126,
-          "production": false
         }
       }
     },
@@ -6852,10 +5265,6 @@
           "production": false
         },
         "macos": {
-          "lines": 109,
-          "production": false
-        },
-        "windows": {
           "lines": 109,
           "production": false
         }
@@ -6873,29 +5282,6 @@
         "macos": {
           "lines": 315,
           "production": false
-        },
-        "windows": {
-          "lines": 315,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/loops_layering.rs::code_only",
-      "name": "code_only",
-      "anchor": "e43e4e71b74c",
-      "sites": {
-        "linux": {
-          "lines": 118,
-          "production": false
-        },
-        "macos": {
-          "lines": 118,
-          "production": false
-        },
-        "windows": {
-          "lines": 118,
-          "production": false
         }
       }
     },
@@ -6910,29 +5296,6 @@
         },
         "macos": {
           "lines": 113,
-          "production": false
-        },
-        "windows": {
-          "lines": 113,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/project_settings_layering/source_text.rs::scrub",
-      "name": "scrub",
-      "anchor": "1869d863852b",
-      "sites": {
-        "linux": {
-          "lines": 126,
-          "production": false
-        },
-        "macos": {
-          "lines": 126,
-          "production": false
-        },
-        "windows": {
-          "lines": 126,
           "production": false
         }
       }
@@ -6949,76 +5312,6 @@
         "macos": {
           "lines": 131,
           "production": false
-        },
-        "windows": {
-          "lines": 131,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/pty_lifecycle_regression/fixture.rs::make_lifecycle_fixture",
-      "name": "make_lifecycle_fixture",
-      "anchor": "5ef21c80d2f0",
-      "sites": {
-        "windows": {
-          "lines": 130,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/pty_lifecycle_regression/fixture.rs::make_test_app",
-      "name": "make_test_app",
-      "anchor": "78d12eeb0203",
-      "sites": {
-        "windows": {
-          "lines": 139,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/pty_lifecycle_regression/main.rs::real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup",
-      "name": "real_pty_session_lifecycle_create_io_resize_restart_persist_restore_cleanup",
-      "anchor": "18805034ef84",
-      "sites": {
-        "windows": {
-          "lines": 476,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/pty_powershell_managed_native/fixture.rs::make_fixture",
-      "name": "make_fixture",
-      "anchor": "b452aa287fdc",
-      "sites": {
-        "windows": {
-          "lines": 218,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/pty_powershell_managed_native/main.rs::configured_powershell_batch_regression",
-      "name": "configured_powershell_batch_regression",
-      "anchor": "797fbe10988c",
-      "sites": {
-        "windows": {
-          "lines": 180,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/pty_powershell_managed_native/main.rs::configured_powershell_managed_native_reporter_argv_and_pty_io",
-      "name": "configured_powershell_managed_native_reporter_argv_and_pty_io",
-      "anchor": "b7bbd0bce037",
-      "sites": {
-        "windows": {
-          "lines": 103,
-          "production": false
         }
       }
     },
@@ -7032,10 +5325,6 @@
           "production": false
         },
         "macos": {
-          "lines": 116,
-          "production": false
-        },
-        "windows": {
           "lines": 116,
           "production": false
         }
@@ -7052,43 +5341,6 @@
         },
         "macos": {
           "lines": 135,
-          "production": false
-        },
-        "windows": {
-          "lines": 135,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/wake_consumption_measure/main.rs::measure_wake_consumption_signals",
-      "name": "measure_wake_consumption_signals",
-      "anchor": "5d37fda0ce41",
-      "sites": {
-        "windows": {
-          "lines": 208,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/wake_consumption_measure/pi_logical_clear.rs::prepare_pi_logical_clear_mode",
-      "name": "prepare_pi_logical_clear_mode",
-      "anchor": "da475e7ac3ea",
-      "sites": {
-        "windows": {
-          "lines": 110,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/wake_consumption_measure/pi_logical_clear.rs::run_pi_trial_body",
-      "name": "run_pi_trial_body",
-      "anchor": "db8e9604953f",
-      "sites": {
-        "windows": {
-          "lines": 102,
           "production": false
         }
       }

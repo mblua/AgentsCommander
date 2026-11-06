@@ -239,13 +239,8 @@ fn project_archive_unarchive_processes_race_typed_preserve_both_orders() {
     }
 }
 
-fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
-    let root = tempfile::tempdir().unwrap().keep();
-    let path = root.join("settings.json");
-    let a = root.join("A").to_string_lossy().replace('\\', "/");
-    let b = root.join("B").to_string_lossy().replace('\\', "/");
-    // Missing raw registrations exercise retained companion pairs.
-    assert!(!root.join("A").exists() && !root.join("B").exists());
+fn seed_preserve_case_files(root: &std::path::Path, a: &str, b: &str, unarchive: bool) {
+    let path = &root.join("settings.json");
     let (active, archived, active_rel, archived_rel) = if unarchive {
         (
             serde_json::json!([b]),
@@ -271,23 +266,23 @@ fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
         managed.as_object_mut().unwrap(),
         &serde_json::Map::new(),
     );
-    std::fs::write(&path, serde_json::to_vec(&managed).unwrap()).unwrap();
+    std::fs::write(path, serde_json::to_vec(&managed).unwrap()).unwrap();
     std::fs::write(
-        super::super::project_paths_path(&path),
+        super::super::project_paths_path(path),
         serde_json::to_vec(&serde_json::json!({
             "projectPaths":active,"projectPathsRelativeToInstance":active_rel,
             "archivedProjectPaths":archived,
             "archivedProjectPathsRelativeToInstance":archived_rel,
-            "projectPath": if unarchive { &b } else { &a },
+            "projectPath": if unarchive { b } else { a },
             "projectPathRelativeToInstance":null,"unknownSidecar":{"sentinel":29}
         }))
         .unwrap(),
     )
     .unwrap();
     let draft = super::super::AppSettings {
-        project_paths: vec![a.clone(), b.clone()],
-        project_path: Some(a.clone()),
-        archived_project_paths: vec![b.clone()],
+        project_paths: vec![a.to_owned(), b.to_owned()],
+        project_path: Some(a.to_owned()),
+        archived_project_paths: vec![b.to_owned()],
         room_number_mask: "##".into(),
         root_token: Some("fixture".into()),
         ..super::super::AppSettings::default()
@@ -297,7 +292,56 @@ fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
         serde_json::to_vec(&draft).unwrap(),
     )
     .unwrap();
-    std::fs::write(root.join("target.txt"), &a).unwrap();
+    std::fs::write(root.join("target.txt"), a).unwrap();
+}
+
+fn assert_preserve_case_sidecar(path: &std::path::Path, a: &str, b: &str, unarchive: bool) {
+    let raw = b3_object(&super::super::project_paths_path(path));
+    assert_eq!(
+        raw["projectPaths"],
+        if unarchive {
+            serde_json::json!([b, a])
+        } else {
+            serde_json::json!([b])
+        }
+    );
+    assert_eq!(
+        raw["archivedProjectPaths"],
+        if unarchive {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([a])
+        }
+    );
+    assert_eq!(raw["projectPath"], serde_json::json!(b));
+    assert_eq!(raw["projectPathRelativeToInstance"], "missing-companion-B");
+    assert_eq!(
+        raw["projectPathsRelativeToInstance"],
+        if unarchive {
+            serde_json::json!(["missing-companion-B", null])
+        } else {
+            serde_json::json!(["missing-companion-B"])
+        }
+    );
+    assert_eq!(
+        raw["archivedProjectPathsRelativeToInstance"],
+        if unarchive {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([null])
+        }
+    );
+    assert_eq!(raw["unknownSidecar"], serde_json::json!({"sentinel":29}));
+}
+
+fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
+    let root = tempfile::tempdir().unwrap().keep();
+    let path = root.join("settings.json");
+    let a = root.join("A").to_string_lossy().replace('\\', "/");
+    let b = root.join("B").to_string_lossy().replace('\\', "/");
+    // Missing raw registrations exercise retained companion pairs.
+    assert!(!root.join("A").exists() && !root.join("B").exists());
+    seed_preserve_case_files(&root, &a, &b, unarchive);
     let holder_root = root.join("holder");
     let contender_root = root.join("contender");
     for control in [&holder_root, &contender_root] {
@@ -343,42 +387,7 @@ fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
     holder.finish();
     std::fs::write(contender_root.join("retry"), b"retry").unwrap();
     contender.finish();
-    let raw = b3_object(&super::super::project_paths_path(&path));
-    assert_eq!(
-        raw["projectPaths"],
-        if unarchive {
-            serde_json::json!([b, a])
-        } else {
-            serde_json::json!([b])
-        }
-    );
-    assert_eq!(
-        raw["archivedProjectPaths"],
-        if unarchive {
-            serde_json::json!([])
-        } else {
-            serde_json::json!([a])
-        }
-    );
-    assert_eq!(raw["projectPath"], serde_json::json!(b));
-    assert_eq!(raw["projectPathRelativeToInstance"], "missing-companion-B");
-    assert_eq!(
-        raw["projectPathsRelativeToInstance"],
-        if unarchive {
-            serde_json::json!(["missing-companion-B", null])
-        } else {
-            serde_json::json!(["missing-companion-B"])
-        }
-    );
-    assert_eq!(
-        raw["archivedProjectPathsRelativeToInstance"],
-        if unarchive {
-            serde_json::json!([])
-        } else {
-            serde_json::json!([null])
-        }
-    );
-    assert_eq!(raw["unknownSidecar"], serde_json::json!({"sentinel":29}));
+    assert_preserve_case_sidecar(&path, &a, &b, unarchive);
     let managed = b3_object(&path);
     assert_eq!(managed["roomNumberMask"], "##");
     assert!(super::super::raw_project_projection(&managed).is_empty());

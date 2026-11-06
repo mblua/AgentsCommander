@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::source_text::{normalized, scrub, Literals};
+use rust_source_scrub::{scrub, Literals};
+
+use super::source_text::normalized;
 
 // ---------------------------------------------------------------------------
 // Resolving what the compiler compiles

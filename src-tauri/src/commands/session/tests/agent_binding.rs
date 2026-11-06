@@ -6,6 +6,175 @@ fn physical_binding_test_settings(dir: &std::path::Path) -> AppSettings {
     crate::config::settings::load_settings_from_path(&path)
 }
 
+type BindingSessionMgr = Arc<tokio::sync::RwLock<SessionManager>>;
+type BindingPtyMgr = Arc<Mutex<crate::pty::manager::PtyManager>>;
+
+async fn create_user_claude_session(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &BindingSessionMgr,
+    pty_mgr: &BindingPtyMgr,
+    work: &std::path::Path,
+    name: String,
+) -> crate::session::session::SessionInfo {
+    super::super::create_session_inner(
+        app.handle(),
+        session_mgr,
+        pty_mgr,
+        "claude".into(),
+        Vec::new(),
+        work.to_string_lossy().to_string(),
+        Some(name),
+        Some("claude".into()),
+        None,
+        true,
+        Vec::new(),
+        true,
+        None,
+        None,
+        None,
+        CreateSelectionIntent::User,
+    )
+    .await
+    .unwrap()
+}
+
+async fn restart_binding_session(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &BindingSessionMgr,
+    pty_mgr: &BindingPtyMgr,
+    id: Uuid,
+) -> crate::session::session::SessionInfo {
+    let settings = app.state::<crate::config::settings::SettingsState>();
+    super::super::restart_session_inner_with_activation(
+        app.handle(),
+        session_mgr,
+        pty_mgr,
+        settings.inner(),
+        id,
+        None,
+        None,
+        Some(false),
+        true,
+    )
+    .await
+    .unwrap()
+}
+
+fn seedless_case_settings(case: &str) -> (tempfile::TempDir, AppSettings) {
+    let physical = tempfile::tempdir().unwrap();
+    let path = crate::config::settings::settings_fixture_path(physical.path());
+    let mut raw = serde_json::to_value(test_settings()).unwrap();
+    if case == "removed" {
+        raw["agents"] = serde_json::json!([]);
+    }
+    if case == "ambiguous" {
+        let repeated = raw["agents"][0].clone();
+        raw["agents"].as_array_mut().unwrap().push(repeated);
+    }
+    std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+    if case == "unreadable" {
+        std::fs::write(
+            physical
+                .path()
+                .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+            b"invalid agents JSON",
+        )
+        .unwrap();
+    }
+    let cfg = if case == "missing-physical" {
+        test_settings()
+    } else {
+        crate::config::settings::load_settings_from_path(&path)
+    };
+    (physical, cfg)
+}
+
+fn load_seedless_recipe(
+    physical: &std::path::Path,
+    original_recipe: &crate::config::sessions_persistence::PersistedSession,
+) -> crate::config::sessions_persistence::PersistedSession {
+    let sessions_path = physical.join("sessions.json");
+    let bytes = serde_json::to_vec(&vec![original_recipe.clone()]).unwrap();
+    std::fs::write(&sessions_path, &bytes).unwrap();
+    let mut loaded = crate::config::sessions_persistence::load_sessions_from_dir(physical);
+    assert_eq!(loaded.len(), 1);
+    let recipe = loaded.remove(0);
+    let loaded_origin = recipe.coding_agent_binding_origin.clone();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        loaded_origin.as_ref().unwrap()["rawFileSHA256"],
+        format!("{:x}", Sha256::digest(&bytes))
+    );
+    assert_eq!(
+        loaded_origin.as_ref().unwrap()["sessionsPath"],
+        sessions_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(loaded_origin.as_ref().unwrap()["originalOrdinal"], 0);
+    recipe
+}
+
+async fn restore_seedless_recipe(
+    transaction: &crate::session::selection::SelectionTransaction<tauri::test::MockRuntime>,
+    session_mgr: &BindingSessionMgr,
+    pty_mgr: &BindingPtyMgr,
+    recipe: &crate::config::sessions_persistence::PersistedSession,
+    birth: &crate::session::manager::CodingAgentBinding,
+) -> crate::session::session::SessionInfo {
+    super::super::create_session_inner_for_restore(
+        transaction,
+        session_mgr,
+        pty_mgr,
+        recipe.shell.clone(),
+        recipe.shell_args.clone(),
+        recipe.working_directory.clone(),
+        Some(recipe.name.clone()),
+        recipe.agent_id.clone(),
+        None,
+        true,
+        Vec::new(),
+        true,
+        None,
+        None,
+        None,
+        Some(false),
+        None,
+        Some(birth.clone()),
+        None,
+    )
+    .await
+    .unwrap()
+}
+
+async fn assert_seedless_restored(
+    manager: &SessionManager,
+    info: &crate::session::session::SessionInfo,
+    recipe: &crate::config::sessions_persistence::PersistedSession,
+    birth: &crate::session::manager::CodingAgentBinding,
+) {
+    assert_eq!(info.shell, recipe.shell);
+    let restored = manager
+        .coding_agent_binding(Uuid::parse_str(&info.id).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(restored.id, birth.id);
+    assert_eq!(restored.seed, birth.seed);
+    assert_eq!(restored.origin, birth.origin);
+    let snapshot = crate::config::sessions_persistence::snapshot_sessions(manager).await;
+    let stored = snapshot
+        .iter()
+        .find(|row| row.id.as_deref() == Some(info.id.as_str()))
+        .unwrap();
+    assert_eq!(
+        stored.coding_agent_binding_id,
+        recipe.coding_agent_binding_id
+    );
+    assert_eq!(
+        stored.coding_agent_binding_origin,
+        recipe.coding_agent_binding_origin
+    );
+    assert!(stored.coding_agent_binding_seed.is_none());
+}
+
 #[tokio::test]
 async fn derived_agent_id_binding_creation_restart_and_plain_shell() {
     let cwd = tempfile::tempdir().unwrap();
@@ -157,26 +326,14 @@ async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() 
         *settings.write().await = written;
         let work = cwd.path().join(format!("post-save-{index}"));
         std::fs::create_dir(&work).unwrap();
-        let info = super::super::create_session_inner(
-            app.handle(),
+        let info = create_user_claude_session(
+            &app,
             &session_mgr,
             &pty_mgr,
-            "claude".into(),
-            Vec::new(),
-            work.to_string_lossy().to_string(),
-            Some(format!("post-save-{index}")),
-            Some("claude".into()),
-            None,
-            true,
-            Vec::new(),
-            true,
-            None,
-            None,
-            None,
-            CreateSelectionIntent::User,
+            &work,
+            format!("post-save-{index}"),
         )
-        .await
-        .unwrap();
+        .await;
         let manager = session_mgr.read().await.clone();
         let binding = manager
             .coding_agent_binding(Uuid::parse_str(&info.id).unwrap())
@@ -190,19 +347,13 @@ async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() 
         births[1].1.seed.as_ref().unwrap()["identityRevision"],
         before
     );
-    let restarted = super::super::restart_session_inner_with_activation(
-        app.handle(),
+    let restarted = restart_binding_session(
+        &app,
         &session_mgr,
         &pty_mgr,
-        settings.inner(),
         Uuid::parse_str(&births[0].0.id).unwrap(),
-        None,
-        None,
-        Some(false),
-        true,
     )
-    .await
-    .unwrap();
+    .await;
     let manager = session_mgr.read().await.clone();
     let after = manager
         .coding_agent_binding(Uuid::parse_str(&restarted.id).unwrap())
@@ -287,31 +438,7 @@ async fn derived_agent_id_binding_wake_restore_preserves_birth_seed_and_origin()
 #[tokio::test]
 async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compatibility() {
     for case in ["removed", "ambiguous", "unreadable", "missing-physical"] {
-        let physical = tempfile::tempdir().unwrap();
-        let path = crate::config::settings::settings_fixture_path(physical.path());
-        let mut raw = serde_json::to_value(test_settings()).unwrap();
-        if case == "removed" {
-            raw["agents"] = serde_json::json!([]);
-        }
-        if case == "ambiguous" {
-            let repeated = raw["agents"][0].clone();
-            raw["agents"].as_array_mut().unwrap().push(repeated);
-        }
-        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
-        if case == "unreadable" {
-            std::fs::write(
-                physical
-                    .path()
-                    .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
-                b"invalid agents JSON",
-            )
-            .unwrap();
-        }
-        let cfg = if case == "missing-physical" {
-            test_settings()
-        } else {
-            crate::config::settings::load_settings_from_path(&path)
-        };
+        let (physical, cfg) = seedless_case_settings(case);
         let expected_error = match case {
             "removed" => "coding_agent_binding_entry_missing_or_ambiguous",
             "ambiguous" => "coding_agent_identity_duplicate",
@@ -337,25 +464,9 @@ async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compat
             agent_id: Some("claude".into()),
             ..Default::default()
         };
-        let sessions_path = physical.path().join("sessions.json");
-        let bytes = serde_json::to_vec(&vec![original_recipe.clone()]).unwrap();
-        std::fs::write(&sessions_path, &bytes).unwrap();
-        let mut loaded =
-            crate::config::sessions_persistence::load_sessions_from_dir(physical.path());
-        assert_eq!(loaded.len(), 1);
-        let mut recipe = loaded.remove(0);
+        let mut recipe = load_seedless_recipe(physical.path(), &original_recipe);
         let loaded_id = recipe.coding_agent_binding_id.clone();
         let loaded_origin = recipe.coding_agent_binding_origin.clone();
-        use sha2::{Digest, Sha256};
-        assert_eq!(
-            loaded_origin.as_ref().unwrap()["rawFileSHA256"],
-            format!("{:x}", Sha256::digest(&bytes))
-        );
-        assert_eq!(
-            loaded_origin.as_ref().unwrap()["sessionsPath"],
-            sessions_path.to_string_lossy().as_ref()
-        );
-        assert_eq!(loaded_origin.as_ref().unwrap()["originalOrdinal"], 0);
         let settings = app.state::<crate::config::settings::SettingsState>();
         let cfg = settings.read().await;
         assert!(recipe.capture_binding_seed(&cfg).is_err());
@@ -365,76 +476,22 @@ async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compat
         assert_eq!(recipe.shell, original_recipe.shell);
         let birth = recipe.binding_metadata().unwrap().unwrap();
         assert!(birth.seed.is_none());
-        let info = super::super::create_session_inner_for_restore(
-            &transaction,
-            &session_mgr,
-            &pty_mgr,
-            recipe.shell.clone(),
-            recipe.shell_args.clone(),
-            recipe.working_directory.clone(),
-            Some(recipe.name.clone()),
-            recipe.agent_id.clone(),
-            None,
-            true,
-            Vec::new(),
-            true,
-            None,
-            None,
-            None,
-            Some(false),
-            None,
-            Some(birth.clone()),
-            None,
-        )
-        .await
-        .unwrap();
+        let info =
+            restore_seedless_recipe(&transaction, &session_mgr, &pty_mgr, &recipe, &birth).await;
         let manager = session_mgr.read().await.clone();
-        assert_eq!(info.shell, recipe.shell);
-        let restored = manager
-            .coding_agent_binding(Uuid::parse_str(&info.id).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(restored.id, birth.id);
-        assert_eq!(restored.seed, birth.seed);
-        assert_eq!(restored.origin, birth.origin);
-        let snapshot = crate::config::sessions_persistence::snapshot_sessions(&manager).await;
-        let stored = snapshot
-            .iter()
-            .find(|row| row.id.as_deref() == Some(info.id.as_str()))
-            .unwrap();
-        assert_eq!(
-            stored.coding_agent_binding_id,
-            recipe.coding_agent_binding_id
-        );
-        assert_eq!(
-            stored.coding_agent_binding_origin,
-            recipe.coding_agent_binding_origin
-        );
-        assert!(stored.coding_agent_binding_seed.is_none());
+        assert_seedless_restored(&manager, &info, &recipe, &birth).await;
         drop(transaction);
         // Central creation adds no capture-only veto; public launch gates stay intact.
         let new_cwd = cwd.path().join("new-birth");
         std::fs::create_dir(&new_cwd).unwrap();
-        let new = super::super::create_session_inner(
-            app.handle(),
+        let new = create_user_claude_session(
+            &app,
             &session_mgr,
             &pty_mgr,
-            "claude".into(),
-            Vec::new(),
-            new_cwd.to_string_lossy().to_string(),
-            Some("seedless new birth".into()),
-            Some("claude".into()),
-            None,
-            true,
-            Vec::new(),
-            true,
-            None,
-            None,
-            None,
-            CreateSelectionIntent::User,
+            &new_cwd,
+            "seedless new birth".into(),
         )
-        .await
-        .unwrap();
+        .await;
         let new_binding = manager
             .coding_agent_binding(Uuid::parse_str(&new.id).unwrap())
             .await;
@@ -448,20 +505,13 @@ async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compat
             assert_ne!(new_binding.id, birth.id);
         }
         if case == "removed" {
-            let settings = app.state::<crate::config::settings::SettingsState>();
-            let restarted = super::super::restart_session_inner_with_activation(
-                app.handle(),
+            let restarted = restart_binding_session(
+                &app,
                 &session_mgr,
                 &pty_mgr,
-                settings.inner(),
                 Uuid::parse_str(&info.id).unwrap(),
-                None,
-                None,
-                Some(false),
-                true,
             )
-            .await
-            .unwrap();
+            .await;
             let after = manager
                 .coding_agent_binding(Uuid::parse_str(&restarted.id).unwrap())
                 .await

@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Runtime, Url, WebviewUrl,
@@ -23,6 +23,8 @@ pub(crate) use mailbox::{
     is_web_browser_action, WEB_BROWSER_NAVIGATE_ACTION, WEB_BROWSER_RELOAD_ACTION,
     WEB_BROWSER_STATUS_ACTION,
 };
+
+pub use crate::phone::mailbox::browser::snapshot::WebBrowserSnapshot;
 
 pub(crate) const WEB_BROWSER_WINDOW_LABEL: &str = "web-browser";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -44,15 +46,6 @@ pub struct PaneBounds {
     pub y: f64,
     pub width: f64,
     pub height: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebBrowserSnapshot {
-    pub url: String,
-    pub title: String,
-    pub loading: bool,
-    pub visible: bool,
 }
 
 #[derive(Default)]

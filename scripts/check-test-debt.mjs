@@ -589,17 +589,38 @@ function addFrontendSkippedFindings(source, rel, ranges, findings) {
   }
 }
 
-function callbackBody(source, masked, fromIndex) {
-  const open = masked.indexOf('{', fromIndex);
-  if (open === -1) return null;
-  const close = findMatchingBrace(masked, open);
-  if (close === -1) return null;
-  return {
-    start: open,
-    end: close,
-    body: source.slice(open + 1, close),
-    maskedBody: maskComments(source.slice(open + 1, close)),
-  };
+function callbackBody(source, masked, fromIndex, callEnd) {
+  // Parameter defaults may contain braces or arrows; skip the complete parameter list.
+  let cursor = skipWhitespace(masked, fromIndex);
+  while (cursor < callEnd) {
+    const ch = masked[cursor];
+    if (ch === '{') {
+      const close = findMatchingBrace(masked, cursor);
+      if (close === -1 || close >= callEnd) return null;
+      return { body: source.slice(cursor + 1, close) };
+    }
+    if (masked.startsWith('=>', cursor)) {
+      cursor = skipWhitespace(masked, cursor + 2);
+      if (masked[cursor] === '{') continue;
+      const start = cursor;
+      const stack = [];
+      for (; cursor < callEnd; cursor += 1) {
+        const token = masked[cursor];
+        if (token === ',' && stack.length === 0) break;
+        if ('([{'.includes(token)) stack.push(token);
+        else if (')]}'.includes(token)) stack.pop();
+      }
+      return { body: source.slice(start, cursor) };
+    }
+    if (ch === '(') {
+      const close = findMatchingParen(masked, cursor);
+      if (close === -1 || close >= callEnd) return null;
+      cursor = close + 1;
+    } else {
+      cursor += 1;
+    }
+  }
+  return null;
 }
 
 function isFrontendPlaceholder(body) {
@@ -616,7 +637,9 @@ function pushFrontendPlaceholder(source, masked, rel, ranges, findings, matchInd
   if (!added) return;
   const comma = masked.indexOf(',', added.literal.end);
   if (comma === -1) return;
-  const body = callbackBody(source, masked, comma + 1);
+  const callEnd = findMatchingParen(masked, nameStart - 1);
+  if (callEnd === -1 || comma >= callEnd) return;
+  const body = callbackBody(source, masked, comma + 1, callEnd);
   if (!body) return;
   if (isFrontendPlaceholder(body.body)) {
     findings.push({
@@ -839,6 +862,20 @@ describe("clean suite", () => {
   });
 });
 `);
+    writeFile(path.join(root, 'src/expressions.test.ts'), `
+describe("formatDuration (#3516)", () => {
+  it.each([[0, "0 ms"], [1250, "1.3 s"]])(
+    "formats %d", (ms, text) => expect(formatDuration(ms)).toBe(text));
+});
+function target(path: string, over: Partial<Target> = {}): Target {
+  return { path, ...over };
+}
+it("expression with object", () => expect({ value: 1 }).toEqual({ value: 1 }));
+it("async expression", async () => expect(await value()).toBe(1), 1000);
+it("single parameter", value => expect(value).toBe(1));
+it("default parameter", (value = () => {}) => expect(value()).toBeUndefined());
+it("function callback", function () { expect(1).toBe(1); });
+`);
     let result = runFixture(root);
     assertSelf(result.code === 0, 'clean fixture should pass');
     assertSelf(
@@ -914,6 +951,26 @@ fn real_test() {
     assertSelf(result.findings.some((f) => f.category === 'placeholder-frontend-test' && f.id.includes('empty parameterized')), 'parameterized frontend placeholder missing');
     assertSelf(!result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('not real debt')), 'commented frontend skip false positive detected');
     assertSelf(!result.findings.some((f) => f.id.endsWith('comment_false_positive.rs::real_test') && f.category === 'ignored-rust-test'), 'comment false positive detected');
+
+    writeFile(path.join(root, 'src/expression-debt.test.ts'), `
+it("bare tautology", () => expect(true).toBe(true));
+test.each([[1]])("bare assert", value => assert.ok(true), 1000);
+it("return only", () => { return; });
+it("comment only", () => { /* future */ });
+it("empty function", function () {});
+it("last bare tautology", async () => expect(true).toBe(true));
+`);
+    result = runFixture(root);
+    const placeholderNames = [
+      'bare tautology', 'bare assert', 'return only', 'comment only',
+      'empty function', 'last bare tautology',
+    ];
+    for (const name of placeholderNames) {
+      assertSelf(result.findings.some((f) =>
+        f.category === 'placeholder-frontend-test' && f.id.endsWith('::' + name)),
+      'frontend placeholder missing: ' + name);
+    }
+    assertSelf(result.code === 1, 'brace-less placeholders must fail');
 
     const entries = result.findings.map((finding) => ({
       id: finding.id,

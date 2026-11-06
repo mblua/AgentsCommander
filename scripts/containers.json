@@ -6,10 +6,12 @@
       "name": "attempts.jsonl",
       "scope": "src-tauri/src/cli/role_experiment/",
       "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 2,
-        "sites": 4
+        "files": 0,
+        "sites": 0
       }
     },
     {
@@ -17,6 +19,8 @@
       "name": "sessions.json",
       "scope": "src-tauri/src/config/sessions_persistence/",
       "owner": "src-tauri/src/config/sessions_persistence/store.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -28,6 +32,8 @@
       "name": "orphaned-sessions.archive.json",
       "scope": "src-tauri/src/config/sessions_persistence/",
       "owner": "src-tauri/src/config/sessions_persistence/orphan.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -50,6 +56,8 @@
       "name": ".team-config-write.lock",
       "scope": "src-tauri/src/config/entity_creation/teams/",
       "owner": "src-tauri/src/config/entity_creation/teams/store.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -61,6 +69,8 @@
       "name": "conventions.md",
       "scope": "src-tauri/src/config/entity_creation/teams/",
       "owner": "src-tauri/src/config/entity_creation/teams/conventions.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -94,6 +104,8 @@
       "name": "screenshots",
       "scope": "src-tauri/src/screenshot/native/",
       "owner": "src-tauri/src/screenshot/native/confirm.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,

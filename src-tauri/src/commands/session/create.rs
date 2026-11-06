@@ -171,15 +171,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     .await
 }
 
-#[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Preserve PTY create result layout and unchanged completion consumers"
-)]
-pub(crate) enum PtyTargetCreateStep {
-    Finalized(SessionInfo),
-    Retained,
-}
+pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Runtime>(

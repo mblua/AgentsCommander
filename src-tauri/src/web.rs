@@ -471,7 +471,7 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     // 1. Tauri resource dir (production NSIS bundle)
     if let Some(resource_dir) = resource_dir {
         let dist = resource_dir.join("dist");
-        if dist.exists() && dist.is_dir() {
+        if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
             log::info!("[web-server] Found dist via resource_dir: {dist:?}");
             return Some(dist);
         }
@@ -481,19 +481,19 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let dist = parent.join("dist");
-            if dist.exists() && dist.is_dir() {
+            if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
                 log::info!("[web-server] Found dist next to exe: {dist:?}");
                 return Some(dist);
             }
             // Dev mode: target/debug/exe to project root/dist.
             if let Some(grandparent) = parent.parent() {
                 let dist = grandparent.join("dist");
-                if dist.exists() && dist.is_dir() {
+                if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
                     return Some(dist);
                 }
                 if let Some(ggparent) = grandparent.parent() {
                     let dist = ggparent.join("dist");
-                    if dist.exists() && dist.is_dir() {
+                    if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
                         return Some(dist);
                     }
                 }
@@ -504,8 +504,10 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     // 3. CWD fallbacks (dev mode)
     for path in &["dist", "../dist"] {
         let p = std::path::PathBuf::from(path);
-        if p.exists() && p.is_dir() {
-            return Some(p.canonicalize().unwrap_or(p));
+        if crate::filesystem::directories::web_dist_candidate_is_directory(&p) {
+            return Some(crate::filesystem::directories::resolve_web_dist_candidate(
+                p,
+            ));
         }
     }
 

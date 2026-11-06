@@ -280,23 +280,7 @@ pub(crate) fn publish_project_migration_backup_labeled(
         .with_file_name(crate::config::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
     let backup_label =
         label.with_file_name(crate::config::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
-    let mismatch = || {
-        project_migration_error_labeled(
-            &backup,
-            &backup_label,
-            SettingsSaveStage::PostWriteVerify,
-            &format!(
-                "project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all \
-            AC/old processes, preserve copies and orphan temps, rename backup without overwrite to \
-            project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended \
-            legacy projection and \
-            retry",
-                label.display(),
-                project_paths_path(label).display(),
-                backup_label.display()
-            ),
-        )
-    };
+    let mismatch = || backup_mismatch_error(&backup, &backup_label, label);
     if let Some(existing) =
         read_project_source_bytes_labeled_with_limit(&backup, &backup_label, 16 * 1024 * 1024)?
     {
@@ -322,14 +306,9 @@ pub(crate) fn publish_project_migration_backup_labeled(
             &reason,
         )
     })?;
-    let mut name = backup.file_name().unwrap().to_os_string();
-    name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        next_settings_save_op_id()
-    ));
-    let temp = parent.join(name);
+    let temp = backup_temp_path(&backup, parent);
     checkpoint("backup_create", &temp)?;
+    write_backup_temp(&backup, &temp, label, bytes, checkpoint)?;
     let io_error = |stage, source| {
         SettingsSaveError::io(
             stage,
@@ -339,27 +318,6 @@ pub(crate) fn publish_project_migration_backup_labeled(
             SettingsSaveLegacyOutward::SettingsSaveFailed,
         )
     };
-    let mut file = settings_sources::migration_stage(&temp)
-        .map_err(|error| io_error(SettingsSaveStage::TempCreate, error))?;
-    crate::path_identity::verify_opened_regular_file(&temp, &file, false).map_err(|reason| {
-        project_migration_error_labeled(
-            &temp,
-            &label.with_file_name(temp.file_name().unwrap()),
-            SettingsSaveStage::TempVerify,
-            &reason,
-        )
-    })?;
-    let prefix = bytes.len() / 2;
-    settings_sources::write_stage(&mut file, &bytes[..prefix])
-        .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
-    checkpoint("backup_prefix", &temp)?;
-    settings_sources::write_stage(&mut file, &bytes[prefix..])
-        .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
-    checkpoint("backup_write", &temp)?;
-    settings_sources::sync_stage(&file)
-        .map_err(|error| io_error(SettingsSaveStage::TempSync, error))?;
-    checkpoint("backup_sync", &temp)?;
-    drop(file);
     if read_project_source_bytes_labeled_with_limit(
         &temp,
         &label.with_file_name(temp.file_name().unwrap()),
@@ -402,6 +360,74 @@ pub(crate) fn publish_project_migration_backup_labeled(
         return Err(mismatch());
     }
     checkpoint("backup_published", &backup)
+}
+
+fn backup_mismatch_error(backup: &Path, backup_label: &Path, label: &Path) -> SettingsSaveError {
+    project_migration_error_labeled(
+        backup,
+        backup_label,
+        SettingsSaveStage::PostWriteVerify,
+        &format!(
+            "project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all \
+        AC/old processes, preserve copies and orphan temps, rename backup without overwrite to \
+        project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended \
+        legacy projection and \
+        retry",
+            label.display(),
+            project_paths_path(label).display(),
+            backup_label.display()
+        ),
+    )
+}
+
+fn backup_temp_path(backup: &Path, parent: &Path) -> PathBuf {
+    let mut name = backup.file_name().unwrap().to_os_string();
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        next_settings_save_op_id()
+    ));
+    parent.join(name)
+}
+
+fn write_backup_temp(
+    backup: &Path,
+    temp: &Path,
+    label: &Path,
+    bytes: &[u8],
+    checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
+) -> Result<(), SettingsSaveError> {
+    let io_error = |stage, source| {
+        SettingsSaveError::io(
+            stage,
+            backup,
+            Some(temp),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    };
+    let mut file = settings_sources::migration_stage(temp)
+        .map_err(|error| io_error(SettingsSaveStage::TempCreate, error))?;
+    crate::path_identity::verify_opened_regular_file(temp, &file, false).map_err(|reason| {
+        project_migration_error_labeled(
+            temp,
+            &label.with_file_name(temp.file_name().unwrap()),
+            SettingsSaveStage::TempVerify,
+            &reason,
+        )
+    })?;
+    let prefix = bytes.len() / 2;
+    settings_sources::write_stage(&mut file, &bytes[..prefix])
+        .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
+    checkpoint("backup_prefix", temp)?;
+    settings_sources::write_stage(&mut file, &bytes[prefix..])
+        .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
+    checkpoint("backup_write", temp)?;
+    settings_sources::sync_stage(&file)
+        .map_err(|error| io_error(SettingsSaveStage::TempSync, error))?;
+    checkpoint("backup_sync", temp)?;
+    drop(file);
+    Ok(())
 }
 
 pub(crate) fn ensure_project_paths_migrated_locked(

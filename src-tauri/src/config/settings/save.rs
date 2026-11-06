@@ -125,6 +125,23 @@ pub(crate) fn write_value_atomic_labeled(
     path: &Path,
     label: &Path,
 ) -> Result<Vec<u8>, SettingsSaveError> {
+    let dir = prepare_atomic_target(path)?;
+    let json = serialize_settings_value(value, path)?;
+    let tmp_path = atomic_temp_path(path, dir);
+    let result: Result<(), SettingsSaveError> = (|| {
+        write_verified_temporary(path, &tmp_path, &json)?;
+        replace_and_verify_target(path, dir, &tmp_path, &json)
+    })();
+    if result.is_err() && settings_file::settings_path_exists(&tmp_path) {
+        let _ = settings_file::remove_settings_temporary(&tmp_path);
+    }
+    result?;
+
+    log::debug!("Saved settings to {label:?}");
+    Ok(json)
+}
+
+fn prepare_atomic_target(path: &Path) -> Result<&Path, SettingsSaveError> {
     let dir = path.parent().ok_or_else(|| {
         SettingsSaveError::semantic(
             SettingsSaveStage::PrepareTarget,
@@ -184,7 +201,10 @@ pub(crate) fn write_value_atomic_labeled(
             ));
         }
     }
+    Ok(dir)
+}
 
+fn serialize_settings_value(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSaveError> {
     let json = serde_json::to_vec_pretty(value).map_err(|source| {
         SettingsSaveError::json(
             SettingsSaveStage::Serialize,
@@ -203,7 +223,10 @@ pub(crate) fn write_value_atomic_labeled(
             SettingsSaveLegacyOutward::SettingsSaveFailed,
         ));
     }
+    Ok(json)
+}
 
+fn atomic_temp_path(path: &Path, dir: &Path) -> std::path::PathBuf {
     let op_id = next_settings_save_op_id();
     let pid = std::process::id();
     // Settings keep their existing instance-qualified temp prefix, including
@@ -221,126 +244,133 @@ pub(crate) fn write_value_atomic_labeled(
     };
     let mut temp_name = temp_base.to_os_string();
     temp_name.push(format!(".{pid}.{op_id}.tmp"));
-    let tmp_path = dir.join(temp_name);
-    let result: Result<(), SettingsSaveError> = (|| {
-        #[cfg(test)]
-        project_atomic_checkpoint(path, SettingsSaveStage::TempCreate)?;
-        let mut temporary =
-            settings_file::open_settings_temporary(&tmp_path).map_err(|source| {
-                SettingsSaveError::io(
-                    SettingsSaveStage::TempCreate,
-                    path,
-                    Some(&tmp_path),
-                    source,
-                    SettingsSaveLegacyOutward::SettingsSaveFailed,
-                )
-            })?;
-        #[cfg(test)]
-        project_atomic_checkpoint(path, SettingsSaveStage::TempWrite)?;
-        settings_file::write_settings_bytes(&mut temporary, &json).map_err(|source| {
-            SettingsSaveError::io(
-                SettingsSaveStage::TempWrite,
-                path,
-                Some(&tmp_path),
-                source,
-                SettingsSaveLegacyOutward::SettingsSaveFailed,
-            )
-        })?;
-        settings_file::flush_settings_file(&mut temporary).map_err(|source| {
-            SettingsSaveError::io(
-                SettingsSaveStage::TempFlush,
-                path,
-                Some(&tmp_path),
-                source,
-                SettingsSaveLegacyOutward::SettingsSaveFailed,
-            )
-        })?;
-        #[cfg(test)]
-        project_atomic_checkpoint(path, SettingsSaveStage::TempSync)?;
-        settings_file::sync_settings_file(&temporary).map_err(|source| {
-            SettingsSaveError::io(
-                SettingsSaveStage::TempSync,
-                path,
-                Some(&tmp_path),
-                source,
-                SettingsSaveLegacyOutward::SettingsSaveFailed,
-            )
-        })?;
-        crate::path_identity::verify_opened_regular_file(&tmp_path, &temporary, false).map_err(
-            |_| {
-                SettingsSaveError::semantic(
-                    SettingsSaveStage::TempVerify,
-                    path,
-                    Some(&tmp_path),
-                    SettingsSaveReason::TempIdentityRejected,
-                    SettingsSaveLegacyOutward::SettingsSaveFailed,
-                )
-            },
-        )?;
-        drop(temporary);
+    dir.join(temp_name)
+}
 
-        #[cfg(test)]
-        project_atomic_checkpoint(path, SettingsSaveStage::AtomicReplace)?;
-        replace_settings_file_atomic(&tmp_path, path).map_err(|source| {
-            SettingsSaveError::io(
-                SettingsSaveStage::AtomicReplace,
+fn write_verified_temporary(
+    path: &Path,
+    tmp_path: &Path,
+    json: &[u8],
+) -> Result<(), SettingsSaveError> {
+    #[cfg(test)]
+    project_atomic_checkpoint(path, SettingsSaveStage::TempCreate)?;
+    let mut temporary = settings_file::open_settings_temporary(tmp_path).map_err(|source| {
+        SettingsSaveError::io(
+            SettingsSaveStage::TempCreate,
+            path,
+            Some(tmp_path),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    #[cfg(test)]
+    project_atomic_checkpoint(path, SettingsSaveStage::TempWrite)?;
+    settings_file::write_settings_bytes(&mut temporary, json).map_err(|source| {
+        SettingsSaveError::io(
+            SettingsSaveStage::TempWrite,
+            path,
+            Some(tmp_path),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    settings_file::flush_settings_file(&mut temporary).map_err(|source| {
+        SettingsSaveError::io(
+            SettingsSaveStage::TempFlush,
+            path,
+            Some(tmp_path),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    #[cfg(test)]
+    project_atomic_checkpoint(path, SettingsSaveStage::TempSync)?;
+    settings_file::sync_settings_file(&temporary).map_err(|source| {
+        SettingsSaveError::io(
+            SettingsSaveStage::TempSync,
+            path,
+            Some(tmp_path),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    crate::path_identity::verify_opened_regular_file(tmp_path, &temporary, false).map_err(
+        |_| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::TempVerify,
                 path,
-                Some(&tmp_path),
+                Some(tmp_path),
+                SettingsSaveReason::TempIdentityRejected,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        },
+    )?;
+    drop(temporary);
+    Ok(())
+}
+
+fn replace_and_verify_target(
+    path: &Path,
+    dir: &Path,
+    tmp_path: &Path,
+    json: &[u8],
+) -> Result<(), SettingsSaveError> {
+    #[cfg(not(unix))]
+    let _ = dir;
+    #[cfg(test)]
+    project_atomic_checkpoint(path, SettingsSaveStage::AtomicReplace)?;
+    replace_settings_file_atomic(tmp_path, path).map_err(|source| {
+        SettingsSaveError::io(
+            SettingsSaveStage::AtomicReplace,
+            path,
+            Some(tmp_path),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        settings_file::set_private_settings_permissions(path).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::TargetPermissions,
+                path,
+                Some(tmp_path),
                 source,
                 SettingsSaveLegacyOutward::SettingsSaveFailed,
             )
         })?;
-        #[cfg(unix)]
-        {
-            settings_file::set_private_settings_permissions(path).map_err(|source| {
-                SettingsSaveError::io(
-                    SettingsSaveStage::TargetPermissions,
-                    path,
-                    Some(&tmp_path),
-                    source,
-                    SettingsSaveLegacyOutward::SettingsSaveFailed,
-                )
-            })?;
-            settings_file::sync_settings_directory(dir).map_err(|source| {
-                SettingsSaveError::io(
-                    SettingsSaveStage::ParentDirectorySync,
-                    path,
-                    Some(&tmp_path),
-                    source,
-                    SettingsSaveLegacyOutward::SettingsSaveFailed,
-                )
-            })?;
-        }
-        #[cfg(test)]
-        project_atomic_checkpoint(path, SettingsSaveStage::PostWriteRead)?;
-        let (written, _) = crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
-            .map_err(|_| {
-                SettingsSaveError::semantic(
-                    SettingsSaveStage::PostWriteRead,
-                    path,
-                    Some(&tmp_path),
-                    SettingsSaveReason::PostWriteReadRejected,
-                    SettingsSaveLegacyOutward::SettingsSaveFailed,
-                )
-            })?;
-        if written != json {
-            return Err(SettingsSaveError::semantic(
-                SettingsSaveStage::PostWriteVerify,
+        settings_file::sync_settings_directory(dir).map_err(|source| {
+            SettingsSaveError::io(
+                SettingsSaveStage::ParentDirectorySync,
                 path,
-                Some(&tmp_path),
-                SettingsSaveReason::WrittenBytesMismatch,
+                Some(tmp_path),
+                source,
                 SettingsSaveLegacyOutward::SettingsSaveFailed,
-            ));
-        }
-        Ok(())
-    })();
-    if result.is_err() && settings_file::settings_path_exists(&tmp_path) {
-        let _ = settings_file::remove_settings_temporary(&tmp_path);
+            )
+        })?;
     }
-    result?;
-
-    log::debug!("Saved settings to {label:?}");
-    Ok(json)
+    #[cfg(test)]
+    project_atomic_checkpoint(path, SettingsSaveStage::PostWriteRead)?;
+    let (written, _) =
+        crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024).map_err(|_| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::PostWriteRead,
+                path,
+                Some(tmp_path),
+                SettingsSaveReason::PostWriteReadRejected,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        })?;
+    if written != json {
+        return Err(SettingsSaveError::semantic(
+            SettingsSaveStage::PostWriteVerify,
+            path,
+            Some(tmp_path),
+            SettingsSaveReason::WrittenBytesMismatch,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::settings::AppSettings;
 use crate::resource_monitor::registry::{
     ProcessTreeBackend, ResourceError, ResourceLaunchRegistration,
@@ -449,7 +450,7 @@ async fn e2992_p44_invalid_no_enforcement() {
             .prefix("watchdog-")
             .tempdir_in(&evidence)
             .unwrap();
-        let path = temp.path().join("settings.30.instance.no-git.json");
+        let path = temp.path().join(SETTINGS_FILE_NAME);
         let cfg = orphan_settings(1);
         std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
         let owner = tokio::task::spawn_blocking(move || {

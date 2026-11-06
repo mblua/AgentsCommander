@@ -336,18 +336,7 @@ pub(crate) fn save_agents_instance_file(
 ) -> Result<Map<String, Value>, SettingsSaveError> {
     let (prepared_duplicate_agents, prepared_profiles, profiles_in_sidecar) = prepared_groups;
     let sidecar_path = agents_instance_path(path);
-    let existing = read_agents_instance_file(&sidecar_path).map_err(|e| {
-        SettingsSaveError::io(
-            disk_gate_stage,
-            &sidecar_path,
-            None,
-            std::io::Error::other(e.clone()),
-            SettingsSaveLegacyOutward::DiskRead(format!(
-                "Refusing to overwrite {}: {e}",
-                sidecar_path.display()
-            )),
-        )
-    })?;
+    let existing = read_existing_agents_instance(&sidecar_path, disk_gate_stage)?;
     let existing_groups = existing.as_ref().map(agents_instance_groups);
     // Read the physical base, never the request or its overlay. The legacy
     // settings group remains authoritative only when the sidecar lacks it.
@@ -400,28 +389,38 @@ pub(crate) fn save_agents_instance_file(
     if existing.is_none() && target.is_empty() {
         return Ok(Map::new());
     }
-    let mut before = legacy
-        .as_ref()
-        .map(agents_instance_groups)
-        .unwrap_or_default();
-    if let Some(groups) = &existing_groups {
-        before.extend(groups.clone());
-    }
+    let before = physical_agents_before(legacy.as_ref(), existing_groups.as_ref());
     let editable_agents = matches!(mode, ProjectWriteMode::Preserve)
         && !settings.local_overlay_state.owns_top_level("agents");
     let editable_profiles = matches!(mode, ProjectWriteMode::Preserve)
         && !settings
             .local_overlay_state
             .owns_top_level("codingAgentProfiles");
-    let rejected = |reason: String| {
-        SettingsSaveError::semantic(
-            disk_gate_stage,
-            &sidecar_path,
-            None,
-            SettingsSaveReason::DiskSettingsValidationRejected,
-            SettingsSaveLegacyOutward::DiskValidation(reason),
-        )
-    };
+    let rejected =
+        |reason: String| agents_instance_rejected(disk_gate_stage, &sidecar_path, reason);
+    let target = finalize_agents_target(
+        target,
+        &before,
+        existing.as_ref(),
+        base_profiles,
+        (prepared_duplicate_agents, prepared_profiles),
+        (editable_agents, editable_profiles),
+        &rejected,
+    )?;
+    finish_agents_instance_write(existing.as_ref(), target, &sidecar_path)
+}
+
+/// Applies the prepared groups and retention rules to the agents-file target,
+/// then validates the physical identity delta.
+fn finalize_agents_target(
+    target: Map<String, Value>,
+    before: &Map<String, Value>,
+    existing: Option<&Map<String, Value>>,
+    base_profiles: Option<&Value>,
+    (prepared_duplicate_agents, prepared_profiles): (Option<&Value>, Option<&Value>),
+    (editable_agents, editable_profiles): (bool, bool),
+    rejected: &impl Fn(String) -> SettingsSaveError,
+) -> Result<Map<String, Value>, SettingsSaveError> {
     let mut retained = Value::Object(target);
     if editable_agents {
         if let Some(prepared) = prepared_duplicate_agents {
@@ -436,49 +435,21 @@ pub(crate) fn save_agents_instance_file(
         editable_agents && prepared_duplicate_agents.is_none(),
         editable_profiles,
     )
-    .map_err(&rejected)?;
+    .map_err(rejected)?;
     let mut target = retained
         .as_object()
         .expect("retained settings object")
         .clone();
     if editable_profiles {
-        // A present empty physical agents array is authoritative. Never substitute
-        // the effective (possibly overlay-owned) base for physical metadata.
-        let agents = target
-            .get("agents")
-            .or_else(|| before.get("agents"))
-            .cloned();
-        if !editable_agents {
-            if let Some(rows) = &agents {
-                let _: Vec<AgentConfig> = serde_json::from_value(rows.clone())
-                    .map_err(|error| rejected(error.to_string()))?;
-            }
-        }
-        if let Some(profiles) = target.get_mut("codingAgentProfiles") {
-            refresh_physical_pair_id_hashes(agents.as_ref(), profiles);
-        }
+        refresh_target_pair_id_hashes(&mut target, before, editable_agents).map_err(rejected)?;
     }
     if let Some(prepared) = prepared_profiles {
-        if editable_profiles && target.contains_key("codingAgentProfiles") {
-            match prepared.get("codingAgentProfiles") {
-                Some(profiles) => {
-                    target.insert("codingAgentProfiles".into(), profiles.clone());
-                }
-                None => {
-                    target.remove("codingAgentProfiles");
-                }
-            }
-        }
-        if editable_agents && target.contains_key("agents") {
-            if let Some(rows) = prepared.get("agents") {
-                target.insert("agents".into(), rows.clone());
-            }
-        }
+        apply_prepared_agents_groups(&mut target, prepared, editable_agents, editable_profiles);
     }
     // Prepared packets may retain original raw rows. Derive metadata from the
     // final physical rows, after insertion, without changing protected rows.
     if editable_agents {
-        refresh_registered_agent_row_metadata(&mut target).map_err(&rejected)?;
+        refresh_registered_agent_row_metadata(&mut target).map_err(rejected)?;
     }
     // Prepared canonical profiles cannot replace the physical owner's HOME carrier.
     restore_codex_home_carrier(&mut target, base_profiles);
@@ -492,7 +463,7 @@ pub(crate) fn save_agents_instance_file(
             // main. Moving their packet must not turn them into new duplicates.
             before.clone()
         } else {
-            existing.clone().unwrap_or_default()
+            existing.cloned().unwrap_or_default()
         };
         validate_physical_identity_delta(
             &physical_before,
@@ -502,19 +473,127 @@ pub(crate) fn save_agents_instance_file(
         )
         .map_err(rejected)?;
     }
+    Ok(target)
+}
+
+/// Reads the physical agents file for a save; an unreadable file refuses the
+/// overwrite.
+fn read_existing_agents_instance(
+    sidecar_path: &Path,
+    disk_gate_stage: SettingsSaveStage,
+) -> Result<Option<Map<String, Value>>, SettingsSaveError> {
+    read_agents_instance_file(sidecar_path).map_err(|e| {
+        SettingsSaveError::io(
+            disk_gate_stage,
+            sidecar_path,
+            None,
+            std::io::Error::other(e.clone()),
+            SettingsSaveLegacyOutward::DiskRead(format!(
+                "Refusing to overwrite {}: {e}",
+                sidecar_path.display()
+            )),
+        )
+    })
+}
+
+/// The physical groups before the save: legacy main-file groups, overridden by
+/// the agents file's own groups.
+fn physical_agents_before(
+    legacy: Option<&Map<String, Value>>,
+    existing_groups: Option<&Map<String, Value>>,
+) -> Map<String, Value> {
+    let mut before = legacy.map(agents_instance_groups).unwrap_or_default();
+    if let Some(groups) = existing_groups {
+        before.extend(groups.clone());
+    }
+    before
+}
+
+/// The disk-validation rejection of an agents-file save.
+fn agents_instance_rejected(
+    disk_gate_stage: SettingsSaveStage,
+    sidecar_path: &Path,
+    reason: String,
+) -> SettingsSaveError {
+    SettingsSaveError::semantic(
+        disk_gate_stage,
+        sidecar_path,
+        None,
+        SettingsSaveReason::DiskSettingsValidationRejected,
+        SettingsSaveLegacyOutward::DiskValidation(reason),
+    )
+}
+
+/// Refreshes the target's pair id hashes from its physical agents rows,
+/// validating those rows first when the agents group is not editable.
+fn refresh_target_pair_id_hashes(
+    target: &mut Map<String, Value>,
+    before: &Map<String, Value>,
+    editable_agents: bool,
+) -> Result<(), String> {
+    // A present empty physical agents array is authoritative. Never substitute
+    // the effective (possibly overlay-owned) base for physical metadata.
+    let agents = target
+        .get("agents")
+        .or_else(|| before.get("agents"))
+        .cloned();
+    if !editable_agents {
+        if let Some(rows) = &agents {
+            let _: Vec<AgentConfig> =
+                serde_json::from_value(rows.clone()).map_err(|error| error.to_string())?;
+        }
+    }
+    if let Some(profiles) = target.get_mut("codingAgentProfiles") {
+        refresh_physical_pair_id_hashes(agents.as_ref(), profiles);
+    }
+    Ok(())
+}
+
+/// Places the prepared profiles and agents groups into the editable groups the
+/// target already holds.
+fn apply_prepared_agents_groups(
+    target: &mut Map<String, Value>,
+    prepared: &Value,
+    editable_agents: bool,
+    editable_profiles: bool,
+) {
+    if editable_profiles && target.contains_key("codingAgentProfiles") {
+        match prepared.get("codingAgentProfiles") {
+            Some(profiles) => {
+                target.insert("codingAgentProfiles".into(), profiles.clone());
+            }
+            None => {
+                target.remove("codingAgentProfiles");
+            }
+        }
+    }
+    if editable_agents && target.contains_key("agents") {
+        if let Some(rows) = prepared.get("agents") {
+            target.insert("agents".into(), rows.clone());
+        }
+    }
+}
+
+/// Keeps unrelated physical fields, then writes the agents file only when it
+/// changed and is not empty. Returns the groups the file now holds.
+fn finish_agents_instance_write(
+    existing: Option<&Map<String, Value>>,
+    mut target: Map<String, Value>,
+    sidecar_path: &Path,
+) -> Result<Map<String, Value>, SettingsSaveError> {
     // Preserve unrelated physical fields as well as recognized groups.
-    if let Some(existing) = &existing {
+    if let Some(existing) = existing {
         for (key, value) in existing {
             if !AGENTS_INSTANCE_KEYS.contains(&key.as_str()) {
                 target.insert(key.clone(), value.clone());
             }
         }
     }
-    if existing.as_ref() == Some(&target) {
+    if existing == Some(&target) {
         return Ok(agents_instance_groups(&target));
     }
     if !target.is_empty() {
-        write_agents_instance_file(&target, &sidecar_path)?;
+        write_agents_instance_file(&target, sidecar_path)?;
     }
     Ok(agents_instance_groups(&target))
 }
