@@ -29,11 +29,7 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     request: RestartJobRequest,
     context: &LifecycleExecutionContext<'_>,
 ) -> Result<SessionInfo, String> {
-    if matches!(context, LifecycleExecutionContext::RestoreEntry { .. })
-        && !transaction.has_active_restore_capability()
-    {
-        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
-    }
+    ensure_restart_restore_authority(transaction, context)?;
     let app = transaction.app();
     let session_mgr = app
         .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -416,6 +412,19 @@ async fn begin_restart_retirement<R: tauri::Runtime>(
     }
 
     Ok(retirement)
+}
+
+/// Rejects a restore-entry restart once the restore capability is gone.
+fn ensure_restart_restore_authority<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    context: &LifecycleExecutionContext<'_>,
+) -> Result<(), String> {
+    if matches!(context, LifecycleExecutionContext::RestoreEntry { .. })
+        && !transaction.has_active_restore_capability()
+    {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    Ok(())
 }
 
 /// #3532 P03: close the old observation before teardown (bounded, fail-soft).
