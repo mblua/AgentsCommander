@@ -1,7 +1,9 @@
 use crate::commands::session::agent_command::effective_restart_requested_profile;
 use crate::commands::session::agent_command::matched_selection;
 use crate::commands::session::agent_command::MatchedSelection;
-use crate::config::agent_command::AgentSpawnCommand;
+pub(crate) use crate::config::agent_command::{
+    build_configured_agent_spawn_for_cwd, resolve_configured_agent_spawn_for_cwd,
+};
 use crate::config::coding_agents_catalog::command_executable_basename;
 use crate::config::coding_agents_catalog::CodingAgentDefinition;
 use crate::config::settings::AppSettings;
@@ -55,60 +57,6 @@ pub(crate) fn resolve_launch_auto_self_clear(
         crate::config::coding_agent_profiles::agent_name_from_dir(std::path::Path::new(cwd))
             .unwrap_or_default();
     crate::config::settings::resolve_auto_self_clear(settings, &agent_name, class_default_on)
-}
-
-pub(crate) fn resolve_configured_agent_spawn_for_cwd(
-    settings: &AppSettings,
-    agent_id: &str,
-    cwd: &str,
-    requested_profile: Option<&str>,
-    requested_profile_authoritative: bool,
-) -> Result<Option<AgentSpawnCommand>, String> {
-    // #2716 (B3, option C): the agents layer could not be read, so the list is not
-    // the user's; refuse rather than fall through to a plain terminal.
-    if let Some(path) = settings.agents_layer.unreadable_path() {
-        return Err(crate::config::settings::agents_unreadable_session_error(
-            path,
-        ));
-    }
-    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
-        return Ok(None);
-    }
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
-    crate::config::agent_command::resolve_agent_spawn_command(
-        settings,
-        agent_id,
-        Some(std::path::Path::new(&cwd)),
-        requested_profile,
-        requested_profile_authoritative,
-    )
-    .map(Some)
-}
-
-pub(crate) fn build_configured_agent_spawn_for_cwd(
-    settings: &AppSettings,
-    agent_id: &str,
-    cwd: &str,
-    requested_profile: Option<&str>,
-) -> Result<Option<AgentSpawnCommand>, String> {
-    // #2716 (B3, option C): the same refusal as the resolver above; each builder
-    // carries its own, so no entry point can reach a spawn past either one.
-    if let Some(path) = settings.agents_layer.unreadable_path() {
-        return Err(crate::config::settings::agents_unreadable_session_error(
-            path,
-        ));
-    }
-    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
-        return Ok(None);
-    }
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
-    crate::config::agent_command::build_agent_spawn_command(
-        settings,
-        agent_id,
-        Some(std::path::Path::new(&cwd)),
-        requested_profile,
-    )
-    .map(Some)
 }
 
 /// #592 - true when a session's loaded profile cell no longer matches what a

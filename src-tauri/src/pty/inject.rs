@@ -12,6 +12,13 @@ use crate::pty::manager::{PtyInputPermit, PtyManager, PtyRouteWriteGuard};
 use crate::session::manager::{CarrierSnapshot, SessionManager};
 use crate::session::session::{Session, SessionStatus};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryMetadataOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+}
+
 // Internal mailbox suspension, consumed only after the writer/lifecycle guards
 // have returned. It is never a delivered outcome or public status.
 pub(crate) const OWNED_WORK_SCOPE_WAIT: &str = "owned_work_scope_wait";

@@ -14,12 +14,7 @@ use uuid::Uuid;
 /// Root-agent sessions skip the record half (the root restore path ignores the
 /// marker, #630 scope; mirrors the restart site's exclusion in
 /// commands/session.rs); the mirror half self-gates on coordinators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundaryMetadataOutcome {
-    Applied,
-    Unchanged,
-    Failed,
-}
+pub(crate) use crate::pty::inject::BoundaryMetadataOutcome;
 
 pub(super) fn combine_boundary_metadata(
     first: BoundaryMetadataOutcome,
