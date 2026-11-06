@@ -3,6 +3,8 @@ use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
 use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::events::MailboxDeliveryEvents;
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -162,12 +164,15 @@ fn complete_session_request(
 
 impl MailboxPoller {
     /// Move an outbox message to outbox/delivered/ with token stripped.
-    pub(crate) async fn move_to_delivered<R: tauri::Runtime>(
+    pub(crate) async fn move_to_delivered<S>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
-    ) -> Result<(), String> {
+    ) -> Result<(), String>
+    where
+        S: MailboxDeliveryEvents + ResponseCompletionState + Clone + Send + Sync + 'static,
+    {
         let delivered_dir = path.parent().ok_or("No parent dir")?.join("delivered");
         mailbox_disk::ensure_mailbox_archive_directory(&delivered_dir)
             .map_err(|e| format!("Failed to create delivered dir: {e}"))?;
