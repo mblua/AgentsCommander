@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
 use crate::config::settings::{
     save_settings, validate_and_repair_settings, AppSettings, CodingAgentEnv,
     CodingAgentProfilesConfig, SettingsState,
@@ -128,7 +129,7 @@ pub async fn set_instance_profile_override(
     // broad apply or a self-switch persist/restart.
     let app_handle = app.clone();
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || {
+    run_owned_selection_operation(move || {
         let app = app_handle.clone();
         async move {
             let payload =

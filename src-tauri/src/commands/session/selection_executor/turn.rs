@@ -30,8 +30,6 @@ impl SelectionTask for NativeSelectionTask {
 
 pub(crate) struct NativeSelectionTasks;
 
-// Removed when native turn callers migrate in P03.
-#[allow(dead_code)]
 pub(crate) static NATIVE_SELECTION_TASKS: NativeSelectionTasks = NativeSelectionTasks;
 
 impl SelectionTasks for NativeSelectionTasks {
@@ -42,8 +40,6 @@ impl SelectionTasks for NativeSelectionTasks {
     }
 }
 
-// Removed when native turn callers migrate in P03.
-#[allow(dead_code)]
 pub(crate) async fn run_owned_selection_operation<F, Fut, T>(operation: F) -> Result<T, String>
 where
     F: FnOnce() -> Fut + Send + 'static,
@@ -57,8 +53,6 @@ where
     .await
 }
 
-// Removed when native turn callers migrate in P03.
-#[allow(dead_code)]
 pub(crate) async fn run_owned_selection_read_timed<F, Fut, T>(
     command: &'static str,
     operation: F,
