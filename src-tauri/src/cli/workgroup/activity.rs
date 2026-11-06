@@ -11,6 +11,7 @@ use crate::config::remote_activity_cache::{
     RemoteActivitySnapshot, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
 };
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::session::session::persisted_is_working;
 
 use super::{print_json, resolve_cli_ac_root, resolve_cli_project, WorkgroupActivityArgs};
@@ -581,7 +582,7 @@ pub(super) fn list_room_repo_dirs(wg_dir: &Path) -> Vec<PathBuf> {
 /// UTF-8 warn once for that room and still report `None`. Never locks, writes,
 /// backs up or repairs the file.
 pub(super) fn read_task_title(room_dir: &Path) -> Option<String> {
-    let path = room_dir.join("TASK.md");
+    let path = room_dir.join(TASK_FILE_NAME);
     match crate::filesystem::documents::read_cli_room_task(&path) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => parse_task_title(&text),

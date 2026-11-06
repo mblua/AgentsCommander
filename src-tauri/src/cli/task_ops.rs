@@ -25,6 +25,7 @@ mod flow;
 mod initialization;
 mod status;
 
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::filesystem::tasks::{
     description_sentinel, io_boundary, open_status_append, open_task_sync,
     read_description_snapshot, TaskLock, TaskLockError,
@@ -81,7 +82,7 @@ pub(crate) fn task_sentinels(root: &Path) -> Result<TaskSentinels, String> {
         Err(error) => Err(format!("snapshot sentinel read failed: {error}")),
     };
     Ok(TaskSentinels {
-        task: stat("TASK.md")?,
+        task: stat(TASK_FILE_NAME)?,
         status: stat(STATUS_NAME)?,
         journal: stat(JOURNAL_NAME)?.is_some(),
     })
@@ -89,7 +90,7 @@ pub(crate) fn task_sentinels(root: &Path) -> Result<TaskSentinels, String> {
 
 /// Read the title without acquiring a mutation lock or recovering task state.
 pub(crate) fn read_title(root: &Path) -> Result<Option<String>, String> {
-    let task_path = root.join("TASK.md");
+    let task_path = root.join(TASK_FILE_NAME);
     let content = match crate::filesystem::tasks::read_task_title_text(&task_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -545,12 +546,12 @@ impl LockGuard {
 
 pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
     let _lock = LockGuard::acquire(
-        &root.join("TASK.md.lock"),
+        &root.join(format!("{TASK_FILE_NAME}.lock")),
         LOCK_TIMEOUT_5S,
         LOCK_STALE_AFTER_5M,
     )?;
     recover_clean_pair_locked(root)?;
-    let path = root.join("TASK.md");
+    let path = root.join(TASK_FILE_NAME);
     let task = match read_description_snapshot(&path, TASK_LIMIT) {
         Ok(Some(bytes)) => {
             if bytes.len() as u64 > TASK_LIMIT {
@@ -588,7 +589,7 @@ pub fn append_status(
     author: &str,
 ) -> Result<StatusReceipt, TaskOpError> {
     let _lock = LockGuard::acquire(
-        &root.join("TASK.md.lock"),
+        &root.join(format!("{TASK_FILE_NAME}.lock")),
         LOCK_TIMEOUT_5S,
         LOCK_STALE_AFTER_5M,
     )?;

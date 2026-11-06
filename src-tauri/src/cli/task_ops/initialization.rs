@@ -1,9 +1,8 @@
 //! Initial content and publication for newly allocated rooms.
 use crate::filesystem::projects::entities::publication;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use std::io;
 use std::path::Path;
-
-pub(crate) const TASK_FILE_NAME: &str = "TASK.md";
 
 pub(crate) fn initialize_new_room(root: &Path, prepared_content: &str) -> io::Result<()> {
     publication::write_initial_room_task(&root.join(TASK_FILE_NAME), prepared_content)

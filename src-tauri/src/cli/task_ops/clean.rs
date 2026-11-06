@@ -1,5 +1,4 @@
 use super::apply_clean;
-use super::initialization::TASK_FILE_NAME;
 use super::parse_task;
 use super::render;
 use super::status::read_latest_status_locked;
@@ -17,6 +16,7 @@ use super::TaskOpError;
 use super::LOCK_STALE_AFTER_5M;
 #[cfg(test)]
 use super::LOCK_TIMEOUT_5S;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::filesystem::tasks::{
     create_task_artifact, io_boundary, open_task_sync, read_clean_journal, read_task_artifact,
     remove_task_artifact, rename_task_artifact_with_retry, task_artifact_exists, task_source_state,
@@ -114,7 +114,7 @@ fn cleanup_owned(path: &Path, hash: &str) {
 #[cfg(test)]
 pub(super) fn recover_clean_pair(root: &Path) -> Result<(), TaskOpError> {
     let _lock = LockGuard::acquire(
-        &root.join("TASK.md.lock"),
+        &root.join(format!("{TASK_FILE_NAME}.lock")),
         LOCK_TIMEOUT_5S,
         LOCK_STALE_AFTER_5M,
     )?;
@@ -430,7 +430,7 @@ pub(super) fn clean_pair_locked(
             original_hash: original_task.hash.clone(),
             target_hash: hash_bytes(new_content.as_bytes()),
             backup: None,
-            stage: format!("TASK.md.tmp.{tx}"),
+            stage: format!("{TASK_FILE_NAME}.tmp.{tx}"),
         },
         status: CleanSide {
             existed: original_status.hash.is_some(),

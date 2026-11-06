@@ -362,7 +362,7 @@ Direct filesystem access (reads/writes/deletes/renames) is forbidden for TASK-st
 "#
         ),
         shared = display_path(&room_root.join(crate::config::shared_locations::ROOM_SHARED_DIR)),
-        task = display_path(&room_root.join("TASK.md")),
+        task = display_path(&room_root.join(crate::filesystem::tasks::TASK_FILE_NAME)),
         status = display_path(&room_root.join("TASK-status.jsonl")),
     )
 }
