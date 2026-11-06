@@ -256,27 +256,11 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        // 1. Resolve the caller's OWN session from the token (the sole authority).
-        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
-            Some(u) => u,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-clear requires a valid session token; restart or respawn the session",
-                    )
-                    .await;
-            }
-        };
-        let session_mgr = app.sessions();
-        let (session, session_id, clear_text) = match self
-            .resolve_self_clear_target(session_mgr, token_uuid, path, msg)
-            .await
-        {
-            Ok(target) => target,
-            Err(outcome) => return outcome,
-        };
+        let (session, session_id, clear_text) =
+            match self.resolve_self_clear_target(app, path, msg).await {
+                Ok(target) => target,
+                Err(outcome) => return outcome,
+            };
 
         let pending = app.pending_clear().clone();
         if msg.action.as_deref() == Some(super::PLAIN_SELF_CLEAR_ACTION) {
@@ -379,13 +363,26 @@ impl MailboxPoller {
 
     /// Resolves the self-clear target session, its id and the logical-clear text.
     /// On any refusal it rejects the message and returns the reject outcome as `Err`.
-    async fn resolve_self_clear_target(
+    async fn resolve_self_clear_target<S: MailboxHost>(
         &self,
-        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-        token_uuid: Uuid,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
     ) -> Result<(SessionInfo, Uuid, &'static str), Result<(), String>> {
+        // 1. Resolve the caller's OWN session from the token (the sole authority).
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return Err(self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear requires a valid session token; restart or respawn the session",
+                    )
+                    .await);
+            }
+        };
+        let session_mgr = app.sessions();
         let session = {
             let mgr = session_mgr.read().await;
             mgr.find_by_token(token_uuid).await

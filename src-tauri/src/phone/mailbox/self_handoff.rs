@@ -32,6 +32,25 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 impl MailboxPoller {
+    async fn resolve_self_handoff_target<S: MailboxHost>(
+        &self,
+        host: &S,
+        path: &Path,
+        msg: &OutboxMessage,
+        action: &'static str,
+    ) -> Result<(SessionInfo, Uuid), Result<(), String>> {
+        match resolve_self_handoff_identity(msg, action, |token_uuid| async move {
+            let session_mgr = host.sessions();
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        })
+        .await
+        {
+            Ok(identity) => Ok(identity),
+            Err(reason) => Err(self.reject_message(path, msg, &reason).await),
+        }
+    }
+
     /// #668 - queue a deferred self switch for the session that owns `msg.token`.
     /// It shares the self context pending set with self-clear, so clear and switch
     /// requests cannot stack on the same live session.
@@ -42,19 +61,12 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let (session, session_id) = match resolve_self_handoff_identity(
-            msg,
-            "self-handoff-and-switch",
-            |token_uuid| async move {
-                let session_mgr = host.sessions();
-                let mgr = session_mgr.read().await;
-                mgr.find_by_token(token_uuid).await
-            },
-        )
-        .await
+        let (session, session_id) = match self
+            .resolve_self_handoff_target(host, path, msg, "self-handoff-and-switch")
+            .await
         {
             Ok(identity) => identity,
-            Err(reason) => return self.reject_message(path, msg, &reason).await,
+            Err(outcome) => return outcome,
         };
 
         if !crate::pty::inject::supports_self_handoff_switch(&session.shell) {
@@ -72,11 +84,7 @@ impl MailboxPoller {
                 .await;
         }
 
-        let settings_snapshot = {
-            let settings = host.pty_settings();
-            let snapshot = settings.read().await.clone();
-            snapshot
-        };
+        let settings_snapshot = host.pty_settings().read().await.clone();
         let (replica_path, targets) =
             match resolve_self_switch_request(&settings_snapshot, &session, msg) {
                 Ok(request) => request,
@@ -182,19 +190,12 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let (session, session_id) = match resolve_self_handoff_identity(
-            msg,
-            "self-handoff-and-restart",
-            |token_uuid| async move {
-                let session_mgr = host.sessions();
-                let mgr = session_mgr.read().await;
-                mgr.find_by_token(token_uuid).await
-            },
-        )
-        .await
+        let (session, session_id) = match self
+            .resolve_self_handoff_target(host, path, msg, "self-handoff-and-restart")
+            .await
         {
             Ok(identity) => identity,
-            Err(reason) => return self.reject_message(path, msg, &reason).await,
+            Err(outcome) => return outcome,
         };
 
         let recipe = match resolve_self_restart_request(&session) {
