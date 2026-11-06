@@ -44,6 +44,24 @@ pub(crate) trait CoordinatorTicket {
     fn failed(self);
 }
 
+pub(crate) struct MailboxSessionCreate<'a> {
+    pub(crate) session_mgr: &'a Arc<RwLock<SessionManager>>,
+    pub(crate) pty_mgr: &'a Arc<Mutex<PtyManager>>,
+    pub(crate) shell: String,
+    pub(crate) shell_args: Vec<String>,
+    pub(crate) cwd: String,
+    pub(crate) session_name: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) agent_label: Option<String>,
+    pub(crate) skip_tooling_save: bool,
+    pub(crate) git_repos: Vec<SessionRepo>,
+    pub(crate) skip_auto_resume: bool,
+    pub(crate) resolved_spawn: Option<AgentSpawnCommand>,
+    pub(crate) resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+    pub(crate) viewport: Option<PtyViewport>,
+    pub(crate) selection_intent: CreateSelectionIntent,
+}
+
 /// Native capabilities available to captured mailbox work.
 pub(crate) trait MailboxHost:
     WakeDeliveryState
@@ -90,45 +108,15 @@ pub(crate) trait MailboxHost:
     fn snapshot_state(&self) -> Option<&Arc<TerminalSnapshotState>>;
 
     #[allow(dead_code, reason = "3946 phased consumer migration")]
-    #[allow(clippy::too_many_arguments)]
     fn create_session_inner<'a>(
         &'a self,
-        session_mgr: &'a Arc<RwLock<SessionManager>>,
-        pty_mgr: &'a Arc<Mutex<PtyManager>>,
-        shell: String,
-        shell_args: Vec<String>,
-        cwd: String,
-        session_name: Option<String>,
-        agent_id: Option<String>,
-        agent_label: Option<String>,
-        skip_tooling_save: bool,
-        git_repos: Vec<SessionRepo>,
-        skip_auto_resume: bool,
-        resolved_spawn: Option<AgentSpawnCommand>,
-        resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
-        viewport: Option<PtyViewport>,
-        selection_intent: CreateSelectionIntent,
+        request: MailboxSessionCreate<'a>,
     ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a;
 
     #[allow(dead_code, reason = "3946 phased consumer migration")]
-    #[allow(clippy::too_many_arguments)]
     fn create_session_inner_with_pty_target_ownership<'a, 'guard>(
         &'a self,
-        session_mgr: &'a Arc<RwLock<SessionManager>>,
-        pty_mgr: &'a Arc<Mutex<PtyManager>>,
-        shell: String,
-        shell_args: Vec<String>,
-        cwd: String,
-        session_name: Option<String>,
-        agent_id: Option<String>,
-        agent_label: Option<String>,
-        skip_tooling_save: bool,
-        git_repos: Vec<SessionRepo>,
-        skip_auto_resume: bool,
-        resolved_spawn: Option<AgentSpawnCommand>,
-        resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
-        viewport: Option<PtyViewport>,
-        selection_intent: CreateSelectionIntent,
+        request: MailboxSessionCreate<'a>,
         target_ownership: &'a PtyInputTargetOwnership<'guard>,
     ) -> impl Future<Output = Result<PtyTargetCreateStep, String>> + Send + 'a
     where

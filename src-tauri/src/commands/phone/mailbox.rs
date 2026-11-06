@@ -1,18 +1,15 @@
 use crate::api::message_store::PtyInputTargetOwnership;
 use crate::app_state::RestoreInProgress;
 use crate::commands::pty::BoundaryMetadataOutcome;
-use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::CreationGateEnforcement;
 use crate::config::settings::SettingsState;
 use crate::phone::mailbox::browser::snapshot::WebBrowserSnapshot;
-use crate::phone::mailbox::host::{BrowserHost, MailboxHost};
-use crate::pty::backend::{PtyViewport, ResolvedAgentHostShell};
+use crate::phone::mailbox::host::{BrowserHost, MailboxHost, MailboxSessionCreate};
 use crate::pty::manager::PtyManager;
 use crate::pty::terminal_snapshot::TerminalSnapshotState;
 use crate::session::create_contracts::{
-    CreateSelectionIntent, OwnedReplacementCreateRequest, OwnedReplacementCreateStep,
-    PtyTargetCreateStep,
+    OwnedReplacementCreateRequest, OwnedReplacementCreateStep, PtyTargetCreateStep,
 };
 use crate::session::maintenance::PendingSelfClear;
 use crate::session::manager::SessionManager;
@@ -20,7 +17,7 @@ use crate::session::purge_guard::PurgeGuard;
 use crate::session::selection::{
     OwnedReplacementContinuation, SelectionCoordinator, TrustedRestartIntent,
 };
-use crate::session::session::{SessionCommunication, SessionInfo, SessionRepo};
+use crate::session::session::{SessionCommunication, SessionInfo};
 use crate::shutdown::ShutdownSignal;
 use crate::{AppOutbox, MasterToken};
 use futures::future::BoxFuture;
@@ -78,64 +75,34 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
             .map(|state| state.inner())
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn create_session_inner<'a>(
         &'a self,
-        session_mgr: &'a Arc<RwLock<SessionManager>>,
-        pty_mgr: &'a Arc<Mutex<PtyManager>>,
-        shell: String,
-        shell_args: Vec<String>,
-        cwd: String,
-        session_name: Option<String>,
-        agent_id: Option<String>,
-        agent_label: Option<String>,
-        skip_tooling_save: bool,
-        git_repos: Vec<SessionRepo>,
-        skip_auto_resume: bool,
-        resolved_spawn: Option<AgentSpawnCommand>,
-        resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
-        viewport: Option<PtyViewport>,
-        selection_intent: CreateSelectionIntent,
+        request: MailboxSessionCreate<'a>,
     ) -> Result<SessionInfo, String> {
         crate::commands::session::create_session_inner(
             self,
-            session_mgr,
-            pty_mgr,
-            shell,
-            shell_args,
-            cwd,
-            session_name,
-            agent_id,
-            agent_label,
-            skip_tooling_save,
-            git_repos,
-            skip_auto_resume,
-            resolved_spawn,
-            resolved_agent_host_shell,
-            viewport,
-            selection_intent,
+            request.session_mgr,
+            request.pty_mgr,
+            request.shell,
+            request.shell_args,
+            request.cwd,
+            request.session_name,
+            request.agent_id,
+            request.agent_label,
+            request.skip_tooling_save,
+            request.git_repos,
+            request.skip_auto_resume,
+            request.resolved_spawn,
+            request.resolved_agent_host_shell,
+            request.viewport,
+            request.selection_intent,
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn create_session_inner_with_pty_target_ownership<'a, 'guard>(
         &'a self,
-        session_mgr: &'a Arc<RwLock<SessionManager>>,
-        pty_mgr: &'a Arc<Mutex<PtyManager>>,
-        shell: String,
-        shell_args: Vec<String>,
-        cwd: String,
-        session_name: Option<String>,
-        agent_id: Option<String>,
-        agent_label: Option<String>,
-        skip_tooling_save: bool,
-        git_repos: Vec<SessionRepo>,
-        skip_auto_resume: bool,
-        resolved_spawn: Option<AgentSpawnCommand>,
-        resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
-        viewport: Option<PtyViewport>,
-        selection_intent: CreateSelectionIntent,
+        request: MailboxSessionCreate<'a>,
         target_ownership: &'a PtyInputTargetOwnership<'guard>,
     ) -> Result<PtyTargetCreateStep, String>
     where
@@ -143,21 +110,21 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
     {
         crate::commands::session::create_session_inner_with_pty_target_ownership(
             self,
-            session_mgr,
-            pty_mgr,
-            shell,
-            shell_args,
-            cwd,
-            session_name,
-            agent_id,
-            agent_label,
-            skip_tooling_save,
-            git_repos,
-            skip_auto_resume,
-            resolved_spawn,
-            resolved_agent_host_shell,
-            viewport,
-            selection_intent,
+            request.session_mgr,
+            request.pty_mgr,
+            request.shell,
+            request.shell_args,
+            request.cwd,
+            request.session_name,
+            request.agent_id,
+            request.agent_label,
+            request.skip_tooling_save,
+            request.git_repos,
+            request.skip_auto_resume,
+            request.resolved_spawn,
+            request.resolved_agent_host_shell,
+            request.viewport,
+            request.selection_intent,
             target_ownership,
         )
         .await
