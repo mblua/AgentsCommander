@@ -559,6 +559,11 @@ fn injection_order(source: &str) -> Result<(), &'static str> {
 }
 
 fn injection_order_mutant(source: &str, row: usize) -> String {
+    let signature = "async fn inject_text_into_session_impl<";
+    let next = "
+async fn session_injection_mode(";
+    let (prefix, injector) = source.split_once(signature).expect("missing injector");
+    let (body, suffix) = injector.split_once(next).expect("missing injector end");
     let (moving, before) = match row {
         1 => (
             "    check_injection_hold(app, session_id, &hold_policy).await?;\n",
@@ -571,20 +576,20 @@ fn injection_order_mutant(source: &str, row: usize) -> String {
         _ => panic!("unknown injection mutation"),
     };
     assert_eq!(
-        source.matches(moving).count(),
+        body.matches(moving).count(),
         1,
         "missing mutation statement"
     );
     assert_eq!(
-        source.matches(before).count(),
+        body.matches(before).count(),
         1,
         "missing mutation destination"
     );
-    let without = source.replacen(moving, "", 1);
+    let without = body.replacen(moving, "", 1);
     let at = without.find(before).unwrap();
     let mut mutant = without;
     mutant.insert_str(at, moving);
-    mutant
+    format!("{prefix}{signature}{mutant}{next}{suffix}")
 }
 
 fn verify_injection_order_row(source: &str, row: usize) {

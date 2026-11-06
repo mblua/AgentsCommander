@@ -4,7 +4,7 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::pty::inject::InjectionHost;
+use crate::pty::inject::host::InjectionHost;
 use crate::pty::manager::PtyManager;
 use crate::pty::menu_guard::MenuGuard;
 use crate::session::manager::SessionManager;

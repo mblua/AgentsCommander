@@ -1,5 +1,5 @@
 mod clear_watch;
-mod host;
+pub(crate) mod host;
 mod preflight;
 
 use std::fmt;
@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
-pub use host::InjectionHost;
+pub(crate) use self::host::InjectionHost;
 
 use crate::pty::backend::PTY_INPUT_MAX_BYTES;
 use crate::pty::manager::{PtyInputPermit, PtyManager, PtyRouteWriteGuard};
