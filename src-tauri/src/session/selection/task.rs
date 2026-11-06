@@ -14,7 +14,5 @@ pub(crate) trait SelectionTask:
 }
 
 pub(crate) trait SelectionTasks: Send + Sync {
-    // Removed when owned turns consume the capability in P02.
-    #[allow(dead_code)]
     fn spawn(&self, future: BoxFuture<'static, ()>) -> Pin<Box<dyn SelectionTask>>;
 }

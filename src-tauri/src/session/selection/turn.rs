@@ -217,6 +217,23 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
+    let task = prepare_owned_selection_task(mode, command, operation)?;
+    match tauri::async_runtime::spawn(task).await {
+        Ok(result) => result,
+        Err(_) => Err("selectionOperationTurnJoinFailed".to_string()),
+    }
+}
+
+fn prepare_owned_selection_task<F, Fut, T>(
+    mode: SelectionTurnMode,
+    command: Option<&'static str>,
+    operation: F,
+) -> Result<futures::future::BoxFuture<'static, Result<T, String>>, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
     if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
     }
@@ -267,9 +284,70 @@ where
     };
     #[cfg(test)]
     let task = with_test_selection_turn(test_turn, task);
-    let handle = tauri::async_runtime::spawn(task);
-    match handle.await {
-        Ok(result) => result,
-        Err(_) => Err("selectionOperationTurnJoinFailed".to_string()),
-    }
+    Ok(Box::pin(task))
+}
+
+/// Submit an owned operation through an explicit task capability.
+pub(crate) async fn run_owned_selection_operation_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_with_tasks(tasks, SelectionTurnMode::Write, None, operation).await
+}
+
+/// Submit an owned operation through an explicit task capability.
+pub(crate) async fn run_owned_selection_read_timed_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_with_tasks(tasks, SelectionTurnMode::Read, Some(command), operation).await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_owned_selection_operation_timed_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_with_tasks(tasks, SelectionTurnMode::Write, Some(command), operation).await
+}
+
+async fn run_owned_selection_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    mode: SelectionTurnMode,
+    command: Option<&'static str>,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    let task = prepare_owned_selection_task(mode, command, operation)?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let handle = tasks.spawn(Box::pin(async move {
+        let _ = send.send(task.await);
+    }));
+    handle
+        .await
+        .map_err(|_| "selectionOperationTurnJoinFailed".to_string())?;
+    receive
+        .await
+        .map_err(|_| "selectionOperationTurnJoinFailed".to_string())?
 }
