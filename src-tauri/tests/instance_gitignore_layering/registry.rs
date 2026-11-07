@@ -225,8 +225,12 @@ fn the_root_agent_dir_name_constant_is_defined_exactly_once() {
 
 /// #2713: `config::naming_migration` is called from the crate root in B1b, and
 /// the crate root is a member of the one cyclic SCC. A module the root calls
-/// joins that SCC the moment it names any member, so this leaf may name
-/// `super::instance_artifacts` and nothing else in the crate. Modelled on
+/// joins that SCC the moment it names any member, so this leaf may name the
+/// `instance_artifacts` owner (as `super::instance_artifacts` from the parent and
+/// `crate::config::instance_artifacts` from its `ignore_rows` child) plus the
+/// `crate::filesystem::naming_journal` seam, and nothing else in the crate.
+/// Either spelling reaches the same terminal registry, so the subtree's outgoing
+/// destinations are unchanged and no reverse path to the SCC exists. Modelled on
 /// `instance_gitignore_names_nothing_that_reaches_the_knot`.
 pub(crate) const MIGRATION_MODULE: [&str; 2] = ["config", "naming_migration"];
 pub(crate) const MIGRATION_FILE: &str = "src/config/naming_migration.rs";
@@ -238,9 +242,11 @@ pub(crate) const MIGRATION_TESTS_FILES: [&str; 3] = [
 ];
 
 /// The SCC members section 3.1 of the B1a plan names, plus the framework.
-/// `super::<name>` and `crate::` are already refused by the equalities below;
-/// this catches a bare `<name>::` path reached through an import this scan
-/// cannot resolve.
+/// The equalities below constrain the `super::` and `crate::` anchors, and the
+/// identifier-bounded `config::` equality permits only
+/// `ignore_rows -> config::instance_artifacts`, including crate root groups and
+/// paths through an imported `config` parent. This still catches a bare
+/// `<name>::` path reached through any other import this scan cannot resolve.
 pub(crate) const MIGRATION_FORBIDDEN_SEGMENTS: [&str; 7] = [
     "settings",
     "loops",
@@ -257,9 +263,14 @@ fn naming_migration_names_nothing_that_reaches_the_knot() {
 
     assert_eq!(
         seen.anchored,
-        expected(&[(MIGRATION_FILE, "filesystem")]),
-        "config::naming_migration may name only crate::filesystem::naming_journal; \
-         this leaf has no path back to the knot"
+        expected(&[
+            (MIGRATION_FILE, "filesystem"),
+            (MIGRATION_IGNORE_ROWS_FILE, "config"),
+        ]),
+        "config::naming_migration may name only crate::filesystem::naming_journal \
+         from the parent and crate::config::instance_artifacts, the direct \
+         artifact registry import, from ignore_rows; this leaf has no path back \
+         to the knot"
     );
     assert!(
         seen.aliases.is_empty(),
@@ -283,21 +294,16 @@ fn naming_migration_names_nothing_that_reaches_the_knot() {
         seen.relative_up,
         expected(&[
             (MIGRATION_FILE, "instance_artifacts"),
-            (MIGRATION_IGNORE_ROWS_FILE, "CONFIG_STATE_TARGET_NAME"),
-            (MIGRATION_IGNORE_ROWS_FILE, "LOOP_STATE_TARGET_NAME"),
-            (MIGRATION_IGNORE_ROWS_FILE, "LOOP_STATE_TMP_TARGET_GLOB"),
-            (MIGRATION_IGNORE_ROWS_FILE, "PROJECT_SETTINGS_TARGET_NAME"),
-            (MIGRATION_IGNORE_ROWS_FILE, "SET_ASIDE_GLOB"),
             (MIGRATION_TESTS_FILES[0], "*"),
             (MIGRATION_TESTS_FILES[1], "*"),
             (MIGRATION_TESTS_FILES[2], "*"),
         ]),
         "the set of names reached by `super::` from config::naming_migration \
-         moved. The only arc out of the module is its one arc, to \
+         moved. The parent's one `super::` arc goes to \
          `config::instance_artifacts`, which has no outgoing arcs; the \
-         `ignore_rows` child re-reads five of those names from this module, \
-         and each `*` is a test module's `use super::*;`, whose `super` is \
-         inside this module. Anything else must be argued as a change to the \
+         `ignore_rows` child imports that registry directly, not through this \
+         module, and each `*` is a test module's `use super::*;`, whose `super` \
+         is inside this module. Anything else must be argued as a change to the \
          arc budget of B1a."
     );
     assert_eq!(
@@ -308,8 +314,15 @@ fn naming_migration_names_nothing_that_reaches_the_knot() {
     );
 
     let files = files_of(&MIGRATION_MODULE, Reach::WithSubmodules).expect("module files");
+    let mut config_children = Vec::new();
     for path in &files {
         let code = normalized(&scrubbed(path, Literals::Drop).expect("scrub"));
+        config_children.extend(
+            children_under(&code, "config::")
+                .expect("config children")
+                .into_iter()
+                .map(|child| (relative_of(path), child)),
+        );
         for segment in MIGRATION_FORBIDDEN_SEGMENTS {
             let needle = format!("{segment}::");
             let named = code.match_indices(&needle).any(|(at, _)| {
@@ -321,10 +334,20 @@ fn naming_migration_names_nothing_that_reaches_the_knot() {
             assert!(
                 !named,
                 "{} names `{segment}::`, a module inside the cyclic SCC or the \
-                 framework; this leaf may name only super::instance_artifacts, \
-                 std, serde, serde_json, chrono and the OS bindings",
+                 framework; this leaf may name only the instance_artifacts \
+                 registry (super:: from the parent, crate::config:: from \
+                 ignore_rows), crate::filesystem::naming_journal, std, serde, \
+                 serde_json, chrono and the OS bindings",
                 relative_of(path)
             );
         }
     }
+    config_children.sort();
+    config_children.dedup();
+    assert_eq!(
+        config_children,
+        expected(&[(MIGRATION_IGNORE_ROWS_FILE, "instance_artifacts")]),
+        "config::naming_migration's config children may name only the artifact \
+         registry, from ignore_rows"
+    );
 }
