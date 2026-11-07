@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "rust-cycles-baseline",
   "generatedFrom": {
-    "toolVersion": "1.1.1",
+    "toolVersion": "1.2.0",
     "functionScope": "cross-module",
     "includeTests": false
   },
