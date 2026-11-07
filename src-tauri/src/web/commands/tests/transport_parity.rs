@@ -573,7 +573,10 @@ fn ws_state_for_1271(
         owners.spawn.clone(),
     )));
     let shutdown = crate::shutdown::ShutdownSignal::new();
-    let coordinator = SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
+    let coordinator = crate::session::selection::SelectionCoordinator::new(
+        Arc::clone(&session_mgr),
+        shutdown.token().clone(),
+    );
     let settings = crate::config::settings::new_settings_state(settings);
 
     let full_app = crate::test_support::test_builder_with_owners(owners.clone())

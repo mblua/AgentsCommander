@@ -9,7 +9,7 @@ use crate::commands::session::selection_executor::turn::run_owned_selection_oper
 // collection, correlation and occupancy invariants only.
 
 use crate::config::replica_identity::strict_read_probe;
-use timing_probe::{
+use crate::session::selection::timing_probe::{
     bench_serialization_lock, BenchContext, Occupancy, OccupancyGuard, SelectionTimingSample,
     TimingSinkRegistration,
 };
@@ -305,7 +305,10 @@ fn bench_read<T, E>(
 ) -> BenchRead {
     let done = Arc::clone(done);
     Box::pin(async move {
-        let ok = BENCH_CONTEXT.scope(context, command).await.is_ok();
+        let ok = crate::session::selection::BENCH_CONTEXT
+            .scope(context, command)
+            .await
+            .is_ok();
         done.lock().expect("done").insert(id);
         (id, ok, std::time::Instant::now())
     })
