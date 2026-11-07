@@ -102,6 +102,7 @@ const ContextBadge: Component<{
   };
   const close = () => {
     cancelClose();
+    cardHovered = false;
     setOpen(false);
   };
   const scheduleClose = () => {
@@ -118,13 +119,21 @@ const ContextBadge: Component<{
   };
   const inside = (node: EventTarget | null) =>
     node instanceof Node && (trigger?.contains(node) || card?.contains(node));
+  // Escape closes wherever focus is while the card is open.
+  const onEscapeAnywhere = (e: KeyboardEvent) => {
+    if (e.key === "Escape") close();
+  };
   const onPointerOutside = (e: PointerEvent) => {
     if (!inside(e.target)) close();
   };
   createEffect(() => {
     if (!open()) return;
     document.addEventListener("pointerdown", onPointerOutside, true);
-    onCleanup(() => document.removeEventListener("pointerdown", onPointerOutside, true));
+    document.addEventListener("keydown", onEscapeAnywhere, true);
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", onPointerOutside, true);
+      document.removeEventListener("keydown", onEscapeAnywhere, true);
+    });
   });
   createEffect(() => {
     if (!historical()) close();
@@ -140,8 +149,10 @@ const ContextBadge: Component<{
     },
     onFocus: show,
     // Pressing on the card (e.g. its scrollbar) blurs the badge; keep it open then.
-    onBlur: () => {
-      if (!cardHovered) close();
+    // Focus moving to a real control always closes; a null target with the pointer
+    // on the card is a press on the card itself (e.g. its scrollbar).
+    onBlur: (e: FocusEvent) => {
+      if (e.relatedTarget !== null || !cardHovered) close();
     },
     "on:keydown": (e: KeyboardEvent) => {
       // The row selects on Enter/Space; nothing on the badge may switch the session.

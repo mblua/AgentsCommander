@@ -351,6 +351,41 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(20, "dark"));
   });
 
+  it("lets the keyboard always close it and never inherits the card hover", () => {
+    renderScoped(35, ready(55));
+    const badge = target(TESTID);
+    const card = cardOf(badge);
+    const other = document.createElement("button");
+    document.body.append(other);
+
+    // Focus on the badge, pointer on the card, Tab to another control: closes.
+    badge.focus();
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(card.hidden).toBe(false);
+    other.focus();
+    expect(document.activeElement).toBe(other);
+    expect(card.hidden).toBe(true);
+
+    // Escape closes from wherever focus is.
+    badge.focus();
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    other.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(card.hidden).toBe(true);
+
+    // Reopened without hover: a blur with no target (no pointer on the card) closes,
+    // so the hover flag was reset by the previous close.
+    badge.dispatchEvent(new FocusEvent("focus"));
+    expect(card.hidden).toBe(false);
+    badge.dispatchEvent(new FocusEvent("blur", { relatedTarget: null }));
+    expect(card.hidden).toBe(true);
+
+    // The scrollbar case still holds: pointer on the card, blur with no target.
+    badge.dispatchEvent(new FocusEvent("focus"));
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    badge.dispatchEvent(new FocusEvent("blur", { relatedTarget: null }));
+    expect(card.hidden).toBe(false);
+  });
+
   it("toggles on touch activation", () => {
     renderScoped(35, ready(55));
     const badge = target(TESTID);
