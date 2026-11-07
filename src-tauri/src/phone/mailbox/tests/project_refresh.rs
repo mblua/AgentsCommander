@@ -625,3 +625,130 @@ async fn typing_hold_armed_during_post_clear_wait_does_not_drop_followup_body() 
         "the follow-up body is not a held wake"
     );
 }
+
+#[tokio::test]
+async fn issue_3946_pollers_publish_in_order() {
+    if std::env::var_os("AC_3946_POLLER_CHILD").is_none() {
+        let config = tempfile::TempDir::new().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "phone::mailbox::tests::project_refresh::issue_3946_pollers_publish_in_order",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("AGENTSCOMMANDER_CONFIG_DIR", config.path())
+            .env("AC_3946_POLLER_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "poller child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use crate::config::coding_agent_mutations::{CodingAgentOp, CodingAgentRequest};
+    let fixture = make_session_request_fixture();
+    let app = app_handle(&fixture.app);
+    *app.state::<SettingsState>().write().await = AppSettings::default();
+    let config = crate::config::config_dir().unwrap();
+    let refresh_dir = config.join("project-refresh-requests");
+    std::fs::create_dir_all(&refresh_dir).unwrap();
+    let refresh_path = refresh_dir.join("refresh.json");
+    write_project_refresh_request_fixture(
+        &refresh_path,
+        "poller-refresh",
+        &fixture.cwd,
+        None,
+        "projectRegistered",
+    );
+    let refresh_events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&refresh_events);
+    let claimed_dir = refresh_dir.clone();
+    fixture
+        .app
+        .listen_any("ac_project_refresh_requested", move |event| {
+            let claimed_exists = std::fs::read_dir(&claimed_dir)
+                .unwrap()
+                .any(|entry| entry.unwrap().path().is_file());
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            captured.lock().unwrap().push((payload, claimed_exists));
+        });
+    let settings_events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&settings_events);
+    let observed = app.clone();
+    fixture
+        .app
+        .listen_any("coding_agent_settings_updated", move |event| {
+            let released = observed.state::<SettingsState>().try_write().is_ok();
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            captured.lock().unwrap().push((payload, released));
+        });
+    let poller = MailboxPoller::default();
+    poller.poll_project_refresh_requests(&app).await;
+    let refresh = refresh_events.lock().unwrap().clone();
+    assert_eq!(refresh.len(), 1);
+    assert!(refresh[0].1, "refresh before removal");
+    assert_eq!(refresh[0].0["id"], "poller-refresh");
+    assert_eq!(refresh[0].0["reason"], "projectRegistered");
+    assert_eq!(refresh[0].0["changedPath"], serde_json::Value::Null);
+    assert_eq!(refresh[0].0["changedName"], serde_json::Value::Null);
+    assert_eq!(
+        refresh[0].0["projectPath"],
+        std::fs::canonicalize(&fixture.cwd)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert!(!refresh_path.exists());
+    assert_eq!(std::fs::read_dir(&refresh_dir).unwrap().count(), 0);
+    let requests = config.join("coding-agent-requests");
+    std::fs::create_dir_all(&requests).unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let request = CodingAgentRequest {
+        request_id: "poller-agent".into(),
+        created_at_ms: now_ms,
+        op: CodingAgentOp::Add {
+            agent: wake_agent("poller-agent", "Poller", "cmd.exe"),
+        },
+    };
+    std::fs::write(
+        requests.join("agent.json"),
+        serde_json::to_string_pretty(&request).unwrap(),
+    )
+    .unwrap();
+    poller.poll_coding_agent_requests(&app).await;
+    let settings = settings_events.lock().unwrap().clone();
+    assert_eq!(settings.len(), 1);
+    assert!(settings[0].1, "settings guard released");
+    assert_eq!(
+        settings[0].0,
+        serde_json::json!({"op": "add", "agentId": "poller-agent"})
+    );
+    let before = app.state::<SettingsState>().read().await.clone();
+    assert!(before.agents.iter().any(|agent| agent.id == "poller-agent"));
+    let expired = CodingAgentRequest {
+        request_id: "expired".into(),
+        created_at_ms: 0,
+        op: CodingAgentOp::Remove {
+            id: "poller-agent".into(),
+        },
+    };
+    std::fs::write(
+        requests.join("expired.json"),
+        serde_json::to_string_pretty(&expired).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(requests.join("invalid.json"), "{invalid").unwrap();
+    poller.poll_coding_agent_requests(&app).await;
+    assert_eq!(settings_events.lock().unwrap().len(), 1);
+    assert_eq!(
+        serde_json::to_value(&*app.state::<SettingsState>().read().await).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+}

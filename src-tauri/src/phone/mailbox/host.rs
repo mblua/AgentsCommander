@@ -4,7 +4,7 @@ use crate::config::agent_command::AgentSpawnCommand;
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::CreationGateEnforcement;
 use crate::config::settings::SettingsState;
-use crate::phone::events::{MailboxDeliveryEvents, PtyInputEvents};
+use crate::phone::events::{MailboxDeliveryEvents, MailboxRequestEvents, PtyInputEvents};
 use crate::phone::mailbox::browser::snapshot::WebBrowserSnapshot;
 use crate::phone::mailbox::pty_observation::WakeDeliveryState;
 use crate::phone::mailbox::response_observation::{
@@ -70,6 +70,7 @@ pub(crate) trait MailboxHost:
     + InjectionHost
     + PtyInputEvents
     + MailboxDeliveryEvents
+    + MailboxRequestEvents
     + MenuGuardEvents
     + SessionWarningEvents
     + Clone

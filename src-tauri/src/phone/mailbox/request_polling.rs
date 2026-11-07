@@ -1,18 +1,14 @@
 use super::poller::{collect_project_refresh_requests, read_text_bom_tolerant, MailboxPoller};
 use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
-use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
-use crate::phone::events::MailboxDeliveryEvents;
+use crate::phone::events::{MailboxDeliveryEvents, MailboxRequestEvents};
+use crate::phone::mailbox::host::{MailboxHost, MailboxSessionCreate};
 use crate::phone::mailbox::response_observation::ResponseCompletionState;
 use crate::phone::types::OutboxMessage;
-use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
+use crate::session::create_contracts::CreateSelectionIntent;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 
 fn archive_id_is_plain(id: &str) -> bool {
     let stem = id
@@ -284,9 +280,9 @@ impl MailboxPoller {
     }
 
     /// Poll ~/.agentscommander/project-refresh-requests/ for sidebar refresh requests.
-    pub(crate) async fn poll_project_refresh_requests<R: tauri::Runtime>(
+    pub(crate) async fn poll_project_refresh_requests<S: MailboxRequestEvents + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
     ) {
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
@@ -302,7 +298,7 @@ impl MailboxPoller {
                 payload.project_path,
                 payload.reason
             );
-            let _ = tauri::Emitter::emit(app, "ac_project_refresh_requested", payload);
+            let _ = app.project_refresh(payload);
         }
 
         for path in batch.processed_paths {
@@ -311,7 +307,7 @@ impl MailboxPoller {
     }
 
     /// Poll ~/.agentscommander/session-requests/ for launch requests from the CLI.
-    pub(crate) async fn poll_session_requests<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
+    pub(crate) async fn poll_session_requests<S: MailboxHost>(&self, app: &S) {
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
             None => return,
@@ -348,13 +344,13 @@ impl MailboxPoller {
                 request.agent_id
             );
 
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            let session_mgr = app.sessions();
+            let pty_mgr = app.routes();
             let cwd = crate::path_utils::normalize_windows_verbatim_path(&request.cwd);
             let (resolved_spawn, resolved_agent_host_shell) = {
-                let settings = app.state::<SettingsState>();
+                let settings = app.pty_settings();
                 let cfg = settings.read().await;
-                match crate::commands::session::build_configured_agent_spawn_for_cwd(
+                match crate::config::agent_command::build_configured_agent_spawn_for_cwd(
                     &cfg,
                     &request.agent_id,
                     &cwd,
@@ -398,26 +394,26 @@ impl MailboxPoller {
                 (request.shell.clone(), request.shell_args.clone(), None)
             };
 
-            let create_result = crate::commands::session::create_session_inner(
-                app,
-                session_mgr.inner(),
-                pty_mgr.inner(),
-                shell,
-                shell_args,
-                cwd,
-                Some(request.session_name.clone()),
-                Some(request.agent_id.clone()),
-                agent_label, // No agent label for legacy custom-shell fallback
-                false,       // Persist tooling
-                Vec::new(),  // git_repos
-                true,        // skip_auto_resume = true → CLI session-request is a fresh create
-                resolved_spawn,
-                resolved_agent_host_shell,
-                // #973 - headless caller: no terminal to measure, keep 120x30.
-                None,
-                crate::commands::session::CreateSelectionIntent::Background,
-            )
-            .await;
+            let create_result = app
+                .create_session_inner(MailboxSessionCreate {
+                    session_mgr,
+                    pty_mgr,
+                    shell,
+                    shell_args,
+                    cwd,
+                    session_name: Some(request.session_name.clone()),
+                    agent_id: Some(request.agent_id.clone()),
+                    agent_label, // No agent label for legacy custom-shell fallback
+                    skip_tooling_save: false, // Persist tooling
+                    git_repos: Vec::new(),
+                    skip_auto_resume: true, // CLI session-request is a fresh create
+                    resolved_spawn,
+                    resolved_agent_host_shell,
+                    // #973 - headless caller: no terminal to measure, keep 120x30.
+                    viewport: None,
+                    selection_intent: CreateSelectionIntent::Background,
+                })
+                .await;
             complete_session_request(&request, &path, create_result);
         }
     }
@@ -430,10 +426,7 @@ impl MailboxPoller {
     /// `.processing`) against it, and on Applied swap the in-memory state and emit
     /// `coding_agent_settings_updated` AFTER the guard drops. `save_settings` is
     /// synchronous, so the write guard is never held across an await.
-    pub(crate) async fn poll_coding_agent_requests<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-    ) {
+    pub(crate) async fn poll_coding_agent_requests<S: MailboxHost>(&self, app: &S) {
         use crate::config::coding_agent_mutations as ca;
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
@@ -460,7 +453,7 @@ impl MailboxPoller {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
 
-        let state = app.state::<SettingsState>();
+        let state = app.pty_settings();
         for path in entries {
             let applied = {
                 let mut s = state.write().await;
@@ -496,10 +489,8 @@ impl MailboxPoller {
             }; // write guard dropped here, before the emit
 
             if let Some((op, agent_id)) = applied {
-                let _ = tauri::Emitter::emit(
-                    app,
-                    "coding_agent_settings_updated",
-                    serde_json::json!({ "op": op, "agentId": agent_id }),
+                let _ = app.coding_agent_settings_updated(
+                    &serde_json::json!({ "op": op, "agentId": agent_id }),
                 );
                 log::info!("[coding-agent-requests] applied op={op} agentId={agent_id:?}");
             }
