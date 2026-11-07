@@ -288,6 +288,8 @@ jobs:
           path: |
             artifacts/module-arcs/module-arcs.txt
             artifacts/module-arcs/receipt.json
+      - name: "Detector child-path tests (#3998)"
+        run: node --test scripts/module-child-paths.test.mjs
       - name: "Check no new dependency cycles (#2447)"
         run: |
           npm run check:cycles:self
