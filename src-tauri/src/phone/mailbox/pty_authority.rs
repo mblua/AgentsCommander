@@ -50,6 +50,11 @@ enum PtyReplacementAdmission {
     Accepted(crate::session::selection::OwnedReplacementContinuation),
 }
 
+// Keep the Send proof local: async-fn inference fails at the owned PTY task caller.
+fn send_pty_spawn_future<F: std::future::Future + Send>(future: F) -> F {
+    future
+}
+
 impl MailboxPoller {
     pub(crate) async fn validate_claimed_api_authority<S: PtyAuthorityState + ?Sized>(
         &self,
@@ -692,11 +697,7 @@ impl MailboxPoller {
         'fixture,
         S,
     > {
-        // Keep the Send proof local: async-fn inference fails at the owned PTY task caller.
-        fn send_future<F: std::future::Future + Send>(future: F) -> F {
-            future
-        }
-        send_future(async move {
+        send_pty_spawn_future(async move {
             use crate::phone::types::PtyInputReasonCode as C;
             let root = Self::pty_target_root(claimed, target, target_ownership)?;
             let settings_state = app.pty_settings();
@@ -744,11 +745,8 @@ impl MailboxPoller {
                 let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
                 let route_or_spawn_survived =
                     Self::pty_removal_route_survived(&pty, exited_id, target);
-                Self::verify_pty_removal(
-                    survived || route_or_spawn_survived,
-                    destroy_result,
-                    claimed,
-                )?;
+                let survived = survived || route_or_spawn_survived;
+                Self::verify_pty_removal(survived, destroy_result, claimed)?;
             }
             self.require_current_pty_spawn(app, &authority).await?;
             let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
