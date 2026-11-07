@@ -201,3 +201,16 @@ impl AutoClose {
 
 #[cfg(test)]
 mod tests;
+
+impl<R: Runtime> crate::session::selection::SelectionEvents for AppHandle<R> {
+    fn selection_event(&self, event: &'static str, value: serde_json::Value) {
+        if let Err(error) = self.emit(event, value.clone()) {
+            log::error!("[selection] Tauri publication failed event={event}: {error}");
+        }
+        if let Some(broadcaster) = self.try_state::<crate::web::broadcast::WsBroadcaster>() {
+            broadcaster.broadcast_event(event, &value);
+        } else {
+            log::debug!("[selection] WebSocket broadcaster unavailable event={event}");
+        }
+    }
+}

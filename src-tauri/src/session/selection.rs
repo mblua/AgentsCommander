@@ -24,6 +24,8 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::app_state::DetachedSessionsState;
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{PendingCreateBinding, SessionManager};
@@ -32,8 +34,6 @@ use crate::session::session::SessionStatus;
 use crate::session::session::{SessionCommunication, SessionInfo};
 use crate::session::warnings::SessionWarning;
 use crate::web::broadcast::WsBroadcaster;
-#[cfg(test)]
-use crate::DetachedSessionsState;
 
 /// Selection's lifecycle operations; transport remains on `SelectionTransaction`
 /// until later phases.
@@ -113,6 +113,168 @@ impl fmt::Debug for OpaqueFixtureInput {
         f.debug_struct("OpaqueFixtureInput")
             .field("continuation", &self.continuation)
             .finish_non_exhaustive()
+    }
+}
+
+/// Synchronous publication; selection retains event names and serialization policy.
+pub(crate) trait SelectionEvents {
+    // First used by the transaction cut in P08.
+    #[allow(dead_code)]
+    fn selection_event(&self, event: &'static str, value: serde_json::Value);
+}
+
+pub(crate) trait SelectionContext: Sized + 'static {
+    type Host: SelectionHost<Self>;
+}
+
+pub(crate) trait SelectionHost<C: SelectionContext>:
+    Clone + Send + Sync + 'static + SelectionEvents + crate::session::warnings::SessionWarningEvents
+{
+    // First required by P08.
+    #[allow(dead_code)]
+    fn sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
+    // First required by P08.
+    #[allow(dead_code)]
+    fn pty_required(&self) -> &Arc<Mutex<PtyManager>>;
+    // First required by P10.
+    #[allow(dead_code)]
+    fn pty_optional(&self) -> Option<&Arc<Mutex<PtyManager>>>;
+    // First required by P08.
+    #[allow(dead_code)]
+    fn detached_required(&self) -> &crate::app_state::DetachedSessionsState;
+    // First required by P10.
+    #[allow(dead_code)]
+    fn settings_required(&self) -> &crate::config::settings::SettingsState;
+    // First required by P13.
+    #[allow(dead_code)]
+    fn response_close_required(&self) -> &crate::pty::manager::ResponseCloseState;
+    // First required by P13.
+    #[allow(dead_code)]
+    fn response_close_optional(&self) -> Option<&crate::pty::manager::ResponseCloseState>;
+    // First required by P13.
+    #[allow(dead_code)]
+    fn coordinator_optional(&self) -> Option<&SelectionCoordinator>;
+    // First required by P12.
+    #[allow(dead_code)]
+    fn tasks(&self) -> &dyn task::SelectionTasks;
+    // First required by P10.
+    #[allow(dead_code)]
+    fn focus_window(&self, label: &str) -> Option<Result<(), String>>;
+    // First required by P10.
+    #[allow(dead_code)]
+    fn destroy_window(&self, label: &str) -> Option<Result<(), String>>;
+}
+
+#[cfg(test)]
+struct NeutralSelectionContext {
+    _local: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl SelectionContext for NeutralSelectionContext {
+    type Host = NeutralSelectionHost;
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct NeutralSelectionHost {
+    sessions: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: Arc<Mutex<PtyManager>>,
+    detached: crate::app_state::DetachedSessionsState,
+    settings: crate::config::settings::SettingsState,
+    response_close: crate::pty::manager::ResponseCloseState,
+    coordinator: Option<SelectionCoordinator>,
+    optional_present: bool,
+}
+
+#[cfg(test)]
+impl NeutralSelectionHost {
+    fn new(
+        sessions: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty: Arc<Mutex<PtyManager>>,
+        detached: crate::app_state::DetachedSessionsState,
+        settings: crate::config::settings::SettingsState,
+        response_close: crate::pty::manager::ResponseCloseState,
+    ) -> Self {
+        Self {
+            sessions,
+            pty,
+            detached,
+            settings,
+            response_close,
+            coordinator: None,
+            optional_present: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl SelectionEvents for NeutralSelectionHost {
+    fn selection_event(&self, _event: &'static str, _value: serde_json::Value) {}
+}
+
+#[cfg(test)]
+impl crate::session::warnings::SessionWarningEvents for NeutralSelectionHost {
+    fn session_warning(&self, _warning: SessionWarning) {}
+}
+
+#[cfg(test)]
+struct NeutralSelectionTasks;
+
+#[cfg(test)]
+impl task::SelectionTasks for NeutralSelectionTasks {
+    fn spawn(
+        &self,
+        _future: futures::future::BoxFuture<'static, ()>,
+    ) -> Pin<Box<dyn task::SelectionTask>> {
+        panic!("host contract fixture does not spawn tasks")
+    }
+}
+
+#[cfg(test)]
+impl SelectionHost<NeutralSelectionContext> for NeutralSelectionHost {
+    fn sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>> {
+        &self.sessions
+    }
+
+    fn pty_required(&self) -> &Arc<Mutex<PtyManager>> {
+        &self.pty
+    }
+
+    fn pty_optional(&self) -> Option<&Arc<Mutex<PtyManager>>> {
+        self.optional_present.then_some(&self.pty)
+    }
+
+    fn detached_required(&self) -> &crate::app_state::DetachedSessionsState {
+        &self.detached
+    }
+
+    fn settings_required(&self) -> &crate::config::settings::SettingsState {
+        &self.settings
+    }
+
+    fn response_close_required(&self) -> &crate::pty::manager::ResponseCloseState {
+        &self.response_close
+    }
+
+    fn response_close_optional(&self) -> Option<&crate::pty::manager::ResponseCloseState> {
+        self.optional_present.then_some(&self.response_close)
+    }
+
+    fn coordinator_optional(&self) -> Option<&SelectionCoordinator> {
+        self.coordinator.as_ref()
+    }
+
+    fn tasks(&self) -> &dyn task::SelectionTasks {
+        &NeutralSelectionTasks
+    }
+
+    fn focus_window(&self, _label: &str) -> Option<Result<(), String>> {
+        None
+    }
+
+    fn destroy_window(&self, _label: &str) -> Option<Result<(), String>> {
+        None
     }
 }
 
@@ -713,254 +875,17 @@ impl<R: Runtime> SelectionTransaction<R> {
 }
 
 #[cfg(test)]
-pub(crate) struct SelectionPortTestState {
-    pub(crate) cleanup_pty: Option<Arc<Mutex<PtyManager>>>,
-    pub(crate) cleanup_backend_present: bool,
-    pub(crate) receiver_present: bool,
-    pub(crate) worker_present: bool,
-    pub(crate) queue_capacity: usize,
-    pub(crate) admission_available: usize,
-    pub(crate) create_tickets_available: usize,
-    pub(crate) expected_queue_capacity: usize,
-    pub(crate) expected_admission_capacity: usize,
-    pub(crate) expected_create_ticket_capacity: usize,
-}
-
-#[cfg(test)]
 impl SelectionCoordinator {
-    pub(crate) fn port_test_state(&self) -> SelectionPortTestState {
-        SelectionPortTestState {
-            cleanup_pty: self
-                .inner
-                .cleanup_pty
-                .lock()
-                .unwrap()
-                .as_ref()
-                .and_then(Weak::upgrade),
-            cleanup_backend_present: self
-                .inner
-                .cleanup_container_backend
-                .lock()
-                .unwrap()
-                .is_some(),
-            receiver_present: self.inner.receiver.lock().unwrap().is_some(),
-            worker_present: self.inner.worker.lock().unwrap().is_some(),
-            queue_capacity: self.inner.sender.capacity(),
-            admission_available: self.inner.admission.available_permits(),
-            create_tickets_available: self.inner.create_tickets.available_permits(),
-            expected_queue_capacity: COORDINATOR_QUEUE_CAPACITY,
-            expected_admission_capacity: COORDINATOR_ADMISSION_CAPACITY,
-            expected_create_ticket_capacity: CREATE_TICKET_CAPACITY,
-        }
-    }
-}
-
-#[cfg(test)]
-impl<R: Runtime> SelectionTransaction<R> {
-    pub(crate) fn port_test_binding_presence(&self) -> (bool, bool) {
-        (self.lifecycle_entry.is_some(), self.restore_nonce.is_some())
-    }
-
-    pub(crate) fn port_test_executor(&self) -> Option<Arc<dyn LifecycleExecutor<Self>>> {
-        self.lifecycle_executor()
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct SelectionPortTestEntry {
-    entry: Option<OwnedLifecycleEntry>,
-    owner: Arc<replacement::ReplacementOwner>,
-}
-
-#[cfg(test)]
-impl SelectionPortTestEntry {
-    pub(crate) fn operation(&self) -> Uuid {
-        self.owner.operation
-    }
-
-    pub(crate) fn nonce(&self) -> Uuid {
-        self.entry.as_ref().unwrap().executor_nonce
-    }
-
-    pub(crate) fn sidecar_released(&self) -> bool {
-        self.owner.state.lock().unwrap().sidecar_released
-    }
-
-    pub(crate) fn attach_lease(&mut self, lease: LifecycleLease) {
-        let entry = self.entry.as_mut().unwrap();
-        assert!(entry.authority.is_none());
-        entry.authority = Some(lease);
-    }
-
-    pub(crate) fn lease(&self) -> &LifecycleLease {
-        self.entry.as_ref().unwrap().authority.as_ref().unwrap()
-    }
-
-    pub(crate) fn enter<R: Runtime>(&self, t: &SelectionTransaction<R>) -> SelectionTransaction<R> {
-        t.for_lifecycle_entry(self.entry.as_ref().unwrap())
-    }
-
-    pub(crate) fn observe_return(&self, result: &Result<SessionInfo, String>) {
-        self.entry.as_ref().unwrap().observe_return(result);
-    }
-
-    pub(crate) async fn release<T>(&mut self, executor: &dyn LifecycleExecutor<T>) {
-        self.entry.as_mut().unwrap().release_lease(executor).await;
-    }
-
-    pub(crate) fn drop_entry(&mut self) {
-        drop(self.entry.take());
-    }
-}
-
-#[cfg(test)]
-pub(crate) enum SelectionPortTestExit {
-    Drain,
-    FailedEnqueue,
-    ReceiverLoss,
-}
-
-#[cfg(test)]
-impl SelectionCoordinator {
-    pub(crate) fn port_test_active_restore_nonce(&self) -> Option<Uuid> {
-        let retained = self.inner.retained_replacements.lock().unwrap();
-        retained
-            .restore_active
-            .load(Ordering::Acquire)
-            .then_some(retained.restore_nonce)
-            .flatten()
-    }
-    pub(crate) fn port_test_retained_entry(&self, source: Uuid) -> Option<(Uuid, Uuid, String)> {
-        self.inner
-            .retained_replacements
-            .lock()
-            .unwrap()
-            .entries
-            .values()
-            .find_map(|owner| {
-                if !matches!(&owner.descriptor,
-                replacement::OwnedReplacementDescriptor::EntryRestart(r) if r.session_id == source)
-                {
-                    return None;
-                }
-                let state = owner.state.lock().unwrap();
-                Some((
-                    owner.operation,
-                    state.executor_nonce,
-                    format!("{:?}", state.stage),
-                ))
-            })
-    }
-    pub(crate) fn port_test_running_unstarted(&self) {
-        assert!(self.inner.worker.lock().unwrap().is_none());
-        assert!(self.inner.receiver.lock().unwrap().is_some());
-        self.inner
-            .phase
-            .compare_exchange(
-                CoordinatorPhase::Bootstrapping as u8,
-                CoordinatorPhase::Running as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap();
-    }
-
-    pub(crate) fn port_test_pending_entry(
-        &self,
-        request: RestartJobRequest,
-    ) -> Result<SelectionPortTestEntry, String> {
-        let (owner, executor_nonce) = Self::prepare_lifecycle_owner(
-            replacement::OwnedReplacementDescriptor::EntryRestart(request),
-        );
-        self.insert_lifecycle_entry(&owner)?;
-        owner.state.lock().unwrap().stage = ReplacementStage::Queued;
-        Ok(SelectionPortTestEntry {
-            entry: Some(OwnedLifecycleEntry {
-                owner: owner.clone(),
-                executor_nonce,
-                authority: None,
-            }),
-            owner,
-        })
-    }
-
     pub(crate) fn port_test_transaction<R: Runtime>(
         &self,
         app: AppHandle<R>,
     ) -> SelectionTransaction<R> {
         SelectionTransaction::new(app, Arc::downgrade(&self.inner))
     }
-
-    pub(crate) async fn port_test_drive<R: Runtime>(
-        &self,
-        t: &SelectionTransaction<R>,
-        mut entry: SelectionPortTestEntry,
-        request: RestartJobRequest,
-        exit: SelectionPortTestExit,
-    ) -> SelectionPortTestEntry {
-        if matches!(exit, SelectionPortTestExit::FailedEnqueue) {
-            let mut receiver = self.inner.receiver.lock().unwrap().take().unwrap();
-            receiver.close();
-            drop(receiver);
-            assert!(matches!(
-                self.try_reserve_envelope(),
-                Err(SelectionCoordinatorError::Unavailable)
-            ));
-            entry.drop_entry();
-            return entry;
-        }
-        let (admission, slot) = self.try_reserve_envelope().unwrap();
-        let (response, receiver) = oneshot::channel();
-        let envelope = CoordinatorEnvelope {
-            _admission: admission,
-            _critical_admission: None,
-            _create_ticket: None,
-            job: CoordinatorJob::RestartLifecycle {
-                entry: entry.entry.take().unwrap(),
-                request,
-                response,
-            },
-        };
-        match exit {
-            SelectionPortTestExit::Drain => {
-                drop(slot.send(envelope));
-                let mut queue = self.inner.receiver.lock().unwrap().take().unwrap();
-                queue.close();
-                SelectionTransaction::drain_after_shutdown(t, &mut queue).await;
-                assert!(receiver.await.unwrap().is_err());
-            }
-            SelectionPortTestExit::ReceiverLoss => {
-                drop(slot);
-                drop(receiver);
-                SelectionTransaction::execute_envelope(t, envelope).await;
-            }
-            SelectionPortTestExit::FailedEnqueue => unreachable!(),
-        }
-        entry
-    }
 }
 
 #[cfg(test)]
-impl<R: Runtime> SelectionTransaction<R> {
-    pub(crate) fn port_test_restore_nonce(&self) -> Option<Uuid> {
-        self.restore_nonce
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn port_test_binding(session_id: Uuid) -> PendingCreateBinding {
-    PendingCreateBinding::new(session_id, Uuid::new_v4())
-}
-
-#[cfg(test)]
-impl LifecycleEffectGuard {
-    pub(crate) fn port_test_identity(&self) -> (Uuid, Uuid) {
-        (
-            self.owner.operation,
-            self.owner.state.lock().unwrap().executor_nonce,
-        )
-    }
-}
+pub(crate) use tests::{port_test_binding, SelectionPortTestExit};
 
 #[cfg(test)]
 mod tests;

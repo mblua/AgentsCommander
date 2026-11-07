@@ -1,6 +1,9 @@
 //! Native lifecycle execution behind the selection-owned port.
 
+mod host;
 pub(crate) mod turn;
+
+pub(crate) use crate::session::selection::SelectionTransaction;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -19,7 +22,7 @@ use crate::session::selection::{
     DestroyOutcome, DestroyRequest, LifecycleAdmission, LifecycleEffectGuard,
     LifecycleEntryOutcome, LifecycleExecutor, LifecycleExecutorState, LifecycleFuture,
     LifecycleLease, RestartJobRequest, RootJobRequest, SelectionCoordinator,
-    SelectionCoordinatorError, SelectionTransaction,
+    SelectionCoordinatorError,
 };
 
 fn executor<R: Runtime>(

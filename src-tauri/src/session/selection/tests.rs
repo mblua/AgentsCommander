@@ -457,3 +457,300 @@ mod source_ownership;
 mod timing;
 mod user_switch;
 mod worker;
+
+#[cfg(test)]
+pub(crate) struct SelectionPortTestState {
+    pub(crate) cleanup_pty: Option<Arc<Mutex<PtyManager>>>,
+    pub(crate) cleanup_backend_present: bool,
+    pub(crate) receiver_present: bool,
+    pub(crate) worker_present: bool,
+    pub(crate) queue_capacity: usize,
+    pub(crate) admission_available: usize,
+    pub(crate) create_tickets_available: usize,
+    pub(crate) expected_queue_capacity: usize,
+    pub(crate) expected_admission_capacity: usize,
+    pub(crate) expected_create_ticket_capacity: usize,
+}
+
+#[cfg(test)]
+impl SelectionCoordinator {
+    pub(crate) fn port_test_state(&self) -> SelectionPortTestState {
+        SelectionPortTestState {
+            cleanup_pty: self
+                .inner
+                .cleanup_pty
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(Weak::upgrade),
+            cleanup_backend_present: self
+                .inner
+                .cleanup_container_backend
+                .lock()
+                .unwrap()
+                .is_some(),
+            receiver_present: self.inner.receiver.lock().unwrap().is_some(),
+            worker_present: self.inner.worker.lock().unwrap().is_some(),
+            queue_capacity: self.inner.sender.capacity(),
+            admission_available: self.inner.admission.available_permits(),
+            create_tickets_available: self.inner.create_tickets.available_permits(),
+            expected_queue_capacity: COORDINATOR_QUEUE_CAPACITY,
+            expected_admission_capacity: COORDINATOR_ADMISSION_CAPACITY,
+            expected_create_ticket_capacity: CREATE_TICKET_CAPACITY,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<R: Runtime> SelectionTransaction<R> {
+    pub(crate) fn port_test_binding_presence(&self) -> (bool, bool) {
+        (self.lifecycle_entry.is_some(), self.restore_nonce.is_some())
+    }
+
+    pub(crate) fn port_test_executor(&self) -> Option<Arc<dyn LifecycleExecutor<Self>>> {
+        self.lifecycle_executor()
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct SelectionPortTestEntry {
+    entry: Option<OwnedLifecycleEntry>,
+    owner: Arc<replacement::ReplacementOwner>,
+}
+
+#[cfg(test)]
+impl SelectionPortTestEntry {
+    pub(crate) fn operation(&self) -> Uuid {
+        self.owner.operation
+    }
+
+    pub(crate) fn nonce(&self) -> Uuid {
+        self.entry.as_ref().unwrap().executor_nonce
+    }
+
+    pub(crate) fn sidecar_released(&self) -> bool {
+        self.owner.state.lock().unwrap().sidecar_released
+    }
+
+    pub(crate) fn attach_lease(&mut self, lease: LifecycleLease) {
+        let entry = self.entry.as_mut().unwrap();
+        assert!(entry.authority.is_none());
+        entry.authority = Some(lease);
+    }
+
+    pub(crate) fn lease(&self) -> &LifecycleLease {
+        self.entry.as_ref().unwrap().authority.as_ref().unwrap()
+    }
+
+    pub(crate) fn enter<R: Runtime>(&self, t: &SelectionTransaction<R>) -> SelectionTransaction<R> {
+        t.for_lifecycle_entry(self.entry.as_ref().unwrap())
+    }
+
+    pub(crate) fn observe_return(&self, result: &Result<SessionInfo, String>) {
+        self.entry.as_ref().unwrap().observe_return(result);
+    }
+
+    pub(crate) async fn release<T>(&mut self, executor: &dyn LifecycleExecutor<T>) {
+        self.entry.as_mut().unwrap().release_lease(executor).await;
+    }
+
+    pub(crate) fn drop_entry(&mut self) {
+        drop(self.entry.take());
+    }
+}
+
+#[cfg(test)]
+pub(crate) enum SelectionPortTestExit {
+    Drain,
+    FailedEnqueue,
+    ReceiverLoss,
+}
+
+#[cfg(test)]
+impl SelectionCoordinator {
+    pub(crate) fn port_test_active_restore_nonce(&self) -> Option<Uuid> {
+        let retained = self.inner.retained_replacements.lock().unwrap();
+        retained
+            .restore_active
+            .load(Ordering::Acquire)
+            .then_some(retained.restore_nonce)
+            .flatten()
+    }
+    pub(crate) fn port_test_retained_entry(&self, source: Uuid) -> Option<(Uuid, Uuid, String)> {
+        self.inner
+            .retained_replacements
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .find_map(|owner| {
+                if !matches!(&owner.descriptor,
+                replacement::OwnedReplacementDescriptor::EntryRestart(r) if r.session_id == source)
+                {
+                    return None;
+                }
+                let state = owner.state.lock().unwrap();
+                Some((
+                    owner.operation,
+                    state.executor_nonce,
+                    format!("{:?}", state.stage),
+                ))
+            })
+    }
+    pub(crate) fn port_test_running_unstarted(&self) {
+        assert!(self.inner.worker.lock().unwrap().is_none());
+        assert!(self.inner.receiver.lock().unwrap().is_some());
+        self.inner
+            .phase
+            .compare_exchange(
+                CoordinatorPhase::Bootstrapping as u8,
+                CoordinatorPhase::Running as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .unwrap();
+    }
+
+    pub(crate) fn port_test_pending_entry(
+        &self,
+        request: RestartJobRequest,
+    ) -> Result<SelectionPortTestEntry, String> {
+        let (owner, executor_nonce) = Self::prepare_lifecycle_owner(
+            replacement::OwnedReplacementDescriptor::EntryRestart(request),
+        );
+        self.insert_lifecycle_entry(&owner)?;
+        owner.state.lock().unwrap().stage = ReplacementStage::Queued;
+        Ok(SelectionPortTestEntry {
+            entry: Some(OwnedLifecycleEntry {
+                owner: owner.clone(),
+                executor_nonce,
+                authority: None,
+            }),
+            owner,
+        })
+    }
+
+    pub(crate) async fn port_test_drive<R: Runtime>(
+        &self,
+        t: &SelectionTransaction<R>,
+        mut entry: SelectionPortTestEntry,
+        request: RestartJobRequest,
+        exit: SelectionPortTestExit,
+    ) -> SelectionPortTestEntry {
+        if matches!(exit, SelectionPortTestExit::FailedEnqueue) {
+            let mut receiver = self.inner.receiver.lock().unwrap().take().unwrap();
+            receiver.close();
+            drop(receiver);
+            assert!(matches!(
+                self.try_reserve_envelope(),
+                Err(SelectionCoordinatorError::Unavailable)
+            ));
+            entry.drop_entry();
+            return entry;
+        }
+        let (admission, slot) = self.try_reserve_envelope().unwrap();
+        let (response, receiver) = oneshot::channel();
+        let envelope = CoordinatorEnvelope {
+            _admission: admission,
+            _critical_admission: None,
+            _create_ticket: None,
+            job: CoordinatorJob::RestartLifecycle {
+                entry: entry.entry.take().unwrap(),
+                request,
+                response,
+            },
+        };
+        match exit {
+            SelectionPortTestExit::Drain => {
+                drop(slot.send(envelope));
+                let mut queue = self.inner.receiver.lock().unwrap().take().unwrap();
+                queue.close();
+                SelectionTransaction::drain_after_shutdown(t, &mut queue).await;
+                assert!(receiver.await.unwrap().is_err());
+            }
+            SelectionPortTestExit::ReceiverLoss => {
+                drop(slot);
+                drop(receiver);
+                SelectionTransaction::execute_envelope(t, envelope).await;
+            }
+            SelectionPortTestExit::FailedEnqueue => unreachable!(),
+        }
+        entry
+    }
+}
+
+#[cfg(test)]
+impl<R: Runtime> SelectionTransaction<R> {
+    pub(crate) fn port_test_restore_nonce(&self) -> Option<Uuid> {
+        self.restore_nonce
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn port_test_binding(session_id: Uuid) -> PendingCreateBinding {
+    PendingCreateBinding::new(session_id, Uuid::new_v4())
+}
+
+#[cfg(test)]
+impl LifecycleEffectGuard {
+    pub(crate) fn port_test_identity(&self) -> (Uuid, Uuid) {
+        (
+            self.owner.operation,
+            self.owner.state.lock().unwrap().executor_nonce,
+        )
+    }
+}
+
+#[test]
+fn issue_3950_host_contract() {
+    fn accepts_context<C: SelectionContext>(_: &C::Host) {}
+    let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+        LifecycleTestBackend::default(),
+    ))));
+    let detached = DetachedSessionsState::default();
+    let settings = crate::config::settings::new_settings_state(Default::default());
+    let response_close = crate::pty::manager::ResponseCloseState::default();
+    let host = NeutralSelectionHost::new(
+        Arc::clone(&sessions),
+        Arc::clone(&pty),
+        Arc::clone(&detached),
+        Arc::clone(&settings),
+        response_close,
+    );
+    accepts_context::<NeutralSelectionContext>(&host);
+    assert!(std::ptr::eq(host.sessions_required(), &host.sessions));
+    assert!(Arc::ptr_eq(host.sessions_required(), &sessions));
+    assert!(std::ptr::eq(host.pty_required(), &host.pty));
+    assert!(Arc::ptr_eq(host.pty_required(), &pty));
+    assert!(std::ptr::eq(host.detached_required(), &host.detached));
+    assert!(Arc::ptr_eq(host.detached_required(), &detached));
+    assert!(std::ptr::eq(host.settings_required(), &host.settings));
+    assert!(Arc::ptr_eq(host.settings_required(), &settings));
+    assert!(std::ptr::eq(
+        host.response_close_required(),
+        &host.response_close
+    ));
+    assert!(host.pty_optional().is_none());
+    assert!(host.response_close_optional().is_none());
+    assert!(host.coordinator_optional().is_none());
+    let mut present = host.clone();
+    present.optional_present = true;
+    present.coordinator = Some(SelectionCoordinator::new(
+        sessions,
+        CancellationToken::new(),
+    ));
+    assert!(std::ptr::eq(present.pty_optional().unwrap(), &present.pty));
+    assert!(std::ptr::eq(
+        present.response_close_optional().unwrap(),
+        &present.response_close,
+    ));
+    assert!(std::ptr::eq(
+        present.coordinator_optional().unwrap(),
+        present.coordinator.as_ref().unwrap(),
+    ));
+    println!(
+        "
+ISSUE3950_CONTROL_OK case=issue_3950_host_contract"
+    );
+}
