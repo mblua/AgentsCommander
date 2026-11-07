@@ -23,6 +23,30 @@ pub(crate) fn escape_gitignore_name(name: &str) -> String {
     out
 }
 
+/// #3532 - the context history store owns this directory: its SQLite database
+/// and rollback journals. `heatmap.json` stays visible.
+const CONTEXT_HISTORY_IGNORE_ENTRY: (&str, &str) = (
+    "/context-history/",
+    "# AgentsCommander: exclude the context history database and journals.",
+);
+
+/// #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
+fn catalog_artifact_patterns() -> [String; 10] {
+    [
+        CODING_AGENTS_LOCAL_ARTIFACT,
+        CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+        CODING_AGENTS_LOCK_ARTIFACT,
+        CODING_AGENTS_BASE_TMP_ARTIFACT,
+        CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+        CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
+        CODING_AGENTS_SET_ASIDE_ARTIFACT,
+    ]
+    .map(|artifact| format!("/{artifact}"))
+}
+
 /// [`ensure_ac_root_gitignore`] with the already-resolved instructions
 /// filenames. The `CLAUDE.md` / `AGENTS.md` floor rows are always written; each
 /// other distinct name adds an escaped `**/__agent_*/<name>` row. A name failing
@@ -50,20 +74,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
 
-    // #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
-    let catalog = [
-        CODING_AGENTS_LOCAL_ARTIFACT,
-        CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
-        CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
-        CODING_AGENTS_LOCK_ARTIFACT,
-        CODING_AGENTS_BASE_TMP_ARTIFACT,
-        CODING_AGENTS_LOCAL_TMP_ARTIFACT,
-        CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
-        CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
-        CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
-        CODING_AGENTS_SET_ASIDE_ARTIFACT,
-    ]
-    .map(|artifact| format!("/{artifact}"));
+    let catalog = catalog_artifact_patterns();
     let custom_patterns = custom_instructions_patterns(configured);
 
     // Each entry: (pattern, comment explaining why)
@@ -121,6 +132,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         // naming migration sets a displaced project file aside in `.ac/`.
         project_settings_lock_row,
         set_aside_row,
+        CONTEXT_HISTORY_IGNORE_ENTRY,
     ];
     required_entries.extend(agent_runtime_ignore_entries());
     required_entries.extend(catalog_ignore_entries(&catalog));

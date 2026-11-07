@@ -134,6 +134,8 @@ const SessionItem: Component<{
   isActive: boolean;
   originProject?: string;
   extraContextAction?: SessionContextExtraAction;
+  /** #3532 P11 - project whose context history colors the CTX badge. */
+  historyProjectPath?: string;
 }> = (props) => {
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [showAgentModal, setShowAgentModal] = createSignal(false);
@@ -153,6 +155,10 @@ const SessionItem: Component<{
   const ctxVisible = () =>
     contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
   const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
+  const historyScope = () =>
+    props.historyProjectPath && !props.session.isRootAgent
+      ? { projectPath: props.historyProjectPath, runtimeSessionId: props.session.id }
+      : undefined;
   const quotaUsed = () => {
     const agentId = props.session.agentId;
     return agentId ? sessionsStore.weeklyQuotaUsedByAgentId[agentId] : undefined;
@@ -489,7 +495,12 @@ const SessionItem: Component<{
               >{tier().text}</span>
             )}</Show>
             <Show when={ctxVisible()}>
-              <ContextBadge percent={ctxPercent()} testId={`session.${props.session.id}.contextBadge`} />
+              <ContextBadge
+                percent={ctxPercent()}
+                testId={`session.${props.session.id}.contextBadge`}
+                historyScope={historyScope()}
+                colorDays={settingsStore.current?.contextHistoryColorDays}
+              />
             </Show>
             <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
               <div class="session-item-branches">

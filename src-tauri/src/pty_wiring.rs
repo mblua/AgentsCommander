@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::settings::SettingsState;
+use crate::context_history::observation::ObservedValue;
+use crate::history_runtime::{SessionLaunch, SessionLaunchSource};
 use crate::pty::agent_quota::source::SourceSpec;
 use crate::pty::agent_quota::{
     AgentQuotaPayload, AgentQuotaSource, QuotaEventSink, QuotaRowsSource, QuotaSourceProvider,
@@ -304,10 +306,30 @@ pub(crate) struct ScraperSamples {
     pub(crate) closed_logged: AtomicBool,
     pub(crate) saturated: AtomicBool,
     pub(crate) dropped: AtomicU64,
+    /// #3532 - optional, independent fanout to the context-history ingress. It is
+    /// offered first and is itself nonblocking, so it can never delay or suppress
+    /// the alert bridge below.
+    pub(crate) history: Option<crate::history_runtime::HistoryIngress>,
+}
+
+/// The history ingress speaks its own observation type, not the scraper's.
+fn history_value(sample: &ContextSample) -> (uuid::Uuid, ObservedValue) {
+    match *sample {
+        ContextSample::Reading {
+            session_id,
+            percent,
+        } => (session_id, ObservedValue::Reading(percent)),
+        ContextSample::Unavailable { session_id } => (session_id, ObservedValue::Unavailable),
+        ContextSample::SessionOver { session_id } => (session_id, ObservedValue::SessionOver),
+    }
 }
 
 impl ContextSampleSink for ScraperSamples {
     fn observe(&self, sample: ContextSample) {
+        if let Some(history) = &self.history {
+            let (session_id, value) = history_value(&sample);
+            history.offer(session_id, value);
+        }
         match self.sender.try_send(sample) {
             Ok(()) => {
                 let recovery_capacity =
@@ -375,6 +397,44 @@ impl ContextPersistSink for ScraperPersist {
             }
             crate::config::sessions_persistence::persist_current_state_prune_dormant(&guard).await;
         })
+    }
+}
+
+/// #3532 - the history runtime's view of a live session: its launch facts, copied
+/// under one short read of the manager and released before any history I/O.
+pub(crate) struct HistorySessions {
+    pub(crate) session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+}
+
+impl SessionLaunchSource for HistorySessions {
+    fn launches<'a>(
+        &'a self,
+        ids: &'a [uuid::Uuid],
+    ) -> futures::future::BoxFuture<'a, Option<Vec<Option<SessionLaunch>>>> {
+        Box::pin(async move {
+            let facts = {
+                let manager = self.session_mgr.read().await;
+                manager.history_launch_facts(ids).await
+            }?;
+            let launches = facts.into_iter().map(|fact| {
+                fact.map(|fact| SessionLaunch {
+                    session_id: fact.id,
+                    exited: fact.exited(),
+                    working_directory: fact.working_directory,
+                    shell: fact.shell,
+                    effective_shell_args: fact.effective_shell_args,
+                    is_root_agent: fact.is_root_agent,
+                })
+            });
+            Some(launches.collect())
+        })
+    }
+
+    fn live_ids<'a>(
+        &'a self,
+        ids: &'a [uuid::Uuid],
+    ) -> futures::future::BoxFuture<'a, Option<std::collections::HashSet<uuid::Uuid>>> {
+        Box::pin(async move { self.session_mgr.read().await.history_live_ids(ids).await })
     }
 }
 

@@ -1,3 +1,4 @@
+use super::context_history::ContextHistoryColorDays;
 use super::{
     default_agent_group_kill_private_bytes, default_agent_group_warn_private_bytes,
     default_agent_process_kill_private_bytes, default_api_bind, default_api_port,
@@ -20,13 +21,17 @@ use super::{
     MainSidebarSide, MainWindowDisplayState, TelegramNetworkPollErrorLogging,
 };
 
+fn default_shell_and_args() -> (String, Vec<String>) {
+    if cfg!(target_os = "windows") {
+        ("powershell.exe".to_string(), vec!["-NoLogo".to_string()])
+    } else {
+        ("/bin/bash".to_string(), vec![])
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
-        let (default_shell, default_shell_args) = if cfg!(target_os = "windows") {
-            ("powershell.exe".to_string(), vec!["-NoLogo".to_string()])
-        } else {
-            ("/bin/bash".to_string(), vec![])
-        };
+        let (default_shell, default_shell_args) = default_shell_and_args();
 
         Self {
             default_shell,
@@ -142,6 +147,7 @@ impl Default for AppSettings {
             response_close_enabled: true,
             response_close_idle_seconds: default_response_close_idle_seconds(),
             room_idle_confirmation_seconds: default_room_idle_confirmation_seconds(),
+            context_history_color_days: ContextHistoryColorDays::default(),
         }
     }
 }

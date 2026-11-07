@@ -13,12 +13,16 @@ fn cleanup_counter(counter: Arc<AtomicUsize>) -> ScannerTaskCleanup {
 
 #[test]
 fn admission_seal_rejects_every_later_task() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock snapshot app");
     let owner = SnapshotScannerShutdownOwner::default();
     owner.seal();
     let ran = Arc::new(AtomicUsize::new(0));
     let ran_in_task = Arc::clone(&ran);
     let phase = Arc::new(std::sync::atomic::AtomicU8::new(SCANNER_TASK_ABORTABLE));
     let admitted = owner.spawn_tracked(
+        app.handle(),
         None,
         phase,
         cleanup_counter(Arc::new(AtomicUsize::new(0))),
@@ -33,10 +37,14 @@ fn admission_seal_rejects_every_later_task() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn drain_abort_joins_work_before_service_ownership() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock snapshot app");
     let owner = SnapshotScannerShutdownOwner::default();
     let cleanup = Arc::new(AtomicUsize::new(0));
     let ownership = ScannerTaskOwnership::new();
     assert!(owner.spawn_tracked(
+        app.handle(),
         None,
         ownership.phase,
         cleanup_counter(Arc::clone(&cleanup)),
@@ -56,6 +64,9 @@ async fn drain_abort_joins_work_before_service_ownership() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn blocking_service_owner_is_retained_then_joined_and_cleaned() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock snapshot app");
     let owner = SnapshotScannerShutdownOwner::default();
     let cleanup = Arc::new(AtomicUsize::new(0));
     let ownership = ScannerTaskOwnership::new();
@@ -63,6 +74,7 @@ async fn blocking_service_owner_is_retained_then_joined_and_cleaned() {
     let release = Arc::new(tokio::sync::Notify::new());
     let release_task = Arc::clone(&release);
     assert!(owner.spawn_tracked(
+        app.handle(),
         None,
         ownership.phase,
         cleanup_counter(Arc::clone(&cleanup)),
@@ -91,6 +103,9 @@ async fn blocking_service_owner_is_retained_then_joined_and_cleaned() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn finalizer_owner_is_never_aborted_and_is_reported_explicitly() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock snapshot app");
     let owner = SnapshotScannerShutdownOwner::default();
     let cleanup = Arc::new(AtomicUsize::new(0));
     let ownership = ScannerTaskOwnership::new();
@@ -99,6 +114,7 @@ async fn finalizer_owner_is_never_aborted_and_is_reported_explicitly() {
     let release = Arc::new(tokio::sync::Notify::new());
     let release_task = Arc::clone(&release);
     assert!(owner.spawn_tracked(
+        app.handle(),
         None,
         ownership.phase,
         cleanup_counter(Arc::clone(&cleanup)),

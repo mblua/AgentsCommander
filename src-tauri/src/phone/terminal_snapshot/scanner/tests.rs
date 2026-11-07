@@ -1,4 +1,5 @@
 use super::*;
+use crate::phone::terminal_snapshot::task::SnapshotTaskHost;
 
 fn request_name(index: usize) -> String {
     format!("00000000-0000-4000-8000-{index:012x}.json")
@@ -210,6 +211,40 @@ struct RecordingSlots {
 /// Clone shares the slots and the trace; cloning looks nothing up.
 #[derive(Clone, Default)]
 struct RecordingHost(Arc<RecordingSlots>);
+
+impl SnapshotTaskHost for RecordingHost {
+    fn spawn_snapshot_task(
+        &self,
+        future: futures::future::BoxFuture<'static, ()>,
+    ) -> std::pin::Pin<Box<dyn crate::phone::terminal_snapshot::task::SnapshotTask>> {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        app.handle().spawn_snapshot_task(future)
+    }
+}
+
+#[tokio::test]
+async fn snapshot_task_forwards_completion_and_abort() {
+    let host = RecordingHost::default();
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    let task = host.spawn_snapshot_task(Box::pin(async move {
+        completed_tx.send(()).expect("completion receiver");
+    }));
+    task.await.expect("native completion");
+    completed_rx.await.expect("forwarded future ran");
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task = host.spawn_snapshot_task(Box::pin(async move {
+        started_tx.send(()).expect("start receiver");
+        std::future::pending::<()>().await;
+    }));
+    started_rx.await.expect("blocked task started");
+    task.abort();
+    assert!(task.await.is_err(), "aborted native task must fail to join");
+    assert!(host.trace().is_empty());
+    assert_eq!(host.snapshot_lookups(), 0);
+}
 
 impl RecordingHost {
     fn record<'a, T>(&'a self, service: &'static str, slot: &'a Option<T>) -> Option<&'a T> {

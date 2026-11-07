@@ -2,6 +2,7 @@ pub(crate) mod agency_templates;
 mod api_client;
 mod close_session;
 mod coding_agent;
+mod context_history;
 pub(crate) mod create_agent;
 pub(crate) mod create_agent_matrix;
 mod harness;
@@ -167,6 +168,8 @@ pub enum Commands {
     ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
+    /// Report context usage of sessions started in a period (returns JSON)
+    ContextHistory(context_history::ContextHistoryArgs),
     /// Manage downloaded Agency Agents role templates
     AgencyTemplates(agency_templates::AgencyTemplatesArgs),
     /// Create a new Agent Matrix in a registered project
@@ -461,6 +464,7 @@ pub fn handle_cli(
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
+        Commands::ContextHistory(args) => context_history::execute(args),
         Commands::AgencyTemplates(args) => agency_templates::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
         Commands::CreateAgentMatrix(args) => create_agent_matrix::execute(args),

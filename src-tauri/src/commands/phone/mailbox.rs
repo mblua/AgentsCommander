@@ -7,7 +7,6 @@ use crate::config::settings::SettingsState;
 use crate::phone::mailbox::browser::snapshot::WebBrowserSnapshot;
 use crate::phone::mailbox::host::{BrowserHost, MailboxHost, MailboxSessionCreate};
 use crate::pty::manager::PtyManager;
-use crate::pty::terminal_snapshot::TerminalSnapshotState;
 use crate::session::create_contracts::{
     OwnedReplacementCreateRequest, OwnedReplacementCreateStep, PtyTargetCreateStep,
 };
@@ -68,11 +67,6 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
 
     fn outbox(&self) -> &AppOutbox {
         self.state::<AppOutbox>().inner()
-    }
-
-    fn snapshot_state(&self) -> Option<&Arc<TerminalSnapshotState>> {
-        self.try_state::<Arc<TerminalSnapshotState>>()
-            .map(|state| state.inner())
     }
 
     async fn create_session_inner<'a>(

@@ -633,6 +633,7 @@ async fn sample_adapter_is_nonblocking_and_recovers_only_after_quarter_capacity(
         closed_logged: AtomicBool::new(false),
         saturated: AtomicBool::new(false),
         dropped: AtomicU64::new(0),
+        history: None,
     };
     let sample = || ContextSample::Unavailable {
         session_id: uuid::Uuid::nil(),
