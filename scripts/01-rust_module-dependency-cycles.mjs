@@ -3282,19 +3282,6 @@ const CRATE_ABC = 'mod a;\nmod b;\nmod c;\n';
 
 const FIXTURES = [
   {
-    name: 'F0 child path does not resolve to a same-name crate-root module (#3991)',
-    files: {
-      'lib.rs': 'mod a;\nmod x;\n',
-      'a.rs': 'mod x;\npub(crate) use x::T;\npub fn f() { x::g(); }\n',
-      'a/x.rs': 'pub struct T;\npub fn g() {}\n',
-      'x.rs': 'pub struct T;\npub fn g() {}\n',
-    },
-    run: [],
-    assert(res, h) {
-      h.no(hasModuleEdge(res, 'crate::a', 'crate::x'), 'false a -> crate-root x edge');
-    },
-  },
-  {
     name: 'F1 line comment is not a reference',
     files: {
       'lib.rs': 'mod a;\nmod b;\n',
@@ -4370,6 +4357,20 @@ const FIXTURES = [
         [['crate', 2], ['crate::empty', 0], ['crate::one', 1]],
         'loc for a two line file, an empty file and an unterminated one line file',
       );
+    },
+  },
+  {
+    // #3991: rustc resolves `x` inside `a` to its child `a::x`, not to `crate::x`.
+    name: 'F44 child use path never binds to a same-name crate-root module',
+    files: Object.fromEntries([
+      ['lib.rs', 'mod a;\nmod x;\n'],
+      ['a.rs', 'mod x;\npub(crate) use x::T;\npub fn f() { x::g(); }\n'],
+      ...['a/x.rs', 'x.rs'].map((file) => [file, 'pub struct T;\npub fn g() {}\n']),
+    ]),
+    run: [],
+    assert(res, h) {
+      h.yes(moduleIds(res).includes('crate::a::x'), 'child module crate::a::x exists');
+      h.no(hasModuleEdge(res, 'crate::a', 'crate::x'), 'false a -> crate-root x edge');
     },
   },
 ];
