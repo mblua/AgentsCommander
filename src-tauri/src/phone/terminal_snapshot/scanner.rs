@@ -9,6 +9,7 @@ use super::publish::sweep_directory;
 use super::shutdown::ScannerTaskCleanup;
 use super::shutdown::ScannerTaskOwnership;
 use super::shutdown::SnapshotScannerShutdownOwner;
+use super::task::SnapshotTaskHost;
 use super::CURSOR_CAP;
 use super::MAX_DIRECTORY_ENTRIES;
 use super::MAX_PER_POLL;
@@ -291,7 +292,11 @@ impl SnapshotMailboxScanner {
         true
     }
 
-    pub(crate) fn scan_root<H: TerminalSnapshotHost>(&mut self, host: &H, requester_root: &Path) {
+    pub(crate) fn scan_root<H: TerminalSnapshotHost + SnapshotTaskHost>(
+        &mut self,
+        host: &H,
+        requester_root: &Path,
+    ) {
         let Some(ScanDirectories {
             root_identity,
             request_directory,
@@ -343,7 +348,7 @@ impl SnapshotMailboxScanner {
                 (&request_directory, &request_directory_identity),
                 (&response_directory, &response_directory_identity),
             );
-            let host = host.clone();
+            let task_host = host.clone();
             let response_directory = response_directory.clone();
             let expected_root = root_identity.clone();
             let ownership = ScannerTaskOwnership::new();
@@ -358,7 +363,7 @@ impl SnapshotMailboxScanner {
                 }
                 let processed = crate::logging::catch_payload_future(process_claimed(
                     ownership,
-                    &host,
+                    &task_host,
                     snapshot_state,
                     processing,
                     response_directory,
@@ -373,6 +378,7 @@ impl SnapshotMailboxScanner {
                 }
             };
             if !self.shutdown_owner.spawn_tracked(
+                host,
                 Some(audit_request_id.clone()),
                 phase,
                 cleanup.clone(),

@@ -1,5 +1,7 @@
 use super::failure::record_host_ingress_failure;
+use super::task::{SnapshotTask, SnapshotTaskHost};
 use std::collections::HashMap;
+use std::pin::Pin;
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use uuid::Uuid;
 
@@ -99,7 +101,7 @@ impl ScannerTaskOwnership {
 struct ScannerTaskRecord {
     audit_request_id: Option<String>,
     phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
-    handle: tauri::async_runtime::JoinHandle<()>,
+    handle: Pin<Box<dyn SnapshotTask>>,
     cleanup: ScannerTaskCleanup,
 }
 
@@ -208,8 +210,9 @@ impl SnapshotScannerShutdownOwner {
         }
     }
 
-    pub(super) fn spawn_tracked<F>(
+    pub(super) fn spawn_tracked<S: SnapshotTaskHost + ?Sized, F>(
         &self,
+        host: &S,
         audit_request_id: Option<String>,
         phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
         cleanup: ScannerTaskCleanup,
@@ -223,10 +226,10 @@ impl SnapshotScannerShutdownOwner {
             return false;
         }
         let task_phase = phase.clone();
-        let handle = tauri::async_runtime::spawn(async move {
+        let handle = host.spawn_snapshot_task(Box::pin(async move {
             future.await;
             task_phase.store(SCANNER_TASK_TERMINAL, std::sync::atomic::Ordering::Release);
-        });
+        }));
         state.tasks.insert(
             Uuid::new_v4(),
             ScannerTaskRecord {

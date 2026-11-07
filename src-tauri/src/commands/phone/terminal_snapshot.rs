@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tauri::Manager;
 
-#[allow(dead_code, reason = "3946 phased consumer migration")]
 struct TauriSnapshotTask {
     inner: tauri::async_runtime::JoinHandle<()>,
 }
