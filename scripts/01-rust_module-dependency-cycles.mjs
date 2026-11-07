@@ -1743,6 +1743,15 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   } else if (target.kind !== 'lib' && (first === target.libName || first === target.pkgIdent)) {
     base = [];
     rest = segments.slice(1);
+  } else if (contextSegments.length > 0
+    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
+    // Rust 2018 resolves a relative first segment in the current module before
+    // the crate root: `use process::X` inside `a::b` with `mod process;` names
+    // `a::b::process`, never a crate-root `process` (#3991). Child-relative
+    // paths make no edge, exactly as for a child whose name has no crate-root
+    // twin, so a same-name crate-root module can never receive a false arc.
+    ctx.stats.externalReferences++;
+    return null;
   } else {
     const isExternal = target.externCrates.has(first);
     const rootModule = tree.modules.get(target.targetId);
@@ -3272,6 +3281,19 @@ function main(argv) {
 const CRATE_ABC = 'mod a;\nmod b;\nmod c;\n';
 
 const FIXTURES = [
+  {
+    name: 'F0 child path does not resolve to a same-name crate-root module (#3991)',
+    files: {
+      'lib.rs': 'mod a;\nmod x;\n',
+      'a.rs': 'mod x;\npub(crate) use x::T;\npub fn f() { x::g(); }\n',
+      'a/x.rs': 'pub struct T;\npub fn g() {}\n',
+      'x.rs': 'pub struct T;\npub fn g() {}\n',
+    },
+    run: [],
+    assert(res, h) {
+      h.no(hasModuleEdge(res, 'crate::a', 'crate::x'), 'false a -> crate-root x edge');
+    },
+  },
   {
     name: 'F1 line comment is not a reference',
     files: {
