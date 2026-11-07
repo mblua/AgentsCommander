@@ -15,7 +15,6 @@ use crate::pty::inject::host::InjectionHost;
 use crate::pty::inject::BoundaryMetadataOutcome;
 use crate::pty::manager::PtyManager;
 use crate::pty::menu_guard::MenuGuardEvents;
-use crate::pty::terminal_snapshot::TerminalSnapshotState;
 use crate::session::create_contracts::{
     CreateSelectionIntent, OwnedReplacementCreateRequest, OwnedReplacementCreateStep,
     PtyTargetCreateStep,
@@ -38,7 +37,6 @@ use uuid::Uuid;
 
 /// Settlement of the native coordinator create ticket used by mailbox tests.
 #[cfg(test)]
-#[allow(dead_code, reason = "3946 phased consumer migration")]
 pub(crate) trait CoordinatorTicket {
     fn succeeded(self);
     fn failed(self);
@@ -67,6 +65,8 @@ pub(crate) trait MailboxHost:
     WakeDeliveryState
     + ResponseAdmissionState
     + ResponseCompletionState
+    + crate::phone::terminal_snapshot::TerminalSnapshotHost
+    + crate::phone::terminal_snapshot::task::SnapshotTaskHost
     + InjectionHost
     + PtyInputEvents
     + MailboxDeliveryEvents
@@ -82,7 +82,6 @@ pub(crate) trait MailboxHost:
     type CoordinatorTicket: CoordinatorTicket;
 
     #[cfg(test)]
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn begin_coordinator_create(&self, cwd: &str) -> Option<Self::CoordinatorTicket>;
 
     fn master_required(&self) -> &MasterToken;
@@ -95,19 +94,12 @@ pub(crate) trait MailboxHost:
 
     fn pending_clear(&self) -> &Arc<PendingSelfClear>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn clocks(&self) -> Option<&CoordinatorClocksState>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn shutdown_opt(&self) -> Option<&ShutdownSignal>;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn outbox(&self) -> &AppOutbox;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
-    fn snapshot_state(&self) -> Option<&Arc<TerminalSnapshotState>>;
-
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn create_session_inner<'a>(
         &'a self,
         request: MailboxSessionCreate<'a>,
@@ -151,7 +143,6 @@ pub(crate) trait MailboxHost:
         enforcement: CreationGateEnforcement,
     ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn attach_persisted_telegram_if_configured<'a>(
         &'a self,
         session_id: Uuid,
@@ -172,12 +163,8 @@ pub(crate) trait MailboxHost:
 }
 
 /// Synchronous browser effects used by mailbox policy.
-#[allow(dead_code, reason = "3946 phased consumer migration")]
 pub(crate) trait BrowserHost: MailboxHost {
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn agent_navigate(&self, url: &str) -> Result<WebBrowserSnapshot, String>;
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn reload(&self) -> Result<WebBrowserSnapshot, String>;
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn snapshot(&self) -> WebBrowserSnapshot;
 }
