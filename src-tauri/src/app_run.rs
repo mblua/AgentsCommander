@@ -57,7 +57,24 @@ pub(crate) fn run(
         ui_automation_state_for_exit: l.for_exit.ui_automation_state_for_exit,
     };
 
-    let builder = plugin_builder();
+    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
+    // on Windows, Linux and macOS; every other target never links them. The
+    // rest of the builder chain is shared. This predicate must match
+    // `Cargo.toml` and `screenshot/mod.rs`.
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let builder = builder
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        crate::screenshot::begin_capture_from_hotkey(app.clone());
+                    }
+                })
+                .build(),
+        );
 
     #[cfg(target_os = "linux")]
     let builder = builder.manage(display_env);
@@ -199,7 +216,7 @@ fn prepare_launch(
     // Callbacks run on native threads (watcher + PTY read loop).
     // AppHandle.emit() is sync and thread-safe, so no tokio needed.
     // AppHandle is set in setup() via OnceLock; callbacks no-op until then.
-    let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
+    let app_handle_lock = Arc::new(OnceLock::new());
     let idle_detector = build_idle_detector(
         owners,
         &response_close,
@@ -371,28 +388,6 @@ fn build_idle_detector(
     }
     response_close.bind_publisher(crate::pty::manager::ResponseClosePublisher::RawOutput);
     idle_detector
-}
-
-fn plugin_builder() -> tauri::Builder<tauri::Wry> {
-    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
-    // on Windows, Linux and macOS; every other target never links them. The
-    // rest of the builder chain is shared. This predicate must match
-    // `Cargo.toml` and `screenshot/mod.rs`.
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
-
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    let builder = builder
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        crate::screenshot::begin_capture_from_hotkey(app.clone());
-                    }
-                })
-                .build(),
-        );
-    builder
 }
 
 struct BootPreamble {
