@@ -104,6 +104,9 @@ impl ProjectEnvironment for FakeEnv {
     ) -> Result<Box<dyn HistoryAppend>, StoreError> {
         Ok(Box::new(FakeWriter(Arc::clone(&self.0))))
     }
+    fn is_root_directory(&self, _working_directory: &str) -> bool {
+        false
+    }
 }
 
 /// Every session is present and live unless marked `absent`.
@@ -453,6 +456,9 @@ impl ProjectEnvironment for DiskEnv {
         config: &HistoryConfig,
     ) -> Result<Box<dyn HistoryAppend>, StoreError> {
         Ok(Box::new(HistoryWriter::open(&self.ac_root, config)?))
+    }
+    fn is_root_directory(&self, _working_directory: &str) -> bool {
+        false
     }
 }
 

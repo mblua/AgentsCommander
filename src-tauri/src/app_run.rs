@@ -3,6 +3,7 @@
 //! `exit.rs`.
 
 pub(crate) mod exit;
+pub(crate) mod history_environment;
 mod setup;
 
 use std::collections::{HashMap, HashSet};

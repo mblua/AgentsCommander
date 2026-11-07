@@ -154,7 +154,7 @@ fn context_history_scopes() -> Arc<crate::history_runtime::HistoryScopeState> {
     };
     Arc::new(crate::history_runtime::HistoryScopeState::new(
         Arc::new(sessions),
-        Arc::new(crate::history_runtime::DiskProjectEnvironment),
+        Arc::new(crate::app_run::history_environment::DiskProjectEnvironment),
     ))
 }
 
