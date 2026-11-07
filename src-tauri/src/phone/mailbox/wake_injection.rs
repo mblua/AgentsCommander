@@ -93,17 +93,18 @@ impl MailboxPoller {
             shell: spawn_shell,
             shell_args: spawn_args,
             cwd,
-            session_name: Some(session_name),
-            agent_id: resolved_command.agent_id.clone(),
-            agent_label: spawn_label,
-            // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence.
+            session_name: Some(session_name), // readable name, no [temp] prefix
+            agent_id: resolved_command.agent_id.clone(), // links to agent config
+            agent_label: spawn_label,         // human-readable label
+            // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence
             skip_tooling_save,
-            git_repos: Vec::new(),
-            skip_auto_resume,
+            git_repos: Vec::new(), // git_repos
+            skip_auto_resume,      // see deliver_wake top
             resolved_spawn,
-            // #1271: host shell from the same settings snapshot as the agent.
+            // #1271 - the configured host shell paired with the resolved agent,
+            // built from the same settings snapshot that produced the spawn.
             resolved_agent_host_shell,
-            // #973: headless caller retains the default 120x30 viewport.
+            // #973 - headless caller: no terminal to measure, keep 120x30.
             viewport: None,
             selection_intent: CreateSelectionIntent::Background,
         })

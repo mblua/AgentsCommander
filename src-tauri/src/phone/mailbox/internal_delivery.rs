@@ -155,11 +155,11 @@ impl MailboxPoller {
         Ok(())
     }
 
-    async fn prepare_internal_background_spawn<'a, S: PtyAuthorityState + ?Sized>(
-        &'a self,
-        app: &'a S,
-        target: &'a InternalSystemTarget,
-        guard: &'a InternalNoticeGuard,
+    async fn prepare_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        target: &InternalSystemTarget,
+        guard: &InternalNoticeGuard,
     ) -> Result<
         (
             ResolvedWakeAgentCommand,
@@ -200,7 +200,7 @@ impl MailboxPoller {
             Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, target).await?;
 
         // Repeat the guard and exact-path absence check immediately before actuation. Command
-        // and profile resolution can perform filesystem work; do not widen this race.
+        // and profile resolution above can perform filesystem work and must not widen this race.
         self.authorize_internal_background_spawn(app, target, guard)
             .await?;
 
@@ -212,13 +212,13 @@ impl MailboxPoller {
         ))
     }
 
-    async fn authorize_internal_exited_session<'a, S: PtyAuthorityState + ?Sized>(
-        &'a self,
-        app: &'a S,
-        target: &'a InternalSystemTarget,
-        exited_candidate: &'a SessionInfo,
-        cancellation: &'a CancellationToken,
-        guard: &'a InternalNoticeGuard,
+    async fn authorize_internal_exited_session<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        target: &InternalSystemTarget,
+        exited_candidate: &SessionInfo,
+        cancellation: &CancellationToken,
+        guard: &InternalNoticeGuard,
     ) -> Result<Uuid, String> {
         if cancellation.is_cancelled() {
             return Err(
@@ -883,9 +883,9 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn destroy_exited_wake_session<'a, S: MailboxHost>(
-        &'a self,
-        app: &'a S,
+    pub(crate) async fn destroy_exited_wake_session<S: MailboxHost>(
+        &self,
+        app: &S,
         session_id: Uuid,
     ) -> Result<(), String> {
         #[cfg(test)]
