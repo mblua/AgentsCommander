@@ -530,7 +530,7 @@ fn start_session_observers(
         Arc::new(HistorySessions {
             session_mgr: Arc::clone(&session_mgr_for_scraper),
         }),
-        Arc::new(crate::history_runtime::DiskProjectEnvironment),
+        Arc::new(crate::app_run::history_environment::DiskProjectEnvironment),
     ));
     let history_ingress = crate::start_context_history_runtime(
         Arc::clone(&history_scopes),
