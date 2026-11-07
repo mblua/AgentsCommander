@@ -148,8 +148,6 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 #[cfg(test)]
-use tauri::Manager;
-#[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use uuid::Uuid;
