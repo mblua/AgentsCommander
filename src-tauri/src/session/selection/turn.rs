@@ -128,40 +128,6 @@ pub(super) fn with_test_selection_turn<T: Send + 'static>(
     }
 }
 
-/// #1940 - run a persisted selection operation on its own owned task.
-///
-/// The submitting task is rejected with `RecursiveSubmission` BEFORE the spawn
-/// (task locals do not propagate into the spawned task, so checking there would
-/// be ineffective). The owned task acquires the turn, awaits the supplied
-/// operation and releases the turn only when that operation finishes; dropping
-/// the caller detaches the owned task instead of aborting it, so a restart that
-/// was already accepted still settles under the turn. A task join failure is
-/// reported as the explicit `selectionOperationTurnJoinFailed` error.
-pub(crate) async fn run_owned_selection_operation<F, Fut, T>(operation: F) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    run_owned_selection_operation_inner(SelectionTurnMode::Write, None, operation).await
-}
-
-/// #2475 - a READ-ONLY operation on its own owned task, holding the read side
-/// of the turn, plus the same timing line as `run_owned_selection_operation_timed`.
-/// Only for operations proven not to write (see the #2485 read-only audit).
-/// Same rejection, owned task and join-failure error as the write path.
-pub(crate) async fn run_owned_selection_read_timed<F, Fut, T>(
-    command: &'static str,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    run_owned_selection_operation_inner(SelectionTurnMode::Read, Some(command), operation).await
-}
-
 pub(super) fn selection_timing_line(
     command: &str,
     queue_wait: std::time::Duration,
@@ -187,23 +153,6 @@ pub(super) fn record_selection_timing(
     timing_probe::deliver(command, &sample, &line);
     #[cfg(not(test))]
     let _ = command;
-}
-
-pub(super) async fn run_owned_selection_operation_inner<F, Fut, T>(
-    mode: SelectionTurnMode,
-    command: Option<&'static str>,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    let task = prepare_owned_selection_task(mode, command, operation)?;
-    match tauri::async_runtime::spawn(task).await {
-        Ok(result) => result,
-        Err(_) => Err("selectionOperationTurnJoinFailed".to_string()),
-    }
 }
 
 fn prepare_owned_selection_task<F, Fut, T>(

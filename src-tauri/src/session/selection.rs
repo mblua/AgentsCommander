@@ -669,8 +669,7 @@ pub(crate) use turn::acquire_selection_read_turn;
 pub(crate) use turn::run_owned_selection_operation_timed_with_tasks;
 pub(crate) use turn::IN_SELECTION_WORKER;
 pub(crate) use turn::{
-    acquire_selection_operation_turn, run_owned_selection_operation,
-    run_owned_selection_operation_with_tasks, run_owned_selection_read_timed,
+    acquire_selection_operation_turn, run_owned_selection_operation_with_tasks,
     run_owned_selection_read_timed_with_tasks,
 };
 #[cfg(test)]

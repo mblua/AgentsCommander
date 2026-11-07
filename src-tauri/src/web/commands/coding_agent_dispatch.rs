@@ -1,5 +1,8 @@
 use serde_json::{json, Value};
 
+use crate::commands::session::selection_executor::turn::{
+    run_owned_selection_operation, run_owned_selection_read_timed,
+};
 use crate::web::event_broadcast::broadcast_all;
 
 use super::args::{require_json, require_str};
@@ -121,17 +124,12 @@ async fn get_replica_selection_default_command(
     let request: crate::commands::config::GetReplicaSelectionDefaultRequest =
         require_json(args, "request")?;
     let state = state.clone();
-    crate::session::selection::run_owned_selection_read_timed(
-        "get_replica_selection_default",
-        move || async move {
-            let result = crate::commands::config::get_replica_selection_default_inner(
-                &state.settings,
-                request,
-            )
-            .await?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        },
-    )
+    run_owned_selection_read_timed("get_replica_selection_default", move || async move {
+        let result =
+            crate::commands::config::get_replica_selection_default_inner(&state.settings, request)
+                .await?;
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    })
     .await
 }
 
@@ -142,7 +140,7 @@ async fn set_replica_selection_default_command(
     let request: crate::commands::config::SetReplicaSelectionDefaultRequest =
         require_json(args, "request")?;
     let state = state.clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
+    run_owned_selection_operation(move || async move {
         let (result, payload) =
             crate::commands::config::set_replica_selection_default_inner(&state.settings, request)
                 .await?;
@@ -230,7 +228,7 @@ async fn set_instance_profile_override_command(
     // operation so the guarded write and its broadcast stay serialized
     // with the desktop paths and the self-switch persist/restart.
     let state = state.clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
+    run_owned_selection_operation(move || async move {
         let payload = crate::commands::config::set_instance_profile_override_inner(
             &state.settings,
             &agent_path,
@@ -260,7 +258,7 @@ async fn preview_coding_agent_profile_selection_command(
     // without canceling the mutation) instead of observing half-settled
     // state.
     let state = state.clone();
-    crate::session::selection::run_owned_selection_read_timed(
+    run_owned_selection_read_timed(
         "preview_coding_agent_profile_selection",
         move || async move {
             let result = crate::commands::config::preview_coding_agent_profile_selection_inner(
@@ -284,7 +282,7 @@ async fn apply_coding_agent_profile_selection_command(
     // #1940 - the whole apply runs under the owned selection operation
     // turn, and its broadcast happens before that turn is released.
     let state = state.clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
+    run_owned_selection_operation(move || async move {
         let (result, payload) = state
             .operations
             .apply_coding_agent_profile_selection(
@@ -312,18 +310,15 @@ async fn preview_selection_lock_removal_command(
     let request: crate::commands::config::PreviewSelectionLockRemovalRequest =
         require_json(args, "request")?;
     let state = state.clone();
-    crate::session::selection::run_owned_selection_read_timed(
-        "preview_selection_lock_removal",
-        move || async move {
-            let result = crate::commands::config::preview_selection_lock_removal_inner(
-                &state.session_mgr,
-                &state.settings,
-                request,
-            )
-            .await?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        },
-    )
+    run_owned_selection_read_timed("preview_selection_lock_removal", move || async move {
+        let result = crate::commands::config::preview_selection_lock_removal_inner(
+            &state.session_mgr,
+            &state.settings,
+            request,
+        )
+        .await?;
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    })
     .await
 }
 
@@ -334,7 +329,7 @@ async fn apply_selection_lock_removal_command(
     let request: crate::commands::config::ApplySelectionLockRemovalRequest =
         require_json(args, "request")?;
     let state = state.clone();
-    crate::session::selection::run_owned_selection_operation(move || async move {
+    run_owned_selection_operation(move || async move {
         let (result, payload) =
             crate::commands::config::apply_selection_lock_removal_inner(&state.settings, request)
                 .await?;
