@@ -5,6 +5,7 @@ pub(crate) use recording::{
 };
 
 use super::*;
+use crate::phone::mailbox::pty_observation::WakeDeliveryState;
 
 pub(super) fn remote_activity_notice(
     kind: RemoteNoticeKind,
@@ -689,12 +690,12 @@ impl CodexClearScannerFixture {
 }
 
 impl CodexClearScannerFixture {
-    pub(crate) fn prepare_spawned_clear_session<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
+    pub(crate) fn prepare_spawned_clear_session<S: WakeDeliveryState + ?Sized>(
+        app: &S,
         hooks: &MailboxTestHooks,
         id: Uuid,
     ) -> Result<(), String> {
-        let Some(pty) = app.try_state::<Arc<Mutex<PtyManager>>>() else {
+        let Some(pty) = app.pty_routes_opt() else {
             return Ok(());
         };
         let manager = pty.lock().map_err(|e| e.to_string())?;
@@ -710,7 +711,7 @@ impl CodexClearScannerFixture {
         manager
             .try_record_route(id, SessionBackendKind::LocalProcess)
             .map_err(|e| e.to_string())?;
-        let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+        let idle = app.pty_readiness();
         idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
         idle.set_pty_input_ready_for_test(id);
         hooks.pty_presence.lock().unwrap().insert(id, true);

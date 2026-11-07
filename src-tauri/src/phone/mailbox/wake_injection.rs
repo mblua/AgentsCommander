@@ -15,19 +15,18 @@ use super::settle::{
     classify_injection_error, live_settle_action, live_wake_route, settle_tick, wake_settle_ready,
     LiveWakeRoute, STARTUP_SETTLE_THRESHOLD,
 };
-#[cfg(test)]
-use super::tests::CodexClearScannerFixture;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::SettleReadiness;
 use crate::pty::manager::PtyManager;
 use crate::session::session::SessionInfo;
-#[cfg(test)]
-use crate::session::session::SessionRepo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use uuid::Uuid;
+
+#[cfg(test)]
+mod fixture;
 
 mod admission;
 use admission::{logical_session_snapshot, standard_payload, standard_prewrite_admission};
@@ -67,71 +66,22 @@ impl MailboxPoller {
         let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
         #[cfg(test)]
-        if let Some(hooks) = &self.test_hooks {
-            let call = MailboxSpawnCall {
-                to: msg.to.clone(),
-                session_name: session_name.clone(),
-                cwd: cwd.clone(),
-                shell: spawn_shell.clone(),
-                shell_args: spawn_args.clone(),
+        if self.test_hooks.is_some() {
+            return fixture::spawn_fixture_wake_session(
+                self,
+                app,
+                msg,
+                resolved_command,
+                cwd,
+                session_name,
                 skip_auto_resume,
                 skip_tooling_save,
-            };
-            record_spawn_call(hooks, call);
-
-            let spawn_gate = hooks.internal_spawn_gate.lock().unwrap().take();
-            if let Some(spawn_gate) = spawn_gate {
-                hooks.internal_spawn_started.notify_one();
-                let _ = spawn_gate.await;
-            }
-
-            let spawn_is_coordinator = *hooks.spawn_is_coordinator.lock().unwrap();
-            // #2411 Mirror production create: the coordinator clear runs before the
-            // create can fail, on both the failure and the success path.
-            // #2413 The ticket ends like production: `failed()` on the create error.
-            let ticket = if spawn_is_coordinator {
-                crate::commands::session::note_coordinator_create_on_app(app, &cwd)
-            } else {
-                None
-            };
-            if let Some(msg) = hooks.internal_spawn_error.lock().unwrap().take() {
-                if let Some(t) = ticket {
-                    t.failed();
-                }
-                return Err(msg);
-            }
-            if let Some(t) = ticket {
-                t.succeeded();
-            }
-            let session_mgr = app.pty_sessions();
-            let mgr = session_mgr.read().await;
-            let session = mgr
-                .create_session(
-                    spawn_shell.clone(),
-                    spawn_args.clone(),
-                    cwd,
-                    resolved_spawn
-                        .as_ref()
-                        .map(|spawn| spawn.trusted_agent_id.clone())
-                        .or_else(|| resolved_command.agent_id.clone()),
-                    spawn_label.clone(),
-                    Vec::<SessionRepo>::new(),
-                    spawn_is_coordinator,
-                    crate::pty::backend::SessionBackendKind::LocalProcess,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            mgr.rename_session(session.id, session_name)
-                .await
-                .map_err(|e| e.to_string())?;
-            mgr.mark_idle(session.id).await;
-            let inserted = mgr
-                .get_session(session.id)
-                .await
-                .ok_or_else(|| format!("Session {} not found after test spawn", session.id))?;
-            drop(mgr);
-            CodexClearScannerFixture::prepare_spawned_clear_session(app, hooks, inserted.id)?;
-            return Ok(SessionInfo::from(&inserted));
+                spawn_shell,
+                spawn_args,
+                spawn_label,
+                resolved_spawn,
+            )
+            .await;
         }
 
         let session_mgr = app.pty_sessions();
