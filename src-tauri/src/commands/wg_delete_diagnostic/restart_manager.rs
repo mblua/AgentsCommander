@@ -334,7 +334,10 @@ pub(super) fn scan_restart_manager_processes_windows(
     }
     // Defensive: drop files that vanished between collection and the FFI call.
     // `RmRegisterResources` aborts the batch on `ERROR_FILE_NOT_FOUND`.
-    let alive: Vec<&PathBuf> = files.iter().filter(|p| p.exists()).collect();
+    let alive: Vec<&PathBuf> = files
+        .iter()
+        .filter(|p| crate::filesystem::room_diagnostics::room_lock_resource_exists(p))
+        .collect();
     if alive.is_empty() {
         return Ok(Vec::new());
     }
@@ -381,7 +384,7 @@ pub(super) fn scan_restart_manager_processes_windows(
         {
             break; // every blocker has its quota — further probing wastes RM sessions
         }
-        if !path.exists() {
+        if !crate::filesystem::room_diagnostics::room_lock_resource_exists(path) {
             continue; // raced again; skip
         }
         let single = std::slice::from_ref(wide);
