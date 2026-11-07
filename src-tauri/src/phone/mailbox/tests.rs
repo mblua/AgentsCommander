@@ -2,6 +2,7 @@ mod claim_and;
 mod clear_watch;
 mod coordinator_ticket;
 mod deliver_wake;
+mod equivalence;
 mod handle_self;
 mod handle_self_2;
 mod internal_live;
@@ -143,6 +144,7 @@ use support_wake::{
     LSA_RESIZE_GRACE, LSA_SETTLE,
 };
 use tauri::Listener;
+use tauri::Manager;
 use tempfile::NamedTempFile;
 
 type Issue3189Transaction = SelectionTransaction<tauri::test::MockRuntime>;
