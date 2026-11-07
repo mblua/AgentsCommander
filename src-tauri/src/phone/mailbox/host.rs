@@ -168,3 +168,6 @@ pub(crate) trait BrowserHost: MailboxHost {
     fn reload(&self) -> Result<WebBrowserSnapshot, String>;
     fn snapshot(&self) -> WebBrowserSnapshot;
 }
+
+#[cfg(test)]
+mod tests;

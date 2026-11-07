@@ -229,3 +229,6 @@ impl<R: tauri::Runtime> crate::phone::mailbox::host::CoordinatorTicket
         crate::commands::session::CoordinatorCreateTicket::failed(self);
     }
 }
+
+#[cfg(test)]
+mod tests;
