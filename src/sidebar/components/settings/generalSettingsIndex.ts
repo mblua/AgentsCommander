@@ -29,6 +29,14 @@ export const GENERAL_SETTINGS_INDEX: GeneralSettingEntry[] = [
   { key: "sidebarAlwaysOnTop", category: "appearance", section: "Window", label: "Sidebar always on top", keywords: "pin float above" },
   { key: "raiseTerminalOnClick", category: "appearance", section: "Window", label: "Raise terminal when clicking sidebar", keywords: "focus bring front" },
   { key: "roomNumberMask", category: "appearance", section: "Window", label: "Room number mask", keywords: "format digits padding" },
+  // #3532 desktop-only: SettingsModal drops this entry from search results in the browser.
+  {
+    key: "contextHistoryColorDays",
+    category: "appearance",
+    section: "Contexto en la barra lateral",
+    label: "Período para el color de la media de contexto",
+    keywords: "contexto media CTX período periodo sidebar context average 1 7 30 días",
+  },
   { key: "screenshotCaptureHotkey", category: "appearance", section: "Hotkeys", label: "Screenshot hotkey", keywords: "shortcut keyboard capture" },
   { key: "sidebarCompactHotkey", category: "appearance", section: "Hotkeys", label: "Compact sidebar hotkey", keywords: "shortcut keyboard collapse" },
   { key: "soundsEnabled", category: "appearance", section: "Notifications", label: "Enable app sounds (master switch)", keywords: "audio mute volume" },

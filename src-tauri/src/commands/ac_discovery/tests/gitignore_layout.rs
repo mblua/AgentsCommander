@@ -805,3 +805,73 @@ fn ensure_ac_root_gitignore_migrates_a_crlf_legacy_seed_manifest_block() {
         "the CRLF file must gain the manifest ignore rule exactly once"
     );
 }
+
+/// #3532 - `git check-ignore --no-index` exit status: 0 ignored, 1 visible.
+fn git_ignores(repo: &std::path::Path, relative: &str) -> bool {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["check-ignore", "-q", "--no-index", relative])
+        .status()
+        .expect("run git check-ignore");
+    match status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        other => panic!("git check-ignore failed for {relative}: {other:?}"),
+    }
+}
+
+/// #3532 - the context history directory is ignored exactly once, on a fresh
+/// root and on a legacy root without the row; a second run changes no byte.
+/// The database and its journals are ignored while the user-managed
+/// `heatmap.json` and other `.ac` configuration stay visible.
+#[test]
+fn ensure_ac_root_gitignore_ignores_the_context_history_store_once() {
+    const LEGACY: &str = "# user rules\n/notes.txt\n";
+    for legacy in [false, true] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let status = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(tmp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir(&ac_root).expect("create .ac");
+        if legacy {
+            std::fs::write(ac_root.join(".gitignore"), LEGACY).expect("write legacy");
+        }
+
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("first run");
+        let first = std::fs::read(ac_root.join(".gitignore")).expect("read");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("second run");
+        let second = std::fs::read(ac_root.join(".gitignore")).expect("read");
+        assert_eq!(first, second, "a second run must be byte-idempotent");
+
+        let content = String::from_utf8(second).expect("utf-8");
+        let rows = content
+            .lines()
+            .filter(|line| line.trim() == "/context-history/")
+            .count();
+        assert_eq!(rows, 1, "legacy={legacy}");
+        if legacy {
+            assert!(content.starts_with(LEGACY), "user rules are preserved");
+        }
+        for ignored in [
+            ".ac/context-history/history.sqlite3",
+            ".ac/context-history/history.sqlite3-journal",
+        ] {
+            assert!(
+                git_ignores(tmp.path(), ignored),
+                "{ignored} must be ignored"
+            );
+        }
+        for visible in [".ac/heatmap.json", ".ac/config.json", ".ac/notes.json"] {
+            assert!(
+                !git_ignores(tmp.path(), visible),
+                "{visible} must stay visible"
+            );
+        }
+    }
+}

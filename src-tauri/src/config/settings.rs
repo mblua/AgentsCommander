@@ -1,5 +1,6 @@
 mod agent;
 mod app_defaults;
+pub(crate) mod context_history;
 mod field;
 mod instance;
 mod load;
@@ -14,6 +15,8 @@ mod source;
 pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
 pub(crate) use naming::{migrate_instance_settings_families, SettingsNamingError};
 
+use self::context_history::deserialize_context_history_color_days;
+pub use self::context_history::ContextHistoryColorDays;
 #[cfg(test)]
 use super::projects;
 #[cfg(test)]
@@ -867,6 +870,10 @@ pub struct AppSettings {
     /// Continuous room inactivity required before confirmation, in seconds.
     #[serde(default = "default_room_idle_confirmation_seconds")]
     pub room_idle_confirmation_seconds: u32,
+    /// #3532: days (1, 7 or 30) that colour the context-history heatmap.
+    /// Any other stored value loads as 30 in memory and is never rewritten.
+    #[serde(default, deserialize_with = "deserialize_context_history_color_days")]
+    pub context_history_color_days: ContextHistoryColorDays,
 }
 
 fn default_jev_model() -> String {

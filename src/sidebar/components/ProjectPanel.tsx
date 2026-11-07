@@ -3034,6 +3034,12 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
           };
+          const historyScope = () => {
+            const s = session();
+            return s && !s.isRootAgent
+              ? { projectPath: proj.path, runtimeSessionId: s.id }
+              : undefined;
+          };
           // #2566 - keyed by AGENT id, so a replica with no live session shows the value
           // of its configured agent's command, and two rooms of one agent agree.
           const quotaUsed = () => {
@@ -3228,6 +3234,8 @@ const ProjectPanel: Component = () => {
                   <Show when={ctxVisible()}>
                     <ContextBadge
                       percent={ctxPercent()}
+                      historyScope={historyScope()}
+                      colorDays={settingsStore.current?.contextHistoryColorDays}
                       testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
                     />
                   </Show>
@@ -3924,6 +3932,7 @@ const ProjectPanel: Component = () => {
                                       session={s()}
                                       isActive={s().id === sessionsStore.activeId}
                                       extraContextAction={agentDeleteAction(agent)}
+                                      historyProjectPath={proj.path}
                                     />
                                   )}
                                 </Show>
