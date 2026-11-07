@@ -2,7 +2,7 @@ use super::*;
 use crate::commands::session::selection_executor::turn::{
     run_owned_selection_operation, run_owned_selection_read_timed,
 };
-use timing_probe::{timing_field_ms, TimingSinkRegistration};
+use crate::session::selection::timing_probe::{timing_field_ms, TimingSinkRegistration};
 
 //
 // Every body announces its ENTRY as its first statement. Assertions are on
