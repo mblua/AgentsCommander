@@ -71,7 +71,7 @@ impl MailboxPoller {
         source_executor.returned(failed);
     }
 }
-impl<S: MailboxHost> PtyDispatcher<'_, S> {
+impl<H: MailboxHost> PtyDispatcher<'_, H> {
     async fn dispatch_accepted_operation(
         &self,
         state: &crate::api::message_store::MessageStoreState,

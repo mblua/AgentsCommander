@@ -31,7 +31,7 @@ pub(super) struct BoundaryWriteGuards {
     pub(super) permit: crate::pty::manager::PtyInputPermit,
 }
 
-impl<S: MailboxHost> PtyDispatcher<'_, S> {
+impl<H: MailboxHost> PtyDispatcher<'_, H> {
     pub(super) async fn select_pty_dispatch_session(
         &self,
         context: &PtyDispatchContext<'_>,
