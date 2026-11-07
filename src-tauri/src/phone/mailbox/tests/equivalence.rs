@@ -148,7 +148,17 @@ fn closing(source: &str, open: usize) -> Result<usize, &'static str> {
 }
 
 fn function_body<'a>(source: &'a str, symbol: &str) -> Result<&'a str, &'static str> {
-    let start = unique(source, &format!("fn{symbol}"))?;
+    let anchor = format!("fn{symbol}");
+    let mut hits = source.match_indices(&anchor).filter(|(offset, _)| {
+        matches!(
+            source.as_bytes().get(offset + anchor.len()),
+            Some(b'(' | b'<')
+        )
+    });
+    let (start, _) = hits.next().ok_or("missing function")?;
+    if hits.next().is_some() {
+        return Err("nonunique function");
+    }
     let open = source[start..].find('{').ok_or("missing function body")? + start;
     let end = closing(source, open)?;
     Ok(&source[open + 1..end])
@@ -254,7 +264,14 @@ impl Control {
         let first = unique(body, self.before)?;
         if matches!(self.scope, Scope::Optional) {
             // A required lookup cannot take the optional unavailable return path.
-            mutant.replace_range(first..first + self.before.len(), "letsettings=");
+            let open = body[first..].find('{').ok_or("missing optional return")? + first;
+            let end = closing(body, open)? + 2;
+            let required = if body[first..open].contains("host.settings_opt()") {
+                "letsettings=host.settings();"
+            } else {
+                "letsettings=app.state::<crate::config::settings::SettingsState>();"
+            };
+            mutant.replace_range(first..end, required);
             return Ok(mutant);
         }
         let second = unique(body, self.after)?;
