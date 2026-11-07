@@ -5,12 +5,12 @@ use super::settle::filter_sessions_by_fqn;
 use crate::config::settings::SettingsState;
 use crate::config::teams;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use crate::MasterToken;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
@@ -305,9 +305,9 @@ impl MailboxPoller {
     /// primary write — for app-outbox messages it would land under
     /// `<config_dir>/instances/<id>/responses/`, a directory the CLI does
     /// not poll, leaking orphan JSON files with no GC.
-    pub(crate) async fn handle_close_session<R: tauri::Runtime>(
+    pub(crate) async fn handle_close_session<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -337,8 +337,8 @@ impl MailboxPoller {
 
         // Re-check master token for coordinator auth bypass (independent of routing bypass above)
         let is_master = if let Some(ref token_str) = msg.token {
-            let master = app.state::<MasterToken>();
-            accepts_close_session_token(&master, token_str)
+            let master = app.master_required();
+            accepts_close_session_token(master, token_str)
         } else {
             false
         };
@@ -377,10 +377,10 @@ impl MailboxPoller {
         let mut session_ids = self.find_all_sessions(app, target).await;
         let mut restore_in_progress_result = false;
         if session_ids.is_empty() {
-            let restore_flag = app.state::<Arc<crate::RestoreInProgress>>();
+            let restore_flag = app.restore_required();
             if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                 restore_in_progress_result = self
-                    .wait_for_restored_close_targets(app, target, &restore_flag, &mut session_ids)
+                    .wait_for_restored_close_targets(app, target, restore_flag, &mut session_ids)
                     .await;
             }
         }

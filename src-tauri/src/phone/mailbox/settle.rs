@@ -4,14 +4,10 @@ use super::handoff::{
 };
 use crate::config::settings::AppSettings;
 use crate::filesystem::phone_mailbox;
-use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
+use crate::phone::mailbox::pty_observation::PtyAuthorityState;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::io::Read;
-use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 /// (#1001 PR2 / B, grinch P1) Pure per-tick decision for the LIVE-inject settle,
@@ -877,38 +873,30 @@ pub(crate) type OwnedPtyWorkTransfer = (
     crate::session::selection::LifecycleEffectGuard,
 );
 
-pub(crate) async fn finish_owned_pty_work<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn finish_owned_pty_work<S: PtyAuthorityState + ?Sized>(
+    app: &S,
     work: &mut Option<OwnedPtyWorkTransfer>,
     observed: bool,
 ) {
     let Some((continuation, effect)) = work.take() else {
         return;
     };
-    let manager = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let manager = app.pty_sessions().read().await.clone();
+    let pty = app.pty_routes().clone();
     continuation
         .finish_observed_work_transfer(&manager, &pty, effect, observed)
         .await;
 }
 
-pub(crate) async fn observe_pty_spawn_scope<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn observe_pty_spawn_scope<S: PtyAuthorityState + ?Sized>(
+    app: &S,
     target: &crate::config::teams::VerifiedPtyInputIdentity,
 ) -> (
     crate::config::sessions_persistence::CreateCarrierScope,
     Option<Uuid>,
 ) {
     let directory = crate::config::config_dir();
-    let manager = app
-        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-        .read()
-        .await
-        .clone();
+    let manager = app.pty_sessions().read().await.clone();
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     manager
         .with_current_carrier_snapshot(&permit, |current| {

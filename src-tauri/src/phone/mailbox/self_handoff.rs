@@ -19,46 +19,54 @@ use super::settle::{
     archive_root_md, capture_self_forget_summary, inject_handoff_prompt_with_archive,
     self_clear_gate_advance, SelfClearBoundary, SelfClearGateAction, SelfClearGateState,
 };
-use crate::commands::pty::{
-    note_post_boundary_content_to_session, stamp_fresh_boundary_to_session,
-};
-use crate::config::settings::{AppSettings, SettingsState};
+use crate::config::agent_command::build_configured_agent_spawn_for_cwd;
+use crate::config::settings::AppSettings;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
-use crate::pty::manager::PtyManager;
 use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use failure::{consume_outcome, SelfHandoffFailure, SelfHandoffOutcome, CONTINUATION_FAILURE};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
+    async fn resolve_self_handoff_target<S: MailboxHost>(
+        &self,
+        host: &S,
+        path: &Path,
+        msg: &OutboxMessage,
+        action: &'static str,
+    ) -> Result<(SessionInfo, Uuid), Result<(), String>> {
+        match resolve_self_handoff_identity(msg, action, |token_uuid| async move {
+            let session_mgr = host.sessions();
+            let mgr = session_mgr.read().await;
+            mgr.find_by_token(token_uuid).await
+        })
+        .await
+        {
+            Ok(identity) => Ok(identity),
+            Err(reason) => Err(self.reject_message(path, msg, &reason).await),
+        }
+    }
+
     /// #668 - queue a deferred self switch for the session that owns `msg.token`.
     /// It shares the self context pending set with self-clear, so clear and switch
     /// requests cannot stack on the same live session.
-    pub(crate) async fn handle_self_handoff_switch<R: tauri::Runtime>(
+    pub(crate) async fn handle_self_handoff_switch<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        host: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let (session, session_id) = match resolve_self_handoff_identity(
-            msg,
-            "self-handoff-and-switch",
-            |token_uuid| async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-                mgr.find_by_token(token_uuid).await
-            },
-        )
-        .await
+        let (session, session_id) = match self
+            .resolve_self_handoff_target(host, path, msg, "self-handoff-and-switch")
+            .await
         {
             Ok(identity) => identity,
-            Err(reason) => return self.reject_message(path, msg, &reason).await,
+            Err(outcome) => return outcome,
         };
 
         if !crate::pty::inject::supports_self_handoff_switch(&session.shell) {
@@ -76,11 +84,7 @@ impl MailboxPoller {
                 .await;
         }
 
-        let settings_snapshot = {
-            let settings = app.state::<SettingsState>();
-            let snapshot = settings.read().await.clone();
-            snapshot
-        };
+        let settings_snapshot = host.pty_settings().read().await.clone();
         let (replica_path, targets) =
             match resolve_self_switch_request(&settings_snapshot, &session, msg) {
                 Ok(request) => request,
@@ -88,7 +92,7 @@ impl MailboxPoller {
             };
 
         let reservation = {
-            let pending = app.state::<Arc<PendingSelfClear>>();
+            let pending = host.pending_clear();
             pending.reserve_legacy(session_id)
         };
         let newly_inserted = match reservation {
@@ -110,13 +114,13 @@ impl MailboxPoller {
 
             #[cfg(not(test))]
             {
-                let app_clone = app.clone();
+                let host_clone = host.clone();
                 let target_agent = targets.coding_agent.clone();
                 let target_profile = targets.profile.clone();
                 let replica_path = replica_path.clone();
-                tauri::async_runtime::spawn(async move {
+                host.spawn_background(Box::pin(async move {
                     Self::run_self_switch_after_sustained_idle(
-                        &app_clone,
+                        &host_clone,
                         session_id,
                         replica_path,
                         target_agent,
@@ -128,7 +132,7 @@ impl MailboxPoller {
                         SELF_CLEAR_MAX_DEFER,
                     )
                     .await;
-                });
+                }));
             }
             #[cfg(test)]
             let _ = &forgotten_summary;
@@ -148,8 +152,16 @@ impl MailboxPoller {
             );
         }
 
-        self.write_self_switch_response(app, path, msg, session_id, status, &targets, is_app_outbox)
-            .await
+        self.write_self_switch_response(
+            host,
+            path,
+            msg,
+            session_id,
+            status,
+            &targets,
+            is_app_outbox,
+        )
+        .await
     }
 
     /// #1632 - self-handoff-and-restart: hand off through `SELF-HANDOFF.md`, then respawn the
@@ -171,26 +183,19 @@ impl MailboxPoller {
     /// reinstate the defect this order removes. Consequence: for a request that is both missing
     /// its handoff file and unlaunchable, switch reports the launchability failure and restart
     /// reports the missing file.
-    pub(crate) async fn handle_self_restart<R: tauri::Runtime>(
+    pub(crate) async fn handle_self_restart<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        host: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        let (session, session_id) = match resolve_self_handoff_identity(
-            msg,
-            "self-handoff-and-restart",
-            |token_uuid| async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-                mgr.find_by_token(token_uuid).await
-            },
-        )
-        .await
+        let (session, session_id) = match self
+            .resolve_self_handoff_target(host, path, msg, "self-handoff-and-restart")
+            .await
         {
             Ok(identity) => identity,
-            Err(reason) => return self.reject_message(path, msg, &reason).await,
+            Err(outcome) => return outcome,
         };
 
         let recipe = match resolve_self_restart_request(&session) {
@@ -202,7 +207,7 @@ impl MailboxPoller {
         //    transaction calls (`commands/session.rs`), so the pre-flight cannot disagree with the
         //    real spawn; a re-implementation could.
         let settings_snapshot = {
-            let settings = app.state::<SettingsState>();
+            let settings = host.pty_settings();
             let snapshot = settings.read().await.clone();
             snapshot
         };
@@ -213,7 +218,7 @@ impl MailboxPoller {
         // 7. Idempotency - atomic check-and-set. The set is SHARED with clear and switch, so the
         //    three operations cannot race on one session.
         let reservation = {
-            let pending = app.state::<Arc<PendingSelfClear>>();
+            let pending = host.pending_clear();
             pending.reserve_legacy(session_id)
         };
         let newly_inserted = match reservation {
@@ -240,13 +245,13 @@ impl MailboxPoller {
             //    poller). Gated under cfg(not(test)) exactly like the other two handlers.
             #[cfg(not(test))]
             {
-                let app_clone = app.clone();
+                let host_clone = host.clone();
                 let restart_agent = recipe.agent.clone();
                 let restart_profile = encode_restart_profile_for_seam(recipe.profile.as_deref());
                 let root = root.to_path_buf();
-                tauri::async_runtime::spawn(async move {
+                host.spawn_background(Box::pin(async move {
                     Self::run_self_switch_after_sustained_idle(
-                        &app_clone,
+                        &host_clone,
                         session_id,
                         root,
                         restart_agent,
@@ -258,7 +263,7 @@ impl MailboxPoller {
                         SELF_CLEAR_MAX_DEFER,
                     )
                     .await;
-                });
+                }));
             }
             #[cfg(test)]
             let _ = &forgotten_summary;
@@ -279,8 +284,16 @@ impl MailboxPoller {
         }
 
         // 10.
-        self.write_self_restart_response(app, path, msg, session_id, status, &recipe, is_app_outbox)
-            .await
+        self.write_self_restart_response(
+            host,
+            path,
+            msg,
+            session_id,
+            status,
+            &recipe,
+            is_app_outbox,
+        )
+        .await
     }
 
     /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both
@@ -290,8 +303,8 @@ impl MailboxPoller {
     /// session is never cleared (the user-approved "30s sustained idle" semantic).
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(test, allow(dead_code))]
-    pub(crate) async fn run_self_clear_after_sustained_idle<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
+    pub(crate) async fn run_self_clear_after_sustained_idle<S: MailboxHost>(
+        host: &S,
         session_id: Uuid,
         clear_text: &'static str,
         root: PathBuf,
@@ -300,34 +313,34 @@ impl MailboxPoller {
         poll: std::time::Duration,
         max_defer: std::time::Duration,
     ) {
-        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
+        let pending = host.pending_clear().clone();
 
-        let app_for_state = app.clone();
+        let host_for_state = host.clone();
         let session_state = move |session_id: Uuid| {
-            let app = app_for_state.clone();
+            let host = host_for_state.clone();
             async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                Self::self_handoff_session_state(session_mgr.inner(), session_id).await
+                let session_mgr = host.sessions();
+                Self::self_handoff_session_state(session_mgr, session_id).await
             }
         };
 
-        let app_for_inject = app.clone();
+        let host_for_inject = host.clone();
         let inject = move |session_id: Uuid, prompt: String| {
             use crate::pty::inject::inject_text_into_session;
-            let app = app_for_inject.clone();
-            async move { inject_text_into_session(&app, session_id, &prompt).await }
+            let host = host_for_inject.clone();
+            async move { inject_text_into_session(&host, session_id, &prompt).await }
         };
 
-        let app_for_boundary = app.clone();
+        let host_for_boundary = host.clone();
         let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
-            let app = app_for_boundary.clone();
+            let host = host_for_boundary.clone();
             async move {
                 match boundary {
                     SelfClearBoundary::Cleared => {
-                        stamp_fresh_boundary_to_session(&app, session_id).await
+                        host.stamp_fresh_boundary_to_session(session_id).await
                     }
                     SelfClearBoundary::ContentInjected => {
-                        note_post_boundary_content_to_session(&app, session_id).await
+                        host.note_post_boundary_content_to_session(session_id).await
                     }
                 };
             }
@@ -347,7 +360,7 @@ impl MailboxPoller {
                 inject,
                 note_boundary,
             ),
-            |failure| Self::report_self_handoff_failure(app, failure),
+            |failure| Self::report_self_handoff_failure(host, failure),
         )
         .await;
     }
@@ -470,8 +483,8 @@ impl MailboxPoller {
 
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(test, allow(dead_code))]
-    async fn run_self_switch_after_sustained_idle<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
+    async fn run_self_switch_after_sustained_idle<S: MailboxHost>(
+        host: &S,
         original_session_id: Uuid,
         cwd: PathBuf,
         target_agent: String,
@@ -482,25 +495,25 @@ impl MailboxPoller {
         poll: std::time::Duration,
         max_defer: std::time::Duration,
     ) {
-        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
+        let pending = host.pending_clear().clone();
 
-        let app_for_state = app.clone();
+        let host_for_state = host.clone();
         let session_state = move |session_id: Uuid| {
-            let app = app_for_state.clone();
+            let host = host_for_state.clone();
             async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                Self::self_handoff_session_state(session_mgr.inner(), session_id).await
+                let session_mgr = host.sessions();
+                Self::self_handoff_session_state(session_mgr, session_id).await
             }
         };
 
-        let app_for_persist = app.clone();
+        let host_for_persist = host.clone();
         let persist = move |cwd: PathBuf, agent: String, profile: String| {
-            let app = app_for_persist.clone();
+            let host = host_for_persist.clone();
             async move {
                 if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action {
                     return Ok(());
                 }
-                let settings_snapshot = app.state::<SettingsState>().read().await.clone();
+                let settings_snapshot = host.pty_settings().read().await.clone();
                 crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
                     &settings_snapshot,
                     &cwd,
@@ -510,57 +523,56 @@ impl MailboxPoller {
             }
         };
 
-        let app_for_restart = app.clone();
+        let host_for_restart = host.clone();
         let restart = move |session_id: Uuid, agent: String, profile: String| {
-            let app = app_for_restart.clone();
+            let host = host_for_restart.clone();
             async move {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-                let settings = app.state::<SettingsState>();
-                let carried_communication =
-                    restart_communication(session_mgr.inner(), session_id).await;
-                let result = crate::commands::session::restart_session_inner_with_intent(
-                    &app,
-                    session_mgr.inner(),
-                    pty_mgr.inner(),
-                    settings.inner(),
-                    session_id,
-                    Some(agent),
-                    if flavor.action == SELF_HANDOFF_FLAVOR_SWITCH.action {
-                        Some(profile)
-                    } else {
-                        decode_restart_profile_from_seam(&profile)
-                    },
-                    Some(true),
-                    true,
-                    crate::session::selection::TrustedRestartIntent::Background,
-                    carried_communication,
-                    // §1295 6.6 / 5.1b: the mailbox wake-restart passes Enforce
-                    // explicitly, unlike the default-preferring user restart.
-                    crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
-                )
-                .await;
+                let session_mgr = host.sessions();
+                let pty_mgr = host.routes();
+                let settings = host.pty_settings();
+                let carried_communication = restart_communication(session_mgr, session_id).await;
+                let result = host
+                    .restart_session_inner_with_intent(
+                        session_mgr,
+                        pty_mgr,
+                        settings,
+                        session_id,
+                        Some(agent),
+                        if flavor.action == SELF_HANDOFF_FLAVOR_SWITCH.action {
+                            Some(profile)
+                        } else {
+                            decode_restart_profile_from_seam(&profile)
+                        },
+                        Some(true),
+                        true,
+                        crate::session::selection::TrustedRestartIntent::Background,
+                        carried_communication,
+                        // §1295 6.6 / 5.1b: the mailbox wake-restart passes Enforce
+                        // explicitly, unlike the default-preferring user restart.
+                        crate::config::sessions_persistence::CreationGateEnforcement::Enforce,
+                    )
+                    .await;
                 result.map(|info| info.id)
             }
         };
 
-        let app_for_inject = app.clone();
+        let host_for_inject = host.clone();
         let inject = move |session_id: Uuid, prompt: String| {
             use crate::pty::inject::inject_text_into_session;
-            let app = app_for_inject.clone();
-            async move { inject_text_into_session(&app, session_id, &prompt).await }
+            let host = host_for_inject.clone();
+            async move { inject_text_into_session(&host, session_id, &prompt).await }
         };
 
-        let app_for_boundary = app.clone();
+        let host_for_boundary = host.clone();
         let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
-            let app = app_for_boundary.clone();
+            let host = host_for_boundary.clone();
             async move {
                 match boundary {
                     SelfClearBoundary::Cleared => {
-                        stamp_fresh_boundary_to_session(&app, session_id).await
+                        host.stamp_fresh_boundary_to_session(session_id).await
                     }
                     SelfClearBoundary::ContentInjected => {
-                        note_post_boundary_content_to_session(&app, session_id).await
+                        host.note_post_boundary_content_to_session(session_id).await
                     }
                 };
             }
@@ -584,13 +596,13 @@ impl MailboxPoller {
                 inject,
                 note_boundary,
             ),
-            |failure| Self::report_self_handoff_failure(app, failure),
+            |failure| Self::report_self_handoff_failure(host, failure),
         )
         .await;
     }
 
-    pub(crate) async fn report_self_handoff_failure<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
+    pub(crate) async fn report_self_handoff_failure<S: MailboxHost>(
+        host: &S,
         failure: SelfHandoffFailure,
     ) {
         use crate::session::warnings::{emit_session_warning, SessionWarning};
@@ -601,7 +613,7 @@ impl MailboxPoller {
         let diagnostic = failure.diagnostic_target();
         let warn = |suffix: &str, text: String| {
             emit_session_warning(
-                app,
+                host,
                 SessionWarning::new(
                     diagnostic,
                     failure.key(suffix),
@@ -618,8 +630,8 @@ impl MailboxPoller {
             );
             return;
         };
-        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let pending = app.state::<Arc<crate::PendingSelfClear>>();
+        let manager = host.sessions();
+        let pending = host.pending_clear();
         let is_pending = || pending.contains(target);
         let body = format!("[AgentsCommander self-handoff failure] {message}");
         let status = retry_notice(
@@ -650,7 +662,7 @@ impl MailboxPoller {
                 #[cfg(test)]
                 failure::signal_inject(target);
                 crate::pty::inject::inject_internal_notice_into_supported_agent_session(
-                    app,
+                    host,
                     target,
                     &body,
                     |snapshot| {
@@ -675,9 +687,8 @@ impl MailboxPoller {
         )
         .await;
         let Some((suffix, reason)) = self_handoff_notice_failure(status) else {
-            crate::commands::pty::note_post_boundary_content_to_session(app, target).await;
-            app.state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-                .touch_silence(target);
+            host.note_post_boundary_content_to_session(target).await;
+            host.pty_readiness().touch_silence(target);
             return;
         };
         warn(
@@ -863,7 +874,7 @@ fn validate_self_restart_spawn(
     } else {
         session.working_directory.clone()
     };
-    match crate::commands::session::build_configured_agent_spawn_for_cwd(
+    match build_configured_agent_spawn_for_cwd(
         settings_snapshot,
         &recipe.agent,
         &preflight_cwd,

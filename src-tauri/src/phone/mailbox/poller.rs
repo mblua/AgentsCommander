@@ -10,8 +10,9 @@ use super::pty_claim::{
 };
 #[cfg(test)]
 use super::tests::ClearObservationProbe;
-use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::pty_observation::WakeDeliveryState;
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
@@ -22,7 +23,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
@@ -173,8 +173,10 @@ pub(crate) struct PreparedResponseRequest {
     pub(crate) roots: Vec<String>,
 }
 
-pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn reserve_response_request_at_write<
+    S: WakeDeliveryState + ResponseCompletionState + ?Sized,
+>(
+    app: &S,
     current: &crate::session::manager::CarrierSnapshot,
     session: &Session,
     prepared: &PreparedResponseRequest,
@@ -190,7 +192,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     }
     if app
-        .try_state::<crate::session::selection::SelectionCoordinator>()
+        .response_selection()
         .is_some_and(|coordinator| coordinator.restore_is_active())
     {
         response_diag_local!(
@@ -200,7 +202,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     }
-    let settings = app.state::<SettingsState>().inner().clone();
+    let settings = app.pty_settings().clone();
     let Ok(settings) = settings.try_read_owned() else {
         response_diag_local!(
             "prewrite_reserve",
@@ -222,7 +224,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
     else {
         return;
     };
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let pty = app.pty_routes().clone();
     reserve_with_routes(
         &pty,
         &settings,
