@@ -538,12 +538,17 @@ impl ReaderDemandHost for RouteHost {
     }
 }
 
+enum RouteRuntime {
+    Native,
+    Tokio,
+}
+
 fn route_host(
     sessions: bool,
     input: bool,
     outcomes: Vec<Result<(), AbstainReason>>,
     mutate: bool,
-    tokio: bool,
+    runtime: RouteRuntime,
 ) -> (RouteHost, oneshot::Receiver<tokio::runtime::Id>) {
     let (finished, receiver) = oneshot::channel();
     let host = RouteHost(Arc::new(RouteInputs {
@@ -557,7 +562,7 @@ fn route_host(
         ready: Mutex::new(CoManagedState::Ready),
         mutate_on_retry: mutate,
         tasks: RouteTasks {
-            tokio,
+            tokio: matches!(runtime, RouteRuntime::Tokio),
             finished: Mutex::new(Some(finished)),
         },
         work: AtomicUsize::new(0),
@@ -630,23 +635,24 @@ async fn issue_3950_co_retry_fresh() {
         false,
         vec![Err(AbstainReason::LockBusy), Ok(())],
         true,
-        false,
+        RouteRuntime::Native,
     );
     let id = route_session(&host).await;
     assert!(matches!(
         route_retry(&host, id).await,
         CoManagedCommit::Committed(_)
     ));
-    let observations = host.0.observations.lock().unwrap();
-    assert_eq!(observations.len(), 2);
-    assert!(observations[0].effective_ready);
-    assert!(
-        !observations[1].effective_ready,
-        "retry must observe mutated readiness"
-    );
-    assert!(observations[1].observed_at > observations[0].observed_at);
-    drop(observations);
-    let (control, _) = route_host(true, false, vec![Ok(())], false, false);
+    {
+        let observations = host.0.observations.lock().unwrap();
+        assert_eq!(observations.len(), 2);
+        assert!(observations[0].effective_ready);
+        assert!(
+            !observations[1].effective_ready,
+            "retry must observe mutated readiness"
+        );
+        assert!(observations[1].observed_at > observations[0].observed_at);
+    }
+    let (control, _) = route_host(true, false, vec![Ok(())], false, RouteRuntime::Native);
     assert!(matches!(
         route_retry(&control, id).await,
         CoManagedCommit::Committed(_)
@@ -658,7 +664,7 @@ async fn issue_3950_co_retry_fresh() {
 
 #[tokio::test]
 async fn issue_3950_co_early_missing() {
-    let (host, _) = route_host(false, true, vec![], false, false);
+    let (host, _) = route_host(false, true, vec![], false, RouteRuntime::Native);
     let id = Uuid::new_v4();
     let pre = gather_co_managed_preconditions(
         &host,
@@ -671,7 +677,7 @@ async fn issue_3950_co_early_missing() {
     assert!(!pre.no_pending_user_input && !pre.effective_ready);
     assert_eq!(pre.session_id, id.to_string());
     assert_eq!(*host.0.calls.lock().unwrap(), ["sessions"]);
-    let (control, _) = route_host(true, true, vec![], false, false);
+    let (control, _) = route_host(true, true, vec![], false, RouteRuntime::Native);
     gather_co_managed_preconditions(
         &control,
         id,
@@ -689,7 +695,7 @@ async fn issue_3950_co_early_missing() {
 #[tokio::test]
 async fn issue_3950_co_input_none() {
     for input in [false, true] {
-        let (host, _) = route_host(true, input, vec![], false, false);
+        let (host, _) = route_host(true, input, vec![], false, RouteRuntime::Native);
         let id = route_session(&host).await;
         if let Some(input) = host.input_optional() {
             input.lock().unwrap().feed(id, b"pending text");
@@ -710,7 +716,13 @@ async fn issue_3950_co_input_none() {
 #[tokio::test]
 async fn issue_3950_co_retry_errors() {
     for retryable in [AbstainReason::LockBusy, AbstainReason::PreconditionsStale] {
-        let (host, _) = route_host(true, false, vec![Err(retryable); 3], false, false);
+        let (host, _) = route_host(
+            true,
+            false,
+            vec![Err(retryable); 3],
+            false,
+            RouteRuntime::Native,
+        );
         assert!(matches!(
             route_retry(&host, Uuid::nil()).await,
             CoManagedCommit::Contention
@@ -722,14 +734,14 @@ async fn issue_3950_co_retry_errors() {
         false,
         vec![Err(AbstainReason::PreconditionsRejected), Ok(())],
         false,
-        false,
+        RouteRuntime::Native,
     );
     assert!(matches!(
         route_retry(&host, Uuid::nil()).await,
         CoManagedCommit::Rejected(AbstainReason::PreconditionsRejected)
     ));
     assert_eq!(host.0.observations.lock().unwrap().len(), 1);
-    let (control, _) = route_host(true, false, vec![Ok(())], false, false);
+    let (control, _) = route_host(true, false, vec![Ok(())], false, RouteRuntime::Native);
     assert!(matches!(
         route_retry(&control, Uuid::nil()).await,
         CoManagedCommit::Committed(_)
@@ -773,7 +785,7 @@ async fn issue_3950_co_join_error() {
 }
 
 async fn cycle_control(text: &str, result: Result<(), AbstainReason>) -> (RouteHost, PathBuf) {
-    let (host, _) = route_host(true, false, vec![result], false, false);
+    let (host, _) = route_host(true, false, vec![result], false, RouteRuntime::Native);
     let id = route_session(&host).await;
     let room = tempfile::tempdir().unwrap();
     let room_root = room.path().join("project/.ac/room-1-dev-team");
@@ -806,17 +818,18 @@ async fn cycle_control(text: &str, result: Result<(), AbstainReason>) -> (RouteH
 #[tokio::test]
 async fn issue_3950_co_secret_first() {
     let (secret, written) = cycle_control("-----BEGIN PRIVATE KEY-----", Ok(())).await;
-    let calls = secret.0.calls.lock().unwrap();
-    assert!(
-        !calls.contains(&"network"),
-        "secret must bypass classification network access"
-    );
-    assert_eq!(calls.last(), Some(&"surface"));
-    assert!(
-        written.as_os_str().is_empty(),
-        "secret must not write messaging file"
-    );
-    drop(calls);
+    {
+        let calls = secret.0.calls.lock().unwrap();
+        assert!(
+            !calls.contains(&"network"),
+            "secret must bypass classification network access"
+        );
+        assert_eq!(calls.last(), Some(&"surface"));
+        assert!(
+            written.as_os_str().is_empty(),
+            "secret must not write messaging file"
+        );
+    }
     let (plain, written) = cycle_control("ordinary candidate text", Ok(())).await;
     assert!(plain.0.calls.lock().unwrap().contains(&"network"));
     assert!(
@@ -829,12 +842,13 @@ async fn issue_3950_co_secret_first() {
 #[tokio::test]
 async fn issue_3950_co_reservation() {
     let (accepted, written) = cycle_control("ordinary candidate text", Ok(())).await;
-    let calls = accepted.0.calls.lock().unwrap();
-    let commit = calls.iter().position(|x| *x == "commit").unwrap();
-    let surface = calls.iter().position(|x| *x == "surface").unwrap();
-    assert!(commit < surface, "reservation must precede route surface");
-    assert!(!written.as_os_str().is_empty());
-    drop(calls);
+    {
+        let calls = accepted.0.calls.lock().unwrap();
+        let commit = calls.iter().position(|x| *x == "commit").unwrap();
+        let surface = calls.iter().position(|x| *x == "surface").unwrap();
+        assert!(commit < surface, "reservation must precede route surface");
+        assert!(!written.as_os_str().is_empty());
+    }
     let (rejected, written) = cycle_control(
         "ordinary candidate text",
         Err(AbstainReason::PreconditionsRejected),
@@ -850,7 +864,7 @@ async fn issue_3950_co_reservation() {
 
 #[tokio::test]
 async fn issue_3950_co_cancel_bias() {
-    let (cancelled, done) = route_host(false, false, vec![], false, false);
+    let (cancelled, done) = route_host(false, false, vec![], false, RouteRuntime::Native);
     let shutdown = CancellationToken::new();
     shutdown.cancel();
     let (handle, _old) = CoManagedSupervisorHandle::new();
@@ -861,7 +875,7 @@ async fn issue_3950_co_cancel_bias() {
     spawn_co_managed_supervisor(cancelled.clone(), handle, receiver, shutdown);
     timeout(PRESENCE, done).await.unwrap().unwrap();
     assert_eq!(cancelled.0.work.load(Ordering::SeqCst), 0);
-    let (control, done) = route_host(false, false, vec![], false, false);
+    let (control, done) = route_host(false, false, vec![], false, RouteRuntime::Native);
     let (work, worked) = oneshot::channel();
     *control.0.work_signal.lock().unwrap() = Some(work);
     let shutdown = CancellationToken::new();
@@ -875,8 +889,8 @@ async fn issue_3950_co_cancel_bias() {
     println!("\nISSUE3950_CONTROL_OK case=issue_3950_co_cancel_bias");
 }
 
-async fn supervisor_runtime(tokio: bool) -> tokio::runtime::Id {
-    let (host, done) = route_host(false, false, vec![], false, tokio);
+async fn supervisor_runtime(runtime: RouteRuntime) -> tokio::runtime::Id {
+    let (host, done) = route_host(false, false, vec![], false, runtime);
     let (work, worked) = oneshot::channel();
     *host.0.work_signal.lock().unwrap() = Some(work);
     let (handle, _old) = CoManagedSupervisorHandle::new();
@@ -906,11 +920,11 @@ async fn issue_3950_co_native_detach() {
         .unwrap();
     assert_ne!(native, tokio::runtime::Handle::current().id());
     assert_eq!(
-        native_runtime_is_exact(supervisor_runtime(false).await, native),
+        native_runtime_is_exact(supervisor_runtime(RouteRuntime::Native).await, native),
         Ok(())
     );
     assert_eq!(
-        native_runtime_is_exact(supervisor_runtime(true).await, native),
+        native_runtime_is_exact(supervisor_runtime(RouteRuntime::Tokio).await, native),
         Err("supervisor must use native runtime")
     );
     println!("\nISSUE3950_MUTANT_REJECTED case=tokio_spawn");
