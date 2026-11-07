@@ -25,24 +25,17 @@ pub(crate) trait CoManagedEvents: Send + Sync {
 
 pub(crate) trait CoManagedHost: Send + Sync + CoManagedEvents + SelectionEvents {
     fn sessions_optional(&self) -> Option<&Arc<RwLock<SessionManager>>>;
-    #[allow(dead_code)] // Consumed by P16.
     fn sessions_required(&self) -> &Arc<RwLock<SessionManager>>;
     fn settings_required(&self) -> &SettingsState;
-    #[allow(dead_code)] // Consumed by P16.
     fn input_optional(&self) -> Option<&SubstantiveInputState>;
-    #[allow(dead_code)] // Consumed by P16.
     fn registry_optional(&self) -> Option<&Arc<CaptureRegistry>>;
-    #[allow(dead_code)] // Consumed by P16.
     fn network_required(&self) -> &OutboundNetwork;
-    #[allow(dead_code)] // Consumed by P16.
     fn tasks(&self) -> &dyn SelectionTasks;
-    #[allow(dead_code)] // Consumed by P16.
     fn effective_state<'a>(
         &'a self,
         room: &'a Path,
         id: &'a str,
     ) -> BoxFuture<'a, Result<CoManagedState, String>>;
-    #[allow(dead_code)] // Consumed by P16.
     fn commit_effect(
         &self,
         room_root: PathBuf,

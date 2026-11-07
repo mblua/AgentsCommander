@@ -70,22 +70,29 @@ impl<R: Runtime> CoManagedHost for AppHandle<R> {
         capture: Arc<CaptureState>,
     ) -> BoxFuture<'static, Result<CommittedEffect, AbstainReason>> {
         Box::pin(async move {
-            tauri::async_runtime::spawn_blocking(move || {
-                crate::capture::state::commit_effect(
-                    &room_root,
-                    &slot,
-                    expected_seq,
-                    &expected_key,
-                    &pre,
-                    &capture,
-                )
-            })
-            .await
-            .unwrap_or(Err(AbstainReason::LockUnavailable(
-                "commit task join failed".to_string(),
-            )))
+            commit_join_result(
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::capture::state::commit_effect(
+                        &room_root,
+                        &slot,
+                        expected_seq,
+                        &expected_key,
+                        &pre,
+                        &capture,
+                    )
+                })
+                .await,
+            )
         })
     }
+}
+
+fn commit_join_result<T, E>(
+    result: Result<Result<T, AbstainReason>, E>,
+) -> Result<T, AbstainReason> {
+    result.unwrap_or(Err(AbstainReason::LockUnavailable(
+        "commit task join failed".to_string(),
+    )))
 }
 
 #[cfg(test)]
