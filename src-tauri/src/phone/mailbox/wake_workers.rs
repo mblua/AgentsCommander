@@ -228,7 +228,7 @@ impl MailboxPoller {
     /// observe that window. An await inside it would let reclamation treat the
     /// claim as unowned and rename it back under a live worker.
     #[cfg(test)]
-    pub(crate) fn claim_and_spawn_wake<A: MailboxHost + BrowserHost>(
+    pub(crate) fn claim_and_spawn_wake<A: MailboxHost>(
         &mut self,
         app: &A,
         path: &Path,
@@ -244,7 +244,7 @@ impl MailboxPoller {
         )
     }
 
-    pub(crate) fn claim_and_spawn_validated_wake<A: MailboxHost + BrowserHost>(
+    pub(crate) fn claim_and_spawn_validated_wake<A: MailboxHost>(
         &mut self,
         app: &A,
         path: &Path,
