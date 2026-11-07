@@ -325,3 +325,82 @@ fn issue_3950_host_windows() {
     );
     println!("\nISSUE3950_CONTROL_OK case=issue_3950_host_windows");
 }
+
+#[tokio::test]
+async fn issue_3950_rollback_optional_pty_and_poison_recovery() {
+    for with_poisoned_pty in [false, true] {
+        let app = app();
+        let manager = SessionManager::new();
+        let sessions = Arc::new(tokio::sync::RwLock::new(manager.clone()));
+        assert!(
+            app.manage(crate::commands::session::selection_executor::state::<
+                MockRuntime,
+            >())
+        );
+        assert!(app.manage(sessions.clone()));
+        let coordinator = SelectionCoordinator::new(sessions, CancellationToken::new());
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        let mut ticket = coordinator
+            .reserve_create(crate::session::selection::TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let row = manager
+            .create_pending_session(
+                &mut ticket,
+                "shell".into(),
+                Vec::new(),
+                "C:/issue3950-rollback".into(),
+                None,
+                None,
+                Vec::new(),
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let binding = ticket.binding().unwrap();
+        if with_poisoned_pty {
+            let pty = pty();
+            pty.lock().unwrap().record_route(
+                row.id,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            );
+            let poison = pty.clone();
+            assert!(catch_unwind(AssertUnwindSafe(move || {
+                let _guard = poison.lock().unwrap();
+                panic!("issue3950 poison rollback PTY");
+            }))
+            .is_err());
+            assert!(pty.is_poisoned());
+            assert!(app.manage(pty));
+        } else {
+            assert!(app.handle().pty_optional().is_none());
+        }
+        let transaction = SelectionTransaction::for_test(app.handle().clone());
+        transaction.rollback_inline_create(binding).await;
+        assert!(manager.get_pending_session(binding).await.is_none());
+        assert!(manager.get_session(row.id).await.is_none());
+        drop(ticket);
+        coordinator.close_and_join().await;
+    }
+}
+
+#[test]
+fn issue_3950_runtime_recovers_poisoned_detached_state() {
+    let app = app();
+    let detached = DetachedSessionsState::default();
+    let id = Uuid::new_v4();
+    let poison = detached.clone();
+    assert!(catch_unwind(AssertUnwindSafe(move || {
+        let mut guard = poison.lock().unwrap();
+        guard.insert(id);
+        panic!("issue3950 poison detached state");
+    }))
+    .is_err());
+    assert!(detached.is_poisoned());
+    assert!(app.manage(detached));
+    assert!(app.manage(pty()));
+    let transaction = SelectionTransaction::for_test(app.handle().clone());
+    assert!(transaction.runtime_snapshot(id).detached);
+}

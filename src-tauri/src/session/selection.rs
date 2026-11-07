@@ -131,12 +131,8 @@ pub(crate) trait SelectionHost<C: SelectionContext>:
 {
     fn sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
     fn pty_required(&self) -> &Arc<Mutex<PtyManager>>;
-    // First required by P10.
-    #[allow(dead_code)]
     fn pty_optional(&self) -> Option<&Arc<Mutex<PtyManager>>>;
     fn detached_required(&self) -> &crate::app_state::DetachedSessionsState;
-    // First required by P10.
-    #[allow(dead_code)]
     fn settings_required(&self) -> &crate::config::settings::SettingsState;
     // First required by P13.
     #[allow(dead_code)]
@@ -150,11 +146,7 @@ pub(crate) trait SelectionHost<C: SelectionContext>:
     // First required by P12.
     #[allow(dead_code)]
     fn tasks(&self) -> &dyn task::SelectionTasks;
-    // First required by P10.
-    #[allow(dead_code)]
     fn focus_window(&self, label: &str) -> Option<Result<(), String>>;
-    // First required by P10.
-    #[allow(dead_code)]
     fn destroy_window(&self, label: &str) -> Option<Result<(), String>>;
 }
 
@@ -731,6 +723,15 @@ fn publish_lifecycle_event<E: SelectionEvents + ?Sized, T: Serialize>(
         }
     };
     events.selection_event(event, value);
+}
+
+#[cfg(test)]
+pub(crate) fn port_test_publish_lifecycle_event<E: SelectionEvents + ?Sized, T: Serialize>(
+    events: &E,
+    event: &'static str,
+    payload: &T,
+) {
+    publish_lifecycle_event(events, event, payload);
 }
 
 pub(crate) fn publish_session_communication<E: SelectionEvents + ?Sized>(

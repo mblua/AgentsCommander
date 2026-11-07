@@ -202,15 +202,32 @@ impl AutoClose {
 #[cfg(test)]
 mod tests;
 
+fn deliver_selection_event(
+    event: &'static str,
+    value: serde_json::Value,
+    native: impl FnOnce(&'static str, serde_json::Value) -> Result<(), String>,
+    websocket: impl FnOnce(&'static str, &serde_json::Value),
+) {
+    if let Err(error) = native(event, value.clone()) {
+        log::error!("[selection] Tauri publication failed event={event}: {error}");
+    }
+    websocket(event, &value);
+}
+
 impl<R: Runtime> crate::session::selection::SelectionEvents for AppHandle<R> {
     fn selection_event(&self, event: &'static str, value: serde_json::Value) {
-        if let Err(error) = self.emit(event, value.clone()) {
-            log::error!("[selection] Tauri publication failed event={event}: {error}");
-        }
-        if let Some(broadcaster) = self.try_state::<crate::web::broadcast::WsBroadcaster>() {
-            broadcaster.broadcast_event(event, &value);
-        } else {
-            log::debug!("[selection] WebSocket broadcaster unavailable event={event}");
-        }
+        deliver_selection_event(
+            event,
+            value,
+            |event, value| self.emit(event, value).map_err(|error| error.to_string()),
+            |event, value| {
+                if let Some(broadcaster) = self.try_state::<crate::web::broadcast::WsBroadcaster>()
+                {
+                    broadcaster.broadcast_event(event, value);
+                } else {
+                    log::debug!("[selection] WebSocket broadcaster unavailable event={event}");
+                }
+            },
+        );
     }
 }
