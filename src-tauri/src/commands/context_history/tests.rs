@@ -93,6 +93,9 @@ impl ProjectEnvironment for Env {
     ) -> Result<Box<dyn HistoryAppend>, StoreError> {
         Err(StoreError::Disabled)
     }
+    fn is_root_directory(&self, _working_directory: &str) -> bool {
+        false
+    }
 }
 
 /// A temporary AC project and the text spelling it is registered with.

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use futures::future::BoxFuture;
 use uuid::Uuid;
 
-use crate::context_history::config::{load_history_config, HistoryConfig, LoadedHistoryConfig};
+use crate::context_history::config::{HistoryConfig, LoadedHistoryConfig};
 use crate::context_history::observation::{
     parse_history_layout, parse_launch_metadata, resolve_history_scope, LaunchMetadata, ScopeInput,
     ScopeResolution, TeamMembers,
@@ -53,8 +53,10 @@ pub(crate) trait SessionLaunchSource: Send + Sync {
     fn live_ids<'a>(&'a self, ids: &'a [Uuid]) -> BoxFuture<'a, Option<HashSet<Uuid>>>;
 }
 
-/// Project-level reads: configuration, team snapshot, AC-root authority and
-/// the writer. Every method may touch disk and runs off the async workers.
+/// Project-level reads: configuration, team snapshot, AC-root authority, the
+/// writer and Root-directory classification. Methods may touch disk; Root
+/// classification keeps the execution context of its caller, including the
+/// sidebar's, so not every method runs off the async workers.
 pub(crate) trait ProjectEnvironment: Send + Sync + 'static {
     fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig;
     fn authoritative_ac_root(&self, ac_root: &Path) -> bool;
@@ -64,6 +66,9 @@ pub(crate) trait ProjectEnvironment: Send + Sync + 'static {
         ac_root: &Path,
         config: &HistoryConfig,
     ) -> Result<Box<dyn HistoryAppend>, StoreError>;
+    /// Whether `working_directory` is the Root agent's by its configured
+    /// basename or path; callers check the launch flag first.
+    fn is_root_directory(&self, working_directory: &str) -> bool;
 }
 
 /// The append half of the store, boxed so tests can script outcomes.
@@ -85,56 +90,13 @@ impl HistoryAppend for HistoryWriter {
     }
 }
 
-/// Production environment: the real config owner, team discovery and store.
-pub(crate) struct DiskProjectEnvironment;
-
-impl ProjectEnvironment for DiskProjectEnvironment {
-    fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig {
-        load_history_config(ac_root)
-    }
-
-    fn authoritative_ac_root(&self, ac_root: &Path) -> bool {
-        crate::config::ac_root::ensure_authoritative_ac_root(ac_root).is_ok()
-    }
-
-    fn teams(&self, project_path: &Path) -> Vec<TeamMembers> {
-        let mut teams = Vec::new();
-        crate::config::teams::discover_teams_in_project_filtered(project_path, &mut teams, |_| {
-            true
-        });
-        teams
-            .into_iter()
-            .map(|team| TeamMembers {
-                team_id: team.name,
-                member_paths: team
-                    .agent_paths
-                    .into_iter()
-                    .flatten()
-                    .chain(team.coordinator_path)
-                    .filter_map(|path| path.to_str().map(str::to_string))
-                    .collect(),
-            })
-            .collect()
-    }
-
-    fn open_writer(
-        &self,
-        ac_root: &Path,
-        config: &HistoryConfig,
-    ) -> Result<Box<dyn HistoryAppend>, StoreError> {
-        Ok(Box::new(HistoryWriter::open(ac_root, config)?))
-    }
-}
-
-fn is_root_session(launch: &SessionLaunch) -> bool {
-    launch.is_root_agent
-        || crate::config::root_agent::is_root_agent_dir_name(&launch.working_directory)
-        || crate::config::root_agent::is_root_agent_path(&launch.working_directory)
+fn is_root_session(launch: &SessionLaunch, env: &dyn ProjectEnvironment) -> bool {
+    launch.is_root_agent || env.is_root_directory(&launch.working_directory)
 }
 
 /// Resolve the scope of one session from an already-copied launch snapshot.
 fn resolve_launch(launch: &SessionLaunch, env: &dyn ProjectEnvironment) -> ScopeResolution {
-    let is_root_agent = is_root_session(launch);
+    let is_root_agent = is_root_session(launch, env);
     let (authoritative_ac_root, teams) = match parse_history_layout(&launch.working_directory) {
         Ok(layout) if !is_root_agent => (
             env.authoritative_ac_root(Path::new(&layout.ac_root)),
@@ -330,7 +292,7 @@ impl HistoryScopeState {
         let mut scopes = Vec::with_capacity(ids.len());
         for (session_id, launch) in ids.iter().copied().zip(launches) {
             let scope = match launch {
-                Some(launch) if !launch.exited && !is_root_session(&launch) => {
+                Some(launch) if !launch.exited && !is_root_session(&launch, self.env.as_ref()) => {
                     match self.resolve(session_id).await {
                         ScopeLookup::Resolved(scope) => Some(scope),
                         ScopeLookup::Absent | ScopeLookup::Saturated => None,

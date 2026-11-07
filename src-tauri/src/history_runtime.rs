@@ -31,8 +31,8 @@ pub(crate) mod project;
 pub(crate) mod scopes;
 
 pub(crate) use scopes::{
-    DiskProjectEnvironment, HistoryAppend, HistoryScopeState, ProjectEnvironment, ScopeLookup,
-    SessionLaunch, SessionLaunchSource,
+    HistoryAppend, HistoryScopeState, ProjectEnvironment, ScopeLookup, SessionLaunch,
+    SessionLaunchSource,
 };
 
 /// Bounded ingress mailbox between the scraper bridge and the actor.
