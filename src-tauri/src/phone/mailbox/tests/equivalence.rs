@@ -21,94 +21,94 @@ enum Scope {
 }
 
 const CONTROLS: [Control; 11] = [
-    Control {
-        path: "phone/mailbox/wake_injection.rs",
-        symbol: "spawn_wake_session",
-        current: include_str!("../wake_injection/fixture.rs"),
-        before: "t.succeeded();",
-        after: ".create_session(",
-        scope: Scope::Order,
-    },
-    Control {
-        path: "phone/mailbox/request_polling.rs",
-        symbol: "poll_project_refresh_requests",
-        current: include_str!("../request_polling.rs"),
-        before: "app.project_refresh(payload)",
-        after: "batch.processed_paths",
-        scope: Scope::Order,
-    },
-    Control {
-        path: "phone/mailbox/request_polling.rs",
-        symbol: "poll_coding_agent_requests",
-        current: include_str!("../request_polling.rs"),
-        before: "letapplied={",
-        after: "app.coding_agent_settings_updated(",
-        scope: Scope::Outside,
-    },
-    Control {
-        path: "pty/inject.rs",
-        symbol: "inject_text_into_session_impl",
-        current: include_str!("../../../pty/inject.rs"),
-        before: "letpermit=PtyManager::acquire_input_writer(",
-        after: "check_injection_hold(app,session_id,&hold_policy).await?;",
-        scope: Scope::Order,
-    },
-    Control {
-        path: "pty/inject.rs",
-        symbol: "inject_text_into_session_impl",
-        current: include_str!("../../../pty/inject.rs"),
-        before: "drop(permit);",
-        after: "watch.finish().await.into_result()?;",
-        scope: Scope::Order,
-    },
-    Control {
-        path: "phone/mailbox/pty_dispatch/select.rs",
-        symbol: "dispatch_selection_spawn",
-        current: include_str!("../pty_dispatch/select.rs"),
-        before: "letspawn={",
-        after: "await_pty_input_before_deadline(",
-        scope: Scope::Inside,
-    },
-    Control {
-        path: "phone/mailbox/wake_delivery.rs",
-        symbol: "deliver_owned_peer_replacement",
-        current: include_str!("../wake_delivery.rs"),
-        before: ".execute_owned_peer_replacement(&app,&pty,&mutexecution).await;",
-        after: "source.returned(result.is_err());",
-        scope: Scope::Order,
-    },
-    Control {
-        path: "phone/mailbox/pty_dispatch.rs",
-        symbol: "dispatch_pty_input_operation_core",
-        current: include_str!("../pty_dispatch.rs"),
-        before: "letfailed=dispatcher",
-        after: "source_executor.returned(failed);",
-        scope: Scope::Order,
-    },
-    Control {
-        path: "phone/mailbox/pty_authority.rs",
-        symbol: "spawn_owned_pty_replacement",
-        current: include_str!("../pty_authority.rs"),
-        before: "with_source_validation(Arc::new(move||{",
-        after: "letrefresh=refresh_pty_claim_for_resume(&store,&initial,&claimed).await;",
-        scope: Scope::Inside,
-    },
-    Control {
-        path: "phone/terminal_snapshot/process.rs",
-        symbol: "process_claimed",
-        current: include_str!("../../terminal_snapshot/process.rs"),
-        before: "letSome(settings)=",
-        after: "publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);return;",
-        scope: Scope::Optional,
-    },
-    Control {
-        path: "commands/web_browser/mailbox.rs",
-        symbol: "handle_web_browser",
-        current: include_str!("../browser.rs"),
-        before: "letSome(session)=caller_session(app,msg).awaitelse{",
-        after: "letresult=matchaction.as_str(){",
-        scope: Scope::Order,
-    },
+    Control::new(
+        "phone/mailbox/wake_injection.rs",
+        "spawn_wake_session",
+        include_str!("../wake_injection/fixture.rs"),
+        "t.succeeded();",
+        ".create_session(",
+        Scope::Order,
+    ),
+    Control::new(
+        "phone/mailbox/request_polling.rs",
+        "poll_project_refresh_requests",
+        include_str!("../request_polling.rs"),
+        "app.project_refresh(payload)",
+        "batch.processed_paths",
+        Scope::Order,
+    ),
+    Control::new(
+        "phone/mailbox/request_polling.rs",
+        "poll_coding_agent_requests",
+        include_str!("../request_polling.rs"),
+        "letapplied={",
+        "app.coding_agent_settings_updated(",
+        Scope::Outside,
+    ),
+    Control::new(
+        "pty/inject.rs",
+        "inject_text_into_session_impl",
+        include_str!("../../../pty/inject.rs"),
+        "letpermit=PtyManager::acquire_input_writer(",
+        "check_injection_hold(app,session_id,&hold_policy).await?;",
+        Scope::Order,
+    ),
+    Control::new(
+        "pty/inject.rs",
+        "inject_text_into_session_impl",
+        include_str!("../../../pty/inject.rs"),
+        "drop(permit);",
+        "watch.finish().await.into_result()?;",
+        Scope::Order,
+    ),
+    Control::new(
+        "phone/mailbox/pty_dispatch/select.rs",
+        "dispatch_selection_spawn",
+        include_str!("../pty_dispatch/select.rs"),
+        "letspawn={",
+        "await_pty_input_before_deadline(",
+        Scope::Inside,
+    ),
+    Control::new(
+        "phone/mailbox/wake_delivery.rs",
+        "deliver_owned_peer_replacement",
+        include_str!("../wake_delivery.rs"),
+        ".execute_owned_peer_replacement(&app,&pty,&mutexecution).await;",
+        "source.returned(result.is_err());",
+        Scope::Order,
+    ),
+    Control::new(
+        "phone/mailbox/pty_dispatch.rs",
+        "dispatch_pty_input_operation_core",
+        include_str!("../pty_dispatch.rs"),
+        "letfailed=dispatcher",
+        "source_executor.returned(failed);",
+        Scope::Order,
+    ),
+    Control::new(
+        "phone/mailbox/pty_authority.rs",
+        "spawn_owned_pty_replacement",
+        include_str!("../pty_authority.rs"),
+        "with_source_validation(Arc::new(move||{",
+        "letrefresh=refresh_pty_claim_for_resume(&store,&initial,&claimed).await;",
+        Scope::Inside,
+    ),
+    Control::new(
+        "phone/terminal_snapshot/process.rs",
+        "process_claimed",
+        include_str!("../../terminal_snapshot/process.rs"),
+        "letSome(settings)=",
+        "publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);return;",
+        Scope::Optional,
+    ),
+    Control::new(
+        "commands/web_browser/mailbox.rs",
+        "handle_web_browser",
+        include_str!("../browser.rs"),
+        "letSome(session)=caller_session(app,msg).awaitelse{",
+        "letresult=matchaction.as_str(){",
+        Scope::Order,
+    ),
 ];
 
 fn compact(source: &str) -> Result<String, &'static str> {
@@ -165,6 +165,24 @@ fn function_body<'a>(source: &'a str, symbol: &str) -> Result<&'a str, &'static 
 }
 
 impl Control {
+    const fn new(
+        path: &'static str,
+        symbol: &'static str,
+        current: &'static str,
+        before: &'static str,
+        after: &'static str,
+        scope: Scope,
+    ) -> Self {
+        Self {
+            path,
+            symbol,
+            current,
+            before,
+            after,
+            scope,
+        }
+    }
+
     fn body(&self, source: &str, current: bool) -> Result<String, &'static str> {
         let source = compact(source)?;
         // Exact P13 native-event spellings; keep all scope and order unchanged.
