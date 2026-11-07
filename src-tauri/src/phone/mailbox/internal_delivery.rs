@@ -205,7 +205,7 @@ impl MailboxPoller {
                     .await?;
 
             // Repeat the guard and exact-path absence check immediately before actuation. Command
-            // and profile resolution above can perform filesystem work and must not widen this race.
+            // and profile resolution can perform filesystem work; do not widen this race.
             self.authorize_internal_background_spawn(app, target, guard)
                 .await?;
 
