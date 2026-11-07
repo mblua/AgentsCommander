@@ -123,3 +123,400 @@ fn empty_directory_keeps_cursor() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(scanner.cursors.get(&identity.object_id), Some(&cursor));
     Ok(())
 }
+
+type SessionOwner = Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>;
+type PtyOwner = Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>;
+
+const SERVICE_ORDER: [&str; 5] = ["session", "pty", "settings", "restore", "purge"];
+const TRACE_MESSAGE: &str = "snapshot service lookup trace";
+
+/// Inert backend: every call that would do work is counted and refused.
+#[derive(Default)]
+struct InertBackend {
+    unexpected: std::sync::atomic::AtomicUsize,
+}
+
+impl InertBackend {
+    fn refuse(&self) -> crate::errors::AppError {
+        self.unexpected
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::errors::AppError::Other("inert test backend".to_string())
+    }
+}
+
+impl crate::pty::backend::PtyBackend for InertBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn spawn(
+        &self,
+        _spec: crate::pty::backend::BackendSpawnSpec,
+    ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
+        let error = self.refuse();
+        Box::pin(async move { Err(error) })
+    }
+    fn write(
+        &self,
+        _authority: &crate::pty::input_route::BackendWriteAuthority,
+        _id: Uuid,
+        _data: &[u8],
+    ) -> Result<(), crate::errors::AppError> {
+        Err(self.refuse())
+    }
+    fn resize(&self, _id: Uuid, _cols: u16, _rows: u16) -> Result<(), crate::errors::AppError> {
+        Err(self.refuse())
+    }
+    fn kill(&self, _id: Uuid) -> Result<(), crate::errors::AppError> {
+        Err(self.refuse())
+    }
+    fn has_session(&self, _id: Uuid) -> bool {
+        false
+    }
+    fn get_screen_snapshot(&self, _id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        None
+    }
+    fn get_pty_size(&self, _id: Uuid) -> Option<(u16, u16)> {
+        None
+    }
+    fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        crate::pty::context_scrape::ScreenRowsRead::SessionOver
+    }
+    fn register_response_watcher(&self, _id: Uuid, _request: String, _dir: PathBuf) {
+        let _ = self.refuse();
+    }
+    fn terminate_job_for_session(&self, _id: Uuid) -> bool {
+        let _ = self.refuse();
+        false
+    }
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        let _ = self.refuse();
+        (0, 0)
+    }
+}
+
+#[derive(Default)]
+struct RecordingSlots {
+    snapshot: Option<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>,
+    session: Option<SessionOwner>,
+    pty: Option<PtyOwner>,
+    settings: Option<crate::config::settings::SettingsState>,
+    restore: Option<Arc<crate::RestoreInProgress>>,
+    purge: Option<Arc<crate::session::purge_guard::PurgeGuard>>,
+    backend: Option<Arc<InertBackend>>,
+    trace: std::sync::Mutex<Vec<&'static str>>,
+    snapshot_lookups: std::sync::atomic::AtomicUsize,
+}
+
+/// Clone shares the slots and the trace; cloning looks nothing up.
+#[derive(Clone, Default)]
+struct RecordingHost(Arc<RecordingSlots>);
+
+impl RecordingHost {
+    fn record<'a, T>(&'a self, service: &'static str, slot: &'a Option<T>) -> Option<&'a T> {
+        self.0.trace.lock().expect("trace lock").push(service);
+        slot.as_ref()
+    }
+
+    fn trace(&self) -> Vec<&'static str> {
+        self.0.trace.lock().expect("trace lock").clone()
+    }
+
+    fn snapshot_lookups(&self) -> usize {
+        self.0
+            .snapshot_lookups
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn unexpected_backend_calls(&self) -> usize {
+        self.0.backend.as_ref().map_or(0, |backend| {
+            backend.unexpected.load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }
+}
+
+impl TerminalSnapshotHost for RecordingHost {
+    fn snapshot_state_opt(
+        &self,
+    ) -> Option<&Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>> {
+        self.0
+            .snapshot_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.snapshot.as_ref()
+    }
+    fn session_manager_opt(&self) -> Option<&SessionOwner> {
+        self.record("session", &self.0.session)
+    }
+    fn pty_manager_opt(&self) -> Option<&PtyOwner> {
+        self.record("pty", &self.0.pty)
+    }
+    fn settings_opt(&self) -> Option<&crate::config::settings::SettingsState> {
+        self.record("settings", &self.0.settings)
+    }
+    fn restore_opt(&self) -> Option<&Arc<crate::RestoreInProgress>> {
+        self.record("restore", &self.0.restore)
+    }
+    fn purge_opt(&self) -> Option<&Arc<crate::session::purge_guard::PurgeGuard>> {
+        self.record("purge", &self.0.purge)
+    }
+}
+
+/// Host with the snapshot state (when `snapshot`) and every service except `missing`.
+fn recording_host(snapshot: bool, missing: Option<&str>) -> RecordingHost {
+    let present = |service: &str| missing != Some(service);
+    let backend = Arc::new(InertBackend::default());
+    let pty_backend: Arc<dyn crate::pty::backend::PtyBackend> = backend.clone();
+    RecordingHost(Arc::new(RecordingSlots {
+        snapshot: snapshot.then(|| {
+            crate::pty::terminal_snapshot::TerminalSnapshotState::new(
+                crate::shutdown::ShutdownSignal::new(),
+            )
+        }),
+        session: present("session").then(|| {
+            Arc::new(tokio::sync::RwLock::new(
+                crate::session::manager::SessionManager::new(),
+            ))
+        }),
+        pty: present("pty").then(|| {
+            Arc::new(std::sync::Mutex::new(
+                crate::pty::manager::PtyManager::new_for_test(pty_backend),
+            ))
+        }),
+        settings: present("settings").then(|| {
+            crate::config::settings::new_settings_state(
+                crate::config::settings::AppSettings::default(),
+            )
+        }),
+        restore: present("restore").then(|| {
+            Arc::new(crate::RestoreInProgress(
+                std::sync::atomic::AtomicBool::new(false),
+            ))
+        }),
+        purge: present("purge")
+            .then(|| Arc::new(crate::session::purge_guard::PurgeGuard::default())),
+        backend: Some(backend),
+        ..RecordingSlots::default()
+    }))
+}
+
+fn isolated_scanner() -> SnapshotMailboxScanner {
+    SnapshotMailboxScanner {
+        shutdown_owner: SnapshotScannerShutdownOwner::unregistered(),
+        cursors: HashMap::new(),
+        observed: std::collections::HashSet::new(),
+        startup_sweep_complete: false,
+    }
+}
+
+fn create_mailbox_directories(root: &Path) -> (PathBuf, PathBuf) {
+    let local = root.join(crate::config::agent_local_dir_name());
+    let request_directory = local.join("outbox").join(REQUEST_DIRECTORY);
+    let response_directory = local.join(RESPONSE_DIRECTORY);
+    for directory in [&request_directory, &response_directory] {
+        std::fs::create_dir_all(directory).expect("snapshot mailbox directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+                .expect("private snapshot mailbox directory");
+        }
+    }
+    (request_directory, response_directory)
+}
+
+fn write_request_bytes(request_directory: &Path, request_id: &str, bytes: &[u8]) -> PathBuf {
+    let path = request_directory.join(format!("{request_id}.json"));
+    std::fs::write(&path, bytes).expect("write host request");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("private host request");
+    }
+    path
+}
+
+fn valid_request() -> super::super::HostTerminalSnapshotRequest {
+    let now = chrono::Utc::now();
+    let mut request = super::super::HostTerminalSnapshotRequest {
+        kind: super::super::REQUEST_KIND.to_string(),
+        version: super::super::REQUEST_VERSION,
+        request_id: Uuid::new_v4().to_string(),
+        token: Uuid::new_v4().to_string(),
+        from: "project:wg-1-team/lead".to_string(),
+        to: "project:wg-1-team/member".to_string(),
+        format: terminal_snapshot_renderer::TerminalSnapshotFormat::Json,
+        issued_at: terminal_snapshot_renderer::canonical_timestamp(now),
+        expires_at: terminal_snapshot_renderer::canonical_timestamp(
+            now + chrono::Duration::seconds(15),
+        ),
+        nonce: "a1".repeat(32),
+        confirmation_tag: String::new(),
+    };
+    request.confirmation_tag = super::super::confirmation_tag(&request);
+    assert!(request.validate(now).is_ok(), "fixture request is valid");
+    request
+}
+
+/// Runs one real scan and joins its tasks; returns the tracked task count seen before the join.
+async fn scan_once(host: &RecordingHost, root: &Path) -> usize {
+    let mut scanner = isolated_scanner();
+    scanner.begin_cycle();
+    scanner.scan_root(host, root);
+    scanner.finish_cycle();
+    let tracked = scanner.shutdown_owner.task_count();
+    scanner.join_pending_tasks_for_test().await;
+    assert_eq!(scanner.shutdown_owner.task_count(), 0);
+    tracked
+}
+
+fn assert_no_processing_artifact(request_directory: &Path) {
+    let leftovers: Vec<_> = std::fs::read_dir(request_directory)
+        .expect("request directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".terminal-snapshot-processing"))
+        .collect();
+    assert!(leftovers.is_empty(), "processing artifacts: {leftovers:?}");
+}
+
+/// Reads the correlated failure response and returns its error code.
+fn failure_response(
+    response_directory: &Path,
+    request: &super::super::HostTerminalSnapshotRequest,
+) -> String {
+    let path = response_directory.join(format!("{}.json", request.request_id));
+    let bytes = std::fs::read(path).expect("correlated response");
+    let response: serde_json::Value = serde_json::from_slice(&bytes).expect("response JSON");
+    let object = response.as_object().expect("response object");
+    let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "apiVersion",
+            "confirmationTag",
+            "detail",
+            "error",
+            "expiresAt",
+            "requestId"
+        ],
+        "failure response carries no success payload"
+    );
+    assert_eq!(object["requestId"], request.request_id.as_str());
+    assert_eq!(object["confirmationTag"], request.confirmation_tag.as_str());
+    object["error"].as_str().expect("error code").to_string()
+}
+
+#[tokio::test]
+async fn snapshot_missing_each_service() {
+    for (index, missing) in SERVICE_ORDER.iter().enumerate() {
+        let root = tempfile::tempdir().expect("requester root");
+        let (request_directory, response_directory) = create_mailbox_directories(root.path());
+        let request = valid_request();
+        let bytes = serde_json::to_vec(&request).expect("request JSON");
+        let request_path = write_request_bytes(&request_directory, &request.request_id, &bytes);
+        let host = recording_host(true, Some(missing));
+        assert_eq!(scan_once(&host, root.path()).await, 1, "{missing}");
+        assert_eq!(host.trace(), SERVICE_ORDER[..=index], "{TRACE_MESSAGE}");
+        assert_eq!(
+            failure_response(&response_directory, &request),
+            TerminalSnapshotReasonCode::ServiceUnavailable.as_str(),
+            "{missing}"
+        );
+        assert!(!request_path.exists());
+        assert_no_processing_artifact(&request_directory);
+        assert_eq!(host.snapshot_lookups(), 1);
+        assert_eq!(host.unexpected_backend_calls(), 0);
+    }
+}
+
+#[tokio::test]
+async fn snapshot_invalid_request_has_no_service_lookups() {
+    let root = tempfile::tempdir().expect("requester root");
+    let (request_directory, response_directory) = create_mailbox_directories(root.path());
+    let mut request = valid_request();
+    request.version = super::super::REQUEST_VERSION + 1;
+    let bytes = serde_json::to_vec(&request).expect("request JSON");
+    write_request_bytes(&request_directory, &request.request_id, &bytes);
+    let host = recording_host(true, None);
+    assert_eq!(scan_once(&host, root.path()).await, 1);
+    assert!(
+        host.trace().is_empty(),
+        "{TRACE_MESSAGE}: {:?}",
+        host.trace()
+    );
+    assert_eq!(
+        failure_response(&response_directory, &request),
+        TerminalSnapshotReasonCode::InvalidRequest.as_str()
+    );
+    assert_eq!(host.snapshot_lookups(), 1);
+    assert_no_processing_artifact(&request_directory);
+
+    let malformed_id = Uuid::new_v4().to_string();
+    let malformed_path = write_request_bytes(&request_directory, &malformed_id, b"{");
+    let host = recording_host(true, None);
+    assert_eq!(scan_once(&host, root.path()).await, 1);
+    assert!(
+        host.trace().is_empty(),
+        "{TRACE_MESSAGE}: {:?}",
+        host.trace()
+    );
+    assert_eq!(host.snapshot_lookups(), 1);
+    assert!(!malformed_path.exists());
+    assert!(!response_directory
+        .join(format!("{malformed_id}.json"))
+        .exists());
+    assert_no_processing_artifact(&request_directory);
+}
+
+#[tokio::test]
+async fn snapshot_service_lookup_order() {
+    let root = tempfile::tempdir().expect("requester root");
+    let (request_directory, response_directory) = create_mailbox_directories(root.path());
+    let request = valid_request();
+    let bytes = serde_json::to_vec(&request).expect("request JSON");
+    write_request_bytes(&request_directory, &request.request_id, &bytes);
+    let host = recording_host(true, None);
+    assert_eq!(scan_once(&host, root.path()).await, 1);
+    assert_eq!(host.trace(), SERVICE_ORDER, "{TRACE_MESSAGE}");
+    let error = failure_response(&response_directory, &request);
+    assert_ne!(
+        error,
+        TerminalSnapshotReasonCode::ServiceUnavailable.as_str()
+    );
+    assert_eq!(host.snapshot_lookups(), 1);
+    assert_eq!(host.unexpected_backend_calls(), 0);
+    assert_no_processing_artifact(&request_directory);
+}
+
+#[tokio::test]
+async fn snapshot_state_absent() {
+    let root = tempfile::tempdir().expect("requester root");
+    let (request_directory, response_directory) = create_mailbox_directories(root.path());
+    let request = valid_request();
+    let bytes = serde_json::to_vec(&request).expect("request JSON");
+    let request_path = write_request_bytes(&request_directory, &request.request_id, &bytes);
+    let host = recording_host(false, None);
+    assert_eq!(scan_once(&host, root.path()).await, 0);
+    assert!(
+        host.trace().is_empty(),
+        "{TRACE_MESSAGE}: {:?}",
+        host.trace()
+    );
+    assert_eq!(host.snapshot_lookups(), 1);
+    assert_eq!(std::fs::read(&request_path).expect("request intact"), bytes);
+    assert!(!response_directory
+        .join(format!("{}.json", request.request_id))
+        .exists());
+    assert_no_processing_artifact(&request_directory);
+
+    let bare_root = tempfile::tempdir().expect("root without mailbox");
+    let host = recording_host(true, None);
+    assert_eq!(scan_once(&host, bare_root.path()).await, 0);
+    assert_eq!(host.snapshot_lookups(), 0);
+    assert!(
+        host.trace().is_empty(),
+        "{TRACE_MESSAGE}: {:?}",
+        host.trace()
+    );
+}
