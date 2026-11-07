@@ -11,9 +11,7 @@ use super::poller::{
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{ResponseWakeWork, WakeDelivery};
 use crate::config::teams;
-use crate::phone::mailbox::pty_observation::{
-    PtyAuthorityState, PtyTargetState, WakeDeliveryState,
-};
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
@@ -38,7 +36,7 @@ fn owned_replacement_work(
 }
 
 fn owned_replacement_directories(
-    request: &crate::commands::session::OwnedReplacementCreateRequest,
+    request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
 ) -> Result<
     (
         crate::path_identity::VerifiedPathIdentity,
@@ -60,10 +58,10 @@ fn owned_replacement_request(
     plan: super::notice::ResolvedWakeSpawnPlan,
     skip_tooling_save: bool,
 ) -> (
-    crate::commands::session::OwnedReplacementCreateRequest,
+    crate::session::create_contracts::OwnedReplacementCreateRequest,
     super::notice::ResolvedWakeAgentCommand,
 ) {
-    let request = crate::commands::session::OwnedReplacementCreateRequest {
+    let request = crate::session::create_contracts::OwnedReplacementCreateRequest {
         shell: plan.spawn_shell,
         shell_args: plan.spawn_args,
         cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
@@ -153,9 +151,9 @@ async fn owned_peer_completion(
 }
 
 impl MailboxPoller {
-    pub(crate) async fn validate_outbox_action_and_mode<R: tauri::Runtime>(
+    pub(crate) async fn validate_outbox_action_and_mode<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -205,9 +203,9 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    pub(crate) async fn deliver_outbox_tail<R: tauri::Runtime>(
+    pub(crate) async fn deliver_outbox_tail<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: OutboxMessage,
         content: &str,
@@ -282,18 +280,18 @@ impl MailboxPoller {
     // throwaway `MailboxPoller::new()` (delivery-stateless: this method and its
     // whole `&self` callee chain read only `app.state::<...>()`, never the
     // poller's `poll_interval` / `retry_tracker` fields). See plan #791 §0.5 HIGH-1.
-    pub(crate) async fn deliver_wake<R: tauri::Runtime>(
+    pub(crate) async fn deliver_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
     ) -> Result<OutboxMessage, String> {
         self.deliver_wake_with_origin(app, msg, WakeDeliveryOrigin::FilesystemPoller)
             .await
     }
 
-    pub(crate) async fn deliver_wake_with_origin<R: tauri::Runtime>(
+    pub(crate) async fn deliver_wake_with_origin<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
     ) -> Result<OutboxMessage, String> {
@@ -312,9 +310,9 @@ impl MailboxPoller {
     /// #2232 phase 7: deliver a wake whose origin is the Co-managed provenance
     /// queue. `comanaged` is display-only and never part of routing; the
     /// existing entry points stay attribution-free.
-    async fn deliver_wake_with_attribution<R: tauri::Runtime>(
+    async fn deliver_wake_with_attribution<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
@@ -337,9 +335,9 @@ impl MailboxPoller {
     /// notice, cancellation, and guard capability are required for `InternalSystem`.
     /// Returns the annotated `OutboxMessage` for the `Delivered:` receipt; the
     /// internal-system arm builds its own envelope (it holds no serialized message).
-    pub(crate) async fn deliver_validated_wake<R: tauri::Runtime>(
+    pub(crate) async fn deliver_validated_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         validated: &ValidatedWake,
         comanaged: bool,
     ) -> Result<OutboxMessage, String> {
@@ -356,9 +354,9 @@ impl MailboxPoller {
         .await
     }
 
-    pub(crate) async fn deliver_wake_engine<R: tauri::Runtime>(
+    pub(crate) async fn deliver_wake_engine<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         delivery: WakeDelivery<'_>,
     ) -> Result<OutboxMessage, String> {
         let target_fqn = match &delivery {
@@ -398,9 +396,9 @@ impl MailboxPoller {
         }
     }
 
-    async fn deliver_peer_wake<R: tauri::Runtime>(
+    async fn deliver_peer_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
@@ -504,9 +502,9 @@ impl MailboxPoller {
         }
     }
 
-    async fn peer_wake_needs_owned_replacement<R: tauri::Runtime>(
+    async fn peer_wake_needs_owned_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         previous: Uuid,
     ) -> bool {
@@ -530,11 +528,11 @@ impl MailboxPoller {
         )
     }
 
-    async fn owned_peer_source_is_current<R: tauri::Runtime>(
+    async fn owned_peer_source_is_current<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
-        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
         physical: &crate::path_identity::VerifiedPathIdentity,
     ) -> bool {
         if app
@@ -624,11 +622,11 @@ impl MailboxPoller {
         }
     }
 
-    async fn admit_owned_peer_replacement<R: tauri::Runtime>(
+    async fn admit_owned_peer_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
-        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
         previous_id: Uuid,
     ) -> Result<Option<OwnedPeerTarget>, String> {
         #[cfg(test)]
@@ -726,9 +724,9 @@ impl MailboxPoller {
         }
     }
 
-    async fn deliver_owned_peer_replacement<R: tauri::Runtime>(
+    async fn deliver_owned_peer_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         delivery: (WakeDeliveryOrigin, bool),
         response: Option<&ResponseWakeWork>,

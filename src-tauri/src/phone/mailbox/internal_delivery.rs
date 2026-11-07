@@ -12,15 +12,14 @@ use super::settle::{err_is_pty_session_missing, internal_target_fqn_prefilter_ma
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::phone::consumption::verdict_to_result;
 use crate::phone::consumption::ConsumptionVerdict;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::ResolvedAgentHostShell;
 use crate::pty::inject::SettleReadiness;
-use crate::session::manager::SessionManager;
 use crate::session::session::Session;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::sync::Arc;
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -33,17 +32,17 @@ enum InternalLiveDelivery {
 }
 
 impl MailboxPoller {
-    pub(crate) async fn deliver_internal_system_wake<R: tauri::Runtime>(
+    pub(crate) async fn deliver_internal_system_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         target: InternalSystemTarget,
         notice: InternalSystemNotice,
         cancellation: CancellationToken,
         guard: InternalNoticeGuard,
     ) -> Result<(), String> {
         wake_receipt::check_cancellation(&cancellation)?;
-        if let Some(purge) = app.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>() {
-            wake_receipt::check_purge(&purge, target.fqn())?;
+        if let Some(purge) = app.pty_purge() {
+            wake_receipt::check_purge(purge, target.fqn())?;
         }
         Self::run_internal_guard(Arc::clone(&guard)).await?;
 
@@ -85,8 +84,7 @@ impl MailboxPoller {
         }
         let marker_fqn = crate::config::teams::agent_fqn_from_path(&cwd);
         let (spawn_with_resume, local) = wake_receipt::background_resume(
-            app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
-                .as_deref(),
+            app.clocks(),
             &marker_fqn,
             target.fqn(),
             spawn_with_resume,
@@ -114,17 +112,13 @@ impl MailboxPoller {
                 .await;
         }
         if let Some(communication) = carried_communication {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let manager = session_mgr.read().await.clone();
             let restored = manager
                 .restore_communication(session_id, communication.clone())
                 .await;
             if restored {
-                crate::session::selection::publish_session_communication(
-                    app,
-                    session_id,
-                    Some(&communication),
-                );
+                app.publish(session_id, Some(&communication));
             }
         }
 
@@ -266,9 +260,9 @@ impl MailboxPoller {
         Ok(())
     }
 
-    async fn deliver_internal_live_notice<R: tauri::Runtime>(
+    async fn deliver_internal_live_notice<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         target: &InternalSystemTarget,
         notice: &InternalSystemNotice,
         cancellation: &CancellationToken,
@@ -388,7 +382,7 @@ impl MailboxPoller {
         let spawn_agent_id = agent_id.to_string();
         let spawn_cwd = cwd.to_string();
         let resolved_spawn = tokio::task::spawn_blocking(move || {
-            crate::commands::session::build_configured_agent_spawn_for_cwd(
+            crate::config::agent_command::build_configured_agent_spawn_for_cwd(
                 &settings_snapshot,
                 &spawn_agent_id,
                 &spawn_cwd,
@@ -602,9 +596,9 @@ impl MailboxPoller {
         Ok(())
     }
 
-    async fn inject_internal_system_notice<R: tauri::Runtime>(
+    async fn inject_internal_system_notice<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         target: &InternalSystemTarget,
         notice: &InternalSystemNotice,
@@ -616,7 +610,7 @@ impl MailboxPoller {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             let session = {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let session_mgr = app.pty_sessions();
                 let manager = session_mgr.read().await.clone();
                 manager.get_session(session_id).await
             }
@@ -692,8 +686,8 @@ impl MailboxPoller {
         )
         .await?;
 
-        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
-        if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+        app.note_post_boundary_content_to_session(session_id).await;
+        if let Some(idle) = app.pty_readiness_opt() {
             idle.touch_silence(session_id);
         }
         Self::log_internal_system_notice_delivery(session_id, target, notice);
@@ -772,9 +766,9 @@ impl MailboxPoller {
         pty.has_session(id)
     }
 
-    pub(crate) async fn inject_wake_into_pty<R: tauri::Runtime>(
+    pub(crate) async fn inject_wake_into_pty<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         msg: &OutboxMessage,
         attribution: (WakeDeliveryOrigin, bool),
@@ -853,7 +847,7 @@ impl MailboxPoller {
             break result;
         };
         Self::finish_wake_injection(msg, response, result, || {
-            if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
+            if let Some(idle) = app.pty_readiness_opt() {
                 idle.touch_silence(session_id);
             }
         })
@@ -889,9 +883,9 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn destroy_exited_wake_session<R: tauri::Runtime>(
+    pub(crate) async fn destroy_exited_wake_session<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
     ) -> Result<(), String> {
         #[cfg(test)]
@@ -907,7 +901,7 @@ impl MailboxPoller {
             if let Some(result) = hooks.destroy_results.lock().unwrap().pop_front() {
                 result?;
             }
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let mgr = session_mgr.read().await;
             return mgr
                 .destroy_session(session_id)
@@ -916,6 +910,6 @@ impl MailboxPoller {
                 .map_err(|e| e.to_string());
         }
 
-        crate::commands::session::background_destroy_session_inner(app, session_id).await
+        app.background_destroy_session_inner(session_id).await
     }
 }

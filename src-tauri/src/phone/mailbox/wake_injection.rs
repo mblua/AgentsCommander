@@ -10,14 +10,15 @@ use super::poller::{reserve_response_request_at_write, MailboxPoller};
 use super::pty_claim::{response_diag_debug_only, ResponseWakeWork};
 #[cfg(test)]
 use super::pty_claim::{MailboxSpawnCall, MailboxTestEvent};
-use super::pty_observation::{PtyAuthorityState, PtyReadinessState, WakeDeliveryState};
 use super::settle::{
     classify_injection_error, live_settle_action, live_wake_route, settle_tick, wake_settle_ready,
     LiveWakeRoute, STARTUP_SETTLE_THRESHOLD,
 };
+use crate::phone::mailbox::host::{MailboxHost, MailboxSessionCreate};
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::SettleReadiness;
 use crate::pty::manager::PtyManager;
+use crate::session::create_contracts::CreateSelectionIntent;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
@@ -45,9 +46,9 @@ fn record_spawn_call(hooks: &super::pty_claim::MailboxTestHooks, call: MailboxSp
 
 impl MailboxPoller {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn spawn_wake_session<R: tauri::Runtime>(
+    pub(crate) async fn spawn_wake_session<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         resolved_command: &ResolvedWakeAgentCommand,
         cwd: String,
@@ -86,34 +87,32 @@ impl MailboxPoller {
 
         let session_mgr = app.pty_sessions();
         let pty_mgr = app.pty_routes();
-        crate::commands::session::create_session_inner(
-            app,
+        app.create_session_inner(MailboxSessionCreate {
             session_mgr,
             pty_mgr,
-            spawn_shell,
-            spawn_args,
+            shell: spawn_shell,
+            shell_args: spawn_args,
             cwd,
-            Some(session_name),                // readable name, no [temp] prefix
-            resolved_command.agent_id.clone(), // links to agent config
-            spawn_label,                       // human-readable label
-            // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence
+            session_name: Some(session_name),
+            agent_id: resolved_command.agent_id.clone(),
+            agent_label: spawn_label,
+            // #1635-2 D5: dispatch-flag wakes suppress lastCodingAgent persistence.
             skip_tooling_save,
-            Vec::new(),       // git_repos
-            skip_auto_resume, // see deliver_wake top
+            git_repos: Vec::new(),
+            skip_auto_resume,
             resolved_spawn,
-            // #1271 - the configured host shell paired with the resolved agent,
-            // built from the same settings snapshot that produced the spawn.
+            // #1271: host shell from the same settings snapshot as the agent.
             resolved_agent_host_shell,
-            // #973 - headless caller: no terminal to measure, keep 120x30.
-            None,
-            crate::commands::session::CreateSelectionIntent::Background,
-        )
+            // #973: headless caller retains the default 120x30 viewport.
+            viewport: None,
+            selection_intent: CreateSelectionIntent::Background,
+        })
         .await
     }
 
-    pub(crate) async fn attach_persisted_telegram_for_wake<R: tauri::Runtime>(
+    pub(crate) async fn attach_persisted_telegram_for_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         bot_id: Option<&str>,
     ) {
@@ -133,10 +132,8 @@ impl MailboxPoller {
 
         #[cfg(not(test))]
         {
-            crate::commands::session::attach_persisted_telegram_if_configured(
-                app, session_id, bot_id,
-            )
-            .await;
+            app.attach_persisted_telegram_if_configured(session_id, bot_id)
+                .await;
         }
         #[cfg(test)]
         {
@@ -144,9 +141,9 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn wait_for_spawned_wake_idle<R: tauri::Runtime>(
+    pub(crate) async fn wait_for_spawned_wake_idle<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
     ) -> Result<SettleReadiness, String> {
         #[cfg(test)]
@@ -191,9 +188,9 @@ impl MailboxPoller {
     /// It reads and decides BEFORE sleeping,
     /// so a seeded already-ready session injects with zero added latency; the
     /// cold-spawn sustained-idle requirement is unchanged.
-    pub(crate) async fn settle_until_ready<R: tauri::Runtime>(
+    pub(crate) async fn settle_until_ready<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         max_wait: std::time::Duration,
         settle: std::time::Duration,
@@ -312,9 +309,9 @@ impl MailboxPoller {
     /// younger than `STARTUP_SETTLE_THRESHOLD` takes the #611 sustained-idle settle
     /// (waits out startup churn); only an established candidate uses the
     /// `activity_age` fast-path below.
-    pub(crate) async fn settle_live_before_inject<R: tauri::Runtime>(
+    pub(crate) async fn settle_live_before_inject<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
     ) -> SettleReadiness {
         #[cfg(test)]
@@ -433,9 +430,9 @@ impl MailboxPoller {
             reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
         )
     )]
-    pub(crate) async fn inject_into_pty<R: tauri::Runtime>(
+    pub(crate) async fn inject_into_pty<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         msg: &OutboxMessage,
         interactive: bool,
@@ -461,9 +458,9 @@ impl MailboxPoller {
         reason = "Keep the original peer injection flags, settle policy and borrowed response \
             context"
     )]
-    pub(crate) async fn inject_into_pty_with_response<R: tauri::Runtime>(
+    pub(crate) async fn inject_into_pty_with_response<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         session_id: Uuid,
         msg: &OutboxMessage,
         interactive: bool,
@@ -509,7 +506,7 @@ struct PtyInjection<'a, A> {
     app: &'a A,
 }
 
-impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
+impl<S: MailboxHost> PtyInjection<'_, S> {
     async fn inject_standard_message(
         &self,
         poller: &MailboxPoller,
@@ -560,7 +557,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         // (#756) AC-injected message CONTENT creates a post-boundary transcript:
         // drop any pending fresh intent (record + mirror). Bare logical action
         // text (/clear, Pi /new, or /compact) never reaches this line.
-        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+        app.note_post_boundary_content_to_session(session_id).await;
         let _ = crate::phone::events::MailboxDeliveryEvents::message_delivered(
             app,
             &serde_json::json!({
@@ -636,7 +633,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
             if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
                 && is_permanent_delivery_error(&e)
             {
-                crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
+                app.clear_held_wake(session_id, &msg.id);
             }
             let (level, outcome) = classify_injection_error(&e);
             log::log!(
@@ -734,7 +731,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
                 // Terminal rejection of a previously held wake: drop its
                 // count. A transient failure keeps it, because the message
                 // stays queued and may be deferred again.
-                crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
+                app.clear_held_wake(session_id, &msg.id);
             }
             let (level, outcome) = classify_injection_error(&e);
             log::log!(
@@ -775,7 +772,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         // whether the provider text was /clear or Pi /new. Compact keeps
         // the conversation and does not stamp.
         if resolved.logical.creates_fresh_boundary() {
-            crate::commands::pty::stamp_fresh_boundary_to_session(app, session_id).await;
+            app.stamp_fresh_boundary_to_session(session_id).await;
         }
 
         let _ = crate::phone::events::MailboxDeliveryEvents::message_delivered(
@@ -798,7 +795,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         let msg_clone = msg.clone();
         let command_owned = command.to_owned();
         let resolved_text = resolved.text;
-        tauri::async_runtime::spawn(async move {
+        app.spawn_background(Box::pin(async move {
             if !msg_clone.body.is_empty() {
                 if let Err(e) = (PtyInjection { app: &app_clone })
                     .inject_followup_after_idle_static(session_id, &msg_clone)
@@ -810,7 +807,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
                     );
                 }
             }
-        });
+        }));
     }
 
     async fn standard_body_override(
@@ -921,7 +918,7 @@ impl<R: tauri::Runtime> PtyInjection<'_, tauri::AppHandle<R>> {
         let payload = crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body);
         crate::pty::inject::inject_text_into_session(app, session_id, &payload).await?;
         // A follow-up body after logical clear is post-boundary content.
-        crate::commands::pty::note_post_boundary_content_to_session(app, session_id).await;
+        app.note_post_boundary_content_to_session(session_id).await;
         Ok(())
     }
 }
