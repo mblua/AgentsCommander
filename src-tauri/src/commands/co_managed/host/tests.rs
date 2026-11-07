@@ -776,6 +776,8 @@ async fn cycle_control(text: &str, result: Result<(), AbstainReason>) -> (RouteH
     let (host, _) = route_host(true, false, vec![result], false, false);
     let id = route_session(&host).await;
     let room = tempfile::tempdir().unwrap();
+    let room_root = room.path().join("project/.ac/room-1-dev-team");
+    std::fs::create_dir_all(&room_root).unwrap();
     let candidate = route_candidate(id, text);
     let slot = CaptureSlot::new();
     slot.offer(candidate.clone(), 0);
@@ -784,14 +786,14 @@ async fn cycle_control(text: &str, result: Result<(), AbstainReason>) -> (RouteH
         &host,
         &handle,
         id,
-        room.path(),
+        &room_root,
         &slot,
         slot.seq(),
         &candidate,
     )
     .await;
     assert!(matches!(outcome, CoManagedOutcome::Done(_)));
-    let messaging = room.path().join("messaging");
+    let messaging = room_root.join("messaging");
     // Preserve only the observable existence; tempfile owns all cleanup.
     let observed = if messaging.exists() {
         messaging
