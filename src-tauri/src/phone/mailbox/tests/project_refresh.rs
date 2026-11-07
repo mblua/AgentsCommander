@@ -626,8 +626,8 @@ async fn typing_hold_armed_during_post_clear_wait_does_not_drop_followup_body() 
     );
 }
 
-#[tokio::test]
-async fn issue_3946_pollers_publish_in_order() {
+#[test]
+fn issue_3946_pollers_publish_in_order() {
     if std::env::var_os("AC_3946_POLLER_CHILD").is_none() {
         let config = tempfile::TempDir::new().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -649,10 +649,24 @@ async fn issue_3946_pollers_publish_in_order() {
         );
         return;
     }
-    use crate::config::coding_agent_mutations::{CodingAgentOp, CodingAgentRequest};
-    let fixture = make_session_request_fixture();
-    let app = app_handle(&fixture.app);
-    *app.state::<SettingsState>().write().await = AppSettings::default();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let fixture = make_session_request_fixture();
+            let app = app_handle(&fixture.app);
+            *app.state::<SettingsState>().write().await = AppSettings::default();
+            assert_poller_refresh_order(&fixture.app, &fixture.cwd).await;
+            assert_poller_settings_order(&fixture.app).await;
+        });
+}
+
+async fn assert_poller_refresh_order(
+    application: &tauri::App<tauri::test::MockRuntime>,
+    cwd: &std::path::Path,
+) {
+    let app = app_handle(application);
     let config = crate::config::config_dir().unwrap();
     let refresh_dir = config.join("project-refresh-requests");
     std::fs::create_dir_all(&refresh_dir).unwrap();
@@ -660,32 +674,20 @@ async fn issue_3946_pollers_publish_in_order() {
     write_project_refresh_request_fixture(
         &refresh_path,
         "poller-refresh",
-        &fixture.cwd,
+        cwd,
         None,
         "projectRegistered",
     );
     let refresh_events = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&refresh_events);
     let claimed_dir = refresh_dir.clone();
-    fixture
-        .app
-        .listen_any("ac_project_refresh_requested", move |event| {
-            let claimed_exists = std::fs::read_dir(&claimed_dir)
-                .unwrap()
-                .any(|entry| entry.unwrap().path().is_file());
-            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
-            captured.lock().unwrap().push((payload, claimed_exists));
-        });
-    let settings_events = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&settings_events);
-    let observed = app.clone();
-    fixture
-        .app
-        .listen_any("coding_agent_settings_updated", move |event| {
-            let released = observed.state::<SettingsState>().try_write().is_ok();
-            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
-            captured.lock().unwrap().push((payload, released));
-        });
+    application.listen_any("ac_project_refresh_requested", move |event| {
+        let claimed_exists = std::fs::read_dir(&claimed_dir)
+            .unwrap()
+            .any(|entry| entry.unwrap().path().is_file());
+        let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+        captured.lock().unwrap().push((payload, claimed_exists));
+    });
     let poller = MailboxPoller::default();
     poller.poll_project_refresh_requests(&app).await;
     let refresh = refresh_events.lock().unwrap().clone();
@@ -697,13 +699,28 @@ async fn issue_3946_pollers_publish_in_order() {
     assert_eq!(refresh[0].0["changedName"], serde_json::Value::Null);
     assert_eq!(
         refresh[0].0["projectPath"],
-        std::fs::canonicalize(&fixture.cwd)
+        std::fs::canonicalize(cwd)
             .unwrap()
             .to_string_lossy()
             .as_ref()
     );
     assert!(!refresh_path.exists());
     assert_eq!(std::fs::read_dir(&refresh_dir).unwrap().count(), 0);
+}
+
+async fn assert_poller_settings_order(application: &tauri::App<tauri::test::MockRuntime>) {
+    use crate::config::coding_agent_mutations::{CodingAgentOp, CodingAgentRequest};
+    let app = app_handle(application);
+    let config = crate::config::config_dir().unwrap();
+    let settings_events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&settings_events);
+    let observed = app.clone();
+    application.listen_any("coding_agent_settings_updated", move |event| {
+        let released = observed.state::<SettingsState>().try_write().is_ok();
+        let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+        captured.lock().unwrap().push((payload, released));
+    });
+    let poller = MailboxPoller::default();
     let requests = config.join("coding-agent-requests");
     std::fs::create_dir_all(&requests).unwrap();
     let now_ms = std::time::SystemTime::now()
