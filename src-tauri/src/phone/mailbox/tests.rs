@@ -733,86 +733,120 @@ async fn issue_3189_retry_near_deadline_completes() {
     }
 }
 
+fn issue_3946_handoff_contract(source: &str) -> bool {
+    let scrubbed = rust_source_scrub::scrub(source, rust_source_scrub::Literals::Drop)
+        .expect("handoff source must lex");
+    // Explicit base/current spelling map; literals and comments never supply witnesses.
+    let code = scrubbed
+        .split_whitespace()
+        .collect::<String>()
+        .replace("app", "host")
+        .replace("tauri::async_runtime::spawn", "host.spawn_background");
+    let body = |name: &str| -> Option<&str> {
+        let tail = code.split_once(&format!("fn{name}<"))?.1;
+        let tail = &tail[tail.find('{')? + 1..];
+        let mut depth = 1;
+        for (i, byte) in tail.bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                return Some(&tail[..i]);
+            }
+        }
+        None
+    };
+    for name in [
+        "run_self_clear_after_sustained_idle",
+        "run_self_switch_after_sustained_idle",
+    ] {
+        let Some(driver) = body(name) else {
+            return false;
+        };
+        let Some(consume) = driver.find("consume_outcome(") else {
+            return false;
+        };
+        let Some(report) = driver.find("Self::report_self_handoff_failure(host,failure)") else {
+            return false;
+        };
+        if consume >= report {
+            return false;
+        }
+    }
+    for (name, flavor) in [
+        ("handle_self_handoff_switch", "SELF_HANDOFF_FLAVOR_SWITCH"),
+        ("handle_self_restart", "SELF_HANDOFF_FLAVOR_RESTART"),
+    ] {
+        let Some(handler) = body(name) else {
+            return false;
+        };
+        let Some((_, spawn)) = handler.split_once("host.spawn_background(") else {
+            return false;
+        };
+        if !spawn.contains("Self::run_self_switch_after_sustained_idle(") || !spawn.contains(flavor)
+        {
+            return false;
+        }
+    }
+    let Some(adapter) = body("run_self_switch_after_sustained_idle") else {
+        return false;
+    };
+    let Some((_, persist)) = adapter.split_once("letpersist=move") else {
+        return false;
+    };
+    let Some((persist, restart)) = persist.split_once("lethost_for_restart") else {
+        return false;
+    };
+    let Some((guard, _)) = persist
+        .split_once("crate::config::coding_agent_profiles::set_replica_coding_agent_selection(")
+    else {
+        return false;
+    };
+    let Some((restart, _)) = restart.split_once("lethost_for_inject") else {
+        return false;
+    };
+    guard.contains("ifflavor.action==SELF_HANDOFF_FLAVOR_RESTART.action{returnOk(());}")
+        && restart.contains("ifflavor.action==SELF_HANDOFF_FLAVOR_SWITCH.action{Some(profile)")
+        && restart.contains("}else{decode_restart_profile_from_seam(&profile)")
+        && !code.contains("fnrun_self_restart_after_sustained_idle")
+}
+
 #[test]
 fn issue_3189_adapter_wiring() {
+    assert!(issue_3946_handoff_contract(include_str!("self_handoff.rs")));
+    let adapter = include_str!("../../commands/phone/mailbox.rs");
+    assert!(adapter.contains("tauri::async_runtime::spawn(future)"));
+}
+
+#[test]
+fn issue_3946_handoff_order() {
     let source = include_str!("self_handoff.rs");
-    for (start, end) in [
-        (
-            "pub(crate) async fn run_self_clear_after_sustained_idle",
-            "pub(crate) async fn drive_self_clear_after_sustained_idle",
-        ),
-        (
-            "async fn run_self_switch_after_sustained_idle",
-            "pub(crate) async fn report_self_handoff_failure",
-        ),
-    ] {
-        let body = source
-            .split_once(start)
-            .unwrap()
-            .1
-            .split_once(end)
-            .unwrap()
-            .0;
-        assert!(body.contains("consume_outcome("));
-        assert!(body.contains("Self::report_self_handoff_failure(app, failure)"));
-    }
-    let switch = source
-        .split_once("pub(crate) async fn handle_self_handoff_switch")
-        .unwrap()
-        .1
-        .split_once("pub(crate) async fn handle_self_restart")
-        .unwrap()
-        .0;
-    let restart = source
-        .split_once("pub(crate) async fn handle_self_restart")
-        .unwrap()
-        .1
-        .split_once("pub(crate) async fn run_self_clear_after_sustained_idle")
-        .unwrap()
-        .0;
-    for (body, flavor) in [
-        (switch, "SELF_HANDOFF_FLAVOR_SWITCH"),
-        (restart, "SELF_HANDOFF_FLAVOR_RESTART"),
-    ] {
-        let spawn = body.split_once("tauri::async_runtime::spawn").unwrap().1;
-        assert!(spawn.contains("Self::run_self_switch_after_sustained_idle("));
-        assert!(spawn.contains(flavor));
-    }
-    let adapter = source
-        .split_once("async fn run_self_switch_after_sustained_idle")
-        .unwrap()
-        .1;
-    let persist = adapter
-        .split_once("let persist = move")
-        .unwrap()
-        .1
-        .split_once("let app_for_restart")
-        .unwrap()
-        .0;
-    let guard = persist
-        .split_once("crate::config::coding_agent_profiles::set_replica_coding_agent_selection(")
-        .unwrap()
-        .0;
-    assert!(guard.contains(
-        "if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action {
-                    return Ok(());"
+    assert!(issue_3946_handoff_contract(source));
+    let mutant = source.replace("if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action", "");
+    assert_ne!(mutant, source);
+    assert!(!issue_3946_handoff_contract(&mutant));
+    assert!(!issue_3946_handoff_contract(
+        &source.replace("consume_outcome(", "removed(")
     ));
-    let restart = adapter
-        .split_once("let restart = move")
-        .unwrap()
-        .1
-        .split_once("let app_for_inject")
-        .unwrap()
-        .0;
-    assert!(restart.contains(
-        "if flavor.action == SELF_HANDOFF_FLAVOR_SWITCH.action {
-                        Some(profile)"
-    ));
-    let decode = restart.split_once("} else {").unwrap().1;
-    assert!(decode
-        .trim_start()
-        .starts_with("decode_restart_profile_from_seam(&profile)"));
-    assert!(!source.contains("async fn run_self_restart_after_sustained_idle"));
+}
+
+#[test]
+fn issue_3946_handoff_order_base() {
+    let Some(dir) = std::env::var_os("ISSUE_3946_BASE_DIR") else {
+        println!("ISSUE3946 P10 BASE_NOT_REQUESTED");
+        return;
+    };
+    let source =
+        std::fs::read_to_string(std::path::Path::new(&dir).join("phone/mailbox/self_handoff.rs"))
+            .unwrap();
+    assert!(issue_3946_handoff_contract(&source));
+    let mutant = source.replace("if flavor.action == SELF_HANDOFF_FLAVOR_RESTART.action", "");
+    assert_ne!(mutant, source);
+    assert!(!issue_3946_handoff_contract(&mutant));
+    println!("ISSUE3946 P10 BASE_PASS 1");
+    println!("ISSUE3946 P10 MUTANT_REJECTED 1");
 }
 
 #[tokio::test]

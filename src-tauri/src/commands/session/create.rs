@@ -31,12 +31,15 @@ pub(crate) use admission::try_acquire_create_publication_region;
 #[cfg(target_os = "windows")]
 pub(crate) use admission::with_create_resource_region;
 #[cfg(test)]
+pub(crate) use admission::CoordinatorCreateTicket;
+#[cfg(test)]
 #[cfg(target_os = "windows")]
 pub(crate) use admission::CreateResourceAdmission;
 #[cfg(test)]
 pub(crate) use admission::OwnedCreateAdmission;
 pub(crate) use launch::build_configured_agent_spawn_for_cwd;
 pub(crate) use launch::compute_profile_outdated;
+#[cfg(test)]
 pub(crate) use launch::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use launch::resolve_create_session_cwd;
 #[cfg(test)]

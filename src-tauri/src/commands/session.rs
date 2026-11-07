@@ -102,6 +102,7 @@ pub(crate) use create::purge_session_side_state;
 #[cfg(test)]
 pub(crate) use create::register_session_samplers;
 use create::reset_substantive_input;
+#[cfg(test)]
 pub(crate) use create::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use create::resolve_create_session_cwd;
 #[cfg(test)]
@@ -113,6 +114,8 @@ use create::try_acquire_create_publication_region;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::with_create_resource_region;
+#[cfg(test)]
+pub(crate) use create::CoordinatorCreateTicket;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
