@@ -864,8 +864,8 @@ pub(super) fn fixture_ticket_settles_before_insertion_and_failure_inserts_nothin
         *hooks.spawn_is_coordinator.lock().unwrap() = true;
         let poller =
             crate::phone::mailbox::poller::MailboxPoller::new_with_test_hooks(hooks.clone());
+        assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, stamp));
         for fail in [true, false] {
-            assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, stamp));
             if fail {
                 *hooks.internal_spawn_error.lock().unwrap() = Some("injected create error".into());
             }
