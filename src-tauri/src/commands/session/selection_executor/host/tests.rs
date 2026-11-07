@@ -404,3 +404,59 @@ fn issue_3950_runtime_recovers_poisoned_detached_state() {
     let transaction = SelectionTransaction::for_test(app.handle().clone());
     assert!(transaction.runtime_snapshot(id).detached);
 }
+
+struct PendingDeadlineTask {
+    release: tokio::sync::oneshot::Receiver<()>,
+    aborted: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::future::Future for PendingDeadlineTask {
+    type Output = Result<(), String>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.release)
+            .poll(cx)
+            .map(|result| result.map_err(|error| error.to_string()))
+    }
+}
+
+impl crate::session::selection::task::SelectionTask for PendingDeadlineTask {
+    fn abort(&self) {
+        self.aborted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn issue_3950_retained_deadline() {
+    let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let coordinator = SelectionCoordinator::new(sessions, CancellationToken::new());
+    let (release, receiver) = tokio::sync::oneshot::channel();
+    let aborted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    coordinator.port_test_install_worker(Box::pin(PendingDeadlineTask {
+        release: receiver,
+        aborted: aborted.clone(),
+    }));
+    assert_eq!(coordinator.port_test_retained_worker_count(), 0);
+    let report = coordinator
+        .port_test_close_with_budget(std::time::Duration::from_millis(40))
+        .await;
+    assert!(aborted.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!report.persistence_safe);
+    assert!(report
+        .retained
+        .iter()
+        .any(|reason| { reason == "reason=coordinator-worker-abort state=retained" }));
+    assert_eq!(coordinator.port_test_retained_worker_count(), 1);
+    release.send(()).unwrap();
+    let retained = coordinator.port_test_take_retained_workers();
+    assert_eq!(retained.len(), 1);
+    for handle in retained {
+        handle.await.expect("released retained worker joins");
+    }
+    assert_eq!(coordinator.port_test_retained_worker_count(), 0);
+    println!("\nISSUE3950_CONTROL_OK case=issue_3950_retained_deadline");
+}

@@ -174,8 +174,6 @@ pub(crate) trait SelectionHost<C: SelectionContext>:
     // First required by P13.
     #[allow(dead_code)]
     fn coordinator_optional(&self) -> Option<&SelectionCoordinator>;
-    // First required by P12.
-    #[allow(dead_code)]
     fn tasks(&self) -> &dyn task::SelectionTasks;
     fn focus_window(&self, label: &str) -> Option<Result<(), String>>;
     fn destroy_window(&self, label: &str) -> Option<Result<(), String>>;
@@ -614,7 +612,9 @@ pub(crate) async fn poll_response_close<R: Runtime>(
             registration.diagnostic_poll_outcome(2, "nonlocal_registration");
             continue;
         }
-        let _ = coordinator.try_response_close(app, &registration).await;
+        let _ = coordinator
+            .try_response_close::<R>(app, &registration)
+            .await;
     }
 }
 
@@ -750,8 +750,8 @@ struct CoordinatorInner {
     blocking_seed_work: Arc<BlockingSeedWorkTracker>,
     critical_keys: Mutex<HashSet<CriticalAdmissionKey>>,
     shutdown: CancellationToken,
-    worker: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    retained_workers: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
+    worker: Mutex<Option<Pin<Box<dyn task::SelectionTask>>>>,
+    retained_workers: Mutex<Vec<Pin<Box<dyn task::SelectionTask>>>>,
     retained_cleanup_tasks:
         Mutex<Vec<tokio::task::JoinHandle<crate::pty::container_backend::ContainerShutdownReport>>>,
     retained_rollback_tasks: Mutex<Vec<tokio::task::JoinHandle<Vec<String>>>>,
@@ -940,3 +940,41 @@ pub(crate) use tests::{port_test_binding, SelectionPortTestExit};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl SelectionCoordinator {
+    pub(crate) fn port_test_install_worker(&self, handle: Pin<Box<dyn task::SelectionTask>>) {
+        let mut worker = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(worker.is_none());
+        *worker = Some(handle);
+    }
+
+    pub(crate) fn port_test_retained_worker_count(&self) -> usize {
+        self.inner
+            .retained_workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    pub(crate) async fn port_test_close_with_budget(
+        &self,
+        budget: Duration,
+    ) -> SelectionShutdownReport {
+        self.close_and_join_with_budget(budget).await
+    }
+
+    pub(crate) fn port_test_take_retained_workers(&self) -> Vec<Pin<Box<dyn task::SelectionTask>>> {
+        std::mem::take(
+            &mut *self
+                .inner
+                .retained_workers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}

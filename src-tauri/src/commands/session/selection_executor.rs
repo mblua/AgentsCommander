@@ -59,6 +59,34 @@ impl SelectionCoordinator {
         self.start_with_executor(app, executor)
     }
 
+    pub(crate) fn start_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<(), SelectionCoordinatorError> {
+        self.start_with_host::<R>(app, executor)
+    }
+
+    pub(crate) async fn restart_lifecycle_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: RestartJobRequest,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<crate::session::session::SessionInfo, String> {
+        self.restart_lifecycle_with_host::<R>(app, request, executor)
+            .await
+    }
+
+    pub(crate) async fn root_lifecycle_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: RootJobRequest,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<crate::session::session::SessionInfo, String> {
+        self.root_lifecycle_with_host::<R>(app, request, executor)
+            .await
+    }
+
     #[cfg(test)]
     pub(crate) async fn submit_inline_replacement_fixture(
         &self,
@@ -295,3 +323,9 @@ pub(crate) fn install<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::B
 
 #[cfg(test)]
 mod tests;
+
+impl crate::session::selection::RestoreBarrierGuard {
+    pub(crate) fn transaction<R: Runtime>(&self, app: AppHandle<R>) -> SelectionTransaction<R> {
+        self.transaction_with_host::<R>(app)
+    }
+}
