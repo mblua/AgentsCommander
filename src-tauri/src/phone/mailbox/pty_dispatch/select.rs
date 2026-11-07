@@ -22,7 +22,9 @@ use crate::pty::manager::PtyManager;
 use crate::session::create_contracts::fixture::FixturePtyCutLease;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
-use std::{path::Path, sync::Arc};
+use std::path::Path;
+#[cfg(test)]
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Owned fresh guard and input permit retained through validation and the write boundary.
