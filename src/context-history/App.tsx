@@ -101,6 +101,12 @@ function decodeFilter(value: string): LaunchFilter {
 
 type MetadataField = "codingAgentId" | "model" | "effort";
 
+/** Plain UTF-16 code-unit order: no locale, collation, normalization or numbers. */
+function byCodeUnit(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 /** Exact values offered by a launch filter: those seen plus the selected one. */
 function exactValues(
   agents: AgentSummary[],
@@ -115,7 +121,7 @@ function exactValues(
     }
   }
   if (selected.kind === "exact") values.add(selected.value);
-  return [...values].sort();
+  return [...values].sort(byCodeUnit);
 }
 
 function teamValues(agents: AgentSummary[], selected: string | null): string[] {
@@ -126,7 +132,7 @@ function teamValues(agents: AgentSummary[], selected: string | null): string[] {
     }
   }
   if (selected !== null) values.add(selected);
-  return [...values].sort();
+  return [...values].sort(byCodeUnit);
 }
 
 function meanBarWidth(mean: number | null): string {
@@ -148,6 +154,14 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
   onMount(() => {
     load();
     rootRef?.focus();
+  });
+  // Native keydown on the region node itself: the region is not a control, so the
+  // Escape handler is registered by ref instead of a JSX listener.
+  onMount(() => {
+    const node = rootRef;
+    if (!node) return;
+    node.addEventListener("keydown", onKeyDown);
+    onCleanup(() => node.removeEventListener("keydown", onKeyDown));
   });
   createEffect(
     on(
@@ -310,7 +324,6 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
       role="region"
       aria-labelledby="ch-title"
       tabIndex={-1}
-      onKeyDown={onKeyDown}
     >
       <div class="ch-panel" classList={{ "ch-has-selection": state.selectedAgent() !== null }}>
         <header class="ch-header">

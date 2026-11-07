@@ -1,7 +1,7 @@
 // #3532 P11 - presentational card with the three context means of a row.
 // It only renders the state it is given: no owner, no IPC, no settings writes.
 import {
-  Component, For, Match, Show, Switch, createEffect, createSignal, onCleanup,
+  Component, For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount,
 } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { SidebarBucket, SidebarScope, SidebarWindows } from "../../shared/context-history";
@@ -110,6 +110,26 @@ const ContextHistoryCard: Component<{
     });
   });
 
+  // Native listeners on the card node: it is presentational, not a control. The
+  // Portal re-parents events to the badge row, so the card still stops them here.
+  onMount(() => {
+    const node = el;
+    if (!node) return;
+    const enter = () => props.onEnter?.();
+    const leave = (e: MouseEvent) => props.onLeave?.(e.relatedTarget);
+    const stop = (e: Event) => e.stopPropagation();
+    node.addEventListener("mouseenter", enter);
+    node.addEventListener("mouseleave", leave);
+    node.addEventListener("pointerdown", stop);
+    node.addEventListener("click", stop);
+    onCleanup(() => {
+      node.removeEventListener("mouseenter", enter);
+      node.removeEventListener("mouseleave", leave);
+      node.removeEventListener("pointerdown", stop);
+      node.removeEventListener("click", stop);
+    });
+  });
+
   const current = () =>
     props.percent === null
       ? "Contexto actual de esta sesión: no disponible"
@@ -129,10 +149,6 @@ const ContextHistoryCard: Component<{
         style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
         data-ac-testid="context-history.card"
         data-ac-state={props.state.status}
-        onMouseEnter={() => props.onEnter?.()}
-        onMouseLeave={(e) => props.onLeave?.(e.relatedTarget)}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
       >
         <p class="ctx-history-current">{current()}</p>
         <Switch>
@@ -170,8 +186,8 @@ const ContextHistoryCard: Component<{
                     Sesiones iniciadas en cada período; sesión entera.
                   </p>
                   <p class="ctx-history-legend">
-                    <span class="ctx-history-swatch low" /> menor media
-                    <span class="ctx-history-swatch high" /> mayor media
+                    <span class="ctx-history-swatch low" />{" "}menor media
+                    <span class="ctx-history-swatch high" />{" "}mayor media
                   </p>
                 </>
               );

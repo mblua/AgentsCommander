@@ -302,3 +302,113 @@ describe("ContextHistoryApp", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+// #3532 P18 - options keep a plain UTF-16 code-unit order (Sonar S2871), and
+// the region's Escape listener is a native one with a clean lifecycle (S6847).
+describe("ContextHistoryApp P18 order and Escape lifecycle", () => {
+  let cleanup: (() => void) | undefined;
+  afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+    platform.isTauri = true;
+  });
+
+  // Written out by hand, not computed with the helper under test.
+  const MIXED = ["a2", "", "a", "\u{1F600}", "A", "ä", "a10", "a"];
+  const EXPECTED = ["A", "a", "a10", "a2", "ä", "\u{1F600}", ""];
+  const mixedAgent = (values: string[]): AgentSummary => ({
+    ...agent,
+    metadataBuckets: values.map((value) => ({
+      ...agent.metadataBuckets[0],
+      model: value,
+      teamIds: [value],
+    })),
+  });
+  const optionValues = (select: HTMLSelectElement) => [...select.options].map((o) => o.value);
+  const selectsOf = (root: Element) => {
+    const all = [...root.querySelectorAll<HTMLSelectElement>("select")];
+    const team = all.find((s) => s.options[0]?.value === "")!;
+    return { team, model: all[3] };
+  };
+
+  it("orders team and metadata options by code unit, deduplicated", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([mixedAgent(MIXED)]));
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    const { team, model } = selectsOf(view.root);
+    expect(optionValues(model)).toEqual(["any", "unknown", ...EXPECTED.map((v) => `exact:${v}`)]);
+    expect(optionValues(team)).toEqual(["", ...EXPECTED]);
+  });
+
+  it("keeps a selected value that the next report no longer has, in order", async () => {
+    const fake = new FakeTransport();
+    let calls = 0;
+    fake.onInvoke("get_context_history_report", () =>
+      reportResponse([mixedAgent(calls++ === 0 ? MIXED : ["A", ""])]),
+    );
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    const { model } = selectsOf(view.root);
+    model.value = "exact:a2";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(calls).toBe(2));
+    await waitFor(() =>
+      expect(optionValues(selectsOf(view.root).model)).toEqual(
+        ["any", "unknown", "exact:A", "exact:a2", "exact:"],
+      ),
+    );
+  });
+
+  it("closes once on Escape from the region or a descendant; other keys do nothing", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([agent]));
+    const onClose = vi.fn();
+    const view = mount(fake, onClose);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    const region = must(view.root, ".ch-overlay");
+    expect(region.getAttribute("role")).toBe("region");
+    expect(region.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(region);
+
+    const outer = vi.fn();
+    document.body.addEventListener("keydown", outer);
+    const other = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+    region.dispatchEvent(other);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(other.defaultPrevented).toBe(false);
+
+    const fromChild = new KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true, cancelable: true,
+    });
+    must(view.root, "[data-agent-key='dev']").dispatchEvent(fromChild);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(fromChild.defaultPrevented).toBe(true);
+    // No stopPropagation: the event still reaches outer listeners.
+    expect(outer).toHaveBeenCalledTimes(2);
+    document.body.removeEventListener("keydown", outer);
+  });
+
+  it("leaves no listener on the retained node after dispose and works after remount", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([]));
+    const first = vi.fn();
+    const view = mount(fake, first);
+    const region = must(view.root, ".ch-overlay");
+    view.cleanup();
+    region.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(first).not.toHaveBeenCalled();
+
+    const second = vi.fn();
+    const again = mount(fake, second);
+    cleanup = again.cleanup;
+    must(again.root, ".ch-overlay").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+  });
+});

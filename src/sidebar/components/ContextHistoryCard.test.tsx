@@ -221,3 +221,88 @@ describe("ContextHistoryCard placement (#3532 P11)", () => {
     remove.mockRestore();
   });
 });
+
+// #3532 P18 - native card listeners (Sonar S6847/S1082) and explicit legend spacing (S6772).
+describe("ContextHistoryCard P18 native listeners", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  function mountWithParent() {
+    const [handlers, setHandlers] = createSignal({ enter: vi.fn(), leave: vi.fn() });
+    const parentClick = vi.fn();
+    const parentPointer = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const dispose = render(
+      () => (
+        // The logical parent: Solid re-targets delegated events through the Portal.
+        <div onClick={parentClick} onPointerDown={parentPointer} data-testid="parent">
+          <ContextHistoryCard
+            id="card-1" open anchor={() => host} state={ready()} percent={35}
+            projectPath="C:/proj" colorDays={30} warning="w"
+            onEnter={() => handlers().enter()}
+            onLeave={(related) => handlers().leave(related)}
+          />
+        </div>
+      ),
+      host,
+    );
+    const card = document.getElementById("card-1")!;
+    return { card, dispose, handlers, setHandlers, parentClick, parentPointer };
+  }
+
+  it("forwards hover with relatedTarget and reads the current props", () => {
+    const { card, handlers, setHandlers } = mountWithParent();
+    const first = handlers();
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    card.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
+    expect(first.enter).toHaveBeenCalledTimes(1);
+    expect(first.leave).toHaveBeenCalledWith(document.body);
+    const next = { enter: vi.fn(), leave: vi.fn() };
+    setHandlers(next);
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(next.enter).toHaveBeenCalledTimes(1);
+    expect(first.enter).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops click and pointerdown from the card and its children", () => {
+    const { card, parentClick, parentPointer } = mountWithParent();
+    const domSpy = vi.fn();
+    document.body.addEventListener("click", domSpy);
+    document.body.addEventListener("pointerdown", domSpy);
+    const child = card.querySelector<HTMLElement>(".ctx-history-row")!;
+    for (const target of [card, child]) {
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      target.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    }
+    expect(parentClick).not.toHaveBeenCalled();
+    expect(parentPointer).not.toHaveBeenCalled();
+    expect(domSpy).not.toHaveBeenCalled();
+    document.body.removeEventListener("click", domSpy);
+    document.body.removeEventListener("pointerdown", domSpy);
+  });
+
+  it("leaves no listener on the retained node after dispose and works after remount", () => {
+    const a = mountWithParent();
+    const enter = a.handlers().enter;
+    a.dispose();
+    a.card.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(enter).not.toHaveBeenCalled();
+    document.body.innerHTML = "";
+    const b = mountWithParent();
+    b.card.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(b.handlers().enter).toHaveBeenCalledTimes(1);
+    expect(enter).not.toHaveBeenCalled();
+  });
+
+  it("separates each legend swatch from its label", () => {
+    const { card } = mountWithParent();
+    const legend = card.querySelector(".ctx-history-legend")!;
+    expect(legend.textContent).toBe(" menor media mayor media");
+    expect(legend.querySelector(".ctx-history-swatch.low")!.nextSibling?.textContent)
+      .toMatch(/^ menor media/);
+    expect(legend.querySelector(".ctx-history-swatch.high")!.nextSibling?.textContent)
+      .toMatch(/^ mayor media/);
+  });
+});
