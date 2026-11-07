@@ -151,8 +151,8 @@ pub(super) fn validated_replica_origin(replica_dir: &Path) -> Result<(PathBuf, P
         ));
     }
 
-    let persisted_identity =
-        read_json_object(&replica_dir.join("config.json")).and_then(|config| {
+    let persisted_identity = read_json_object(&crate::config::config_file_path(&replica_dir))
+        .and_then(|config| {
             config
                 .get("identity")
                 .and_then(|value| value.as_str())

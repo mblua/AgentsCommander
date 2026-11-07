@@ -28,7 +28,7 @@ pub(crate) fn read_preferred_agent_id_logged(
     settings: &crate::config::settings::AppSettings,
     warnings: &mut Vec<String>,
 ) -> Option<String> {
-    let config_path = dir.join("config.json");
+    let config_path = crate::config::config_file_path(dir);
     // #2786 (C1) - through the shared loader: state file first, key-wise.
     let v = match crate::config::agent_config::read_agent_local_config_json(dir) {
         Ok(v) => v?,

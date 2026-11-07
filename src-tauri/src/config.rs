@@ -58,6 +58,14 @@ use std::time::Duration;
 /// reader of `crate::config::root_agent::ROOT_AGENT_DIR_NAME` keeps resolving.
 pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";
 
+/// #3980: the one spelling of the `config.json` file name.
+pub(crate) const CONFIG_FILE_NAME: &str = "config.json";
+
+/// #3980: the `config.json` path inside `dir`. Spelling only: no IO.
+pub(crate) fn config_file_path(dir: &Path) -> PathBuf {
+    dir.join(CONFIG_FILE_NAME)
+}
+
 pub(crate) const TRANSIENT_IO_WINDOWS_BACKOFFS_MS: [u64; 5] = [15, 30, 60, 120, 240];
 
 #[derive(Debug)]

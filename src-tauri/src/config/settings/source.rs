@@ -278,7 +278,7 @@ pub(crate) const fn source_protocol_active() -> bool {
 /// PAIR layout belongs beside the physical identity-reference facade.
 pub(crate) fn identity_reference_pair_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (
-        root.join("config.json"),
+        crate::config::config_file_path(root),
         root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
         root.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
     )

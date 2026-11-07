@@ -157,7 +157,7 @@ pub(super) fn write_replica_selection_prepared(
         return Err("Coding agent id must not be empty".to_string());
     }
     let replica_dir = validated_replica_dir(settings, replica_path)?;
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(&replica_dir);
     let requested_pair = ReplicaSelectionPair {
         coding_agent_id: pair.coding_agent_id.clone(),
         requested_profile: profile.clone(),
@@ -305,7 +305,7 @@ pub(crate) fn set_prepared_source_profile_override(
     }
     let replica_dir = validated_replica_dir(settings, replica_path)?;
     crate::config::agent_config::update_existing_agent_config(
-        &replica_dir.join("config.json"),
+        &crate::config::config_file_path(&replica_dir),
         |obj, _state| {
             validate_selection_write_state(&replica_dir, expected)?;
             let tooling = obj
@@ -348,7 +348,7 @@ pub(super) fn clear_replica_selection_lock_with_publish(
     publish: Option<crate::config::agent_config::ConfigPublisher<'_>>,
 ) -> Result<SelectionWriteOutcome, String> {
     let replica_dir = validated_replica_dir(settings, replica_path)?;
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(&replica_dir);
     let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
 
     let written = crate::config::agent_config::update_existing_agent_config_with_publish(
