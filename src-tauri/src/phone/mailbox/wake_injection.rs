@@ -138,6 +138,8 @@ impl MailboxPoller {
         }
         #[cfg(test)]
         {
+            // Reference the production capability without invoking it in tests.
+            let _ = S::attach_persisted_telegram_if_configured;
             let _ = (app, session_id, bot_id);
         }
     }

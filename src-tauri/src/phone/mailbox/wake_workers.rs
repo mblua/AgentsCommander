@@ -2,6 +2,7 @@ use super::handoff::{
     is_permanent_delivery_error, prune_retry_tracker, wake_claim_has_settled_receipt,
     wake_claim_origin, wake_claim_path, WakeHandoff, WakeOutcomeReport,
 };
+use super::host::{BrowserHost, MailboxHost};
 use super::notice::{
     retain_unarchived_session_dirs, OutboxOrigin, RetryState, MAX_DELIVERY_ATTEMPTS,
 };
@@ -12,11 +13,9 @@ use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::session::manager::SessionManager;
-use crate::AppOutbox;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 
 mod outboxes;
 
@@ -70,8 +69,12 @@ impl MailboxPoller {
     }
 
     /// Start the poller as a background task.
-    pub fn start(mut self, app: tauri::AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
-        tauri::async_runtime::spawn(async move {
+    pub fn start<A: MailboxHost + BrowserHost>(
+        mut self,
+        app: A,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) {
+        app.clone().spawn_background(Box::pin(async move {
             // Initial poll without delay (matches original behavior)
             if let Err(e) = self.poll(&app).await {
                 log::warn!("MailboxPoller error: {e}");
@@ -96,7 +99,7 @@ impl MailboxPoller {
                     }
                 }
             }
-        });
+        }));
     }
 
     fn scrub_stale_pty_input_temps(
@@ -225,9 +228,9 @@ impl MailboxPoller {
     /// observe that window. An await inside it would let reclamation treat the
     /// claim as unowned and rename it back under a live worker.
     #[cfg(test)]
-    pub(crate) fn claim_and_spawn_wake<R: tauri::Runtime>(
+    pub(crate) fn claim_and_spawn_wake<A: MailboxHost>(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        app: &A,
         path: &Path,
         msg: OutboxMessage,
     ) -> WakeHandoff {
@@ -241,9 +244,9 @@ impl MailboxPoller {
         )
     }
 
-    pub(crate) fn claim_and_spawn_validated_wake<R: tauri::Runtime>(
+    pub(crate) fn claim_and_spawn_validated_wake<A: MailboxHost>(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        app: &A,
         path: &Path,
         validated: ValidatedWake,
     ) -> WakeHandoff {
@@ -539,31 +542,29 @@ impl MailboxPoller {
     }
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
-    pub(crate) async fn poll<R: tauri::Runtime>(
+    pub(crate) async fn poll<A: MailboxHost + BrowserHost>(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        app: &A,
     ) -> Result<(), String> {
         let cycle_started = self.begin_poll_cycle().await;
         let mut messages_processed = 0usize;
-        if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
-            Self::maintain_pty_input_runtime(&state).await;
+        if let Some(state) = app.message_store() {
+            Self::maintain_pty_input_runtime(state).await;
         }
-        let settings = app.state::<SettingsState>();
-        let (repo_paths, archived) = Self::poll_project_paths(&settings).await;
+        let settings = app.pty_settings();
+        let (repo_paths, archived) = Self::poll_project_paths(settings).await;
 
         // Also scan CWDs of active sessions for repos not in settings
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let (startup_project_paths, all_paths, snapshot_session_dirs) =
-            Self::poll_session_paths(repo_paths, archived, &session_mgr).await?;
+            Self::poll_session_paths(repo_paths, archived, session_mgr).await?;
 
         // One bounded startup sweep covers canonical Root plus verified WG
         // replicas under active and archived projects. Fresh artifacts are
         // registered so the monotonic cleanup task continues after this poll.
         if self.snapshot_scanner.startup_sweep_pending() {
-            if let Some(state) =
-                app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
-            {
-                self.poll_snapshot_startup(&state, &startup_project_paths);
+            if let Some(state) = app.snapshot_state_opt() {
+                self.poll_snapshot_startup(state, &startup_project_paths);
             }
             self.snapshot_scanner.finish_startup_sweep();
         }
@@ -589,7 +590,7 @@ impl MailboxPoller {
         }
 
         // Include the instance-private app outbox
-        let app_outbox = app.state::<AppOutbox>();
+        let app_outbox = app.outbox();
         let app_outbox_path = app_outbox.path().to_string();
 
         let scan_dirs = outboxes::scan_dirs(&all_paths, &app_outbox_path);
@@ -599,7 +600,7 @@ impl MailboxPoller {
                 continue;
             }
             let is_app_outbox = *origin == OutboxOrigin::Master;
-            if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
+            if let Some(state) = app.message_store() {
                 if let Ok(store) = &state.store {
                     self.scrub_stale_pty_input_temps(outbox_dir, store);
                 }
