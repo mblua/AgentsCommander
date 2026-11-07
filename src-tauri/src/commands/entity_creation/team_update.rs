@@ -151,7 +151,7 @@ pub(super) fn apply_wg_replica_repos(
     assigned_repos: &[String],
 ) -> Result<crate::config::replica_identity::WgReplicaIdentity, String> {
     // Read existing config, preserving identity/tooling/other runtime fields
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(replica_dir);
     let mut repaired_identity = None;
     crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
         let mut config = serde_json::Value::Object(std::mem::take(obj));

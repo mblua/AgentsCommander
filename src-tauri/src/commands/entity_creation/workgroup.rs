@@ -236,7 +236,7 @@ pub(super) fn initialize_replica_config_on_disk(
     replica_dir: &Path,
     assigned_repos: &[String],
 ) -> Result<(), String> {
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(replica_dir);
     crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         let had_config = config_path.try_exists().map_err(|error| {
             format!(
