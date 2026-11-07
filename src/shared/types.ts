@@ -778,6 +778,8 @@ export interface ApiClientMintResponse {
   note: string;
 }
 
+export type ContextHistoryColorDays = 1 | 7 | 30;
+
 export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
@@ -794,6 +796,8 @@ export interface AppSettings {
   soundsEnabled: boolean;
   teamIdleBeepEnabled: boolean;
   roomIdleConfirmationSeconds?: number;
+  /** #3532 Window (days) for the sidebar context-average color; omitted resolves to 30. */
+  contextHistoryColorDays?: ContextHistoryColorDays;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
   geminiModel: string;
