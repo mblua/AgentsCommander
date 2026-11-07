@@ -1,0 +1,143 @@
+/* #3532 P11 - CTX badge tint from the saved context mean, and its card.
+   Only the badge background/border change; the live text keeps the theme fg. */
+.ctx-badge.ctx-history {
+  cursor: default;
+  border: 1px solid transparent;
+}
+
+.ctx-badge.ctx-history:focus-visible {
+  outline: 1px solid var(--sidebar-accent);
+  outline-offset: 1px;
+}
+
+.ctx-badge.ctx-history.toned {
+  --ctx-history-tone: var(--ctx-history-tone-dark);
+  border-color: var(--ctx-history-tone);
+  background: color-mix(in srgb, var(--ctx-history-tone) 22%, transparent);
+  color: var(--sidebar-fg);
+}
+
+html.light-theme .ctx-badge.ctx-history.toned {
+  --ctx-history-tone: var(--ctx-history-tone-light);
+  background: color-mix(in srgb, var(--ctx-history-tone) 14%, transparent);
+}
+
+/* N/A with a valid history: the tint stays, only the live text dims. */
+.ctx-badge.unavailable.ctx-history {
+  opacity: 1;
+}
+
+.ctx-badge.unavailable.ctx-history .ctx-history-live {
+  opacity: 0.4;
+}
+
+.ctx-history-card {
+  position: fixed;
+  z-index: 1000;
+  width: 260px;
+  max-width: calc(100vw - 16px);
+  padding: 8px 10px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 4px;
+  background: var(--sidebar-surface);
+  color: var(--sidebar-fg);
+  font-size: 11px;
+  line-height: 1.35;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.ctx-history-card[hidden] {
+  display: none;
+}
+
+.ctx-history-current {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.ctx-history-identity {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 6px;
+  margin: 0 0 6px;
+}
+
+.ctx-history-identity dt {
+  color: var(--sidebar-fg-dim);
+}
+
+.ctx-history-identity dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ctx-history-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 2px 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.ctx-history-row.selected .ctx-history-period {
+  font-weight: 600;
+}
+
+.ctx-history-period {
+  color: var(--sidebar-fg-dim);
+}
+
+.ctx-history-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--sidebar-border);
+  overflow: hidden;
+}
+
+.ctx-history-fill {
+  display: block;
+  height: 100%;
+  background: var(--sidebar-fg-dim);
+}
+
+.ctx-history-value {
+  grid-column: 2;
+}
+
+.ctx-history-partial {
+  color: var(--sidebar-fg-dim);
+}
+
+.ctx-history-note,
+.ctx-history-legend,
+.ctx-history-warning {
+  margin: 4px 0 0;
+}
+
+.ctx-history-warning {
+  color: var(--sidebar-fg-dim);
+}
+
+.ctx-history-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin: 0 2px 0 6px;
+  border-radius: 2px;
+}
+
+.ctx-history-swatch.low {
+  background: #22c55e;
+}
+
+.ctx-history-swatch.high {
+  background: #ef4444;
+}
+
+html.light-theme .ctx-history-swatch.low {
+  background: #15803d;
+}
+
+html.light-theme .ctx-history-swatch.high {
+  background: #b91c1c;
+}
