@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
 use crate::config::coding_agent_profiles::SelectionWriteIntent;
 
 fn selection_lock_web_fixture(
@@ -392,13 +393,11 @@ async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_wa
     // caller (the WebSocket waiter) is dropped.
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-    let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || async move {
-            entered_tx.send(()).expect("signal entered");
-            release_rx.await.expect("release holder");
-            Ok::<(), String>(())
-        },
-    ));
+    let holder = tokio::spawn(run_owned_selection_operation(move || async move {
+        entered_tx.send(()).expect("signal entered");
+        release_rx.await.expect("release holder");
+        Ok::<(), String>(())
+    }));
     entered_rx.await.expect("holder entered");
 
     let state_for_dispatch = state.clone();
@@ -476,33 +475,31 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
     // The holder owns the turn while a mutation is still in flight; the
     // publication happens after the barrier, so a racing preview would
     // observe the unlocked pre-publication state.
-    let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || {
-            let settings = settings_for_holder;
-            let replica = replica_for_holder;
-            async move {
-                entered_tx.send(()).expect("signal entered");
-                release_rx.await.expect("release holder");
-                let snapshot = settings.read().await.clone();
-                let expected =
-                    crate::config::coding_agent_profiles::read_replica_selection_state(&replica)
-                        .expectation()
-                        .expect("fresh expectation");
-                crate::config::coding_agent_profiles::write_replica_selection(
-                    &snapshot,
-                    &replica,
-                    &crate::config::coding_agent_profiles::ReplicaSelectionPair {
-                        coding_agent_id: "codex".to_string(),
-                        requested_profile: "B".to_string(),
-                    },
-                    SelectionWriteIntent::IndividualAssignLock,
-                    &expected,
-                )
-                .expect("publish the lock");
-                Ok::<(), String>(())
-            }
-        },
-    ));
+    let holder = tokio::spawn(run_owned_selection_operation(move || {
+        let settings = settings_for_holder;
+        let replica = replica_for_holder;
+        async move {
+            entered_tx.send(()).expect("signal entered");
+            release_rx.await.expect("release holder");
+            let snapshot = settings.read().await.clone();
+            let expected =
+                crate::config::coding_agent_profiles::read_replica_selection_state(&replica)
+                    .expectation()
+                    .expect("fresh expectation");
+            crate::config::coding_agent_profiles::write_replica_selection(
+                &snapshot,
+                &replica,
+                &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                    coding_agent_id: "codex".to_string(),
+                    requested_profile: "B".to_string(),
+                },
+                SelectionWriteIntent::IndividualAssignLock,
+                &expected,
+            )
+            .expect("publish the lock");
+            Ok::<(), String>(())
+        }
+    }));
     entered_rx.await.expect("holder entered");
 
     let state_for_dispatch = state.clone();
@@ -576,10 +573,7 @@ fn ws_state_for_1271(
         owners.spawn.clone(),
     )));
     let shutdown = crate::shutdown::ShutdownSignal::new();
-    let coordinator = crate::session::selection::SelectionCoordinator::new(
-        Arc::clone(&session_mgr),
-        shutdown.token().clone(),
-    );
+    let coordinator = SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown.token().clone());
     let settings = crate::config::settings::new_settings_state(settings);
 
     let full_app = crate::test_support::test_builder_with_owners(owners.clone())

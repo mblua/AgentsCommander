@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::turn::run_owned_selection_operation_timed;
 
 // ── #2475 synthetic selection-lock bench ─────────────────────────
 //
@@ -8,7 +9,7 @@ use super::*;
 // collection, correlation and occupancy invariants only.
 
 use crate::config::replica_identity::strict_read_probe;
-use crate::session::selection::timing_probe::{
+use timing_probe::{
     bench_serialization_lock, BenchContext, Occupancy, OccupancyGuard, SelectionTimingSample,
     TimingSinkRegistration,
 };
@@ -304,10 +305,7 @@ fn bench_read<T, E>(
 ) -> BenchRead {
     let done = Arc::clone(done);
     Box::pin(async move {
-        let ok = crate::session::selection::BENCH_CONTEXT
-            .scope(context, command)
-            .await
-            .is_ok();
+        let ok = BENCH_CONTEXT.scope(context, command).await.is_ok();
         done.lock().expect("done").insert(id);
         (id, ok, std::time::Instant::now())
     })
@@ -497,10 +495,9 @@ fn bench_scopes() -> [super::ProfileAssignmentScope; 3] {
 /// Test-only: records one timed sample WITHOUT a run context.
 async fn bench_inject_uncorrelated(options: &BenchOptions) -> Result<(), BenchError> {
     if options.inject_uncorrelated {
-        crate::session::selection::run_owned_selection_operation_timed(
-            "get_replica_selection_default",
-            || async { Ok::<(), String>(()) },
-        )
+        run_owned_selection_operation_timed("get_replica_selection_default", || async {
+            Ok::<(), String>(())
+        })
         .await
         .map_err(BenchError::Failed)?;
     }
