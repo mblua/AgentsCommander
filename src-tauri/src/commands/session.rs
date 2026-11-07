@@ -58,7 +58,7 @@ pub(crate) mod selection_executor;
 mod telegram;
 #[cfg(test)]
 pub(crate) use crate::session::create_contracts::fixture::{
-    FixturePtyCutLease, FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
+    FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
 };
 pub use crate::session::create_contracts::CreateSelectionIntent;
 #[cfg(test)]
