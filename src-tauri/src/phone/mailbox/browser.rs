@@ -42,10 +42,7 @@ pub(crate) fn response_json(action: &str, snapshot: &WebBrowserSnapshot) -> serd
     })
 }
 
-async fn caller_session<S: BrowserHost + ?Sized>(
-    app: &S,
-    msg: &OutboxMessage,
-) -> Option<SessionInfo> {
+async fn caller_session<S: BrowserHost>(app: &S, msg: &OutboxMessage) -> Option<SessionInfo> {
     let token = msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok())?;
     let mgr = {
         let session_mgr = app.pty_sessions();
