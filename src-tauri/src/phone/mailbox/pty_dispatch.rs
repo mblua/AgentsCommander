@@ -1,5 +1,6 @@
 mod context;
 mod select;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::mailbox::poller::MailboxPoller;
 #[cfg(test)]
 use crate::phone::mailbox::pty_claim::MailboxTestHooks;
@@ -16,7 +17,6 @@ use context::{
 };
 use select::BoundaryWriteGuards;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 /// Payload and authority validated together before the first write.
@@ -37,9 +37,9 @@ impl<A> std::ops::Deref for PtyDispatcher<'_, A> {
     }
 }
 impl MailboxPoller {
-    pub(crate) async fn dispatch_pty_input_operation_core<R: tauri::Runtime>(
+    pub(crate) async fn dispatch_pty_input_operation_core<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         state: &crate::api::message_store::MessageStoreState,
         injection_id: &str,
         source_plane: crate::phone::types::PtyInputSourcePlane,
@@ -71,7 +71,7 @@ impl MailboxPoller {
         source_executor.returned(failed);
     }
 }
-impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
+impl<S: MailboxHost> PtyDispatcher<'_, S> {
     async fn dispatch_accepted_operation(
         &self,
         state: &crate::api::message_store::MessageStoreState,
@@ -86,7 +86,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             Err(_) => return false,
         };
         let shutdown = app
-            .try_state::<crate::shutdown::ShutdownSignal>()
+            .shutdown_opt()
             .map_or_else(tokio_util::sync::CancellationToken::new, |signal| {
                 signal.token().clone()
             });
@@ -173,9 +173,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         let app = self.app;
         // Startup restore must finish before this dispatch owns target guards.
         // No claim or payload has been consumed at this point.
-        if let Some(coordinator) =
-            app.try_state::<crate::session::selection::SelectionCoordinator>()
-        {
+        if let Some(coordinator) = app.selection_opt() {
             if coordinator.wait_for_restore_release().await.is_err() {
                 return false;
             }
