@@ -36,8 +36,13 @@ fn ticket_order(source: &str) -> Result<(), &'static str> {
 fn late_ticket_mutant(source: &str) -> String {
     let success = "if let Some(t) = ticket {\n                t.succeeded();\n            }";
     let compact = "if let Some(t) = ticket {\n        t.succeeded();\n    }";
+    let scoped = "if let Some(t) = ticket {
+            t.succeeded();
+        }";
     let spelling = if source.contains(success) {
         success
+    } else if source.contains(scoped) {
+        scoped
     } else {
         compact
     };

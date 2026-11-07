@@ -44,19 +44,21 @@ pub(super) async fn spawn_fixture_wake_session<S: MailboxHost>(
     // #2411 Mirror production create: the coordinator clear runs before the
     // create can fail, on both the failure and the success path.
     // #2413 The ticket ends like production: `failed()` on the create error.
-    let ticket = if spawn_is_coordinator {
-        app.begin_coordinator_create(&cwd)
-    } else {
-        None
-    };
-    if let Some(msg) = hooks.internal_spawn_error.lock().unwrap().take() {
-        if let Some(t) = ticket {
-            t.failed();
+    {
+        let ticket = if spawn_is_coordinator {
+            app.begin_coordinator_create(&cwd)
+        } else {
+            None
+        };
+        if let Some(msg) = hooks.internal_spawn_error.lock().unwrap().take() {
+            if let Some(t) = ticket {
+                t.failed();
+            }
+            return Err(msg);
         }
-        return Err(msg);
-    }
-    if let Some(t) = ticket {
-        t.succeeded();
+        if let Some(t) = ticket {
+            t.succeeded();
+        }
     }
     let session_mgr = app.pty_sessions();
     let mgr = session_mgr.read().await;
