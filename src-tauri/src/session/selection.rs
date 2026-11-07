@@ -19,22 +19,15 @@ pub(crate) use turn::BENCH_CONTEXT;
 pub(crate) use turn::TEST_SELECTION_TURN;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[cfg(test)]
-use crate::app_state::DetachedSessionsState;
 use crate::pty::container_backend::ContainerTransportBackend;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{PendingCreateBinding, SessionManager};
-#[cfg(test)]
-use crate::session::session::SessionStatus;
 use crate::session::session::{SessionCommunication, SessionInfo};
 use crate::session::warnings::SessionWarning;
-#[cfg(test)]
-use crate::web::broadcast::WsBroadcaster;
 
 /// Selection's lifecycle operations; transport remains on `SelectionTransaction`
 /// until later phases.
@@ -165,14 +158,8 @@ pub(crate) trait SelectionHost<C: SelectionContext>:
     fn pty_optional(&self) -> Option<&Arc<Mutex<PtyManager>>>;
     fn detached_required(&self) -> &crate::app_state::DetachedSessionsState;
     fn settings_required(&self) -> &crate::config::settings::SettingsState;
-    // First required by P13.
-    #[allow(dead_code)]
     fn response_close_required(&self) -> &crate::pty::manager::ResponseCloseState;
-    // First required by P13.
-    #[allow(dead_code)]
     fn response_close_optional(&self) -> Option<&crate::pty::manager::ResponseCloseState>;
-    // First required by P13.
-    #[allow(dead_code)]
     fn coordinator_optional(&self) -> Option<&SelectionCoordinator>;
     fn tasks(&self) -> &dyn task::SelectionTasks;
     fn focus_window(&self, label: &str) -> Option<Result<(), String>>;
@@ -544,11 +531,11 @@ pub(crate) fn forget_response_close_registration(id: Uuid) {
     }
 }
 
-pub(crate) async fn poll_response_close<R: Runtime>(
-    app: &AppHandle<R>,
-    executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+pub(crate) async fn poll_response_close<C: SelectionContext>(
+    host: &C::Host,
+    executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>>,
 ) {
-    let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
+    let Some(tracker) = host.response_close_optional() else {
         log::debug!(
             target: "agentscommander_lib::response_close_diag",
             "response_close_diag id=unknown site={} stage=poll_health \
@@ -559,7 +546,7 @@ pub(crate) async fn poll_response_close<R: Runtime>(
     };
     let diagnostic_status = tracker.diagnostic_poll_health();
     if let Some(executor) = executor {
-        let transaction = SelectionTransaction::<R>::new_host(app.clone(), Weak::new())
+        let transaction = SelectionTransaction::<C>::new_host(host.clone(), Weak::new())
             .with_lifecycle_executor(Arc::clone(&executor));
         executor.reconcile(&transaction).await;
     } else {
@@ -568,7 +555,7 @@ pub(crate) async fn poll_response_close<R: Runtime>(
             "response_close_diag stage=poll_reconcile outcome=executor_missing"
         );
     }
-    let Some(coordinator) = app.try_state::<SelectionCoordinator>() else {
+    let Some(coordinator) = host.coordinator_optional() else {
         if diagnostic_status {
             log::debug!(
                 target: "agentscommander_lib::response_close_diag",
@@ -604,7 +591,7 @@ pub(crate) async fn poll_response_close<R: Runtime>(
         );
     }
     for registration in registrations {
-        if !registration.tracker.same_state(&tracker) {
+        if !registration.tracker.same_state(tracker) {
             registration.diagnostic_poll_outcome(1, "same_tracker_mismatch");
             continue;
         }
@@ -613,7 +600,7 @@ pub(crate) async fn poll_response_close<R: Runtime>(
             continue;
         }
         let _ = coordinator
-            .try_response_close::<R>(app, &registration)
+            .try_response_close::<C>(host, &registration)
             .await;
     }
 }
@@ -922,16 +909,6 @@ impl<C: SelectionContext> SelectionTransaction<C> {
                 "communication": null,
             }),
         );
-    }
-}
-
-#[cfg(test)]
-impl SelectionCoordinator {
-    pub(crate) fn port_test_transaction<R: Runtime>(
-        &self,
-        app: AppHandle<R>,
-    ) -> SelectionTransaction<R> {
-        SelectionTransaction::<R>::new_host(app, Arc::downgrade(&self.inner))
     }
 }
 

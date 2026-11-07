@@ -33,7 +33,7 @@ fn executor<R: Runtime>(
 }
 
 pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
-    crate::session::selection::poll_response_close(app, executor(app)).await;
+    crate::session::selection::poll_response_close::<R>(app, executor(app)).await;
 }
 
 pub(crate) fn start_response_close_polling<R: Runtime>(

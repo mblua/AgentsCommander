@@ -1,7 +1,11 @@
 use super::*;
+use crate::app_state::DetachedSessionsState;
+use crate::session::session::SessionStatus;
+use crate::web::broadcast::WsBroadcaster;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use tauri::{AppHandle, Manager, Runtime};
 
 fn response_close_unbound_ticket() -> super::CreateFinalizationTicket {
     super::CreateFinalizationTicket {
@@ -502,7 +506,7 @@ impl SelectionCoordinator {
 }
 
 #[cfg(test)]
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
     pub(crate) fn port_test_binding_presence(&self) -> (bool, bool) {
         (self.lifecycle_entry.is_some(), self.restore_nonce.is_some())
     }
@@ -542,7 +546,10 @@ impl SelectionPortTestEntry {
         self.entry.as_ref().unwrap().authority.as_ref().unwrap()
     }
 
-    pub(crate) fn enter<R: Runtime>(&self, t: &SelectionTransaction<R>) -> SelectionTransaction<R> {
+    pub(crate) fn enter<C: SelectionContext>(
+        &self,
+        t: &SelectionTransaction<C>,
+    ) -> SelectionTransaction<C> {
         t.for_lifecycle_entry(self.entry.as_ref().unwrap())
     }
 
@@ -630,9 +637,9 @@ impl SelectionCoordinator {
         })
     }
 
-    pub(crate) async fn port_test_drive<R: Runtime>(
+    pub(crate) async fn port_test_drive<C: SelectionContext>(
         &self,
-        t: &SelectionTransaction<R>,
+        t: &SelectionTransaction<C>,
         mut entry: SelectionPortTestEntry,
         request: RestartJobRequest,
         exit: SelectionPortTestExit,
@@ -680,7 +687,7 @@ impl SelectionCoordinator {
 }
 
 #[cfg(test)]
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
     pub(crate) fn port_test_restore_nonce(&self) -> Option<Uuid> {
         self.restore_nonce
     }
@@ -753,4 +760,85 @@ fn issue_3950_host_contract() {
         "
 ISSUE3950_CONTROL_OK case=issue_3950_host_contract"
     );
+}
+
+#[cfg(test)]
+impl SelectionCoordinator {
+    pub(crate) fn port_test_transaction<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+    ) -> SelectionTransaction<R> {
+        SelectionTransaction::<R>::new_host(app, Arc::downgrade(&self.inner))
+    }
+}
+
+#[test]
+fn issue_3950_native_compatibility() {
+    fn native<R: Runtime>(
+        app: AppHandle<R>,
+        coordinator: &SelectionCoordinator,
+        barrier: &RestoreBarrierGuard,
+        restart: RestartJobRequest,
+        root: RootJobRequest,
+        mut entry: SelectionPortTestEntry,
+    ) {
+        use crate::commands::session::selection_executor as edge;
+        let state: LifecycleExecutorState<edge::SelectionTransaction<R>> = edge::state::<R>();
+        let executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>> = Arc::clone(state.get());
+        let transaction: SelectionTransaction<R> = SelectionTransaction::for_test(app.clone());
+        let _: &AppHandle<R> = transaction.app();
+        let bound: SelectionTransaction<R> = coordinator.port_test_transaction(app.clone());
+        let _: SelectionTransaction<R> = barrier.transaction(app.clone());
+        let _ = SelectionCoordinator::start::<R>;
+        let _ = SelectionCoordinator::start_with_executor::<R>;
+        drop(coordinator.restart_lifecycle_with_executor(
+            app.clone(),
+            restart,
+            Some(Arc::clone(&executor)),
+        ));
+        drop(coordinator.root_lifecycle_with_executor(app.clone(), root, Some(executor)));
+        let _ = edge::poll_response_close::<R>;
+        let _ = edge::start_response_close_polling::<R>;
+        let _ = edge::install::<R>;
+        let _: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>> =
+            bound.port_test_executor();
+        let _: (bool, bool) = bound.port_test_binding_presence();
+        let _: Option<Uuid> = bound.port_test_restore_nonce();
+        let _: SelectionTransaction<R> = entry.enter(&bound);
+        let _ = entry.operation();
+        let _ = entry.nonce();
+        let _ = entry.sidecar_released();
+        let _ = SelectionPortTestEntry::attach_lease;
+        let _ = SelectionPortTestEntry::lease;
+        let _ = SelectionPortTestEntry::observe_return;
+        let _ = SelectionPortTestEntry::release::<SelectionTransaction<R>>;
+        entry.drop_entry();
+        let _ = SelectionCoordinator::port_test_state;
+        let _ = SelectionCoordinator::port_test_active_restore_nonce;
+        let _ = SelectionCoordinator::port_test_retained_entry;
+        let _ = SelectionCoordinator::port_test_running_unstarted;
+        let _ = SelectionCoordinator::port_test_pending_entry;
+        let _ = SelectionCoordinator::port_test_drive::<R>;
+        let _ = SelectionCoordinator::port_test_install_worker;
+        let _ = SelectionCoordinator::port_test_retained_worker_count;
+        let _ = SelectionCoordinator::port_test_close_with_budget;
+        let _ = SelectionCoordinator::port_test_take_retained_workers;
+        let _ = LifecycleEffectGuard::port_test_identity;
+        let _ = LifecycleLease::port_test_attach_trace;
+        let _ = LifecycleLease::port_test_trace;
+        let _ = port_test_binding;
+        let _ = port_test_publish_lifecycle_event::<AppHandle<R>, SessionSelection>;
+        let _: Option<OwnedReplacementContinuation> = None;
+        let _: Option<TrustedRestartIntent> = None;
+    }
+    let _ = native::<tauri::test::MockRuntime>;
+    assert_eq!(
+        std::any::TypeId::of::<
+            crate::commands::session::selection_executor::SelectionTransaction<
+                tauri::test::MockRuntime,
+            >,
+        >(),
+        std::any::TypeId::of::<SelectionTransaction<tauri::test::MockRuntime>>(),
+    );
+    println!("\nISSUE3950_CONTROL_OK case=issue_3950_native_compatibility");
 }
