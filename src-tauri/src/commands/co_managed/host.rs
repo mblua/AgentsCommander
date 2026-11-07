@@ -87,3 +87,6 @@ impl<R: Runtime> CoManagedHost for AppHandle<R> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

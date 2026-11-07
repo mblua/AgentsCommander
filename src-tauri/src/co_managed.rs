@@ -8,14 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::config::settings::SettingsState;
+use self::host::{CoManagedEvents, CoManagedHost};
 use crate::filesystem::co_managed_queue::{
     canonical_co_managed_message, create_co_managed_queue_entry, ensure_co_managed_queue,
     flush_co_managed_queue_file, read_co_managed_message_snapshot, remove_co_managed_message,
     write_co_managed_queue_bytes,
 };
-use crate::session::manager::SessionManager;
-use tauri::Manager;
 
 use crate::{capture, config};
 
@@ -298,15 +296,14 @@ impl CoManagedSupervisorHandle {
 /// `session_idle` **first**, with the Co-managed decision in the same payload,
 /// then hands the edge to the supervisor. A separate later event would always
 /// paint waiting first, which is what this signature exists to prevent.
-pub(crate) fn emit_session_idle_edge<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn emit_session_idle_edge<E: CoManagedEvents + ?Sized>(
+    app: &E,
     armed: &capture::armed::ArmedFlags,
     supervisor: Option<&CoManagedSupervisorHandle>,
     session_id: uuid::Uuid,
 ) -> bool {
     let comanaged = armed.is_armed(&session_id.to_string());
-    let _ = tauri::Emitter::emit(
-        app,
+    app.co_managed_event(
         "session_idle",
         serde_json::json!({ "id": session_id.to_string(), "comanaged": comanaged }),
     );
@@ -318,14 +315,13 @@ pub(crate) fn emit_session_idle_edge<R: tauri::Runtime>(
 
 /// `session_comanaged_state`, emitted with `emit` (every window), never
 /// `emit_to`, so a detached terminal window receives it too (plan 9.2).
-pub(crate) fn emit_co_managed_state<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn emit_co_managed_state<E: CoManagedEvents + ?Sized>(
+    app: &E,
     session_id: uuid::Uuid,
     active: bool,
     reason: Option<&str>,
 ) {
-    let _ = tauri::Emitter::emit(
-        app,
+    app.co_managed_event(
         "session_comanaged_state",
         serde_json::json!({
             "id": session_id.to_string(),
@@ -415,12 +411,12 @@ pub(crate) fn co_managed_user_message(
 /// Surface a user-facing communication on the session. The slot is single:
 /// `raise_hand` and `set_blocked_menu` overwrite it, and when that happens the
 /// pointer is lost, not the file, which stays findable in `messaging/`.
-pub(crate) async fn surface_co_managed_user_message<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn surface_co_managed_user_message<H: CoManagedHost + ?Sized>(
+    app: &H,
     session_id: uuid::Uuid,
     message: String,
 ) {
-    let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+    let Some(manager) = app.sessions_optional() else {
         return;
     };
     let outcome = {
@@ -441,10 +437,10 @@ pub(crate) async fn surface_co_managed_user_message<R: tauri::Runtime>(
 }
 
 /// Read the six `AppSettings` Jev fields into the leaf's plain value type.
-pub(crate) async fn co_managed_jev_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn co_managed_jev_settings<H: CoManagedHost + ?Sized>(
+    app: &H,
 ) -> Result<capture::jev::JevSettings, config::settings::SettingsOwnerError> {
-    let settings = app.state::<SettingsState>();
+    let settings = app.settings_required();
     let guard = settings.current_read().await?;
     Ok(capture::jev::JevSettings {
         api_key: guard.jev_api_key.clone(),

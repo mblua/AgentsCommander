@@ -20,16 +20,13 @@ use crate::session::selection::task::SelectionTasks;
 use crate::session::selection::SelectionEvents;
 
 pub(crate) trait CoManagedEvents: Send + Sync {
-    #[allow(dead_code)] // Consumed by P15.
     fn co_managed_event(&self, event: &'static str, value: Value);
 }
 
 pub(crate) trait CoManagedHost: Send + Sync + CoManagedEvents + SelectionEvents {
-    #[allow(dead_code)] // Consumed by P15.
     fn sessions_optional(&self) -> Option<&Arc<RwLock<SessionManager>>>;
     #[allow(dead_code)] // Consumed by P16.
     fn sessions_required(&self) -> &Arc<RwLock<SessionManager>>;
-    #[allow(dead_code)] // Consumed by P15.
     fn settings_required(&self) -> &SettingsState;
     #[allow(dead_code)] // Consumed by P16.
     fn input_optional(&self) -> Option<&SubstantiveInputState>;
