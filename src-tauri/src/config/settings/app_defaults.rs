@@ -21,13 +21,17 @@ use super::{
     MainSidebarSide, MainWindowDisplayState, TelegramNetworkPollErrorLogging,
 };
 
+fn default_shell_and_args() -> (String, Vec<String>) {
+    if cfg!(target_os = "windows") {
+        ("powershell.exe".to_string(), vec!["-NoLogo".to_string()])
+    } else {
+        ("/bin/bash".to_string(), vec![])
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
-        let (default_shell, default_shell_args) = if cfg!(target_os = "windows") {
-            ("powershell.exe".to_string(), vec!["-NoLogo".to_string()])
-        } else {
-            ("/bin/bash".to_string(), vec![])
-        };
+        let (default_shell, default_shell_args) = default_shell_and_args();
 
         Self {
             default_shell,
