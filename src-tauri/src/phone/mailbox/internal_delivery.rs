@@ -155,89 +155,98 @@ impl MailboxPoller {
         Ok(())
     }
 
-    async fn prepare_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
-        &self,
-        app: &S,
-        target: &InternalSystemTarget,
-        guard: &InternalNoticeGuard,
-    ) -> Result<
-        (
-            ResolvedWakeAgentCommand,
+    fn prepare_internal_background_spawn<'a, S: PtyAuthorityState + ?Sized>(
+        &'a self,
+        app: &'a S,
+        target: &'a InternalSystemTarget,
+        guard: &'a InternalNoticeGuard,
+    ) -> impl std::future::Future<
+        Output = Result<
+            (
+                ResolvedWakeAgentCommand,
+                String,
+                AgentSpawnCommand,
+                Option<ResolvedAgentHostShell>,
+            ),
             String,
-            AgentSpawnCommand,
-            Option<ResolvedAgentHostShell>,
-        ),
-        String,
-    > {
-        // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
-        // supported recipient that appeared wins; this attempt returns stale rather than
-        // creating a duplicate.
-        self.authorize_internal_background_spawn(app, target, guard)
-            .await?;
+        >,
+    > + Send
+           + 'a {
+        async move {
+            // Final pre-spawn authorization followed by a fresh exact-path enumeration. A
+            // supported recipient that appeared wins; this attempt returns stale rather than
+            // creating a duplicate.
+            self.authorize_internal_background_spawn(app, target, guard)
+                .await?;
 
-        let resolved_command = self
-            .resolve_internal_agent_command(app, target)
-            .await?
-            .ok_or_else(|| {
+            let resolved_command = self
+                .resolve_internal_agent_command(app, target)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "No supported coding-agent command is configured for '{}'",
+                        target.fqn()
+                    )
+                })?;
+            let agent_id = resolved_command.agent_id.as_deref().ok_or_else(|| {
                 format!(
-                    "No supported coding-agent command is configured for '{}'",
+                    "Resolved command for '{}' has no trusted coding-agent id",
                     target.fqn()
                 )
             })?;
-        let agent_id = resolved_command.agent_id.as_deref().ok_or_else(|| {
-            format!(
-                "Resolved command for '{}' has no trusted coding-agent id",
-                target.fqn()
-            )
-        })?;
-        let cwd = target.replica_dir().to_string_lossy().to_string();
-        let settings_snapshot = {
-            let settings = app.pty_settings();
-            let snapshot = settings.read().await.clone();
-            snapshot
-        };
-        let (resolved_spawn, resolved_agent_host_shell) =
-            Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, target).await?;
+            let cwd = target.replica_dir().to_string_lossy().to_string();
+            let settings_snapshot = {
+                let settings = app.pty_settings();
+                let snapshot = settings.read().await.clone();
+                snapshot
+            };
+            let (resolved_spawn, resolved_agent_host_shell) =
+                Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, target)
+                    .await?;
 
-        // Repeat the guard and exact-path absence check immediately before actuation. Command
-        // and profile resolution above can perform filesystem work and must not widen this race.
-        self.authorize_internal_background_spawn(app, target, guard)
-            .await?;
+            // Repeat the guard and exact-path absence check immediately before actuation. Command
+            // and profile resolution above can perform filesystem work and must not widen this race.
+            self.authorize_internal_background_spawn(app, target, guard)
+                .await?;
 
-        Ok((
-            resolved_command,
-            cwd,
-            resolved_spawn,
-            resolved_agent_host_shell,
-        ))
+            Ok((
+                resolved_command,
+                cwd,
+                resolved_spawn,
+                resolved_agent_host_shell,
+            ))
+        }
     }
 
-    async fn authorize_internal_exited_session<S: PtyAuthorityState + ?Sized>(
-        &self,
-        app: &S,
-        target: &InternalSystemTarget,
-        exited_candidate: &SessionInfo,
-        cancellation: &CancellationToken,
-        guard: &InternalNoticeGuard,
-    ) -> Result<Uuid, String> {
-        if cancellation.is_cancelled() {
-            return Err(
-                "Context alert delivery was canceled before exited-session actuation".to_string(),
-            );
-        }
-        let exited_id = Uuid::parse_str(&exited_candidate.id)
-            .map_err(|e| format!("Invalid exited orchestrator session id: {e}"))?;
-        self.recheck_internal_exited_candidate(app, exited_id, target)
+    fn authorize_internal_exited_session<'a, S: PtyAuthorityState + ?Sized>(
+        &'a self,
+        app: &'a S,
+        target: &'a InternalSystemTarget,
+        exited_candidate: &'a SessionInfo,
+        cancellation: &'a CancellationToken,
+        guard: &'a InternalNoticeGuard,
+    ) -> impl std::future::Future<Output = Result<Uuid, String>> + Send + 'a {
+        async move {
+            if cancellation.is_cancelled() {
+                return Err(
+                    "Context alert delivery was canceled before exited-session actuation"
+                        .to_string(),
+                );
+            }
+            let exited_id = Uuid::parse_str(&exited_candidate.id)
+                .map_err(|e| format!("Invalid exited orchestrator session id: {e}"))?;
+            self.recheck_internal_exited_candidate(app, exited_id, target)
+                .await?;
+            Self::run_internal_guard(Arc::clone(guard)).await?;
+            self.recheck_internal_exited_record(
+                app,
+                exited_id,
+                target,
+                &exited_candidate.working_directory,
+            )
             .await?;
-        Self::run_internal_guard(Arc::clone(guard)).await?;
-        self.recheck_internal_exited_record(
-            app,
-            exited_id,
-            target,
-            &exited_candidate.working_directory,
-        )
-        .await?;
-        Ok(exited_id)
+            Ok(exited_id)
+        }
     }
 
     async fn authorize_internal_background_spawn<S: PtyAuthorityState + ?Sized>(
@@ -883,33 +892,35 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn destroy_exited_wake_session<S: MailboxHost>(
-        &self,
-        app: &S,
+    pub(crate) fn destroy_exited_wake_session<'a, S: MailboxHost>(
+        &'a self,
+        app: &'a S,
         session_id: Uuid,
-    ) -> Result<(), String> {
-        #[cfg(test)]
-        if let Some(hooks) = &self.test_hooks {
-            {
-                let mut calls = hooks.destroy_calls.lock().unwrap();
-                calls.push(session_id);
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send + 'a {
+        async move {
+            #[cfg(test)]
+            if let Some(hooks) = &self.test_hooks {
+                {
+                    let mut calls = hooks.destroy_calls.lock().unwrap();
+                    calls.push(session_id);
+                }
+                {
+                    let mut events = hooks.events.lock().unwrap();
+                    events.push(MailboxTestEvent::Destroy(session_id));
+                }
+                if let Some(result) = hooks.destroy_results.lock().unwrap().pop_front() {
+                    result?;
+                }
+                let session_mgr = app.pty_sessions();
+                let mgr = session_mgr.read().await;
+                return mgr
+                    .destroy_session(session_id)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
             }
-            {
-                let mut events = hooks.events.lock().unwrap();
-                events.push(MailboxTestEvent::Destroy(session_id));
-            }
-            if let Some(result) = hooks.destroy_results.lock().unwrap().pop_front() {
-                result?;
-            }
-            let session_mgr = app.pty_sessions();
-            let mgr = session_mgr.read().await;
-            return mgr
-                .destroy_session(session_id)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string());
-        }
 
-        app.background_destroy_session_inner(session_id).await
+            app.background_destroy_session_inner(session_id).await
+        }
     }
 }
