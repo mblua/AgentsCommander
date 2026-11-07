@@ -210,7 +210,7 @@ impl SnapshotScannerShutdownOwner {
         }
     }
 
-    pub(super) fn spawn_tracked<S: SnapshotTaskHost + ?Sized, F>(
+    pub(super) fn spawn_tracked<S: SnapshotTaskHost, F>(
         &self,
         host: &S,
         audit_request_id: Option<String>,
