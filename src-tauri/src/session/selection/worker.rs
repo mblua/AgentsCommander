@@ -77,54 +77,52 @@ impl<C: SelectionContext> SelectionTransaction<C> {
                     hold.release();
                 }
                 CoordinatorJob::Transition { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued transition caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued transition caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::Snapshot { response } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued snapshot caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued snapshot caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RouteLoss { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued route-loss caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued route-loss caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::ConditionalResponseClose { .. } => {
                     hold.release();
                 }
                 CoordinatorJob::Destroy { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued destroy caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued destroy caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RestartLifecycle { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued restart caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued restart caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RootLifecycle { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued Root caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued Root caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::ResourceKill { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!(
-                            "[selection] queued resource-kill caller dropped during shutdown"
-                        );
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued resource-kill caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::Detach { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued detach caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued detach caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::Attach { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued attach caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued attach caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RestoreBarrier { started, .. } => {
                     if started.send(()).is_err() {
@@ -156,15 +154,13 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             }
             CoordinatorJob::Transition { request, response } => {
                 let result = execute_transition(transaction, request).await;
-                if hold.respond(response, result).is_err() {
-                    log::debug!("[selection] transition caller dropped before result delivery");
-                }
+                let message = "[selection] transition caller dropped before result delivery";
+                Self::respond_result_logged(&mut hold, response, result, message);
             }
             CoordinatorJob::Snapshot { response } => {
                 let snapshot = transaction.manager().await.selection_payload().await;
-                if hold.respond(response, Ok(snapshot)).is_err() {
-                    log::debug!("[selection] snapshot caller dropped before result delivery");
-                }
+                let message = "[selection] snapshot caller dropped before result delivery";
+                Self::respond_result_logged(&mut hold, response, Ok(snapshot), message);
             }
             CoordinatorJob::FinalizeCreate { request, response } => {
                 Self::execute_finalize_job(transaction, &mut hold, request, response).await;
@@ -203,9 +199,8 @@ impl<C: SelectionContext> SelectionTransaction<C> {
                     "selection start contract violated: lifecycle executor binding missing",
                 );
                 let result = executor.destroy(transaction, request).await;
-                if hold.respond(response, result).is_err() {
-                    log::debug!("[selection] destroy caller dropped before result delivery");
-                }
+                let message = "[selection] destroy caller dropped before result delivery";
+                Self::respond_result_logged(&mut hold, response, result, message);
             }
             CoordinatorJob::RestartLifecycle {
                 request,
@@ -239,6 +234,17 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             hold.is_released(),
             "#1580: a coordinator job arm finished without releasing admission and critical key"
         );
+    }
+
+    fn respond_result_logged<T>(
+        hold: &mut super::envelope::EnvelopeHold,
+        response: tokio::sync::oneshot::Sender<Result<T, String>>,
+        result: Result<T, String>,
+        message: &'static str,
+    ) {
+        if hold.respond(response, result).is_err() {
+            log::debug!("{message}");
+        }
     }
 
     fn respond_unavailable<T>(
