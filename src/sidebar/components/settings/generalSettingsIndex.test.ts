@@ -75,7 +75,9 @@ describe("context history color search (#3532)", () => {
     const entry = GENERAL_SETTINGS_INDEX.find((e) => e.key === "contextHistoryColorDays")!;
     expect(entry.category).toBe("appearance");
     expect(entry.section).toBe("Contexto en la barra lateral");
-    const sections = GENERAL_SETTINGS_INDEX.filter((e) => e.category === "appearance").map((e) => e.section);
+    const sections = GENERAL_SETTINGS_INDEX
+      .filter((e) => e.category === "appearance")
+      .map((e) => e.section);
     const at = sections.indexOf(entry.section);
     expect(sections[at - 1]).toBe("Window");
     expect(sections[at + 1]).toBe("Hotkeys");

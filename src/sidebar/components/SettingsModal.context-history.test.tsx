@@ -81,13 +81,17 @@ describe("SettingsModal context history color window (#3532)", () => {
       try {
         const select = m.$<HTMLSelectElement>(FIELD)!;
         expect(select.value).toBe(String(days));
-        expect(select.closest("[data-ac-setting]")!.getAttribute("data-ac-setting")).toBe("contextHistoryColorDays");
+        const wrapper = select.closest("[data-ac-setting]")!;
+        expect(wrapper.getAttribute("data-ac-setting")).toBe("contextHistoryColorDays");
       } finally { m.rendered.cleanup(); }
     });
   }
 
   it("persists the number on Save and keeps the other fields", async () => {
-    const m = await renderModal({ contextHistoryColorDays: 30, roomIdleConfirmationSeconds: 60 }, false);
+    const m = await renderModal(
+      { contextHistoryColorDays: 30, roomIdleConfirmationSeconds: 60 },
+      false,
+    );
     try {
       pick(m.$<HTMLSelectElement>(FIELD)!, "7");
       m.$<HTMLButtonElement>(SAVE)!.click();
@@ -122,7 +126,10 @@ describe("SettingsModal context history color window (#3532)", () => {
       const before = settingsStore.current?.contextHistoryColorDays;
       pick(select, "7");
       m.$<HTMLButtonElement>(SAVE)!.click();
-      await waitFor(() => expect(m.rendered.root.querySelector(".modal-save-error")?.textContent).toContain("color window write failed"));
+      await waitFor(() =>
+        expect(m.rendered.root.querySelector(".modal-save-error")?.textContent)
+          .toContain("color window write failed"),
+      );
       expect(select.value).toBe("7");
       expect(m.onClose).not.toHaveBeenCalled();
       expect(settingsStore.current?.contextHistoryColorDays).toBe(before);

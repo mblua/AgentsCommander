@@ -122,7 +122,8 @@ import {
 type ProfileCellEnvRow = { key: string; value: string };
 
 const DEFAULT_ROOM_NUMBER_MASK = "#";
-// #3532 Allowed windows for the sidebar context-average color; the select maps back to these numbers.
+// #3532 Allowed windows for the sidebar context-average color;
+// the select maps back to these numbers.
 const CONTEXT_HISTORY_COLOR_DAYS: readonly ContextHistoryColorDays[] = [1, 7, 30];
 const ROOM_NUMBER_MASK_MAX_WIDTH = 9;
 
@@ -3068,7 +3069,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     class="settings-input"
                     value={String(settings.data?.contextHistoryColorDays ?? 30)}
                     onChange={(e) => {
-                      const days = CONTEXT_HISTORY_COLOR_DAYS.find((d) => String(d) === e.currentTarget.value);
+                      const raw = e.currentTarget.value;
+                      const days = CONTEXT_HISTORY_COLOR_DAYS.find((d) => String(d) === raw);
                       if (days !== undefined) updateField("contextHistoryColorDays", days);
                     }}
                     data-ac-testid="settings.general.contextHistoryColorDays"
@@ -3077,7 +3079,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     <option value="7">Últimos 7 días</option>
                     <option value="30">Últimos 30 días (predeterminado)</option>
                   </select>
-                  <div class="settings-hint" data-ac-testid="settings.general.contextHistoryColorDays.hint">
+                  <div
+                    class="settings-hint"
+                    data-ac-testid="settings.general.contextHistoryColorDays.hint"
+                  >
                     Colorea la media de contexto del agente o del team, no el CTX vivo; el hover
                     muestra siempre las medias de 1, 7 y 30 días. No cambia la captura ni el
                     período del historial.
