@@ -1826,11 +1826,12 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
     && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
     // Rust 2018 resolves a relative first segment in the current module before
     // the crate root: `use process::X` inside `a::b` with `mod process;` names
-    // `a::b::process`, never a crate-root `process` (#3991). Child-relative
-    // paths make no edge, exactly as for a child whose name has no crate-root
-    // twin, so a same-name crate-root module can never receive a false arc.
-    ctx.stats.externalReferences++;
-    return null;
+    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
+    // against the current module, so the child arc is recorded and a same-name
+    // crate-root module can never receive a false arc (#3998).
+    base = contextSegments.slice();
+    rest = segments.slice();
+    ctx.stats.barePathResolutions++;
   } else {
     const isExternal = target.externCrates.has(first);
     const rootModule = tree.modules.get(target.targetId);
