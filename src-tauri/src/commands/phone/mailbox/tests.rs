@@ -86,20 +86,29 @@ fn issue_3946_adapter_live_getters() {
         .load(std::sync::atomic::Ordering::SeqCst));
 }
 
-fn seed_markers(clocks: &CoordinatorClocksState, fqn: &str, time: chrono::DateTime<chrono::Utc>) {
+fn seed_markers(
+    clocks: &CoordinatorClocksState,
+    fqn: &str,
+    time: chrono::DateTime<chrono::Utc>,
+    manual: bool,
+) {
     let mut clocks = clocks.lock().unwrap();
-    assert!(clocks.mark_auto_closed(fqn, time));
-    assert!(clocks.mark_manually_closed(fqn, time));
+    if manual {
+        assert!(clocks.mark_manually_closed(fqn, time));
+    } else {
+        assert!(clocks.mark_auto_closed(fqn, time));
+    }
 }
 
 fn assert_markers(
     clocks: &CoordinatorClocksState,
     fqn: &str,
     time: Option<chrono::DateTime<chrono::Utc>>,
+    manual: bool,
 ) {
     let clocks = clocks.lock().unwrap();
-    assert_eq!(clocks.auto_closed_at(fqn), time);
-    assert_eq!(clocks.manually_closed_at(fqn), time);
+    assert_eq!(clocks.auto_closed_at(fqn), time.filter(|_| !manual));
+    assert_eq!(clocks.manually_closed_at(fqn), time.filter(|_| manual));
 }
 
 #[test]
@@ -111,18 +120,23 @@ fn issue_3946_adapter_real_ticket_settlement() {
     let cwd = "C:/ac-test/project/.ac/wg-3946-team/__agent_coordinator";
     let fqn = crate::config::teams::agent_fqn_from_path(cwd);
     let time = chrono::Utc::now();
-    for outcome in [
-        "success",
-        "failure",
-        "cancel",
-        "fenced_failure",
-        "fenced_cancel",
+    for (outcome, manual) in [
+        ("success", false),
+        ("failure", false),
+        ("cancel", false),
+        ("fenced_failure", false),
+        ("fenced_cancel", false),
+        ("success", true),
+        ("failure", true),
+        ("cancel", true),
+        ("fenced_failure", true),
+        ("fenced_cancel", true),
     ] {
-        seed_markers(&clocks, &fqn, time);
+        seed_markers(&clocks, &fqn, time, manual);
         let mut ticket: crate::commands::session::CoordinatorCreateTicket<
             tauri::test::MockRuntime,
         > = MailboxHost::begin_coordinator_create(handle, cwd).expect("real ticket");
-        assert_markers(&clocks, &fqn, None);
+        assert_markers(&clocks, &fqn, None, manual);
         ticket.session_may_exist = outcome.starts_with("fenced");
         match outcome {
             "success" => CoordinatorTicket::succeeded(ticket),
@@ -130,7 +144,7 @@ fn issue_3946_adapter_real_ticket_settlement() {
             _ => drop(ticket),
         }
         let restored = matches!(outcome, "failure" | "cancel");
-        assert_markers(&clocks, &fqn, restored.then_some(time));
+        assert_markers(&clocks, &fqn, restored.then_some(time), manual);
         // Reset only the test's clocks between independent ticket scenarios.
         *clocks.lock().unwrap() = Default::default();
     }
