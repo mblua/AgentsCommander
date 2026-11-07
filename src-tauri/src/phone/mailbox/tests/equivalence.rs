@@ -172,6 +172,14 @@ impl Control {
         } else {
             self.symbol
         };
+        if self.symbol == "handle_web_browser" {
+            let caller = function_body(&source, "caller_session")?;
+            if unique(caller, "Uuid::parse_str(t).ok()")?
+                >= unique(caller, "mgr.find_by_token(token).await")?
+            {
+                return Err("token lookup must precede caller selection");
+            }
+        }
         Ok(function_body(&source, symbol)?.to_owned())
     }
 
@@ -208,6 +216,19 @@ impl Control {
                 Ok(proof < call
                     && unique(body, "&target_ownership,")? < end
                     && body[call..end].ends_with(".await"))
+            }
+            "deliver_owned_peer_replacement" => {
+                let start = unique(body, "run_owned_persist_core(asyncmove{")?;
+                let open = start + "run_owned_persist_core(asyncmove{".len() - 1;
+                let end = closing(body, open)?;
+                let call = unique(body, self.before)?;
+                let returned = unique(body, self.after)?;
+                Ok(open < call && call < returned && returned < end)
+            }
+            "inject_text_into_session_impl" if self.before.starts_with("letpermit") => {
+                let start = unique(body, self.before)?;
+                let hold = unique(body, self.after)?;
+                Ok(body[start..hold].ends_with(".await.map_err(|error|error.to_string())?;"))
             }
             "dispatch_pty_input_operation_core" => {
                 let returned = unique(body, self.after)?;
