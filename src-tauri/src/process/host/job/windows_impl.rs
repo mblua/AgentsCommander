@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use super::SettlementAttempt;
+use super::settlement::SettlementAttempt;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
