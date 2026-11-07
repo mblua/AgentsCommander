@@ -122,7 +122,7 @@ pub async fn get_replica_context_files(path: String) -> Result<Vec<String>, Stri
 /// Preserves all other fields in the config.
 #[tauri::command]
 pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Result<(), String> {
-    let config_path = Path::new(&path).join("config.json");
+    let config_path = crate::config::config_file_path(Path::new(&path));
 
     crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         if files.is_empty() {

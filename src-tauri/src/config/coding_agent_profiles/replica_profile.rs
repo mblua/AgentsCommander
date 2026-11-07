@@ -129,7 +129,7 @@ pub(super) fn write_profile_to_launch_path(
     launch_path: &Path,
     profile: Option<&str>,
 ) -> Result<(), String> {
-    let config_path = launch_path.join("config.json");
+    let config_path = crate::config::config_file_path(launch_path);
     crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         // #1939 - shape-based, like agent_config: absent tooling becomes an
         // object, a present non-object is an error, never silently reset.
