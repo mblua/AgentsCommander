@@ -69,5 +69,5 @@ where
 {
     let bytes =
         serde_json::to_vec_pretty(&default_agent_matrix_config()).map_err(|e| e.to_string())?;
-    write(Path::new("config.json"), &bytes)
+    write(Path::new(crate::config::CONFIG_FILE_NAME), &bytes)
 }

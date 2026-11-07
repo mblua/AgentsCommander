@@ -262,7 +262,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     || !args.repo_agents.is_empty()
                     || !args.repo_exclude_agents.is_empty();
                 let team_dir = ac_root.join(format!("_team_{safe_team}"));
-                let config_path = team_dir.join("config.json");
+                let config_path = crate::config::config_file_path(&team_dir);
                 let team_config_exists =
                     crate::filesystem::directories::cli_discovery_exists(&team_dir)
                         || crate::filesystem::directories::cli_discovery_exists(&config_path);

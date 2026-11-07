@@ -37,7 +37,7 @@ use crate::filesystem::co_managed_config::{
 /// Directory holding the per-room Co-managed files, directly under the Room root.
 pub const CO_MANAGED_DIR_NAME: &str = ".co-managed";
 /// The opt-in flag file. Unknown keys survive a rewrite.
-pub const CONFIG_FILE_NAME: &str = "config.json";
+pub const CONFIG_FILE_NAME: &str = crate::config::CONFIG_FILE_NAME;
 /// Advisory lock file governing `config.json` (and the phase-3 `state.json`).
 pub const LOCK_FILE_NAME: &str = "lock";
 /// The phase-7 provenance queue directory, directly under `.co-managed/`.
@@ -120,7 +120,7 @@ pub fn co_managed_dir(room_root: &Path) -> PathBuf {
 
 /// `<room-root>/.co-managed/config.json`.
 pub fn config_path(room_root: &Path) -> PathBuf {
-    co_managed_dir(room_root).join(CONFIG_FILE_NAME)
+    crate::config::config_file_path(&co_managed_dir(room_root))
 }
 
 /// `<room-root>/.co-managed/lock`.

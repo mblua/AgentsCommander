@@ -487,7 +487,7 @@ pub(super) fn parse_replica_selection_default(
 pub fn read_replica_selection_default(
     matrix_dir: &Path,
 ) -> Result<Option<ReplicaSelectionDefault>, String> {
-    let config_path = matrix_dir.join("config.json");
+    let config_path = crate::config::config_file_path(matrix_dir);
     let bytes = match read_selection_default_bytes(&config_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -525,7 +525,7 @@ pub fn write_replica_selection_default(
     expected_prior: Option<&ReplicaSelectionDefault>,
 ) -> Result<SelectionWriteOutcome, String> {
     let normalized = default.clone().normalized()?;
-    let config_path = matrix_dir.join("config.json");
+    let config_path = crate::config::config_file_path(matrix_dir);
     crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         let current = read_replica_selection_default(matrix_dir)?;
         if current.as_ref() != expected_prior {

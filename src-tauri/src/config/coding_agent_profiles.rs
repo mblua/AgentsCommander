@@ -116,7 +116,7 @@ fn write_tooling_string(
             agent_dir.display()
         ));
     }
-    let config_path = agent_dir.join("config.json");
+    let config_path = crate::config::config_file_path(agent_dir);
     crate::config::agent_config::update_agent_config(&config_path, |decisions, state| {
         let obj = match side {
             ToolingSide::Decisions => decisions,

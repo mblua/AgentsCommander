@@ -166,7 +166,7 @@ pub(crate) fn create_agent_matrix_on_disk(
     }
 
     write_local_config_value(
-        &agent_dir.join("config.json"),
+        &crate::config::config_file_path(&agent_dir),
         default_agent_matrix_config(),
     )?;
 
@@ -210,7 +210,7 @@ pub(crate) fn create_agent_matrix_from_role(
     let role_path = roles::write_created_role(&agent_dir, args.role_bytes)?;
 
     write_local_config_value(
-        &agent_dir.join("config.json"),
+        &crate::config::config_file_path(&agent_dir),
         default_agent_matrix_config(),
     )?;
 

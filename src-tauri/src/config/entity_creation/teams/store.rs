@@ -49,7 +49,7 @@ pub(crate) fn inspect_team_skill_source(root: &Path) -> TeamSkillSourceInspectio
     {
         Err("invalid team name".into())
     } else {
-        inspect(root, true).and_then(|()| inspect(&root.join("config.json"), false))
+        inspect(root, true).and_then(|()| inspect(&crate::config::config_file_path(root), false))
     };
     match result {
         Ok(()) => TeamSkillSourceInspection::Accepted,
@@ -241,7 +241,7 @@ impl TeamConfigReadError {
 }
 
 pub(crate) fn read_discovery_team_config(team_dir: &Path) -> Option<serde_json::Value> {
-    let config_path = team_dir.join("config.json");
+    let config_path = crate::config::config_file_path(team_dir);
     crate::filesystem::ac_discovery::read_team_discovery_config(&config_path)
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
@@ -466,9 +466,7 @@ pub(crate) fn normalize_team_config_for_project(
 }
 
 pub(crate) fn config_path(ac_root: &Path, team_name: &str) -> PathBuf {
-    ac_root
-        .join(format!("_team_{team_name}"))
-        .join("config.json")
+    crate::config::config_file_path(&ac_root.join(format!("_team_{team_name}")))
 }
 
 pub(crate) fn publish_owned_team(
@@ -491,11 +489,11 @@ pub(crate) fn publish_owned_team(
     let temporary_entry = owned.entries.last().expect("temporary entry");
     let identity = temporary_entry.identity;
     let digest = temporary_entry.digest;
-    let config = owned.root.join("config.json");
+    let config = crate::config::config_file_path(&owned.root);
     publication::link_owned_team_config(&owned.root.join(&temporary), &config)
         .map_err(|e| format!("Failed to publish config.json: {e}"))?;
     owned.entries.push(OwnedCopyEntry {
-        relative: PathBuf::from("config.json"),
+        relative: PathBuf::from(crate::config::CONFIG_FILE_NAME),
         identity,
         kind: MatrixCopyKind::File,
         digest,

@@ -192,7 +192,7 @@ pub fn set_last_coding_agent(
     config_locations::ensure_shared_directories(&instance_dir)
         .map_err(|e| format!("Failed to create {local_dir_name} dir: {e}"))?;
     upsert_config(
-        &instance_dir.join("config.json"),
+        &crate::config::config_file_path(&instance_dir),
         agent_id,
         &entry,
         write_descriptor,
@@ -200,7 +200,7 @@ pub fn set_last_coding_agent(
 
     // Also write to root config.json so discovery can find it regardless of instance
     upsert_config(
-        &Path::new(repo_path).join("config.json"),
+        &crate::config::config_file_path(Path::new(repo_path)),
         agent_id,
         &entry,
         write_descriptor,
@@ -226,7 +226,7 @@ pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bo
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
     config_locations::ensure_shared_directories(&instance_dir)
         .map_err(|e| format!("Failed to create {local_dir_name} dir: {e}"))?;
-    let path = instance_dir.join("config.json");
+    let path = crate::config::config_file_path(&instance_dir);
 
     let inserted = activity_only_update(&path, at_rfc3339)?;
 
@@ -273,7 +273,7 @@ pub fn read_last_agent_message_at(repo_path: &str) -> Option<String> {
     // Read only landed state and tracked legacy stamps. A pending activity
     // intent must never be advertised before its state publish.
     let mut maximum: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
-    for path in [dir.join("config.json"), state_file_path(&dir)] {
+    for path in [crate::config::config_file_path(&dir), state_file_path(&dir)] {
         let value = documents::read_agent_activity_bytes(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -338,7 +338,7 @@ pub(crate) mod load_probe_harness;
 pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
     #[cfg(test)]
     load_probe::record_load(dir);
-    let decisions = read_config_text(&dir.join("config.json"));
+    let decisions = read_config_text(&crate::config::config_file_path(dir));
     if decisions.as_ref().is_some_and(|text| !typed_ok(text)) {
         return None;
     }
@@ -357,7 +357,7 @@ pub fn read_agent_local_config_json(dir: &Path) -> Result<Option<serde_json::Val
     #[cfg(test)]
     load_probe::record_load(dir);
     merge_config_texts(
-        read_config_text(&dir.join("config.json")),
+        read_config_text(&crate::config::config_file_path(dir)),
         read_config_text(&state_file_path(dir)).filter(|text| typed_ok(text)),
     )
 }
