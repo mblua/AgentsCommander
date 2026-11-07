@@ -292,7 +292,7 @@ impl SelectionCoordinator {
         if let Err(error) = self.wait_for_restore_release().await {
             return (Err(error), true);
         }
-        let transaction = SelectionTransaction::new(app.clone(), Weak::new())
+        let transaction = SelectionTransaction::<R>::new_host(app.clone(), Weak::new())
             .with_lifecycle_executor(Arc::clone(&executor));
         if matches!(&owner.descriptor, OwnedReplacementDescriptor::EntryRoot(_)) {
             let effect = Self::initial_root_directory_effect(&owner, executor_nonce);
@@ -550,7 +550,7 @@ pub struct RestoreBarrierGuard {
 
 impl RestoreBarrierGuard {
     pub(crate) fn transaction<R: Runtime>(&self, app: AppHandle<R>) -> SelectionTransaction<R> {
-        let mut transaction = SelectionTransaction::new(app, self.coordinator.clone());
+        let mut transaction = SelectionTransaction::<R>::new_host(app, self.coordinator.clone());
         transaction.restore_nonce = Some(self.nonce);
         transaction
     }

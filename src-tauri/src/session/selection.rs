@@ -19,7 +19,7 @@ pub(crate) use turn::BENCH_CONTEXT;
 pub(crate) use turn::TEST_SELECTION_TURN;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -33,6 +33,7 @@ use crate::session::manager::{PendingCreateBinding, SessionManager};
 use crate::session::session::SessionStatus;
 use crate::session::session::{SessionCommunication, SessionInfo};
 use crate::session::warnings::SessionWarning;
+#[cfg(test)]
 use crate::web::broadcast::WsBroadcaster;
 
 /// Selection's lifecycle operations; transport remains on `SelectionTransaction`
@@ -118,8 +119,6 @@ impl fmt::Debug for OpaqueFixtureInput {
 
 /// Synchronous publication; selection retains event names and serialization policy.
 pub(crate) trait SelectionEvents {
-    // First used by the transaction cut in P08.
-    #[allow(dead_code)]
     fn selection_event(&self, event: &'static str, value: serde_json::Value);
 }
 
@@ -130,17 +129,11 @@ pub(crate) trait SelectionContext: Sized + 'static {
 pub(crate) trait SelectionHost<C: SelectionContext>:
     Clone + Send + Sync + 'static + SelectionEvents + crate::session::warnings::SessionWarningEvents
 {
-    // First required by P08.
-    #[allow(dead_code)]
     fn sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
-    // First required by P08.
-    #[allow(dead_code)]
     fn pty_required(&self) -> &Arc<Mutex<PtyManager>>;
     // First required by P10.
     #[allow(dead_code)]
     fn pty_optional(&self) -> Option<&Arc<Mutex<PtyManager>>>;
-    // First required by P08.
-    #[allow(dead_code)]
     fn detached_required(&self) -> &crate::app_state::DetachedSessionsState;
     // First required by P10.
     #[allow(dead_code)]
@@ -512,7 +505,7 @@ pub(crate) async fn poll_response_close<R: Runtime>(
     };
     let diagnostic_status = tracker.diagnostic_poll_health();
     if let Some(executor) = executor {
-        let transaction = SelectionTransaction::new(app.clone(), Weak::new())
+        let transaction = SelectionTransaction::<R>::new_host(app.clone(), Weak::new())
             .with_lifecycle_executor(Arc::clone(&executor));
         executor.reconcile(&transaction).await;
     } else {
@@ -721,12 +714,12 @@ pub struct SelectionShutdownReport {
     pub retained: Vec<String>,
 }
 
-fn publish_selection<R: Runtime>(app: &AppHandle<R>, payload: &SessionSelection) {
-    publish_lifecycle_event(app, "session_switched", payload);
+fn publish_selection<E: SelectionEvents + ?Sized>(events: &E, payload: &SessionSelection) {
+    publish_lifecycle_event(events, "session_switched", payload);
 }
 
-fn publish_lifecycle_event<R: Runtime, T: Serialize>(
-    app: &AppHandle<R>,
+fn publish_lifecycle_event<E: SelectionEvents + ?Sized, T: Serialize>(
+    events: &E,
     event: &'static str,
     payload: &T,
 ) {
@@ -737,23 +730,16 @@ fn publish_lifecycle_event<R: Runtime, T: Serialize>(
             return;
         }
     };
-    if let Err(error) = app.emit(event, value.clone()) {
-        log::error!("[selection] Tauri publication failed event={event}: {error}");
-    }
-    if let Some(broadcaster) = app.try_state::<WsBroadcaster>() {
-        broadcaster.broadcast_event(event, &value);
-    } else {
-        log::debug!("[selection] WebSocket broadcaster unavailable event={event}");
-    }
+    events.selection_event(event, value);
 }
 
-pub(crate) fn publish_session_communication<R: Runtime>(
-    app: &AppHandle<R>,
+pub(crate) fn publish_session_communication<E: SelectionEvents + ?Sized>(
+    events: &E,
     session_id: Uuid,
     communication: Option<&crate::session::session::SessionCommunication>,
 ) {
     publish_lifecycle_event(
-        app,
+        events,
         "session_communication_changed",
         &serde_json::json!({
             "sessionId": session_id.to_string(),
@@ -837,18 +823,18 @@ pub(crate) use turn::{
 #[cfg(test)]
 use turn::{selection_operation_turn, selection_timing_line};
 
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
     pub(crate) fn publish_selection(&self, payload: &SessionSelection) {
-        publish_selection(&self.app, payload);
+        publish_selection(self.host(), payload);
     }
 
     pub(crate) fn publish_created(&self, info: &SessionInfo) {
-        publish_lifecycle_event(&self.app, "session_created", info);
+        publish_lifecycle_event(self.host(), "session_created", info);
     }
 
     pub(crate) fn publish_destroyed(&self, session_id: Uuid) {
         publish_lifecycle_event(
-            &self.app,
+            self.host(),
             "session_destroyed",
             &serde_json::json!({ "id": session_id.to_string() }),
         );
@@ -856,7 +842,7 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) fn publish_view_requested(&self, session_id: Uuid) {
         publish_lifecycle_event(
-            &self.app,
+            self.host(),
             "session_view_requested",
             &serde_json::json!({ "id": session_id.to_string() }),
         );
@@ -864,7 +850,7 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) fn publish_communication_cleared(&self, session_id: Uuid) {
         publish_lifecycle_event(
-            &self.app,
+            self.host(),
             "session_communication_changed",
             &serde_json::json!({
                 "sessionId": session_id.to_string(),
@@ -880,7 +866,7 @@ impl SelectionCoordinator {
         &self,
         app: AppHandle<R>,
     ) -> SelectionTransaction<R> {
-        SelectionTransaction::new(app, Arc::downgrade(&self.inner))
+        SelectionTransaction::<R>::new_host(app, Arc::downgrade(&self.inner))
     }
 }
 

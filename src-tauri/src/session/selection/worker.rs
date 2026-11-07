@@ -24,7 +24,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         mut receiver: mpsc::Receiver<CoordinatorEnvelope>,
         executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
     ) {
-        let transaction = SelectionTransaction::new(app, Arc::downgrade(&inner))
+        let transaction = SelectionTransaction::<R>::new_host(app, Arc::downgrade(&inner))
             .with_lifecycle_executor(executor);
         loop {
             let envelope = tokio::select! {

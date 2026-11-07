@@ -9,7 +9,9 @@ use crate::config::settings::SettingsState;
 use crate::pty::manager::{PtyManager, ResponseCloseState};
 use crate::session::manager::SessionManager;
 use crate::session::selection::task::SelectionTasks;
-use crate::session::selection::{SelectionContext, SelectionCoordinator, SelectionHost};
+use crate::session::selection::{
+    SelectionContext, SelectionCoordinator, SelectionHost, SelectionTransaction,
+};
 
 use super::turn::NATIVE_SELECTION_TASKS;
 
@@ -66,5 +68,16 @@ impl<R: Runtime> SelectionHost<R> for AppHandle<R> {
     fn destroy_window(&self, label: &str) -> Option<Result<(), String>> {
         self.get_webview_window(label)
             .map(|window| window.destroy().map_err(|error| error.to_string()))
+    }
+}
+
+impl<R: Runtime> SelectionTransaction<R> {
+    pub(crate) fn app(&self) -> &AppHandle<R> {
+        self.host()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(app: AppHandle<R>) -> Self {
+        Self::for_test_host(app)
     }
 }
