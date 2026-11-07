@@ -1,6 +1,6 @@
-use super::{
-    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, ProcessTreeBackend,
-    ResourceError, TerminateOutcome,
+use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
+use crate::resource_monitor::types::{
+    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
 };
 
 pub struct PlatformProcessTreeBackend;

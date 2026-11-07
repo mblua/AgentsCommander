@@ -72,7 +72,7 @@ const LIMITATIONS = [
   'mod foo; nested inside an inline mod block is not resolved.',
   '#[path] on an inline mod block is not supported.',
   'Explicit [[bin]] / [[test]] manifest sections with custom path values are not read; only conventional target locations are discovered.',
-  '#[cfg] is not evaluated. Non-test gated code is included and tagged; test-gated code is excluded by default.',
+  '#[cfg] is not evaluated. Non-test gated code is included and tagged; test-gated code is excluded by default. Test-gated means a top-level cfg whose predicate provably requires test: test, all(..) with a test-requiring child, or a non-empty any(..) whose every child requires test; not(..), cfg_attr, unknown and malformed predicates never count.',
   'Function-level output is a lower bound in every mode.',
 ];
 
@@ -87,7 +87,6 @@ const NON_CALL_WORDS = new Set([
   'use', 'mod', 'pub', 'crate', 'super', 'self', 'Self', 'true', 'false', 'and', 'or',
 ]);
 
-const CFG_TEST_RE = /\bcfg\s*\(\s*test\s*\)/;
 const CFG_ANY_RE = /\bcfg\s*\(/;
 
 class UsageError extends Error {}
@@ -120,7 +119,8 @@ function printHelp() {
   lines.push('  --baseline <file>          compare against a baseline; only new cycles gate');
   lines.push('  --write-baseline <file>    write the current cycles as a baseline and exit');
   lines.push('  --emit-graph <file>        write the complete dependency graph to that file');
-  lines.push('  --include-tests            include #[cfg(test)] items, mod tests blocks and');
+  lines.push('  --include-tests            include #[cfg(test)] and compound test-gated items');
+  lines.push('                             (e.g. #[cfg(all(test, unix))]), mod tests blocks and');
   lines.push('                             test/bench/example crate targets');
   lines.push('  --exclude <pattern>        skip matching paths (repeatable)');
   lines.push('  --quiet                    suppress the human summary; exit code only');
@@ -484,6 +484,85 @@ function readIdent(s, i, to) {
   const start = j;
   while (j < to && isIdentChar(s[j])) j++;
   return { name: s.slice(start, j), start: i, end: j };
+}
+
+/* ------------------------------------------------------------------ *
+ * 4a. Test cfg classification
+ * ------------------------------------------------------------------ */
+
+/**
+ * True only when `attribute` is one complete top-level #[cfg(P)] or #![cfg(P)]
+ * whose predicate provably requires test. Comments and strings are masked
+ * first, so a cfg inside them, inside cfg_attr or inside another attribute is
+ * never matched. Malformed or unsupported syntax returns false: retaining an
+ * arc never hides a production dependency.
+ */
+function hasRequiredTestCfg(attribute) {
+  const m = stripCommentsAndStrings(attribute);
+  const n = m.length;
+  let i = skipWs(m, 0, n);
+  if (m[i] !== '#') return false;
+  i++;
+  if (m[i] === '!') i++;
+  i = skipWs(m, i, n);
+  if (m[i] !== '[') return false;
+  const close = matchDelimiter(m, i);
+  if (close < 0 || skipWs(m, close + 1, n) !== n) return false;
+  const kw = readIdent(m, skipWs(m, i + 1, close), close);
+  if (!kw || kw.name !== 'cfg' || kw.end - kw.start !== 3) return false;
+  const open = skipWs(m, kw.end, close);
+  if (m[open] !== '(') return false;
+  const end = matchDelimiter(m, open);
+  if (end < 0 || skipWs(m, end + 1, close) !== close) return false;
+  const list = readCfgPredicateList(m, attribute, open + 1, end);
+  return list !== null && list.length === 1 && list[0];
+}
+
+/**
+ * Parse a comma separated predicate list in [from, to), allowing a trailing
+ * comma. Returns one requires-test boolean per child, or null when any child
+ * is unsupported or malformed.
+ */
+function readCfgPredicateList(m, raw, from, to) {
+  const out = [];
+  let i = skipWs(m, from, to);
+  while (i < to) {
+    const p = readCfgPredicate(m, raw, i, to);
+    if (!p) return null;
+    out.push(p.requiresTest);
+    i = skipWs(m, p.end, to);
+    if (i >= to) break;
+    if (m[i] !== ',') return null;
+    i = skipWs(m, i + 1, to);
+  }
+  return out;
+}
+
+/** One predicate at `i`: ident, ident = "string", or all/any/not(list). */
+function readCfgPredicate(m, raw, i, to) {
+  const id = readIdent(m, i, to);
+  if (!id) return null;
+  const k = skipWs(m, id.end, to);
+  if (m[k] === '=') {
+    // The string is masked to spaces; the raw text proves it is a string.
+    let q = k + 1;
+    while (q < to && m[q] === ' ' && raw[q] !== '"' && raw[q] !== 'r') q++;
+    if (raw[q] !== '"' && !(raw[q] === 'r' && (raw[q + 1] === '"' || raw[q + 1] === '#'))) return null;
+    let e = q;
+    while (e < to && m[e] === ' ') e++;
+    return { requiresTest: false, end: e };
+  }
+  if (m[k] !== '(') return { requiresTest: id.name === 'test' && id.end - id.start === 4, end: id.end };
+  const close = matchDelimiter(m, k);
+  if (close < 0 || close >= to) return null;
+  const kids = readCfgPredicateList(m, raw, k + 1, close);
+  if (kids === null) return null;
+  let requiresTest;
+  if (id.name === 'all') requiresTest = kids.some(Boolean);
+  else if (id.name === 'any') requiresTest = kids.length > 0 && kids.every(Boolean);
+  else if (id.name === 'not' && kids.length === 1) requiresTest = false;
+  else return null;
+  return { requiresTest, end: close + 1 };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1100,7 +1179,7 @@ function scanScope(st, from, to, ctx, depth) {
         }
         const raw = st.src.slice(i, e + 1);
         if (inner) {
-          if (ctx.kind === 'file' && CFG_TEST_RE.test(raw)) st.out.fileCfgTest = true;
+          if (ctx.kind === 'file' && hasRequiredTestCfg(raw)) st.out.fileCfgTest = true;
         } else {
           if (attrs.length === 0) attrStart = i;
           attrs.push(raw);
@@ -1143,7 +1222,7 @@ function scanItem(st, i, to, ctx, attrs, itemStart, depth) {
   j = skipWs(m, j, to);
   const kw = readIdent(m, j, to);
   const attrText = attrs.join(' ');
-  const cfgTest = CFG_TEST_RE.test(attrText);
+  const cfgTest = attrs.some(hasRequiredTestCfg);
   const cfgGated = !cfgTest && CFG_ANY_RE.test(attrText);
   const pathAttrRaw = attrs.find((a) => /#\s*\[\s*path\s*=/.test(a)) || null;
 
@@ -3280,6 +3359,22 @@ function main(argv) {
 
 const CRATE_ABC = 'mod a;\nmod b;\nmod c;\n';
 
+/** [module, attribute] pairs whose use must stay in the graph (F47). */
+const RETAINED_CFG_CASES = [
+  ['r_any', '#[cfg(any(test, unix))]'],
+  ['r_not', '#[cfg(not(test))]'],
+  ['r_notnot', '#[cfg(not(not(test)))]'],
+  ['r_all_empty', '#[cfg(all())]'],
+  ['r_any_empty', '#[cfg(any())]'],
+  ['r_feature', '#[cfg(feature = "test")]'],
+  ['r_cfg_attr', '#[cfg_attr(test, cfg(test))]'],
+  ['r_malformed', '#[cfg(test unix)]'],
+  ['r_unknown', '#[cfg(xor(test, test))]'],
+  ['r_doc', '#[doc = "cfg(test)"]'],
+  ['r_all_prod', '#[cfg(all(unix, feature = "x"))]'],
+  ['r_plain', ''],
+];
+
 const FIXTURES = [
   {
     name: 'F1 line comment is not a reference',
@@ -4373,6 +4468,118 @@ const FIXTURES = [
       h.no(hasModuleEdge(res, 'crate::a', 'crate::x'), 'false a -> crate-root x edge');
     },
   },
+  {
+    // #3995: compound predicates that provably require test exclude declared
+    // file modules like direct cfg(test). Every gate here except multi was
+    // missed by the old direct-only rule.
+    name: 'F45 compound test cfg excludes file modules and their arcs',
+    files: Object.fromEntries([
+      ['lib.rs', [
+        'mod b;',
+        '#[cfg(all(test, windows))]\nmod wt;',
+        '#[cfg(all(unix, test))]\nmod ut;',
+        '#[cfg(all(unix, any(test, all(feature = "x", test))))]\nmod nt;',
+        '#[cfg(any(test, all(test, windows)))]\nmod at;',
+        '#[cfg(unix)]\n#[cfg(test)]\nmod multi;',
+        '#[cfg( all ( /* note */ windows ,\n  test , ) )]\nmod sp;',
+        '',
+      ].join('\n')],
+      ['b.rs', 'pub struct T;\n'],
+      ...['wt', 'ut', 'nt', 'at', 'multi', 'sp'].map((m) => [`${m}.rs`, 'use crate::b::T;\n']),
+    ]),
+    run: [],
+    assert(res, h) {
+      const withTests = h.run(['--include-tests']).result;
+      for (const m of ['wt', 'ut', 'nt', 'at', 'multi', 'sp']) {
+        h.yes(isTestOnlyModule(res, `crate::${m}`), `crate::${m} is a test-only module`);
+        h.no(hasModuleEdge(res, `crate::${m}`, 'crate::b'), `${m} -> b edge excluded by default`);
+        h.yes(hasModuleEdge(withTests, `crate::${m}`, 'crate::b'), `${m} -> b under --include-tests`);
+      }
+    },
+  },
+  {
+    name: 'F46 compound test cfg on inline items, use, functions and inner attributes',
+    files: {
+      'lib.rs': 'mod a;\nmod b;\nmod c;\nmod d;\nmod e;\n',
+      'a.rs': [
+        '#[cfg(all(test, unix))]',
+        'use crate::b::T;',
+        '#[cfg(all(test, unix,))]',
+        'fn helper() { crate::c::g(); }',
+        '#[cfg(all(windows, test))]',
+        'mod inline {',
+        '    use crate::d::U;',
+        '}',
+        'pub fn f() {}',
+        '',
+      ].join('\n'),
+      'b.rs': 'pub struct T;\n',
+      'c.rs': 'pub fn g() {}\n',
+      'd.rs': 'pub struct U;\n',
+      'e.rs': '#![cfg(all(test, unix))]\nuse crate::b::T;\n',
+    },
+    run: [],
+    assert(res, h) {
+      const calls = (r) => r.callGraph.edges.map((e) => e.to);
+      for (const to of ['crate::b', 'crate::c', 'crate::d']) {
+        h.no(hasModuleEdge(res, 'crate::a', to), `a -> ${to} excluded by default`);
+      }
+      h.no(calls(res).includes('crate::c::g'), 'no call edge from an excluded function');
+      h.yes(moduleIds(res).includes('crate::e'), 'inner attribute keeps module metadata');
+      h.no(isTestOnlyModule(res, 'crate::e'), 'inner attribute does not remove the module');
+      h.no(hasModuleEdge(res, 'crate::e', 'crate::b'), 'inner attribute skips file contents');
+      const withTests = h.run(['--include-tests']).result;
+      for (const to of ['crate::b', 'crate::c', 'crate::d']) {
+        h.yes(hasModuleEdge(withTests, 'crate::a', to), `a -> ${to} under --include-tests`);
+      }
+      h.yes(calls(withTests).includes('crate::c::g'), 'call edge under --include-tests');
+      h.yes(hasModuleEdge(withTests, 'crate::e', 'crate::b'), 'e -> b under --include-tests');
+    },
+  },
+  {
+    // Predicates that do not prove test, plus malformed ones, keep their arcs.
+    // all(unix, feature) is the production control for the all-case.
+    name: 'F47 retained cfg predicates and ordinary paths keep their arcs',
+    files: Object.fromEntries([
+      ['lib.rs', 'mod a;\nmod call_any;\nmod call_plain;\n'
+        + RETAINED_CFG_CASES.map(([m]) => `mod ${m};\n`).join('')],
+      ['a.rs', RETAINED_CFG_CASES.map(([m, attr]) => `${attr}\nuse crate::${m}::T;\n`).join('')
+        + '#[cfg(any(test, unix))]\nfn h() { crate::call_any::g(); }\n'
+        + 'pub fn f() { crate::call_plain::g(); }\n'],
+      ...RETAINED_CFG_CASES.map(([m]) => [`${m}.rs`, 'pub struct T;\n']),
+      ['call_any.rs', 'pub fn g() {}\n'],
+      ['call_plain.rs', 'pub fn g() {}\n'],
+    ]),
+    run: [],
+    assert(res, h) {
+      for (const [m, attr] of RETAINED_CFG_CASES) {
+        h.yes(hasModuleEdge(res, 'crate::a', `crate::${m}`), `a -> ${m} retained under ${attr || 'no attribute'}`);
+      }
+      const calls = res.callGraph.edges.map((e) => e.to);
+      h.yes(calls.includes('crate::call_any::g'), 'call under any(test, unix) retained');
+      h.yes(calls.includes('crate::call_plain::g'), 'ordinary call retained');
+    },
+  },
+  {
+    // terminal_snapshot shape: a compound-gated use names a direct-test module.
+    // The old rule kept the use and refused to publish an open graph.
+    name: 'F48 compound-gated use of a cfg(test) module keeps the graph closed',
+    files: {
+      'lib.rs': '#[cfg(test)]\nmod t;\nmod a;\n',
+      'a.rs': '#[cfg(all(test, unix))]\nuse crate::t::VALUE;\npub fn f() {}\n',
+      't.rs': 'pub const VALUE: u32 = 1;\n',
+    },
+    run: [],
+    assert(res, h) {
+      const p = path.join(h.dir, 'g.json');
+      const r = h.main(['--emit-graph', p, '--quiet']);
+      h.eq(r.code, 0, 'exit 0');
+      const g = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const ids = new Set(g.modules.map((m) => m.id));
+      h.yes(g.edges.every((e) => ids.has(e.from) && ids.has(e.to)), 'published graph is closed');
+      h.no(ids.has('crate::t'), 'crate::t is not a node');
+    },
+  },
 ];
 
 function moduleIds(res) {
@@ -4381,6 +4588,14 @@ function moduleIds(res) {
     for (const id of tree.modules.keys()) ids.push(id);
   }
   return ids;
+}
+
+function isTestOnlyModule(res, id) {
+  for (const tree of res.trees.values()) {
+    const mod = tree.modules.get(id);
+    if (mod) return mod.testOnly === true;
+  }
+  return false;
 }
 
 function hasModuleEdge(res, from, to) {

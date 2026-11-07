@@ -2,12 +2,14 @@
 //! the locking, the disk-driven decision table and the create-only rename
 //! primitive that every later phase-B migration calls.
 //!
-//! A leaf on purpose: it names only `super::instance_artifacts`, `std`, `serde`,
-//! `serde_json`, `chrono` and, per platform, the OS bindings. The crate root is a
-//! member of the crate's one cyclic SCC, and a module called from it that named
-//! any SCC member would join that SCC. The guard
-//! `naming_migration_names_nothing_that_reaches_the_knot` in
-//! `tests/instance_gitignore_layering.rs` holds that line.
+//! A leaf on purpose: it names only `super::instance_artifacts`, the
+//! `crate::filesystem::naming_journal` seam, `std`, `serde`, `serde_json`,
+//! `chrono` and, per platform, the OS bindings. Its `ignore_rows` child imports
+//! the same `instance_artifacts` owner directly. The crate root is a member of
+//! the crate's one cyclic SCC, and a module called from it that named any SCC
+//! member would join that SCC; no route leads from these owners back to it. The
+//! guard `naming_migration_names_nothing_that_reaches_the_knot` in
+//! `tests/instance_gitignore_layering/registry.rs` holds that line.
 //!
 //! No step deletes or overwrites. When both the old and the new name exist, the
 //! new file wins and the old one is moved, create-only, to
@@ -25,11 +27,7 @@ use crate::filesystem::naming_journal;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::instance_artifacts::{
-    CONFIG_STATE_TARGET_NAME, LOOP_STATE_TARGET_NAME, LOOP_STATE_TMP_TARGET_GLOB,
-    NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME, PROJECT_SETTINGS_TARGET_NAME,
-    SET_ASIDE_GLOB,
-};
+use super::instance_artifacts::{NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME};
 
 mod ignore_rows;
 

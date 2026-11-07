@@ -1,4 +1,4 @@
-use super::{
+use crate::config::instance_artifacts::{
     CONFIG_STATE_TARGET_NAME, LOOP_STATE_TARGET_NAME, LOOP_STATE_TMP_TARGET_GLOB,
     PROJECT_SETTINGS_TARGET_NAME, SET_ASIDE_GLOB,
 };
