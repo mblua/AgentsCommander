@@ -19,6 +19,13 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use uuid::Uuid;
 
+/// Budget for a capture wait (#3420). Locally a record lands in well under
+/// 1 s (500 ms watcher poll), but the watchers share the global Tauri
+/// runtime with the whole lib suite, and the 2-core Windows CI runner
+/// starved 10 s waits; 30 s matches the crate's other load-tolerant
+/// budgets and only delays a real failure.
+const CAPTURE_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(crate) struct Harness {
     pub(crate) app: tauri::App<tauri::test::MockRuntime>,
     manager: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -306,6 +313,19 @@ impl RestartHarness {
         (tg.reader_id(id), tg.reader_demands(id))
     }
 
+    /// Wait until the detached create-time Room raise has installed `id`'s
+    /// reader (#3420): it runs on another runtime and races the test.
+    async fn settle_create_time_raise(&self, id: Uuid) {
+        let deadline = tokio::time::Instant::now() + CAPTURE_WAIT_BUDGET;
+        while self.snapshot(id).await.0.is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the create-time Room raise never installed a reader"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     async fn release_all(&self, id: Uuid) {
         let shutdown = {
             let tg = self.bridge().await;
@@ -453,10 +473,9 @@ fn append_codex(path: &std::path::Path, body: &str) {
 /// Poll the slot until it holds a record the predicate accepts.
 async fn wait_for_slot_record(
     slot: &crate::capture::sink::CaptureSlot,
-    timeout: std::time::Duration,
     mut accept: impl FnMut(&Arc<crate::capture::record::CapturedRecord>) -> bool,
 ) -> (u64, Arc<crate::capture::record::CapturedRecord>) {
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now() + CAPTURE_WAIT_BUDGET;
     loop {
         let state = slot.snapshot();
         if let crate::capture::sink::SlotValue::Valid(record) = state.value {
@@ -466,7 +485,8 @@ async fn wait_for_slot_record(
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "no matching slot record within the budget"
+            "no matching slot record within the budget (slot seq {})",
+            state.seq
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }

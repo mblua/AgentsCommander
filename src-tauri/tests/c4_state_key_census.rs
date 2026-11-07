@@ -341,9 +341,9 @@ fn p5_is_frozen() {
 #[test]
 fn p6_is_frozen() {
     let pin = Pin {
-        total: 50,
-        distinct: 45,
-        sha256: "FFBCC12110D7DEA82BFEA97B33123DF9E7CC8D3A9B37FC196A0465471F405A11",
+        total: 49,
+        distinct: 44,
+        sha256: "901F5BBDD5C9AF5C023BD6D29649CF58E360BA3383E846E747A2CF21C71350C3",
         per_file: &[
             ("commands/ac_discovery/tests/discovery.rs", 1),
             ("commands/config/tests/selection_api/error_code.rs", 1),
@@ -377,7 +377,6 @@ fn p6_is_frozen() {
             ("config/instance_artifacts/names.rs", 1),
             ("config/instance_artifacts/tests.rs", 1),
             ("config/local_config_io/tests.rs", 2),
-            ("config/naming_migration.rs", 1),
             ("config/naming_migration/ignore_rows.rs", 4),
             ("config/replica_identity/tests.rs", 3),
             ("config/root_agent/tests/config_merge.rs", 1),
