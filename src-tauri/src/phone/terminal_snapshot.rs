@@ -6,6 +6,7 @@ mod publish;
 mod request;
 mod scanner;
 mod shutdown;
+pub(crate) mod task;
 
 #[cfg(test)]
 use failure::publish_trusted_failure;
