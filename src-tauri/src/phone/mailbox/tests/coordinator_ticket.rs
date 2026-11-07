@@ -1,9 +1,3 @@
-use crate::phone::mailbox::pty_claim::MailboxTestHooks;
-use crate::phone::mailbox::tests::{make_mailbox_app, CodexClearScannerFixture};
-use std::sync::{Arc, Mutex};
-use tauri::Manager;
-use uuid::Uuid;
-
 fn fixture_code(source: &str) -> String {
     rust_source_scrub::scrub(source, rust_source_scrub::Literals::Drop)
         .expect("fixture source must lex")
@@ -120,102 +114,15 @@ fn issue_3946_fixture_order_base() {
 
 #[test]
 fn fixture_scanner_absent_pty_leaves_hooks_empty() {
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let hooks = MailboxTestHooks::default();
-    CodexClearScannerFixture::prepare_spawned_clear_session(app.handle(), &hooks, Uuid::nil())
-        .unwrap();
-    assert!(hooks.pty_presence.lock().unwrap().is_empty());
-    assert!(hooks.real_inject_sessions.lock().unwrap().is_empty());
+    super::support_core::fixture_scanner_absent_pty_leaves_hooks_empty();
 }
 
 #[test]
 fn fixture_scanner_registers_route_readiness_and_real_injection() {
-    let root = tempfile::tempdir().unwrap();
-    let app = make_mailbox_app(root.path());
-    let routes = app.state::<Arc<Mutex<crate::pty::manager::PtyManager>>>();
-    let manager = routes.lock().unwrap();
-    let backend = manager.backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess);
-    let backend = backend
-        .as_any()
-        .downcast_ref::<super::MailboxMockPtyBackend>()
-        .unwrap();
-    backend
-        .prepare_clear
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    drop(manager);
-    let hooks = MailboxTestHooks::default();
-    let id = Uuid::new_v4();
-    CodexClearScannerFixture::prepare_spawned_clear_session(app.handle(), &hooks, id).unwrap();
-    assert_eq!(hooks.pty_presence.lock().unwrap().get(&id), Some(&true));
-    assert!(hooks.real_inject_sessions.lock().unwrap().contains(&id));
-    let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
-    assert!(idle.purge_readiness(&[id])[0].watcher_idle);
+    super::support_core::fixture_scanner_registers_route_readiness_and_real_injection();
 }
 
 #[test]
 fn fixture_ticket_settles_before_insertion_and_failure_inserts_nothing() {
-    let root = tempfile::tempdir().unwrap();
-    let app = make_mailbox_app(root.path());
-    let clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
-        Arc::new(Mutex::new(Default::default()));
-    app.manage(clocks.clone());
-    let cwd = "C:/ac-test/project/.ac/wg-2413-dev-team/__agent_tech-lead";
-    let fqn = crate::config::teams::agent_fqn_from_path(cwd);
-    let stamp = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let sessions =
-            app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let resolved = crate::phone::mailbox::notice::ResolvedWakeAgentCommand {
-            shell: "codex".into(),
-            shell_args: vec![],
-            agent_id: Some("codex".into()),
-            agent_label: None,
-            source: "fixture".into(),
-            raw_command: "codex".into(),
-        };
-        let message = super::root_outbox_message("ticket".into(), None);
-        let hooks = MailboxTestHooks::default();
-        *hooks.spawn_is_coordinator.lock().unwrap() = true;
-        let poller =
-            crate::phone::mailbox::poller::MailboxPoller::new_with_test_hooks(hooks.clone());
-        for fail in [true, false] {
-            assert!(clocks.lock().unwrap().mark_auto_closed(&fqn, stamp));
-            if fail {
-                *hooks.internal_spawn_error.lock().unwrap() = Some("injected create error".into());
-            }
-            let guard = sessions.write().await;
-            let create = poller.spawn_wake_session(
-                app.handle(),
-                &message,
-                &resolved,
-                cwd.into(),
-                "ticket".into(),
-                false,
-                false,
-                "codex".into(),
-                vec![],
-                None,
-                None,
-                None,
-            );
-            tokio::pin!(create);
-            if fail {
-                assert_eq!(create.await.unwrap_err(), "injected create error");
-                assert!(guard.list_sessions().await.is_empty());
-                assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), Some(stamp));
-            } else {
-                assert!(futures::poll!(&mut create).is_pending());
-                // Creation is blocked on this write guard: settlement already happened.
-                assert!(guard.list_sessions().await.is_empty());
-                assert_eq!(clocks.lock().unwrap().auto_closed_at(&fqn), None);
-                assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
-                drop(guard);
-                create.await.unwrap();
-                assert_eq!(sessions.read().await.list_sessions().await.len(), 1);
-            }
-        }
-    });
+    super::support_core::fixture_ticket_settles_before_insertion_and_failure_inserts_nothing();
 }
