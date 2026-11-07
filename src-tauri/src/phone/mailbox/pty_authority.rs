@@ -646,116 +646,160 @@ impl MailboxPoller {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn spawn_pty_input_target<S: MailboxHost>(
-        &self,
-        app: &S,
-        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
-        matching: &[SessionInfo],
-        sender: &crate::config::teams::VerifiedPtyInputIdentity,
-        target: &crate::config::teams::VerifiedPtyInputIdentity,
+    pub(crate) fn spawn_pty_input_target<
+        'poller,
+        'host,
+        'claim,
+        'matching,
+        'sender,
+        'target,
+        'api,
+        'proof,
+        'guard,
+        'initial,
+        'executor,
+        'fixture,
+        S: MailboxHost,
+    >(
+        &'poller self,
+        app: &'host S,
+        claimed: &'claim crate::api::message_store::ClaimedPtyInputOperation,
+        matching: &'matching [SessionInfo],
+        sender: &'sender crate::config::teams::VerifiedPtyInputIdentity,
+        target: &'target crate::config::teams::VerifiedPtyInputIdentity,
         source_plane: crate::phone::types::PtyInputSourcePlane,
-        api_client_store: Option<&Arc<crate::api::auth::ApiClientStore>>,
-        target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
-        initial: &crate::phone::types::PtyInputResult,
+        api_client_store: Option<&'api Arc<crate::api::auth::ApiClientStore>>,
+        target_ownership: &'proof crate::api::message_store::PtyInputTargetOwnership<'guard>,
+        initial: &'initial crate::phone::types::PtyInputResult,
         prepared_replacement: Option<crate::session::selection::PreparedOwnedReplacement>,
-        source_executor: &mut crate::session::selection::SourceExecutorGuard,
-        #[cfg(test)] fixture_lease: Option<&Arc<FixturePtyCutLease>>,
-    ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
-        use crate::phone::types::PtyInputReasonCode as C;
-        let root = Self::pty_target_root(claimed, target, target_ownership)?;
-        let settings_state = app.pty_settings();
-        let settings = settings_state.read().await.clone();
-        let input = Self::resolve_pty_spawn_input(&root, &settings, claimed, matching, target)?;
-        let authority = PtySpawnAuthority {
-            claimed,
-            sender,
-            target,
-            source_plane,
-            api_client_store,
-        };
-        self.require_current_pty_spawn(app, &authority).await?;
-        // No destroy/create/native preparation has started. Return ownership
-        // to dispatch rather than waiting under its borrowed target guards.
-        use crate::config::sessions_persistence::CreateCarrierScope;
-        let (scope, retained) = observe_pty_spawn_scope(app, target).await;
-        if !matches!(scope, CreateCarrierScope::Foreign { .. }) {
-            let Some(retained_id) = retained else {
-                return Ok(PtySpawnStep::NeedReacquire(prepared_replacement));
+        source_executor: &'executor mut crate::session::selection::SourceExecutorGuard,
+        #[cfg(test)] fixture_lease: Option<&'fixture Arc<FixturePtyCutLease>>,
+    ) -> impl std::future::Future<
+        Output = Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode>,
+    > + Send
+           + use<
+        'poller,
+        'host,
+        'claim,
+        'matching,
+        'sender,
+        'target,
+        'api,
+        'proof,
+        'guard,
+        'initial,
+        'executor,
+        'fixture,
+        S,
+    > {
+        // Keep the Send proof local: async-fn inference fails at the owned PTY task caller.
+        fn send_future<F: std::future::Future + Send>(future: F) -> F {
+            future
+        }
+        send_future(async move {
+            use crate::phone::types::PtyInputReasonCode as C;
+            let root = Self::pty_target_root(claimed, target, target_ownership)?;
+            let settings_state = app.pty_settings();
+            let settings = settings_state.read().await.clone();
+            let input = Self::resolve_pty_spawn_input(&root, &settings, claimed, matching, target)?;
+            let authority = PtySpawnAuthority {
+                claimed,
+                sender,
+                target,
+                source_plane,
+                api_client_store,
             };
-            let exited_id = Self::retained_pty_target_id(input.backend, input.exited, retained_id)?;
-            return self
-                .spawn_owned_pty_replacement(
-                    app,
-                    Self::resolved_pty_replacement_request(input, &root, claimed),
-                    (claimed, initial, sender, api_client_store),
-                    (target, exited_id),
-                    prepared_replacement,
-                    target_ownership,
-                    source_executor,
-                    #[cfg(test)]
-                    fixture_lease,
-                )
-                .await;
-        }
-        drop(prepared_replacement);
-        let sessions = app.pty_sessions().clone();
-        let pty = app.pty_routes().clone();
-        if let Some(exited) = input.exited {
-            let exited_id =
-                parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
-            let destroy_result = app.background_destroy_session_inner(exited_id).await;
-            let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
-            let route_or_spawn_survived = Self::pty_removal_route_survived(&pty, exited_id, target);
-            Self::verify_pty_removal(survived || route_or_spawn_survived, destroy_result, claimed)?;
-        }
-        self.require_current_pty_spawn(app, &authority).await?;
-        let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
-        let created = app
-            .create_session_inner_with_pty_target_ownership(
-                MailboxSessionCreate {
-                    session_mgr: &sessions,
-                    pty_mgr: &pty,
-                    shell: input.spawn.shell.clone(),
-                    shell_args: input.spawn.shell_args.clone(),
-                    cwd: root,
-                    session_name: Some(local_name.to_string()),
-                    agent_id: Some(input.agent_id),
-                    agent_label: Some(input.spawn.trusted_agent_label.clone()),
-                    skip_tooling_save: false,
-                    git_repos: Vec::new(),
-                    skip_auto_resume: input.exited.is_none(),
-                    resolved_spawn: Some(input.spawn),
-                    resolved_agent_host_shell: input.host_shell,
-                    viewport: None,
-                    selection_intent: CreateSelectionIntent::Background,
-                },
-                target_ownership,
-            )
-            .await;
-        let Some((info, id)) = Self::resolve_created_pty_target(
-            created,
-            &sessions,
-            &pty,
-            target,
-            input.backend,
-            &settings,
-        )
-        .await?
-        else {
-            return Ok(PtySpawnStep::RetainedUnowned);
-        };
-        if let Some((bot_id, communication)) = input.carried {
-            if bot_id.is_some() {
-                self.attach_persisted_telegram_for_wake(app, id, bot_id.as_deref())
+            self.require_current_pty_spawn(app, &authority).await?;
+            // No destroy/create/native preparation has started. Return ownership
+            // to dispatch rather than waiting under its borrowed target guards.
+            use crate::config::sessions_persistence::CreateCarrierScope;
+            let (scope, retained) = observe_pty_spawn_scope(app, target).await;
+            if !matches!(scope, CreateCarrierScope::Foreign { .. }) {
+                let Some(retained_id) = retained else {
+                    return Ok(PtySpawnStep::NeedReacquire(prepared_replacement));
+                };
+                let exited_id =
+                    Self::retained_pty_target_id(input.backend, input.exited, retained_id)?;
+                return self
+                    .spawn_owned_pty_replacement(
+                        app,
+                        Self::resolved_pty_replacement_request(input, &root, claimed),
+                        (claimed, initial, sender, api_client_store),
+                        (target, exited_id),
+                        prepared_replacement,
+                        target_ownership,
+                        source_executor,
+                        #[cfg(test)]
+                        fixture_lease,
+                    )
                     .await;
             }
-            if let Some(communication) = communication {
-                let restored = Self::restore_pty_communication(&sessions, id, &communication).await;
-                if restored {
-                    app.publish(id, Some(&communication));
+            drop(prepared_replacement);
+            let sessions = app.pty_sessions().clone();
+            let pty = app.pty_routes().clone();
+            if let Some(exited) = input.exited {
+                let exited_id =
+                    parse_canonical_uuid_v4(&exited.id).map_err(|_| C::InconsistentSession)?;
+                let destroy_result = app.background_destroy_session_inner(exited_id).await;
+                let survived = Self::pty_removal_session_survived(&sessions, exited, target).await;
+                let route_or_spawn_survived =
+                    Self::pty_removal_route_survived(&pty, exited_id, target);
+                Self::verify_pty_removal(
+                    survived || route_or_spawn_survived,
+                    destroy_result,
+                    claimed,
+                )?;
+            }
+            self.require_current_pty_spawn(app, &authority).await?;
+            let (_, local_name) = crate::config::teams::split_project_prefix(&claimed.target_fqn);
+            let created = app
+                .create_session_inner_with_pty_target_ownership(
+                    MailboxSessionCreate {
+                        session_mgr: &sessions,
+                        pty_mgr: &pty,
+                        shell: input.spawn.shell.clone(),
+                        shell_args: input.spawn.shell_args.clone(),
+                        cwd: root,
+                        session_name: Some(local_name.to_string()),
+                        agent_id: Some(input.agent_id),
+                        agent_label: Some(input.spawn.trusted_agent_label.clone()),
+                        skip_tooling_save: false,
+                        git_repos: Vec::new(),
+                        skip_auto_resume: input.exited.is_none(),
+                        resolved_spawn: Some(input.spawn),
+                        resolved_agent_host_shell: input.host_shell,
+                        viewport: None,
+                        selection_intent: CreateSelectionIntent::Background,
+                    },
+                    target_ownership,
+                )
+                .await;
+            let Some((info, id)) = Self::resolve_created_pty_target(
+                created,
+                &sessions,
+                &pty,
+                target,
+                input.backend,
+                &settings,
+            )
+            .await?
+            else {
+                return Ok(PtySpawnStep::RetainedUnowned);
+            };
+            if let Some((bot_id, communication)) = input.carried {
+                if bot_id.is_some() {
+                    self.attach_persisted_telegram_for_wake(app, id, bot_id.as_deref())
+                        .await;
+                }
+                if let Some(communication) = communication {
+                    let restored =
+                        Self::restore_pty_communication(&sessions, id, &communication).await;
+                    if restored {
+                        app.publish(id, Some(&communication));
+                    }
                 }
             }
-        }
-        Ok(PtySpawnStep::Created(info))
+            Ok(PtySpawnStep::Created(info))
+        })
     }
 }
