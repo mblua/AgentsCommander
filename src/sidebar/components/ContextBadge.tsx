@@ -44,6 +44,9 @@ export function rampColor(mean: number, theme: "dark" | "light"): string {
   return `#${hex.join("")}`;
 }
 
+/** Grace period to move the pointer from the badge to the card. */
+export const CLOSE_DELAY_MS = 150;
+
 const UNAVAILABLE: SidebarHistoryState = { status: "unavailable" };
 
 const ContextBadge: Component<{
@@ -89,7 +92,26 @@ const ContextBadge: Component<{
   let card: HTMLDivElement | undefined;
   const cardId = `ctx-history-${createUniqueId()}`;
 
+  // Crossing the gap between badge and card must not close it: leaving either
+  // area closes after a short delay that entering the other one cancels.
+  let cardHovered = false;
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  const cancelClose = () => {
+    if (closeTimer !== undefined) clearTimeout(closeTimer);
+    closeTimer = undefined;
+  };
+  const close = () => {
+    cancelClose();
+    setOpen(false);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer = setTimeout(close, CLOSE_DELAY_MS);
+  };
+  onCleanup(cancelClose);
+
   const show = () => {
+    cancelClose();
     setOpen(true);
     const s = props.historyScope;
     if (s) refreshContextHistoryOnHover(s);
@@ -97,7 +119,7 @@ const ContextBadge: Component<{
   const inside = (node: EventTarget | null) =>
     node instanceof Node && (trigger?.contains(node) || card?.contains(node));
   const onPointerOutside = (e: PointerEvent) => {
-    if (!inside(e.target)) setOpen(false);
+    if (!inside(e.target)) close();
   };
   createEffect(() => {
     if (!open()) return;
@@ -105,7 +127,7 @@ const ContextBadge: Component<{
     onCleanup(() => document.removeEventListener("pointerdown", onPointerOutside, true));
   });
   createEffect(() => {
-    if (!historical()) setOpen(false);
+    if (!historical()) close();
   });
 
   // Native (not delegated) listeners so the row never sees these events.
@@ -114,14 +136,17 @@ const ContextBadge: Component<{
     "aria-describedby": cardId,
     onMouseEnter: show,
     onMouseLeave: (e: MouseEvent) => {
-      if (!inside(e.relatedTarget)) setOpen(false);
+      if (!inside(e.relatedTarget)) scheduleClose();
     },
     onFocus: show,
-    onBlur: () => setOpen(false),
+    // Pressing on the card (e.g. its scrollbar) blurs the badge; keep it open then.
+    onBlur: () => {
+      if (!cardHovered) close();
+    },
     "on:keydown": (e: KeyboardEvent) => {
       // The row selects on Enter/Space; nothing on the badge may switch the session.
       e.stopPropagation();
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") close();
     },
     "on:pointerdown": (e: PointerEvent) => {
       e.stopPropagation();
@@ -207,8 +232,13 @@ const ContextBadge: Component<{
           projectPath={props.historyScope?.projectPath ?? ""}
           colorDays={days()}
           warning={CONTEXT_BADGE_TOOLTIP}
+          onEnter={() => {
+            cardHovered = true;
+            cancelClose();
+          }}
           onLeave={(related) => {
-            if (!inside(related)) setOpen(false);
+            cardHovered = false;
+            if (!inside(related)) scheduleClose();
           }}
         />
       </Show>

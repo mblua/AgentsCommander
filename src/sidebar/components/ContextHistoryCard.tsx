@@ -1,13 +1,24 @@
 // #3532 P11 - presentational card with the three context means of a row.
 // It only renders the state it is given: no owner, no IPC, no settings writes.
-import { Component, For, Match, Show, Switch, createEffect, createSignal } from "solid-js";
+import {
+  Component, For, Match, Show, Switch, createEffect, createSignal, onCleanup,
+} from "solid-js";
 import { Portal } from "solid-js/web";
-import type { SidebarBucket } from "../../shared/context-history";
-import type { SidebarHistoryState } from "../context-history";
+import type { SidebarBucket, SidebarScope, SidebarWindows } from "../../shared/context-history";
 
 export type HistoryDays = 1 | 7 | 30;
 
+/** What the card renders; the badge hands the sidebar owner's state as is. */
+export type CardHistoryState =
+  | { status: "unavailable" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ambiguous" | "unknown"; scope: SidebarScope; generatedAtUtcMs: number; text: string }
+  | { status: "ready"; scope: SidebarScope; windows: SidebarWindows; generatedAtUtcMs: number };
+
 const MARGIN = 8;
+/** Space between trigger and card; the badge bridges it with a delayed close. */
+export const GAP = 4;
 
 export function formatMean(mean: number): string {
   return `${mean.toFixed(1)}%`;
@@ -56,30 +67,47 @@ const ContextHistoryCard: Component<{
   id: string;
   open: boolean;
   anchor: () => HTMLElement | undefined;
-  state: SidebarHistoryState;
+  state: CardHistoryState;
   percent: number | null;
   projectPath: string;
   colorDays: HistoryDays;
   warning: string;
   cardRef?: (el: HTMLDivElement) => void;
+  onEnter?: () => void;
   onLeave?: (related: EventTarget | null) => void;
 }> = (props) => {
   const [pos, setPos] = createSignal({ left: 0, top: 0 });
   let el: HTMLDivElement | undefined;
 
-  // Fixed to the viewport so the sidebar's overflow never clips it.
-  createEffect(() => {
-    if (!props.open) return;
+  // Fixed to the viewport so the sidebar's overflow never clips it; the CSS caps
+  // the height at the viewport and scrolls, so placement only clamps.
+  const place = () => {
     const anchor = props.anchor()?.getBoundingClientRect();
     if (!anchor || !el) return;
     const w = el.offsetWidth;
-    const h = el.offsetHeight;
+    const h = Math.min(el.offsetHeight, window.innerHeight - 2 * MARGIN);
     const left = Math.max(MARGIN, Math.min(anchor.left, window.innerWidth - w - MARGIN));
-    const below = anchor.bottom + 4;
-    const top = below + h + MARGIN > window.innerHeight
-      ? Math.max(MARGIN, anchor.top - h - 4)
-      : below;
+    const below = anchor.bottom + GAP;
+    const fitsBelow = below + h + MARGIN <= window.innerHeight;
+    const above = anchor.top - h - GAP;
+    const top = fitsBelow
+      ? below
+      : Math.max(MARGIN, Math.min(above, window.innerHeight - h - MARGIN));
     setPos({ left, top });
+  };
+  createEffect(() => {
+    if (!props.open) return;
+    void props.state;
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    if (el) observer?.observe(el);
+    onCleanup(() => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      observer?.disconnect();
+    });
   });
 
   const current = () =>
@@ -101,6 +129,7 @@ const ContextHistoryCard: Component<{
         style={{ left: `${pos().left}px`, top: `${pos().top}px` }}
         data-ac-testid="context-history.card"
         data-ac-state={props.state.status}
+        onMouseEnter={() => props.onEnter?.()}
         onMouseLeave={(e) => props.onLeave?.(e.relatedTarget)}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
@@ -121,18 +150,19 @@ const ContextHistoryCard: Component<{
           </Match>
           <Match when={props.state.status === "ready" && props.state}>
             {(ready) => {
-              const s = ready() as Extract<SidebarHistoryState, { status: "ready" }>;
+              // Read on every access: a ready -> ready update must reach the card.
+              const s = () => ready() as Extract<CardHistoryState, { status: "ready" }>;
               return (
                 <>
                   <dl class="ctx-history-identity">
                     <dt>Agente</dt>
-                    <dd>{s.scope.agentKey ?? "—"}</dd>
+                    <dd>{s().scope.agentKey ?? "—"}</dd>
                     <dt>Team</dt>
-                    <dd>{s.scope.teamIds.join(", ") || "—"}</dd>
+                    <dd>{s().scope.teamIds.join(", ") || "—"}</dd>
                     <dt>Proyecto</dt>
                     <dd>{props.projectPath}</dd>
                   </dl>
-                  <For each={[s.windows.day, s.windows.week, s.windows.month]}>
+                  <For each={[s().windows.day, s().windows.week, s().windows.month]}>
                     {(bucket) => <Bar bucket={bucket} selected={bucket.days === props.colorDays} />}
                   </For>
                   <p class="ctx-history-note">Color basado en: {basisLabel(props.colorDays)}</p>

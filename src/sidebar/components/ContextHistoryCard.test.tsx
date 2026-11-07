@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
-import ContextHistoryCard, { formatMean, type HistoryDays } from "./ContextHistoryCard";
+import ContextHistoryCard, {
+  GAP,
+  formatMean,
+  type CardHistoryState as SidebarHistoryState,
+  type HistoryDays,
+} from "./ContextHistoryCard";
 import type { SidebarBucket } from "../../shared/context-history";
-import type { SidebarHistoryState } from "../context-history";
 
 // #3532 P11 - the card only renders the state it is given.
 
@@ -116,5 +121,103 @@ describe("ContextHistoryCard (#3532 P11)", () => {
     const { card } = renderCard(ready());
     expect(card.getAttribute("role")).toBe("tooltip");
     expect(card.hidden).toBe(false);
+  });
+});
+
+// AC-3532-030 - viewport placement with stubbed measures (jsdom has no layout).
+describe("ContextHistoryCard placement (#3532 P11)", () => {
+  let cardH = 100;
+  const CARD_W = 260;
+  const restore: (() => void)[] = [];
+  const stub = (obj: object, key: string, desc: PropertyDescriptor) => {
+    const prev = Object.getOwnPropertyDescriptor(obj, key);
+    Object.defineProperty(obj, key, { configurable: true, ...desc });
+    restore.push(() => {
+      if (prev) Object.defineProperty(obj, key, prev);
+      else delete (obj as Record<string, unknown>)[key];
+    });
+  };
+  const viewport = (w: number, h: number) => {
+    stub(window, "innerWidth", { value: w, writable: true });
+    stub(window, "innerHeight", { value: h, writable: true });
+  };
+
+  beforeEach(() => {
+    cardH = 100;
+    stub(HTMLElement.prototype, "offsetHeight", {
+      get(this: HTMLElement) { return this.id === "card-1" ? cardH : 0; },
+    });
+    stub(HTMLElement.prototype, "offsetWidth", {
+      get(this: HTMLElement) { return this.id === "card-1" ? CARD_W : 0; },
+    });
+  });
+  afterEach(() => {
+    while (restore.length) restore.pop()!();
+    document.body.innerHTML = "";
+  });
+
+  function mount(anchorTop: number, initial: SidebarHistoryState = ready()) {
+    const anchor = document.createElement("span");
+    anchor.getBoundingClientRect = () =>
+      ({ left: 20, top: anchorTop, bottom: anchorTop + 16, right: 60 }) as DOMRect;
+    document.body.append(anchor);
+    const [state, setState] = createSignal(initial);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const dispose = render(
+      () => (
+        <ContextHistoryCard
+          id="card-1" open anchor={() => anchor} state={state()} percent={35}
+          projectPath="C:/proj" colorDays={30} warning="w"
+        />
+      ),
+      host,
+    );
+    const card = document.getElementById("card-1")!;
+    const top = () => parseFloat(card.style.top);
+    return { card, top, setState, dispose };
+  }
+
+  it("opens below the anchor when it fits", () => {
+    viewport(800, 600);
+    const { top } = mount(100);
+    expect(top()).toBe(100 + 16 + GAP);
+  });
+
+  it("flips above an anchor near the bottom", () => {
+    viewport(800, 600);
+    const { top } = mount(560);
+    expect(top()).toBe(560 - 100 - GAP);
+  });
+
+  it("stays inside a viewport lower than the card", () => {
+    viewport(800, 120);
+    cardH = 400;
+    const { top } = mount(60);
+    expect(top()).toBe(8);
+  });
+
+  it("re-places on loading -> ready and on resize", () => {
+    viewport(800, 600);
+    cardH = 40;
+    const { top, setState } = mount(400, { status: "loading" });
+    expect(top()).toBe(400 + 16 + GAP);
+    cardH = 300;
+    setState(ready());
+    expect(top()).toBe(400 - 300 - GAP);
+    cardH = 40;
+    window.dispatchEvent(new Event("resize"));
+    expect(top()).toBe(400 + 16 + GAP);
+  });
+
+  it("removes its window listeners when it closes", () => {
+    viewport(800, 600);
+    const remove = vi.spyOn(window, "removeEventListener");
+    const { dispose } = mount(100);
+    dispose();
+    const types = remove.mock.calls.map((c) => c[0]);
+    expect(types).toContain("resize");
+    expect(types).toContain("scroll");
+    remove.mockRestore();
   });
 });

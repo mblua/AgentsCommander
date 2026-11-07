@@ -106,6 +106,14 @@ describe("ProjectPanel CTX history scope (#3532 P11)", () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(fake.callsFor("switch_session")).toEqual([]);
       expect(fake.callsFor("restart_session")).toEqual([]);
+      // The row itself keeps working: its click and the badge contextmenu reach it.
+      const row = badge.closest<HTMLElement>(".replica-item")!;
+      fake.resolve("switch_session", undefined);
+      fake.resolve("list_unresolved_loop_targets", []);
+      click(row);
+      await waitFor(() => expect(fake.callsFor("switch_session").length).toBeGreaterThan(0));
+      badge.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      await waitFor(() => expect(document.querySelector(".session-context-menu")).not.toBeNull());
     } finally {
       rendered.cleanup();
     }

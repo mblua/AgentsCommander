@@ -23,7 +23,7 @@ vi.mock("../context-history", async (importOriginal) => {
   };
 });
 
-import ContextBadge, { CONTEXT_BADGE_TOOLTIP, rampColor } from "./ContextBadge";
+import ContextBadge, { CLOSE_DELAY_MS, CONTEXT_BADGE_TOOLTIP, rampColor } from "./ContextBadge";
 
 const TESTID = "session.s1.contextBadge";
 
@@ -284,8 +284,12 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     badge.dispatchEvent(new MouseEvent("mouseenter"));
     expect(cardOf(badge).hidden).toBe(false);
     expect(history.refresh).toHaveBeenCalledWith(SCOPE);
+    vi.useFakeTimers();
     badge.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
+    expect(cardOf(badge).hidden).toBe(false);
+    vi.advanceTimersByTime(CLOSE_DELAY_MS);
     expect(cardOf(badge).hidden).toBe(true);
+    vi.useRealTimers();
 
     badge.dispatchEvent(new FocusEvent("focus"));
     expect(cardOf(badge).hidden).toBe(false);
@@ -301,6 +305,50 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     expect(cardOf(badge).hidden).toBe(true);
     expect(bubbled).not.toHaveBeenCalled();
+  });
+
+  it("survives the gap between badge and card and closes after leaving both", () => {
+    vi.useFakeTimers();
+    try {
+      renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      const card = cardOf(badge);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      // The pointer leaves the badge into the gap: relatedTarget is neither area.
+      badge.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
+      vi.advanceTimersByTime(CLOSE_DELAY_MS / 2);
+      card.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(CLOSE_DELAY_MS * 4);
+      expect(card.hidden).toBe(false);
+      // Pressing inside the card blurs the badge without closing it.
+      badge.dispatchEvent(new FocusEvent("blur"));
+      expect(card.hidden).toBe(false);
+      card.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
+      expect(card.hidden).toBe(false);
+      vi.advanceTimersByTime(CLOSE_DELAY_MS);
+      expect(card.hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("updates the open card on a ready -> ready change", () => {
+    const [state, setState] = createSignal<SidebarHistoryState>(ready(55));
+    history.state = state;
+    const root = document.createElement("div");
+    document.body.append(root);
+    render(() => <ContextBadge percent={35} testId={TESTID} historyScope={SCOPE} />, root);
+    const badge = target(TESTID);
+    badge.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(cardOf(badge).textContent).toContain("55.0%");
+    setState({
+      ...ready(20),
+      scope: { kind: "known", agentKey: "other-agent", teamIds: ["t2"] },
+    });
+    expect(cardOf(badge).textContent).toContain("20.0%");
+    expect(cardOf(badge).textContent).toContain("other-agent");
+    expect(cardOf(badge).textContent).not.toContain("55.0%");
+    expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(20, "dark"));
   });
 
   it("toggles on touch activation", () => {

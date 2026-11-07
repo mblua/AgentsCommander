@@ -36,6 +36,8 @@ html.light-theme .ctx-badge.ctx-history.toned {
   z-index: 1000;
   width: 260px;
   max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 8px 10px;
   border: 1px solid var(--sidebar-border);
   border-radius: 4px;
