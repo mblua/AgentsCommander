@@ -87,7 +87,6 @@ pub(crate) trait MailboxHost:
 
     fn master_required(&self) -> &MasterToken;
 
-    #[cfg_attr(not(test), allow(dead_code, reason = "3946 phased consumer migration"))]
     fn selection_opt(&self) -> Option<&SelectionCoordinator>;
 
     fn restore_required(&self) -> &Arc<RestoreInProgress>;
@@ -114,7 +113,6 @@ pub(crate) trait MailboxHost:
         request: MailboxSessionCreate<'a>,
     ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn create_session_inner_with_pty_target_ownership<'a, 'guard>(
         &'a self,
         request: MailboxSessionCreate<'a>,
@@ -123,7 +121,6 @@ pub(crate) trait MailboxHost:
     where
         'guard: 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn create_owned_response_replacement<'a, 'guard>(
         &'a self,
         request: OwnedReplacementCreateRequest,
@@ -133,7 +130,6 @@ pub(crate) trait MailboxHost:
     where
         'guard: 'a;
 
-    #[allow(dead_code, reason = "3946 phased consumer migration")]
     fn background_destroy_session_inner<'a>(
         &'a self,
         uuid: Uuid,
