@@ -3,6 +3,7 @@ mod diagnostics;
 pub(crate) mod browser;
 mod clear_attempt;
 mod handoff;
+pub(crate) mod host;
 mod internal_delivery;
 mod notice;
 mod outbox_auth;

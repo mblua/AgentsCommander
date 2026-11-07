@@ -21,15 +21,13 @@ use crate::config::injected_messages::TOKEN_THRESHOLDS;
 use crate::config::injected_messages::TOKEN_WORKGROUP;
 use crate::config::settings::AgentConfig;
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::pty_observation::PtyAuthorityState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::inject::LogicalPtyCommand;
-use crate::pty::manager::PtyManager;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 pub(crate) fn sender_name_for_session_cwd_with_root_flag(
@@ -654,11 +652,11 @@ pub(crate) fn inline_body_from_file_notification(
     Ok(Some(body))
 }
 
-pub(crate) fn is_container_backend_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn is_container_backend_session<S: PtyAuthorityState + ?Sized>(
+    app: &S,
     session_id: Uuid,
 ) -> Result<bool, String> {
-    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let pty_mgr = app.pty_routes();
     let mgr = pty_mgr
         .lock()
         .map_err(|e| format!("PTY lock failed: {e}"))?;

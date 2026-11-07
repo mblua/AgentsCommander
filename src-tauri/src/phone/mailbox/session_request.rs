@@ -13,6 +13,7 @@ use super::settle::{archive_root_md, capture_self_forget_summary};
 use crate::config::sessions_persistence::RaiseHandPersistOutcome;
 use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::LogicalPtyCommand;
 use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
@@ -20,16 +21,15 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
     /// (#885) Handle `purge-wg`: purge every peer in the caller's own workgroup.
     ///
     /// Sequence is non-reorderable. Steps 1-14 per plan §5.5c, consensus round 1.
-    pub(crate) async fn handle_purge_wg<R: tauri::Runtime>(
+    pub(crate) async fn handle_purge_wg<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -42,7 +42,7 @@ impl MailboxPoller {
 
         // 2-4. Resolve and authorize the WG scope, then enumerate its peers.
         let Some((project, wg_name, peer_fqns)) = self
-            .resolve_purge_scope(&app.state::<SettingsState>(), path, msg)
+            .resolve_purge_scope(app.pty_settings(), path, msg)
             .await?
         else {
             return Ok(());
@@ -50,15 +50,11 @@ impl MailboxPoller {
 
         // 5. Take the mirror snapshot ONCE (F-4). One list_sessions(), one
         //    PTY-liveness pass. Per-peer filtering reuses the pure predicate.
-        let (sessions, pty_live) = purge_mirror_snapshot(
-            &app.state::<Arc<tokio::sync::RwLock<SessionManager>>>(),
-            &app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>(),
-        )
-        .await;
+        let (sessions, pty_live) = purge_mirror_snapshot(app.sessions(), app.routes()).await;
 
         // 6. Restore-in-progress guard (F-2: exit 3, not 0).
         {
-            let restore_flag = app.state::<Arc<crate::RestoreInProgress>>();
+            let restore_flag = app.restore_required();
             if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                 let response = serde_json::json!({
                     "action": PURGE_WG_ACTION,
@@ -89,10 +85,7 @@ impl MailboxPoller {
 
         // 8. Readiness snapshot and the four-leg gate (§2.3.3, F-1).
         let quiet = purge_quiet_period(msg);
-        let readiness_map = purge_readiness_map(
-            &app.state::<Arc<crate::pty::idle_detector::IdleDetector>>(),
-            &all_live_session_ids,
-        );
+        let readiness_map = purge_readiness_map(app.pty_readiness(), &all_live_session_ids);
         let gate_peers = purge::gate_peers(&peer_infos, &readiness_map);
 
         let decision = evaluate_gate(&gate_peers, quiet);
@@ -114,10 +107,7 @@ impl MailboxPoller {
         }
 
         // 11. Acquire the lease (F-14: clone Arc into a named local first).
-        let purge_guard = app
-            .state::<Arc<crate::session::purge_guard::PurgeGuard>>()
-            .inner()
-            .clone();
+        let purge_guard = app.purge_required().clone();
         let owned_app = app.clone();
         let close = move |poller: Self, sid, force, timeout_secs| {
             let app = owned_app.clone();
@@ -259,36 +249,20 @@ impl MailboxPoller {
     /// Returns fast: the 30s sustained-idle wait runs in a detached task so the
     /// poll loop is never blocked. Idempotent: a second request while one is
     /// pending is a no-op ("`already_queued`").
-    pub(crate) async fn handle_self_clear<R: tauri::Runtime>(
+    pub(crate) async fn handle_self_clear<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        // 1. Resolve the caller's OWN session from the token (the sole authority).
-        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
-            Some(u) => u,
-            None => {
-                return self
-                    .reject_message(
-                        path,
-                        msg,
-                        "self-clear requires a valid session token; restart or respawn the session",
-                    )
-                    .await;
-            }
-        };
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let (session, session_id, clear_text) = match self
-            .resolve_self_clear_target(&session_mgr, token_uuid, path, msg)
-            .await
-        {
-            Ok(target) => target,
-            Err(outcome) => return outcome,
-        };
+        let (session, session_id, clear_text) =
+            match self.resolve_self_clear_target(app, path, msg).await {
+                Ok(target) => target,
+                Err(outcome) => return outcome,
+            };
 
-        let pending = app.state::<Arc<PendingSelfClear>>().inner().clone();
+        let pending = app.pending_clear().clone();
         if msg.action.as_deref() == Some(super::PLAIN_SELF_CLEAR_ACTION) {
             #[cfg(not(test))]
             let inject = {
@@ -303,10 +277,13 @@ impl MailboxPoller {
             };
             let boundary_app = app.clone();
             let note_boundary = move |sid| async move {
-                crate::commands::pty::stamp_fresh_boundary_to_session(&boundary_app, sid).await;
+                boundary_app.stamp_fresh_boundary_to_session(sid).await;
             };
             let transport = || self.move_to_delivered(app, path, msg);
-            let launch = Self::launch_self_clear_driver::<super::self_clear::Driver>;
+            let launch_app = app.clone();
+            let launch = move |driver: super::self_clear::Driver| {
+                launch_app.spawn_background(Box::pin(driver));
+            };
             return self
                 .handle_plain_self_clear(
                     path,
@@ -348,7 +325,7 @@ impl MailboxPoller {
                 // without a mid-flight session-manager lookup. A session's working
                 // directory never changes while its id stays alive.
                 let root = root.to_path_buf();
-                Self::launch_self_clear_driver(async move {
+                app.spawn_background(Box::pin(async move {
                     Self::run_self_clear_after_sustained_idle(
                         &app_clone,
                         session_id,
@@ -360,7 +337,7 @@ impl MailboxPoller {
                         SELF_CLEAR_MAX_DEFER,
                     )
                     .await;
-                });
+                }));
             }
             #[cfg(test)]
             let _ = (clear_text, &forgotten_summary);
@@ -386,13 +363,26 @@ impl MailboxPoller {
 
     /// Resolves the self-clear target session, its id and the logical-clear text.
     /// On any refusal it rejects the message and returns the reject outcome as `Err`.
-    async fn resolve_self_clear_target(
+    async fn resolve_self_clear_target<S: MailboxHost>(
         &self,
-        session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-        token_uuid: Uuid,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
     ) -> Result<(SessionInfo, Uuid, &'static str), Result<(), String>> {
+        // 1. Resolve the caller's OWN session from the token (the sole authority).
+        let token_uuid = match msg.token.as_deref().and_then(|t| Uuid::parse_str(t).ok()) {
+            Some(u) => u,
+            None => {
+                return Err(self
+                    .reject_message(
+                        path,
+                        msg,
+                        "self-clear requires a valid session token; restart or respawn the session",
+                    )
+                    .await);
+            }
+        };
+        let session_mgr = app.sessions();
         let session = {
             let mgr = session_mgr.read().await;
             mgr.find_by_token(token_uuid).await
@@ -542,9 +532,9 @@ impl MailboxPoller {
         crate::commands::entity_creation::parse_task_title(&content).is_some()
     }
 
-    pub(crate) async fn handle_raise_hand<R: tauri::Runtime>(
+    pub(crate) async fn handle_raise_hand<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -562,7 +552,7 @@ impl MailboxPoller {
             }
         };
         let mgr = {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.sessions();
             let guard = session_mgr.read().await;
             guard.clone()
         };
@@ -632,11 +622,7 @@ impl MailboxPoller {
         };
 
         if let Some(communication) = changed_communication {
-            crate::session::selection::publish_session_communication(
-                app,
-                session_id,
-                Some(&communication),
-            );
+            app.publish(session_id, Some(&communication));
         }
 
         self.write_raise_hand_response(app, path, msg, session_id, raised, status, is_app_outbox)
@@ -665,13 +651,6 @@ impl Drop for PlainReceiptStage {
 }
 
 impl MailboxPoller {
-    fn launch_self_clear_driver<F>(driver: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        tauri::async_runtime::spawn(driver);
-    }
-
     async fn handle_plain_self_clear<L, T, TF, I, IF, B, BF>(
         &self,
         path: &std::path::Path,
