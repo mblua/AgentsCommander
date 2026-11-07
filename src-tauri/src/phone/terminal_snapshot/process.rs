@@ -7,10 +7,25 @@ use super::request::HostTerminalSnapshotRequest;
 use super::shutdown::ScannerTaskOwnership;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 use terminal_snapshot_renderer::canonical_timestamp;
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use terminal_snapshot_renderer::MAX_REQUEST_BYTES;
+
+/// Borrowed app-managed services for one host terminal-snapshot request.
+///
+/// Each getter is looked up lazily, at the point the old direct state lookup ran.
+pub(crate) trait TerminalSnapshotHost: Clone + Send + Sync + 'static {
+    fn snapshot_state_opt(
+        &self,
+    ) -> Option<&Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>;
+    fn session_manager_opt(
+        &self,
+    ) -> Option<&Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>;
+    fn pty_manager_opt(&self) -> Option<&Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>;
+    fn settings_opt(&self) -> Option<&crate::config::settings::SettingsState>;
+    fn restore_opt(&self) -> Option<&Arc<crate::RestoreInProgress>>;
+    fn purge_opt(&self) -> Option<&Arc<crate::session::purge_guard::PurgeGuard>>;
+}
 
 fn read_correlated_request(
     snapshot_state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
@@ -159,9 +174,9 @@ fn read_owned_request(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn process_claimed<R: tauri::Runtime>(
+pub(super) async fn process_claimed<H: TerminalSnapshotHost>(
     scanner_ownership: ScannerTaskOwnership,
-    app: &tauri::AppHandle<R>,
+    host: &H,
     snapshot_state: Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
     processing: PathBuf,
     response_directory: PathBuf,
@@ -182,27 +197,23 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
     };
     let publish_error =
         request_failure_publisher(&snapshot_state, &response_directory, &request, request_id);
-    let Some(session_manager) =
-        app.try_state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>()
-    else {
+    let Some(session_manager) = host.session_manager_opt() else {
         publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);
         return;
     };
-    let Some(pty_manager) =
-        app.try_state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>()
-    else {
+    let Some(pty_manager) = host.pty_manager_opt() else {
         publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);
         return;
     };
-    let Some(settings) = app.try_state::<crate::config::settings::SettingsState>() else {
+    let Some(settings) = host.settings_opt() else {
         publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);
         return;
     };
-    let Some(restore) = app.try_state::<Arc<crate::RestoreInProgress>>() else {
+    let Some(restore) = host.restore_opt() else {
         publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);
         return;
     };
-    let Some(purge) = app.try_state::<Arc<crate::session::purge_guard::PurgeGuard>>() else {
+    let Some(purge) = host.purge_opt() else {
         publish_error(TerminalSnapshotReasonCode::ServiceUnavailable);
         return;
     };
@@ -214,11 +225,11 @@ pub(super) async fn process_claimed<R: tauri::Runtime>(
         }
     };
     let context = crate::pty::terminal_snapshot::TerminalSnapshotServiceContext {
-        session_manager: session_manager.inner().clone(),
-        pty_manager: pty_manager.inner().clone(),
-        settings: settings.inner().clone(),
-        restore: restore.inner().clone(),
-        purge: purge.inner().clone(),
+        session_manager: session_manager.clone(),
+        pty_manager: pty_manager.clone(),
+        settings: settings.clone(),
+        restore: restore.clone(),
+        purge: purge.clone(),
     };
     let (service_request, audit) =
         prepare_service_request(&request, request_id, monotonic_deadline, expires_at);
