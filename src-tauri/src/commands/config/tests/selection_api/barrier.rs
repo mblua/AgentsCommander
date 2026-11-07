@@ -158,7 +158,7 @@ async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply
     let _ = read.await;
     let probe = tokio::time::timeout(
         Duration::from_millis(150),
-        acquire_selection_operation_turn(),
+        crate::session::selection::acquire_selection_operation_turn(),
     )
     .await;
     assert!(
