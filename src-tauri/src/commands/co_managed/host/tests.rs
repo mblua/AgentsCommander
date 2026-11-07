@@ -110,31 +110,71 @@ async fn issue_3950_co_fresh_settings() {
     println!("\nISSUE3950_CONTROL_OK case=issue_3950_co_fresh_settings");
 }
 
+#[derive(Debug, PartialEq)]
+enum IdlePublication {
+    Native(&'static str, Value),
+    Notify(CoManagedTrigger),
+    WebSocket,
+}
+
 struct IdleSink {
     receiver: Mutex<tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>>,
-    calls: Mutex<Vec<(&'static str, Value)>>,
+    calls: Mutex<Vec<IdlePublication>>,
     fail: bool,
 }
 
 impl CoManagedEvents for IdleSink {
     fn co_managed_event(&self, event: &'static str, value: Value) {
-        assert!(
-            self.receiver.lock().unwrap().try_recv().is_err(),
-            "emit before notify"
-        );
+        self.record_notifications();
         let _ = self.native(event, value);
     }
 }
 
 impl IdleSink {
+    fn record_notifications(&self) {
+        let mut receiver = self.receiver.lock().unwrap();
+        while let Ok(trigger) = receiver.try_recv() {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(IdlePublication::Notify(trigger));
+        }
+    }
+
     fn native(&self, event: &'static str, value: Value) -> Result<(), &'static str> {
-        self.calls.lock().unwrap().push((event, value));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(IdlePublication::Native(event, value));
         if self.fail {
             Err("native failure")
         } else {
             Ok(())
         }
     }
+
+    fn recording(&self) -> Vec<IdlePublication> {
+        self.record_notifications();
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+}
+
+fn ordered_idle_publication(
+    recording: &[IdlePublication],
+    id: Uuid,
+    armed: bool,
+) -> Result<(), &'static str> {
+    let expected = [
+        IdlePublication::Native(
+            "session_idle",
+            json!({"id": id.to_string(), "comanaged": armed}),
+        ),
+        IdlePublication::Notify(CoManagedTrigger::IdleEdge(id)),
+    ];
+    if recording != expected {
+        return Err("native idle event must precede one notification without WebSocket");
+    }
+    Ok(())
 }
 
 fn idle_control(armed: bool, fail: bool) {
@@ -153,45 +193,66 @@ fn idle_control(armed: bool, fail: bool) {
         armed
     );
     assert_eq!(
-        *sink.calls.lock().unwrap(),
-        vec![(
-            "session_idle",
-            json!({"id": id.to_string(), "comanaged": armed})
-        )]
+        ordered_idle_publication(&sink.recording(), id, armed),
+        Ok(())
     );
-    assert_eq!(
-        sink.receiver.lock().unwrap().try_recv().unwrap(),
-        CoManagedTrigger::IdleEdge(id)
-    );
-    assert!(sink.receiver.lock().unwrap().try_recv().is_err());
 }
 
-fn publication_order(deliver: impl FnOnce(&mut Vec<&'static str>)) -> bool {
-    let mut recording = Vec::new();
-    deliver(&mut recording);
-    recording == ["native", "notify"]
+fn idle_double(id: Uuid, deliver: impl FnOnce(&IdleSink, &dyn Fn())) -> Vec<IdlePublication> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let sink = IdleSink {
+        receiver: Mutex::new(receiver),
+        calls: Mutex::new(Vec::new()),
+        fail: false,
+    };
+    let notify = || sender.send(CoManagedTrigger::IdleEdge(id)).unwrap();
+    deliver(&sink, &notify);
+    sink.recording()
 }
 
 #[test]
 fn issue_3950_co_idle_order() {
     idle_control(false, false);
     idle_control(true, false);
-    assert!(publication_order(|r| {
-        r.push("native");
-        r.push("notify");
-    }));
-    assert!(!publication_order(|r| {
-        r.push("notify");
-        r.push("native");
-    }));
-    println!("\nISSUE3950_MUTANT_REJECTED case=notify_first");
-    assert!(!publication_order(|r| {
-        r.push("native");
-        r.push("ws");
-        r.push("notify");
-    }));
-    println!("\nISSUE3950_MUTANT_REJECTED case=add_ws");
-    println!("\nISSUE3950_CONTROL_OK case=issue_3950_co_idle_order");
+    let id = Uuid::new_v4();
+    let native = |sink: &IdleSink| {
+        sink.co_managed_event(
+            "session_idle",
+            json!({"id": id.to_string(), "comanaged": false}),
+        );
+    };
+    let positive = idle_double(id, |sink, notify| {
+        native(sink);
+        notify();
+    });
+    assert_eq!(ordered_idle_publication(&positive, id, false), Ok(()));
+    let notify_first = idle_double(id, |sink, notify| {
+        notify();
+        native(sink);
+    });
+    let violation = Err("native idle event must precede one notification without WebSocket");
+    assert_eq!(
+        ordered_idle_publication(&notify_first, id, false),
+        violation
+    );
+    println!(
+        "
+ISSUE3950_MUTANT_REJECTED case=notify_first"
+    );
+    let add_ws = idle_double(id, |sink, notify| {
+        native(sink);
+        sink.calls.lock().unwrap().push(IdlePublication::WebSocket);
+        notify();
+    });
+    assert_eq!(ordered_idle_publication(&add_ws, id, false), violation);
+    println!(
+        "
+ISSUE3950_MUTANT_REJECTED case=add_ws"
+    );
+    println!(
+        "
+ISSUE3950_CONTROL_OK case=issue_3950_co_idle_order"
+    );
 }
 
 #[test]
