@@ -5,6 +5,7 @@ import {
   isHistoryIpcError,
   periodEndingAt,
   type ChangesRequest,
+  type SidebarMeansResponse,
   type ReportQuery,
 } from "./context-history";
 
@@ -96,6 +97,30 @@ describe("ContextHistoryAPI wire contract", () => {
     expect(sent.codingAgentId).toEqual({ kind: "unknown" });
     expect(sent.model).toEqual({ kind: "exact", value: "opus" });
     expect(sent.effort).toEqual({ kind: "any" });
+  });
+
+  it("sends sidebar means nested as {request:{projectPath,runtimeSessionIds}}", async () => {
+    const reply: SidebarMeansResponse = {
+      schemaVersion: 2,
+      generatedAtUtcMs: 5,
+      entries: [
+        {
+          runtimeSessionId: L,
+          scope: { kind: "unknown", agentKey: null, teamIds: [] },
+          windows: null,
+        },
+      ],
+    };
+    fake.resolve("get_context_history_sidebar_means", reply);
+    const got = await ContextHistoryAPI.sidebarMeans({
+      projectPath: "__PROJECT__",
+      runtimeSessionIds: [L],
+    });
+    expect(fake.calls[0]).toEqual({
+      cmd: "get_context_history_sidebar_means",
+      args: { request: { projectPath: "__PROJECT__", runtimeSessionIds: [L] } },
+    });
+    expect(got.entries[0].windows).toBeNull();
   });
 });
 
