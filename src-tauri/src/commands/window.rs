@@ -5,11 +5,11 @@ use uuid::Uuid;
 use crate::config::settings::{AppSettings, MainWindowDisplayState, WindowGeometry};
 use crate::session::manager::{CommitDecision, LifecycleMutations, SessionManager};
 use crate::session::selection::{
-    SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
+    LifecycleFuture, SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
+    SelectionWindowEffects,
 };
 use crate::session::session::SessionStatus;
 use crate::DetachedSessionsState;
-
 #[cfg(test)]
 #[derive(Default)]
 struct WindowDestroyAudit(std::sync::Mutex<Vec<String>>);
@@ -218,7 +218,24 @@ pub(crate) async fn detach_terminal_inner<R: tauri::Runtime>(
         .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
     coordinator.detach(uuid, geometry, skip_switch).await
 }
-
+impl<R: tauri::Runtime> SelectionWindowEffects<R> for AppHandle<R> {
+    fn detach<'a>(
+        &'a self,
+        t: &'a SelectionTransaction<R>,
+        id: Uuid,
+        geometry: Option<WindowGeometry>,
+        suppress: bool,
+    ) -> LifecycleFuture<'a, Result<String, String>> {
+        Box::pin(execute_detach_transaction(t, id, geometry, suppress))
+    }
+    fn attach<'a>(
+        &'a self,
+        t: &'a SelectionTransaction<R>,
+        id: Uuid,
+    ) -> LifecycleFuture<'a, Result<(), String>> {
+        Box::pin(execute_attach_transaction(t, id))
+    }
+}
 pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     session_id: Uuid,

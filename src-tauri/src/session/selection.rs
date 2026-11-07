@@ -126,8 +126,39 @@ pub(crate) trait SelectionContext: Sized + 'static {
     type Host: SelectionHost<Self>;
 }
 
+pub(crate) trait SelectionResourceEffects<C: SelectionContext> {
+    fn resource_kill<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<C>,
+        id: Uuid,
+        intent: TrustedResourceIntent,
+    ) -> LifecycleFuture<'a, Result<crate::resource_monitor::ResourceKillResult, String>>;
+}
+
+pub(crate) trait SelectionWindowEffects<C: SelectionContext> {
+    fn detach<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<C>,
+        id: Uuid,
+        geometry: Option<crate::config::settings::WindowGeometry>,
+        suppress_selection: bool,
+    ) -> LifecycleFuture<'a, Result<String, String>>;
+    fn attach<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<C>,
+        id: Uuid,
+    ) -> LifecycleFuture<'a, Result<(), String>>;
+}
+
 pub(crate) trait SelectionHost<C: SelectionContext>:
-    Clone + Send + Sync + 'static + SelectionEvents + crate::session::warnings::SessionWarningEvents
+    Clone
+    + Send
+    + Sync
+    + 'static
+    + SelectionEvents
+    + crate::session::warnings::SessionWarningEvents
+    + SelectionResourceEffects<C>
+    + SelectionWindowEffects<C>
 {
     fn sessions_required(&self) -> &Arc<tokio::sync::RwLock<SessionManager>>;
     fn pty_required(&self) -> &Arc<Mutex<PtyManager>>;
@@ -213,6 +244,39 @@ impl task::SelectionTasks for NeutralSelectionTasks {
         _future: futures::future::BoxFuture<'static, ()>,
     ) -> Pin<Box<dyn task::SelectionTask>> {
         panic!("host contract fixture does not spawn tasks")
+    }
+}
+
+#[cfg(test)]
+impl SelectionResourceEffects<NeutralSelectionContext> for NeutralSelectionHost {
+    fn resource_kill<'a>(
+        &'a self,
+        _transaction: &'a SelectionTransaction<NeutralSelectionContext>,
+        _id: Uuid,
+        _intent: TrustedResourceIntent,
+    ) -> LifecycleFuture<'a, Result<crate::resource_monitor::ResourceKillResult, String>> {
+        Box::pin(async { panic!("neutral effect not exercised") })
+    }
+}
+
+#[cfg(test)]
+impl SelectionWindowEffects<NeutralSelectionContext> for NeutralSelectionHost {
+    fn detach<'a>(
+        &'a self,
+        _transaction: &'a SelectionTransaction<NeutralSelectionContext>,
+        _id: Uuid,
+        _geometry: Option<crate::config::settings::WindowGeometry>,
+        _suppress_selection: bool,
+    ) -> LifecycleFuture<'a, Result<String, String>> {
+        Box::pin(async { panic!("neutral effect not exercised") })
+    }
+
+    fn attach<'a>(
+        &'a self,
+        _transaction: &'a SelectionTransaction<NeutralSelectionContext>,
+        _id: Uuid,
+    ) -> LifecycleFuture<'a, Result<(), String>> {
+        Box::pin(async { panic!("neutral effect not exercised") })
     }
 }
 

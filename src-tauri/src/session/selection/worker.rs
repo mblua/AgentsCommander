@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tauri::{AppHandle, Runtime};
 use tokio::sync::mpsc;
 
 use super::envelope::CoordinatorEnvelope;
@@ -10,21 +9,24 @@ use super::execute::{
 };
 use super::payload::SelectionCoordinatorError;
 use super::transaction::SelectionTransaction;
-use super::{CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor};
+use super::{
+    CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor, SelectionContext,
+    SelectionResourceEffects, SelectionWindowEffects,
+};
 
 #[cfg(test)]
 use super::replacement_fixture::{
     ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureEnvelopeTrace,
 };
 
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
     pub(super) async fn worker_loop(
-        app: AppHandle<R>,
+        host: C::Host,
         inner: Arc<CoordinatorInner>,
         mut receiver: mpsc::Receiver<CoordinatorEnvelope>,
-        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
+        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>,
     ) {
-        let transaction = SelectionTransaction::<R>::new_host(app, Arc::downgrade(&inner))
+        let transaction = SelectionTransaction::<C>::new_host(host, Arc::downgrade(&inner))
             .with_lifecycle_executor(executor);
         loop {
             let envelope = tokio::select! {
@@ -44,7 +46,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     pub(super) async fn drain_after_shutdown(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         receiver: &mut mpsc::Receiver<CoordinatorEnvelope>,
     ) {
         while let Some(envelope) = receiver.recv().await {
@@ -139,7 +141,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     pub(super) async fn execute_envelope(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         envelope: CoordinatorEnvelope,
     ) {
         let (job, mut hold) = envelope.into_parts();
@@ -251,7 +253,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_restart_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::RestartJobRequest,
         mut entry: super::replacement::OwnedLifecycleEntry,
@@ -358,7 +360,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_root_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::RootJobRequest,
         mut entry: super::replacement::OwnedLifecycleEntry,
@@ -465,7 +467,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_finalize_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::FinalizeCreateRequest,
         response: tokio::sync::oneshot::Sender<
@@ -509,7 +511,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_window_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         job: CoordinatorJob,
     ) {
@@ -519,12 +521,10 @@ impl<R: Runtime> SelectionTransaction<R> {
                 intent,
                 response,
             } => {
-                let result = crate::commands::resource_monitor::execute_resource_kill_transaction(
-                    transaction,
-                    session_id,
-                    intent,
-                )
-                .await;
+                let result = transaction
+                    .host()
+                    .resource_kill(transaction, session_id, intent)
+                    .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
                         "[selection] resource-kill caller dropped before result delivery \
@@ -538,13 +538,10 @@ impl<R: Runtime> SelectionTransaction<R> {
                 suppress_selection,
                 response,
             } => {
-                let result = crate::commands::window::execute_detach_transaction(
-                    transaction,
-                    session_id,
-                    geometry,
-                    suppress_selection,
-                )
-                .await;
+                let result = transaction
+                    .host()
+                    .detach(transaction, session_id, geometry, suppress_selection)
+                    .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
                         "[selection] detach caller dropped before result delivery \
@@ -556,9 +553,7 @@ impl<R: Runtime> SelectionTransaction<R> {
                 session_id,
                 response,
             } => {
-                let result =
-                    crate::commands::window::execute_attach_transaction(transaction, session_id)
-                        .await;
+                let result = transaction.host().attach(transaction, session_id).await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
                         "[selection] attach caller dropped before result delivery \
@@ -572,7 +567,7 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     #[cfg(test)]
     async fn execute_fixture_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         input: super::OpaqueFixtureInput,
         control: Arc<ReplacementFixtureControl>,
@@ -616,7 +611,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_restore_barrier(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         nonce: uuid::Uuid,
         started: tokio::sync::oneshot::Sender<()>,
@@ -638,7 +633,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn drain_finalizer(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::FinalizeCreateRequest,
         response: tokio::sync::oneshot::Sender<

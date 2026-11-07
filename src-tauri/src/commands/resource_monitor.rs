@@ -12,8 +12,8 @@ use crate::resource_monitor::types::{
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::{CommitDecision, LifecycleMutations};
 use crate::session::selection::{
-    SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
-    TrustedResourceIntent,
+    LifecycleFuture, SelectionCause, SelectionCoordinator, SelectionResourceEffects,
+    SelectionSource, SelectionTransaction, TrustedResourceIntent,
 };
 
 #[tauri::command]
@@ -65,6 +65,17 @@ pub async fn kill_resource_group<R: tauri::Runtime>(
     coordinator
         .resource_kill(session_id, TrustedResourceIntent::User)
         .await
+}
+
+impl<R: tauri::Runtime> SelectionResourceEffects<R> for AppHandle<R> {
+    fn resource_kill<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        id: Uuid,
+        intent: TrustedResourceIntent,
+    ) -> LifecycleFuture<'a, Result<ResourceKillResult, String>> {
+        Box::pin(execute_resource_kill_transaction(transaction, id, intent))
+    }
 }
 
 pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(

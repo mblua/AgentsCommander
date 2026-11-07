@@ -66,7 +66,7 @@ impl SelectionCoordinator {
             .ok_or(SelectionCoordinatorError::Unavailable)?;
         let inner = Arc::clone(&self.inner);
         let handle = tauri::async_runtime::spawn(IN_SELECTION_WORKER.scope((), async move {
-            SelectionTransaction::worker_loop(app, inner, receiver, executor).await;
+            SelectionTransaction::<R>::worker_loop(app, inner, receiver, executor).await;
         }));
         let mut worker = self
             .inner
