@@ -14,6 +14,10 @@ async fn an_old_id_raise_resumed_after_old_row_removal_self_cleans() {
         .await;
     let old_key = old.to_string();
 
+    // #3420: the detached create-time raise must not win the race to the
+    // seam; its reader is re-raised below, once this raise is parked.
+    h.settle_create_time_raise(old).await;
+    h.release_all(old).await;
     let barrier = crate::commands::telegram::reader_demand_seam::install_before_install(&old_key);
     let app = h.app.handle().clone();
     let raise = tokio::spawn(async move {
@@ -25,6 +29,8 @@ async fn an_old_id_raise_resumed_after_old_row_removal_self_cleans() {
     )
     .await
     .expect("the old-id raise reaches the pre-install seam");
+    // The reader the create-time raise owns, raised while this one is parked.
+    assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
 
     // The restart runs to completion while the raise is still paused.
     let restarted = h.restart(old).await.expect("restart succeeds");
@@ -68,6 +74,10 @@ async fn an_old_id_raise_installed_before_commit_is_swept_after_it() {
         .await;
     let old_key = old.to_string();
 
+    // #3420: the detached create-time raise must not win the race to the
+    // seam; its reader is re-raised below, once this raise is parked.
+    h.settle_create_time_raise(old).await;
+    h.release_all(old).await;
     let raise_barrier =
         crate::commands::telegram::reader_demand_seam::install_before_install(&old_key);
     let restart_barrier =
@@ -83,6 +93,8 @@ async fn an_old_id_raise_installed_before_commit_is_swept_after_it() {
     )
     .await
     .expect("the old-id raise reaches the pre-install seam");
+    // The reader the create-time raise owns, raised while this one is parked.
+    assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
 
     let restart = {
         let app = h.app.handle().clone();

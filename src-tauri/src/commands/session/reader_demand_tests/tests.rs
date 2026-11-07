@@ -140,10 +140,7 @@ async fn a_supervised_codex_reader_puts_a_record_in_the_registry_slot() {
         "codex supervised body",
         chrono::Utc::now() - chrono::Duration::seconds(1),
     );
-    let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "codex supervised body"
-    })
-    .await;
+    let (_, record) = wait_for_slot_record(&slot, |r| r.text == "codex supervised body").await;
     assert_eq!(record.session_id, id.to_string());
 
     let shutdown = {
@@ -237,16 +234,10 @@ async fn a_detach_persistence_failure_releases_the_bot_demand_and_keeps_capture(
         ),
     )
     .expect("transcript");
-    wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "before detach"
-    })
-    .await;
+    wait_for_slot_record(&slot, |r| r.text == "before detach").await;
     let sends_before = h.message_permits();
     append_claude(&path, "after detach");
-    let (_, record) = wait_for_slot_record(&slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "after detach"
-    })
-    .await;
+    let (_, record) = wait_for_slot_record(&slot, |r| r.text == "after detach").await;
     assert_eq!(record.origin, RecordOrigin::Live);
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     assert_eq!(

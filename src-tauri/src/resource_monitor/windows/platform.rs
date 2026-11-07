@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::{
-    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, ProcessTreeBackend,
-    ResourceError, TerminateOutcome,
+use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
+use crate::resource_monitor::types::{
+    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
