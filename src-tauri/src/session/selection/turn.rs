@@ -146,24 +146,6 @@ where
     run_owned_selection_operation_inner(SelectionTurnMode::Write, None, operation).await
 }
 
-/// #2475 - `run_owned_selection_operation` plus one timing log line that
-/// separates the wait for the turn (`queue_wait`) from the operation itself
-/// (`work`). Instrumentation only: the turn and the result are unchanged.
-/// #2475 - test-only since the three timed reads moved to
-/// `run_owned_selection_read_timed`; persisted operations are untimed.
-#[cfg(test)]
-pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
-    command: &'static str,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    run_owned_selection_operation_inner(SelectionTurnMode::Write, Some(command), operation).await
-}
-
 /// #2475 - a READ-ONLY operation on its own owned task, holding the read side
 /// of the turn, plus the same timing line as `run_owned_selection_operation_timed`.
 /// Only for operations proven not to write (see the #2485 read-only audit).

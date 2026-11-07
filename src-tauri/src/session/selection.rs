@@ -665,15 +665,13 @@ mod turn;
 use envelope::CoordinatorEnvelope;
 #[cfg(test)]
 pub(crate) use turn::acquire_selection_read_turn;
+#[cfg(test)]
+pub(crate) use turn::run_owned_selection_operation_timed_with_tasks;
 pub(crate) use turn::IN_SELECTION_WORKER;
 pub(crate) use turn::{
     acquire_selection_operation_turn, run_owned_selection_operation,
     run_owned_selection_operation_with_tasks, run_owned_selection_read_timed,
     run_owned_selection_read_timed_with_tasks,
-};
-#[cfg(test)]
-pub(crate) use turn::{
-    run_owned_selection_operation_timed, run_owned_selection_operation_timed_with_tasks,
 };
 #[cfg(test)]
 use turn::{selection_operation_turn, selection_timing_line};

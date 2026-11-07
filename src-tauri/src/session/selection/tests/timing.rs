@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::turn::run_owned_selection_operation_timed;
 
 #[test]
 fn selection_timing_line_separates_queue_wait_and_work() {
