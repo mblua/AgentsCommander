@@ -38,7 +38,10 @@ mod observation;
 mod report;
 
 use crate::shutdown::ShutdownSignal;
-pub use observation::{BlackBoxRecord, FreezeMarker, PendingEntry, Verdict};
+// Preserve the existing type path even though production callers use BlackBoxRecord.
+#[allow(unused_imports)]
+pub use observation::PendingEntry;
+pub use observation::{BlackBoxRecord, FreezeMarker, Verdict};
 use observation::{TickSnapshot, LOOP_OUTLIVED_MS};
 use report::{marker_only_block, record_block, silence_block, summary_line};
 
