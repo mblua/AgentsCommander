@@ -61,14 +61,19 @@ impl<R: Runtime> SelectionHost<R> for AppHandle<R> {
     }
 
     fn focus_window(&self, label: &str) -> Option<Result<(), String>> {
-        self.get_webview_window(label)
-            .map(|window| window.set_focus().map_err(|error| error.to_string()))
+        window_effect(self.get_webview_window(label), |window| window.set_focus())
     }
 
     fn destroy_window(&self, label: &str) -> Option<Result<(), String>> {
-        self.get_webview_window(label)
-            .map(|window| window.destroy().map_err(|error| error.to_string()))
+        window_effect(self.get_webview_window(label), |window| window.destroy())
     }
+}
+
+fn window_effect<W, E: std::fmt::Display>(
+    window: Option<W>,
+    effect: impl FnOnce(W) -> Result<(), E>,
+) -> Option<Result<(), String>> {
+    window.map(|window| effect(window).map_err(|error| error.to_string()))
 }
 
 impl<R: Runtime> SelectionTransaction<R> {
@@ -81,3 +86,6 @@ impl<R: Runtime> SelectionTransaction<R> {
         Self::for_test_host(app)
     }
 }
+
+#[cfg(test)]
+mod tests;
