@@ -3,6 +3,7 @@ use super::poller::MailboxPoller;
 use super::pty_claim::MailboxTestHooks;
 use super::pty_observation::{PtyAuthorityState, PtyTargetState};
 use super::settle::{reason_code_from_name, session_has_current_pty_submission_provenance};
+use crate::phone::mailbox::host::MailboxHost;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
@@ -321,9 +322,9 @@ impl MailboxPoller {
         Some(SessionInfo::from(&session))
     }
 
-    pub(crate) async fn dispatch_pty_input_operation<R: tauri::Runtime>(
+    pub(crate) async fn dispatch_pty_input_operation<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         state: &crate::api::message_store::MessageStoreState,
         injection_id: &str,
         source_plane: crate::phone::types::PtyInputSourcePlane,

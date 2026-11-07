@@ -9,7 +9,7 @@ impl MailboxPoller {
     pub(crate) async fn prepare_pty_replacement(
         coordinator: &crate::session::selection::SelectionCoordinator,
         manager: &SessionManager,
-        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
         claimed: &crate::api::message_store::ClaimedPtyInputOperation,
         initial: &crate::phone::types::PtyInputResult,
         target: &crate::config::teams::VerifiedPtyInputIdentity,
@@ -151,12 +151,14 @@ impl MailboxPoller {
         candidates.dedup();
         let mut resolved = None;
         for id in candidates {
-            let Ok(Some(spawn)) = crate::commands::session::build_configured_agent_spawn_for_cwd(
-                settings,
-                &id,
-                target_root_text,
-                None,
-            ) else {
+            let Ok(Some(spawn)) =
+                crate::config::agent_command::build_configured_agent_spawn_for_cwd(
+                    settings,
+                    &id,
+                    target_root_text,
+                    None,
+                )
+            else {
                 if claimed.requested_agent_id.is_some() {
                     return Err(C::UnsupportedProfile);
                 }
@@ -227,14 +229,14 @@ impl MailboxPoller {
         Ok(created_id)
     }
     pub(crate) fn owned_pty_spawn_outcome(
-        created: Result<crate::commands::session::OwnedReplacementCreateStep, String>,
+        created: Result<crate::session::create_contracts::OwnedReplacementCreateStep, String>,
         continuation: crate::session::selection::OwnedReplacementContinuation,
     ) -> Result<PtySpawnStep, crate::phone::types::PtyInputReasonCode> {
         match created {
-            Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(info)) => {
+            Ok(crate::session::create_contracts::OwnedReplacementCreateStep::Finalized(info)) => {
                 Ok(PtySpawnStep::OwnedCreated(info, continuation))
             }
-            Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
+            Ok(crate::session::create_contracts::OwnedReplacementCreateStep::Retained) => {
                 Ok(PtySpawnStep::Retained {
                     continuation,
                     failed: false,
@@ -291,8 +293,8 @@ impl MailboxPoller {
         target_root_text: &str,
         local_name: &str,
         resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
-    ) -> crate::commands::session::OwnedReplacementCreateRequest {
-        crate::commands::session::OwnedReplacementCreateRequest {
+    ) -> crate::session::create_contracts::OwnedReplacementCreateRequest {
+        crate::session::create_contracts::OwnedReplacementCreateRequest {
             shell: spawn.shell.clone(),
             shell_args: spawn.shell_args.clone(),
             cwd: crate::path_utils::normalize_windows_verbatim_path(target_root_text),
@@ -307,7 +309,7 @@ impl MailboxPoller {
     }
     pub(crate) fn validate_pty_replacement_launch(
         prepared: &crate::session::selection::PreparedOwnedReplacement,
-        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
     ) -> Result<(), crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::PtyInputReasonCode as C;
         if !prepared.matches_launch(
@@ -337,7 +339,7 @@ impl MailboxPoller {
     }
 
     pub(crate) async fn resolve_created_pty_target(
-        created: Result<crate::commands::session::PtyTargetCreateStep, String>,
+        created: Result<crate::session::create_contracts::PtyTargetCreateStep, String>,
         session_manager: &Arc<tokio::sync::RwLock<SessionManager>>,
         pty_manager: &Arc<Mutex<PtyManager>>,
         verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
@@ -345,8 +347,8 @@ impl MailboxPoller {
         settings: &crate::config::settings::AppSettings,
     ) -> Result<Option<(SessionInfo, Uuid)>, crate::phone::types::PtyInputReasonCode> {
         let info = match created {
-            Ok(crate::commands::session::PtyTargetCreateStep::Finalized(info)) => info,
-            Ok(crate::commands::session::PtyTargetCreateStep::Retained) => return Ok(None),
+            Ok(crate::session::create_contracts::PtyTargetCreateStep::Finalized(info)) => info,
+            Ok(crate::session::create_contracts::PtyTargetCreateStep::Retained) => return Ok(None),
             Err(error) => {
                 return Err(Self::classify_pty_spawn_failure(
                     session_manager,

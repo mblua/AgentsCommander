@@ -1,5 +1,6 @@
 mod claim_and;
 mod clear_watch;
+mod coordinator_ticket;
 mod deliver_wake;
 mod handle_self;
 mod handle_self_2;

@@ -3,9 +3,9 @@ use super::pty_claim::write_atomic_pty_metadata;
 use super::pty_observation::PtyAuthorityState;
 use super::settle::{reason_code_name, CorrelatedHostPtyMetadata};
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::host::MailboxHost;
 use std::path::Path;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 fn valid_host_pty_envelope_shape(
@@ -728,9 +728,9 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn process_pty_input_file<R: tauri::Runtime>(
+    pub(crate) async fn process_pty_input_file<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         is_app_outbox: bool,
         bytes: &[u8],
@@ -739,7 +739,7 @@ impl MailboxPoller {
         let Some(value) = self.parse_pty_candidate_json(path, bytes) else {
             return;
         };
-        let state = app.try_state::<crate::api::message_store::MessageStoreState>();
+        let state = app.message_store();
 
         if value.get("kind").and_then(serde_json::Value::as_str) == Some("pty-input-marker") {
             let Some(state) = state else {
@@ -761,7 +761,7 @@ impl MailboxPoller {
             };
             self.dispatch_pty_input_operation(
                 app,
-                &state,
+                state,
                 &marker.injection_id,
                 crate::phone::types::PtyInputSourcePlane::HostCli,
                 None,
@@ -818,7 +818,7 @@ impl MailboxPoller {
         };
         self.dispatch_pty_input_operation(
             app,
-            &state,
+            state,
             &injection_id,
             crate::phone::types::PtyInputSourcePlane::HostCli,
             None,
