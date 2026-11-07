@@ -276,6 +276,13 @@ impl Control {
         }
         let second = unique(body, self.after)?;
         match self.scope {
+            Scope::Inside if self.symbol == "spawn_owned_pty_replacement" => {
+                // Hoist the refresh out of both the async body and the validator closure.
+                let end = statement_end(body, second)?;
+                let statement = body[second..end].to_owned();
+                mutant.replace_range(second..end, "");
+                mutant.insert_str(statement_start(body, first), &statement);
+            }
             Scope::Inside => {
                 // End the proof/validator scope before its protected work.
                 let end = closing(body, first + self.before.len() - 1)?;
