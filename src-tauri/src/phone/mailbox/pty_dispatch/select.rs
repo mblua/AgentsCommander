@@ -2,9 +2,8 @@ use super::{
     BoundaryAuthority, DispatchSelection, FinalDispatchInput, PtyDispatchContext,
     PtyDispatchGuards, PtyDispatcher, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
 };
-use crate::config::settings::SettingsState;
 use crate::config::teams::VerifiedPtyInputIdentity;
-use crate::phone::events::PtyInputEvents;
+use crate::phone::mailbox::host::MailboxHost;
 #[cfg(test)]
 use crate::phone::mailbox::pty_claim::MailboxTestHooks;
 use crate::phone::mailbox::pty_claim::PtyReacquireGoal::{Published, Spawn};
@@ -17,14 +16,15 @@ use crate::phone::mailbox::settle::{
 };
 use crate::phone::types::{PtyInputPublicStatus as S, PtyInputReasonCode as C};
 use crate::pty::backend::SessionBackendKind;
+use crate::pty::inject::BoundaryMetadataOutcome;
 use crate::pty::manager::PtyManager;
+#[cfg(test)]
+use crate::session::create_contracts::fixture::FixturePtyCutLease;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
-use tauri::Manager;
+use std::path::Path;
+#[cfg(test)]
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Owned fresh guard and input permit retained through validation and the write boundary.
@@ -33,7 +33,7 @@ pub(super) struct BoundaryWriteGuards {
     pub(super) permit: crate::pty::manager::PtyInputPermit,
 }
 
-impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
+impl<H: MailboxHost> PtyDispatcher<'_, H> {
     pub(super) async fn select_pty_dispatch_session(
         &self,
         context: &PtyDispatchContext<'_>,
@@ -47,11 +47,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             let verified_sender = verified_route.sender;
             let verified_target = verified_route.target;
 
-            let session_manager = app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .inner()
-                .clone();
-            let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            let session_manager = app.pty_sessions().clone();
+            let pty_manager = app.pty_routes().clone();
             let SelectionCandidates {
                 matching,
                 eligible,
@@ -64,7 +61,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 &session_manager,
                 &pty_manager,
                 &verified_target,
-                || async { app.state::<SettingsState>().read().await.clone() },
+                || async { app.pty_settings().read().await.clone() },
             )
             .await;
             let (selected, spawned) = if let Some(selected) = eligible.into_iter().next() {
@@ -139,7 +136,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         let app = self.app;
 
         if app
-            .try_state::<Arc<crate::RestoreInProgress>>()
+            .pty_restore()
             .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
         {
             self.dispatch_selection_finish(context, guards, C::RestoreInProgress)
@@ -147,7 +144,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             return Err(false);
         }
         if app
-            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .pty_purge()
             .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
         {
             self.dispatch_selection_finish(context, guards, C::PurgeInProgress)
@@ -218,7 +215,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 guards.heartbeat.finish().await;
                 return Err(false);
             };
-            Some(Arc::new(crate::commands::session::FixturePtyCutLease {
+            Some(Arc::new(FixturePtyCutLease {
                 gate: context.target_gate.clone(),
                 target: context.target.clone(),
                 exact,
@@ -368,10 +365,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             let guard = selection.session_manager.read().await;
             guard.clone()
         };
-        let idle_detector = app
-            .state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-            .inner()
-            .clone();
+        let idle_detector = app.pty_readiness().clone();
         let authority_id = match crate::phone::types::parse_canonical_uuid_v4(
             &context.claimed.authority_session_id,
         ) {
@@ -472,7 +466,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             authority_route,
             ..
         } = authority;
-        let boundary_settings = app.state::<SettingsState>().inner().clone();
+        let boundary_settings = app.pty_settings().clone();
         let owned_route = guards.owned_work.as_ref().and_then(|_| {
             PtyManager::snapshot_route_proof(selection.pty_manager, selection.selected_id).ok()
         });
@@ -629,14 +623,13 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                 redundant_enter_failed,
             } => {
                 let metadata = if payload == b"/clear" {
-                    crate::commands::pty::stamp_fresh_boundary_to_session(app, selected_id).await
+                    app.stamp_fresh_boundary_to_session(selected_id).await
                 } else if payload == b"/compact" {
-                    crate::commands::pty::BoundaryMetadataOutcome::Unchanged
+                    BoundaryMetadataOutcome::Unchanged
                 } else {
-                    crate::commands::pty::note_post_boundary_content_to_session(app, selected_id)
-                        .await
+                    app.note_post_boundary_content_to_session(selected_id).await
                 };
-                let reason = if metadata == crate::commands::pty::BoundaryMetadataOutcome::Failed {
+                let reason = if metadata == BoundaryMetadataOutcome::Failed {
                     Some(C::BoundaryMetadataFailed)
                 } else {
                     redundant_enter_failed.then_some(C::RedundantEnterFailed)
@@ -673,10 +666,10 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         } = authority;
         if context.expires <= chrono::Utc::now()
             || app
-                .try_state::<Arc<crate::RestoreInProgress>>()
+                .pty_restore()
                 .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
             || app
-                .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+                .pty_purge()
                 .is_some_and(|guard| guard.blocks_agent(&context.claimed.target_fqn))
         {
             return false;
@@ -782,7 +775,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
     async fn dispatch_selection_restore_fixture(
         &self,
         guards: &mut PtyDispatchGuards<'_>,
-        lease: Option<Arc<crate::commands::session::FixturePtyCutLease>>,
+        lease: Option<Arc<FixturePtyCutLease>>,
         control: Option<&Arc<crate::session::selection::ReplacementFixtureControl>>,
     ) -> Result<(), bool> {
         if let Some(lease) = lease {
@@ -863,12 +856,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             }
         };
         if let Some(effect) = effect {
-            let manager = app
-                .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                .read()
-                .await
-                .clone();
-            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            let manager = app.pty_sessions().read().await.clone();
+            let pty = app.pty_routes().clone();
             if rolled_back {
                 continuation
                     .finish_rolled_back_work(&manager, &pty, effect, observed)

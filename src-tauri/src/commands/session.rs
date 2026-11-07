@@ -58,13 +58,15 @@ pub(crate) mod selection_executor;
 mod telegram;
 #[cfg(test)]
 pub(crate) use crate::session::create_contracts::fixture::{
-    FixturePtyCutLease, FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
+    FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
 };
 pub use crate::session::create_contracts::CreateSelectionIntent;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::OwnedReplacementCreateRequest;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::OwnedReplacementCreateStep;
+#[cfg(test)]
 pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
-pub(crate) use crate::session::create_contracts::{
-    OwnedReplacementCreateRequest, OwnedReplacementCreateStep,
-};
 #[cfg(test)]
 use agent_command::coding_agent_descriptor;
 pub(crate) use agent_command::executable_basename;

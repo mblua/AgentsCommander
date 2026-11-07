@@ -68,7 +68,7 @@ async fn assert_foreign_container_scope_resumes(
             .unwrap();
         agent.backend.kind = SessionBackendKind::ContainerTransport;
         agent.backend.image = Some("agentscommander/ac-codex:latest".into());
-        let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+        let spawn = crate::config::agent_command::build_configured_agent_spawn_for_cwd(
             &settings,
             "codex",
             &route.target.replica_root.to_string_lossy(),
@@ -635,4 +635,228 @@ async fn shared_pty_engine_bounds_held_permit_wait_by_expiry_then_next_target_pr
         ]
     );
     assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
+}
+
+// Inspect executable tokens and brace scopes; comments/literals cannot supply witnesses.
+fn p17_code(source: &str) -> String {
+    rust_source_scrub::scrub(source, rust_source_scrub::Literals::Drop)
+        .expect("proof source must lex")
+        .split_whitespace()
+        .collect::<String>()
+        .replace(
+            "crate::commands::session::create_owned_response_replacement(app,",
+            "app.create_owned_response_replacement(",
+        )
+        .replace(
+            ".try_state::<crate::api::message_store::MessageStoreState>()",
+            ".message_store()",
+        )
+}
+
+fn p17_scope(code: &str, open: usize) -> Option<&str> {
+    let mut depth = 0_u32;
+    for (offset, token) in code[open..].bytes().enumerate() {
+        match token {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&code[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn p17_body<'a>(code: &'a str, name: &str) -> Option<&'a str> {
+    let start = code.find(&format!("fn{name}"))?;
+    let open = start + code[start..].find('{')?;
+    p17_scope(code, open)
+}
+
+fn p17_order(code: &str, witnesses: &[&str]) -> bool {
+    let mut rest = code;
+    for witness in witnesses {
+        let Some((_, after)) = rest.split_once(witness) else {
+            return false;
+        };
+        rest = after;
+    }
+    true
+}
+
+fn p17_proof_lifetime(select: &str, authority: &str) -> Result<(), &'static str> {
+    let select = p17_code(select);
+    let authority = p17_code(authority);
+    let body = p17_body(&select, "dispatch_selection_spawn").ok_or("proof lifetime")?;
+    let start = body.find("letspawn={").ok_or("proof lifetime")?;
+    let open = start + "letspawn=".len();
+    let scope = p17_scope(body, open).ok_or("proof lifetime")?;
+    if !p17_order(
+        scope,
+        &[
+            "(guards.target_stripe.as_ref(),guards.target_guard.as_ref())",
+            "let(Some(stripe),Some(exact))=(stripe,exact)else{",
+            "lettarget_ownership=",
+            ".target_ownership(context.target,stripe,exact)",
+            "await_pty_input_before_deadline(",
+            "self.spawn_pty_input_target(",
+            "&target_ownership,",
+            ").await",
+        ],
+    ) || scope.contains("drop(target_ownership)")
+    {
+        return Err("proof lifetime");
+    }
+    let after_scope = &body[open + scope.len() + 2..];
+    if !after_scope.starts_with(";#[cfg(test)]self.dispatch_selection_restore_fixture(") {
+        return Err("proof lifetime");
+    }
+    let owned = p17_body(&authority, "spawn_owned_pty_replacement").ok_or("proof lifetime")?;
+    if !p17_order(
+        owned,
+        &[
+            "source_executor.bind(&continuation)",
+            "letcaptured=(",
+            "with_source_validation(Arc::new(move||{",
+        ],
+    ) {
+        return Err("proof lifetime");
+    }
+    let validator = owned.find("Arc::new(move||{").ok_or("proof lifetime")?;
+    let validator_open = validator + "Arc::new(move||".len();
+    let validator_body = p17_scope(owned, validator_open).ok_or("proof lifetime")?;
+    if !p17_order(
+        validator_body,
+        &[
+            ".message_store()",
+            "refresh_pty_claim_for_resume(",
+            "Self::require_resumable_pty_claim(refresh)?",
+            ".pty_spawn_authority_is_current(",
+            "Self::require_owned_pty_source_authority(current)?",
+            ".owned_pty_recipe_is_current(",
+        ],
+    ) || !p17_order(
+        &owned[validator_open + validator_body.len() + 2..],
+        &[
+            "app.create_owned_response_replacement(",
+            "target_ownership,",
+            ".await",
+        ],
+    ) {
+        return Err("proof lifetime");
+    }
+    Ok(())
+}
+
+fn p17_source_exit(dispatch: &str) -> Result<(), &'static str> {
+    let dispatch = p17_code(dispatch);
+    let body =
+        p17_body(&dispatch, "dispatch_pty_input_operation_core").ok_or("source lexical exit")?;
+    let start = body
+        .find("letfailed=dispatcher")
+        .ok_or("source lexical exit")?;
+    let returned = body
+        .find("source_executor.returned(failed);")
+        .ok_or("source lexical exit")?;
+    if !p17_order(
+        body,
+        &[
+            "letmutsource_executor=",
+            "letfailed=dispatcher.dispatch_accepted_operation(",
+            "&mutsource_executor,",
+            ").await;",
+            "source_executor.returned(failed);",
+        ],
+    ) || returned <= start
+    {
+        return Err("source lexical exit");
+    }
+    // Both statements must be in this function's lexical scope.
+    for position in [start, returned] {
+        let mut depth = 0_i32;
+        for token in body[..position].bytes() {
+            depth += match token {
+                b'{' => 1,
+                b'}' => -1,
+                _ => 0,
+            };
+        }
+        if depth != 0 {
+            return Err("source lexical exit");
+        }
+    }
+    Ok(())
+}
+
+fn p17_early_proof_end(select: &str) -> String {
+    let code = p17_code(select);
+    let body = p17_body(&code, "dispatch_selection_spawn").expect("spawn body");
+    let start = body.find("letspawn={").expect("spawn scope") + "letspawn=".len();
+    let scope = p17_scope(body, start).expect("balanced proof block");
+    let close = code.find(body).unwrap() + start + scope.len() + 1;
+    let mut mutant = code;
+    mutant.remove(close);
+    let deadline = mutant.find("await_pty_input_before_deadline(").unwrap();
+    mutant.insert(deadline, '}');
+    mutant
+}
+
+fn p17_early_returned(dispatch: &str) -> String {
+    let code = p17_code(dispatch);
+    let anchor = "source_executor.returned(failed);";
+    assert_eq!(code.matches(anchor).count(), 1);
+    let mut mutant = code.replacen(anchor, "", 1);
+    let dispatch = mutant.find("letfailed=dispatcher").expect("dispatch await");
+    mutant.insert_str(dispatch, anchor);
+    mutant
+}
+
+fn p17_check_sources(select: &str, authority: &str, dispatch: &str, base: bool) {
+    assert_eq!(p17_proof_lifetime(select, authority), Ok(()));
+    assert_eq!(
+        p17_proof_lifetime(&p17_early_proof_end(select), authority),
+        Err("proof lifetime")
+    );
+    if base {
+        println!("ISSUE3946 P17 BASE_PASS 1");
+        println!("ISSUE3946 P17 MUTANT_REJECTED 1");
+    }
+    assert_eq!(p17_source_exit(dispatch), Ok(()));
+    assert_eq!(
+        p17_source_exit(&p17_early_returned(dispatch)),
+        Err("source lexical exit")
+    );
+    if base {
+        println!("ISSUE3946 P17 BASE_PASS 2");
+        println!("ISSUE3946 P17 MUTANT_REJECTED 2");
+    }
+}
+
+#[test]
+fn issue_3946_proof_scope() {
+    p17_check_sources(
+        include_str!("../pty_dispatch/select.rs"),
+        include_str!("../pty_authority.rs"),
+        include_str!("../pty_dispatch.rs"),
+        false,
+    );
+}
+
+#[test]
+fn issue_3946_proof_scope_base() {
+    let Some(dir) = std::env::var_os("ISSUE_3946_BASE_DIR") else {
+        println!("ISSUE3946 P17 BASE_NOT_REQUESTED");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let select = std::fs::read_to_string(dir.join("phone/mailbox/pty_dispatch/select.rs"))
+        .expect("exported pinned selection source");
+    let authority = std::fs::read_to_string(dir.join("phone/mailbox/pty_authority.rs"))
+        .expect("exported pinned authority source");
+    let dispatch = std::fs::read_to_string(dir.join("phone/mailbox/pty_dispatch.rs"))
+        .expect("exported pinned dispatch source");
+    p17_check_sources(&select, &authority, &dispatch, true);
 }

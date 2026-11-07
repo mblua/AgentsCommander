@@ -1743,6 +1743,15 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   } else if (target.kind !== 'lib' && (first === target.libName || first === target.pkgIdent)) {
     base = [];
     rest = segments.slice(1);
+  } else if (contextSegments.length > 0
+    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
+    // Rust 2018 resolves a relative first segment in the current module before
+    // the crate root: `use process::X` inside `a::b` with `mod process;` names
+    // `a::b::process`, never a crate-root `process` (#3991). Child-relative
+    // paths make no edge, exactly as for a child whose name has no crate-root
+    // twin, so a same-name crate-root module can never receive a false arc.
+    ctx.stats.externalReferences++;
+    return null;
   } else {
     const isExternal = target.externCrates.has(first);
     const rootModule = tree.modules.get(target.targetId);
@@ -4348,6 +4357,20 @@ const FIXTURES = [
         [['crate', 2], ['crate::empty', 0], ['crate::one', 1]],
         'loc for a two line file, an empty file and an unterminated one line file',
       );
+    },
+  },
+  {
+    // #3991: rustc resolves `x` inside `a` to its child `a::x`, not to `crate::x`.
+    name: 'F44 child use path never binds to a same-name crate-root module',
+    files: Object.fromEntries([
+      ['lib.rs', 'mod a;\nmod x;\n'],
+      ['a.rs', 'mod x;\npub(crate) use x::T;\npub fn f() { x::g(); }\n'],
+      ...['a/x.rs', 'x.rs'].map((file) => [file, 'pub struct T;\npub fn g() {}\n']),
+    ]),
+    run: [],
+    assert(res, h) {
+      h.yes(moduleIds(res).includes('crate::a::x'), 'child module crate::a::x exists');
+      h.no(hasModuleEdge(res, 'crate::a', 'crate::x'), 'false a -> crate-root x edge');
     },
   },
 ];

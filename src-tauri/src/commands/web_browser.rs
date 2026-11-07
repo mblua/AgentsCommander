@@ -19,9 +19,10 @@ use tauri::{
 
 mod mailbox;
 
+#[cfg(test)]
+pub(crate) use mailbox::is_web_browser_action;
 pub(crate) use mailbox::{
-    is_web_browser_action, WEB_BROWSER_NAVIGATE_ACTION, WEB_BROWSER_RELOAD_ACTION,
-    WEB_BROWSER_STATUS_ACTION,
+    WEB_BROWSER_NAVIGATE_ACTION, WEB_BROWSER_RELOAD_ACTION, WEB_BROWSER_STATUS_ACTION,
 };
 
 pub use crate::phone::mailbox::browser::snapshot::WebBrowserSnapshot;
