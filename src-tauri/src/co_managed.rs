@@ -1,5 +1,7 @@
 //! Co-managed supervisor (#2232 phase 7).
 
+pub(crate) mod host;
+
 pub(crate) mod route;
 
 use std::collections::{HashMap, HashSet};
