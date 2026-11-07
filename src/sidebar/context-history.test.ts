@@ -246,7 +246,8 @@ describe("sidebar context-history owner (#3532 P10)", () => {
     expect(stats().activeKeys).toBe(1);
     b.release();
     expect(stats()).toEqual({
-      projects: 0, activeKeys: 0, queued: 0, inflight: 0, timers: 0, listening: false,
+      projects: 0, activeKeys: 0, queued: 0, inflight: 0, timers: 0, watchdogs: 0,
+      listening: false,
     });
     answer(0);
     await settle();
@@ -278,5 +279,63 @@ describe("sidebar context-history owner (#3532 P10)", () => {
     expect(queries().map((q) => q.projectPath).sort()).toEqual(["C:/other", P]);
     a.release();
     expect(stats()).toMatchObject({ projects: 1, timers: 1 });
+  });
+
+  // AC-3532-025: success, error and watchdog of an old batch skip a re-acquired key.
+  for (const outcome of ["success", "error", "timeout"] as const) {
+    it(`a re-acquired key ignores the old batch ${outcome}`, async () => {
+      const a = acq(1);
+      acq(2);
+      await settle();
+      a.release();
+      const again = acq(1);
+      await settle();
+      if (outcome === "success") answer(0);
+      if (outcome === "error") pending[0].reject({ code: "Busy", message: "busy" });
+      if (outcome === "timeout") await vi.advanceTimersByTimeAsync(REQUEST_WATCHDOG_MS);
+      await settle();
+      expect(again.state()).toEqual({ status: "loading" });
+      expect(queries()).toHaveLength(2);
+      expect(queries()[1].runtimeSessionIds).toEqual([uuid(1)]);
+      answer(1);
+      await settle();
+      expect(again.state().status).toBe("ready");
+    });
+  }
+
+  // AC-3532-026: hover never adds a second pending request for a key in flight.
+  it("hover on a key in flight does not refresh it again", async () => {
+    const scope = { projectPath: P, runtimeSessionId: uuid(1) };
+    acquireContextHistory(scope);
+    await settle();
+    answer(0);
+    await settle();
+    vi.setSystemTime(Date.now() + REFRESH_INTERVAL_MS + 1);
+    refreshContextHistoryOnHover(scope);
+    await settle();
+    expect(queries()).toHaveLength(2);
+    vi.setSystemTime(Date.now() + REFRESH_INTERVAL_MS + 1);
+    refreshContextHistoryOnHover(scope);
+    refreshContextHistoryOnHover(scope);
+    await settle();
+    expect(stats().queued).toBe(0);
+    answer(1);
+    await settle();
+    expect(queries()).toHaveLength(2);
+  });
+
+  // AC-3532-027: no timer survives the last release while a request hangs.
+  it("last release with an unresolved request leaves zero timers", async () => {
+    const a = acq(1);
+    await settle();
+    expect(stats()).toMatchObject({ inflight: 1, watchdogs: 1 });
+    expect(vi.getTimerCount()).toBe(2);
+    a.release();
+    expect(stats()).toMatchObject({ watchdogs: 0, timers: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+    acq(2);
+    await settle();
+    __resetContextHistoryForTests();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -62,6 +62,9 @@ interface ProjectOwner {
   /** Insertion-ordered and duplicate-free; always a subset of `keys`. */
   queue: Set<string>;
   inflight: number | null;
+  /** Entries of the request in flight; a re-acquired key is a new entry. */
+  inflightEntries: Set<KeyEntry>;
+  watchdog: ReturnType<typeof setTimeout> | null;
   flushScheduled: boolean;
   timer: ReturnType<typeof setInterval> | null;
 }
@@ -140,6 +143,8 @@ function createOwner(projectPath: string): ProjectOwner {
     keys: new Map(),
     queue: new Set(),
     inflight: null,
+    inflightEntries: new Set(),
+    watchdog: null,
     flushScheduled: false,
     timer: null,
   };
@@ -159,14 +164,16 @@ function releaseKey(owner: ProjectOwner, id: string, entry: KeyEntry): void {
   if (owner.timer !== null) clearInterval(owner.timer);
   owner.timer = null;
   owner.queue.clear();
-  owner.inflight = null;
+  clearInflight(owner);
   owner.generation += 1;
   if (owners.get(owner.projectPath) === owner) owners.delete(owner.projectPath);
   if (owners.size === 0) unlisten();
 }
 
 function enqueue(owner: ProjectOwner, id: string): void {
-  if (owners.get(owner.projectPath) !== owner || !owner.keys.has(id)) return;
+  const entry = owner.keys.get(id);
+  if (owners.get(owner.projectPath) !== owner || !entry) return;
+  if (owner.inflightEntries.has(entry)) return;
   owner.queue.add(id);
   if (owner.flushScheduled || owner.inflight !== null) return;
   owner.flushScheduled = true;
@@ -188,6 +195,8 @@ function flush(owner: ProjectOwner): void {
   const ids = Array.from(owner.queue).slice(0, MAX_IDS_PER_REQUEST);
   if (ids.length === 0) return;
   for (const id of ids) owner.queue.delete(id);
+  const sent = ids.map((id) => [id, owner.keys.get(id)!] as const);
+  for (const [, entry] of sent) owner.inflightEntries.add(entry);
   const requestId = nextRequestId++;
   const generation = owner.generation;
   owner.inflight = requestId;
@@ -196,24 +205,23 @@ function flush(owner: ProjectOwner): void {
     && owner.generation === generation
     && owner.inflight === requestId;
   const finish = () => {
-    owner.inflight = null;
+    clearInflight(owner);
     if (owner.queue.size > 0) enqueue(owner, owner.queue.values().next().value as string);
   };
-  const watchdog = setTimeout(() => {
+  owner.watchdog = setTimeout(() => {
+    owner.watchdog = null;
     if (!current()) return;
-    applyError(owner, ids, "Timeout");
+    applyError(owner, sent, "Timeout");
     finish();
   }, REQUEST_WATCHDOG_MS);
   ContextHistoryAPI.sidebarMeans({ projectPath: owner.projectPath, runtimeSessionIds: ids }).then(
     (response) => {
-      clearTimeout(watchdog);
       if (!current()) return;
       const byId = new Map<string, SidebarEntry>(
         response.entries.map((e) => [e.runtimeSessionId, e]),
       );
-      for (const id of ids) {
-        const entry = owner.keys.get(id);
-        if (!entry) continue;
+      for (const [id, entry] of sent) {
+        if (owner.keys.get(id) !== entry) continue;
         const result = byId.get(id);
         entry.fetchedAtMs = Date.now();
         entry.setState(result ? toState(result, response.generatedAtUtcMs) : missing());
@@ -221,9 +229,8 @@ function flush(owner: ProjectOwner): void {
       finish();
     },
     (error: unknown) => {
-      clearTimeout(watchdog);
       if (!current()) return;
-      applyError(owner, ids, isHistoryIpcError(error) ? error.code : String(error));
+      applyError(owner, sent, isHistoryIpcError(error) ? error.code : String(error));
       finish();
     },
   );
@@ -239,10 +246,21 @@ function toState(entry: SidebarEntry, generatedAtUtcMs: number): SidebarHistoryS
 
 const missing = (): SidebarHistoryState => ({ status: "error", message: "No entry in response" });
 
-function applyError(owner: ProjectOwner, ids: string[], message: string): void {
-  for (const id of ids) {
-    const entry = owner.keys.get(id);
-    if (!entry) continue;
+function clearInflight(owner: ProjectOwner): void {
+  if (owner.watchdog !== null) clearTimeout(owner.watchdog);
+  owner.watchdog = null;
+  owner.inflight = null;
+  owner.inflightEntries.clear();
+}
+
+/** Applies only to the entry that was sent; a re-acquired key keeps its own state. */
+function applyError(
+  owner: ProjectOwner,
+  sent: ReadonlyArray<readonly [string, KeyEntry]>,
+  message: string,
+): void {
+  for (const [id, entry] of sent) {
+    if (owner.keys.get(id) !== entry) continue;
     entry.fetchedAtMs = Date.now();
     entry.setState({ status: "error", message });
   }
@@ -281,6 +299,7 @@ export function __contextHistoryStatsForTests() {
     queued: Array.from(owners.values()).reduce((n, o) => n + o.queue.size, 0),
     inflight: Array.from(owners.values()).filter((o) => o.inflight !== null).length,
     timers: Array.from(owners.values()).filter((o) => o.timer !== null).length,
+    watchdogs: Array.from(owners.values()).filter((o) => o.watchdog !== null).length,
     listening,
   };
 }
@@ -288,6 +307,7 @@ export function __contextHistoryStatsForTests() {
 export function __resetContextHistoryForTests(): void {
   for (const owner of owners.values()) {
     if (owner.timer !== null) clearInterval(owner.timer);
+    clearInflight(owner);
     owner.generation += 1;
   }
   owners.clear();
