@@ -376,7 +376,14 @@ impl MailboxPoller {
                 origin,
                 comanaged,
                 response,
-            } => Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response)).await,
+            } => {
+                let delivery: std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = Result<OutboxMessage, String>> + Send + '_,
+                    >,
+                > = Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response));
+                delivery.await
+            }
             WakeDelivery::InternalSystem {
                 target,
                 notice,
