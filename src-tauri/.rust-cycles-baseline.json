@@ -369,13 +369,6 @@
       ]
     },
     {
-      "id": "57d32580131e0976",
-      "members": [
-        "agentscommander_lib::cli::send",
-        "agentscommander_lib::cli::send::pty_input"
-      ]
-    },
-    {
       "id": "b2640baf29803e8a",
       "members": [
         "agentscommander_lib::config::daemon_pid",
