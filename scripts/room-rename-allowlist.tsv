@@ -2571,7 +2571,7 @@ P0-identifier	src-tauri/src/phone/mailbox.rs	let Some(lexical_ac_root) = lexical
 P0-identifier	src-tauri/src/phone/mailbox/notice.rs	let wg_root = crate::phone::messaging::workgroup_root(sender_root)
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	// and is what the "Entire Workgroup" coding-agent assignment writes to each
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// `<project_dir>/<workspace>/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
-P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
+P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// Mirrors the WG-replica walk-up in `cli::send::project::derive_root_project_dir` so
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// the mailbox can resolve qualified WG-peer FQNs against the same root-walk-up
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// `<wg-*>` → `<workspace>` → `<project_dir>`.
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
