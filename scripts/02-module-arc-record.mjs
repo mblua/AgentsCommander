@@ -2,7 +2,7 @@
 // Reduces a Rust dependency graph to its unique module-to-module arc set and writes that
 // set to src-tauri/module-arcs.txt, for issue #1249.
 //
-// INPUT: graph from the in-repo 01-rust_module-dependency-cycles.mjs detector1.1.1.
+// INPUT: graph from the in-repo 01-rust_module-dependency-cycles.mjs detector1.2.0.
 // This script projects the graph; it does not analyse Rust or decide cycle policy.
 // Output is UTF-8, sorted unique non-self "from -> to" pairs, LF only.
 // Empty arcs produce zero bytes. The default record is ignored local review material.
@@ -89,7 +89,7 @@ const USAGE = [
   '  header and no counters. An empty arc set is a zero-byte file.',
   '',
   'REGENERATING THE RECORD',
-  '  From the repository root (in-repo detector1.1.1):',
+  '  From the repository root (in-repo detector1.2.0):',
   '',
   '    node scripts/01-rust_module-dependency-cycles.mjs src-tauri --emit-graph graph.json --quiet',
   '    npm run record:arcs -- --graph graph.json',

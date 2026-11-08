@@ -15,8 +15,9 @@ repository, changed by reviewed fixes: #3991 (child use paths never bind to a sa
 crate-root module), #3995 (compound test-cfg arcs excluded) and #3998 (child paths resolve
 against the current module, so parent-to-child arcs are recorded).
 
-- `TOOL_VERSION` stays `1.1.1` and `SCHEMA_VERSION` stays `1`.
+- TOOL_VERSION is now 1.2.0 under #4013 to identify the parent-to-child arc semantics from #3998; SCHEMA_VERSION stays 1.
 - SHA-256 after #3998: `01d847b9ecfa327b4a3c12326be06c4cafcb43719d78c9893bfbdb30a950c6fe`
+- SHA-256 after #4013: `76d47fa2af9e9a4656e4b2f4202da289e10fefd8f7c0c96f72c70f307e3b41f8`
 
 Edit it here, through a reviewed fix with tests, and update the hash above. Do not re-copy
 the vault source over it: that would drop these fixes. The vault is not refreshed from here.
