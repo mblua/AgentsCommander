@@ -411,13 +411,6 @@
       ]
     },
     {
-      "id": "1fefd2ca3233c97a",
-      "members": [
-        "agentscommander_lib::loops::scheduler",
-        "agentscommander_lib::loops::scheduler::state"
-      ]
-    },
-    {
       "id": "9cc5d31519f8d48a",
       "members": [
         "agentscommander_lib::path_identity",
