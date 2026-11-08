@@ -604,6 +604,33 @@ fn all_teams_select_n_per_scope_and_weight_records_not_ratios() {
 }
 
 #[test]
+fn count_mode_ranks_each_agent_on_its_own_sessions() {
+    let mut records = session(1, NOW - 3 * DAY_MS, &[(NOW, 10)]);
+    records.extend(session(2, NOW - 2 * DAY_MS, &[(NOW, 20)]));
+    records.extend(session(3, NOW - DAY_MS, &[(NOW, 30)]));
+    records.extend(with(session(4, NOW - 9 * DAY_MS, &[(NOW, 40)]), |record| {
+        record.agent_key = "ops".to_string();
+        record.instance_fqn = "demo:room-1/ops".to_string();
+    }));
+    let response = report(&records, &recent(2));
+    for (key, sessions) in [("dev", 2), ("ops", 1)] {
+        let agent = response
+            .agents_page
+            .iter()
+            .find(|agent| agent.agent_key == key)
+            .expect("agent");
+        assert_eq!(agent.totals.sessions_count, sessions, "{key}");
+        let windows = agent.scope_windows.as_deref().expect("count mode");
+        assert_eq!(windows.len(), 1, "{key} lists only its own scope");
+        assert_eq!(windows[0].agent_key, key);
+        assert_eq!(
+            windows[0].available_sessions,
+            u32::try_from(sessions).expect("small")
+        );
+    }
+}
+
+#[test]
 fn count_mode_filters_metadata_before_ranking_and_keeps_unknown_scopes_apart() {
     let mut records = session(1, NOW - 3 * DAY_MS, &[(NOW, 10)]);
     records.extend(with(session(2, NOW - DAY_MS, &[(NOW, 20)]), |record| {
