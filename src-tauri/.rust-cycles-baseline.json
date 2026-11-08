@@ -376,13 +376,6 @@
         "agentscommander_lib::process::agent::owner",
         "agentscommander_lib::process::agent::owner::command_run"
       ]
-    },
-    {
-      "id": "105668e38beb5bd2",
-      "members": [
-        "agentscommander_lib::resource_monitor::registry",
-        "agentscommander_lib::resource_monitor::registry::snapshot"
-      ]
     }
   ],
   "functionCycles": []
