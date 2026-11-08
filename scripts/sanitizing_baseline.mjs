@@ -34,7 +34,8 @@ function resolveGitExecutable({ cwd, env }) {
 }
 export function gitRunner(args, { cwd, env = process.env, input }) {
   return spawnSync(resolveGitExecutable({ cwd, env }), args, {
-    cwd, env, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    cwd, env, ...(input === undefined ? {} : { input }),
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     timeout: 120_000,
     maxBuffer: 64 * 1024 * 1024, windowsHide: true,
   });
