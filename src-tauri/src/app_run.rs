@@ -3,22 +3,21 @@
 //! `exit.rs`.
 
 pub(crate) mod exit;
+pub(crate) mod history_environment;
 mod setup;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::Manager;
-
 use crate::{
-    agent_update, capture, commands, config, emit_session_idle_edge, log_naming_migration_summary,
-    loops, network, preflight_config_startup, prepare_app_outbox, resource_monitor, screenshot,
-    ApiServerHandle, CoManagedSupervisorHandle, ConfigSeedLockState, DetachedSessionsState,
-    IdleDetector, MasterToken, OutputSenderMap, PendingSelfClear, QuitGate, RestoreInProgress,
-    SessionManager, SettingsState, ShutdownSignal, SpecBoardState, StartupError,
-    TelegramBridgeManager, TelegramBridgeState, UpdateCheckState, VoiceTracker, VoiceTrackingState,
-    WebAccessToken, WebServerHandle, WsBroadcaster,
+    agent_update, capture, commands, config, log_naming_migration_summary, loops, network,
+    preflight_config_startup, prepare_app_outbox, resource_monitor, screenshot, ApiServerHandle,
+    CoManagedSupervisorHandle, ConfigSeedLockState, DetachedSessionsState, IdleDetector,
+    MasterToken, OutputSenderMap, PendingSelfClear, QuitGate, RestoreInProgress, SessionManager,
+    SettingsState, ShutdownSignal, SpecBoardState, StartupError, TelegramBridgeManager,
+    TelegramBridgeState, UpdateCheckState, VoiceTracker, VoiceTrackingState, WebAccessToken,
+    WebServerHandle, WsBroadcaster,
 };
 
 #[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
@@ -43,12 +42,148 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let display_env = crate::screenshot::display_env_snapshot();
 
-    let BootPreamble {
-        master_token,
-        app_outbox,
-        ui_automation_state,
-        web_access_token,
-    } = prepare_boot(&owners, ui_automation_enabled)?;
+    let l = prepare_launch(&owners, test_window_placement, ui_automation_enabled)?;
+    let exit_ctx = exit::ExitCtx {
+        detached_set: l.rs.detached_sessions.clone(),
+        spec_board_state: l.rs.spec_board_state.clone(),
+        activity_for_exit: Arc::clone(&owners.activity),
+        session_mgr_for_exit: Arc::clone(&l.session_mgr),
+        coordinator_clocks_for_exit: l.for_exit.coordinator_clocks_for_exit,
+        shutdown_for_exit: l.for_exit.shutdown_for_exit,
+        selection_coordinator_for_exit: l.for_exit.selection_coordinator_for_exit,
+        tg_mgr_for_exit: l.for_exit.tg_mgr_for_exit,
+        resource_monitor_for_exit: l.for_exit.resource_monitor_for_exit,
+        ui_automation_state_for_exit: l.for_exit.ui_automation_state_for_exit,
+    };
+
+    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
+    // on Windows, Linux and macOS; every other target never links them. The
+    // rest of the builder chain is shared. This predicate must match
+    // `Cargo.toml` and `screenshot/mod.rs`.
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let builder = builder
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        crate::screenshot::begin_capture_from_hotkey(app.clone());
+                    }
+                })
+                .build(),
+        );
+
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(display_env);
+
+    let builder = crate::commands::session::selection_executor::install(builder);
+
+    builder
+        .manage(owners.clone())
+        .manage(l.boot.master_token)
+        .manage(l.boot.app_outbox)
+        .manage(l.session_mgr)
+        .manage(l.selection_coordinator)
+        .manage(l.tg_mgr)
+        .manage(l.capture_registry_for_state)
+        .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
+        .manage(Arc::clone(&l.rs.resource_monitor_state))
+        .manage(l.rs.voice_tracking)
+        .manage(l.rs.settings)
+        .manage(l.idle_detector) // #552 managed type: Arc<IdleDetector>
+        .manage(l.rs.coordinator_clocks) // #552 managed type: CoordinatorClocksState
+        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
+        .manage(l.rs.detached_sessions.clone())
+        .manage(l.rs.spec_board_state.clone())
+        .manage(l.rs.loop_scheduler.clone())
+        .manage(l.rs.non_stop_state)
+        .manage(l.rs.ipc_observer)
+        .manage(l.boot.web_access_token.clone())
+        .manage(l.broadcaster.clone())
+        .manage(WebServerHandle::default())
+        .manage(ApiServerHandle::default())
+        .manage(l.rs.message_store_state)
+        .manage(l.rs.pty_target_gate_state)
+        .manage(l.rs.config_seed_lock)
+        .manage(Arc::new(commands::session::PreflightState::default()))
+        .manage(l.rs.update_check_state)
+        .manage(l.rs.agent_update_gate)
+        .manage(l.rs.agent_install_cache)
+        .manage(l.boot.ui_automation_state)
+        .manage(l.terminal_snapshot_state)
+        .manage(l.shutdown_signal)
+        .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
+        .manage(Arc::new(PendingSelfClear::default()))
+        .manage(l.rs.screenshot_capture_state) // #714
+        .manage(l.rs.screenshot_hotkey_state) // #714
+        .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
+        .manage(l.response_close.clone())
+        .manage(crate::pty::input_activity::new_typing_hold_state()) // #2336 typing hold
+        .manage(crate::session::warnings::new_session_warning_state())
+        .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
+        .setup(move |app| setup::setup(app, l.setup_ctx))
+        // (#1652) Every invoke that reaches the app handler is stamped here,
+        // before dispatch: the only place in the process that sees the
+        // frontend -> backend direction as a stream, which is what lets
+        // `[ipc-observer] SILENCE` speak about the CHANNEL and not one command.
+        // Entry only - `generate_handler!` returns as soon as the command is
+        // dispatched, so there is no exit to hook. The exit side is the
+        // renderer's `settled` accounting (phase 2); the pair separates "never
+        // arrived" from "never came back".
+        //
+        // UNSTABLE API: `tauri::ipc::Invoke`'s own doc comment says it "is used
+        // internally by macros and is explicitly **NOT** stable"
+        // (tauri-2.10.3/src/ipc/mod.rs:209). `Cargo.lock` pins 2.10.3 and this
+        // wrapper is the ONLY place in the app depending on an explicitly
+        // unstable tauri type. The next tauri bump must re-check three things:
+        // `Invoke::message` public, `InvokeMessage::command()` public, and
+        // `generate_handler!` still expanding to a bindable closure expression.
+        //
+        // Blind spot, stated: Tauri routes plugin commands (`plugin:window|*`,
+        // `plugin:event|emit`, `plugin:dialog|open`) through `manager.extend_api`
+        // in a branch that never reaches `run_invoke_handler`
+        // (tauri-2.10.3/src/webview/mod.rs:1840-1890), so they never reach this
+        // closure - and the renderer's registry does not see them either, because
+        // `@tauri-apps/api`'s window/event/dialog helpers call
+        // `__TAURI_INTERNALS__.invoke` directly, not `TauriTransport.invoke`. The
+        // two sides therefore stay symmetric and no false "sent but never
+        // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
+        // this in every record block.
+        .invoke_handler(crate::invoke_handler(l.rs.ipc_observer_for_handler))
+        .build(tauri::generate_context!())
+        .expect("error while building application")
+        .run(crate::exit_callback(
+            exit_ctx,
+            commands::spec_board::spec_board_close_all,
+        ));
+    Ok(())
+}
+
+/// Session, idle and runtime state prepared before the Tauri builder chain.
+struct Launch {
+    boot: BootPreamble,
+    session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
+    selection_coordinator: crate::session::selection::SelectionCoordinator,
+    tg_mgr: TelegramBridgeState,
+    capture_registry_for_state: Arc<capture::registry::CaptureRegistry>,
+    idle_detector: Arc<IdleDetector>,
+    broadcaster: WsBroadcaster,
+    terminal_snapshot_state: Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
+    shutdown_signal: ShutdownSignal,
+    response_close: crate::pty::manager::ResponseCloseState,
+    rs: ManagedRuntime,
+    for_exit: RuntimeExitParts,
+    setup_ctx: setup::SetupCtx,
+}
+
+fn prepare_launch(
+    owners: &crate::AppOwners,
+    test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
+    ui_automation_enabled: bool,
+) -> Result<Launch, StartupError> {
+    let boot = prepare_boot(owners, ui_automation_enabled)?;
 
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
@@ -80,111 +215,14 @@ pub(crate) fn run(
     // Callbacks run on native threads (watcher + PTY read loop).
     // AppHandle.emit() is sync and thread-safe, so no tokio needed.
     // AppHandle is set in setup() via OnceLock; callbacks no-op until then.
-    let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
-    let handle_for_idle = Arc::clone(&app_handle_lock);
-    let handle_for_busy = Arc::clone(&app_handle_lock);
-    let response_close_for_idle = response_close.clone();
-    let response_close_for_busy = response_close.clone();
-    let idle_detector = IdleDetector::with_activity_coalescer(
-        Arc::clone(&owners.activity),
-        move |id| {
-            response_close_for_idle.observe_detector(id, false, std::time::Instant::now());
-            log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
-            if let Some(app) = handle_for_idle.get() {
-                // #2232 phase 7: the Co-managed decision travels in the same
-                // payload, emitted synchronously and FIRST (epic 3.6). A
-                // separate later event would always paint waiting before red.
-                // `is_armed` is lock-free and never reads settings or disk.
-                let _ = emit_session_idle_edge(
-                    app,
-                    &co_managed_supervisor_for_idle.armed,
-                    Some(&co_managed_supervisor_for_idle),
-                    id,
-                );
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr_clone = session_mgr.inner().clone();
-                let app_for_idle = app.clone();
-                // #1682 - read the control-write mark on the watcher thread, at
-                // the edge instant. `Option<Duration>` is `Copy`, so it moves
-                // into the spawned task with no clone and no guard held.
-                let control_write_age = app
-                    .try_state::<Arc<crate::pty::idle_detector::IdleDetector>>()
-                    .and_then(|detector| detector.control_write_age(id));
-                tauri::async_runtime::spawn(async move {
-                    let mgr = mgr_clone.read().await;
-                    mgr.mark_idle(id).await;
-                    crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
-                        .await;
-                    // #1682 - a busy->idle edge on an armed session stamps
-                    // `tooling.lastAgentMessageAt`. A no-op unless a message write reached
-                    // an arming site for this session in this process (R7 and R8 arm with
-                    // nothing submitted), the user has no recent unsubmitted input in it,
-                    // and no recent control write of ours is what re-opened the busy period.
-                    crate::commands::session::record_agent_turn_completed(
-                        &app_for_idle,
-                        &mgr,
-                        id,
-                        control_write_age,
-                    )
-                    .await;
-                    if let Some(scheduler) =
-                        app_for_idle.try_state::<Arc<loops::scheduler::LoopScheduler>>()
-                    {
-                        scheduler
-                            .inner()
-                            .on_session_idle(app_for_idle.clone(), id)
-                            .await;
-                    }
-                });
-            }
-        },
-        move |id| {
-            response_close_for_busy.observe_detector(id, true, std::time::Instant::now());
-            log::debug!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
-            if let Some(app) = handle_for_busy.get() {
-                let _ = tauri::Emitter::emit(
-                    app,
-                    "session_busy",
-                    serde_json::json!({ "id": id.to_string() }),
-                );
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr_clone = session_mgr.inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mgr = mgr_clone.read().await;
-                    mgr.mark_busy(id).await;
-                    crate::config::sessions_persistence::persist_current_state_prune_dormant(&mgr)
-                        .await;
-                });
-            }
-        },
+    let app_handle_lock = Arc::new(OnceLock::new());
+    let idle_detector = IdleDetector::for_app_run(
+        owners,
+        &response_close,
+        co_managed_supervisor_for_idle,
+        &app_handle_lock,
     );
-    response_close.bind_publisher(crate::pty::manager::ResponseClosePublisher::Detector);
-    let response_close_for_output = response_close.clone();
-    if !idle_detector.bind_raw_output_observer(response_close.wiring_identity(), move |id, now| {
-        response_close_for_output.observe_raw_output(id, now);
-    }) {
-        response_close.fail_closed();
-    }
-    response_close.bind_publisher(crate::pty::manager::ResponseClosePublisher::RawOutput);
-    let session_mgr_for_git = Arc::clone(&session_mgr);
-    let session_mgr_for_git_sweeper = Arc::clone(&session_mgr);
-    let session_mgr_for_discovery = Arc::clone(&session_mgr);
-    let session_mgr_for_web = Arc::clone(&session_mgr);
-    let session_mgr_for_api = Arc::clone(&session_mgr);
-    let activity_for_exit = Arc::clone(&owners.activity);
-    let session_mgr_for_exit = Arc::clone(&session_mgr);
-    // #1088 - handed to `ScraperPersist` so the context scraper can persist
-    // changed readings through the same path the idle/busy callbacks use.
-    let session_mgr_for_scraper = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
-    let idle_detector_for_pty = Arc::clone(&idle_detector);
-    // #552 manage the IdleDetector so the shared user-message helper, the mailbox
-    // wake path, and the auto-close task can reach its silence clock.
-    let idle_detector_for_state = Arc::clone(&idle_detector);
-    let idle_detector_for_setup = Arc::clone(&idle_detector);
-    let broadcaster_for_pty = broadcaster.clone();
-    let broadcaster_for_web = broadcaster.clone();
-    let web_token_for_server = Arc::clone(&web_access_token);
 
     // #2232 phase 3 section 5.1 / phase 4 section 4.2: the **single**
     // `CaptureRegistry` of the app. It is stored in Tauri state below and
@@ -197,202 +235,64 @@ pub(crate) fn run(
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::with_captures(output_senders, capture_registry),
     ));
-
     let RuntimeState {
-        settings,
-        coordinator_clocks,
-        coordinator_clocks_for_exit,
-        resource_monitor_state,
-        screenshot_capture_state,
-        screenshot_hotkey_state,
-        settings_for_web,
-        detached_sessions,
-        voice_tracking,
-        spec_board_state,
-        loop_scheduler,
-        loop_scheduler_for_setup,
-        non_stop_state,
-        non_stop_state_for_setup,
-        ipc_observer,
-        ipc_observer_for_setup,
-        ipc_observer_for_handler,
-        config_seed_lock,
-        update_check_state,
-        update_check_state_for_setup,
-        agent_update_gate,
-        agent_update_gate_for_setup,
-        agent_install_cache,
-        shutdown_for_setup,
-        shutdown_for_exit,
-        selection_coordinator_for_setup,
-        selection_coordinator_for_exit,
-        tg_mgr_for_exit,
-        resource_monitor_for_setup,
-        resource_monitor_for_exit,
-        ui_automation_state_for_setup,
-        ui_automation_state_for_exit,
-        message_store_state,
-        pty_target_gate_state,
+        managed: rs,
+        for_setup,
+        for_exit,
     } = prepare_runtime_state(
-        &owners,
+        owners,
         &response_close,
         &shutdown_signal,
         &selection_coordinator,
         &tg_mgr,
-        &ui_automation_state,
+        &boot.ui_automation_state,
     );
-
-    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
-    // on Windows, Linux and macOS; every other target never links them. The
-    // rest of the builder chain is shared. This predicate must match
-    // `Cargo.toml` and `screenshot/mod.rs`.
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
-
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    let builder = builder
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        crate::screenshot::begin_capture_from_hotkey(app.clone());
-                    }
-                })
-                .build(),
-        );
-
-    #[cfg(target_os = "linux")]
-    let builder = builder.manage(display_env);
-
-    let builder = crate::commands::session::selection_executor::install(builder);
-
-    builder
-        .manage(owners.clone())
-        .manage(master_token)
-        .manage(app_outbox)
-        .manage(session_mgr)
-        .manage(selection_coordinator)
-        .manage(tg_mgr)
-        .manage(capture_registry_for_state)
-        .manage(network::OutboundNetwork::new().expect("failed to build shared network clients"))
-        .manage(Arc::clone(&resource_monitor_state))
-        .manage(voice_tracking)
-        .manage(settings)
-        .manage(idle_detector_for_state) // #552 managed type: Arc<IdleDetector>
-        .manage(coordinator_clocks) // #552 managed type: CoordinatorClocksState
-        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
-        .manage(detached_sessions.clone())
-        .manage(spec_board_state.clone())
-        .manage(loop_scheduler.clone())
-        .manage(non_stop_state)
-        .manage(ipc_observer)
-        .manage(web_access_token.clone())
-        .manage(broadcaster.clone())
-        .manage(WebServerHandle::default())
-        .manage(ApiServerHandle::default())
-        .manage(message_store_state)
-        .manage(pty_target_gate_state)
-        .manage(config_seed_lock)
-        .manage(Arc::new(commands::session::PreflightState::default()))
-        .manage(update_check_state)
-        .manage(agent_update_gate)
-        .manage(agent_install_cache)
-        .manage(ui_automation_state)
-        .manage(terminal_snapshot_state)
-        .manage(shutdown_signal)
-        .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
-        .manage(Arc::new(PendingSelfClear::default()))
-        .manage(screenshot_capture_state) // #714
-        .manage(screenshot_hotkey_state) // #714
-        .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
-        .manage(response_close.clone())
-        .manage(crate::pty::input_activity::new_typing_hold_state()) // #2336 typing hold
-        .manage(crate::session::warnings::new_session_warning_state())
-        .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
-        .setup(move |app| {
-            setup::setup(
-                app,
-                setup::SetupCtx {
-                    owners: owners.clone(),
-                    test_window_placement,
-                    app_handle_lock,
-                    co_managed_supervisor_for_setup,
-                    co_managed_triggers,
-                    response_close_for_setup,
-                    session_mgr_for_git,
-                    session_mgr_for_git_sweeper,
-                    session_mgr_for_discovery,
-                    session_mgr_for_web,
-                    session_mgr_for_api,
-                    session_mgr_for_scraper,
-                    output_senders_for_pty,
-                    idle_detector_for_pty,
-                    idle_detector_for_setup,
-                    broadcaster_for_pty,
-                    broadcaster_for_web,
-                    web_access_token,
-                    web_token_for_server,
-                    settings_for_web,
-                    loop_scheduler_for_setup,
-                    non_stop_state_for_setup,
-                    ipc_observer_for_setup,
-                    update_check_state_for_setup,
-                    agent_update_gate_for_setup,
-                    shutdown_for_setup,
-                    selection_coordinator_for_setup,
-                    resource_monitor_for_setup,
-                    ui_automation_state_for_setup,
-                },
-            )
-        })
-        // (#1652) Every invoke that reaches the app handler is stamped here,
-        // before dispatch: the only place in the process that sees the
-        // frontend -> backend direction as a stream, which is what lets
-        // `[ipc-observer] SILENCE` speak about the CHANNEL and not one command.
-        // Entry only - `generate_handler!` returns as soon as the command is
-        // dispatched, so there is no exit to hook. The exit side is the
-        // renderer's `settled` accounting (phase 2); the pair separates "never
-        // arrived" from "never came back".
-        //
-        // UNSTABLE API: `tauri::ipc::Invoke`'s own doc comment says it "is used
-        // internally by macros and is explicitly **NOT** stable"
-        // (tauri-2.10.3/src/ipc/mod.rs:209). `Cargo.lock` pins 2.10.3 and this
-        // wrapper is the ONLY place in the app depending on an explicitly
-        // unstable tauri type. The next tauri bump must re-check three things:
-        // `Invoke::message` public, `InvokeMessage::command()` public, and
-        // `generate_handler!` still expanding to a bindable closure expression.
-        //
-        // Blind spot, stated: Tauri routes plugin commands (`plugin:window|*`,
-        // `plugin:event|emit`, `plugin:dialog|open`) through `manager.extend_api`
-        // in a branch that never reaches `run_invoke_handler`
-        // (tauri-2.10.3/src/webview/mod.rs:1840-1890), so they never reach this
-        // closure - and the renderer's registry does not see them either, because
-        // `@tauri-apps/api`'s window/event/dialog helpers call
-        // `__TAURI_INTERNALS__.invoke` directly, not `TauriTransport.invoke`. The
-        // two sides therefore stay symmetric and no false "sent but never
-        // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
-        // this in every record block.
-        .invoke_handler(crate::invoke_handler(ipc_observer_for_handler))
-        .build(tauri::generate_context!())
-        .expect("error while building application")
-        .run({
-            let detached_set = detached_sessions.clone();
-            let spec_board_state = spec_board_state.clone();
-            let ctx = exit::ExitCtx {
-                detached_set,
-                spec_board_state,
-                activity_for_exit,
-                session_mgr_for_exit,
-                coordinator_clocks_for_exit,
-                shutdown_for_exit,
-                selection_coordinator_for_exit,
-                tg_mgr_for_exit,
-                resource_monitor_for_exit,
-                ui_automation_state_for_exit,
-            };
-            crate::exit_callback(ctx, commands::spec_board::spec_board_close_all)
-        });
-    Ok(())
+    let setup_ctx = setup::SetupCtx {
+        owners: owners.clone(),
+        test_window_placement,
+        app_handle_lock,
+        co_managed_supervisor_for_setup,
+        co_managed_triggers,
+        response_close_for_setup,
+        session_mgr_for_git: Arc::clone(&session_mgr),
+        session_mgr_for_git_sweeper: Arc::clone(&session_mgr),
+        session_mgr_for_discovery: Arc::clone(&session_mgr),
+        session_mgr_for_web: Arc::clone(&session_mgr),
+        session_mgr_for_api: Arc::clone(&session_mgr),
+        session_mgr_for_scraper: Arc::clone(&session_mgr),
+        output_senders_for_pty,
+        idle_detector_for_pty: Arc::clone(&idle_detector),
+        idle_detector_for_setup: Arc::clone(&idle_detector),
+        broadcaster_for_pty: broadcaster.clone(),
+        broadcaster_for_web: broadcaster.clone(),
+        web_access_token: Arc::clone(&boot.web_access_token),
+        web_token_for_server: Arc::clone(&boot.web_access_token),
+        settings_for_web: for_setup.settings_for_web,
+        loop_scheduler_for_setup: for_setup.loop_scheduler_for_setup,
+        non_stop_state_for_setup: for_setup.non_stop_state_for_setup,
+        ipc_observer_for_setup: for_setup.ipc_observer_for_setup,
+        update_check_state_for_setup: for_setup.update_check_state_for_setup,
+        agent_update_gate_for_setup: for_setup.agent_update_gate_for_setup,
+        shutdown_for_setup: for_setup.shutdown_for_setup,
+        selection_coordinator_for_setup: for_setup.selection_coordinator_for_setup,
+        resource_monitor_for_setup: for_setup.resource_monitor_for_setup,
+        ui_automation_state_for_setup: for_setup.ui_automation_state_for_setup,
+    };
+    Ok(Launch {
+        boot,
+        session_mgr,
+        selection_coordinator,
+        tg_mgr,
+        capture_registry_for_state,
+        idle_detector,
+        broadcaster,
+        terminal_snapshot_state,
+        shutdown_signal,
+        response_close,
+        rs,
+        for_exit,
+        setup_ctx,
+    })
 }
 
 struct BootPreamble {
@@ -502,40 +402,52 @@ fn prepare_boot(
 }
 
 struct RuntimeState {
+    managed: ManagedRuntime,
+    for_setup: RuntimeSetupParts,
+    for_exit: RuntimeExitParts,
+}
+
+struct ManagedRuntime {
     settings: SettingsState,
     coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState,
-    coordinator_clocks_for_exit: crate::config::coordinator_clocks::CoordinatorClocksState,
     resource_monitor_state: Arc<resource_monitor::ResourceMonitorState>,
     screenshot_capture_state: screenshot::ScreenshotCaptureState,
     screenshot_hotkey_state: screenshot::ScreenshotHotkeyState,
-    settings_for_web: SettingsState,
     detached_sessions: DetachedSessionsState,
     voice_tracking: VoiceTrackingState,
     spec_board_state: SpecBoardState,
     loop_scheduler: Arc<loops::scheduler::LoopScheduler>,
-    loop_scheduler_for_setup: Arc<loops::scheduler::LoopScheduler>,
     non_stop_state: crate::loops::non_stop_watchdog::NonStopWatchdogState,
-    non_stop_state_for_setup: crate::loops::non_stop_watchdog::NonStopWatchdogState,
     ipc_observer: Arc<crate::loops::ipc_observer::IpcObserver>,
-    ipc_observer_for_setup: Arc<crate::loops::ipc_observer::IpcObserver>,
     ipc_observer_for_handler: Arc<crate::loops::ipc_observer::IpcObserver>,
     config_seed_lock: ConfigSeedLockState,
     update_check_state: UpdateCheckState,
-    update_check_state_for_setup: UpdateCheckState,
     agent_update_gate: Arc<agent_update::AgentUpdateGate>,
-    agent_update_gate_for_setup: Arc<agent_update::AgentUpdateGate>,
     agent_install_cache: Arc<crate::agent_version::AgentInstallCache>,
-    shutdown_for_setup: ShutdownSignal,
-    shutdown_for_exit: ShutdownSignal,
-    selection_coordinator_for_setup: crate::session::selection::SelectionCoordinator,
-    selection_coordinator_for_exit: crate::session::selection::SelectionCoordinator,
-    tg_mgr_for_exit: TelegramBridgeState,
-    resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
-    resource_monitor_for_exit: Arc<resource_monitor::ResourceMonitorState>,
-    ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
-    ui_automation_state_for_exit: crate::testability::ui_automation::UiAutomationState,
     message_store_state: crate::api::message_store::MessageStoreState,
     pty_target_gate_state: crate::api::message_store::PtyInputTargetGateState,
+}
+
+struct RuntimeSetupParts {
+    settings_for_web: SettingsState,
+    loop_scheduler_for_setup: Arc<loops::scheduler::LoopScheduler>,
+    non_stop_state_for_setup: crate::loops::non_stop_watchdog::NonStopWatchdogState,
+    ipc_observer_for_setup: Arc<crate::loops::ipc_observer::IpcObserver>,
+    update_check_state_for_setup: UpdateCheckState,
+    agent_update_gate_for_setup: Arc<agent_update::AgentUpdateGate>,
+    shutdown_for_setup: ShutdownSignal,
+    selection_coordinator_for_setup: crate::session::selection::SelectionCoordinator,
+    resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
+    ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
+}
+
+struct RuntimeExitParts {
+    coordinator_clocks_for_exit: crate::config::coordinator_clocks::CoordinatorClocksState,
+    shutdown_for_exit: ShutdownSignal,
+    selection_coordinator_for_exit: crate::session::selection::SelectionCoordinator,
+    tg_mgr_for_exit: TelegramBridgeState,
+    resource_monitor_for_exit: Arc<resource_monitor::ResourceMonitorState>,
+    ui_automation_state_for_exit: crate::testability::ui_automation::UiAutomationState,
 }
 
 fn prepare_runtime_state(
@@ -620,16 +532,6 @@ fn prepare_runtime_state(
     let agent_install_cache: Arc<crate::agent_version::AgentInstallCache> =
         Arc::new(crate::agent_version::AgentInstallCache::new());
 
-    let shutdown_for_setup = shutdown_signal.clone();
-    let shutdown_for_exit = shutdown_signal.clone();
-    let selection_coordinator_for_setup = selection_coordinator.clone();
-    let selection_coordinator_for_exit = selection_coordinator.clone();
-    let tg_mgr_for_exit = tg_mgr.clone();
-    let resource_monitor_for_setup = Arc::clone(&resource_monitor_state);
-    let resource_monitor_for_exit = Arc::clone(&resource_monitor_state);
-    let ui_automation_state_for_setup = ui_automation_state.clone();
-    let ui_automation_state_for_exit = ui_automation_state.clone();
-
     // One recovered operation store is shared by the filesystem poller and
     // both API start paths. A failure disables only privileged PTY input.
     let message_store_state = crate::api::message_store::MessageStoreState::initialize();
@@ -641,39 +543,46 @@ fn prepare_runtime_state(
     let pty_target_gate_state = message_store_state.target_gate_state();
 
     RuntimeState {
-        settings,
-        coordinator_clocks,
-        coordinator_clocks_for_exit,
-        resource_monitor_state,
-        screenshot_capture_state,
-        screenshot_hotkey_state,
-        settings_for_web,
-        detached_sessions,
-        voice_tracking,
-        spec_board_state,
-        loop_scheduler,
-        loop_scheduler_for_setup,
-        non_stop_state,
-        non_stop_state_for_setup,
-        ipc_observer,
-        ipc_observer_for_setup,
-        ipc_observer_for_handler,
-        config_seed_lock,
-        update_check_state,
-        update_check_state_for_setup,
-        agent_update_gate,
-        agent_update_gate_for_setup,
-        agent_install_cache,
-        shutdown_for_setup,
-        shutdown_for_exit,
-        selection_coordinator_for_setup,
-        selection_coordinator_for_exit,
-        tg_mgr_for_exit,
-        resource_monitor_for_setup,
-        resource_monitor_for_exit,
-        ui_automation_state_for_setup,
-        ui_automation_state_for_exit,
-        message_store_state,
-        pty_target_gate_state,
+        // Handle clones first; `managed` then moves the originals.
+        for_setup: RuntimeSetupParts {
+            settings_for_web,
+            loop_scheduler_for_setup,
+            non_stop_state_for_setup,
+            ipc_observer_for_setup,
+            update_check_state_for_setup,
+            agent_update_gate_for_setup,
+            shutdown_for_setup: shutdown_signal.clone(),
+            selection_coordinator_for_setup: selection_coordinator.clone(),
+            resource_monitor_for_setup: Arc::clone(&resource_monitor_state),
+            ui_automation_state_for_setup: ui_automation_state.clone(),
+        },
+        for_exit: RuntimeExitParts {
+            coordinator_clocks_for_exit,
+            shutdown_for_exit: shutdown_signal.clone(),
+            selection_coordinator_for_exit: selection_coordinator.clone(),
+            tg_mgr_for_exit: tg_mgr.clone(),
+            resource_monitor_for_exit: Arc::clone(&resource_monitor_state),
+            ui_automation_state_for_exit: ui_automation_state.clone(),
+        },
+        managed: ManagedRuntime {
+            settings,
+            coordinator_clocks,
+            resource_monitor_state,
+            screenshot_capture_state,
+            screenshot_hotkey_state,
+            detached_sessions,
+            voice_tracking,
+            spec_board_state,
+            loop_scheduler,
+            non_stop_state,
+            ipc_observer,
+            ipc_observer_for_handler,
+            config_seed_lock,
+            update_check_state,
+            agent_update_gate,
+            agent_install_cache,
+            message_store_state,
+            pty_target_gate_state,
+        },
     }
 }

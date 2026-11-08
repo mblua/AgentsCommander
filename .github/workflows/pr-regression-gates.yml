@@ -268,7 +268,7 @@ jobs:
             testedSha, ...(process.env.PR_HEAD_SHA ? { prHeadSha: process.env.PR_HEAD_SHA } : {}),
             generatedUtc: new Date().toISOString(), sha256: hash(record), bytes: record.length,
             arcCount: record.length ? record.toString('utf8').split(String.fromCharCode(10)).length - 1 : 0,
-            detectorVersion: '1.1.1', nodeVersion: process.version,
+            detectorVersion: '1.2.0', nodeVersion: process.version,
           };
           fs.writeFileSync(dir + '/receipt.json', JSON.stringify(receipt, null, 2) + String.fromCharCode(10));
           const saved = JSON.parse(fs.readFileSync(dir + '/receipt.json', 'utf8'));
@@ -288,6 +288,8 @@ jobs:
           path: |
             artifacts/module-arcs/module-arcs.txt
             artifacts/module-arcs/receipt.json
+      - name: "Detector child-path tests (#3998)"
+        run: node --test scripts/module-child-paths.test.mjs
       - name: "Check no new dependency cycles (#2447)"
         run: |
           npm run check:cycles:self

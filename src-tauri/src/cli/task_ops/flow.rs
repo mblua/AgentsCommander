@@ -1,19 +1,19 @@
-use super::apply_edit;
 use super::clean::clean_pair_locked;
 use super::clean::recover_clean_pair_locked;
-use super::initialization::TASK_FILE_NAME;
-use super::is_user_owned_title;
-use super::parse_task;
-use super::render;
-use super::title_value_of;
-use super::EditOutcome;
-use super::LockGuard;
-use super::TaskOp;
-use super::TaskOpError;
-use super::LOCK_STALE_AFTER_5M;
-use super::LOCK_TIMEOUT_5S;
+use super::document::apply_edit;
+use super::document::is_user_owned_title;
+use super::document::parse_task;
+use super::document::render;
+use super::document::title_value_of;
+use super::lock::LockGuard;
+use super::lock::LOCK_STALE_AFTER_5M;
+use super::lock::LOCK_TIMEOUT_5S;
+use super::operation::EditOutcome;
+use super::operation::TaskOp;
+use super::operation::TaskOpError;
 #[cfg(test)]
 use crate::filesystem::tasks::io_boundary;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::filesystem::tasks::{
     copy_description_backup, description_sentinel, publish_description_stage, read_task_title_text,
     remove_task_artifact, reserve_task_backup, write_description_stage,
@@ -33,10 +33,10 @@ where
     F: FnOnce() -> DateTime<Utc>,
 {
     let task_path = wg_root.join(TASK_FILE_NAME);
-    let lock_path = wg_root.join("TASK.md.lock");
+    let lock_path = wg_root.join(format!("{TASK_FILE_NAME}.lock"));
     // Per-PID tmp suffix eliminates the tmp-collision race during stale-lock
     // recovery (HIGH-2).
-    let tmp_path = wg_root.join(format!("TASK.md.tmp.{}", std::process::id()));
+    let tmp_path = wg_root.join(format!("{TASK_FILE_NAME}.tmp.{}", std::process::id()));
 
     let _lock = LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M)?;
 

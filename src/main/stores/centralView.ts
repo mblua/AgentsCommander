@@ -6,8 +6,9 @@ import { SettingsAPI } from "../../shared/ipc";
 // always-mounted terminal, or the Resource Monitor overlaid on top of it (same
 // shape as the Home overlay, see home.ts). This tiny store owns that choice.
 // #3367 adds the embedded web browser as a third view; only the Resource
-// Monitor choice is persisted.
-export type CentralView = "terminal" | "resourceMonitor" | "browser";
+// Monitor choice is persisted. #3532 adds the desktop context history as a
+// fourth view; like the browser it is never persisted.
+export type CentralView = "terminal" | "resourceMonitor" | "browser" | "contextHistory";
 
 const [view, setView] = createSignal<CentralView>("terminal");
 
@@ -43,6 +44,9 @@ export const centralViewStore = {
   get isBrowser() {
     return view() === "browser";
   },
+  get isContextHistory() {
+    return view() === "contextHistory";
+  },
 
   // Restore-only: set the signal without persisting or touching windows.
   // Called once from MainApp.onMount after settings load.
@@ -73,6 +77,13 @@ export const centralViewStore = {
     if (leavingResourceMonitor) persist(false);
   },
 
+  showContextHistory() {
+    if (view() === "contextHistory") return;
+    const leavingResourceMonitor = view() === "resourceMonitor";
+    setView("contextHistory");
+    if (leavingResourceMonitor) persist(false);
+  },
+
   toggleResourceMonitor() {
     if (view() === "resourceMonitor") this.showTerminal();
     else this.showResourceMonitor();
@@ -81,6 +92,11 @@ export const centralViewStore = {
   toggleBrowser() {
     if (view() === "browser") this.showTerminal();
     else this.showBrowser();
+  },
+
+  toggleContextHistory() {
+    if (view() === "contextHistory") this.showTerminal();
+    else this.showContextHistory();
   },
 };
 

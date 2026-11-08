@@ -12,8 +12,6 @@ use crate::commands::entity_creation::{
     validate_existing_name, CreationTrace, Origin, Outcome, Reason, RepoAssignment, Stage,
     StageGuard, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
-use crate::config::ac_root::existing_ac_root;
-use crate::config::projects::resolve_project_reference;
 
 #[cfg(test)]
 use crate::config::remote_activity_cache::{
@@ -21,13 +19,19 @@ use crate::config::remote_activity_cache::{
 };
 #[cfg(test)]
 use crate::config::sessions_persistence::PersistedSession;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 
 #[cfg(test)]
 use crate::commands::entity_creation::create_workgroup_on_disk;
 
 mod activity;
+mod output;
+mod project;
 
-use activity::{activity, list_replica_activity_dirs};
+use output::print_json;
+pub(crate) use project::{resolve_cli_ac_root, resolve_cli_project};
+
+use activity::{activity, list_replica_activity_dirs, WorkgroupActivityArgs};
 #[cfg(test)]
 use activity::{
     aggregate_room_ci, canonical_activity_path_key, ci_gate, index_ci_entries, list_room_repo_dirs,
@@ -51,30 +55,6 @@ enum WorkgroupCommand {
     Add(WorkgroupAddArgs),
     /// Remove a room
     Remove(WorkgroupRemoveArgs),
-}
-
-#[derive(Args)]
-struct WorkgroupActivityArgs {
-    #[arg(long)]
-    project: String,
-    /// Keep only these room numbers (comma-separated, e.g. 5,12,17)
-    #[arg(long, allow_hyphen_values = true)]
-    rooms: Option<String>,
-    /// Keep only rooms of this team (exact name)
-    #[arg(long, allow_hyphen_values = true)]
-    team: Option<String>,
-    /// Keep only rooms whose working state is true or false
-    #[arg(long, allow_hyphen_values = true)]
-    working: Option<String>,
-    /// Keep only rooms whose ciState is running, idle or unknown
-    #[arg(long = "ci-state", allow_hyphen_values = true)]
-    ci_state: Option<String>,
-    /// Keep only rooms whose task title matches this regex (case-sensitive; (?i) for insensitive)
-    #[arg(long = "title-regex", allow_hyphen_values = true)]
-    title_regex: Option<String>,
-    /// Drop rooms whose task title is missing, blank or "clean" (any case)
-    #[arg(long = "hide-clean")]
-    hide_clean: bool,
 }
 
 #[derive(Args)]
@@ -138,22 +118,6 @@ pub fn execute(args: WorkgroupArgs) -> i32 {
             1
         }
     }
-}
-
-pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
-    let settings = crate::config::settings::load_settings_for_cli();
-    let resolved =
-        resolve_project_reference(&settings.project_paths, project).map_err(|e| e.to_string())?;
-    Ok(resolved.path)
-}
-
-pub(crate) fn resolve_cli_ac_root(project_path: &Path) -> Result<PathBuf, String> {
-    existing_ac_root(project_path).ok_or_else(|| {
-        format!(
-            "Project AC Root not found in {} (.ac)",
-            project_path.display()
-        )
-    })
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
@@ -235,7 +199,7 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
                     &path.join(crate::phone::messaging::MESSAGING_DIR_NAME),
                 ),
                 has_task: crate::filesystem::directories::cli_discovery_is_file(
-                    &path.join("TASK.md"),
+                    &path.join(TASK_FILE_NAME),
                 ),
                 replicas,
             })
@@ -261,7 +225,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     || !args.repo_agents.is_empty()
                     || !args.repo_exclude_agents.is_empty();
                 let team_dir = ac_root.join(format!("_team_{safe_team}"));
-                let config_path = team_dir.join("config.json");
+                let config_path = crate::config::config_file_path(&team_dir);
                 let team_config_exists =
                     crate::filesystem::directories::cli_discovery_exists(&team_dir)
                         || crate::filesystem::directories::cli_discovery_exists(&config_path);
@@ -606,13 +570,6 @@ pub(crate) async fn clone_missing_for_config(
     repos: &[RepoAssignment],
 ) -> Vec<crate::commands::entity_creation::CloneError> {
     clone_missing_repos_for_workgroup(wg_dir, repos).await
-}
-
-fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize JSON output: {e}"))?;
-    crate::cli_println!("{}", json);
-    Ok(())
 }
 
 #[cfg(test)]

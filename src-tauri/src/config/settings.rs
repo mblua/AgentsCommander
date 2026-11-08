@@ -1,5 +1,6 @@
 mod agent;
 mod app_defaults;
+pub(crate) mod context_history;
 mod field;
 mod instance;
 mod load;
@@ -14,6 +15,8 @@ mod source;
 pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
 pub(crate) use naming::{migrate_instance_settings_families, SettingsNamingError};
 
+use self::context_history::deserialize_context_history_color_days;
+pub use self::context_history::ContextHistoryColorDays;
 #[cfg(test)]
 use super::projects;
 #[cfg(test)]
@@ -24,6 +27,7 @@ use crate::config::instance_artifacts::{
 use crate::config::local_overlay::LocalSettingsOverlay;
 #[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
+use crate::resource_monitor::types::ResourceLimits;
 use crate::telegram::types::TelegramBotConfig;
 #[cfg(test)]
 use agent::{
@@ -867,6 +871,10 @@ pub struct AppSettings {
     /// Continuous room inactivity required before confirmation, in seconds.
     #[serde(default = "default_room_idle_confirmation_seconds")]
     pub room_idle_confirmation_seconds: u32,
+    /// #3532: days (1, 7 or 30) that colour the context-history heatmap.
+    /// Any other stored value loads as 30 in memory and is never rewritten.
+    #[serde(default, deserialize_with = "deserialize_context_history_color_days")]
+    pub context_history_color_days: ContextHistoryColorDays,
 }
 
 fn default_jev_model() -> String {
@@ -908,6 +916,18 @@ pub(crate) const REMOTE_AGENT_HELP_URL: &str = concat!(
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/",
     "remote-resources/agent-help/v1/agent-help.json",
 );
+
+impl From<&AppSettings> for ResourceLimits {
+    fn from(value: &AppSettings) -> Self {
+        Self {
+            monitor_enabled: value.resource_monitor_enabled,
+            max_concurrent_agent_processes: value.max_concurrent_agent_processes,
+            group_warn_private_bytes: value.agent_group_warn_private_bytes,
+            group_kill_private_bytes: value.agent_group_kill_private_bytes,
+            process_kill_private_bytes: value.agent_process_kill_private_bytes,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

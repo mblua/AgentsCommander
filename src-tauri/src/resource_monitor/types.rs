@@ -220,18 +220,6 @@ pub struct ResourceLimits {
     pub process_kill_private_bytes: u64,
 }
 
-impl From<&crate::config::settings::AppSettings> for ResourceLimits {
-    fn from(value: &crate::config::settings::AppSettings) -> Self {
-        Self {
-            monitor_enabled: value.resource_monitor_enabled,
-            max_concurrent_agent_processes: value.max_concurrent_agent_processes,
-            group_warn_private_bytes: value.agent_group_warn_private_bytes,
-            group_kill_private_bytes: value.agent_group_kill_private_bytes,
-            process_kill_private_bytes: value.agent_process_kill_private_bytes,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ResourceLaunchMetadata {
     pub session_id: Uuid,

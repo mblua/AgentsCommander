@@ -1,9 +1,8 @@
 //! Initial content and publication for newly allocated rooms.
 use crate::filesystem::projects::entities::publication;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use std::io;
 use std::path::Path;
-
-pub(crate) const TASK_FILE_NAME: &str = "TASK.md";
 
 pub(crate) fn initialize_new_room(root: &Path, prepared_content: &str) -> io::Result<()> {
     publication::write_initial_room_task(&root.join(TASK_FILE_NAME), prepared_content)
@@ -19,7 +18,7 @@ pub(crate) fn build_task_content(task_title: &str) -> String {
     // #738: the workgroup-creation title is a human decision, so store it as
     // user-owned (`USER:`). This locks it against coordinator auto-retitle until
     // a Clean resets the task. `user_owned_title` trims and avoids double-prefix.
-    let title = super::user_owned_title(task_title);
+    let title = super::document::user_owned_title(task_title);
     let escaped = title.replace('\'', "''");
     format!("---\ntitle: '{escaped}'\n---\n")
 }

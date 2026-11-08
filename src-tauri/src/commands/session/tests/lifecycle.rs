@@ -614,3 +614,87 @@ async fn nested_project_create_gates_against_its_own_replica_only() {
     let _ = (temp, nested_origin);
     close_test_coordinator(&app).await;
 }
+
+#[tokio::test]
+async fn restart_closes_old_history_before_teardown_and_never_waits_on_it() {
+    use crate::history_runtime::{HistoryIngress, IngressMessage};
+    use tauri::Manager;
+
+    let cwd = tempfile::tempdir().unwrap();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(ScriptedSpawnBackend::default());
+    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        backend.clone(),
+    )));
+    let app = session_test_app(
+        test_settings(),
+        Arc::clone(&session_mgr),
+        Arc::clone(&pty_mgr),
+    );
+    let (ingress, mut mailbox) = HistoryIngress::for_test(16);
+    app.manage(ingress);
+    let old =
+        create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy()).await;
+    let old_id = Uuid::parse_str(&old.id).unwrap();
+    // The first notice is acknowledged after checking the old PTY still lives.
+    let observer_backend = backend.clone();
+    let observer = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(message) = mailbox.recv().await {
+            if let IngressMessage::Restart(notice) = message {
+                let alive = observer_backend.has_session(notice.session_id());
+                seen.push((notice.session_id(), notice.closes(), alive));
+                if seen.len() == 1 {
+                    notice.acknowledge();
+                } else {
+                    break;
+                }
+            }
+        }
+        seen
+    });
+    let settings = app.state::<crate::config::settings::SettingsState>();
+    let replacement = super::super::restart_session_inner_with_activation(
+        app.handle(),
+        &session_mgr,
+        &pty_mgr,
+        settings.inner(),
+        old_id,
+        None,
+        None,
+        Some(false),
+        true,
+    )
+    .await
+    .expect("restart succeeds");
+    let replacement_id = Uuid::parse_str(&replacement.id).unwrap();
+    assert!(!backend.has_session(old_id));
+    // The second restart's notice is never acknowledged: it still succeeds,
+    // within the ack budget plus the restart itself.
+    let began = std::time::Instant::now();
+    super::super::restart_session_inner_with_activation(
+        app.handle(),
+        &session_mgr,
+        &pty_mgr,
+        settings.inner(),
+        replacement_id,
+        None,
+        None,
+        Some(false),
+        true,
+    )
+    .await
+    .expect("unacknowledged history never fails restart");
+    assert!(began.elapsed() < std::time::Duration::from_secs(5));
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), observer)
+        .await
+        .expect("both restarts notified history")
+        .unwrap();
+    // Each notice arrived while its old PTY was still alive, before teardown;
+    // a successful teardown sends no reopen notice in between.
+    assert_eq!(
+        seen,
+        vec![(old_id, true, true), (replacement_id, true, true)]
+    );
+    close_test_coordinator(&app).await;
+}

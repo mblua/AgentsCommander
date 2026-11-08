@@ -128,7 +128,7 @@ pub(crate) fn discover_teams_in_project_filtered(
             .unwrap_or(dir_name)
             .to_string();
 
-        let config_path = team_dir.join("config.json");
+        let config_path = crate::config::config_file_path(&team_dir);
         let raw = match ac_discovery::read_team_discovery_config(&config_path) {
             Ok(s) => s,
             Err(e) => {

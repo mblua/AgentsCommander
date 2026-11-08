@@ -52,7 +52,7 @@ pub(crate) fn build_replica_context_with_activation(
         ));
     }
     let cwd_path = std::path::Path::new(cwd);
-    let config_path = cwd_path.join("config.json");
+    let config_path = crate::config::config_file_path(cwd_path);
 
     // No config.json → no replica context, fall back to default behavior
     if !crate::filesystem::session_context::context_source_exists(&config_path) {
@@ -553,7 +553,7 @@ pub(crate) fn build_root_agent_context_at(
     auto_self_clear: bool,
 ) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
-    let config_path = cwd_path.join("config.json");
+    let config_path = crate::config::config_file_path(cwd_path);
     let config: Option<serde_json::Value> =
         match crate::filesystem::session_context::read_context_source(&config_path) {
             Ok(text) => Some(
@@ -563,7 +563,7 @@ pub(crate) fn build_root_agent_context_at(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("Failed to read {}: {}", config_path.display(), e)),
         };
-    let defaults = serde_json::json!(["../Context.root-agent.md", "Role.md"]);
+    let defaults = serde_json::json!(["../Context.root-agent.md", roles::ROLE_FILE_NAME]);
     super::super::root_agent::ensure_default_root_agent_skills_at(cwd_path)?;
     let entries = config
         .as_ref()
@@ -641,7 +641,7 @@ pub(crate) fn build_direct_matrix_context(
 ) -> Result<String, String> {
     let cwd_path = Path::new(cwd);
     let role_path = roles::role_path(cwd_path);
-    let config_path = cwd_path.join("config.json");
+    let config_path = crate::config::config_file_path(cwd_path);
     let config = if crate::filesystem::session_context::context_source_exists(&config_path) {
         let config_content = crate::filesystem::session_context::read_context_source(&config_path)
             .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;

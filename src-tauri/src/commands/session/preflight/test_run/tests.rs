@@ -183,9 +183,15 @@ impl Fixture {
 
     async fn describe_at(&self, path: &str, letter: Option<&str>) -> PreflightTargetDescription {
         let letter = letter.map(String::from);
-        describe_preflight_target_inner(&self.deps(), ID.to_string(), letter, path.to_string())
-            .await
-            .expect("describe")
+        describe_preflight_target_inner(
+            &self.deps(),
+            ID.to_string(),
+            letter,
+            path.to_string(),
+            None,
+        )
+        .await
+        .expect("describe")
     }
 
     async fn describe(&self) -> PreflightTargetDescription {
@@ -194,7 +200,7 @@ impl Fixture {
 
     async fn start_at(&self, path: &str, revision: String) -> Result<String, String> {
         let (id, path) = (ID.to_string(), path.to_string());
-        start_preflight_test_inner(self.deps(), id, None, path, revision).await
+        start_preflight_test_inner(self.deps(), id, None, path, revision, None).await
     }
 
     async fn start(&self) -> Result<String, String> {
@@ -203,7 +209,7 @@ impl Fixture {
 
     async fn prepare(&self) -> (String, PreflightTestTask) {
         let (id, path) = (ID.to_string(), self.cwd.clone());
-        prepare_preflight_test(self.deps(), id, None, path, self.revision())
+        prepare_preflight_test(self.deps(), id, None, path, self.revision(), None)
             .await
             .expect("prepare")
     }
@@ -393,7 +399,7 @@ fn revision_scope() {
 async fn start_rejects_stale_revision() {
     let fx = Fixture::new(pass());
     let error = fx.start_at(&fx.cwd, "x".to_string()).await.unwrap_err();
-    assert_eq!(error, "Save your changes before testing preflights.");
+    assert_eq!(error, STALE);
     assert!(fx.state.runs().runs.is_empty());
 }
 
@@ -683,4 +689,307 @@ fn test_hold_rules() {
         assert!(!state.is_free("c:/a/B/"));
         drop(hold);
     }
+}
+
+fn stage(command: Option<&str>, timeout_seconds: Option<u32>) -> PreflightDraftStage {
+    PreflightDraftStage {
+        command: command.map(String::from),
+        timeout_seconds,
+    }
+}
+
+type Cells<'a> = &'a [(&'a str, PreflightDraftStage)];
+type R<T> = Result<T, String>;
+
+fn draft(coding_agent: PreflightDraftStage, cells: Cells<'_>) -> PreflightTestDraft {
+    let profiles = cells.iter().map(|(k, s)| ((*k).to_string(), s.clone()));
+    let profiles = profiles.collect();
+    PreflightTestDraft {
+        coding_agent,
+        profiles,
+    }
+}
+
+type Shown = Vec<(PreflightStageSource, String, u32)>;
+
+fn shown(description: &PreflightTargetDescription) -> Shown {
+    let stages = description.stages.iter();
+    stages
+        .map(|s| (s.source, s.command_text.clone(), s.timeout_seconds))
+        .collect()
+}
+
+impl Fixture {
+    async fn describe_draft(&self, draft: PreflightTestDraft) -> R<PreflightTargetDescription> {
+        let (id, path) = (ID.to_string(), self.cwd.clone());
+        describe_preflight_target_inner(&self.deps(), id, None, path, Some(draft)).await
+    }
+
+    async fn start_draft(&self, letter: Option<&str>, draft: PreflightTestDraft) -> R<String> {
+        let (id, path, letter) = (ID.to_string(), self.cwd.clone(), letter.map(String::from));
+        let revision = self.revision();
+        start_preflight_test_inner(self.deps(), id, letter, path, revision, Some(draft)).await
+    }
+
+    async fn list(&self, agent_id: &str, paths: &[String]) -> R<Vec<PreflightTestTarget>> {
+        let agent_id = agent_id.to_string();
+        list_preflight_test_targets_inner(&self.deps(), agent_id, paths.to_vec()).await
+    }
+}
+
+#[tokio::test]
+async fn draft_runs_in_order_and_keeps_saved_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = crate::config::settings::settings_fixture_path(dir.path());
+    let saved = settings(Some(text("exit 3")), Some(text("exit 4")));
+    std::fs::write(&file, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let fx = Fixture::new(crate::config::settings::load_settings_from_path(&file));
+    let file_bytes = std::fs::read(&file).unwrap();
+    let before = fx.settings.current_snapshot().await.unwrap();
+    let saved_spawn = |cfg: &AppSettings| {
+        let spawn = build_configured_agent_spawn_for_cwd(cfg, ID, &fx.cwd, None);
+        spawn.expect("resolve").expect("configured")
+    };
+    let spawn = saved_spawn(&before);
+    let (ca, profile) = (text("exit 0"), text("exit 00"));
+    let edit = draft(
+        stage(Some(&ca), Some(7)),
+        &[("A", stage(Some(&profile), Some(9)))],
+    );
+
+    let description = fx.describe_draft(edit.clone()).await.expect("describe");
+    let expected = [
+        (PreflightStageSource::CodingAgent, ca.clone(), 7),
+        (PreflightStageSource::Profile, profile.clone(), 9),
+    ];
+    assert_eq!(shown(&description), expected);
+    assert_eq!(description.settings_revision, fx.revision());
+    let run_id = fx.start_draft(None, edit).await.expect("start");
+    let snapshot = fx.finished(&run_id).await;
+    assert_eq!(snapshot.outcome, Some(PreflightTestOutcome::Passed));
+
+    let requests = fx.backend.requests.lock().unwrap().clone();
+    let ran: Vec<String> = requests.iter().map(|r| r.args.join(" ")).collect();
+    assert_eq!(ran.len(), 2);
+    assert!(
+        ran[0].contains("exit 0") && !ran[0].contains("exit 00"),
+        "{ran:?}"
+    );
+    assert!(ran[1].contains("exit 00"), "{ran:?}");
+    for request in &requests {
+        assert_eq!(request.cwd, description.cwd);
+        assert_eq!(request.configured_env, spawn.child_env);
+        assert_eq!(request.env_remove_keys, spawn.env_remove_keys);
+        let shell = request
+            .resolved_agent_host_shell
+            .as_ref()
+            .expect("saved shell");
+        assert_eq!(shell.program, before.default_shell);
+        assert_eq!(shell.args, before.default_shell_args);
+    }
+
+    let after = fx.settings.current_snapshot().await.unwrap();
+    let bytes = |cfg: &AppSettings| serde_json::to_vec(cfg).unwrap();
+    assert_eq!(bytes(&after), bytes(&before));
+    assert_eq!(std::fs::read(&file).unwrap(), file_bytes);
+    // Positive control: the real launch builder still sees the saved chain and identity.
+    let control = saved_spawn(&after);
+    let saved_chain = control.preflight_stages.clone().expect("saved chain");
+    let saved_chain: Vec<_> = saved_chain
+        .iter()
+        .map(|s| (s.command_text.clone(), s.timeout_seconds))
+        .collect();
+    assert_eq!(saved_chain, [(text("exit 3"), 60), (text("exit 4"), 60)]);
+    assert_eq!(control.profile_content_hash, spawn.profile_content_hash);
+    assert!(fx.session_mgr.read().await.list_sessions().await.is_empty());
+    assert_eq!(fx.backend.spawns.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn draft_stage_cases() {
+    let t0 = text("exit 0");
+    use PreflightStageSource::{CodingAgent as Ca, Profile as Pr};
+    let none = || stage(None, None);
+    let blank = draft(
+        stage(Some(" \t"), Some(5)),
+        &[("A", stage(Some(" "), None))],
+    );
+    let nulls = draft(stage(Some(&t0), None), &[]);
+    let absent = draft(none(), &[("B", stage(Some(&t0), Some(3)))]);
+    let only = draft(none(), &[("A", stage(Some(&t0), Some(4)))]);
+    let cases: Vec<(&str, PreflightTestDraft, Shown)> = vec![
+        ("empty draft, saved nonempty", draft(none(), &[]), vec![]),
+        ("blank commands", blank, vec![]),
+        ("null timeout is 60", nulls, vec![(Ca, t0.clone(), 60)]),
+        ("absent effective entry", absent, vec![]),
+        ("profile only", only, vec![(Pr, t0.clone(), 4)]),
+    ];
+    let fx = Fixture::new(pass());
+    for (name, edit, expected) in cases {
+        let description = fx.describe_draft(edit).await.expect(name);
+        assert_eq!(description.unavailable_reason, None, "{name}");
+        assert_eq!(shown(&description), expected, "{name}");
+    }
+    let malformed = draft(stage(Some("pre \"unclosed"), None), &[]);
+    let description = fx
+        .describe_draft(malformed.clone())
+        .await
+        .expect("describe");
+    let reason = description.unavailable_reason.expect("unavailable");
+    let prefix = "Invalid Coding Agent preflight command: ";
+    assert!(reason.starts_with(prefix), "{reason}");
+    assert_eq!(fx.start_draft(None, malformed).await.unwrap_err(), reason);
+    assert!(fx.state.runs().runs.is_empty());
+
+    // An invalid saved chain does not block a valid draft; with no draft it still refuses.
+    let fx = Fixture::new(settings(Some("pre \"unclosed".to_string()), None));
+    assert!(fx.describe().await.unavailable_reason.is_some());
+    let repair = draft(stage(Some(&t0), None), &[]);
+    let repaired = fx.describe_draft(repair).await.expect("describe");
+    assert_eq!(repaired.unavailable_reason, None);
+    assert_eq!(repaired.stages.len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_draft_refused_by_inner() {
+    let fx = Fixture::new(pass());
+    let t0 = text("exit 0");
+    let none = || stage(None, None);
+    let drafts = [
+        draft(none(), &[("a", stage(Some(&t0), None))]),
+        draft(none(), &[("AB", none())]),
+        draft(none(), &[("", none())]),
+        draft(none(), &[("1", none())]),
+        draft(stage(None, Some(0)), &[]),
+        draft(stage(Some(&t0), None), &[("B", stage(None, Some(0)))]),
+    ];
+    for (index, edit) in drafts.into_iter().enumerate() {
+        let refused = fx.describe_draft(edit.clone()).await;
+        assert!(refused.is_err(), "describe {index}");
+        assert!(fx.start_draft(None, edit).await.is_err(), "start {index}");
+    }
+    assert!(fx.state.runs().runs.is_empty());
+}
+
+#[test]
+fn draft_wire_decoding() {
+    let decode = |value: serde_json::Value| serde_json::from_value::<PreflightTestDraft>(value);
+    let ok = serde_json::json!({
+        "codingAgent": {"command": null, "timeoutSeconds": null},
+        "profiles": {"A": {"command": "x", "timeoutSeconds": 5}}
+    });
+    let decoded = decode(ok.clone()).expect("valid draft");
+    let expected = draft(stage(None, None), &[("A", stage(Some("x"), Some(5)))]);
+    assert_eq!(decoded, expected);
+    let edits: [fn(&mut serde_json::Value); 11] = [
+        |v| drop(v.as_object_mut().unwrap().remove("codingAgent")),
+        |v| drop(v.as_object_mut().unwrap().remove("profiles")),
+        |v| drop(v["codingAgent"].as_object_mut().unwrap().remove("command")),
+        |v| {
+            drop(
+                v["codingAgent"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("timeoutSeconds"),
+            )
+        },
+        |v| v["cwd"] = "C:/x".into(),
+        |v| v["profiles"]["A"]["enabled"] = true.into(),
+        |v| v["profiles"]["A"]["timeoutSeconds"] = 1.5.into(),
+        |v| v["profiles"]["A"]["timeoutSeconds"] = (-1).into(),
+        |v| v["profiles"]["A"]["timeoutSeconds"] = 4_294_967_296_u64.into(),
+        |v| v["profiles"]["A"]["timeoutSeconds"] = "5".into(),
+        |v| v["profiles"] = serde_json::json!([]),
+    ];
+    for (index, edit) in edits.iter().enumerate() {
+        let mut value = ok.clone();
+        edit(&mut value);
+        assert!(decode(value).is_err(), "case {index}");
+    }
+}
+
+#[tokio::test]
+async fn saved_fallback_owns_profile_and_race_refuses() {
+    let mut fx = Fixture::new(pass());
+    let name = crate::config::coding_agent_profiles::agent_name_from_dir(Path::new(&fx.cwd));
+    let profiles = &mut fx.cfg.coding_agent_profiles;
+    let defaults = &mut profiles.default_profile_by_agent;
+    defaults.insert(name.expect("agent name"), "C".to_string());
+    let mut disabled = cell(Some(text("exit 5")));
+    disabled.enabled = false;
+    let cells = profiles.profiles_by_agent.get_mut(ID).unwrap();
+    cells.insert("C".to_string(), disabled);
+    fx.settings = new_settings_state(fx.cfg.clone());
+
+    let targets = fx.list(ID, &[fx.cwd.clone()]).await.expect("list");
+    let first = &targets[0];
+    let letters = (
+        first.requested_profile.as_str(),
+        first.effective_profile.as_str(),
+    );
+    assert_eq!((letters, first.fallback_applied), (("C", "A"), true));
+    let t00 = text("exit 00");
+    let cells = [
+        ("C", stage(Some(&text("exit 9")), None)),
+        ("A", stage(Some(&t00), Some(4))),
+    ];
+    let edit = draft(stage(None, None), &cells);
+    let description = fx.describe_draft(edit.clone()).await.expect("describe");
+    let requested = description.requested_profile.as_str();
+    assert_eq!(
+        (requested, description.effective_profile.as_str()),
+        ("C", "A")
+    );
+    assert_eq!(
+        shown(&description),
+        [(PreflightStageSource::Profile, t00, 4)]
+    );
+    let race = fx.start_draft(Some("C"), edit.clone()).await.unwrap_err();
+    assert_eq!(race, "This agent uses Profile A, not Profile C.");
+    assert!(fx.state.runs().runs.is_empty());
+    let run_id = fx.start_draft(Some("A"), edit).await.expect("start");
+    let outcome = fx.finished(&run_id).await.outcome;
+    assert_eq!(outcome, Some(PreflightTestOutcome::Passed));
+}
+
+#[tokio::test]
+async fn list_dedups_skips_and_marks_running() {
+    let fx = Fixture::new(pass());
+    let manager = fx.session_mgr.read().await;
+    manager
+        .insert_pending_session_for_test(fx.other.clone())
+        .await;
+    drop(manager);
+    let plain = tempfile::tempdir().unwrap();
+    let plain_path = plain.path().to_string_lossy().into_owned();
+    let missing = plain.path().join("gone").to_string_lossy().into_owned();
+    let paths = [
+        fx.cwd.clone(),
+        plain_path,
+        format!("{}/", fx.cwd),
+        missing,
+        fx.other.clone(),
+        fx.other.clone(),
+    ];
+    let rows = |targets: Vec<PreflightTestTarget>| -> Vec<(String, String, bool)> {
+        let rows = targets.into_iter();
+        rows.map(|t| (t.replica_path, t.effective_profile, t.running))
+            .collect()
+    };
+    let listed = rows(fx.list(ID, &paths).await.expect("list"));
+    let a = || "A".to_string();
+    let expected = [(fx.cwd.clone(), a(), false), (fx.other.clone(), a(), true)];
+    assert_eq!(listed, expected);
+    let _live = fx.live_session(&fx.cwd).await;
+    let listed = rows(fx.list(ID, &paths[..1]).await.expect("list"));
+    assert_eq!(listed, [(fx.cwd.clone(), a(), true)]);
+    assert_eq!(fx.list("nope", &paths).await.unwrap_err(), NOT_FOUND);
+
+    let mut cfg = pass();
+    cfg.agents[0].backend.kind = SessionBackendKind::ContainerTransport;
+    let fx = Fixture::new(cfg);
+    assert_eq!(fx.list(ID, &paths[..1]).await.unwrap_err(), CONTAINER);
+    let refused = fx.describe_draft(draft(stage(None, None), &[])).await;
+    let reason = refused.expect("describe").unavailable_reason;
+    assert_eq!(reason.as_deref(), Some(CONTAINER));
 }

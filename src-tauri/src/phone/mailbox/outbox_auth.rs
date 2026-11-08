@@ -12,17 +12,17 @@ use super::pty_observation::{PtyAuthorityState, PtyReadinessState};
 use super::settle::session_has_current_pty_submission_provenance;
 use crate::config::teams;
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::browser::is_web_browser_action;
 #[cfg(test)]
 use crate::phone::mailbox::classify_outbox_document;
+use crate::phone::mailbox::host::{BrowserHost, MailboxHost};
 #[cfg(test)]
 use crate::phone::mailbox::OutboxClassification;
 use crate::phone::types::OutboxMessage;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
-use crate::MasterToken;
 use std::path::Path;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
@@ -188,9 +188,9 @@ impl MailboxPoller {
     /// `origin`: the directory the file was found in (#2232 phase 7). The
     /// master/root-token origin is `OutboxOrigin::Master`.
     #[cfg(test)]
-    pub(crate) async fn process_message<R: tauri::Runtime>(
+    pub(crate) async fn process_message<S: BrowserHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         origin: OutboxOrigin,
     ) -> Result<(), String> {
@@ -228,9 +228,9 @@ impl MailboxPoller {
     /// `slot` and `Ok(())` is returned WITHOUT delivering. `None` runs the tail
     /// inline (the `#[cfg(test)]` `process_message` entry point). Every earlier
     /// rejection return is unaffected because the success type stays `()`.
-    pub(crate) async fn process_message_content<R: tauri::Runtime>(
+    pub(crate) async fn process_message_content<S: BrowserHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         origin: OutboxOrigin,
         content: &str,
@@ -548,16 +548,16 @@ impl MailboxPoller {
         )))
     }
 
-    async fn authenticate_outbox<R: tauri::Runtime>(
+    async fn authenticate_outbox<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
     ) -> OutboxStage<OutboxAuthenticationFacts> {
         // Check if token is the master token or root token (bypasses anti-spoofing + team
         // validation)
         let is_master = if let Some(ref token_str) = msg.token {
-            let master = app.state::<MasterToken>();
+            let master = app.master_required();
             if master.matches(token_str) {
                 true
             } else {
@@ -598,9 +598,9 @@ impl MailboxPoller {
         )))
     }
 
-    async fn dispatch_outbox_self_operation<R: tauri::Runtime>(
+    async fn dispatch_outbox_self_operation<S: BrowserHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         origin: OutboxOrigin,
@@ -667,7 +667,7 @@ impl MailboxPoller {
         }
         // (#3367) Same pre-routing block: the embedded web browser belongs to the
         // app, so the token-owning caller is authorized by role, not team reach.
-        if crate::commands::web_browser::is_web_browser_action(msg.action.as_deref()) {
+        if is_web_browser_action(msg.action.as_deref()) {
             return Ok(std::ops::ControlFlow::Break(
                 self.handle_web_browser(app, path, msg, is_app_outbox).await,
             ));

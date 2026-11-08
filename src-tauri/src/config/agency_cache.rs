@@ -14,6 +14,8 @@ use crate::filesystem::agency_templates::{
     rename_agency_path, write_agency_lock, write_agency_text,
 };
 
+use crate::filesystem::projects::entities::roles;
+
 use crate::config::role_templates::{
     agency_template_metas_from_cache, agency_templates_dir, agency_templates_status,
     collect_agency_templates_from_dir, parse_agency_template_frontmatter,
@@ -551,7 +553,7 @@ fn normalize_agency_role_file(
     normalized.push_str("---\n\n");
     normalized.push_str(&body);
     normalized.push('\n');
-    let role_path = staging.join(division_slug).join(&role_slug).join("Role.md");
+    let role_path = roles::role_path(&staging.join(division_slug).join(&role_slug));
     if let Some(parent) = role_path.parent() {
         ensure_agency_directory(parent)
             .map_err(|e| format!("Failed to create normalized role dir: {e}"))?;

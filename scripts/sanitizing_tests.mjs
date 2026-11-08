@@ -1,5 +1,6 @@
 import './sanitizing_rust_scan_tests.mjs';
 import './sanitizing_containers_tests.mjs';
+import './sanitizing_disk_access_tests.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

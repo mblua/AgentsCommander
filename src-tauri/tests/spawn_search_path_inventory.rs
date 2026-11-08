@@ -216,9 +216,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/gitignore_layout.rs",
-        7,
+        9,
         0,
-        &[(TestOnly, 7)],
+        &[(TestOnly, 9)],
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/gitignore_rules.rs",
@@ -455,6 +455,18 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/filesystem/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
+        "src-tauri/src/filesystem/context_history/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/context_history/store/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/loops/scheduler/tests/issue_2682.rs",
         1,
         0,
@@ -468,6 +480,12 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/phone/mailbox/tests/physical_cwd.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/phone/mailbox/tests/project_refresh.rs",
         1,
         0,
         &[(TestOnly, 1)],

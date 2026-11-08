@@ -67,20 +67,19 @@ pub(crate) async fn accept_restart_deferred_completion<R: tauri::Runtime>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "Preserve restart settlement inputs for rollback, selection and prompt transfer"
-)]
+pub(crate) struct RestartFinalizeOptions {
+    pub(crate) old_lost: bool,
+    pub(crate) old_selected: bool,
+    pub(crate) activate_after: bool,
+    pub(crate) restart_start_fresh: bool,
+}
+
 pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     deferred: &DeferredCreateOutput,
     uuid: uuid::Uuid,
-    old_lost: bool,
-    old_selected: bool,
-    activate_after: bool,
     intent: TrustedRestartIntent,
-    restart_start_fresh: bool,
+    options: RestartFinalizeOptions,
 ) -> Result<
     (
         uuid::Uuid,
@@ -89,6 +88,12 @@ pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     ),
     String,
 > {
+    let RestartFinalizeOptions {
+        old_lost,
+        old_selected,
+        activate_after,
+        restart_start_fresh,
+    } = options;
     let new_uuid = match Uuid::parse_str(&deferred.info.id) {
         Ok(id) => id,
         Err(error) => {
@@ -197,7 +202,7 @@ pub(crate) async fn publish_restart_before_warnings<R: tauri::Runtime>(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&uuid);
     }
-    crate::telegram::manager::release_all_reader_demands(app, uuid).await;
+    crate::commands::telegram::release_all_reader_demands(app, uuid).await;
     raise_room_reader_demand(app, new_uuid).await;
     transaction.observe_entry_reader_demand(
         binding,
@@ -258,7 +263,7 @@ pub(crate) async fn complete_owned_replacement_retirement<R: tauri::Runtime>(
 ) {
     crate::session::selection::forget_response_close_registration(session_id);
     detach_restart_telegram(transaction, session_id).await;
-    crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     transaction
         .app()
         .state::<DetachedSessionsState>()
@@ -312,7 +317,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
         // Section 5.2: the old runtime is confirmed gone, so its reader
         // demands are released before the replacement is created. A failure to
         // create the replacement therefore leaves no old reader behind.
-        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
         return Ok(true);
     }
 
@@ -388,7 +393,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
     detach_restart_telegram(transaction, session_id).await;
     // Section 5.2: old runtime loss is confirmed, so the old id's reader
     // demands are released before the replacement is created.
-    crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     Ok(true)
 }
 
@@ -421,7 +426,7 @@ pub(crate) async fn finalize_failed_restart<R: tauri::Runtime>(
         // Section 5.2: the old row is gone, so any old-id reader demand that
         // survived teardown (or was raised while it was in flight) is released and
         // its capture slot closed before the destroyed publication.
-        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
         transaction
             .persist(SelectionSource::Restart, Some(session_id))
             .await;
@@ -451,7 +456,8 @@ pub(crate) async fn accept_restart_teardown<R: tauri::Runtime>(
             if error.old_lost {
                 // Section 5.2: the old PTY is already gone, so its demands must
                 // not outlive the failed restart.
-                crate::telegram::manager::release_all_reader_demands(transaction.app(), uuid).await;
+                crate::commands::telegram::release_all_reader_demands(transaction.app(), uuid)
+                    .await;
                 if let Err(finalize_error) =
                     finalize_failed_restart(transaction, uuid, old_selected, intent).await
                 {

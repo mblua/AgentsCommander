@@ -3,6 +3,8 @@ use super::notice::{
 };
 use super::settle::{observe_pty_spawn_scope, raw_privileged_probe, OutboxClassification};
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::pty_observation::PtyAuthorityState;
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 #[cfg(test)]
 use crate::phone::mailbox::ConsumptionVerdict;
 use crate::phone::types::OutboxMessage;
@@ -17,7 +19,6 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -43,8 +44,8 @@ pub(crate) enum WakeDelivery<'a> {
     },
 }
 
-pub(crate) async fn pty_spawn_scope_may_resume<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn pty_spawn_scope_may_resume<S: PtyAuthorityState + ?Sized>(
+    app: &S,
     target: &crate::config::teams::VerifiedPtyInputIdentity,
 ) -> bool {
     use crate::config::sessions_persistence::CreateCarrierScope;
@@ -108,8 +109,8 @@ pub(crate) enum PtyReacquireGoal {
     Published(Uuid),
 }
 
-pub(crate) async fn reacquire_pty_dispatch_target<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn reacquire_pty_dispatch_target<S: ResponseCompletionState + ?Sized>(
+    app: &S,
     source: (
         &Arc<crate::api::message_store::MessageStore>,
         &crate::phone::types::PtyInputResult,
@@ -138,9 +139,7 @@ pub(crate) async fn reacquire_pty_dispatch_target<R: tauri::Runtime>(
         {
             return Ok(None);
         }
-        if let Some(coordinator) =
-            app.try_state::<crate::session::selection::SelectionCoordinator>()
-        {
+        if let Some(coordinator) = app.response_selection() {
             coordinator
                 .wait_for_restore_release()
                 .await

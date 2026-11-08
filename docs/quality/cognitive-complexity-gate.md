@@ -148,7 +148,10 @@ allows a bounded shrink.
   `The baseline may only shrink. Regenerating it does not legitimise new debt.`
 - **A shrink must be earned.** Removing an entry is accepted only when the pull request touched
   the entry's `.rs` file (it appears in `git diff --name-only <base>...HEAD`) or the file is gone
-  from the working tree. Otherwise the step prints
+  from the working tree. The id names the file that declares the module, so when its `mod:x`
+  segments resolve to out-of-line module files (`mod x;` loading `x.rs`, `x/mod.rs` or a
+  `#[path]` file), touching the resolved file or any module file it loads, recursively, also
+  counts (#3965). Otherwise the step prints
   `Baseline entry removed without touching its file: <id>#<anchor> (<platform>)` followed by
   `A shrink is only credible where the pull request changed the code. Include that file, or explain the removal in a toolchain-refresh pull request.`
 - **The single growth exemption is a toolchain refresh.** If the diff contains **no `.rs` path** and the

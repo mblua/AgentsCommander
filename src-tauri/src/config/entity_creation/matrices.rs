@@ -1,5 +1,5 @@
 //! Matrix layouts and defaults; excludes template resolution.
-use crate::filesystem::projects::entities::directories;
+use crate::filesystem::projects::entities::{directories, roles};
 use std::path::Path;
 
 pub(crate) const AGENT_MATRIX_DIRS: &[&str] = &["memory", "plans", "skills", "inbox", "outbox"];
@@ -55,7 +55,7 @@ pub(crate) fn create_agent_replica_layout(
 pub(crate) fn default_agent_matrix_config() -> serde_json::Value {
     serde_json::json!({
         "tooling": {},
-        "context": ["$AGENTSCOMMANDER_CONTEXT", super::roles::ROLE_FILE_NAME],
+        "context": ["$AGENTSCOMMANDER_CONTEXT", roles::ROLE_FILE_NAME],
     })
 }
 
@@ -69,5 +69,5 @@ where
 {
     let bytes =
         serde_json::to_vec_pretty(&default_agent_matrix_config()).map_err(|e| e.to_string())?;
-    write(Path::new("config.json"), &bytes)
+    write(Path::new(crate::config::CONFIG_FILE_NAME), &bytes)
 }

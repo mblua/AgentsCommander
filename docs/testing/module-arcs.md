@@ -38,3 +38,32 @@ rules. Finish the merge, then regenerate with `npm run check:arcs` and run `chec
 Confirm `git ls-files -- src-tauri/module-arcs.txt` is empty and `git check-ignore
 src-tauri/module-arcs.txt` succeeds. Never force-add, reserve, or select ours/theirs as
 an authoritative generated record. Unexpected source conflicts need their own review.
+
+## Bounded cycle baseline (#3998)
+
+The detector now records parent-to-child arcs (`use child::T` in a parent). This made
+sixteen existing module cycles visible; no application code changed. They are frozen in
+`src-tauri/.rust-cycles-baseline.json`, written only by `npm run write:cycles-baseline`.
+`functionCycles` is empty. Each entry freezes its exact member set, not just a count.
+
+`npm run check:cycles` fails on any change: a new cycle exits 1, and a frozen cycle that
+grows, shrinks or swaps members fails too. A frozen cycle that disappears exits 3 until
+the baseline is pruned. This exception covers these sixteen sets only; it never widens automatically.
+
+Known detector limits behind some members (pinned as KNOWN LIMITATION in
+`scripts/module-child-paths.test.mjs`):
+
+- D1: a `#[path]` module may be read from the wrong directory and close a false cycle.
+- D2: a bare path guessed as a crate-root module may be an import alias.
+- D3: `#[cfg]` is not evaluated; arcs from exclusive platforms are unioned.
+  `cd361f9ca2d1da52` is such a cross-platform union, not one single-platform cycle.
+
+Imports inside expressions, methods and function bodies remain under-reported.
+
+Pruning contract, for each of the sixteen sets: when a reviewed cut or detector fix
+removes that exact cyclic set, measure comparable before/after graphs on clean trees and
+review members, pairs, reachability and layers. Every remaining cycle must be a subset of
+one earlier set: shrink, split or removal is allowed; growth, new members or merging two
+sets is not. Then run `npm run write:cycles-baseline` and `npm run check:cycles` in the
+same PR, so the retired id is pruned and a returning cycle fails. There is no automatic
+expiry or re-acceptance. An unchanged member set never approves new coupling inside it.

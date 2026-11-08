@@ -10,6 +10,7 @@ import {
   settingsSnapshot,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { isTauri } from "../../shared/platform";
 import type { AppSettings } from "../../shared/types";
 import {
   GENERAL_CATEGORIES,
@@ -277,7 +278,9 @@ describe("SettingsModal General categories + search (#2704)", () => {
     const { rendered, $ } = await renderModal({ containerOptionsEnabled: true, apiServerEnabled: true, webServerEnabled: true });
     try {
       await waitFor(() => expect($(tid("settings.general.apiServerEnabled"))).toBeTruthy());
-      const indexKeys = GENERAL_SETTINGS_INDEX.map((e) => e.key);
+      const indexKeys = GENERAL_SETTINGS_INDEX.map((e) => e.key)
+        // #3532 the context color window is desktop-only; JSDOM runs as the browser.
+        .filter((key) => isTauri || key !== "contextHistoryColorDays");
       const domKeys = Array.from(rendered.root.querySelectorAll("[data-ac-setting]")).map(
         (el) => el.getAttribute("data-ac-setting")!,
       );

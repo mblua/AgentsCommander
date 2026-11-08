@@ -585,60 +585,16 @@ export interface ProfileCellConfig {
   preflightTimeoutSeconds?: number;
 }
 
-/** #3516 - wire mirror of the P04 preflight test API (camelCase serde). */
-export type PreflightStageSource = "codingAgent" | "profile";
-
-export type PreflightStageStatus =
-  | "pending" | "running" | "passed" | "failed" | "timedOut"
-  | "spawnFailed" | "signaled" | "cancelled" | "notRun";
-
-export interface PreflightStageReport {
-  source: PreflightStageSource;
-  label: string;
-  effectiveProfile: string;
-  commandText: string;
-  timeoutSeconds: number;
-  status: PreflightStageStatus;
-  exitCode: number | null;
-  durationMs: number | null;
-  stdout: string;
-  stderr: string;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
-  detail: string | null;
-  cleanupDefect: string | null;
-}
-
-export interface PreflightTargetDescription {
-  agentId: string;
-  replicaPath: string;
-  cwd: string;
-  requestedProfile: string;
-  effectiveProfile: string;
-  fallbackApplied: boolean;
-  stopped: boolean;
-  stages: {
-    source: PreflightStageSource;
-    label: string;
-    commandText: string;
-    timeoutSeconds: number;
-  }[];
-  settingsRevision: string;
-  activeRunId: string | null;
-  unavailableReason: string | null;
-}
-
-export interface PreflightTestSnapshot {
-  runId: string;
-  agentId: string;
-  replicaPath: string;
-  effectiveProfile: string;
-  settingsRevision: string;
-  phase: "preparing" | "running" | "finished";
-  outcome: "passed" | "failed" | "cancelled" | null;
-  message: string | null;
-  stages: PreflightStageReport[];
-}
+export type {
+  PreflightDraftStage,
+  PreflightStageReport,
+  PreflightStageSource,
+  PreflightStageStatus,
+  PreflightTargetDescription,
+  PreflightTestDraft,
+  PreflightTestSnapshot,
+  PreflightTestTarget,
+} from "./preflightTypes";
 
 export interface CodingAgentProfileResolution {
   requestedProfile: string;
@@ -822,6 +778,8 @@ export interface ApiClientMintResponse {
   note: string;
 }
 
+export type ContextHistoryColorDays = 1 | 7 | 30;
+
 export interface AppSettings {
   defaultShell: string;
   defaultShellArgs: string[];
@@ -838,6 +796,8 @@ export interface AppSettings {
   soundsEnabled: boolean;
   teamIdleBeepEnabled: boolean;
   roomIdleConfirmationSeconds?: number;
+  /** #3532 Window (days) for the sidebar context-average color; omitted resolves to 30. */
+  contextHistoryColorDays?: ContextHistoryColorDays;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
   geminiModel: string;

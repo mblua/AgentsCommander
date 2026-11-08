@@ -6,9 +6,11 @@ mod publish;
 mod request;
 mod scanner;
 mod shutdown;
+pub(crate) mod task;
 
 #[cfg(test)]
 use failure::publish_trusted_failure;
+pub(crate) use process::TerminalSnapshotHost;
 #[cfg(test)]
 use publish::{path_is_absent, protocol_cleanup_name, publish_response_bytes, safe_remove};
 pub(crate) use request::confirmation_tag;

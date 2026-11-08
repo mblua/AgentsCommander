@@ -5,6 +5,7 @@ pub mod capture;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub(crate) mod context_history;
 pub(crate) mod debug_logs;
 pub(crate) mod errors;
 pub(crate) mod events;
@@ -33,6 +34,7 @@ pub mod web;
 mod app_run;
 mod app_state;
 mod co_managed;
+mod history_runtime;
 mod pty_wiring;
 mod quit_gate;
 mod reader_demand;
@@ -75,9 +77,9 @@ pub(crate) use commands::quit_gate::{
     quit_gate_unregister,
 };
 pub(crate) use pty_wiring::{
-    codex_activity_factory, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns, ScraperPersist,
-    ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery, WatcherPatterns,
-    WatcherSink,
+    codex_activity_factory, HistorySessions, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns,
+    ScraperPersist, ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery,
+    WatcherPatterns, WatcherSink,
 };
 pub use startup::AppOutbox;
 
@@ -317,9 +319,16 @@ impl crate::loops::ipc_observer::IpcObserver {
         self: Arc<Self>,
         generated: F,
     ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+        // #3832 - one more route would push `invoke_handler` past its ceiling.
+        let list_targets: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool =
+            tauri::generate_handler![commands::session::list_preflight_test_targets];
         move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
             self.note_invoke(invoke.message.command());
-            generated(invoke)
+            if invoke.message.command() == "list_preflight_test_targets" {
+                list_targets(invoke)
+            } else {
+                commands::context_history::dispatch(invoke, &generated)
+            }
         }
     }
 }
@@ -791,6 +800,38 @@ fn start_remote_alerts(
         messages,
     ));
     tauri::async_runtime::spawn(session::remote_alerts::run(ports, transitions, shutdown))
+}
+
+/// #3532: start the one context-history actor on the Tauri runtime and return
+/// its ingress. `history_runtime` stays free of Tauri; cancelling `shutdown`
+/// flushes the actor for at most its bounded window.
+fn start_context_history_runtime(
+    scopes: Arc<history_runtime::HistoryScopeState>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> history_runtime::HistoryIngress {
+    let (ingress, actor) = history_runtime::HistoryRuntime::start(scopes, shutdown);
+    tauri::async_runtime::spawn(actor);
+    ingress
+}
+
+/// #3532: manage the history ingress (restart) and the shared scope state
+/// (history IPC) together. Refuses, registering neither, when either is
+/// already managed, so the first registration always stays intact.
+pub(crate) fn register_context_history_state<R: tauri::Runtime, M: tauri::Manager<R>>(
+    app: &M,
+    ingress: history_runtime::HistoryIngress,
+    scopes: Arc<history_runtime::HistoryScopeState>,
+) -> Result<(), String> {
+    let ingress_managed = app.try_state::<history_runtime::HistoryIngress>().is_some();
+    let scopes_managed = app
+        .try_state::<Arc<history_runtime::HistoryScopeState>>()
+        .is_some();
+    if ingress_managed || scopes_managed {
+        return Err("context-history state is already registered".to_string());
+    }
+    app.manage(ingress);
+    app.manage(scopes);
+    Ok(())
 }
 
 impl pty::container_backend::ContainerBackgroundTasks

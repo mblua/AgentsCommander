@@ -240,7 +240,7 @@ impl LoopScheduler {
         let (config, state, s0_raw, s0_generation) = {
             let _io = self.io_lock.lock().await;
             let _loop_lock = acquire_loop_lock_for_dir(&dir, LOOP_LOCK_TIMEOUT)?;
-            if !dir.is_dir() {
+            if !crate::filesystem::loop_files::loop_path_is_directory(&dir) {
                 return Err(format!("Loop '{loop_id}' not found"));
             }
             let Some(config) = read_loop_config_if_present(&dir)? else {
@@ -422,7 +422,7 @@ impl LoopScheduler {
         // S0: a Loop that is gone at entry is a quiet skip.
         let _io = self.io_lock.lock().await;
         let _loop_lock = acquire_loop_lock_for_dir(dir, LOOP_LOCK_TIMEOUT)?;
-        if !dir.is_dir() {
+        if !crate::filesystem::loop_files::loop_path_is_directory(dir) {
             return Ok(None);
         }
         let Some(config) = read_loop_config_if_present(dir)? else {

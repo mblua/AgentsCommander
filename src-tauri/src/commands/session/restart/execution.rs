@@ -29,11 +29,7 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     request: RestartJobRequest,
     context: &LifecycleExecutionContext<'_>,
 ) -> Result<SessionInfo, String> {
-    if matches!(context, LifecycleExecutionContext::RestoreEntry { .. })
-        && !transaction.has_active_restore_capability()
-    {
-        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
-    }
+    ensure_restart_restore_authority(transaction, context)?;
     let app = transaction.app();
     let session_mgr = app
         .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -53,7 +49,10 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
     // 3. Release the old runtime slot while retaining its canonical manager row.
     // Dormant rows skip teardown and remain retryable until replacement success.
     let old_was_dormant = matches!(next.old_status, SessionStatus::Exited(_));
+    let observed = !old_was_dormant && !next.is_root_agent;
+    let history = restart_history_boundary(transaction, uuid, observed).await;
     let teardown = teardown_old_for_restart(transaction, uuid, old_was_dormant).await;
+    restart_history_teardown_failed(history.as_ref(), uuid, &teardown);
     complete_restart_retirement(retirement, &teardown);
     let old_lost =
         accept_restart_teardown(transaction, teardown, uuid, next.old_selected, next.intent)
@@ -112,11 +111,13 @@ pub(crate) async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
         transaction,
         &deferred,
         uuid,
-        old_lost,
-        next.old_selected,
-        next.activate_after,
         next.intent,
-        prepared.restart_start_fresh,
+        super::settlement::RestartFinalizeOptions {
+            old_lost,
+            old_selected: next.old_selected,
+            activate_after: next.activate_after,
+            restart_start_fresh: prepared.restart_start_fresh,
+        },
     )
     .await?;
     publish_restart(
@@ -411,6 +412,52 @@ async fn begin_restart_retirement<R: tauri::Runtime>(
     }
 
     Ok(retirement)
+}
+
+/// Rejects a restore-entry restart once the restore capability is gone.
+fn ensure_restart_restore_authority<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    context: &LifecycleExecutionContext<'_>,
+) -> Result<(), String> {
+    if matches!(context, LifecycleExecutionContext::RestoreEntry { .. })
+        && !transaction.has_active_restore_capability()
+    {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    Ok(())
+}
+
+/// #3532 P03: close the old observation before teardown (bounded, fail-soft).
+/// `observed` is false for dormant and Root sessions, which never notify
+/// history. Returns the ingress and intent that
+/// [`restart_history_teardown_failed`] needs.
+async fn restart_history_boundary<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    uuid: uuid::Uuid,
+    observed: bool,
+) -> Option<(crate::history_runtime::HistoryIngress, uuid::Uuid)> {
+    let history = observed
+        .then(|| {
+            transaction
+                .app()
+                .try_state::<crate::history_runtime::HistoryIngress>()
+        })
+        .flatten()
+        .map(|ingress| ingress.inner().clone())?;
+    let history_intent = uuid::Uuid::new_v4();
+    history.restart_boundary(uuid, history_intent).await;
+    Some((history, history_intent))
+}
+
+/// #3532 P03: reopen the old observation as a partial segment if teardown failed.
+fn restart_history_teardown_failed(
+    history: Option<&(crate::history_runtime::HistoryIngress, uuid::Uuid)>,
+    uuid: uuid::Uuid,
+    teardown: &Result<bool, super::settlement::RestartTeardownError>,
+) {
+    if let (Some((history, history_intent)), Err(_)) = (history, teardown) {
+        history.restart_teardown_failed(uuid, *history_intent);
+    }
 }
 
 fn complete_restart_retirement(

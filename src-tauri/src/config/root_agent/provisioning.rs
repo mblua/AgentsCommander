@@ -10,6 +10,7 @@ use super::{
 };
 use crate::config::ROOT_AGENT_DIR_NAME;
 use crate::filesystem::agent_files;
+use crate::filesystem::projects::entities::roles;
 use std::path::Path;
 
 pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r"# Role
@@ -146,10 +147,10 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
         )
     })?;
 
-    let role_path = root_dir.join("Role.md");
+    let role_path = roles::role_path(root_dir);
     migrate_root_role(&role_path)?;
 
-    merge_root_agent_config(&root_dir.join("config.json"))?;
+    merge_root_agent_config(&crate::config::config_file_path(root_dir))?;
 
     // #979: BEST-EFFORT, never `?`. `ensure_root_agent_dir` is fatal at
     // commands/session.rs:2741 and :3276, so a retirement error here would make the

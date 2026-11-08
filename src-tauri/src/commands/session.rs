@@ -58,13 +58,15 @@ pub(crate) mod selection_executor;
 mod telegram;
 #[cfg(test)]
 pub(crate) use crate::session::create_contracts::fixture::{
-    FixturePtyCutLease, FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
+    FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
 };
 pub use crate::session::create_contracts::CreateSelectionIntent;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::OwnedReplacementCreateRequest;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::OwnedReplacementCreateStep;
+#[cfg(test)]
 pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
-pub(crate) use crate::session::create_contracts::{
-    OwnedReplacementCreateRequest, OwnedReplacementCreateStep,
-};
 #[cfg(test)]
 use agent_command::coding_agent_descriptor;
 pub(crate) use agent_command::executable_basename;
@@ -102,6 +104,7 @@ pub(crate) use create::purge_session_side_state;
 #[cfg(test)]
 pub(crate) use create::register_session_samplers;
 use create::reset_substantive_input;
+#[cfg(test)]
 pub(crate) use create::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use create::resolve_create_session_cwd;
 #[cfg(test)]
@@ -113,6 +116,8 @@ use create::try_acquire_create_publication_region;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::with_create_resource_region;
+#[cfg(test)]
+pub(crate) use create::CoordinatorCreateTicket;
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
@@ -141,8 +146,8 @@ pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
 pub(crate) use preflight::test_run::{
     cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
-    start_preflight_test_inner, PreflightTargetDescription, PreflightTestDeps,
-    PreflightTestSnapshot,
+    list_preflight_test_targets_inner, start_preflight_test_inner, PreflightTargetDescription,
+    PreflightTestDeps, PreflightTestDraft, PreflightTestSnapshot, PreflightTestTarget,
 };
 pub(crate) use preflight::PreflightState;
 pub(crate) use restart::carry_communication_for_restart;
@@ -440,7 +445,7 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         purge_session_side_state(transaction.app(), session_id);
         // #2232 phase 4 section 5: destroy releases **both** demands, which
         // cancels the reader and closes the session's `CaptureRegistry` entry.
-        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     }
 
     for row in committed
@@ -871,16 +876,28 @@ fn preflight_deps(app: &AppHandle) -> Result<PreflightTestDeps, String> {
     })
 }
 
-/// #3516 - the saved preflight chain of a stopped agent folder.
+/// #3832 - the given folders of one agent that a preflight test can target.
+#[tauri::command]
+pub(crate) async fn list_preflight_test_targets(
+    app: AppHandle,
+    agent_id: String,
+    replica_paths: Vec<String>,
+) -> Result<Vec<PreflightTestTarget>, String> {
+    let deps = preflight_deps(&app)?;
+    list_preflight_test_targets_inner(&deps, agent_id, replica_paths).await
+}
+
+/// #3516 - the saved preflight chain of a stopped agent folder; #3832 optional draft.
 #[tauri::command]
 pub(crate) async fn describe_preflight_target(
     app: AppHandle,
     agent_id: String,
     profile_letter: Option<String>,
     replica_path: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<PreflightTargetDescription, String> {
     let deps = preflight_deps(&app)?;
-    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path).await
+    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path, draft).await
 }
 
 /// #3516 - starts a preflight test run; returns its id.
@@ -891,9 +908,10 @@ pub(crate) async fn start_preflight_test(
     profile_letter: Option<String>,
     replica_path: String,
     settings_revision: String,
+    draft: Option<PreflightTestDraft>,
 ) -> Result<String, String> {
-    let d = preflight_deps(&app)?;
-    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, settings_revision).await
+    let (d, revision) = (preflight_deps(&app)?, settings_revision);
+    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, revision, draft).await
 }
 
 #[tauri::command]

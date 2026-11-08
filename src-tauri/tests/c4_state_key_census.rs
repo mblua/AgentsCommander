@@ -214,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1577, "inventory count");
+    assert_eq!(sources.len(), 1618, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -341,9 +341,9 @@ fn p5_is_frozen() {
 #[test]
 fn p6_is_frozen() {
     let pin = Pin {
-        total: 50,
-        distinct: 45,
-        sha256: "FFBCC12110D7DEA82BFEA97B33123DF9E7CC8D3A9B37FC196A0465471F405A11",
+        total: 49,
+        distinct: 44,
+        sha256: "901F5BBDD5C9AF5C023BD6D29649CF58E360BA3383E846E747A2CF21C71350C3",
         per_file: &[
             ("commands/ac_discovery/tests/discovery.rs", 1),
             ("commands/config/tests/selection_api/error_code.rs", 1),
@@ -377,7 +377,6 @@ fn p6_is_frozen() {
             ("config/instance_artifacts/names.rs", 1),
             ("config/instance_artifacts/tests.rs", 1),
             ("config/local_config_io/tests.rs", 2),
-            ("config/naming_migration.rs", 1),
             ("config/naming_migration/ignore_rows.rs", 4),
             ("config/replica_identity/tests.rs", 3),
             ("config/root_agent/tests/config_merge.rs", 1),
@@ -393,12 +392,10 @@ fn p6_is_frozen() {
 #[test]
 fn p7_is_frozen() {
     let pin = Pin {
-        total: 75,
-        distinct: 54,
-        sha256: "A08BD4ABA6BED268A0873F837D24DEB2ABFE341C4244B355AD91D44994F68F38",
+        total: 65,
+        distinct: 45,
+        sha256: "D239EB0C43ACAE755BE02D3C48CFE11CBB5B640FE799521EB7BF8A8F61C7CD83",
         per_file: &[
-            ("config/agent_config.rs", 6),
-            ("config/agent_config/discovery.rs", 3),
             ("config/agent_config/load_probe_harness.rs", 1),
             ("config/agent_config/tests/activity_stamp.rs", 2),
             ("config/agent_config/tests/coding_agent_entries.rs", 1),
@@ -407,7 +404,7 @@ fn p7_is_frozen() {
             ("config/agent_config/tests/pair_activity.rs", 5),
             ("config/agent_config/tests/pair_fixture.rs", 2),
             ("config/agent_config/tests/sweep_and_writers.rs", 13),
-            ("config/local_config_io/staging.rs", 2),
+            ("config/local_config_io/staging.rs", 1),
             ("config/local_config_io/tests.rs", 22),
             ("config/local_config_io/tests/pair.rs", 2),
             ("config/local_config_io/tests/pair_activity.rs", 9),

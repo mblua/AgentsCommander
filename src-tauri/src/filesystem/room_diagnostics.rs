@@ -97,3 +97,8 @@ pub(crate) fn collect_room_lock_resources(wg_dir: &Path, max_files: usize) -> Ve
     out.extend(cold.into_iter().take(remaining));
     out
 }
+
+#[cfg(windows)]
+pub(crate) fn room_lock_resource_exists(path: &Path) -> bool {
+    path.exists()
+}

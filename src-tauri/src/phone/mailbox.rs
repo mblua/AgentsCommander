@@ -3,6 +3,7 @@ mod diagnostics;
 pub(crate) mod browser;
 mod clear_attempt;
 mod handoff;
+pub(crate) mod host;
 mod internal_delivery;
 mod notice;
 mod outbox_auth;
@@ -146,8 +147,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
-#[cfg(test)]
-use tauri::Manager;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]

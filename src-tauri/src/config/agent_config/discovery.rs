@@ -3,17 +3,19 @@
 use std::path::Path;
 
 pub(crate) fn discovery_replica_config_exists(dir: &Path) -> bool {
-    crate::filesystem::ac_discovery::discovery_config_exists(&dir.join("config.json"))
+    crate::filesystem::ac_discovery::discovery_config_exists(&crate::config::config_file_path(dir))
 }
 
 pub(crate) fn read_discovery_replica_json(dir: &Path) -> Option<serde_json::Value> {
-    crate::filesystem::ac_discovery::read_replica_discovery_config(&dir.join("config.json"))
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+    crate::filesystem::ac_discovery::read_replica_discovery_config(
+        &crate::config::config_file_path(dir),
+    )
+    .ok()
+    .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
 }
 
 pub(crate) fn read_discovery_replica_context(dir: &Path) -> Result<Vec<String>, String> {
-    let config_path = dir.join("config.json");
+    let config_path = crate::config::config_file_path(dir);
     if !crate::filesystem::ac_discovery::discovery_config_exists(&config_path) {
         return Ok(vec![]);
     }

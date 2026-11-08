@@ -10,8 +10,10 @@ use super::pty_claim::{
 };
 #[cfg(test)]
 use super::tests::ClearObservationProbe;
-use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::host::MailboxHost;
+use crate::phone::mailbox::pty_observation::WakeDeliveryState;
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
@@ -22,7 +24,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
@@ -104,9 +105,9 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
 /// any failure rename the claim back before the outcome is sent, so by the
 /// time the scanner drains it the origin path is valid again and the
 /// retry/reject block sees a real file.
-pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
+pub(crate) async fn deliver_claimed_wake<S: MailboxHost>(
     delivery: &MailboxPoller,
-    app: &tauri::AppHandle<R>,
+    app: &S,
     claim: &Path,
     origin: &Path,
     validated: &ValidatedWake,
@@ -173,8 +174,10 @@ pub(crate) struct PreparedResponseRequest {
     pub(crate) roots: Vec<String>,
 }
 
-pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn reserve_response_request_at_write<
+    S: WakeDeliveryState + ResponseCompletionState + ?Sized,
+>(
+    app: &S,
     current: &crate::session::manager::CarrierSnapshot,
     session: &Session,
     prepared: &PreparedResponseRequest,
@@ -190,7 +193,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     }
     if app
-        .try_state::<crate::session::selection::SelectionCoordinator>()
+        .response_selection()
         .is_some_and(|coordinator| coordinator.restore_is_active())
     {
         response_diag_local!(
@@ -200,7 +203,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     }
-    let settings = app.state::<SettingsState>().inner().clone();
+    let settings = app.pty_settings().clone();
     let Ok(settings) = settings.try_read_owned() else {
         response_diag_local!(
             "prewrite_reserve",
@@ -222,7 +225,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
     else {
         return;
     };
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let pty = app.pty_routes().clone();
     reserve_with_routes(
         &pty,
         &settings,
@@ -514,7 +517,7 @@ pub(crate) struct OwnedPeerWakeExecution {
     pub(crate) delivery: (WakeDeliveryOrigin, bool),
     pub(crate) response: Option<ResponseWakeWork>,
     pub(crate) flags_present: bool,
-    pub(crate) request: crate::commands::session::OwnedReplacementCreateRequest,
+    pub(crate) request: crate::session::create_contracts::OwnedReplacementCreateRequest,
     pub(crate) resolved_command: ResolvedWakeAgentCommand,
     pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
     pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
@@ -531,7 +534,7 @@ pub(crate) struct OwnedPeerTarget {
 }
 
 pub(crate) fn owned_replacement_launch_recipe(
-    request: &crate::commands::session::OwnedReplacementCreateRequest,
+    request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
 ) -> serde_json::Value {
     let configured = request.resolved_spawn.as_ref().map(|spawn| {
         let seed = spawn.seed.as_ref().map(|seed| {

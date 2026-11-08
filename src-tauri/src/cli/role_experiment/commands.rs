@@ -6,7 +6,6 @@ use super::report::build_report_artifact;
 use super::report::create_explicit_run_dir;
 use super::report::create_generated_run_dir;
 use super::report::default_run_artifact_paths;
-use super::report::experiments_dir;
 use super::report::generated_seed_from_uuid;
 use super::report::render_report_markdown;
 use super::report::report_artifact_paths;
@@ -15,15 +14,18 @@ use super::report::validate_replicates;
 use super::report::validate_report_artifacts;
 use super::report::validate_run_id;
 use super::storage::create_attempts;
+use super::storage::experiments_dir;
 use super::storage::load_experiment;
 use super::storage::load_variant_metadata;
 use super::storage::read_json;
 use super::storage::resolve_ac_root;
 use super::storage::resolve_project;
+use super::storage::validate_required_artifact_file;
 use super::storage::write_json;
-use super::storage::write_json_new;
 use super::storage::write_new_file;
 use super::storage::{attempts_name, attempts_path, attempts_path_display};
+use super::storage::{create_report, create_run, run_name};
+use super::storage::{load_report, load_run, validate_report_presence, validate_run_presence};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::line_diff;
@@ -65,6 +67,7 @@ use crate::commands::entity_creation::create_agent_matrix_from_role;
 use crate::commands::entity_creation::resolve_agent_ref;
 use crate::commands::entity_creation::validate_existing_name;
 use crate::commands::entity_creation::CreateAgentMatrixFromRoleArgs;
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 use std::collections::HashSet;
 use std::path::Path;
@@ -139,7 +142,7 @@ pub(super) fn init_for_project_path(
             source_agent: source_agent.clone(),
             agent_name: agent_name.clone(),
             matrix_path: format!("../../../_agent_{agent_name}"),
-            role_path: format!("../../../_agent_{agent_name}/Role.md"),
+            role_path: format!("../../../_agent_{agent_name}/{}", roles::ROLE_FILE_NAME),
             role_sha256: role_sha.clone(),
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -365,7 +368,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         &loaded.experiment.source_agent,
         &args.variant,
     );
-    let expected_role = expected_matrix.join("Role.md");
+    let expected_role = roles::role_path(&expected_matrix);
     reject_link_or_reparse(
         &expected_matrix,
         "variant_role_link_or_reparse",
@@ -467,18 +470,16 @@ pub(super) fn variant_diff_loaded(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let left_role = variant_matrix_path(
+    let left_role = roles::role_path(&variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.against,
-    )
-    .join("Role.md");
-    let right_role = variant_matrix_path(
+    ));
+    let right_role = roles::role_path(&variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.variant,
-    )
-    .join("Role.md");
+    ));
     let left_text = map_err(
         documents::read_experiment_document(&left_role),
         "variant_role_missing",
@@ -651,9 +652,9 @@ fn write_dry_run_artifacts(
 ) -> Result<(), Vec<CliError>> {
     let report_markdown = render_report_markdown(report_artifact);
 
-    write_json_new(&run_dir.join("run.json"), run_artifact)?;
+    create_run(run_dir, run_artifact)?;
     create_attempts(run_dir, attempts)?;
-    write_json_new(&run_dir.join("report.json"), report_artifact)?;
+    create_report(run_dir, report_artifact)?;
     write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())
 }
 
@@ -760,7 +761,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             "seed": seed,
             "seedProvided": seed_provided,
             "artifacts": {
-                "run": "run.json",
+                "run": run_name(),
                 "attempts": artifacts.attempts,
                 "reportJson": artifacts.report_json,
                 "reportMarkdown": artifacts.report_markdown,
@@ -769,6 +770,19 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         warnings,
         errors: Vec::new(),
     })
+}
+
+/// Presence of every report input precedes parsing; run.json parses before report.json.
+pub(super) fn load_report_command_artifacts(
+    dir: &Path,
+) -> Result<(RunArtifact, ReportArtifact), Vec<CliError>> {
+    validate_run_presence(dir)?;
+    validate_required_artifact_file(&attempts_path(dir))?;
+    validate_report_presence(dir)?;
+    validate_required_artifact_file(&dir.join("report.md"))?;
+    let run_artifact = load_run(dir)?;
+    let report_artifact = load_report(dir)?;
+    Ok((run_artifact, report_artifact))
 }
 
 pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
@@ -798,24 +812,8 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             &dir,
         )]);
     }
-    let run_path = dir.join("run.json");
-    let attempts_path = attempts_path(&dir);
-    let report_path = dir.join("report.json");
     let markdown_path = dir.join("report.md");
-    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
-        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(path) {
-            return Err(vec![err_at_path(
-                "run_artifact_missing",
-                format!("Run artifact not found: {}", path.display()),
-                path,
-            )]);
-        }
-    }
-    let run_artifact: RunArtifact = read_json(&run_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
-    let report_artifact: ReportArtifact = read_json(&report_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
+    let (run_artifact, report_artifact) = load_report_command_artifacts(&dir)?;
     validate_report_artifacts(
         &loaded,
         &args.run_id,
@@ -874,7 +872,7 @@ fn init_source_paths(
     let source_agent = agent_ref_bare_name(&source_ref);
     validate_slug_identity(&source_agent, "Source agent", "source_agent_invalid")?;
     let source_matrix = source_matrix_path(ac_root, &source_agent);
-    let source_role = source_matrix.join("Role.md");
+    let source_role = roles::role_path(&source_matrix);
     reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
     reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
     if !directories::experiment_path_is_file(&source_role) {
@@ -946,12 +944,11 @@ fn dry_run_variant_artifact(
         name: variant.name.clone(),
         agent_name: variant.agent_name.clone(),
         role_sha256: variant.role_sha256.clone(),
-        role_path: variant_matrix_path(
+        role_path: roles::role_path(&variant_matrix_path(
             &loaded.ac_root,
             &loaded.experiment.source_agent,
             &variant.name,
-        )
-        .join("Role.md")
+        ))
         .to_string_lossy()
         .to_string(),
     }
@@ -970,7 +967,7 @@ fn init_experiment_metadata(
         project: args.project.clone(),
         source_agent: source_agent.to_string(),
         source_matrix_path: format!("../../_agent_{source_agent}"),
-        source_role_path: format!("../../_agent_{source_agent}/Role.md"),
+        source_role_path: format!("../../_agent_{source_agent}/{}", roles::ROLE_FILE_NAME),
         source_role_sha256: role_sha.to_string(),
         created_at: now.clone(),
         updated_at: now,
