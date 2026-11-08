@@ -766,7 +766,7 @@ pub(crate) fn default_root_context_template() -> &'static str {
 pub(crate) fn frozen_root_context_snapshots() -> [&'static str; 12] {
     [
         OLD_ROOT_ROLE_MD,
-        &OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
+        OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
         ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD,
         ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD,
         ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD,
@@ -783,7 +783,7 @@ pub(crate) fn frozen_root_context_snapshots() -> [&'static str; 12] {
 pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
     let old_generated = [
         OLD_ROOT_ROLE_MD,
-        &OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
+        OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
         ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD,
         ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD,
         ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD,

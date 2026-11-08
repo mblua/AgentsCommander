@@ -1,6 +1,7 @@
 //! Context history records (#3532): pure DTOs and their validation.
 //!
-//! This parent only declares its children. `config` owns `.ac/heatmap.json`,
+//! This parent only declares its children. `config` holds only runtime
+//! values (Settings are read by `app_run::history_environment`, #4049),
 //! `store` owns `.ac/context-history/`, `observation` turns scrape outcomes
 //! into records and `report` builds reports from them; all of them import
 //! these DTOs, and this module never imports, calls or re-exports them.
