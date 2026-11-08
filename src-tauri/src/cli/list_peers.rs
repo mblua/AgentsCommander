@@ -13,8 +13,12 @@ use crate::session::session::SessionCommunicationKind;
 
 mod discovery;
 mod snapshot;
-mod status;
 
+#[cfg(test)]
+use crate::config::sessions_persistence::{
+    build_session_index_from, canon_or_norm, compute_peer_status, norm_path, CandidateSession,
+    PeerStatus,
+};
 use discovery::{apply_peer_filter, discover_peers, report_unknown_peers};
 #[cfg(test)]
 use discovery::{
@@ -27,11 +31,6 @@ use snapshot::{
 };
 #[cfg(test)]
 use snapshot::{snapshot_targets_reason_note, SnapshotTargetsSilentReason};
-#[cfg(test)]
-use status::{
-    build_session_index_from, canon_or_norm, compute_peer_status, norm_path, CandidateSession,
-    PeerStatus,
-};
 
 #[derive(Args)]
 #[command(after_help = "\

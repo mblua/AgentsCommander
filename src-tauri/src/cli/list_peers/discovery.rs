@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use super::status::{build_session_index, compute_peer_status, CandidateSession};
 use super::{extract_role_section, read_role, PeerInfo};
 use crate::config::ac_root::existing_ac_root;
 use crate::config::agent_config::read_agent_local_config;
+use crate::config::sessions_persistence::{
+    build_session_index, compute_peer_status, CandidateSession,
+};
 use crate::filesystem::projects::entities::roles;
 
 pub(super) struct WgReplicaInfo {

@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "2981838eaf93e795",
+      "id": "19f29e57b235c9c2",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -34,7 +34,6 @@
         "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::cli::list_peers::discovery",
         "agentscommander_lib::cli::list_peers::snapshot",
-        "agentscommander_lib::cli::list_peers::status",
         "agentscommander_lib::cli::terminal_snapshot",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
