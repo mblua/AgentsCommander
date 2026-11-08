@@ -254,3 +254,200 @@ fn new_fields_survive_save_reload_and_unrelated_updates() {
         ContextHistoryColorDays::Seven
     );
 }
+
+const WINDOWS: &str = "contextHistorySessionWindows";
+const COLOUR: &str = "contextHistoryColorSessions";
+
+/// #4091: fixture with nondefault #4049 fields plus the given windows/colour
+/// (each removed when `None`).
+fn sessions_json(windows: Option<Value>, colour: Option<Value>) -> Value {
+    let mut raw = settings_json(Some(json!(7)));
+    let object = raw.as_object_mut().unwrap();
+    object.insert(RETENTION.to_string(), json!(90));
+    for (key, value) in [(WINDOWS, windows), (COLOUR, colour)] {
+        match value {
+            Some(value) => object.insert(key.to_string(), value),
+            None => object.remove(key),
+        };
+    }
+    raw
+}
+
+fn load_sessions(windows: Option<Value>, colour: Option<Value>) -> AppSettings {
+    let mut settings: AppSettings = serde_json::from_value(sessions_json(windows, colour))
+        .expect("a bad #4091 field never fails the load");
+    settings.normalize_context_history_sessions();
+    settings
+}
+
+#[test]
+fn fresh_defaults_are_coherent() {
+    let fresh = AppSettings::default();
+    assert_eq!(
+        fresh.context_history_session_windows.counts(),
+        [25, 100, 300]
+    );
+    assert_eq!(fresh.context_history_color_sessions, Some(300));
+    let raw = serde_json::to_value(&fresh).unwrap();
+    assert_eq!(raw[WINDOWS], json!([25, 100, 300]));
+    assert_eq!(raw[COLOUR], json!(300));
+}
+
+#[test]
+fn valid_custom_arrays_load_unchanged() {
+    let max: Vec<u32> = (1..=8).map(|n| n * 1250).collect();
+    for windows in [json!([1]), json!([5, 10]), json!(max), json!([10000])] {
+        let settings = load_sessions(Some(windows.clone()), None);
+        let raw = serde_json::to_value(&settings).unwrap();
+        assert_eq!(raw[WINDOWS], windows);
+        assert_eq!(raw[RETENTION], json!(90), "{windows}");
+    }
+}
+
+#[test]
+fn invalid_arrays_fall_back_to_defaults_and_keep_other_fields() {
+    let invalid = [
+        json!([]),
+        json!([0, 10]),
+        json!([1.5]),
+        json!(["25"]),
+        json!([null]),
+        json!([true]),
+        json!([-1, 5]),
+        json!([25, 25]),
+        json!([100, 25]),
+        json!([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        json!([10001]),
+        json!([u64::MAX]),
+        json!(25),
+        json!("25,100"),
+        Value::Null,
+        json!({ "0": 25 }),
+    ];
+    for value in invalid {
+        let settings = load_sessions(Some(value.clone()), Some(json!(100)));
+        assert_eq!(
+            settings.context_history_session_windows,
+            ContextHistorySessionWindows::default(),
+            "{value}"
+        );
+        assert_eq!(
+            settings.context_history_color_sessions,
+            Some(100),
+            "{value}"
+        );
+        assert_eq!(
+            settings.context_history_retention_days.days(),
+            90,
+            "{value}"
+        );
+        assert_eq!(settings.typing_hold_seconds, 9, "{value}");
+        assert_eq!(settings.project_paths, ["C:/fixture/project-a"], "{value}");
+    }
+}
+
+#[test]
+fn missing_windows_use_defaults() {
+    let settings = load_sessions(None, None);
+    assert_eq!(
+        settings.context_history_session_windows.counts(),
+        [25, 100, 300]
+    );
+    assert_eq!(settings.context_history_color_sessions, Some(300));
+}
+
+#[test]
+fn colour_falls_back_to_the_last_custom_member() {
+    let windows = || Some(json!([25, 100, 300, 1000]));
+    for colour in [
+        None,
+        Some(Value::Null),
+        Some(json!(0)),
+        Some(json!(1.5)),
+        Some(json!("300")),
+        Some(json!(true)),
+        Some(json!([300])),
+        Some(json!(-300)),
+        Some(json!(10001)),
+        Some(json!(50)),
+    ] {
+        let settings = load_sessions(windows(), colour.clone());
+        assert_eq!(
+            settings.context_history_color_sessions,
+            Some(1000),
+            "{colour:?}"
+        );
+        assert_eq!(settings.typing_hold_seconds, 9, "{colour:?}");
+    }
+    let explicit = load_sessions(windows(), Some(json!(300)));
+    assert_eq!(explicit.context_history_color_sessions, Some(300));
+    let raw = serde_json::to_value(&explicit).unwrap();
+    assert_eq!(raw[COLOUR], json!(300));
+}
+
+#[test]
+fn old_colour_days_never_become_a_session_count() {
+    let mut raw = sessions_json(Some(json!([1, 7, 30])), None);
+    raw[KEY] = json!(7);
+    let mut settings: AppSettings = serde_json::from_value(raw).unwrap();
+    assert_eq!(settings.context_history_color_sessions, None);
+    settings.normalize_context_history_sessions();
+    assert_eq!(settings.context_history_color_sessions, Some(30));
+    assert_eq!(
+        settings.context_history_color_days,
+        ContextHistoryColorDays::Seven
+    );
+}
+
+#[test]
+fn production_load_repairs_colour_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    // A first load may persist unrelated startup migrations (root token, ...).
+    let seed = serde_json::to_vec_pretty(&sessions_json(None, None)).unwrap();
+    std::fs::write(&path, seed).unwrap();
+    load_settings_from_path(&path);
+    let mut stable: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    stable[WINDOWS] = json!([25, 100, 300, 1000]);
+    for colour in [None, Some(Value::Null), Some(json!("x")), Some(json!(50))] {
+        match &colour {
+            Some(value) => stable[COLOUR] = value.clone(),
+            None => {
+                stable.as_object_mut().unwrap().remove(COLOUR);
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&stable).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let settings = load_settings_from_path(&path);
+        assert_eq!(
+            settings.context_history_color_sessions,
+            Some(1000),
+            "{colour:?}"
+        );
+        assert_eq!(settings.context_history_retention_days.days(), 90);
+        assert_eq!(settings.typing_hold_seconds, 9);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{colour:?}");
+    }
+}
+
+#[test]
+fn save_validation_repairs_colour_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut settings = load_sessions(Some(json!([10, 20])), Some(json!(20)));
+    settings.context_history_color_sessions = Some(999);
+    crate::config::settings::validate_and_repair_settings(&mut settings).unwrap();
+    assert_eq!(settings.context_history_color_sessions, Some(20));
+    let saved = crate::config::settings::save::save_settings_to_path_preserving_project_paths(
+        &settings, &path,
+    )
+    .unwrap();
+    assert_eq!(saved.context_history_color_sessions, Some(20));
+    let disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(disk[WINDOWS], json!([10, 20]));
+    assert_eq!(disk[COLOUR], json!(20));
+    let reloaded = load_settings_from_path(&path);
+    assert_eq!(reloaded.context_history_session_windows.counts(), [10, 20]);
+    assert_eq!(reloaded.context_history_color_sessions, Some(20));
+    assert_eq!(reloaded.context_history_retention_days.days(), 90);
+}
