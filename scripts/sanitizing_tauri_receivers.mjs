@@ -451,8 +451,7 @@ export function createReceiverClassifier(context) {
           if (dot > e && dot < tokens[e + 1].mate) return true;
         } else {
           // Expression closure: conservatively extends to the enclosing group's end.
-          let close = body.end;
-          for (const g of groupsAround(tokens, k)) { close = g; break; }
+          const close = groupsAround(tokens, k)[0] ?? body.end;
           if (dot > e && dot < close) return true;
         }
       }
