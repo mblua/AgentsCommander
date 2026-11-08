@@ -314,6 +314,11 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
     object.insert("roomIdleConfirmationSeconds".to_string(), Value::from(15));
     assert!(!object.contains_key("contextHistoryColorDays"));
     object.insert("contextHistoryColorDays".to_string(), Value::from(30));
+    assert!(!object.contains_key("contextHistoryEnabled"));
+    assert!(!object.contains_key("contextHistoryRetentionDays"));
+    // #4049 adds the default-off switch and default-30 retention.
+    object.insert("contextHistoryEnabled".to_string(), Value::Bool(false));
+    object.insert("contextHistoryRetentionDays".to_string(), Value::from(30));
     // H02 adds backend-derived metadata; never rewrite the frozen control.
     for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
         assert!(raw.get("id_hash").is_none());
