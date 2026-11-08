@@ -319,7 +319,8 @@ fn scan_once_calls_archived_candidate_filter() {
         env!("CARGO_MANIFEST_DIR"),
         "/src/loops/scheduler/state.rs"
     ))
-    .expect("read scheduler/state.rs");
+    .expect("read scheduler/state.rs")
+    .replace("\r\n", "\n");
     let candidates = state
         .find(concat!(
             "async fn active_project_candidates_for_owner(\n",
@@ -327,10 +328,11 @@ fn scan_once_calls_archived_candidate_filter() {
             ") -> Vec<ProjectResolution> {"
         ))
         .expect("active_project_candidates_for_owner definition");
-    let body = state[candidates..]
-        .split("fn unresolved_targets_in_project(")
-        .next()
-        .expect("active_project_candidates_for_owner body");
+    let rest = &state[candidates..];
+    let end = rest
+        .find("pub(super) fn loop_dirs(")
+        .expect("loop_dirs definition ends active_project_candidates_for_owner");
+    let body = &rest[..end];
     let normalize = body
         .find("let archived_roots = sessions_persistence::normalize_project_roots(&archived);")
         .expect("archived root normalization");
@@ -343,6 +345,42 @@ fn scan_once_calls_archived_candidate_filter() {
         "active_project_candidates_for_owner must subtract archived candidates after normalizing \
             archived roots"
     );
+}
+
+/// #4048: `state` must not reference its parent's types (cycle 1fefd2ca).
+fn state_source_is_free_of_parent_types(state: &str) -> bool {
+    !state.contains("SchedulerContext") && !state.contains("UnresolvedLoopTarget")
+}
+
+#[test]
+fn issue_4048_state_does_not_depend_on_scheduler_types() {
+    let read = |path: &str| {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}"))
+            .replace("\r\n", "\n")
+    };
+    let state = read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/loops/scheduler/state.rs"
+    ));
+    let scheduler = read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/loops/scheduler.rs"
+    ));
+    let production = scheduler
+        .split("#[cfg(test)]\nmod tests")
+        .next()
+        .expect("production scheduler source");
+    // Positive probe: the predicate rejects the PRE import.
+    assert!(!state_source_is_free_of_parent_types(
+        "use super::{SchedulerContext, UnresolvedLoopTarget};\n"
+    ));
+    assert!(
+        state_source_is_free_of_parent_types(&state),
+        "scheduler/state.rs must not reference SchedulerContext or UnresolvedLoopTarget"
+    );
+    assert!(production.contains("\nfn unresolved_targets_in_project(project_dir: &Path)"));
+    assert!(production.contains("\nfn emit_transition(\n"));
 }
 
 #[test]

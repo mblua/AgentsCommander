@@ -102,7 +102,8 @@ export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUnivers
     for (const [side, tree] of trees.entries()) {
       const scan = createRustScanner(tree, snapshot.readBlob);
       for (const path of [...tree.keys()].filter(path => inUniverse(path)).sort(codeOrder)) {
-        const m = measure(path, scan(path));
+        // Additive third argument: this side's tree and scan lookup, for receiver proofs.
+        const m = measure(path, scan(path), { tree, scan });
         byPath[side].set(path, m);
         for (const rule of rules) totals[side][rule] = (totals[side][rule] ?? 0) + (m.counts[rule] ?? 0);
         measurements[side ? 'head' : 'base'].push({ path, counts: m.counts, sites: m.sites });

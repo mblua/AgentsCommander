@@ -1,7 +1,8 @@
 //! `context-history` (#3532 P04): print the context-history report as JSON.
 //!
 //! The report core is pure; this edge validates arguments, resolves the
-//! Project AC Root, reads the retained snapshot once and streams every page of
+//! Project AC Root, reads the retained snapshot once (retention from the
+//! read-only CLI Settings snapshot, #4049) and streams every page of
 //! agents as one schema 2 JSON document on stdout. Errors go to stderr with
 //! exit code 1 and never produce an empty successful result.
 
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-use crate::context_history::config::load_history_config;
+use crate::config::settings::load_settings_for_cli;
 use crate::context_history::report::{
     build_report, LaunchFilter, ReportContext, ReportError, ReportQuery,
 };
@@ -202,7 +203,13 @@ fn verified_project(project: &Path) -> Result<VerifiedProject, CliError> {
         .map_err(|error| CliError::Usage(format!("--project {error}")))
 }
 
-fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Result<(), CliError> {
+/// `retention_days` comes from one Settings snapshot taken by [`execute`].
+fn run(
+    args: &ContextHistoryArgs,
+    retention_days: u32,
+    now_utc_ms: i64,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
     let mut query = query_from_args(args)?;
     let project = verified_project(&args.project)?;
     query.project_path = project
@@ -211,7 +218,7 @@ fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Resul
         .ok_or_else(|| CliError::Usage("--project must be valid UTF-8".to_string()))?
         .to_string();
     let context = ReportContext {
-        retention_days: load_history_config(&project.ac_root).config.retention_days,
+        retention_days,
         generated_at_utc_ms: now_utc_ms,
     };
     let mut records = read_records(&project.ac_root)?;
@@ -238,9 +245,13 @@ fn exit_code(result: Result<(), CliError>) -> i32 {
 }
 
 pub fn execute(args: ContextHistoryArgs) -> i32 {
+    let retention_days = load_settings_for_cli()
+        .context_history_retention_days
+        .days();
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    exit_code(run(&args, chrono::Utc::now().timestamp_millis(), &mut out))
+    let now = chrono::Utc::now().timestamp_millis();
+    exit_code(run(&args, retention_days, now, &mut out))
 }
 
 #[cfg(test)]

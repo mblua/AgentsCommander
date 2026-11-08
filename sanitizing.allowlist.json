@@ -6,8 +6,8 @@
       "rule": "new",
       "path": "src-tauri/src/phone/mailbox/wake_workers.rs",
       "symbol": "impl:MailboxPoller::poll",
-      "hash": "6bd711afcbe6",
-      "reason": "Same function as baseline #dff40736a7a2; its header changed when the mailbox was split. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "hash": "41e034e74406",
+      "reason": "Same function as baseline #dff40736a7a2; its header changed when the mailbox was split, and again when #3946 made it generic over the host traits (#4063). Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
       "issue": 3182,
       "since": "2026-10-23"
     },
@@ -37,7 +37,7 @@
       "path": "src-tauri/src/phone/mailbox/wake_workers.rs",
       "symbol": "impl:MailboxPoller::poll",
       "hash": "dff40736a7a2",
-      "reason": "Now observed as #6bd711afcbe6 after the mailbox split. Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
+      "reason": "Now observed as #41e034e74406 after the mailbox split and #3946 (#4063). Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
       "issue": 3182,
       "since": "2026-10-23"
     }

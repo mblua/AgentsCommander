@@ -7,6 +7,8 @@
 //! `generate_handler!` (invisible to the module-arc instrument) and the
 //! phase-9 frontend. See phase 2 section 4.1.
 
+pub(crate) mod host;
+
 use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};

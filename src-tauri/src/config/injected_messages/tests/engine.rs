@@ -274,3 +274,93 @@ fn registry_cache_keeps_first_file_snapshot() {
     assert_eq!(edited[CONTEXT_ALERT_MESSAGE_ID], "edited template");
     assert_eq!(edited.keys().cloned().collect::<Vec<_>>(), keys);
 }
+
+// ---- #4035: one forbidden-scalar policy, two consumers -----------------
+
+/// Independent test-only oracle: the forbidden intervals written out here as
+/// expected data, never derived from the production predicate.
+const FORBIDDEN_ORACLE: [(u32, u32); 7] = [
+    (0x0000, 0x0008),
+    (0x000B, 0x001F),
+    (0x007F, 0x009F),
+    (0x061C, 0x061C),
+    (0x200E, 0x200F),
+    (0x2028, 0x202E),
+    (0x2066, 0x2069),
+];
+
+fn assert_probe(scalar: char, forbidden: bool) {
+    use crate::pty::inject::{validate_pty_input_text, PtyInputTextErrorKind};
+    let text = format!("é🙂{scalar}x");
+    let code = scalar as u32;
+    let result = validate_pty_input_text(&text);
+    if forbidden {
+        assert_eq!(sanitize(&text), "é🙂x", "sanitize kept U+{code:04X}");
+        let err = result.expect_err("validator accepted a forbidden scalar");
+        assert_eq!(err.kind, PtyInputTextErrorKind::ForbiddenScalar);
+        assert_eq!((err.byte_offset, err.scalar_offset), (6, 2));
+        assert_eq!(err.code_point, Some(code));
+        let display = err.to_string();
+        assert_eq!(
+            display,
+            format!("invalid_text:byte=6:scalar=2:codepoint=U+{code:04X}")
+        );
+        assert!(
+            !display.contains('é') && !display.contains('🙂'),
+            "{display}"
+        );
+    } else {
+        assert_eq!(sanitize(&text), text, "sanitize changed U+{code:04X}");
+        assert_eq!(result, Ok(()), "validator rejected U+{code:04X}");
+    }
+}
+
+#[test]
+fn scalar_policy_preserves_both_paths_and_edges() {
+    for (start, end) in FORBIDDEN_ORACLE {
+        for code in start..=end {
+            assert_probe(char::from_u32(code).unwrap(), true);
+        }
+        for edge in [start.checked_sub(1), Some(end + 1)].into_iter().flatten() {
+            let in_oracle = FORBIDDEN_ORACLE
+                .iter()
+                .any(|&(s, e)| (s..=e).contains(&edge));
+            if !in_oracle {
+                assert_probe(char::from_u32(edge).unwrap(), false);
+            }
+        }
+    }
+    for accepted in ['\t', '\n', 'A', '~', ' ', 'é', 'ñ', '🙂', '\u{10FFFF}'] {
+        assert_probe(accepted, false);
+    }
+    assert_eq!(sanitize("a\r\nb\rc\t\n"), "a\nbc\t\n");
+    assert_eq!(
+        sanitize("%\u{202e}%AC_RESPONSE::abc::START%%"),
+        "%AC_RESPONSE::abc::START%%"
+    );
+}
+
+#[test]
+fn validator_error_precedence_is_unchanged() {
+    use crate::pty::backend::PTY_INPUT_MAX_BYTES as MAX;
+    use crate::pty::inject::{validate_pty_input_text, PtyInputTextErrorKind};
+    let empty = validate_pty_input_text("").unwrap_err();
+    assert_eq!(empty.kind, PtyInputTextErrorKind::Empty);
+    assert_eq!(
+        (empty.byte_offset, empty.scalar_offset, empty.code_point),
+        (0, 0, None)
+    );
+    assert_eq!(empty.to_string(), "invalid_text:empty");
+
+    let ascii = "a".repeat(MAX + 1);
+    let crossing = format!("{}é", "a".repeat(MAX - 1));
+    let forbidden_first = format!("\u{202e}{}", "a".repeat(MAX));
+    for (text, scalars) in [(ascii, MAX), (crossing, MAX), (forbidden_first, MAX - 2)] {
+        assert!(text.len() > MAX);
+        let err = validate_pty_input_text(&text).unwrap_err();
+        assert_eq!(err.kind, PtyInputTextErrorKind::TooLarge);
+        assert_eq!((err.byte_offset, err.scalar_offset), (MAX, scalars));
+        assert_eq!(err.code_point, None);
+        assert_eq!(err.to_string(), "payload_too_large");
+    }
+}
