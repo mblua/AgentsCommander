@@ -382,16 +382,6 @@
       ]
     },
     {
-      "id": "2d169732e2030fa6",
-      "members": [
-        "agentscommander_lib::cli::task_ops",
-        "agentscommander_lib::cli::task_ops::clean",
-        "agentscommander_lib::cli::task_ops::flow",
-        "agentscommander_lib::cli::task_ops::initialization",
-        "agentscommander_lib::cli::task_ops::status"
-      ]
-    },
-    {
       "id": "b2640baf29803e8a",
       "members": [
         "agentscommander_lib::config::daemon_pid",
