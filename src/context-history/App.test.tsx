@@ -484,7 +484,7 @@ describe("ContextHistoryApp", () => {
     const expected = [
       "team-a: Últimas 300 sesiones",
       "team-b: Últimas 300 sesiones (2 disponibles)",
-      `${TEXT.unknown}: Últimas 300 sesiones (1 disponibles)`,
+      `${TEXT.unknown}: Últimas 300 sesiones (1 disponible)`,
       `${TEXT.ambiguous}: Últimas 300 sesiones (0 disponibles)`,
     ];
     expect(texts(must(view.root, "[data-agent-key='dev']"))).toEqual(expected);
