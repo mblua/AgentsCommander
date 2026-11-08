@@ -452,6 +452,7 @@ mod admission;
 mod blocking_seed;
 mod container_shutdown;
 mod critical_key;
+mod edge;
 mod operation_turn;
 mod payload;
 mod response_registration;

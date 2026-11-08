@@ -46,3 +46,6 @@ pub(crate) trait CoManagedHost: Send + Sync + CoManagedEvents + SelectionEvents 
         capture: Arc<CaptureState>,
     ) -> BoxFuture<'static, Result<CommittedEffect, AbstainReason>>;
 }
+
+#[cfg(test)]
+mod tests;
