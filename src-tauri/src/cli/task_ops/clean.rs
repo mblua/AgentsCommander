@@ -1,6 +1,14 @@
-use super::apply_clean;
-use super::parse_task;
-use super::render;
+use super::document::apply_clean;
+use super::document::parse_task;
+use super::document::render;
+#[cfg(test)]
+use super::lock::LockGuard;
+#[cfg(test)]
+use super::lock::LOCK_STALE_AFTER_5M;
+#[cfg(test)]
+use super::lock::LOCK_TIMEOUT_5S;
+use super::operation::EditOutcome;
+use super::operation::TaskOpError;
 use super::status::read_latest_status_locked;
 use super::status::status_invalid;
 use super::status::write_failed;
@@ -8,14 +16,6 @@ use super::status::StatusRecord;
 use super::status::JOURNAL_NAME;
 use super::status::STATUS_LIMIT;
 use super::status::STATUS_NAME;
-use super::EditOutcome;
-#[cfg(test)]
-use super::LockGuard;
-use super::TaskOpError;
-#[cfg(test)]
-use super::LOCK_STALE_AFTER_5M;
-#[cfg(test)]
-use super::LOCK_TIMEOUT_5S;
 use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::filesystem::tasks::{
     create_task_artifact, io_boundary, open_task_sync, read_clean_journal, read_task_artifact,
