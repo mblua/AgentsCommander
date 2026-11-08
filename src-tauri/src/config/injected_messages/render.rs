@@ -1,8 +1,8 @@
-use super::registry;
-use super::warn_once;
-use super::MessageSpec;
-use super::KNOWN_MESSAGES;
-use super::MAX_RENDERED_BYTES;
+use super::registry::registry;
+use super::registry::spec_for;
+use super::registry::warn_once;
+use super::registry::MessageWarnings;
+use super::registry::MAX_RENDERED_BYTES;
 
 // ---------------------------------------------------------------------------
 // Pure rendering engine
@@ -149,7 +149,7 @@ pub(super) fn sanitize(value: &str) -> String {
 pub(crate) fn render_with_template(
     template: &str,
     values: &[(&str, &str)],
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> String {
     let (expanded, unknown) = expand_tokens(template, values);
     for token in unknown {
@@ -177,7 +177,7 @@ pub(super) fn render_resolved(
     template: &str,
     from_registry: bool,
     values: &[(&str, &str)],
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> String {
     let rendered = render_with_template(template, values, warnings);
     if !rendered.is_empty() {
@@ -207,11 +207,7 @@ pub(super) fn render_resolved(
 /// Never fails and never blocks an alert. Returns a non-empty string for every
 /// id in `KNOWN_MESSAGES`; it returns `""` only for an id this binary does not
 /// know, which no production call site can produce.
-pub(crate) fn render(
-    id: &str,
-    values: &[(&str, &str)],
-    warnings: &crate::config::injected_messages::MessageWarnings,
-) -> String {
+pub(crate) fn render(id: &str, values: &[(&str, &str)], warnings: &MessageWarnings) -> String {
     let (template, from_registry) = match registry(warnings).get(id) {
         Some(template) => (template.clone(), true),
         None => match spec_for(id) {
@@ -221,8 +217,4 @@ pub(crate) fn render(
         },
     };
     render_resolved(id, &template, from_registry, values, warnings)
-}
-
-pub(super) fn spec_for(id: &str) -> Option<&'static MessageSpec> {
-    KNOWN_MESSAGES.iter().find(|spec| spec.id == id)
 }

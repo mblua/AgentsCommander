@@ -355,14 +355,6 @@
       ]
     },
     {
-      "id": "3ac0f5b624695468",
-      "members": [
-        "agentscommander_lib::config::injected_messages",
-        "agentscommander_lib::config::injected_messages::provision",
-        "agentscommander_lib::config::injected_messages::render"
-      ]
-    },
-    {
       "id": "9cc5d31519f8d48a",
       "members": [
         "agentscommander_lib::path_identity",
