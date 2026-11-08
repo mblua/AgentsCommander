@@ -218,6 +218,14 @@ describe("context-history helpers", () => {
     expect(sessionWindowLabel(100, 42)).toBe("Últimas 100 sesiones (42 disponibles)");
     expect(sessionWindowLabel(100, 100)).toBe("Últimas 100 sesiones");
     expect(sessionWindowLabel(100, null)).toBe("Últimas 100 sesiones");
+    expect(sessionWindowLabel(25, 1)).toBe("Últimas 25 sesiones (1 disponible)");
+    expect(sessionWindowLabel(25, 2)).toBe("Últimas 25 sesiones (2 disponibles)");
+    expect(sessionWindowLabel(25, 0)).toBe("Últimas 25 sesiones (0 disponibles)");
+    expect(sessionWindowLabel(25, 25)).toBe("Últimas 25 sesiones");
+    expect(sessionWindowLabel(25, 26)).toBe("Últimas 25 sesiones");
+    expect(sessionWindowLabel(1, 0)).toBe("Última sesión (0 disponibles)");
+    expect(sessionWindowLabel(1, 1)).toBe("Última sesión");
+    expect(sessionWindowLabel(1)).toBe("Última sesión");
   });
 
   it("selects the configured colour window, falling back to the last member", () => {

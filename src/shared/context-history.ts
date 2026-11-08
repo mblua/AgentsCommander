@@ -264,7 +264,7 @@ export function periodEndingAt(toUtcMs: number, days: number): {
 export function sessionWindowLabel(requested: number, available?: number | null): string {
   const base = requested === 1 ? "Última sesión" : `Últimas ${requested} sesiones`;
   if (available === undefined || available === null || available >= requested) return base;
-  return `${base} (${available} disponibles)`;
+  return `${base} (${available} ${available === 1 ? "disponible" : "disponibles"})`;
 }
 
 /**
