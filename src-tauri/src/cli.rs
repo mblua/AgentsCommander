@@ -22,6 +22,7 @@ mod self_restart;
 mod self_switch;
 pub(crate) mod send;
 mod session_safety;
+pub(crate) mod stdout;
 mod task_append_body;
 pub(crate) mod task_ops;
 mod task_set_title;
@@ -34,6 +35,8 @@ mod window_list;
 #[cfg(target_os = "windows")]
 mod window_screenshot;
 mod workgroup;
+
+pub use stdout::print_stdout;
 
 use crate::filesystem::{directories, documents};
 use clap::{Parser, Subcommand};
@@ -54,30 +57,10 @@ use clap::{Parser, Subcommand};
 #[macro_export]
 macro_rules! cli_println {
     () => {{
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let mut h = stdout.lock();
-        if let Err(e) = writeln!(h) {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                #[expect(clippy::exit, reason = "BrokenPipe exits successfully")]
-                std::process::exit(0);
-            } else {
-                panic!("failed printing to stdout: {}", e);
-            }
-        }
+        $crate::cli::print_stdout(::std::format_args!(""));
     }};
     ($($arg:tt)*) => {{
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let mut h = stdout.lock();
-        if let Err(e) = writeln!(h, $($arg)*) {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                #[expect(clippy::exit, reason = "BrokenPipe exits successfully")]
-                std::process::exit(0);
-            } else {
-                panic!("failed printing to stdout: {}", e);
-            }
-        }
+        $crate::cli::print_stdout(::std::format_args!($($arg)*));
     }};
 }
 

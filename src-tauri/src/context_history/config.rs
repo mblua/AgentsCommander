@@ -3,8 +3,6 @@
 //! The file is never created, repaired or rewritten here. A missing file means
 //! disabled; an unreadable or invalid one means disabled with a bounded
 //! diagnostic.
-// Dormant until the history runtime (#3532 P02) reads the configuration.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
