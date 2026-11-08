@@ -1,3 +1,4 @@
+use super::pair_image::{ConfigPairCleanup, ConfigPairFinish, ConfigPublisher};
 use super::{
     acquire_config_file_write_lock, land_pair_activity, lock_local_config_writes,
     prepared_pair_image, protected_revision, publish_pair_sides, publish_temp_config,
@@ -10,15 +11,6 @@ use serde_json::Map;
 use serde_json::Value;
 use std::cell::Cell;
 use std::path::Path;
-
-/// #2786 (C1) - the caller-supplied cleanup sequence of `update_config_pair`:
-/// it edits the decisions map and the state map before `mutate` runs.
-pub(crate) type ConfigPairCleanup<'a> =
-    &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;
-
-pub(in crate::config) type ConfigPublisher<'a> = &'a dyn Fn(&Path, &Path) -> Result<(), String>;
-
-pub(crate) type ConfigPairFinish<'a> = &'a dyn Fn(&mut Map<String, Value>) -> Result<(), String>;
 
 /// #2786 (C1) - write the decisions file and the state file as one guarded
 /// pair. `state` is the state file's path, `state_keys` the keys that live in
