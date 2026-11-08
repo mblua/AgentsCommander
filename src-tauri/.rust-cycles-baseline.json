@@ -387,16 +387,6 @@
       ]
     },
     {
-      "id": "2d169732e2030fa6",
-      "members": [
-        "agentscommander_lib::cli::task_ops",
-        "agentscommander_lib::cli::task_ops::clean",
-        "agentscommander_lib::cli::task_ops::flow",
-        "agentscommander_lib::cli::task_ops::initialization",
-        "agentscommander_lib::cli::task_ops::status"
-      ]
-    },
-    {
       "id": "09a21e1f03af7027",
       "members": [
         "agentscommander_lib::cli::workgroup",
