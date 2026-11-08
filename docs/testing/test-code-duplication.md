@@ -42,7 +42,7 @@ assertSessionVisible({ id: "s-x", name: "wg-9/x", path: "C:\\Project\\x" });
 - `npm run dup:changed` — the blocking gate. Scans the working tree with the same configuration, scoped to new code against `git merge-base HEAD origin/main` (or the ref in `GATE_BASE_REF`, which CI sets to the PR's base branch). New clones and edits inside baseline clones fail; the recorded baseline clones do not.
 - `npm run dup:changed:self` — the gate's self-test. Builds throwaway git repositories under the system temp directory and proves the gate goes red and green for the right reasons. It changes nothing in this repository.
 
-The gate also fails when the scan finds **zero** files (`--fail-on-empty`) and scans without `.gitignore` (`--no-gitignore`), so an ignore entry cannot silently shrink the scan; `.jscpd.json` ignores `**/node_modules/**` to keep dependency test files out of that wider scan. Copies are detected across `.test.ts` and `.test.tsx` as well as within each format.
+The gate also fails when the scan finds **zero** files (`--fail-on-empty`) and scans without `.gitignore` (`--no-gitignore`), so an ignore entry cannot silently shrink the scan; `.jscpd.json` ignores `**/node_modules/**` to keep dependency test files out of that wider scan, and `**/artifacts/**` to keep local gate evidence out of it: `artifacts/` is gitignored, can hold copies of real test files (for example `artifacts/<n>/src/foo.test.ts`), and without the entry each copy is reported as a new clone. No tracked file lives under `artifacts/`, so the entry does not shrink the scan of versioned files (#4111). Copies are detected across `.test.ts` and `.test.tsx` as well as within each format.
 
 ## The recorded `main` baseline
 
