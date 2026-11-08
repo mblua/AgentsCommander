@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "19f29e57b235c9c2",
+      "id": "991148630873da05",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -28,12 +28,8 @@
         "agentscommander_lib::api::message_store::rows",
         "agentscommander_lib::api::message_store::types",
         "agentscommander_lib::app_state",
-        "agentscommander_lib::cli",
         "agentscommander_lib::cli::create_agent::session_request",
         "agentscommander_lib::cli::create_agent_matrix",
-        "agentscommander_lib::cli::list_peers",
-        "agentscommander_lib::cli::list_peers::discovery",
-        "agentscommander_lib::cli::list_peers::snapshot",
         "agentscommander_lib::cli::terminal_snapshot",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
@@ -351,17 +347,22 @@
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::bridge::poll",
         "agentscommander_lib::telegram::manager",
-        "agentscommander_lib::testability::reset",
         "agentscommander_lib::testability::ui_automation",
         "agentscommander_lib::testability::ui_automation::args",
         "agentscommander_lib::testability::ui_automation::cli_run",
         "agentscommander_lib::testability::ui_automation::files",
-        "agentscommander_lib::testability::window_info",
         "agentscommander_lib::update_check",
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands",
         "agentscommander_lib::web::commands::agent_update_dispatch",
         "agentscommander_lib::window"
+      ]
+    },
+    {
+      "id": "629bffdade5ff28c",
+      "members": [
+        "agentscommander_lib::cli::list_peers",
+        "agentscommander_lib::cli::list_peers::snapshot"
       ]
     },
     {
