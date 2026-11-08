@@ -22,6 +22,7 @@ use super::storage::next_attempt_output_path;
 use super::storage::replace_attempts;
 use super::storage::write_attempt_prompt_file;
 use super::storage::{attempts_name, attempts_path_display};
+use super::storage::{replace_report, replace_run, report_name, run_name};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::source_matrix_path;
@@ -64,7 +65,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
     }
     run_artifact.updated_at = completed_at.clone();
     run_artifact.status = summarize_run_status(&plan.attempts, false);
-    atomic_write_json(&plan.run_dir.join("run.json"), &run_artifact)?;
+    replace_run(&plan.run_dir, &run_artifact)?;
     replace_attempts(&plan.run_dir, &plan.attempts)?;
     let report_artifact = build_report_artifact(
         &plan.run_id,
@@ -78,7 +79,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
         false,
         Some(&plan.workgroup),
     );
-    atomic_write_json(&plan.run_dir.join("report.json"), &report_artifact)?;
+    replace_report(&plan.run_dir, &report_artifact)?;
     atomic_write_bytes(
         &plan.run_dir.join("report.md"),
         render_report_markdown(&report_artifact).as_bytes(),
@@ -101,9 +102,9 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
             "seed": run_artifact.seed,
             "seedProvided": run_artifact.seed_provided,
             "artifacts": {
-                "run": "run.json",
+                "run": run_name(),
                 "attempts": attempts_name(),
-                "reportJson": "report.json",
+                "reportJson": report_name(),
                 "reportMarkdown": "report.md",
                 "prompts": "prompts",
                 "outputs": "outputs",
@@ -368,7 +369,7 @@ fn execute_attempts_with_fake_executor(
         replace_attempts(&plan.run_dir, &plan.attempts)?;
         run_artifact.status = "running".to_string();
         run_artifact.updated_at = started_at.clone();
-        atomic_write_json(&plan.run_dir.join("run.json"), run_artifact)?;
+        replace_run(&plan.run_dir, run_artifact)?;
 
         let result = fake_attempt_result(args, &plan.attempts[idx], &output_path);
         let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

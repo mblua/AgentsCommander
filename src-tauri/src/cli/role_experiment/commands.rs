@@ -6,7 +6,6 @@ use super::report::build_report_artifact;
 use super::report::create_explicit_run_dir;
 use super::report::create_generated_run_dir;
 use super::report::default_run_artifact_paths;
-use super::report::experiments_dir;
 use super::report::generated_seed_from_uuid;
 use super::report::render_report_markdown;
 use super::report::report_artifact_paths;
@@ -15,15 +14,18 @@ use super::report::validate_replicates;
 use super::report::validate_report_artifacts;
 use super::report::validate_run_id;
 use super::storage::create_attempts;
+use super::storage::experiments_dir;
 use super::storage::load_experiment;
 use super::storage::load_variant_metadata;
 use super::storage::read_json;
 use super::storage::resolve_ac_root;
 use super::storage::resolve_project;
+use super::storage::validate_required_artifact_file;
 use super::storage::write_json;
-use super::storage::write_json_new;
 use super::storage::write_new_file;
 use super::storage::{attempts_name, attempts_path, attempts_path_display};
+use super::storage::{create_report, create_run, run_name};
+use super::storage::{load_report, load_run, validate_report_presence, validate_run_presence};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::line_diff;
@@ -650,9 +652,9 @@ fn write_dry_run_artifacts(
 ) -> Result<(), Vec<CliError>> {
     let report_markdown = render_report_markdown(report_artifact);
 
-    write_json_new(&run_dir.join("run.json"), run_artifact)?;
+    create_run(run_dir, run_artifact)?;
     create_attempts(run_dir, attempts)?;
-    write_json_new(&run_dir.join("report.json"), report_artifact)?;
+    create_report(run_dir, report_artifact)?;
     write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())
 }
 
@@ -759,7 +761,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             "seed": seed,
             "seedProvided": seed_provided,
             "artifacts": {
-                "run": "run.json",
+                "run": run_name(),
                 "attempts": artifacts.attempts,
                 "reportJson": artifacts.report_json,
                 "reportMarkdown": artifacts.report_markdown,
@@ -768,6 +770,19 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         warnings,
         errors: Vec::new(),
     })
+}
+
+/// Presence of every report input precedes parsing; run.json parses before report.json.
+pub(super) fn load_report_command_artifacts(
+    dir: &Path,
+) -> Result<(RunArtifact, ReportArtifact), Vec<CliError>> {
+    validate_run_presence(dir)?;
+    validate_required_artifact_file(&attempts_path(dir))?;
+    validate_report_presence(dir)?;
+    validate_required_artifact_file(&dir.join("report.md"))?;
+    let run_artifact = load_run(dir)?;
+    let report_artifact = load_report(dir)?;
+    Ok((run_artifact, report_artifact))
 }
 
 pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
@@ -797,24 +812,8 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             &dir,
         )]);
     }
-    let run_path = dir.join("run.json");
-    let attempts_path = attempts_path(&dir);
-    let report_path = dir.join("report.json");
     let markdown_path = dir.join("report.md");
-    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
-        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(path) {
-            return Err(vec![err_at_path(
-                "run_artifact_missing",
-                format!("Run artifact not found: {}", path.display()),
-                path,
-            )]);
-        }
-    }
-    let run_artifact: RunArtifact = read_json(&run_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
-    let report_artifact: ReportArtifact = read_json(&report_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
+    let (run_artifact, report_artifact) = load_report_command_artifacts(&dir)?;
     validate_report_artifacts(
         &loaded,
         &args.run_id,
