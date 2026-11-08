@@ -834,7 +834,9 @@ fn issue_4004_resume_parses_run_then_attempts_then_report() {
         if failing == "attempts.jsonl" {
             assert_eq!(errors[0].code, "run_artifact_unparseable");
             assert!(errors[0].path.is_none());
-            assert!(errors[0].message.starts_with("Attempt line 1 is invalid JSON"));
+            assert!(errors[0]
+                .message
+                .starts_with("Attempt line 1 is invalid JSON"));
             assert_eq!(errors[0].line, Some(1));
         } else {
             let message = errors[0].message.clone();
