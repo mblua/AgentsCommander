@@ -772,6 +772,19 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     })
 }
 
+/// Presence of every report input precedes parsing; run.json parses before report.json.
+pub(super) fn load_report_command_artifacts(
+    dir: &Path,
+) -> Result<(RunArtifact, ReportArtifact), Vec<CliError>> {
+    validate_run_presence(dir)?;
+    validate_required_artifact_file(&attempts_path(dir))?;
+    validate_report_presence(dir)?;
+    validate_required_artifact_file(&dir.join("report.md"))?;
+    let run_artifact = load_run(dir)?;
+    let report_artifact = load_report(dir)?;
+    Ok((run_artifact, report_artifact))
+}
+
 pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
     if args.format != "text" && args.format != "json" {
         return Err(vec![err(
@@ -800,12 +813,7 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
         )]);
     }
     let markdown_path = dir.join("report.md");
-    validate_run_presence(&dir)?;
-    validate_required_artifact_file(&attempts_path(&dir))?;
-    validate_report_presence(&dir)?;
-    validate_required_artifact_file(&markdown_path)?;
-    let run_artifact = load_run(&dir)?;
-    let report_artifact = load_report(&dir)?;
+    let (run_artifact, report_artifact) = load_report_command_artifacts(&dir)?;
     validate_report_artifacts(
         &loaded,
         &args.run_id,

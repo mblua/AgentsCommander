@@ -732,6 +732,7 @@ fn missing_message(path: &Path) -> String {
     format!("Run artifact not found: {}", path.display())
 }
 
+#[cfg(windows)]
 fn link_message(path: &Path) -> String {
     format!(
         "Path component is a symlink or reparse point: {}",
@@ -847,6 +848,58 @@ fn issue_4004_resume_parses_run_then_attempts_then_report() {
     }
 }
 
+#[test]
+fn issue_4004_report_presence_precedes_malformed_run() {
+    for missing in ["attempts.jsonl", "report.json", "report.md"] {
+        let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+        std::fs::write(run_dir.join("run.json"), "{").unwrap();
+        let path = run_dir.join(missing);
+        std::fs::remove_file(&path).unwrap();
+        let before = run_dir_snapshot(&run_dir);
+        let errors = commands::load_report_command_artifacts(&run_dir).expect_err("presence");
+        let message = missing_message(&path);
+        assert_single_error(&errors, "run_artifact_missing", message, Some(&path));
+        assert_eq!(run_dir_snapshot(&run_dir), before);
+    }
+}
+
+#[test]
+fn issue_4004_report_parses_run_then_report() {
+    for (corrupt, failing) in [
+        (&["run.json", "report.json"][..], "run.json"),
+        (&["report.json"][..], "report.json"),
+    ] {
+        let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+        for name in corrupt {
+            std::fs::write(run_dir.join(name), "{").unwrap();
+        }
+        let before = run_dir_snapshot(&run_dir);
+        let errors = commands::load_report_command_artifacts(&run_dir).expect_err("parse");
+        let path = run_dir.join(failing);
+        let message = errors[0].message.clone();
+        let path = Some(path.as_path());
+        assert_single_error(&errors, "run_artifact_unparseable", message, path);
+        assert_eq!(run_dir_snapshot(&run_dir), before);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn issue_4004_report_rejects_linked_artifact_before_parsing() {
+    for name in ["run.json", "report.json"] {
+        let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+        std::fs::write(run_dir.join("run.json"), "{").unwrap();
+        let target = run_dir.join(name);
+        let real = run_dir.join("real-target");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::create_dir(&real).unwrap();
+        crate::config::teams::create_test_junction(&target, &real);
+        let errors = commands::load_report_command_artifacts(&run_dir).expect_err("linked");
+        let message = link_message(&target);
+        assert_single_error(&errors, "run_artifact_link_or_reparse", message, None);
+        std::fs::remove_dir(&target).unwrap();
+    }
+}
 #[cfg(windows)]
 #[test]
 fn issue_4004_linked_run_and_report_artifacts_are_rejected() {
