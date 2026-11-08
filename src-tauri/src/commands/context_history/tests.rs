@@ -751,7 +751,8 @@ fn sidebar_exited_local_session_is_unknown() {
         .invoke(NAMES[3], sidebar(&project.text, &[exited.to_string()]))
         .expect("means");
     assert_eq!(response["entries"][0]["scope"]["kind"], "unknown");
-    assert_eq!(response["entries"][0]["windows"], Value::Null);
+    assert_eq!(response["entries"][0]["sessionWindows"], Value::Null);
+    assert!(response["entries"][0].get("windows").is_none());
 }
 
 // ---- Settings retention (#4049) ----------------------------------------------------------
