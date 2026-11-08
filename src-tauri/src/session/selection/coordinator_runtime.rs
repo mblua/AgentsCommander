@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -25,22 +24,22 @@ use super::transaction::SelectionTransaction;
 use super::turn::IN_SELECTION_WORKER;
 use super::{
     ConditionalResponseClose, CoordinatorInner, CoordinatorJob, LifecycleAdmission,
-    LifecycleExecutor, LifecycleLease, RestartJobRequest, RootJobRequest, SelectionCoordinator,
+    LifecycleExecutor, LifecycleLease, RestartJobRequest, RootJobRequest, SelectionContext,
+    SelectionCoordinator, SelectionHost,
 };
 
 impl SelectionCoordinator {
-    pub(crate) fn start_with_executor<R: Runtime>(
+    pub(crate) fn start_with_host<C: SelectionContext>(
         &self,
-        app: AppHandle<R>,
-        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+        host: C::Host,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>>,
     ) -> Result<(), SelectionCoordinatorError> {
         let Some(executor) = executor else {
             log::error!("[selection] lifecycle executor binding missing at coordinator start");
             return Err(SelectionCoordinatorError::Unavailable);
         };
-        if let Some(pty) = app.try_state::<Arc<Mutex<PtyManager>>>() {
+        if let Some(pty) = host.pty_optional() {
             let container_backend = pty
-                .inner()
                 .lock()
                 .map_err(|_| SelectionCoordinatorError::Unavailable)?
                 .container_backend();
@@ -49,7 +48,7 @@ impl SelectionCoordinator {
                 .cleanup_pty
                 .lock()
                 .map_err(|_| SelectionCoordinatorError::Unavailable)?;
-            *cleanup_pty = Some(Arc::downgrade(pty.inner()));
+            *cleanup_pty = Some(Arc::downgrade(pty));
             let mut cleanup_container_backend = self
                 .inner
                 .cleanup_container_backend
@@ -65,9 +64,13 @@ impl SelectionCoordinator {
             .take()
             .ok_or(SelectionCoordinatorError::Unavailable)?;
         let inner = Arc::clone(&self.inner);
-        let handle = tauri::async_runtime::spawn(IN_SELECTION_WORKER.scope((), async move {
-            SelectionTransaction::worker_loop(app, inner, receiver, executor).await;
-        }));
+        let worker_host = host.clone();
+        let handle = host
+            .tasks()
+            .spawn(Box::pin(IN_SELECTION_WORKER.scope((), async move {
+                SelectionTransaction::<C>::worker_loop(worker_host, inner, receiver, executor)
+                    .await;
+            })));
         let mut worker = self
             .inner
             .worker
@@ -116,9 +119,9 @@ impl SelectionCoordinator {
         }
     }
 
-    pub(super) async fn try_response_close<R: Runtime>(
+    pub(super) async fn try_response_close<C: SelectionContext>(
         &self,
-        app: &AppHandle<R>,
+        host: &C::Host,
         registration: &ResponseCloseRegistration,
     ) -> Result<(), SelectionCoordinatorError> {
         let key = CriticalAdmissionKey {
@@ -139,13 +142,10 @@ impl SelectionCoordinator {
         let (admission, slot) = self.try_reserve_envelope().inspect_err(|_| {
             registration.diagnostic_poll_outcome(5, "reserve_envelope_error");
         })?;
-        let tracker = app
-            .state::<crate::pty::manager::ResponseCloseState>()
-            .inner()
-            .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let tracker = host.response_close_required().clone();
+        let pty = host.pty_required().clone();
         let manager = self.inner.manager.read().await.clone();
-        let settings = app.state::<crate::config::settings::SettingsState>();
+        let settings = host.settings_required();
         let settings = settings.read().await;
         let carrier_permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         if self.restore_is_active() {
@@ -220,43 +220,43 @@ impl SelectionCoordinator {
         Ok(())
     }
 
-    pub(crate) async fn restart_lifecycle_with_executor<R: Runtime>(
+    pub(crate) async fn restart_lifecycle_with_host<C: SelectionContext>(
         &self,
-        app: AppHandle<R>,
+        host: C::Host,
         request: RestartJobRequest,
-        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>>,
     ) -> Result<SessionInfo, String> {
         let executor =
             executor.ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        self.submit_lifecycle_entry(
-            app,
+        self.submit_lifecycle_entry::<C>(
+            host,
             OwnedReplacementDescriptor::EntryRestart(request),
             executor,
         )
         .await
     }
 
-    pub(crate) async fn root_lifecycle_with_executor<R: Runtime>(
+    pub(crate) async fn root_lifecycle_with_host<C: SelectionContext>(
         &self,
-        app: AppHandle<R>,
+        host: C::Host,
         request: RootJobRequest,
-        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>>,
     ) -> Result<SessionInfo, String> {
         let executor =
             executor.ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        self.submit_lifecycle_entry(
-            app,
+        self.submit_lifecycle_entry::<C>(
+            host,
             OwnedReplacementDescriptor::EntryRoot(request),
             executor,
         )
         .await
     }
 
-    async fn submit_lifecycle_entry<R: Runtime>(
+    async fn submit_lifecycle_entry<C: SelectionContext>(
         &self,
-        app: AppHandle<R>,
+        host: C::Host,
         descriptor: OwnedReplacementDescriptor,
-        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
+        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>,
     ) -> Result<SessionInfo, String> {
         // Original real capacity probe precedes acceptance and validation.
         let (admission, slot) = self
@@ -270,7 +270,7 @@ impl SelectionCoordinator {
         let coordinator = self.clone();
         crate::config::sessions_persistence::run_owned_persist_core(async move {
             let execution = coordinator
-                .execute_accepted_entry(&app, owner.clone(), executor_nonce, executor)
+                .execute_accepted_entry::<C>(&host, owner.clone(), executor_nonce, executor)
                 .await;
             coordinator
                 .finish_lifecycle_entry(&owner, executor_nonce, execution, publication)
@@ -282,17 +282,17 @@ impl SelectionCoordinator {
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
     }
 
-    async fn execute_accepted_entry<R: Runtime>(
+    async fn execute_accepted_entry<C: SelectionContext>(
         &self,
-        app: &AppHandle<R>,
+        host: &C::Host,
         owner: Arc<ReplacementOwner>,
         executor_nonce: Uuid,
-        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
+        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>,
     ) -> (Result<SessionInfo, String>, bool) {
         if let Err(error) = self.wait_for_restore_release().await {
             return (Err(error), true);
         }
-        let transaction = SelectionTransaction::new(app.clone(), Weak::new())
+        let transaction = SelectionTransaction::<C>::new_host(host.clone(), Weak::new())
             .with_lifecycle_executor(Arc::clone(&executor));
         if matches!(&owner.descriptor, OwnedReplacementDescriptor::EntryRoot(_)) {
             let effect = Self::initial_root_directory_effect(&owner, executor_nonce);
@@ -549,8 +549,11 @@ pub struct RestoreBarrierGuard {
 }
 
 impl RestoreBarrierGuard {
-    pub(crate) fn transaction<R: Runtime>(&self, app: AppHandle<R>) -> SelectionTransaction<R> {
-        let mut transaction = SelectionTransaction::new(app, self.coordinator.clone());
+    pub(crate) fn transaction_with_host<C: SelectionContext>(
+        &self,
+        host: C::Host,
+    ) -> SelectionTransaction<C> {
+        let mut transaction = SelectionTransaction::<C>::new_host(host, self.coordinator.clone());
         transaction.restore_nonce = Some(self.nonce);
         transaction
     }

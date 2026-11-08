@@ -349,12 +349,83 @@ export function measureSource(path, text, scan = scanRust(path, text)) {
     writers };
 }
 
+// literal-files-v1: complete decoded strings, with no runtime path inference.
+function literalIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const literal = value.replaceAll(String.fromCodePoint(92), '/');
+  const relative = literal.replace(/^(?:[A-Za-z]:)?\//, '');
+  const segments = relative.split('/');
+  const segment = /^(?:[A-Za-z0-9_.*-]|\{(?:[A-Za-z_][A-Za-z0-9_]*)?\})+$/;
+  if (segments.some(s => !s || s === '.' || s === '..' ||
+      !segment.test(s))) return null;
+  return /^.+\.(?:jsonl?|toml|ya?ml|db|sqlite3?|lock|md|txt)$/.test(segments.at(-1))
+    ? literal : null;
+}
+function discoverMeasurements(measurements, containers) {
+  const entries = new Map();
+  for (const [path, m] of measurements) for (const t of m.literals) {
+    const literal = literalIdentity(t.value);
+    if (literal === null || containers.some(c => t.value === c.name &&
+        path.startsWith(c.literalScope ?? c.scope))) continue;
+    if (!entries.has(literal)) entries.set(literal, { literal, files: new Set(), sites: [] });
+    const entry = entries.get(literal);
+    entry.files.add(path); entry.sites.push({ path, line: t.line });
+  }
+  return [...entries.values()].filter(e => e.files.size >= 2).map(e => ({ ...e,
+    files: [...e.files].sort(codeOrder),
+    sites: e.sites.sort((a, b) => codeOrder(a.path, b.path) || a.line - b.line),
+  })).sort((a, b) => codeOrder(a.literal, b.literal));
+}
+function checkedReader(readBlob) {
+  return entry => {
+    const text = readBlob(entry);
+    if (typeof text !== 'string') throw new GateError('source blob missing or non-text');
+    return text;
+  };
+}
+export function discoverUnregistered(tree, readBlob, containers) {
+  readBlob = checkedReader(readBlob);
+  if (!(tree instanceof Map)) throw new GateError('unregistered: tree missing');
+  const scan = createRustScanner(tree, readBlob), measurements = new Map();
+  for (const p of [...tree.keys()].filter(rustSource).sort(codeOrder))
+    measurements.set(p, { literals: scan(p).productionTokens.filter(t => t.kind === 'string')
+      .map(t => ({ value: t.value, line: t.line })) });
+  return discoverMeasurements(measurements, containers);
+}
+const discoveryReport = entries => ({ entries, counts: {
+  identities: entries.length, pairs: entries.reduce((n, e) => n + e.files.length, 0),
+  sites: entries.reduce((n, e) => n + e.sites.length, 0),
+} });
+function unregisteredDiagnostics(base, head) {
+  const previous = new Map(base.map(e => [e.literal, e])), diagnostics = [];
+  for (const entry of head) {
+    const old = previous.get(entry.literal);
+    for (const site of entry.sites) {
+      if (old?.files.includes(site.path)) continue;
+      diagnostics.push({ gate: '04', status: 'FAIL',
+        rule: old ? 'unregistered_container_file' : 'unregistered_container_growth',
+        literal: entry.literal, ...site, baseFiles: old?.files ?? [], headFiles: entry.files,
+        reason: 'Distributed unregistered literal adds an identity or production file.',
+        remedy: 'Remove distributed names, use the owner API, or approve registration separately.'
+      });
+    }
+  }
+  return diagnostics.sort((a, b) => codeOrder(a.rule, b.rule) ||
+    codeOrder(a.literal, b.literal) || codeOrder(a.path, b.path) || a.line - b.line);
+}
+
 export function runGate(snapshot) {
   const diagnostics = [], metrics = [], inventory = { files: 0, sites: 0 };
   try {
+    const readBlob = checkedReader(snapshot.readBlob);
+    if (!(snapshot.baseTree instanceof Map) || !(snapshot.headTree instanceof Map))
+      throw new GateError('unregistered: base/head tree missing');
+    const baseEntry = snapshot.baseTree.get(registryPath);
+    if (!baseEntry) throw new GateError('containers.json: base registry missing');
+    const baseContainers = parseRegistry(readBlob(baseEntry));
     const entry = snapshot.headTree.get(registryPath);
     if (!entry) throw new GateError('containers.json: registry missing');
-    const containers = parseRegistry(snapshot.readBlob(entry));
+    const containers = parseRegistry(readBlob(entry));
     for (const c of containers) if (!snapshot.headTree.has(c.owner))
       throw new GateError('containers.json: owner missing: ' + c.owner);
     for (const c of containers) if (c.ownerModule && ![...snapshot.headTree.keys()].some(p =>
@@ -364,12 +435,17 @@ export function runGate(snapshot) {
       for (const p of metadataFiles)
         if (!snapshot.headTree.has(p)) throw new GateError('metadata source missing: ' + p);
     const measurements = new Map();
-    const scan = createRustScanner(snapshot.headTree, snapshot.readBlob);
+    const scan = createRustScanner(snapshot.headTree, readBlob);
     for (const p of [...snapshot.headTree.keys()].filter(rustSource).sort(codeOrder)) {
-      const m = measureSource(p, snapshot.readBlob(snapshot.headTree.get(p)), scan(p));
+      const m = measureSource(p, readBlob(snapshot.headTree.get(p)), scan(p));
       measurements.set(p, m);
       if (m.writers.length) { inventory.files++; inventory.sites += m.writers.length; }
     }
+    const headEntries = discoverMeasurements(measurements, containers);
+    const baseEntries = discoverUnregistered(snapshot.baseTree, readBlob, baseContainers);
+    const unregistered = { contract: 'literal-files-v1',
+      base: discoveryReport(baseEntries), head: discoveryReport(headEntries) };
+    diagnostics.push(...unregisteredDiagnostics(baseEntries, headEntries));
     const contexts = moduleContexts(measurements.keys(), scan);
     const registeredScopes = containers.filter(c => !c.ownerModule).map(c => c.scope);
     const unknown = [...measurements].filter(([p, m]) => m.writers.length &&
@@ -418,10 +494,11 @@ export function runGate(snapshot) {
     snapshot.assertStableHead();
     const fail = diagnostics.some(d => d.status === 'FAIL');
     return { gate: '04', status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0,
-      baseOid: snapshot.baseOid, headOid: snapshot.headOid, inventory, metrics, diagnostics };
+      baseOid: snapshot.baseOid, headOid: snapshot.headOid, inventory, metrics, diagnostics,
+      unregistered };
   } catch (e) {
     return { gate: '04', status: 'ERROR', exit: e.exit ?? 3,
-      diagnostics: [{ gate: '04', reason: e.message,
+      diagnostics: [...diagnostics, { gate: '04', reason: e.message,
         remedy: 'Repair registry/Git input and rerun.' }] };
   }
 }

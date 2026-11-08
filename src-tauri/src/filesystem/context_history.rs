@@ -1,6 +1,4 @@
 //! Physical operations for the context history; the store owns paths, SQL and policy.
-// Dormant until the history store (#3532 P01) consumes these operations.
-#![allow(dead_code)]
 
 use std::fs::{self, File};
 use std::io::{self, Read};

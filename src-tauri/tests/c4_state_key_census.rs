@@ -214,7 +214,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1603, "inventory count");
+    assert_eq!(sources.len(), 1621, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -302,12 +302,12 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "0CD4A5FFA31876156CCADE44569C38CAD2B9AC0C0AAF3F92362CEC2D7E76DAAD",
+        sha256: "ECF7362A2E1CD94D13A5966761903C6699C9FF89CFC1FF3D18C1099E17E596D9",
         per_file: &[
-            ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 1),
             ("config/agent_config/tests/loader.rs", 3),
             ("config/agent_config/tests/migration.rs", 1),
+            ("config/teams/discovery.rs", 4),
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority/target.rs", 1),
             ("phone/mailbox/self_switch.rs", 1),
@@ -322,12 +322,12 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "75A5A08E39BBC59AA23F153857962965061ECD13F293A24A9BD7547A4E42CBD8",
+        sha256: "C2EB3A0738FDED51D9345F305431279240D13D85874377443C1A0734C1C49945",
         per_file: &[
-            ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 2),
             ("config/agent_config/tests/loader.rs", 5),
             ("config/agent_config/tests/migration.rs", 1),
+            ("config/teams/discovery.rs", 4),
             ("loops/delivery.rs", 1),
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority/target.rs", 2),

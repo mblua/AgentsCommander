@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::run_owned_selection_operation;
 
 #[tokio::test]
 async fn issue_1937_selection_api_barrier_unlock_waits_for_paused_apply_publication() {
@@ -15,45 +16,43 @@ async fn issue_1937_selection_api_barrier_unlock_waits_for_paused_apply_publicat
     let (entered_tx, entered_rx) = oneshot::channel::<()>();
     let (release_tx, release_rx) = oneshot::channel::<()>();
 
-    let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || {
-            let settings = settings_for_holder;
-            let replica = replica_for_holder;
-            async move {
-                // Publication phase of an apply, then the held restart span.
-                let snapshot = settings.read().await.clone();
-                let enumeration = super::enumerate_profile_assignment_targets(
-                    &snapshot,
-                    &replica,
-                    &super::ProfileAssignmentScope::Replica,
-                    &[],
-                )
-                .expect("enumerate");
-                let target = &enumeration.candidates[0].target;
-                let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
-                    configuration_ref: None,
-                    profile_override_source: None,
-                    identity: target.identity_path.clone(),
-                    pair: super::target_pair(target),
-                    locked: false,
-                };
-                crate::config::coding_agent_profiles::write_replica_selection(
-                    &snapshot,
-                    &replica,
-                    &crate::config::coding_agent_profiles::ReplicaSelectionPair {
-                        coding_agent_id: "agent-0".to_string(),
-                        requested_profile: "B".to_string(),
-                    },
-                    SelectionWriteIntent::IndividualAssignLock,
-                    &expected,
-                )
-                .expect("publish the lock");
-                entered_tx.send(()).expect("signal entered");
-                release_rx.await.expect("release the publication span");
-                Ok::<(), String>(())
-            }
-        },
-    ));
+    let holder = tokio::spawn(run_owned_selection_operation(move || {
+        let settings = settings_for_holder;
+        let replica = replica_for_holder;
+        async move {
+            // Publication phase of an apply, then the held restart span.
+            let snapshot = settings.read().await.clone();
+            let enumeration = super::enumerate_profile_assignment_targets(
+                &snapshot,
+                &replica,
+                &super::ProfileAssignmentScope::Replica,
+                &[],
+            )
+            .expect("enumerate");
+            let target = &enumeration.candidates[0].target;
+            let expected = crate::config::coding_agent_profiles::ReplicaSelectionExpectation {
+                configuration_ref: None,
+                profile_override_source: None,
+                identity: target.identity_path.clone(),
+                pair: super::target_pair(target),
+                locked: false,
+            };
+            crate::config::coding_agent_profiles::write_replica_selection(
+                &snapshot,
+                &replica,
+                &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                    coding_agent_id: "agent-0".to_string(),
+                    requested_profile: "B".to_string(),
+                },
+                SelectionWriteIntent::IndividualAssignLock,
+                &expected,
+            )
+            .expect("publish the lock");
+            entered_tx.send(()).expect("signal entered");
+            release_rx.await.expect("release the publication span");
+            Ok::<(), String>(())
+        }
+    }));
     entered_rx.await.expect("holder entered");
 
     let preview =
@@ -62,25 +61,23 @@ async fn issue_1937_selection_api_barrier_unlock_waits_for_paused_apply_publicat
     let fingerprint = preview.target_fingerprint.clone();
     let settings_for_unlock = settings.clone();
     let replica_for_unlock = replica.clone();
-    let unlock = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || {
-            let settings = settings_for_unlock;
-            let replica = replica_for_unlock;
-            let fingerprint = fingerprint.clone();
-            async move {
-                super::apply_selection_lock_removal_inner(
-                    &settings,
-                    api_removal_apply_request(
-                        &replica,
-                        super::ProfileAssignmentScope::Replica,
-                        &fingerprint,
-                    ),
-                )
-                .await
-                .map(|(result, _payload)| result)
-            }
-        },
-    ));
+    let unlock = tokio::spawn(run_owned_selection_operation(move || {
+        let settings = settings_for_unlock;
+        let replica = replica_for_unlock;
+        let fingerprint = fingerprint.clone();
+        async move {
+            super::apply_selection_lock_removal_inner(
+                &settings,
+                api_removal_apply_request(
+                    &replica,
+                    super::ProfileAssignmentScope::Replica,
+                    &fingerprint,
+                ),
+            )
+            .await
+            .map(|(result, _payload)| result)
+        }
+    }));
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
@@ -120,13 +117,11 @@ async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply
     let (entered_tx, entered_rx) = oneshot::channel::<()>();
     let (release_tx, release_rx) = oneshot::channel::<()>();
 
-    let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || {
-            let settings = settings_for_holder;
-            let replica = replica_for_holder;
-            hold_published_selection(settings, replica, entered_tx, release_rx)
-        },
-    ));
+    let holder = tokio::spawn(run_owned_selection_operation(move || {
+        let settings = settings_for_holder;
+        let replica = replica_for_holder;
+        hold_published_selection(settings, replica, entered_tx, release_rx)
+    }));
     entered_rx.await.expect("holder entered");
     let published_bytes = config_bytes(&replica);
     let mut dir_before: Vec<std::ffi::OsString> = std::fs::read_dir(&replica)
@@ -137,21 +132,19 @@ async fn issue_1937_selection_api_barrier_read_cannot_observe_half_settled_apply
 
     let settings_for_read = settings.clone();
     let replica_for_read = replica.clone();
-    let read = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || {
-            let settings = settings_for_read;
-            let replica = replica_for_read;
-            async move {
-                super::preview_selection_lock_removal_inner(
-                    &empty_session_manager(),
-                    &settings,
-                    api_removal_preview_request(&replica, super::ProfileAssignmentScope::Replica),
-                )
-                .await
-                .map(|preview| preview.protected_count)
-            }
-        },
-    ));
+    let read = tokio::spawn(run_owned_selection_operation(move || {
+        let settings = settings_for_read;
+        let replica = replica_for_read;
+        async move {
+            super::preview_selection_lock_removal_inner(
+                &empty_session_manager(),
+                &settings,
+                api_removal_preview_request(&replica, super::ProfileAssignmentScope::Replica),
+            )
+            .await
+            .map(|preview| preview.protected_count)
+        }
+    }));
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRegistry, runGate as containersGate } from './sanitizing_containers.mjs';
+import {
+  parseRegistry, discoverUnregistered, runGate as containersGate,
+} from './sanitizing_containers.mjs';
 
 const attemptsScope = 'src-tauri/src/' + 'cli/role_experiment/';
 const attemptsRegistry = () => ({
@@ -18,7 +20,8 @@ function containerTree(files = {}, registry = attemptsRegistry()) {
     ...files,
   };
   const headTree = new Map(Object.keys(blobs).map(path => [path, path]));
-  return { headTree, readBlob: entry => blobs[entry], assertStableHead() {} };
+  return { baseTree: new Map(headTree), headTree,
+    readBlob: entry => blobs[entry], assertStableHead() {} };
 }
 test('04 accepts safe basenames and enforces their scoped owner', () => {
   for (const name of [
@@ -82,7 +85,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createSnapshot, gitRunner } from './sanitizing_baseline.mjs';
+import { createSnapshot, gitRunner, parseArgs, codeOrder } from './sanitizing_baseline.mjs';
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const candidateSnapshot = () => {
   const oid = gitRunner(['rev-parse', 'HEAD'], { cwd: repo });
@@ -452,7 +455,7 @@ function snapshotTree(files = {}, registry = widened()) {
     [sessionsScope + 'store.rs']: 'fn load() {}', [namesPath]: snapshotNames,
     [artifactsPath]: snapshotArtifacts, ...files };
   const headTree = new Map(Object.keys(blobs).map(p => [p, p]));
-  return { headTree, readBlob: e => blobs[e], assertStableHead() {} };
+  return { baseTree: new Map(headTree), headTree, readBlob: e => blobs[e], assertStableHead() {} };
 }
 const literalSites = r => r.diagnostics.filter(d => d.rule === 'external_container_literal')
   .map(d => d.path + ':' + d.line);
@@ -516,4 +519,316 @@ test('04 stage-1 containers scan all production sources on candidate HEAD', t =>
   for (const id of ids)
     assert.equal(result.metrics.find(m => m.id === id).externalLiterals, 0, id);
   t.diagnostic(JSON.stringify(result.metrics.filter(m => ids.includes(m.id))));
+});
+
+// Independent immutable sides: mutating HEAD cannot mutate the base fixture's blobs.
+function ratchetTree(base = {}, head = base, baseRegistry = attemptsRegistry(),
+  headRegistry = baseRegistry) {
+  const a = containerTree(structuredClone(base), structuredClone(baseRegistry));
+  const b = containerTree(structuredClone(head), structuredClone(headRegistry));
+  const blobs = new Map();
+  const side = s => new Map([...s.headTree].map(([p, e]) => {
+    const entry = { path: p }; blobs.set(entry, s.readBlob(e)); return [p, entry];
+  }));
+  return { baseTree: side(a), headTree: side(b), readBlob: e => blobs.get(e),
+    baseOid: 'base-fixture', headOid: 'head-fixture', assertStableHead() {} };
+}
+const sourceLiteral = literal => 'const N: &str = ' + JSON.stringify(literal) + ';';
+const distributed = (literal, paths = ['a.rs', 'b.rs']) =>
+  Object.fromEntries(paths.map(p => [root + p, sourceLiteral(literal)]));
+const debtEntry = (literal, paths = ['a.rs', 'b.rs'], line = 1) => ({ literal,
+  files: paths.map(p => root + p).sort(codeOrder),
+  sites: paths.map(p => ({ path: root + p, line })).sort((a, b) => a.path.localeCompare(b.path)),
+});
+const countsOf = entries => ({ identities: entries.length,
+  pairs: entries.reduce((n, e) => n + e.files.length, 0),
+  sites: entries.reduce((n, e) => n + e.sites.length, 0) });
+function assertDebt(result, side, entries) {
+  assert.deepEqual(result.unregistered?.[side], { entries, counts: countsOf(entries) });
+}
+function rejection(t, label, base, safe, bad, expected, registries = []) {
+  const run = head => containersGate(ratchetTree(base, head, ...registries));
+  const before = run(safe), after = run(bad), restored = run(safe);
+  assert.deepEqual([before.exit, after.exit, restored.exit], [0, 1, 0],
+    JSON.stringify({ label, before, after, restored }));
+  const matched = after.diagnostics.filter(d => d.rule?.startsWith('unregistered_container_'));
+  assert.deepEqual(matched.map(({ rule, literal, path, line }) =>
+    ({ rule, literal, path, line })), expected);
+  t.diagnostic(JSON.stringify({ control: label, exits: [0, 1, 0], matched,
+    expectedSites: expected }));
+  return after;
+}
+const expectedSites = (rule, literal, paths) => paths.map(path =>
+  ({ rule, literal, path: root + path, line: 1 }));
+const growth = 'unregistered_container_growth', newFile = 'unregistered_container_file';
+
+test('04 unregistered explicit debt sets and shrinking controls', t => {
+  const cases = [
+    ['empty', {}, []],
+    ['singleton', distributed('run.json', ['a.rs']), []],
+    ['same file repetitions', { [root + 'a.rs']: new Array(3).fill(sourceLiteral('run.json'))
+      .join('\n') }, []],
+    ['unchanged', distributed('run.json'), [debtEntry('run.json')]],
+  ];
+  for (const [label, files, entries] of cases) {
+    const result = containersGate(ratchetTree(files));
+    assert.equal(result.exit, 0, JSON.stringify(result));
+    assertDebt(result, 'base', entries); assertDebt(result, 'head', entries);
+    assert.ok(!result.diagnostics.some(d => d.status === 'FAIL'));
+    t.diagnostic(JSON.stringify({ control: label, exits: [0], entries,
+      counts: countsOf(entries) }));
+  }
+  const three = distributed('run.json', ['a.rs', 'b.rs', 'c.rs']);
+  for (const head of [distributed('run.json'), distributed('run.json', ['a.rs']), {}]) {
+    const result = containersGate(ratchetTree(three, head));
+    assert.equal(result.exit, 0, JSON.stringify(result));
+    assertDebt(result, 'base', [debtEntry('run.json', ['a.rs', 'b.rs', 'c.rs'])]);
+    assertDebt(result, 'head', Object.keys(head).length === 2 ? [debtEntry('run.json')] : []);
+    t.diagnostic(JSON.stringify({ control: 'shrink/removal', exits: [0],
+      head: result.unregistered.head }));
+  }
+  const repeated = distributed('run.json');
+  repeated[root + 'a.rs'] += '\n' + sourceLiteral('run.json');
+  const r = containersGate(ratchetTree(distributed('run.json'), repeated));
+  const entry = debtEntry('run.json'); entry.sites.splice(1, 0, { path: root + 'a.rs', line: 2 });
+  assert.equal(r.exit, 0); assertDebt(r, 'head', [entry]);
+});
+
+test('04 unregistered rejects growth and file/identity replacements with receipts', t => {
+  const old = distributed('run.json'), fresh = distributed('ledger.json');
+  rejection(t, 'new identity', {}, {}, fresh, expectedSites(growth, 'ledger.json',
+    ['a.rs', 'b.rs']));
+  rejection(t, 'singleton becomes distributed', distributed('run.json', ['a.rs']),
+    distributed('run.json', ['a.rs']), old, expectedSites(growth, 'run.json', ['a.rs', 'b.rs']));
+  rejection(t, 'extra file/copy', old, old, distributed('run.json', ['a.rs', 'b.rs', 'c.rs']),
+    expectedSites(newFile, 'run.json', ['c.rs']));
+  rejection(t, 'equal identity totals and compensating deletion', old, old, fresh,
+    expectedSites(growth, 'ledger.json', ['a.rs', 'b.rs']));
+  rejection(t, 'equal pair totals and rename', old, old,
+    distributed('run.json', ['a.rs', 'c.rs']), expectedSites(newFile, 'run.json', ['c.rs']));
+  rejection(t, 'repaired debt resurrection', {}, {}, old,
+    expectedSites(growth, 'run.json', ['a.rs', 'b.rs']));
+  const recovery = containersGate(ratchetTree(fresh));
+  assert.equal(recovery.exit, 0); assertDebt(recovery, 'head', [debtEntry('ledger.json')]);
+  t.diagnostic(JSON.stringify({ control: 'base advancement accepts merged debt', exits: [0],
+    base: recovery.unregistered.base, head: recovery.unregistered.head }));
+});
+
+test('04 literal-files-v1 exact grammar and lexical limits', t => {
+  const accepted = ['run.json', 'a.jsonl', 'a.toml', 'a.yaml', 'a.yml', 'a.db', 'a.sqlite',
+    'a.sqlite3', '.team.lock', 'Role.md', 'a.txt', '/fixture/a.json', 'C:/fixture/a.json',
+    'x' + String.fromCodePoint(92) + 'a.json', '{}.json', '{name}_*.json',
+    'a/{_id9}/report.json', 'RUN.json'];
+  const rejected = ['', '.json', './run.json', '../run.json', 'a//run.json',
+    'a/./run.json', 'a/../run.json', 'run.JSON', 'a.csv', ' run.json', 'a b.json',
+    'a\n.json', 'é.json', '{9id}.json', '{bad-name}.json', '{x.json', 'a.json/', 'C:a.json'];
+  for (const value of [...accepted, ...rejected]) {
+    const fixture = ratchetTree(distributed(value));
+    const entries = accepted.includes(value) ?
+      [debtEntry(value.replaceAll(String.fromCodePoint(92), '/'))] : [];
+    const result = containersGate(fixture);
+    assert.equal(result.exit, 0, JSON.stringify(result));
+    assertDebt(result, 'head', entries);
+    assert.deepEqual(discoverUnregistered(fixture.headTree, fixture.readBlob,
+      attemptsRegistry().containers), entries);
+    t.diagnostic(JSON.stringify({ control: 'grammar ' + JSON.stringify(value), exits: [0],
+      entries, counts: countsOf(entries) }));
+  }
+  const forms = [
+    ['raw', 'const N: &str = r#"run.json"#;', true],
+    ['escaped', String.raw`const N: &str = "run\u{2e}json";`, true],
+    ['macro complete', 'observe!("run.json");', true],
+    ['static', 'static N: &str = "run.json";', true],
+    ['comment', '// "run.json"', false],
+    ['test item', '#[cfg(test)] fn f(){let _="run.json";}', false],
+    ['byte', 'const N: &[u8] = b"run.json";', false],
+    ['assembled', 'concat!("run", ".json");', false],
+    ['identifier consumer', 'fn f(){let _=NAME;}', false],
+  ];
+  for (const [label, source, counts] of forms) {
+    const files = { [root + 'a.rs']: source, [root + 'b.rs']: source };
+    const result = containersGate(ratchetTree(files));
+    assert.equal(result.exit, 0, JSON.stringify(result));
+    assertDebt(result, 'head', counts ? [debtEntry('run.json')] : []);
+    t.diagnostic(JSON.stringify({ control: label, exits: [0], entries: result.unregistered.head }));
+  }
+});
+
+test('04 discovery scoped exclusions, templates, metadata and test layouts', t => {
+  const registry = attemptsRegistry(), c = registry.containers[0];
+  const files = { ...distributed(c.name),
+    [c.owner]: sourceLiteral(c.name),
+    [root + 'meta.rs']: 'const INSTANCE_ARTIFACTS: &[A] = &[A{name:"artifact.json"}];',
+    [root + 'names.rs']: sourceLiteral('artifact.json'),
+    [root + 'template.rs']: sourceLiteral('{}.json'),
+    [root + 'template2.rs']: sourceLiteral('{}.json'),
+    [root + 'full.rs']: sourceLiteral('/fixture/attempts.jsonl'),
+    [root + 'full2.rs']: sourceLiteral('/fixture/attempts.jsonl'),
+    [root + 'lib.rs']: '#[cfg(test)] mod proof;',
+    [root + 'proof.rs']: sourceLiteral('test-only.json'),
+    [root + 'proof2.rs']: '#[cfg(test)] fn f(){let _="test-only.json";}',
+  };
+  const expected = [debtEntry('/fixture/attempts.jsonl', ['full.rs', 'full2.rs']),
+    debtEntry('artifact.json', ['meta.rs', 'names.rs']), debtEntry(c.name),
+    debtEntry('{}.json', ['template.rs', 'template2.rs'])];
+  const result = containersGate(ratchetTree(files));
+  assert.equal(result.exit, 0, JSON.stringify(result)); assertDebt(result, 'head', expected);
+  // Widening the registry removes only exact decoded values, never full paths.
+  const wide = structuredClone(registry); wide.containers[0].literalScope = root;
+  const fixture = ratchetTree(files, files, wide, wide);
+  assert.deepEqual(discoverUnregistered(fixture.headTree, fixture.readBlob, wide.containers),
+    expected.filter(e => e.literal !== c.name));
+  const unsupported = { ...distributed('test-only.json', ['proof.rs', 'other.rs']),
+    [root + 'lib.rs']: '#[cfg(test)] mod proof; #[path="other.rs"] mod custom;' };
+  const conservative = containersGate(ratchetTree(unsupported));
+  assert.equal(conservative.exit, 0);
+  assertDebt(conservative, 'head', [debtEntry('test-only.json', ['other.rs', 'proof.rs'])]);
+  rejection(t, 'artifact metadata is counted', {}, {}, distributed('artifact.json'),
+    expectedSites(growth, 'artifact.json', ['a.rs', 'b.rs']));
+  rejection(t, 'template homonyms are counted', {}, {}, distributed('{}.json'),
+    expectedSites(growth, '{}.json', ['a.rs', 'b.rs']));
+  t.diagnostic(JSON.stringify({ control: 'scoped homonyms and unsupported layout', exits: [0],
+    entries: expected, conservative: conservative.unregistered.head }));
+});
+
+test('04 independent registry snapshots, errors and ordering', t => {
+  const files = distributed('run.json');
+  const narrow = attemptsRegistry(), wide = structuredClone(narrow);
+  wide.containers[0].name = 'run.json'; wide.containers[0].literalScope = root;
+  const result = containersGate(ratchetTree(files, files, narrow, wide));
+  assert.equal(result.exit, 1); // existing registered external-name check remains independent
+  assertDebt(result, 'base', [debtEntry('run.json')]); assertDebt(result, 'head', []);
+  const normal = () => ratchetTree();
+  const errors = [
+    ['missing baseTree', s => delete s.baseTree, 'tree missing'],
+    ['missing headTree', s => delete s.headTree, 'tree missing'],
+    ['missing base registry', s => s.baseTree.delete('scripts/containers.json'), 'base registry'],
+    ['missing head registry', s => s.headTree.delete('scripts/containers.json'),
+      'registry missing'],
+    ['base invalid JSON', s => {
+      const old = s.readBlob, e = s.baseTree.get('scripts/containers.json');
+      s.readBlob = x => x === e ? '{' : old(x);
+    }, 'invalid JSON'],
+    ['head invalid version', s => {
+      const old = s.readBlob, e = s.headTree.get('scripts/containers.json');
+      s.readBlob = x => x === e ? '{"version":2,"containers":[]}' : old(x);
+    }, 'version 1'],
+    ['missing source blob', s => {
+      s.baseTree.set(root + 'missing.rs', {});
+    }, 'blob'],
+    ['unsupported mode', s => { s.readBlob = () => { throw new Error('unsupported mode'); }; },
+      'unsupported mode'],
+    ['HEAD drift', s => { s.assertStableHead = () => { throw new Error('HEAD drift'); }; },
+      'HEAD drift'],
+  ];
+  for (const [label, mutate, cause] of errors) {
+    const s = normal(); mutate(s); const r = containersGate(s);
+    assert.equal(r.exit, 3, label + JSON.stringify(r)); assert.equal(r.status, 'ERROR');
+    assert.ok(r.diagnostics.some(d => d.reason.includes(cause)), JSON.stringify(r));
+    assert.equal(r.unregistered, undefined);
+    t.diagnostic(JSON.stringify({ control: label, exits: [3], expectedSite: null,
+      matched: r.diagnostics }));
+  }
+  const unordered = { ...distributed('z.json', ['z.rs', 'a.rs']),
+    ...distributed('a.json', ['c.rs', 'b.rs']) };
+  const r = containersGate(ratchetTree(unordered));
+  assertDebt(r, 'head', [debtEntry('a.json', ['b.rs', 'c.rs']),
+    debtEntry('z.json', ['a.rs', 'z.rs'])]);
+});
+
+test('04 committed source and registry inputs stay distinct from dirty files', t => {
+  const f = gitFixture(t), initial = containerTree(distributed('run.json'));
+  for (const [p, entry] of initial.headTree) f.write(p, initial.readBlob(entry));
+  const base = f.commit(), baseline = containersGate(f.snapshot(base));
+  assert.equal(baseline.exit, 0); assertDebt(baseline, 'base', [debtEntry('run.json')]);
+  f.write(root + 'c.rs', sourceLiteral('run.json'));
+  assert.equal(containersGate(f.snapshot(base)).exit, 0, 'dirty source ignored');
+  f.commit(); const after = containersGate(f.snapshot(base));
+  assert.equal(after.exit, 1);
+  const matched = after.diagnostics.filter(d => d.rule === newFile);
+  assert.deepEqual(matched.map(({ rule, literal, path, line }) => ({ rule, literal, path, line })),
+    expectedSites(newFile, 'run.json', ['c.rs']));
+  f.write(root + 'c.rs', ''); f.commit();
+  assert.equal(containersGate(f.snapshot(base)).exit, 0);
+  const wide = attemptsRegistry(); wide.containers[0].name = 'run.json';
+  wide.containers[0].literalScope = root;
+  f.write('scripts/containers.json', JSON.stringify(wide));
+  const dirty = containersGate(f.snapshot(base));
+  assertDebt(dirty, 'head', [debtEntry('run.json')]);
+  f.commit(); const registered = containersGate(f.snapshot(base));
+  assertDebt(registered, 'base', [debtEntry('run.json')]); assertDebt(registered, 'head', []);
+  t.diagnostic(JSON.stringify({ control: 'committed/dirty source and registry', exits: [0, 1, 0],
+    expectedSites: expectedSites(newFile, 'run.json', ['c.rs']), matched,
+    registryBase: registered.unregistered.base, registryHead: registered.unregistered.head }));
+});
+
+test('04 real default snapshot exposes debt and rejects exact memory injection', t => {
+  const s = createSnapshot({ cwd: repo, ...parseArgs([]) });
+  const before = containersGate(s);
+  assert.equal(before.exit, 0, JSON.stringify(before));
+  const registries = {};
+  for (const side of ['base', 'head']) {
+    const tree = s[side + 'Tree'];
+    registries[side] = parseRegistry(s.readBlob(tree.get('scripts/containers.json')));
+    const entries = discoverUnregistered(tree, s.readBlob, registries[side]);
+    assertDebt(before, side, entries);
+    for (const e of entries) {
+      assert.ok(e.files.length >= 2 && e.sites.length > 0);
+      assert.deepEqual([...new Set(e.sites.map(site => site.path))].sort(codeOrder), e.files);
+      for (const site of e.sites) assert.ok(Number.isInteger(site.line) && site.line > 0);
+    }
+    // Independent direct-source witnesses, without the discovery helper's matcher.
+    for (const literal of ['run.json', 'report.json', 'experiment.json']) {
+      const witnesses = [], excluded = [];
+      for (const [p, entry] of tree) {
+        if (!p.startsWith(attemptsScope) || !p.endsWith('.rs') || /\/tests?\//.test(p)) continue;
+        const lines = s.readBlob(entry).split('\n');
+        lines.forEach((line, index) => {
+          if (!line.includes('"' + literal + '"') || line.trimStart().startsWith('//')) return;
+          const registration = registries[side].find(c => c.name === literal &&
+            p.startsWith(c.literalScope ?? c.scope));
+          (registration ? excluded : witnesses).push({ path: p, line: index + 1 });
+        });
+      }
+      if (new Set(witnesses.map(w => w.path)).size >= 2) {
+        const debt = entries.find(e => e.literal === literal);
+        assert.ok(debt, JSON.stringify({ side, literal, witnesses, entries }));
+        for (const witness of witnesses) assert.ok(debt.sites.some(site =>
+          site.path === witness.path && site.line === witness.line), JSON.stringify(witness));
+      }
+      t.diagnostic(JSON.stringify({ control: 'direct-source witnesses', side, literal,
+        witnesses, excluded, reason: excluded.length ? 'scoped registered name' :
+          witnesses.length ? 'direct source occurrences checked' : 'example absent from source' }));
+    }
+  }
+  const existing = before.unregistered.head.entries[0];
+  let literal = existing?.literal ?? 'proof_4024_fresh.json';
+  if (!existing) {
+    const occupied = new Set([...before.unregistered.base.entries.map(e => e.literal),
+      ...registries.base.map(c => c.name), ...registries.head.map(c => c.name)]);
+    while (occupied.has(literal)) literal = '_' + literal;
+  }
+  const headTree = new Map(s.headTree), additions = new Map(), sites = [];
+  for (let i = 0; i < (existing ? 1 : 2); i++) {
+    let p = root + 'proof_4024_' + i + '.rs';
+    while (headTree.has(p)) p = p.replace('.rs', '_fresh.rs');
+    const entry = { path: p }; headTree.set(p, entry);
+    additions.set(entry, sourceLiteral(literal)); sites.push({ path: p, line: 1 });
+  }
+  const injected = { ...s, headTree,
+    readBlob: entry => additions.has(entry) ? additions.get(entry) : s.readBlob(entry) };
+  const after = containersGate(injected), restored = containersGate(s);
+  assert.deepEqual([before.exit, after.exit, restored.exit], [0, 1, 0], JSON.stringify(after));
+  const rule = existing ? newFile : growth;
+  const matched = after.diagnostics.filter(d => d.rule === rule && d.literal === literal);
+  assert.deepEqual(matched.map(({ path, line }) => ({ path, line })), sites);
+  for (const side of ['base', 'head']) {
+    assert.equal(injected[side + 'Oid'], s[side + 'Oid']);
+    const entry = s[side + 'Tree'].get('scripts/containers.json');
+    assert.equal(injected.readBlob(entry), s.readBlob(entry));
+  }
+  assert.deepEqual(restored.unregistered, before.unregistered);
+  t.diagnostic(JSON.stringify({ control: 'real snapshot inventory and injection',
+    baseOid: s.baseOid, headOid: s.headOid, unregistered: before.unregistered,
+    injectedSites: sites, literal, exits: [0, 1, 0], matched }));
 });

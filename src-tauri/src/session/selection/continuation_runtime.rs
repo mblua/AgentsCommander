@@ -1,7 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, Runtime};
-
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{CommitDecision, CommitResult, LifecycleMutations, SessionManager};
 use crate::session::session::SessionInfo;
@@ -12,6 +10,7 @@ use super::replacement::{
     OwnedReplacementDescriptor, ReplacementCleanupAuthority, ReplacementStage,
 };
 use super::transaction::SelectionTransaction;
+use super::{SelectionContext, SelectionHost};
 
 #[cfg(test)]
 use super::replacement_fixture::{
@@ -21,9 +20,9 @@ use super::replacement_fixture::{
 impl OwnedReplacementContinuation {
     /// None is an internal retained outcome. It is never translated into a
     /// successful create or ordinary pending-create error/rollback.
-    pub(super) async fn commit_finalized<R: Runtime>(
+    pub(super) async fn commit_finalized<C: SelectionContext>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         decision: CommitDecision,
         cause: SelectionCause,
         mutations: LifecycleMutations,
@@ -33,11 +32,7 @@ impl OwnedReplacementContinuation {
         }
         let manager = transaction.manager().await;
         let activity_owner = manager.activity_owner();
-        let pty = transaction
-            .app()
-            .state::<Arc<Mutex<PtyManager>>>()
-            .inner()
-            .clone();
+        let pty = transaction.host().pty_required().clone();
         #[cfg(test)]
         if !self
             .fixture_reached(ReplacementFixtureCut::BeforeCommit)
@@ -194,9 +189,9 @@ impl OwnedReplacementContinuation {
         true
     }
 
-    async fn retire_previous<R: Runtime>(
+    async fn retire_previous<C: SelectionContext>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
     ) -> Option<bool> {
@@ -317,22 +312,13 @@ impl OwnedReplacementContinuation {
         Some(())
     }
 
-    pub(super) async fn complete_finalized_create<R: Runtime>(
+    pub(super) async fn complete_finalized_create<C: SelectionContext>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
     ) -> Option<(SessionInfo, SessionSelection)> {
         let manager = transaction.manager().await;
-        let pty = transaction
-            .app()
-            .state::<Arc<Mutex<PtyManager>>>()
-            .inner()
-            .clone();
-        let settings = transaction
-            .app()
-            .state::<crate::config::settings::SettingsState>()
-            .read()
-            .await
-            .clone();
+        let pty = transaction.host().pty_required().clone();
+        let settings = transaction.host().settings_required().read().await.clone();
         let roots =
             crate::config::sessions_persistence::session_retention_project_paths(&settings).ok()?;
         if !self.apply_finalized_carry(&manager, &pty).await {
