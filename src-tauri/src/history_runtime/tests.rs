@@ -54,6 +54,8 @@ struct Shared {
     stored: Mutex<Vec<HistoryRecord>>,
     /// Retention of every writer opened, in order.
     opened: Mutex<Vec<u32>>,
+    /// When set, configuration comes from the production Settings adapter.
+    settings: Mutex<Option<crate::app_run::history_environment::DiskProjectEnvironment>>,
 }
 
 struct FakeEnv(Arc<Shared>);
@@ -84,7 +86,10 @@ impl HistoryAppend for FakeWriter {
 }
 
 impl ProjectEnvironment for FakeEnv {
-    fn load_config(&self, _ac_root: &Path) -> LoadedHistoryConfig {
+    fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig {
+        if let Some(settings) = self.0.settings.lock().unwrap().as_ref() {
+            return settings.load_config(ac_root);
+        }
         LoadedHistoryConfig {
             config: HistoryConfig {
                 enabled: self.0.enabled.load(Ordering::SeqCst),
@@ -905,46 +910,11 @@ async fn a_pending_session_is_captured_once_finished_without_any_memo() {
 
 // ---- #4049 P03: live Settings polling through the production adapter ----------------------
 
-/// The production Settings adapter for configuration; the fake for the rest.
-struct SettingsEnv {
-    settings: crate::app_run::history_environment::DiskProjectEnvironment,
-    fake: FakeEnv,
-}
-
-impl ProjectEnvironment for SettingsEnv {
-    fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig {
-        self.settings.load_config(ac_root)
-    }
-    fn authoritative_ac_root(&self, ac_root: &Path) -> bool {
-        self.fake.authoritative_ac_root(ac_root)
-    }
-    fn teams(&self, project_path: &Path) -> Vec<TeamMembers> {
-        self.fake.teams(project_path)
-    }
-    fn open_writer(
-        &self,
-        ac_root: &Path,
-        config: &HistoryConfig,
-    ) -> Result<Box<dyn HistoryAppend>, StoreError> {
-        self.fake.open_writer(ac_root, config)
-    }
-    fn is_root_directory(&self, working_directory: &str) -> bool {
-        self.fake.is_root_directory(working_directory)
-    }
-}
-
+/// The fakes, with configuration from the production Settings adapter over `state`.
 fn start_on_settings(shared: &Arc<Shared>, state: &SettingsState) -> Started {
-    let token = CancellationToken::new();
-    let env = Arc::new(SettingsEnv {
-        settings: crate::app_run::history_environment::DiskProjectEnvironment::new(Arc::clone(
-            state,
-        )),
-        fake: FakeEnv(Arc::clone(shared)),
-    });
-    let sessions = Arc::new(FakeSessions::default());
-    let scopes = Arc::new(HistoryScopeState::new(sessions, env));
-    let (ingress, actor) = HistoryRuntime::start(scopes, token.clone());
-    (ingress, token, tokio::spawn(actor))
+    let env = crate::app_run::history_environment::DiskProjectEnvironment::new(Arc::clone(state));
+    *shared.settings.lock().unwrap() = Some(env);
+    start(shared)
 }
 
 /// Publish the two history fields, then wait past one configuration poll.
@@ -962,13 +932,8 @@ async fn set_history(state: &SettingsState, enabled: bool, retention: u32) {
 }
 
 fn percents(shared: &Shared) -> Vec<Option<u8>> {
-    shared
-        .stored
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|record| record.percent)
-        .collect()
+    let stored = shared.stored.lock().unwrap();
+    stored.iter().map(|record| record.percent).collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -979,10 +944,7 @@ async fn live_settings_toggle_off_on_off_on_keeps_rows_and_drops_stale_epochs() 
     let id = Uuid::new_v4();
     ingress.offer(id, ObservedValue::Reading(20));
     settle().await;
-    assert!(
-        percents(&shared).is_empty(),
-        "default Settings capture nothing"
-    );
+    assert!(percents(&shared).is_empty(), "off by default");
 
     set_history(&state, true, 30).await;
     ingress.offer(id, ObservedValue::Reading(30));
@@ -1003,7 +965,7 @@ async fn live_settings_toggle_off_on_off_on_keeps_rows_and_drops_stale_epochs() 
     assert_eq!(
         percents(&shared),
         [Some(30), Some(40)],
-        "old rows stay; none after"
+        "rows kept, none new"
     );
 
     set_history(&state, true, 30).await;
