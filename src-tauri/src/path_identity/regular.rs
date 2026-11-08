@@ -1,15 +1,17 @@
-use super::handle_identity;
-use super::is_link_or_reparse;
+use super::identity::handle_identity;
+use super::identity::is_link_or_reparse;
 #[cfg(unix)]
-use super::open_directory_no_follow;
-use super::retain_immutable_directory;
-use super::snapshot;
-use super::verify_component_chain;
-use super::verify_directory;
-use super::verify_regular_file;
-use super::VerifiedPathIdentity;
+use super::identity::open_directory_no_follow;
+use super::identity::open_read_no_follow;
+use super::identity::retain_immutable_directory;
+use super::identity::same_object;
+use super::identity::snapshot;
+use super::identity::verify_component_chain;
+use super::identity::verify_directory;
+use super::identity::verify_regular_file;
+use super::identity::VerifiedPathIdentity;
 #[cfg(unix)]
-use super::UNIX_O_NOFOLLOW;
+use super::identity::UNIX_O_NOFOLLOW;
 use sha2::Digest;
 use sha2::Sha256;
 use std::fs::File;
@@ -21,27 +23,6 @@ use std::io::Write;
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
-
-pub(super) fn open_read_no_follow(path: &Path) -> Result<File, String> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(UNIX_O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    options.open(path).map_err(|_| "unsafe_path".to_string())
-}
 
 /// Open a regular one-link file, read at most `max_bytes + 1`, and prove that
 /// the directory entry still names the opened object afterward.
@@ -583,8 +564,4 @@ pub fn path_is_descendant(child: &Path, parent: &Path) -> bool {
 
 pub fn is_verified_descendant(child: &VerifiedPathIdentity, parent: &VerifiedPathIdentity) -> bool {
     path_is_descendant(&child.canonical_path, &parent.canonical_path)
-}
-
-pub fn same_object(a: &VerifiedPathIdentity, b: &VerifiedPathIdentity) -> bool {
-    a.object_id == b.object_id
 }
