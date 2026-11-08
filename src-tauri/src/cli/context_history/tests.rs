@@ -8,6 +8,8 @@ use crate::context_history::{
 };
 
 const NOW: i64 = 1_800_000_000_000;
+/// The default Settings retention the report reads (#4049).
+const RETENTION: u32 = 30;
 const FROM: &str = "2026-11-01T00:00:00Z";
 const TO: &str = "2026-11-08T00:00:00Z";
 
@@ -35,7 +37,7 @@ fn project() -> (tempfile::TempDir, String) {
 
 fn run_to_string(args: &ContextHistoryArgs) -> (i32, String) {
     let mut out = Vec::new();
-    let code = exit_code(run(args, NOW, &mut out));
+    let code = exit_code(run(args, RETENTION, NOW, &mut out));
     (code, String::from_utf8(out).expect("utf-8 output"))
 }
 
@@ -207,9 +209,9 @@ fn broken_pipe_exits_successfully_and_other_write_errors_fail() {
     let (_tmp, project) = project();
     let arguments = args(&project, FROM, TO);
     let mut pipe = FailingWriter(io::ErrorKind::BrokenPipe);
-    assert_eq!(exit_code(run(&arguments, NOW, &mut pipe)), 0);
+    assert_eq!(exit_code(run(&arguments, RETENTION, NOW, &mut pipe)), 0);
     let mut denied = FailingWriter(io::ErrorKind::PermissionDenied);
-    assert_eq!(exit_code(run(&arguments, NOW, &mut denied)), 1);
+    assert_eq!(exit_code(run(&arguments, RETENTION, NOW, &mut denied)), 1);
 }
 
 #[cfg(unix)]
@@ -401,4 +403,62 @@ fn project_errors_match_the_shared_helper() {
     let shared = identity::verified_project(Path::new(&text)).expect("verified");
     let local = verified_project(Path::new(&text)).expect("verified");
     assert_eq!(local, shared);
+}
+
+/// #4049: a CLI Settings file in a temp profile with the given history keys.
+fn settings_file(dir: &Path, enabled: bool, retention: u32) -> (PathBuf, Vec<u8>) {
+    let mut raw = serde_json::to_value(crate::config::settings::AppSettings::default())
+        .expect("settings json");
+    raw["contextHistoryEnabled"] = serde_json::json!(enabled);
+    raw["contextHistoryRetentionDays"] = serde_json::json!(retention);
+    let path = dir.join("settings.json");
+    let bytes = serde_json::to_vec_pretty(&raw).expect("bytes");
+    std::fs::write(&path, &bytes).expect("write settings");
+    (path, bytes)
+}
+
+#[test]
+fn settings_retention_overrides_any_heatmap_file_and_disabled_still_reads() {
+    let legacy = [
+        None,
+        Some(r#"{"version":1,"enabled":true,"retentionDays":5}"#),
+        Some(r#"{"version":1,"enabled":false,"retentionDays":365}"#),
+        Some("{ not json"),
+    ];
+    for heatmap in legacy {
+        let (tmp, project, ac_root) = seeded_project(120);
+        let heatmap_path = ac_root.join("heatmap.json");
+        if let Some(text) = heatmap {
+            std::fs::write(&heatmap_path, text).expect("write heatmap");
+        }
+        let profile = tempfile::tempdir().expect("profile");
+        let (settings_path, settings_bytes) = settings_file(profile.path(), false, 120);
+        let settings: crate::config::settings::AppSettings =
+            serde_json::from_slice(&std::fs::read(&settings_path).expect("read settings"))
+                .expect("settings snapshot");
+        assert!(!settings.context_history_enabled);
+        let retention = settings.context_history_retention_days.days();
+        let arguments = args(&project, "2027-01-15T00:00:00Z", "2027-01-16T00:00:00Z");
+        let mut out = Vec::new();
+        assert_eq!(
+            exit_code(run(&arguments, retention, NOW, &mut out)),
+            0,
+            "{heatmap:?}"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&out).expect("pure json");
+        assert_eq!(json["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        assert_eq!(json["totalAgents"], 120, "{heatmap:?}");
+        assert_eq!(json["agents"].as_array().expect("agents").len(), 120);
+        assert_eq!(
+            std::fs::read(&settings_path).expect("settings"),
+            settings_bytes
+        );
+        let after = std::fs::read_to_string(&heatmap_path).ok();
+        assert_eq!(
+            after.as_deref(),
+            heatmap,
+            "the legacy file is never written"
+        );
+        drop(tmp);
+    }
 }
