@@ -1,68 +1,12 @@
-//! #3532 P08: app-scope colour period for the context-history heatmap.
-//! #4049: app-scope enabled switch and retention days for the same feature.
+//! #4049: app-scope enabled switch and retention days for the context-history heatmap.
 //! #4091: session-count windows and the session count that colours the map.
 //!
-//! Pure types: the Settings store owns all IO. Colour accepts only 1, 7 and 30;
-//! retention only integers 1..=365; enabled only JSON booleans. Any other JSON
-//! value falls back to its default in memory without failing the load.
+//! Pure types: the Settings store owns all IO. Retention accepts only integers
+//! 1..=365; enabled only JSON booleans. Any other JSON value falls back to its
+//! default in memory without failing the load.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-
-/// Days of history that colour the heatmap. Serialized as the plain number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ContextHistoryColorDays {
-    One,
-    Seven,
-    #[default]
-    Thirty,
-}
-
-impl ContextHistoryColorDays {
-    /// The wire value: 1, 7 or 30.
-    pub(crate) const fn days(self) -> u8 {
-        match self {
-            Self::One => 1,
-            Self::Seven => 7,
-            Self::Thirty => 30,
-        }
-    }
-
-    fn from_value(value: &Value) -> Option<Self> {
-        match value.as_u64()? {
-            1 => Some(Self::One),
-            7 => Some(Self::Seven),
-            30 => Some(Self::Thirty),
-            _ => None,
-        }
-    }
-}
-
-impl Serialize for ContextHistoryColorDays {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u8(self.days())
-    }
-}
-
-/// Field deserializer: never fails on valid JSON, so a bad value cannot reset
-/// the rest of `AppSettings`. The warning names only the JSON kind.
-pub(crate) fn deserialize_context_history_color_days<'de, D>(
-    deserializer: D,
-) -> Result<ContextHistoryColorDays, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    Ok(
-        ContextHistoryColorDays::from_value(&value).unwrap_or_else(|| {
-            log::warn!(
-                "Invalid contextHistoryColorDays ({}): expected 1, 7 or 30; using 30 in memory",
-                json_kind(&value)
-            );
-            ContextHistoryColorDays::default()
-        }),
-    )
-}
 
 /// #4049: days of stored context history to keep. Serialized as the plain number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

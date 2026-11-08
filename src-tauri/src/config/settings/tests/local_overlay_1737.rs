@@ -312,8 +312,8 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
     assert!(!object.contains_key("roomIdleConfirmationSeconds"));
     // #3123 adds a default-15 field; preserve the historical captured control.
     object.insert("roomIdleConfirmationSeconds".to_string(), Value::from(15));
+    // #4091 P08 retired contextHistoryColorDays; the projection never carries it.
     assert!(!object.contains_key("contextHistoryColorDays"));
-    object.insert("contextHistoryColorDays".to_string(), Value::from(30));
     assert!(!object.contains_key("contextHistoryEnabled"));
     assert!(!object.contains_key("contextHistoryRetentionDays"));
     // #4049 adds the default-off switch and default-30 retention.
