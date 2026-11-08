@@ -2,7 +2,7 @@ use super::*;
 
 use super::state::{
     active_project_candidates_for_owner, generation_key, guarded_state_write, read_raw_loop_state,
-    read_state_snapshot, retain_unarchived_candidates, unresolved_targets_in_project,
+    read_state_snapshot, retain_unarchived_candidates,
 };
 use crate::config::sessions_persistence;
 
