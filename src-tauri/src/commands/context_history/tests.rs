@@ -191,6 +191,15 @@ struct Harness {
 }
 
 fn harness(registered: &[&str], teams: Vec<TeamMembers>, fallback_result: bool) -> Harness {
+    let settings = AppSettings {
+        project_paths: registered.iter().map(|path| path.to_string()).collect(),
+        ..AppSettings::default()
+    };
+    harness_with(settings, teams, fallback_result)
+}
+
+/// #4049: a harness over an explicit Settings snapshot.
+fn harness_with(settings: AppSettings, teams: Vec<TeamMembers>, fallback_result: bool) -> Harness {
     let fallbacks = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&fallbacks);
     let fallback = move |_invoke: tauri::ipc::Invoke<tauri::test::MockRuntime>| {
@@ -201,10 +210,6 @@ fn harness(registered: &[&str], teams: Vec<TeamMembers>, fallback_result: bool) 
         .invoke_handler(move |invoke| dispatch(invoke, &fallback))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let settings = AppSettings {
-        project_paths: registered.iter().map(|path| path.to_string()).collect(),
-        ..AppSettings::default()
-    };
     app.manage(new_settings_state(settings));
     let sessions = Arc::new(Sessions::default());
     let env = Arc::new(Env {
@@ -495,7 +500,8 @@ fn ipc_and_cli_build_the_same_report_from_one_fixture() {
     let h = harness(&[&project.text], Vec::new(), false);
     let request = query(&project.text, None);
     let ipc = h.invoke(NAMES[0], request.clone()).expect("report");
-    let (canonical, retention, records) = read_project(&project.text).expect("read");
+    let (canonical, records) = read_project(&project.text).expect("read");
+    let retention = 30;
     let mut core_query: ReportQuery = serde_json::from_value(request).expect("query");
     core_query.project_path = canonical;
     let generated = ipc["generatedAtUtcMs"].as_i64().expect("now");
@@ -725,4 +731,68 @@ fn sidebar_exited_local_session_is_unknown() {
         .expect("means");
     assert_eq!(response["entries"][0]["scope"]["kind"], "unknown");
     assert_eq!(response["entries"][0]["windows"], Value::Null);
+}
+
+// ---- Settings retention (#4049) ----------------------------------------------------------
+
+/// Settings registering `project` with history off and the given retention.
+fn disabled_settings(project: &str, retention: u32) -> AppSettings {
+    let base = AppSettings {
+        project_paths: vec![project.to_string()],
+        ..AppSettings::default()
+    };
+    let mut raw = serde_json::to_value(&base).expect("settings json");
+    raw["contextHistoryEnabled"] = json!(false);
+    raw["contextHistoryRetentionDays"] = json!(retention);
+    let settings: AppSettings = serde_json::from_value(raw).expect("settings");
+    assert!(!settings.context_history_enabled);
+    assert_eq!(settings.context_history_retention_days.days(), retention);
+    settings
+}
+
+#[test]
+fn settings_retention_overrides_any_heatmap_file_for_every_report() {
+    let legacy = [
+        None,
+        Some(r#"{"version":1,"enabled":true,"retentionDays":5}"#),
+        Some(r#"{"version":1,"enabled":false,"retentionDays":365}"#),
+        Some("{ not json"),
+    ];
+    for heatmap in legacy {
+        let project = Project::new();
+        let started = now_utc_ms() - HOUR_MS;
+        project.seed(&[record(&project.text, "dev", "team-a", 1, started)]);
+        let heatmap_path = project.dir.path().join(".ac/heatmap.json");
+        if let Some(text) = heatmap {
+            std::fs::write(&heatmap_path, text).expect("write heatmap");
+        }
+        let h = harness_with(disabled_settings(&project.text, 120), Vec::new(), false);
+        let report = h
+            .invoke(NAMES[0], query(&project.text, None))
+            .expect("disabled history still reads");
+        assert_eq!(report["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        assert_eq!(report["totalAgents"], 1, "{heatmap:?}");
+        let detail = h
+            .invoke(NAMES[1], query(&project.text, Some("dev")))
+            .expect("detail");
+        assert_eq!(detail["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        let logical = detail["sessionsPage"][0]["logicalSessionId"].clone();
+        let changes =
+            json!({ "query": query(&project.text, Some("dev")), "logicalSessionId": logical });
+        let page = h.invoke(NAMES[2], changes).expect("changes");
+        assert_eq!(page["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        let stranger = Project::new();
+        assert_eq!(
+            h.error_code(NAMES[0], query(&stranger.text, None)),
+            "InvalidProject",
+            "registration still precedes the store"
+        );
+        let after = std::fs::read_to_string(&heatmap_path).ok();
+        assert_eq!(
+            after.as_deref(),
+            heatmap,
+            "the legacy file is never written"
+        );
+        assert_eq!(h.fallbacks(), 0);
+    }
 }

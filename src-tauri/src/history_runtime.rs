@@ -41,7 +41,7 @@ pub(crate) const MAILBOX_CAPACITY: usize = 4096;
 pub(crate) const LIVE_STATE_CAPACITY: usize = 4096;
 /// Maximum records queued, in flight or retrying for one project.
 pub(crate) const PENDING_CAPACITY: usize = 4096;
-/// How often `.ac/heatmap.json` is re-read; configuration, not sampling.
+/// How often the Settings history fields are polled; configuration, not sampling.
 pub(crate) const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// A busy batch is retried in FIFO order for at least this long, so a reader
 /// holding the database for 5 s still lets it commit once...
