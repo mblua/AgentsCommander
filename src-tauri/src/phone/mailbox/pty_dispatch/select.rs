@@ -1,3 +1,4 @@
+use super::context::BoundaryWriteGuards;
 use super::{
     BoundaryAuthority, DispatchSelection, FinalDispatchInput, PtyDispatchContext,
     PtyDispatchGuards, PtyDispatcher, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
@@ -26,12 +27,6 @@ use std::path::Path;
 #[cfg(test)]
 use std::sync::Arc;
 use uuid::Uuid;
-
-/// Owned fresh guard and input permit retained through validation and the write boundary.
-pub(super) struct BoundaryWriteGuards {
-    pub(super) final_api_guard: Option<crate::api::auth::ApiClientFreshGuard>,
-    pub(super) permit: crate::pty::manager::PtyInputPermit,
-}
 
 impl<H: MailboxHost> PtyDispatcher<'_, H> {
     pub(super) async fn select_pty_dispatch_session(

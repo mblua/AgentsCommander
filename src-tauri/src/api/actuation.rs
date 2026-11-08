@@ -158,11 +158,11 @@ pub async fn resolve_api_send_target<H: ApiSendSettings + ?Sized>(
 }
 
 /// In-process `list-peers-lean` for the caller's bound replica, reusing the
-/// exact CLI discovery + `reachable` computation (no subprocess).
+/// shared team peer discovery + `reachable` computation (no subprocess).
 pub fn lean_peers_via_api(
     bound_root: &str,
-) -> Result<Vec<crate::cli::list_peers::LeanPeerInfo>, ApiError> {
-    crate::cli::list_peers::lean_peers(bound_root)
+) -> Result<Vec<crate::config::teams::peer_projection::LeanPeerInfo>, ApiError> {
+    crate::config::teams::lean_peers(bound_root)
         .map_err(|e| ApiError::Internal(format!("peer discovery failed: {e}")))
 }
 

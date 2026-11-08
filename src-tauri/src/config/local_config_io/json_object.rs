@@ -1,6 +1,8 @@
-use super::{
-    acquire_config_file_write_lock, acquire_fresh_config_stage, lock_local_config_writes,
-    ordinary_staging_error, publish_temp_config, ConfigWriterActive, PairTargetGuard,
+use super::pair_image::PairTargetGuard;
+use super::publish::publish_temp_config;
+use super::staging::{acquire_fresh_config_stage, ordinary_staging_error};
+use super::write_lock::{
+    acquire_config_file_write_lock, lock_local_config_writes, ConfigWriterActive,
     CONFIG_LOCK_TIMEOUT,
 };
 use crate::filesystem::local_config::{

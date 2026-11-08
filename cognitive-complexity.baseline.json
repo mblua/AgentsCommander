@@ -36,34 +36,6 @@
           "dff40736a7a2"
         ]
       }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::drain_after_shutdown",
-      "sites": {
-        "windows": [
-          "40c91cf940c1"
-        ],
-        "linux": [
-          "40c91cf940c1"
-        ],
-        "macos": [
-          "40c91cf940c1"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/session/selection/worker.rs::impl:<R: Runtime> SelectionTransaction<R>::execute_envelope",
-      "sites": {
-        "windows": [
-          "185e15600ecd"
-        ],
-        "linux": [
-          "185e15600ecd"
-        ],
-        "macos": [
-          "185e15600ecd"
-        ]
-      }
     }
   ]
 }

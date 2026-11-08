@@ -1,5 +1,11 @@
 //! Native lifecycle execution behind the selection-owned port.
 
+mod host;
+pub(crate) mod turn;
+
+pub(crate) use crate::session::selection::SelectionTransaction;
+
+use std::future::Future;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -11,14 +17,64 @@ use crate::session::selection::{
     OpaqueFixtureInput, OpaqueFixtureOutput, ReplacementFixtureControl, ReplacementFixtureOutcome,
 };
 
+use self::turn::NATIVE_SELECTION_TASKS;
+
 use super::lifecycle::LifecycleEntryAuthority;
 use super::{destroy, lifecycle, restart, root_agent};
 use crate::session::selection::{
     DestroyOutcome, DestroyRequest, LifecycleAdmission, LifecycleEffectGuard,
     LifecycleEntryOutcome, LifecycleExecutor, LifecycleExecutorState, LifecycleFuture,
     LifecycleLease, RestartJobRequest, RootJobRequest, SelectionCoordinator,
-    SelectionCoordinatorError, SelectionTransaction,
+    SelectionCoordinatorError,
 };
+
+pub(crate) async fn run_owned_selection_operation<F, Fut, T>(operation: F) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    crate::session::selection::run_owned_selection_operation_with_tasks(
+        &NATIVE_SELECTION_TASKS,
+        operation,
+    )
+    .await
+}
+
+pub(crate) async fn run_owned_selection_read_timed<F, Fut, T>(
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    crate::session::selection::run_owned_selection_read_timed_with_tasks(
+        &NATIVE_SELECTION_TASKS,
+        command,
+        operation,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    crate::session::selection::run_owned_selection_operation_timed_with_tasks(
+        &NATIVE_SELECTION_TASKS,
+        command,
+        operation,
+    )
+    .await
+}
 
 fn executor<R: Runtime>(
     app: &AppHandle<R>,
@@ -28,7 +84,7 @@ fn executor<R: Runtime>(
 }
 
 pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
-    crate::session::selection::poll_response_close(app, executor(app)).await;
+    crate::session::selection::poll_response_close::<R>(app, executor(app)).await;
 }
 
 pub(crate) fn start_response_close_polling<R: Runtime>(
@@ -52,6 +108,34 @@ impl SelectionCoordinator {
     pub fn start<R: Runtime>(&self, app: AppHandle<R>) -> Result<(), SelectionCoordinatorError> {
         let executor = executor(&app);
         self.start_with_executor(app, executor)
+    }
+
+    pub(crate) fn start_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<(), SelectionCoordinatorError> {
+        self.start_with_host::<R>(app, executor)
+    }
+
+    pub(crate) async fn restart_lifecycle_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: RestartJobRequest,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<crate::session::session::SessionInfo, String> {
+        self.restart_lifecycle_with_host::<R>(app, request, executor)
+            .await
+    }
+
+    pub(crate) async fn root_lifecycle_with_executor<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: RootJobRequest,
+        executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    ) -> Result<crate::session::session::SessionInfo, String> {
+        self.root_lifecycle_with_host::<R>(app, request, executor)
+            .await
     }
 
     #[cfg(test)]
@@ -290,3 +374,9 @@ pub(crate) fn install<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::B
 
 #[cfg(test)]
 mod tests;
+
+impl crate::session::selection::RestoreBarrierGuard {
+    pub(crate) fn transaction<R: Runtime>(&self, app: AppHandle<R>) -> SelectionTransaction<R> {
+        self.transaction_with_host::<R>(app)
+    }
+}
