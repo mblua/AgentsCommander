@@ -257,7 +257,7 @@ async fn issue_3950_co_fake_policy() {
             assert_eq!(reason, "abstained: neutral-proof");
             assert!(write_candidate_file);
         }
-        _ => panic!("abstention routes to the user"),
+        CoManagedRoute::Wake { .. } => panic!("abstention routes to the user"),
     }
     println!("\nISSUE3950_CONTROL_OK case=issue_3950_co_fake_policy");
 }
