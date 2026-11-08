@@ -3,7 +3,8 @@
 //! Four read-only commands share the report core with the CLI: validate in
 //! memory, check the project against this app's Settings registration and the
 //! live session snapshot, then verify the project and read one retained
-//! snapshot off the async workers. Errors are `{code, message}` without paths.
+//! snapshot off the async workers. Retention comes from the same Settings
+//! snapshot (#4049), never from a project file. Errors are `{code, message}` without paths.
 //! [`dispatch`] routes the four names so `invoke_handler` does not grow.
 
 use std::path::{Path, PathBuf};
@@ -15,7 +16,6 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
-use crate::context_history::config::load_history_config;
 use crate::context_history::observation::ScopeResolution;
 use crate::context_history::report::{
     build_agent_detail, build_changes_page, build_report, sidebar_means, validate_sidebar_ids,
@@ -129,9 +129,16 @@ struct SidebarMeansRequest {
     runtime_session_ids: Vec<String>,
 }
 
+/// One Settings snapshot of a request: the registered spellings of the project
+/// and the app-wide history retention (#4049).
+struct Registration {
+    paths: Vec<PathBuf>,
+    retention_days: u32,
+}
+
 /// The registered spellings equivalent to the requested project, compared in
 /// memory with the P13 identity; none means the project is not registered.
-async fn registered_paths(settings: &SettingsState, project: &str) -> IpcResult<Vec<PathBuf>> {
+async fn registered_paths(settings: &SettingsState, project: &str) -> IpcResult<Registration> {
     let requested = Path::new(project);
     if !requested.is_absolute() {
         return Err(invalid_project());
@@ -151,18 +158,20 @@ async fn registered_paths(settings: &SettingsState, project: &str) -> IpcResult<
         return Err(invalid_project());
     }
     paths.push(requested);
-    Ok(paths)
+    Ok(Registration {
+        paths,
+        retention_days: snapshot.context_history_retention_days.days(),
+    })
 }
 
-/// The verified project's canonical text, retention and aligned records.
-fn read_project(project: &str) -> IpcResult<(String, u32, Vec<HistoryRecord>)> {
+/// The verified project's canonical text and aligned records.
+fn read_project(project: &str) -> IpcResult<(String, Vec<HistoryRecord>)> {
     let verified = verified_project(Path::new(project)).map_err(|_| invalid_project())?;
     let canonical = verified
         .canonical
         .to_str()
         .ok_or_else(invalid_project)?
         .to_string();
-    let retention_days = load_history_config(&verified.ac_root).config.retention_days;
     let mut records = match read_history(&verified.ac_root, ReadAttempt::ReadOnly) {
         Err(StoreError::RecoveryRequired { .. }) => {
             read_history(&verified.ac_root, ReadAttempt::AllowRecovery)
@@ -171,17 +180,18 @@ fn read_project(project: &str) -> IpcResult<(String, u32, Vec<HistoryRecord>)> {
     }
     .map_err(store_error)?;
     align_project_paths(&mut records, &verified.spellings, &canonical);
-    Ok((canonical, retention_days, records))
+    Ok((canonical, records))
 }
 
-/// Run `build` over one snapshot off the async workers.
-async fn blocking<T, B>(project: String, build: B) -> IpcResult<T>
+/// Run `build` over one snapshot off the async workers, with the retention
+/// already read from Settings (no lock is held across the blocking IO).
+async fn blocking<T, B>(project: String, retention_days: u32, build: B) -> IpcResult<T>
 where
     T: Send + 'static,
     B: FnOnce(String, u32, Vec<HistoryRecord>) -> IpcResult<T> + Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let (canonical, retention_days, records) = read_project(&project)?;
+        let (canonical, records) = read_project(&project)?;
         build(canonical, retention_days, records)
     })
     .await
@@ -195,11 +205,12 @@ fn now_utc_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// Validate a report-family query and its registration; returns the project.
-async fn checked_query(settings: &SettingsState, query: &ReportQuery) -> IpcResult<String> {
+/// Validate a report-family query and its registration; returns the project
+/// and the Settings retention.
+async fn checked_query(settings: &SettingsState, query: &ReportQuery) -> IpcResult<(String, u32)> {
     query.validate().map_err(report_error)?;
-    registered_paths(settings, &query.project_path).await?;
-    Ok(query.project_path.clone())
+    let registration = registered_paths(settings, &query.project_path).await?;
+    Ok((query.project_path.clone(), registration.retention_days))
 }
 
 /// The query bound to the verified canonical project, as the CLI binds it.
@@ -221,9 +232,9 @@ pub(crate) async fn get_context_history_report(
     settings: State<'_, SettingsState>,
 ) -> IpcResult<ReportResponse> {
     let query: ReportQuery = parse(request)?;
-    let project = checked_query(&settings, &query).await?;
+    let (project, retention) = checked_query(&settings, &query).await?;
     let now = now_utc_ms();
-    blocking(project, move |canonical, retention, records| {
+    blocking(project, retention, move |canonical, retention, records| {
         build_report(&records, &bound(query, canonical), context(retention, now))
             .map_err(report_error)
     })
@@ -240,9 +251,9 @@ pub(crate) async fn get_context_history_agent_detail(
         .agent_key
         .clone()
         .ok_or_else(|| invalid_query("agentKey required"))?;
-    let project = checked_query(&settings, &query).await?;
+    let (project, retention) = checked_query(&settings, &query).await?;
     let now = now_utc_ms();
-    blocking(project, move |canonical, retention, records| {
+    blocking(project, retention, move |canonical, retention, records| {
         let query = bound(query, canonical);
         build_agent_detail(&records, &query, &agent_key, context(retention, now))
             .map_err(report_error)
@@ -262,9 +273,9 @@ pub(crate) async fn get_context_history_changes(
         .clone()
         .ok_or_else(|| invalid_query("agentKey required"))?;
     let session_id = parse_uuid(&request.logical_session_id)?;
-    let project = checked_query(&settings, &query).await?;
+    let (project, retention) = checked_query(&settings, &query).await?;
     let now = now_utc_ms();
-    blocking(project, move |canonical, retention, records| {
+    blocking(project, retention, move |canonical, retention, records| {
         let query = bound(query, canonical);
         build_changes_page(
             &records,
@@ -314,8 +325,11 @@ pub(crate) async fn get_context_history_sidebar_means(
         .map(|id| parse_uuid(id))
         .collect::<IpcResult<Vec<Uuid>>>()?;
     validate_sidebar_ids(&ids).map_err(report_error)?;
-    let paths = registered_paths(&settings, &request.project_path).await?;
-    let resolved = match scopes.snapshot_sidebar_scopes(&paths, &ids).await {
+    let registration = registered_paths(&settings, &request.project_path).await?;
+    let resolved = match scopes
+        .snapshot_sidebar_scopes(&registration.paths, &ids)
+        .await
+    {
         Ok(resolved) => resolved,
         Err(SidebarScopeError::ForeignSession(_)) => return Err(invalid_project()),
         Err(SidebarScopeError::InvalidRequest) => return Err(invalid_query("invalid session ids")),
@@ -330,6 +344,7 @@ pub(crate) async fn get_context_history_sidebar_means(
     let now = now_utc_ms();
     blocking(
         request.project_path,
+        registration.retention_days,
         move |canonical, _retention, records| {
             sidebar_means(&records, &canonical, &targets, now).map_err(report_error)
         },

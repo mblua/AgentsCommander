@@ -1,6 +1,23 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
+pub const SESSION_FILE: &str = "session.json";
+pub const REQUESTS_DIR: &str = "requests";
+pub const RESPONSES_DIR: &str = "responses";
+pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
+pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
+pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
+
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+pub(crate) const POLL_MS: u64 = 50;
+pub(crate) const FS_RETRY_COUNT: usize = 8;
+pub(crate) const FS_RETRY_DELAY_MS: u64 = 25;
+pub(crate) const SESSION_READ_RETRY_COUNT: usize = 8;
+pub(crate) const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
+pub(crate) const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
+pub(crate) const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiAutomationSession {

@@ -1,27 +1,31 @@
-use super::analyze_source;
-use super::canonical_reference_bytes;
-use super::canonical_seed_bytes;
-use super::display_path;
-use super::is_literal_quotable;
-use super::message_block;
-use super::quote_literal;
-use super::render::spec_for;
-use super::sha256_hex;
-use super::warn_once;
-use super::EntryOutcome;
-use super::EntryValue;
-use super::InjectedMessagesState;
-use super::MessageSpec;
-use super::MessageStateEntry;
-use super::ProvisionReport;
-use super::ReadModel;
-use super::ReseedTarget;
-use super::WriteDoc;
-use super::INJECTED_MESSAGES_FILENAME;
-use super::INJECTED_MESSAGES_REFERENCE_FILENAME;
-use super::INJECTED_MESSAGES_STATE_FILENAME;
-use super::KNOWN_MESSAGES;
-use super::SCHEMA_VERSION;
+use super::registry::analyze_source;
+use super::registry::canonical_reference_bytes;
+use super::registry::canonical_seed_bytes;
+use super::registry::display_path;
+use super::registry::is_literal_quotable;
+use super::registry::message_block;
+use super::registry::quote_literal;
+use super::registry::read_source;
+use super::registry::sha256_hex;
+use super::registry::spec_for;
+use super::registry::warn_once;
+use super::registry::EntryOutcome;
+use super::registry::EntryValue;
+use super::registry::InjectedMessagesState;
+use super::registry::MessageSpec;
+use super::registry::MessageStateEntry;
+use super::registry::MessageWarnings;
+use super::registry::ProvisionReport;
+use super::registry::ReadModel;
+use super::registry::ReseedTarget;
+use super::registry::WriteDoc;
+use super::registry::INJECTED_MESSAGES_FILENAME;
+use super::registry::INJECTED_MESSAGES_REFERENCE_FILENAME;
+use super::registry::INJECTED_MESSAGES_STATE_FILENAME;
+use super::registry::KNOWN_MESSAGES;
+use super::registry::SCHEMA_VERSION;
+#[cfg(test)]
+use super::tests::record_write;
 use crate::config::local_config_io::write_file_atomic;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -33,44 +37,6 @@ use crate::filesystem::injected_documents;
 // ---------------------------------------------------------------------------
 // Provisioning
 // ---------------------------------------------------------------------------
-
-pub(super) fn read_source(path: &Path) -> Result<Option<String>, String> {
-    match injected_documents::source_metadata(path) {
-        Ok(metadata) => {
-            if is_link_or_reparse(&metadata) || !metadata.is_file() {
-                return Err("the path is not a regular file".to_string());
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("it cannot be inspected: {e}")),
-    }
-
-    let bytes = injected_documents::read_source_bytes(path)
-        .map_err(|e| format!("it cannot be read: {e}"))?;
-    match String::from_utf8(bytes) {
-        Ok(source) => Ok(Some(source)),
-        Err(e) => Err(format!("it is not valid UTF-8: {e}")),
-    }
-}
-
-pub(super) fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
 
 fn load_state(path: &Path) -> InjectedMessagesState {
     match injected_documents::read_state_text(path) {
@@ -95,13 +61,13 @@ fn write_if_different(path: &Path, contents: &str) -> Result<bool, String> {
 /// depending on filesystem timestamp resolution.
 fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
     #[cfg(test)]
-    super::record_write(path);
+    record_write(path);
     write_file_atomic(path, bytes)
 }
 
 pub(crate) fn ensure_injected_messages(
     dir: &Path,
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> Result<ProvisionReport, String> {
     provision(dir, &KNOWN_MESSAGES, None, warnings)
 }
@@ -117,7 +83,7 @@ pub(super) fn provision(
     dir: &Path,
     specs: &[MessageSpec],
     forced: Option<&BTreeSet<String>>,
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> Result<ProvisionReport, String> {
     let path = dir.join(INJECTED_MESSAGES_FILENAME);
     let state_path = dir.join(INJECTED_MESSAGES_STATE_FILENAME);
@@ -260,7 +226,7 @@ fn reconcile_entries<'a>(
     forced: Option<&BTreeSet<String>>,
     state: &mut InjectedMessagesState,
     report: &mut ProvisionReport,
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> ReconcilePlan<'a> {
     let mut state_changed = false;
     let mut refresh: BTreeMap<String, &MessageSpec> = BTreeMap::new();
@@ -381,7 +347,7 @@ fn reconcile(
     specs: &[MessageSpec],
     forced: Option<&BTreeSet<String>>,
     report: &mut ProvisionReport,
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> Result<(), String> {
     let model = analyze_source(source);
     if let Some(reason) = model
@@ -594,7 +560,7 @@ pub(crate) fn known_message_ids() -> Vec<&'static str> {
 pub(crate) fn reseed(
     dir: &Path,
     target: ReseedTarget,
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> Result<Vec<String>, String> {
     let ids: BTreeSet<String> = match &target {
         ReseedTarget::All => KNOWN_MESSAGES

@@ -298,7 +298,7 @@ pub(crate) struct WgReplicaInfo {
 ///
 /// Thin wrapper over the shared walk-up in
 /// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
-/// `send::derive_root_project_dir` and `mailbox::derive_project_from_outbox_path`,
+/// `send::project::derive_root_project_dir` and `mailbox::derive_project_from_outbox_path`,
 /// see #726). This caller keeps the project FOLDER NAME (`my_project`), the LHS
 /// of a WG replica's canonical FQN, rather than the full project path.
 pub(crate) fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
@@ -518,8 +518,9 @@ pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     // #293 — synthetic Root Agent reply peer (identity-verified coordinators
     // only). Augment the captured runtime project paths with the caller's own project
     // dir so `verified_wg_coordinator_target` sees the replica even when the
-    // project isn't in settings. Mirrors `cli/send.rs::effective_project_paths`
-    // (send.rs `derive_root_project_dir` augmentation) and the mailbox
+    // project isn't in settings. Mirrors the `effective_project_paths` local
+    // built by `cli/send.rs::resolve_send_target`
+    // (send/project.rs `derive_root_project_dir` augmentation) and the mailbox
     // root-recipient arm's `derive_project_from_outbox_path` augmentation.
     let effective_paths = effective_wg_project_paths(&wg, project_paths);
     if let Some(root_peer) = build_root_agent_synthetic_peer(&wg, &effective_paths) {

@@ -67,6 +67,9 @@ function measure(path, scan, receivers) {
       if (proof.kind !== PROVEN_PORT) record('emit_files', t);
     }
     if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
+    else if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
+      ts[i + 2]?.text === '(' && ts[i + 2].mate === ts[i + 3]?.index &&
+      receivers?.proveState(path, scan, t).proved === true) record('state_files',t);
     if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (value.startsWith('tauri::') || value === 'tauri' || /(?:^|::)AppHandle$/.test(value)) {

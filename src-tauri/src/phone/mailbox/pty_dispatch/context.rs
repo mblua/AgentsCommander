@@ -51,6 +51,12 @@ pub(super) struct PtyDispatchGuards<'a> {
     pub(super) source_executor: &'a mut crate::session::selection::SourceExecutorGuard,
 }
 
+/// Owned fresh guard and input permit retained through validation and the write boundary.
+pub(super) struct BoundaryWriteGuards {
+    pub(super) final_api_guard: Option<crate::api::auth::ApiClientFreshGuard>,
+    pub(super) permit: crate::pty::manager::PtyInputPermit,
+}
+
 pub(super) struct SelectionCandidates {
     pub(super) matching: Vec<SessionInfo>,
     pub(super) eligible: Vec<SessionInfo>,

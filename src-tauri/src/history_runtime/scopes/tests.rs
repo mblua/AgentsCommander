@@ -336,7 +336,7 @@ async fn a_foreign_directory_root_refuses_before_classification() {
 #[test]
 fn the_production_adapter_excludes_the_root_basename_without_the_flag() {
     let working_directory = format!("/p/proj/{}", crate::config::ROOT_AGENT_DIR_NAME);
-    let env = crate::app_run::history_environment::DiskProjectEnvironment;
+    let env = crate::app_run::history_environment::DiskProjectEnvironment::for_tests();
     assert_eq!(
         resolve_launch(&launch_at(&working_directory, false), &env),
         ScopeResolution::Excluded("root_agent")
