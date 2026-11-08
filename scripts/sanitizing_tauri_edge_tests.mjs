@@ -36,7 +36,7 @@ export function registerTauriEdgeTests({ trees, control }) {
   const use = 'use crate::ports::Sink;\n';
 
   test('06 receiver proof: parameters, fields, generics, imports and supertraits', () => {
-    for (const x of [
+    const shapes = [
       use + 'fn f(host: &dyn Sink) { host.emit(1); }',
       use + "fn f<'a>(host: &'a dyn Sink) { host.emit_to(\"main\", 1); }",
       use + 'use std::sync::Arc;\nfn f(host: Arc<dyn Sink + Send + Sync>) { host.emit(1); }',
@@ -56,17 +56,53 @@ export function registerTauriEdgeTests({ trees, control }) {
         'fn go(&mut self) { self.app.emit(1); } }',
       'trait Local: Send { fn emit(&self, v: u8); }\nfn f(x: &dyn Local) { x.emit(1); }',
       'use crate::ports::Sink;\ntrait Child: Sink + Sync {}\nfn f(x: &dyn Child) { x.emit(1); }',
-    ]) proven(x);
+    ];
+    // AC-4017-001: each positive shape with the port replaced by AppHandle/Emitter counts again.
+    const twins = [
+      'fn f(host: &tauri::AppHandle) { host.emit("e", 1); }',
+      "fn f<'a>(host: &'a tauri::AppHandle) { host.emit_to(\"main\", \"e\", 1); }",
+      'use std::sync::Arc;\nfn f(host: Arc<tauri::AppHandle>) { host.emit("e", 1); }',
+      'use std::sync::{Arc as Shared, Mutex};\n' +
+        'fn f(h: Shared<tauri::AppHandle>) { h.emit("e", 1); }',
+      'fn f(host: std::sync::Arc<tauri::AppHandle>) { host.emit("e", 1); }',
+      'use tauri::AppHandle as Out;\nfn f(o: &Out) { o.emit("e", 1); }',
+      'use tauri::{self as p};\nfn f(o: &p::AppHandle) { o.emit("e", 1); }',
+      'async fn f(host: &tauri::AppHandle) { host.emit("e", 1); }',
+      'use std::sync::Arc;\nstruct G { host: Arc<tauri::AppHandle> }\nfn f(host: ' +
+        'Arc<tauri::AppHandle>) { let g = G { host: Arc::clone(&host) }; host.emit("e", 1); }',
+      'use std::sync::Arc;\npub struct E { pub(crate) sink: Arc<tauri::AppHandle>, n: u8 }\n' +
+        'impl E { fn tick(&self) { if self.n > 0 { self.sink.emit("e", self.n); } } }',
+      use + 'pub(crate) struct W<H: tauri::Emitter> { pub(crate) app: H }\n' +
+        'impl<H: tauri::Emitter> Sink for W<H> { fn emit(&self, v: u8) { self.app.emit(v); }\n' +
+        '  fn emit_to(&self, l: &str, v: u8) { self.app.emit_to(l, v); } }',
+      'struct W<H> { app: H }\nimpl<K> W<K> where K: tauri::Emitter + Send { ' +
+        'fn go(&mut self) { self.app.emit("e", 1); } }',
+      'trait Local: tauri::Emitter { fn emit(&self, v: u8); }\nfn f(x: &dyn Local) { x.emit(1); }',
+      'trait Child: tauri::Emitter + Sync {}\nfn f(x: &dyn Child) { x.emit(1); }',
+    ];
+    assert.equal(twins.length, shapes.length);
+    for (const x of shapes) proven(x);
+    // Every replaced call site counts (the wrapper twin has two).
+    for (const x of twins) counted(x, {}, x.split('.emit').length - 1);
     // Multi-file declarations: nested modules, super paths and an explicit reexport.
     const deep = { 'lib.rs': 'mod a;\nmod x;\n', 'a.rs': 'pub mod b;\npub use b::Deep;\n',
       'a/b.rs': 'pub trait Deep { fn emit(&self); }\n' };
-    proven('use crate::a::Deep;\nfn f(d: &dyn Deep) { d.emit(); }', deep);
-    proven('use super::a::b::Deep as D;\nfn f(d: &dyn D) { d.emit(); }', deep);
     const { 'a/b.rs': leaf, ...folder } = deep;
-    proven('use crate::a::b::Deep;\nfn f(d: &dyn Deep) { d.emit(); }',
-      { ...folder, 'a/b/mod.rs': leaf });
+    const real = { 'a/b.rs': 'pub trait Deep: tauri::Emitter { fn emit(&self); }\n' };
+    for (const [x, layout] of [
+      ['use crate::a::Deep;\nfn f(d: &dyn Deep) { d.emit(); }', deep],
+      ['use super::a::b::Deep as D;\nfn f(d: &dyn D) { d.emit(); }', deep],
+      ['use crate::a::b::Deep;\nfn f(d: &dyn Deep) { d.emit(); }',
+        { ...folder, 'a/b/mod.rs': leaf }],
+    ]) {
+      proven(x, layout);
+      const twin = 'a/b/mod.rs' in layout ? { ...folder, 'a/b/mod.rs': real['a/b.rs'] }
+        : { ...deep, ...real };
+      counted(x, twin);
+    }
     // The quit-gate shape: a later macro use cannot rebind the earlier receiver.
     proven(use + 'fn f(host: &dyn Sink) { host.emit(1); m! { log(host.n()) } }');
+    counted('fn f(host: &tauri::AppHandle) { host.emit("e", 1); m! { log(host.n()) } }');
     const late = run({}, crate(use + 'fn f(host: &dyn Sink) {\n  host.emit(1);\n' +
       '  m! { host.emit(2) }\n}'));
     assert.deepEqual(late.measurements.head.find(m => m.path === R + 'x.rs').sites.emit_files
