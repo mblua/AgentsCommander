@@ -4,8 +4,6 @@
 //! inspection operations belong to `filesystem::context_history`. Writers open
 //! only for an enabled configuration; explicit reads and hot-journal recovery
 //! work regardless of it and never create anything.
-// Dormant until the history runtime (#3532 P02) opens writers and readers.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

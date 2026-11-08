@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "2981838eaf93e795",
+      "id": "1f85d8d1d3a2f0fa",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -28,13 +28,8 @@
         "agentscommander_lib::api::message_store::rows",
         "agentscommander_lib::api::message_store::types",
         "agentscommander_lib::app_state",
-        "agentscommander_lib::cli",
         "agentscommander_lib::cli::create_agent::session_request",
         "agentscommander_lib::cli::create_agent_matrix",
-        "agentscommander_lib::cli::list_peers",
-        "agentscommander_lib::cli::list_peers::discovery",
-        "agentscommander_lib::cli::list_peers::snapshot",
-        "agentscommander_lib::cli::list_peers::status",
         "agentscommander_lib::cli::terminal_snapshot",
         "agentscommander_lib::co_managed",
         "agentscommander_lib::co_managed::route",
@@ -148,15 +143,8 @@
         "agentscommander_lib::config::config_seed::copy",
         "agentscommander_lib::config::config_seed::perform",
         "agentscommander_lib::config::coordinator_clocks",
-        "agentscommander_lib::config::daemon_pid",
-        "agentscommander_lib::config::entity_creation::copies",
         "agentscommander_lib::config::entity_creation::teams",
-        "agentscommander_lib::config::entity_creation::teams::raw",
         "agentscommander_lib::config::entity_creation::teams::sources",
-        "agentscommander_lib::config::entity_creation::teams::store",
-        "agentscommander_lib::config::injected_messages",
-        "agentscommander_lib::config::injected_messages::provision",
-        "agentscommander_lib::config::injected_messages::render",
         "agentscommander_lib::config::loops",
         "agentscommander_lib::config::loops::lock",
         "agentscommander_lib::config::loops::storage",
@@ -352,17 +340,18 @@
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::bridge::poll",
         "agentscommander_lib::telegram::manager",
-        "agentscommander_lib::testability::reset",
-        "agentscommander_lib::testability::ui_automation",
-        "agentscommander_lib::testability::ui_automation::args",
-        "agentscommander_lib::testability::ui_automation::cli_run",
-        "agentscommander_lib::testability::ui_automation::files",
-        "agentscommander_lib::testability::window_info",
         "agentscommander_lib::update_check",
         "agentscommander_lib::web",
         "agentscommander_lib::web::commands",
         "agentscommander_lib::web::commands::agent_update_dispatch",
         "agentscommander_lib::window"
+      ]
+    },
+    {
+      "id": "629bffdade5ff28c",
+      "members": [
+        "agentscommander_lib::cli::list_peers",
+        "agentscommander_lib::cli::list_peers::snapshot"
       ]
     },
     {
@@ -380,10 +369,21 @@
       ]
     },
     {
-      "id": "57d32580131e0976",
+      "id": "b2640baf29803e8a",
       "members": [
-        "agentscommander_lib::cli::send",
-        "agentscommander_lib::cli::send::pty_input"
+        "agentscommander_lib::config::daemon_pid",
+        "agentscommander_lib::testability::ui_automation",
+        "agentscommander_lib::testability::ui_automation::args",
+        "agentscommander_lib::testability::ui_automation::cli_run",
+        "agentscommander_lib::testability::ui_automation::files"
+      ]
+    },
+    {
+      "id": "3ac0f5b624695468",
+      "members": [
+        "agentscommander_lib::config::injected_messages",
+        "agentscommander_lib::config::injected_messages::provision",
+        "agentscommander_lib::config::injected_messages::render"
       ]
     },
     {
@@ -401,13 +401,6 @@
       ]
     },
     {
-      "id": "1fefd2ca3233c97a",
-      "members": [
-        "agentscommander_lib::loops::scheduler",
-        "agentscommander_lib::loops::scheduler::state"
-      ]
-    },
-    {
       "id": "9cc5d31519f8d48a",
       "members": [
         "agentscommander_lib::path_identity",
@@ -420,14 +413,6 @@
       "members": [
         "agentscommander_lib::process::agent::owner",
         "agentscommander_lib::process::agent::owner::command_run"
-      ]
-    },
-    {
-      "id": "8b956eab6329b261",
-      "members": [
-        "agentscommander_lib::pty::spawn_diagnostics",
-        "agentscommander_lib::pty::spawn_diagnostics::registry",
-        "agentscommander_lib::pty::spawn_diagnostics::thresholds"
       ]
     },
     {

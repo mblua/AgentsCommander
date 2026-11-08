@@ -233,3 +233,83 @@ fn daemon_applied_agent_is_launch_resolvable() {
         "expected a spawn command for the applied agent"
     );
 }
+
+#[test]
+fn cancel_preserves_not_found_and_leaves_result() {
+    let dir = crate::config::settings::source_transition_test_root();
+    let (requests, results) = coding_agent_queue_directories(dir.path());
+    let request = write_request_file(
+        &requests,
+        "cancel",
+        100,
+        add(agent("claude", "L", "claude")),
+    );
+    std::fs::create_dir_all(&results).unwrap();
+    let result = results.join("cancel.json");
+    std::fs::write(&result, "untouched").unwrap();
+
+    cancel_coding_agent_request(&request).unwrap();
+    assert!(!request.exists());
+    assert_eq!(
+        cancel_coding_agent_request(&request).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(std::fs::read_to_string(result).unwrap(), "untouched");
+}
+
+#[test]
+fn pending_preserves_extension_filter_including_json_directories() {
+    let dir = crate::config::settings::source_transition_test_root();
+    let (requests, results) = coding_agent_queue_directories(dir.path());
+    assert!(pending_coding_agent_requests(&requests).is_empty());
+    let not_directory = dir.path().join("not-directory");
+    std::fs::write(&not_directory, "file").unwrap();
+    assert!(pending_coding_agent_requests(&not_directory).is_empty());
+    std::fs::create_dir_all(&results).unwrap();
+    for name in [
+        "pending.json",
+        "pending.json.tmp",
+        "claimed.json.processing",
+    ] {
+        std::fs::write(requests.join(name), "request").unwrap();
+    }
+    let json_directory = requests.join("directory.json");
+    std::fs::create_dir(&json_directory).unwrap();
+
+    let entries = pending_coding_agent_requests(&requests);
+    assert_eq!(entries.len(), 2);
+    assert!(entries.contains(&requests.join("pending.json")));
+    assert!(entries.contains(&json_directory));
+}
+
+#[test]
+fn take_removes_only_valid_result_and_preserves_request_and_claim() {
+    let dir = crate::config::settings::source_transition_test_root();
+    let (requests, results) = coding_agent_queue_directories(dir.path());
+    let request = write_request_file(&requests, "valid", 100, add(agent("claude", "L", "claude")));
+    let claim = processing_path_for(&request);
+    std::fs::write(&claim, "untouched claim").unwrap();
+    write_coding_agent_result(
+        &results,
+        &CodingAgentResult {
+            request_id: "valid".into(),
+            ok: true,
+            op: Some("add".into()),
+            error: None,
+            agent: None,
+            removed_id: None,
+        },
+    )
+    .unwrap();
+    let malformed = results.join("malformed.json");
+    std::fs::write(&malformed, "{invalid").unwrap();
+
+    let result = take_coding_agent_result(&results, "valid").unwrap();
+    assert_eq!(result.request_id, "valid");
+    assert!(result.ok);
+    assert!(!results.join("valid.json").exists());
+    assert!(take_coding_agent_result(&results, "malformed").is_none());
+    assert_eq!(std::fs::read_to_string(malformed).unwrap(), "{invalid");
+    assert!(request.exists());
+    assert_eq!(std::fs::read_to_string(claim).unwrap(), "untouched claim");
+}

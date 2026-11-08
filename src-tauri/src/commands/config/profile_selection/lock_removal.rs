@@ -2,6 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::session::selection_executor::{
+    run_owned_selection_operation, run_owned_selection_read_timed,
+};
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 
@@ -25,12 +28,9 @@ pub async fn preview_selection_lock_removal(
 ) -> Result<PreviewSelectionLockRemovalResult, String> {
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_read_timed(
-        "preview_selection_lock_removal",
-        move || async move {
-            preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
-        },
-    )
+    run_owned_selection_read_timed("preview_selection_lock_removal", move || async move {
+        preview_selection_lock_removal_inner(&session_mgr, &settings, request).await
+    })
     .await
 }
 
@@ -90,7 +90,7 @@ pub async fn apply_selection_lock_removal<R: tauri::Runtime>(
     // before the turn is released, so no later bulk can restart behind it.
     let app_handle = app.clone();
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || {
+    run_owned_selection_operation(move || {
         let app = app_handle.clone();
         async move {
             let (result, payload) = apply_selection_lock_removal_inner(&settings, request).await?;

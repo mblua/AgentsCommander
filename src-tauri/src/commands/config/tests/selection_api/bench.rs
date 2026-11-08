@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::run_owned_selection_operation_timed;
 
 // ── #2475 synthetic selection-lock bench ─────────────────────────
 //
@@ -497,10 +498,9 @@ fn bench_scopes() -> [super::ProfileAssignmentScope; 3] {
 /// Test-only: records one timed sample WITHOUT a run context.
 async fn bench_inject_uncorrelated(options: &BenchOptions) -> Result<(), BenchError> {
     if options.inject_uncorrelated {
-        crate::session::selection::run_owned_selection_operation_timed(
-            "get_replica_selection_default",
-            || async { Ok::<(), String>(()) },
-        )
+        run_owned_selection_operation_timed("get_replica_selection_default", || async {
+            Ok::<(), String>(())
+        })
         .await
         .map_err(BenchError::Failed)?;
     }
