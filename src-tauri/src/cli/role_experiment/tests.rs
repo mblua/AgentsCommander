@@ -1,5 +1,6 @@
 use super::storage::{attempts_name, attempts_path, attempts_path_display};
 use super::*;
+use std::path::Path;
 
 fn loaded_fixture(source_agent: &str) -> (tempfile::TempDir, LoadedExperiment) {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -701,4 +702,243 @@ fn issue_3298_missing_path_retains_lexical_dot_parent_fallback() {
     loaded.experiment.source_matrix_path = "../../missing/../_agent_alpha/.".into();
     loaded.experiment.source_role_path = "../../missing/../_agent_alpha/./Role.md".into();
     assert!(validation::validate_loaded_experiment_source_metadata(&loaded).is_empty());
+}
+
+fn run_dir_snapshot(run_dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut entries = std::fs::read_dir(run_dir)
+        .expect("read run dir")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            (name, std::fs::read(&path).expect("read artifact"))
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
+}
+
+fn assert_single_error(errors: &[CliError], code: &str, message: String, path: Option<&Path>) {
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, code);
+    assert_eq!(errors[0].message, message);
+    let path = path.map(|path| path.to_string_lossy().to_string());
+    assert_eq!(errors[0].path, path);
+    assert!(errors[0].variant.is_none());
+    assert!(errors[0].line.is_none());
+}
+
+fn missing_message(path: &Path) -> String {
+    format!("Run artifact not found: {}", path.display())
+}
+
+#[cfg(windows)]
+fn link_message(path: &Path) -> String {
+    format!(
+        "Path component is a symlink or reparse point: {}",
+        path.display()
+    )
+}
+
+fn assert_run_and_report_writes<T: serde::Serialize>(
+    name: &str,
+    value: &T,
+    create: fn(&Path, &T) -> Result<(), Vec<CliError>>,
+    replace: fn(&Path, &T) -> Result<(), Vec<CliError>>,
+) {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join(name);
+    let other = dir.path().join("other.json");
+    let expected = format!("{}\n", serde_json::to_string_pretty(value).unwrap());
+    create(dir.path(), value).expect("create");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    std::fs::write(&path, "sentinel").unwrap();
+    let errors = create(dir.path(), value).expect_err("create-new refuses");
+    assert_eq!(errors[0].code, "run_artifact_write_failed");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "sentinel");
+    std::fs::write(&other, "other").unwrap();
+    replace(dir.path(), value).expect("replace");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "other");
+}
+
+#[test]
+fn issue_4004_run_and_report_storage_bytes_and_metadata() {
+    let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, report) = resume_fixture();
+    let run = storage::load_run(&run_dir).expect("load run");
+    let loaded_report = storage::load_report(&run_dir).expect("load report");
+    assert_eq!(loaded_report.run_id, report.run_id);
+    assert_run_and_report_writes("run.json", &run, storage::create_run, storage::replace_run);
+    let (create, replace) = (storage::create_report, storage::replace_report);
+    assert_run_and_report_writes("report.json", &report, create, replace);
+    let paths = report::report_artifact_paths(&run_dir, attempts_path_display(&run_dir));
+    assert_eq!(paths.run, run_dir.join("run.json").to_string_lossy());
+    assert_eq!(
+        paths.report_json,
+        run_dir.join("report.json").to_string_lossy()
+    );
+    let defaults = serde_json::to_value(default_run_artifact_paths(attempts_name())).unwrap();
+    assert_eq!(defaults["reportJson"], "report.json");
+    assert_eq!(defaults["reportMarkdown"], "report.md");
+    assert_eq!(storage::run_name(), "run.json");
+}
+
+#[test]
+fn issue_4004_resume_presence_precedes_malformed_run() {
+    for missing in [
+        "attempts.jsonl",
+        "report.json",
+        "report.md",
+        "attempt-state",
+    ] {
+        let (_tmp, loaded, suite, variants, args, run_dir, run_id, _report) = resume_fixture();
+        std::fs::write(run_dir.join("run.json"), "{").unwrap();
+        let path = run_dir.join(missing);
+        let message = if missing == "attempt-state" {
+            std::fs::remove_dir(&path).unwrap();
+            format!("Run artifact directory not found: {}", path.display())
+        } else {
+            std::fs::remove_file(&path).unwrap();
+            missing_message(&path)
+        };
+        let before = run_dir_snapshot(&run_dir);
+        let errors = load_and_validate_resume_artifacts(
+            &args, &loaded, &suite, &run_id, &run_dir, &variants,
+        )
+        .expect_err("presence failure");
+        assert_single_error(&errors, "run_artifact_missing", message, Some(&path));
+        assert_eq!(run_dir_snapshot(&run_dir), before);
+    }
+}
+
+#[test]
+fn issue_4004_resume_parses_run_then_attempts_then_report() {
+    for (corrupt, failing) in [
+        (
+            &["run.json", "attempts.jsonl", "report.json"][..],
+            "run.json",
+        ),
+        (&["attempts.jsonl", "report.json"][..], "attempts.jsonl"),
+        (&["report.json"][..], "report.json"),
+    ] {
+        let (_tmp, loaded, suite, variants, args, run_dir, run_id, _report) = resume_fixture();
+        for name in corrupt {
+            std::fs::write(run_dir.join(name), "{").unwrap();
+        }
+        let before = run_dir_snapshot(&run_dir);
+        let errors = load_and_validate_resume_artifacts(
+            &args, &loaded, &suite, &run_id, &run_dir, &variants,
+        )
+        .expect_err("parse failure");
+        let path = run_dir.join(failing);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        if failing == "attempts.jsonl" {
+            assert_eq!(errors[0].code, "run_artifact_unparseable");
+            assert!(errors[0].path.is_none());
+            assert!(errors[0]
+                .message
+                .starts_with("Attempt line 1 is invalid JSON"));
+            assert_eq!(errors[0].line, Some(1));
+        } else {
+            let message = errors[0].message.clone();
+            let path = Some(path.as_path());
+            assert_single_error(&errors, "run_artifact_unparseable", message, path);
+        }
+        assert_eq!(run_dir_snapshot(&run_dir), before);
+    }
+}
+
+#[test]
+fn issue_4004_report_presence_precedes_malformed_run() {
+    for missing in ["attempts.jsonl", "report.json", "report.md"] {
+        let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+        std::fs::write(run_dir.join("run.json"), "{").unwrap();
+        let path = run_dir.join(missing);
+        std::fs::remove_file(&path).unwrap();
+        let before = run_dir_snapshot(&run_dir);
+        let errors = commands::load_report_command_artifacts(&run_dir).expect_err("presence");
+        let message = missing_message(&path);
+        assert_single_error(&errors, "run_artifact_missing", message, Some(&path));
+        assert_eq!(run_dir_snapshot(&run_dir), before);
+    }
+}
+
+#[test]
+fn issue_4004_report_parses_run_then_report() {
+    for (corrupt, failing) in [
+        (&["run.json", "report.json"][..], "run.json"),
+        (&["report.json"][..], "report.json"),
+    ] {
+        let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+        for name in corrupt {
+            std::fs::write(run_dir.join(name), "{").unwrap();
+        }
+        let before = run_dir_snapshot(&run_dir);
+        let errors = commands::load_report_command_artifacts(&run_dir).expect_err("parse");
+        let path = run_dir.join(failing);
+        let message = errors[0].message.clone();
+        let path = Some(path.as_path());
+        assert_single_error(&errors, "run_artifact_unparseable", message, path);
+        assert_eq!(run_dir_snapshot(&run_dir), before);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn issue_4004_report_rejects_linked_artifact_before_parsing() {
+    for name in ["run.json", "report.json"] {
+        let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, _report) = resume_fixture();
+        std::fs::write(run_dir.join("run.json"), "{").unwrap();
+        let target = run_dir.join(name);
+        let real = run_dir.join("real-target");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::create_dir(&real).unwrap();
+        crate::config::teams::create_test_junction(&target, &real);
+        let errors = commands::load_report_command_artifacts(&run_dir).expect_err("linked");
+        let message = link_message(&target);
+        assert_single_error(&errors, "run_artifact_link_or_reparse", message, None);
+        std::fs::remove_dir(&target).unwrap();
+    }
+}
+#[cfg(windows)]
+#[test]
+fn issue_4004_linked_run_and_report_artifacts_are_rejected() {
+    for name in ["run.json", "report.json"] {
+        let (_tmp, loaded, suite, variants, args, run_dir, run_id, _report) = resume_fixture();
+        let target = run_dir.join(name);
+        let real = run_dir.join("real-target");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::create_dir(&real).unwrap();
+        crate::config::teams::create_test_junction(&target, &real);
+        let errors = load_and_validate_resume_artifacts(
+            &args, &loaded, &suite, &run_id, &run_dir, &variants,
+        )
+        .expect_err("linked artifact");
+        assert_single_error(
+            &errors,
+            "run_artifact_link_or_reparse",
+            link_message(&target),
+            None,
+        );
+        std::fs::remove_dir(&target).unwrap();
+    }
+    let (_tmp, _loaded, _suite, _variants, _args, run_dir, _run_id, report) = resume_fixture();
+    let run = storage::load_run(&run_dir).expect("load run");
+    let real = run_dir.join("real");
+    let link = run_dir.join("linked");
+    std::fs::create_dir(&real).unwrap();
+    crate::config::teams::create_test_junction(&link, &real);
+    for errors in [
+        storage::replace_run(&link, &run).unwrap_err(),
+        storage::replace_report(&link, &report).unwrap_err(),
+    ] {
+        assert_single_error(
+            &errors,
+            "run_artifact_link_or_reparse",
+            link_message(&link),
+            None,
+        );
+    }
+    assert!(std::fs::read_dir(&real).unwrap().next().is_none());
+    std::fs::remove_dir(&link).unwrap();
 }

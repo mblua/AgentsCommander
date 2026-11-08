@@ -2,9 +2,10 @@ use super::*;
 use chrono::TimeZone;
 use std::fs::OpenOptions;
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod edits;
 mod issue_2837;

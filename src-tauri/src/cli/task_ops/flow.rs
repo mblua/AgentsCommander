@@ -1,16 +1,16 @@
-use super::apply_edit;
 use super::clean::clean_pair_locked;
 use super::clean::recover_clean_pair_locked;
-use super::is_user_owned_title;
-use super::parse_task;
-use super::render;
-use super::title_value_of;
-use super::EditOutcome;
-use super::LockGuard;
-use super::TaskOp;
-use super::TaskOpError;
-use super::LOCK_STALE_AFTER_5M;
-use super::LOCK_TIMEOUT_5S;
+use super::document::apply_edit;
+use super::document::is_user_owned_title;
+use super::document::parse_task;
+use super::document::render;
+use super::document::title_value_of;
+use super::lock::LockGuard;
+use super::lock::LOCK_STALE_AFTER_5M;
+use super::lock::LOCK_TIMEOUT_5S;
+use super::operation::EditOutcome;
+use super::operation::TaskOp;
+use super::operation::TaskOpError;
 #[cfg(test)]
 use crate::filesystem::tasks::io_boundary;
 use crate::filesystem::tasks::TASK_FILE_NAME;
