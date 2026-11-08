@@ -418,14 +418,6 @@
       ]
     },
     {
-      "id": "9cc5d31519f8d48a",
-      "members": [
-        "agentscommander_lib::path_identity",
-        "agentscommander_lib::path_identity::regular",
-        "agentscommander_lib::path_identity::terminal_output"
-      ]
-    },
-    {
       "id": "c44ae1cfc325d1ba",
       "members": [
         "agentscommander_lib::phone::mailbox::pty_dispatch",
