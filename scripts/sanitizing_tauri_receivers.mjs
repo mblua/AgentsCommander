@@ -499,11 +499,9 @@ export function createReceiverClassifier(context) {
     return { open, parts: split(tokens.slice(open + 1, tokens[open].mate), ',') };
   }
 
-  function classifyUnsafe(path, scan, dot) {
-    const tokens = scan.tokens, i = dot.index, method = tokens[i + 1]?.name;
-    need(tree && lookup, 'missing receiver context');
-    need(['emit', 'emit_to'].includes(method) && tokens[i + 2]?.text === '(', 'not an emit call');
-    need(!inMacro(scan, i), 'emit inside macro');
+  // Shared extraction preserves emits' safety checks, order and diagnostic text.
+  function receiverBinding(path, scan, dot) {
+    const tokens = scan.tokens, i = dot.index;
     let field = null, recv = i - 1, start = i - 1;
     need(tokens[recv]?.kind === 'ident', 'non-identifier receiver');
     if (tokens[recv - 1]?.text === '.') {
@@ -525,7 +523,67 @@ export function createReceiverClassifier(context) {
     need(!captured(tokens, body, i), 'receiver captured by closure or async block');
     const module = moduleOf(path);
     checkFile(scan);
-    const { open, parts } = fnParams(scan, fn);
+    const { parts } = fnParams(scan, fn);
+    return { field, recv, start, fn, body, module, parts };
+  }
+
+  function stateType(scan, module, tokens) {
+    let k = 0;
+    if (tokens[k]?.text === '&') {
+      k++;
+      if (tokens[k]?.kind === 'lifetime') k++;
+      if (tokens[k]?.name === 'mut') k++;
+    }
+    const rest = tokens.slice(k), open = rest.findIndex(t => t.text === '<');
+    let head = rest;
+    if (open >= 0) {
+      need(open > 0 && closeAngle(rest, open) === rest.length - 1,
+        'unsupported state type arguments');
+      need(simplePath(rest.slice(open + 1, -1)), 'state runtime is not a simple path');
+      head = rest.slice(0, open);
+    }
+    const r = resolveType(scan, module, head);
+    need(/^tauri::(?:AppHandle|App|Window|WebviewWindow)$/.test(r.tauri ?? ''),
+      'state receiver is not a concrete Tauri handle');
+    return { real: r.tauri };
+  }
+
+  function proveStateUnsafe(path, scan, dot) {
+    const tokens = scan.tokens, i = dot.index;
+    need(tree && lookup, 'missing receiver context');
+    need(['state', 'try_state'].includes(tokens[i + 1]?.name) &&
+      tokens[i + 2]?.text === '(' && tokens[i + 2].mate === i + 3,
+      'not an empty inferred state call');
+    need(!inMacro(scan, i), 'state inside macro');
+    const { field, recv, start, fn, body, module, parts } = receiverBinding(path, scan, dot);
+    let result, declaration;
+    if (!field) {
+      const name = tokens[recv].name;
+      const param = parts.filter(p => p[0]?.name === name && p[1]?.text === ':');
+      need(param.length === 1, 'receiver is not a simple fn parameter');
+      need(!parts.some(p => p.some(t => t.name === name) && p !== param[0]),
+        'receiver name reused in parameters');
+      safeReceiver(scan, fn, body, name, param[0][0].index, i);
+      result = stateType(scan, module, param[0].slice(2));
+      declaration = { path, line: param[0][0].line };
+    } else {
+      checkFieldReceiver(tokens, parts, body, field);
+      result = fieldType(scan, module, fn, field, stateType);
+      declaration = result.declaration;
+    }
+    return { proved: true, reason: 'Tauri state receiver ' + result.real, evidence: {
+      receiver: { path, line: tokens[start].line, start: tokens[start].start,
+        end: tokens[recv].end }, declaration, type: result.real,
+    } };
+  }
+
+  function classifyUnsafe(path, scan, dot) {
+    const tokens = scan.tokens, i = dot.index, method = tokens[i + 1]?.name;
+    need(tree && lookup, 'missing receiver context');
+    need(['emit', 'emit_to'].includes(method) && tokens[i + 2]?.text === '(', 'not an emit call');
+    need(!inMacro(scan, i), 'emit inside macro');
+    const { field, recv, start, fn, body, module, parts } =
+      receiverBinding(path, scan, dot);
     let proof, declaration;
     if (!field) {
       const name = tokens[recv].name;
@@ -538,12 +596,7 @@ export function createReceiverClassifier(context) {
       if (r.real) return { kind: REAL, reason: 'Tauri receiver ' + r.real };
       proof = r.traits; declaration = { path, line: param[0][0].line };
     } else {
-      const self = (parts[0] ?? []).filter(t => t.kind !== 'lifetime');
-      need(self.at(-1)?.name === 'self' && self.length <= 3, 'method without self receiver');
-      for (let k = body.start + 1; k < body.end - 2; k++)
-        need(!(tokens[k].name === 'self' && tokens[k + 1].text === '.' &&
-          tokens[k + 2].name === field && ['=', '+=', '@'].includes(tokens[k + 3]?.text)),
-          'receiver field written');
+      checkFieldReceiver(tokens, parts, body, field);
       const r = fieldType(scan, module, fn, field);
       if (r.real) return { kind: REAL, reason: 'Tauri receiver ' + r.real };
       proof = r.traits; declaration = r.declaration;
@@ -564,8 +617,17 @@ export function createReceiverClassifier(context) {
       } };
   }
 
+  function checkFieldReceiver(tokens, parts, body, field) {
+    const self = (parts[0] ?? []).filter(t => t.kind !== 'lifetime');
+    need(self.at(-1)?.name === 'self' && self.length <= 3, 'method without self receiver');
+    for (let k = body.start + 1; k < body.end - 2; k++)
+      need(!(tokens[k].name === 'self' && tokens[k + 1].text === '.' &&
+        tokens[k + 2].name === field && ['=', '+=', '@'].includes(tokens[k + 3]?.text)),
+        'receiver field written');
+  }
+
   // self.field: unique impl, unique same-module named-field struct, consistent binders.
-  function fieldType(scan, module, fn, field) {
+  function fieldType(scan, module, fn, field, policy = objectType) {
     const tokens = scan.tokens;
     const impls = scan.items.filter(i => i.kind === 'impl' && i.start < fn.start &&
       fn.end <= i.end);
@@ -605,6 +667,7 @@ export function createReceiverClassifier(context) {
     const declaration = { path: scan.path, line: hits[0][0].line };
     const structGenerics = genericBounds(scan, sh.generics, sh.where);
     if (type.length === 1 && structGenerics.has(type[0].name)) {
+      need(policy === objectType, 'generic field does not prove a concrete state handle');
       const position = [...structGenerics.keys()].indexOf(type[0].name);
       const implGenerics = genericBounds(scan, ih.generics, ih.where);
       need(args.length === structGenerics.size && args.every(a => a.length === 1),
@@ -621,11 +684,18 @@ export function createReceiverClassifier(context) {
       }
       return { traits: all, declaration };
     }
-    const o = objectType(scan, module, type);
+    const o = policy(scan, module, type);
     return { ...o, declaration };
   }
 
   return {
+    proveState(path, currentScan, dotToken) {
+      try { return proveStateUnsafe(path, currentScan, dotToken); }
+      catch (e) {
+        if (!(e instanceof Unknown)) throw e;
+        return { proved: false, reason: 'state receiver not proved: ' + e.message };
+      }
+    },
     classify(path, currentScan, dotToken) {
       try { return classifyUnsafe(path, currentScan, dotToken); }
       catch (e) {

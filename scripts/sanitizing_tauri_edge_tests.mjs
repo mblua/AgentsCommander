@@ -245,4 +245,162 @@ export function registerTauriEdgeTests({ trees, control }) {
     counted('fn f(app: tauri::AppHandle) { let a = app.clone(); ' +
       'spawn(move || { let _ = a.emit("e", 1); }); }');
   });
+
+  const states = r => r.totals.map(t => t.state_files ?? 0);
+  const stateSites = r => r.measurements.head.flatMap(m => (m.sites.state_files ?? [])
+    .map(s => ({ path: m.path, line: s.line })));
+  const stateCase = (x, expected, extra = {}) => {
+    const result = run(crate(x, extra));
+    assert.deepEqual(states(result), [expected, expected], x);
+    assert.equal(stateSites(result).length, expected, x);
+    assert.ok(stateSites(result).every(s => s.path === R + 'x.rs' && s.line > 0), x);
+    const withoutCalls = run(crate(x.replace(/.(?:state|try_state)()/g, '.unrelated()'), extra));
+    assert.deepEqual(result.diagnostics.filter(d => d.status === 'WARN'),
+      withoutCalls.diagnostics.filter(d => d.status === 'WARN'),
+      'inferred calls add no warning: ' + x);
+    return result;
+  };
+
+  test('06 inferred state: concrete handles, imports, references and fields', () => {
+    const types = ['tauri::AppHandle', 'tauri::App', 'tauri::Window', 'tauri::WebviewWindow',
+      'tauri::AppHandle<R>', 'tauri::Window<tauri::Wry>', "&'a mut tauri::AppHandle<R>",
+      '&tauri::App', '&mut tauri::Window'];
+    for (const type of types) for (const method of ['state', 'try_state'])
+      stateCase(`async fn f<'a, R>(app: ${type}) {\n app.${method}( /* empty */ );\n}`, 1);
+    for (const x of [
+      'use tauri::AppHandle; fn f(app: AppHandle) { app.state(); app.try_state(); }',
+      'use tauri::AppHandle as H; fn f(app: H) { app.state(); app.try_state(); }',
+      'use tauri::{self as t, AppHandle as H}; fn f(app: H, w: t::Window<R>) ' +
+        '{ app.state(); w.try_state(); }',
+      'fn r#f(r#app: tauri::AppHandle) { r#app.r#state(); r#app.r#try_state(); }',
+      'struct W { app: tauri::AppHandle } impl W { fn f(&self) ' +
+        '{ self.app.state(); self.app.try_state(); } }',
+      'struct W<R> { app: tauri::AppHandle<R> } impl<R> W<R> { fn f(&self) ' +
+        '{ self.app.state(); self.app.try_state(); } }',
+    ]) stateCase(x, 2);
+    stateCase('fn f(app: tauri::AppHandle) {\n app.state();\n app.try_state();\n}', 2);
+    assert.deepEqual(stateSites(run(crate('fn f(app: tauri::AppHandle) {\n' +
+      ' app.state();\n app.try_state();\n}'))).map(s => s.line), [2, 3]);
+  });
+
+  test('06 inferred state: unknown and unsupported twins are silent and excluded', () => {
+    const types = ['X', 'tauri::Emitter', 'tauri::State<X>', 'tauri::Unknown<R>',
+      'tauri::x::AppHandle', 'dyn tauri::Manager', 'Arc<tauri::AppHandle>',
+      'Box<tauri::AppHandle>', 'Rc<tauri::AppHandle>', 'tauri::AppHandle<>',
+      'tauri::AppHandle<R, S>', 'tauri::AppHandle<Vec<R>>', 'tauri::AppHandle<R + Send>',
+      'tauri::AppHandle<Item = R>', 'tauri::AppHandle<3>', 'tauri::AppHandle<(R,)>'];
+    for (const type of types)
+      stateCase(`fn f(app: ${type}) { app.state(); app.try_state(); }`, 0);
+    for (const x of [
+      'struct AppHandle; fn f(app: AppHandle) { app.state(); app.try_state(); }',
+      'mod tauri {} fn f(app: tauri::AppHandle) { app.state(); }',
+      'type H = tauri::AppHandle; fn f(app: H) { app.state(); }',
+      'use tauri::*; fn f(app: AppHandle) { app.state(); }',
+      'use tauri::AppHandle as H; use other::H; fn f(app: H) { app.state(); }',
+      'fn f<H: tauri::Manager>(app: H) { app.state(); }',
+      'fn f(app: tauri::AppHandle) { let app = x; app.state(); }',
+      'fn f(app: tauri::AppHandle) { app = x; app.state(); }',
+      'fn f(app: tauri::AppHandle) { app.state(); let app = x; }',
+      'fn f(app: tauri::AppHandle) { app.clone().state(); }',
+      'fn f(app: tauri::AppHandle) { (app).state(); }',
+      'fn f(app: tauri::AppHandle) { let f = || { app.state(); }; }',
+      'fn f(app: tauri::AppHandle) { let f = async { app.state(); }; }',
+      'fn f(app: tauri::AppHandle) { m!(app.state()); }',
+      'fn f(app: tauri::AppHandle) { m!(app); app.state(); }',
+      'fn f(app: tauri::AppHandle) { app.state(1); app.try_state(x); }',
+      'fn f(app: tauri::AppHandle) { app.state; app.try_state; }',
+      'fn f(app: tauri::AppHandle) { tauri::Manager::state(app); }',
+      'struct W<H: tauri::Manager> { app: H } impl<H: tauri::Manager> W<H> ' +
+        '{ fn f(&self) { self.app.state(); } }',
+      'struct W { app: tauri::AppHandle } impl W { fn f(&self) ' +
+        '{ self.app = x; self.app.state(); } }',
+      'struct W { app: tauri::AppHandle } impl W { fn f(&self) { self.app.x.state(); } }',
+      'struct W { app: tauri::AppHandle } impl W { fn f(&self) { self.state(); } }',
+      'struct Identity; impl Identity { fn state(&self) {} fn try_state(&self) {} } ' +
+        'fn f(path_identity: Identity) { path_identity.state(); path_identity.try_state(); }',
+    ]) stateCase(x, 0);
+    for (const root of ['#[cfg(unix)] mod x;', '#[path="x.rs"] mod x;'])
+      stateCase('fn f(app: tauri::AppHandle) { app.state(); }', 0,
+        { 'lib.rs': root });
+  });
+
+  test('06 inferred state: explicit history, filtering and exact boundaries', () => {
+    stateCase('fn f(x: X) { x.state::<X>(); x.try_state::<X>(); }', 2);
+    stateCase('fn f(app: tauri::AppHandle) { app.state::<X>(); app.state(); ' +
+      'app.try_state::<X>(); app.try_state(); }', 4);
+    stateCase('fn f(app: tauri::AppHandle) { /* app.state(); */ ' +
+      'let s = "app.state()"; let r = r###"app.try_state()"###; }', 0);
+    stateCase('#[cfg(test)] mod t { fn f(app: tauri::AppHandle) { app.state(); } } ' +
+      '#[test] fn f(app: tauri::AppHandle) { app.try_state(); }', 0);
+    for (const p of ['lib.rs', 'main.rs', 'commands.rs', 'events.rs',
+      'commands/a.rs', 'commands/a/b.rs', 'events/a.rs', 'events/a/b.rs']) {
+      const result = run(files({[p]: 'fn f(app: tauri::AppHandle) { app.state(); }'}));
+      assert.deepEqual(states(result), [0, 0], p);
+    }
+    for (const [p, layout] of [
+      ['app_run.rs', {'lib.rs':'mod app_run;'}],
+      ['app_run/setup.rs', {'lib.rs':'mod app_run;', 'app_run.rs':'mod setup;'}],
+      ['app_run/a/b.rs', {'lib.rs':'mod app_run;', 'app_run.rs':'mod a;',
+        'app_run/a.rs':'mod b;'}],
+    ]) {
+      const r = run(files({...layout, [p]:'fn f(app: tauri::AppHandle) { app.state(); }'}));
+      assert.deepEqual(states(r), [1, 1], p);
+      assert.deepEqual(stateSites(r), [{path:R+p,line:1}]);
+    }
+    const tests = files({'lib.rs':'mod x;', 'x.rs':
+      '#[test] fn f(app: tauri::AppHandle) { app.state(); }'});
+    const added = run({}, tests);
+    assert.deepEqual(states(added), [0, 0]);
+    assert.equal(added.exit, 1, 'new core test-only Tauri still fails');
+  });
+
+  test('06 inferred state: shared ratchet and snapshot isolation', () => {
+    const make = (type, body = '') => crate(`fn f(app: ${type}) {\n${body}\n}`);
+    for (const method of ['state', 'try_state']) {
+      const base = make('tauri::AppHandle'), head = make('tauri::AppHandle', `app.${method}();`);
+      assert.equal(run(base).exit, 0);
+      const r = run(base, head);
+      assert.equal(r.exit, 1);
+      assert.deepEqual(states(r), [0, 1]);
+      assert.ok(r.diagnostics.some(d => d.status === 'FAIL' && d.rule === 'state_files' &&
+        d.path === R+'x.rs' && d.line === 2 && d.remedy));
+      assert.equal(run(base, base).exit, 0);
+      assert.equal(run(head, base).exit, 0);
+    }
+    const one = make('tauri::AppHandle', 'app.state();');
+    const alternate = make('tauri::AppHandle', 'app.try_state();');
+    assert.deepEqual(states(run(one, alternate)), [1, 1]);
+    assert.equal(run(one, alternate).exit, 0);
+    assert.deepEqual(states(run(one, make('tauri::AppHandle',
+      'app.state::<X>(); app.try_state();'))), [1, 2]);
+    const added = run(one, {...one, ...files({'lib.rs':'mod ports; mod x; mod y;',
+      'y.rs':'fn f(app: tauri::AppHandle) { app.state(); }'})});
+    assert.deepEqual(states(added), [1, 2]);
+    assert.equal(added.exit, 1);
+    const pairs = [
+      [make('X','app.state();'), one],
+      [crate('use other::AppHandle as H; fn f(app: H) { app.state(); }'),
+        crate('use tauri::AppHandle as H; fn f(app: H) { app.state(); }')],
+      [crate('struct W { app: X } impl W { fn f(&self) { self.app.state(); } }'),
+        crate('struct W { app: tauri::AppHandle } impl W { fn f(&self) { self.app.state(); } }')],
+    ];
+    for (const [base, head] of pairs) {
+      assert.deepEqual(states(run(base, head)), [0, 1]);
+      assert.deepEqual(states(run(head, base)), [1, 0]);
+      assert.deepEqual(states(run(base, head)),
+ [0, 1]);
+    }
+  });
+
+  test('06 shared receiver mechanics: emits preserve real, port and warning contracts', () => {
+    const r = run(crate(use + 'fn f(port: &dyn Sink, app: tauri::AppHandle, x: X) {\n' +
+      'port.emit(1);\napp.emit("e", 1);\nx.emit(1);\n}'));
+    assert.equal(emits(r), 2);
+    assert.deepEqual(r.measurements.head.find(m => m.path === R+'x.rs').sites.emit_files
+      .map(s => s.line), [4, 5]);
+    const warnings = r.diagnostics.filter(d => d.status === 'WARN');
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].line, 5);
+    assert.equal(warnings[0].reason, 'emit receiver not proved: unresolved type path: X');
+  });
 }
