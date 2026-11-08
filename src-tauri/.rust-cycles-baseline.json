@@ -461,13 +461,6 @@
       ]
     },
     {
-      "id": "1e99d7b564d4bc9b",
-      "members": [
-        "agentscommander_lib::process::host::job",
-        "agentscommander_lib::process::host::job::windows_impl"
-      ]
-    },
-    {
       "id": "d258c1e898c90373",
       "members": [
         "agentscommander_lib::pty::remote_watcher::sweeper",
@@ -487,13 +480,6 @@
       "members": [
         "agentscommander_lib::resource_monitor::registry",
         "agentscommander_lib::resource_monitor::registry::snapshot"
-      ]
-    },
-    {
-      "id": "e5ddddcbb6ecd07a",
-      "members": [
-        "agentscommander_lib::session::profile",
-        "agentscommander_lib::session::profile::pty_submission"
       ]
     }
   ],
