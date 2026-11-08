@@ -82,7 +82,8 @@ fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
     let table_valued =
         "schema_version = 1\n\n[messages.context-alert.template]\nk = 1\n".to_string();
     std::fs::write(main_path(dir.path()), &table_valued).expect("write");
-    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
+    let report: ProvisionReport =
+        ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     // The unreadable entry stays byte-identical and the four missing ids are
     // appended after it.
