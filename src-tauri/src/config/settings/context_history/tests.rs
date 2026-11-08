@@ -451,3 +451,96 @@ fn save_validation_repairs_colour_and_round_trips() {
     assert_eq!(reloaded.context_history_color_sessions, Some(20));
     assert_eq!(reloaded.context_history_retention_days.days(), 90);
 }
+
+const SNAPSHOTS: &str = "terminalSnapshotsEnabled";
+
+fn cas(
+    current: &AppSettings,
+    path: &std::path::Path,
+    expected: bool,
+    enabled: bool,
+) -> AppSettings {
+    crate::config::settings::compare_and_set_terminal_snapshots_enabled_at_path(
+        current, path, expected, enabled,
+    )
+    .unwrap()
+}
+
+/// #4091 AC-4091-001: a seeded custom-window file whose colour is replaced
+/// (or removed when `None`) after startup migrations settled.
+fn seed_cas_file(path: &std::path::Path, colour: Option<Value>) -> Vec<u8> {
+    let mut raw = sessions_json(Some(json!([25, 100, 300, 1000])), None);
+    raw[SNAPSHOTS] = json!(false);
+    std::fs::write(path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+    load_settings_from_path(path);
+    let mut stable: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    match colour {
+        Some(value) => stable[COLOUR] = value,
+        None => {
+            stable.as_object_mut().unwrap().remove(COLOUR);
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&stable).unwrap();
+    std::fs::write(path, &bytes).unwrap();
+    bytes
+}
+
+#[test]
+fn snapshot_cas_on_an_existing_file_keeps_colour_coherent() {
+    let cases = [
+        (None, 1000),
+        (Some(Value::Null), 1000),
+        (Some(json!(50)), 1000),
+        (Some(json!(300)), 300),
+    ];
+    for (colour, expected) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let bytes = seed_cas_file(&path, colour.clone());
+        let current = AppSettings::default();
+        let no_op = cas(&current, &path, false, false);
+        assert_eq!(
+            no_op.context_history_color_sessions,
+            Some(expected),
+            "{colour:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{colour:?}");
+        let agents = serde_json::to_value(&no_op.agents).unwrap();
+        let toggled = cas(&no_op, &path, false, true);
+        assert_eq!(
+            toggled.context_history_color_sessions,
+            Some(expected),
+            "{colour:?}"
+        );
+        let disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk[SNAPSHOTS], json!(true), "{colour:?}");
+        assert_eq!(disk[COLOUR], json!(expected), "{colour:?}");
+        assert_eq!(disk[WINDOWS], json!([25, 100, 300, 1000]), "{colour:?}");
+        let reloaded = load_settings_from_path(&path);
+        assert_eq!(reloaded.context_history_color_sessions, Some(expected));
+        assert_eq!(reloaded.context_history_retention_days.days(), 90);
+        assert_eq!(reloaded.typing_hold_seconds, 9);
+        assert_eq!(serde_json::to_value(&reloaded.agents).unwrap(), agents);
+    }
+}
+
+#[test]
+fn snapshot_cas_creating_the_file_saves_the_last_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    // Raw decode, deliberately not normalized: colour is `None`.
+    let current: AppSettings =
+        serde_json::from_value(sessions_json(Some(json!([25, 100, 300, 1000])), None)).unwrap();
+    assert_eq!(current.context_history_color_sessions, None);
+    assert!(!path.exists());
+    let created = cas(&current, &path, true, false);
+    assert_eq!(created.context_history_color_sessions, Some(1000));
+    let disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(disk[SNAPSHOTS], json!(false));
+    assert_eq!(disk[COLOUR], json!(1000));
+    assert_eq!(disk[WINDOWS], json!([25, 100, 300, 1000]));
+    let reloaded = load_settings_from_path(&path);
+    assert_eq!(reloaded.context_history_color_sessions, Some(1000));
+    assert_eq!(reloaded.context_history_retention_days.days(), 90);
+    assert_eq!(reloaded.typing_hold_seconds, 9);
+}
