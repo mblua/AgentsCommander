@@ -72,7 +72,7 @@ test('07r immediate standard constructors, aliases, qualified, multiline and raw
     ['use std::path::Path; fn f(x: &str) { Path::new(x).join("a").exists(); }', 0],
     ['use std::path::Path; fn f(x: &str) { Path::new(x).as_path().exists(); }', 0],
     ['use std::path::Path; fn f(x: &str) { Path::new(x).clone().exists(); }', 0],
-    ['use std::path::Path; fn f(x: &str) { let p = Path::new(x); p.exists(); }', 0],
+    ['use std::path::Path; fn f(x: &str) { let p = Path::new(x); p.exists(); }', 1],
   ]);
 });
 
@@ -140,13 +140,13 @@ test('07r real/homonym mix and homonym types never count', () => {
   ]);
 });
 
-test('07r unknown provenance remains WARN-only, never a proven site', () => {
+test('07r provenance matrix retains unknowns and recognizes #4025 locals', () => {
   const use = 'use std::path::{Path, PathBuf}; ';
   const results = expectSites([
     [use + 'fn f() { dir().exists(); }', 0],
     [use + 'fn f(e: ContextEntry) { e.exists(); }', 0],
-    [use + 'fn f(x: &str) { let p = PathBuf::from(x); p.exists(); }', 0],
-    [use + 'fn f(p: &Path) { let q = p.join("a"); q.exists(); p.join("b").exists(); }', 0],
+    [use + 'fn f(x: &str) { let p = PathBuf::from(x); p.exists(); }', 1],
+    [use + 'fn f(p: &Path) { let q = p.join("a"); q.exists(); p.join("b").exists(); }', 1],
     [use + 'fn f(v: Vec<PathBuf>) { v[0].exists(); }', 0],
     [use + 'fn f(v: &[PathBuf]) { for p in v { p.exists(); } }', 0],
     [use + 'struct S { dir: D } impl S { fn f(&self, dir: &Path) { self.dir.is_dir(); } }', 0],
@@ -251,4 +251,173 @@ test('07r direct calls, unsupported receivers and malformed input keep their ver
   assert.equal(error.status, 'ERROR');
   assert.equal(unknown.exit, 0);
   assert.equal(unknown.approximation.head.sites, 1);
+});
+
+// #4025 extends only the local shapes above; old immediate and parameter controls remain.
+const localC = 'std::path::Path::new("x")';
+const localP = 'p.join("x")';
+function localSource(seed, prefix = '', call = 'q.exists();', declaration = 'let q') {
+  return 'fn f(p: &std::path::Path, flag: bool) { ' + prefix + ' ' + declaration +
+    ' = ' + seed + '; ' + call + ' }';
+}
+
+test('07l each method on constructor and parameter locals, zero to two joins', () => {
+  expectSites(methods.flatMap(m => [localC, localC + '.join("a")',
+    localC + '.join("a").join("b")', 'std::path::PathBuf::new()',
+    'std::path::PathBuf::from("x")', localP, localP + '.join("b")']
+    .map(seed => [localSource(seed, '', 'q.' + m + '();'), 1])));
+  expectSites([
+    ['use std::path::PathBuf as B; fn f(x: String) { let q = B::from(x); q.exists(); }', 1],
+    ['use std::path::Path as r#P; fn f(x: &str) { let r#q = r#P::new(x); '
+      + 'r#q.is_dir(); }', 1],
+    ['fn f(x: &str) { let q = ::std::path::Path::new(\n x,\n).join(g(1, 2),); '
+      + 'q.is_file(); }', 1],
+    ["fn f<'a>(p: &'a std::path::Path) { let q = p.join(g()); q.exists(); }", 1],
+    ["struct S<'a>(&'a u8); impl<'a> S<'a> { fn f(&self, p: &std::path::Path) { "
+      + 'let q = p.join("x"); q.exists(); } }', 1],
+    ['fn f(p: std::path::PathBuf) { let q = p.join("x"); { q.exists(); } }', 1],
+    ['fn f(p: &std::path::Path) { { let q = p.join("x"); q.exists(); } }', 1],
+    ...[localC, localP].map(seed => [localSource(seed,
+      'let a = g().await?; let mut b: u8 = h()?; if !(flag) { return; }'), 1]),
+  ]);
+});
+
+test('07l C and P controls identify the exact receiver failure and restoration', () => {
+  const p = root + 'control.rs';
+  for (const seed of [localC, localP]) {
+    const before = { [p]: 'fn f() {}' };
+    const after = { [p]: 'fn f(p: &std::path::Path) {\n  let q = ' + seed +
+      ';\n  q.exists();\n}' };
+    const [clean, bad, restored] = gate([[before, before], [before, after], [before, before]]);
+    assert.equal(clean.exit, 0); assert.equal(restored.exit, 0);
+    assert.equal(bad.status, 'FAIL'); assert.equal(bad.exit, 1);
+    assert.deepEqual(bad.totals.map(t => t.receiver_disk_sites ?? 0), [0, 1]);
+    assert.deepEqual(bad.totals.map(t => t.disk_files ?? 0), [0, 0]);
+    assert.equal(bad.fails.length, 1);
+    const [d] = bad.fails;
+    assert.deepEqual([d.rule, d.path, d.line, d.base, d.head],
+      ['receiver_disk_sites', p, 3, 0, 1]);
+    assert.ok(d.remedy);
+  }
+});
+
+test('07l pipe barriers C/P each have a pipe-free one-site control', () => {
+  for (const seed of [localC, localP]) expectSites([
+    [localSource(seed), 1],
+    ...['a || b;', 'let g = || 1;', 'let g = |a| a;', 'let g = |a||b| b;']
+      .map(prefix => [localSource(seed, prefix), 0]),
+  ]);
+});
+
+test('07l immutable simple declarations, exact initializers and lexical visibility', () => {
+  for (const seed of [localC, localP]) expectSites([
+    ...['let mut q', 'let ref q', 'let q: std::path::PathBuf', 'let (q, r)']
+      .map(decl => [localSource(seed, '', 'q.exists();', decl), 0]),
+    ...['?', '.await', '.as_path()', '.parent()', '.clone()']
+      .map(suffix => [localSource(seed + suffix), 0]),
+    [localSource('(' + seed + ')'), 0],
+    [localSource(seed, '', 'let r = q; r.exists();'), 0],
+    [localSource(seed, '', 'self.q.exists(); x.q.exists(); a::q.exists(); (q).exists();'), 0],
+    [localSource(seed, '', 'q.exists(1);'), 0],
+    [localSource(seed, 'q.exists();', ''), 0],
+    [localSource(seed, '', 'let q = other(); q.exists();'), 0],
+    [localSource(seed, '{ let q = other(); }'), 0],
+    [localSource(seed, '', '{ let q = other(); } q.exists();'), 0],
+    ['fn f(p: &std::path::Path) { { let q = ' + seed + '; } q.exists(); }', 0],
+    [localSource(seed, '', 'fn inner() { q.exists(); }'), 0],
+    [localSource(seed, '', 'm!(q.exists());'), 0],
+    [localSource(seed, '', '#[attr(q.exists())] let x = 1;'), 0],
+    ...['let (a, b) = x;', 'if let Some(a) = x {}', 'let a = x else { return; };',
+      'for a in x {}', 'match x { _ => () };', 'bind!(a);', 'm::bind![a];',
+      'g({ let (a,b) = x; });', 'g({ let a = || 1; });']
+      .map(prefix => [localSource(seed, prefix), 0]),
+    ...['const q: u8 = 1;', 'static q: u8 = 1;', 'type q = u8;', 'use m::q;',
+      'struct Q;', 'enum Q {}', 'union Q { x: u8 }', 'trait Q {}', 'impl Q {}',
+      'extern "C" {}', 'mod m {}', 'macro_rules! m { () => {} }']
+      .map(item => [localSource(seed, '', 'q.exists(); ' + item), 0]),
+    ['fn f(q: Other, p: &std::path::Path) { let q = ' + seed + '; q.exists(); }', 0],
+    ['fn f<T>(p: &std::path::Path) { let q = ' + seed + '; q.exists(); }', 0],
+    ['#[cfg(test)] mod tests { ' + localSource(seed) + ' }', 0],
+  ]);
+});
+
+test('07l constructor identity, arity and parameter seed rejection', () => {
+  expectSites([
+    [localSource('Path::new("x")'), 0],
+    ['struct Path; fn f() { let q = Path::new("x"); q.exists(); }', 0],
+    ['mod std {} ' + localSource(localC), 0],
+    ['extern crate custom as std; ' + localSource(localC), 0],
+    ['use other::*; ' + localSource(localC), 0],
+    ['fn f<Path>() { let q = Path::new("x"); q.exists(); }', 0],
+    ['fn f() { type P = std::path::Path; let q = P::new("x"); q.exists(); }', 0],
+    ...['std::path::Path::new()', 'std::path::Path::new("x", "y")',
+      'std::path::PathBuf::new("x")', 'std::path::PathBuf::from()',
+      'std::path::PathBuf::from("x", "y")', 'std::path::Path::new("x").join()',
+      'p.join()', 'p.join("x", "y")', 'p', 'helper().join("x")', 'p.parent()',
+      'self.p.join("x")'].map(seed => [localSource(seed), 0]),
+    ...['std::fs::Metadata', 'std::fs::FileType', 'log::Record', 'Custom', 'Path']
+      .map(type => ['fn f(p: ' + type + ') { let q = p.join("x"); q.exists(); }', 0]),
+    [localSource(localP, 'let p = other();'), 0],
+    [localSource(localP, '{ let p = other(); }'), 0],
+    [localSource('std::path::Path::new(g({ let (a,b) = x; a }))'), 0],
+    [localSource('p.join(g({ let (a,b) = x; a }))'), 0],
+  ]);
+});
+
+const traitJ = 'trait J { fn join(&self, s: &str) -> std::fs::Metadata; } '
+  + 'impl J for std::path::PathBuf { fn join(&self, s: &str) -> std::fs::Metadata '
+  + '{ panic!() } } ';
+const traitD = 'trait D { fn is_dir(&self) -> bool; } '
+  + 'impl D for std::path::PathBuf { fn is_dir(&self) -> bool { false } } ';
+
+test('07l accepted trait limit exposes false FAIL and compensating false PASS', () => {
+  const p = root + 'limit.rs';
+  const falseSite = traitJ + 'fn f() { let m = std::path::PathBuf::from("x").join("y"); '
+    + 'm.is_dir(); }';
+  const overridden = traitD + 'fn f() { let q = std::path::Path::new("x").join("y"); '
+    + 'q.is_dir(); }';
+  expectSites([[falseSite, 1], [overridden, 1],
+    [traitD + 'fn f(p: &std::path::Path) { p.is_dir(); }', 1],
+    [localSource(localP, '', 'q.is_dir();'), 1]]);
+  const base = falseSite + ' fn b(p: &std::path::Path) {}';
+  const head = traitJ + 'fn b(p: &std::path::Path) { p.is_dir(); }';
+  const results = gate([
+    [{ [p]: '' }, { [p]: falseSite }], [{ [p]: '' }, { [p]: overridden }],
+    [{ [p]: base }, { [p]: head }],
+    // Equivalent old-only counts: the local was unsupported, the parameter still counts.
+    [{ [p]: traitJ + 'fn b(p: &std::path::Path) {}' }, { [p]: head }],
+  ]);
+  assert.deepEqual(results.map(r => r.exit), [1, 1, 0, 1]);
+  assert.deepEqual(results[2].totals.map(t => t.receiver_disk_sites), [1, 1]);
+  assert.deepEqual(results[3].totals.map(t => t.receiver_disk_sites ?? 0), [0, 1]);
+  for (const r of results) assert.ok(r.totals.every(t => (t.disk_files ?? 0) === 0));
+  for (const r of [results[0], results[1], results[3]])
+    assert.ok(r.fails.some(d => d.rule === 'receiver_disk_sites'));
+});
+
+test('07l local ratchet and unchanged old/direct forms in unsupported functions', () => {
+  const p = root + 'old.rs', q = root + 'new.rs', one = localSource(localP);
+  const two = localSource(localP, '', 'q.exists(); q.is_dir();');
+  const base = { [p]: one };
+  const results = gate([[base, base], [base, { [p]: '' }], [base, { [p]: two }],
+    [base, { [p]: '', [q]: one }], [base, { [q]: one }],
+    [base, { [p]: one, [q]: one }], [base,
+      base]]);
+  assert.deepEqual(results.map(r => r.exit), [0, 0, 1, 1, 1, 1, 0]);
+  for (const r of results) assert.equal(r.totals[1].disk_files ?? 0, 0);
+  expectSites([['fn f(p: &std::path::Path) { p.exists(); let (a,b) = x; '
+    + 'std::path::Path::new("x").exists(); let q = p.join("x"); q.exists(); }', 2]]);
+  const [direct] = gate([[{ [p]: '' }, { [p]: 'use other::*; fn f() { '
+    + 'std::fs::read("x"); let q = std::path::Path::new("x"); q.exists(); }' }]]);
+  assert.equal(direct.exit, 1);
+  assert.deepEqual(direct.fails.map(d => d.rule), ['disk_files']);
+});
+
+test('07l unrelated function-pointer types and path keywords are not item declarations', () => {
+  for (const seed of [localC, localP]) expectSites([
+    [localSource(seed, 'let handler: fn(u8) = h;'), 1],
+    [localSource(seed, 'let x = obj.r#type();'), 1],
+    [localSource(seed, 'let x = module::r#const();'), 1],
+    [localSource(seed + '.join(g({ let a = 1; a }))'), 1],
+  ]);
 });

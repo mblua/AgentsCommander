@@ -432,19 +432,8 @@ impl MailboxPoller {
             Some(d) => d,
             None => return,
         };
-        let requests_dir = config_dir.join(ca::CODING_AGENT_REQUESTS_DIR);
-        if !mailbox_disk::mailbox_path_is_dir(&requests_dir) {
-            return;
-        }
-        let results_dir = requests_dir.join(ca::RESULTS_SUBDIR);
-
-        let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
-            Ok(rd) => rd
-                .filter_map(std::result::Result::ok)
-                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
-                .collect(),
-            Err(_) => return,
-        };
+        let (requests_dir, results_dir) = ca::coding_agent_queue_directories(&config_dir);
+        let entries = ca::pending_coding_agent_requests(&requests_dir);
         if entries.is_empty() {
             return;
         }
