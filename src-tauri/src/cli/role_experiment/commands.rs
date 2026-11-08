@@ -1,3 +1,20 @@
+use super::arguments::ExperimentArgs;
+use super::arguments::InitArgs;
+use super::arguments::ProjectArgs;
+use super::arguments::ReportArgs;
+use super::arguments::RunArgs;
+use super::arguments::ValidateArgs;
+use super::arguments::VariantDiffArgs;
+use super::arguments::VariantSetArgs;
+use super::artifacts::CliError;
+use super::artifacts::CommandOutput;
+use super::artifacts::ExperimentMetadata;
+use super::artifacts::LoadedExperiment;
+use super::artifacts::ReportArtifact;
+use super::artifacts::RunArtifact;
+use super::artifacts::RunSuiteArtifact;
+use super::artifacts::RunVariantArtifact;
+use super::artifacts::VariantMetadata;
 use super::fake_run::collect_experiment_validation;
 use super::fake_run::run_fake_execution;
 use super::prompt_suite::parse_prompt_suite;
@@ -44,23 +61,6 @@ use super::validation::validate_loaded_experiment_source_metadata;
 use super::validation::validate_slug_identity;
 use super::validation::validate_variant_metadata_paths;
 use super::validation::validate_variant_name_request;
-use super::CliError;
-use super::CommandOutput;
-use super::ExperimentArgs;
-use super::ExperimentMetadata;
-use super::InitArgs;
-use super::LoadedExperiment;
-use super::ProjectArgs;
-use super::ReportArgs;
-use super::ReportArtifact;
-use super::RunArgs;
-use super::RunArtifact;
-use super::RunSuiteArtifact;
-use super::RunVariantArtifact;
-use super::ValidateArgs;
-use super::VariantDiffArgs;
-use super::VariantMetadata;
-use super::VariantSetArgs;
 use crate::cli::workgroup;
 use crate::commands::entity_creation::agent_ref_bare_name;
 use crate::commands::entity_creation::create_agent_matrix_from_role;
@@ -647,7 +647,7 @@ fn execute_requires_runtime_guard(args: &RunArgs) -> Result<(), Vec<CliError>> {
 fn write_dry_run_artifacts(
     run_dir: &Path,
     run_artifact: &RunArtifact,
-    attempts: &[super::AttemptArtifact],
+    attempts: &[super::artifacts::AttemptArtifact],
     report_artifact: &ReportArtifact,
 ) -> Result<(), Vec<CliError>> {
     let report_markdown = render_report_markdown(report_artifact);
@@ -659,7 +659,7 @@ fn write_dry_run_artifacts(
 }
 
 /// Warns when the run has more than 50 attempts.
-fn push_large_run_warning(warnings: &mut Vec<super::CliWarning>, attempt_count: usize) {
+fn push_large_run_warning(warnings: &mut Vec<super::artifacts::CliWarning>, attempt_count: usize) {
     if attempt_count > 50 {
         warnings.push(warn(
             "large_run_size",

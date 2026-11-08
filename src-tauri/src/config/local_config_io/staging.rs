@@ -1,6 +1,6 @@
+use super::pair_image::{ConfigPublisher, PairTargetGuard, PreparedPairError};
 #[cfg(test)]
-use super::publish_temp_config;
-use super::{ConfigPublisher, PairTargetGuard, PreparedPairError};
+use super::publish::publish_temp_config;
 use crate::filesystem::local_config::{
     create_local_config_stage, flush_local_config_stage, read_local_config_text,
     remove_local_config_stage, sync_local_config_stage, write_local_config_stage, LocalConfigStage,

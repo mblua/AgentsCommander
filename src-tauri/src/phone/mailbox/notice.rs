@@ -873,7 +873,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 /// `<project_dir>/<workspace>/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
 /// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
 ///
-/// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
+/// Mirrors the WG-replica walk-up in `cli::send::project::derive_root_project_dir` so
 /// the mailbox can resolve qualified WG-peer FQNs against the same root-walk-up
 /// source the sending CLI used (and the same source `list_peers::detect_wg_replica`
 /// uses to report siblings as `reachable: true`). In-memory only — settings.json
@@ -888,7 +888,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 /// `list_peers::detect_wg_replica`. The shared
 /// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
 /// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
-/// `cli::send::derive_root_project_dir` and `list_peers::detect_wg_replica`,
+/// `cli::send::project::derive_root_project_dir` and `list_peers::detect_wg_replica`,
 /// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
 /// prefix to reach the `__agent_*` dir stays here.
 pub(crate) fn derive_project_from_outbox_path(

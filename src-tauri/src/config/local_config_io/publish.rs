@@ -1,4 +1,4 @@
-use super::{ordinary_publish_result, PairTargetGuard, PreparedPairError};
+use super::pair_image::{ordinary_publish_result, PairTargetGuard, PreparedPairError};
 use std::path::Path;
 
 use crate::filesystem::local_config;
