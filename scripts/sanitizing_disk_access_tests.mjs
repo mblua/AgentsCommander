@@ -421,3 +421,77 @@ test('07l unrelated function-pointer types and path keywords are not item declar
     [localSource(seed + '.join(g({ let a = 1; a }))'), 1],
   ]);
 });
+
+test('4086 associated witness: an existing-file Path query grows only receiver debt', () => {
+  const p = root + 'associated.rs';
+  const before = { [p]: 'fn f(p: &std::path::Path) {}' };
+  const after = { [p]: 'fn f(p: &std::path::Path) {\nstd::path::Path::exists(p);\n}' };
+  const [r] = gate([[before, after]]);
+  assert.equal(r.status, 'FAIL'); assert.equal(r.exit, 1);
+  assert.deepEqual(r.totals.map(t => t.receiver_disk_sites ?? 0), [0, 1]);
+  assert.deepEqual(r.totals.map(t => t.disk_files ?? 0), [0, 0]);
+  assert.deepEqual(r.fails.map(d => [d.rule, d.path, d.line]),
+    [['receiver_disk_sites', p, 2]]);
+});
+
+test('4086 associated finite methods, aliases and single argument forms', () => {
+  expectSites(methods.flatMap(m => [
+    ['fn f(p: &std::path::Path) { std::path::Path::' + m + '(p); }', 1],
+    ['fn f(p: &std::path::Path) { ::std::path::Path::' + m + '(p,); }', 1],
+    ['use std::path::{Path as P}; fn f() { P::' + m + '(g(1, 2)); }', 1],
+    ['use std::path::Path; fn f() { Path::' + m + '(p); }', 1],
+    ['use std::path as sp; fn f() { sp::Path::' + m + '(p); }', 1],
+    ['use std::path::{self as sp}; fn f() { sp::Path::' + m + '(p); }', 1],
+    ['use std::path::Path as r#P; fn f() { r#P::r#' + m + '\n(p); }', 1],
+    ['fn f() { std::path::Path\n::' + m + '(\np,\n); }', 1],
+  ]));
+});
+
+test('4086 associated excludes unsupported identities, contexts and arities', () => {
+  const call = 'std::path::Path::exists(p);';
+  expectSites([
+    ['struct Path; fn f() { Path::exists(p); }', 0],
+    ['use custom::Path; fn f() { Path::exists(p); }', 0],
+    ['use std::path::Path; mod m { struct Path; fn f() { Path::exists(p); } }', 0],
+    ['use std::path::Path; use custom::Path; fn f() { Path::exists(p); }', 0],
+    ['mod std {} fn f() { ' + call + ' }', 0],
+    ['fn f(std: u8) { ' + call + ' }', 0],
+    ['use other::*; fn f() { ' + call + ' }', 0],
+    ['use std::path::*; fn f() { Path::exists(p); }', 0],
+    ['fn f<T>() { ' + call + ' }', 0],
+    ['struct S<T>(T); impl<T> S<T> { fn f() { ' + call + ' } }', 0],
+    ['trait T<X> { fn f() { ' + call + ' } }', 0],
+    ['fn f() { /* ' + call + ' */ let s = "' + call + '"; }', 0],
+    ['fn f() { m!(' + call + '); }', 0],
+    ['#[attr(std::path::Path::exists(p))] fn f() {}', 0],
+    ['#[cfg(test)] mod tests { fn f() { ' + call + ' } }', 0],
+    ['#[test] fn f() { ' + call + ' }', 0],
+    ...['std::path::PathBuf::exists(p)', '<std::path::Path>::exists(p)',
+      '<std::path::Path as T>::exists(p)', 'std::path::Path::exists::<T>(p)',
+      'std::path::Path::exists()', 'std::path::Path::exists(p, q)',
+      'std::path::Path::exists', 'std::path::Path::new(p).join("x")',
+      'obj.std::path::Path::exists(p)']
+      .map(expr => ['fn f() { ' + expr + '; }', 0]),
+  ]);
+  for (const name of ['filesystem.rs', 'path_identity/a.rs', 'path_utils.rs',
+    'tests.rs', 'foo/tests/a.rs', 'foo_tests.rs']) expectSites([['fn f() { ' + call + ' }', 0]],
+    name);
+});
+
+test('4086 associated ratchet and mixed sites preserve separate old metrics', () => {
+  const p = root + 'old.rs', q = root + 'new.rs';
+  const one = 'fn f(p: &std::path::Path) { std::path::Path::exists(p); }';
+  const two = one + ' fn g() { std::path::Path::is_dir(p); }';
+  const base = { [p]: one };
+  const results = gate([[base, base], [base, { [p]: '' }], [base, { [p]: two }],
+    [base, { [p]: '', [q]: one }], [base, { [q]: one }]]);
+  assert.deepEqual(results.map(r => r.exit), [0, 0, 1, 1, 1]);
+  assert.ok(results[3].fails.some(d => d.path === q && d.rule === 'receiver_disk_sites'));
+  const mixed = 'fn f(p: &std::path::Path) { p.exists(); std::path::Path::exists(p); '
+    + 'std::fs::read("x"); std::path::Path::metadata(std::path::Path::canonicalize(p)); }';
+  const [r] = gate([[{ [p]: mixed }, { [p]: mixed }]]);
+  assert.equal(r.exit, 0);
+  assert.equal(r.totals[1].receiver_disk_sites, 4);
+  assert.equal(r.totals[1].disk_files, 1);
+  assert.equal(r.approximation.head.sites, 1);
+});
