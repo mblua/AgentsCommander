@@ -122,7 +122,7 @@ pub struct WgReplicaLayout {
 /// prefix, missing ancestor, or non-authoritative workspace name), and `Err`
 /// only when the workspace fails [`ensure_authoritative_ac_root`].
 ///
-/// Single source for the walk-up shared by `cli::send::derive_root_project_dir`,
+/// Single source for the walk-up shared by `cli::send::project::derive_root_project_dir`,
 /// `cli::list_peers::detect_wg_replica`, and
 /// `phone::mailbox::derive_project_from_outbox_path`. Each caller canonicalizes
 /// its own input (an agent root, or an outbox file walked up to the agent dir)

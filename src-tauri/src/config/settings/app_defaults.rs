@@ -1,4 +1,4 @@
-use super::context_history::ContextHistoryColorDays;
+use super::context_history::{ContextHistoryColorDays, ContextHistoryRetentionDays};
 use super::{
     default_agent_group_kill_private_bytes, default_agent_group_warn_private_bytes,
     default_agent_process_kill_private_bytes, default_api_bind, default_api_port,
@@ -31,11 +31,9 @@ fn default_shell_and_args() -> (String, Vec<String>) {
 
 impl Default for AppSettings {
     fn default() -> Self {
-        let (default_shell, default_shell_args) = default_shell_and_args();
-
         Self {
-            default_shell,
-            default_shell_args,
+            default_shell: default_shell_and_args().0,
+            default_shell_args: default_shell_and_args().1,
             agents: vec![],
             coding_agent_profiles: CodingAgentProfilesConfig::default(),
             agent_file_source_by_menu: None,
@@ -148,6 +146,8 @@ impl Default for AppSettings {
             response_close_idle_seconds: default_response_close_idle_seconds(),
             room_idle_confirmation_seconds: default_room_idle_confirmation_seconds(),
             context_history_color_days: ContextHistoryColorDays::default(),
+            context_history_enabled: false,
+            context_history_retention_days: ContextHistoryRetentionDays::default(),
         }
     }
 }

@@ -643,7 +643,10 @@ impl PollView {
         if direct {
             tokio::time::timeout(
                 Duration::from_secs(5),
-                crate::session::selection::poll_response_close(self.app.handle(), None),
+                crate::session::selection::poll_response_close::<tauri::test::MockRuntime>(
+                    self.app.handle(),
+                    None,
+                ),
             )
             .await
             .unwrap();

@@ -1,6 +1,6 @@
-use super::CliError;
-use super::CliWarning;
-use super::DiffStats;
+use super::artifacts::CliError;
+use super::artifacts::CliWarning;
+use super::artifacts::DiffStats;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::path::PathBuf;

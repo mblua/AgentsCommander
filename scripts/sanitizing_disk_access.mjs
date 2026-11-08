@@ -229,10 +229,21 @@ function receiverSites(m, scan) {
     .map(item => ({ item, body: item.bodyScope.open }));
   for (const t of scan.productionTokens) {
     const k = t.index;
-    if (t.kind !== 'ident' || !receiverMethod.test(t.name) || T[k - 1]?.text !== '.' ||
-      T[k + 1]?.text !== '(' || T[k + 1].mate !== k + 2) continue;
+    if (t.kind !== 'ident' || !receiverMethod.test(t.name) ||
+      T[k + 1]?.text !== '(') continue;
     if (ranges.some(r => k > r.start && k < r.end) ||
       generic.some(i => t.start >= i.start && t.start < i.end)) continue;
+    if (T[k - 1]?.text === '::') {
+      let start = k - 2;
+      if (T[start]?.kind !== 'ident') continue;
+      while (T[start - 1]?.text === '::' && T[start - 2]?.kind === 'ident') start -= 2;
+      if (T[start - 1]?.text === '::') start--;
+      if (['.', '>', '::'].includes(T[start - 1]?.text)) continue;
+      if (typedPath(scan, T.slice(start, k - 1)) === 'std::path::Path' &&
+        oneArgument(T, k + 1)) hit(m, 'receiver_disk_sites', t.line);
+      continue;
+    }
+    if (T[k - 1]?.text !== '.' || T[k + 1].mate !== k + 2) continue;
     if (constructorReceiver(scan, T, k - 2) || parameterReceiver(scan, T, k - 2, fns) ||
       localReceiver(scan, T, k - 2, fns))
       hit(m, 'receiver_disk_sites', t.line);
