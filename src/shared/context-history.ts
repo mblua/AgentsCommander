@@ -1,9 +1,9 @@
-// #3532 P06 - TypeScript mirror of the schema-version-2 context-history DTOs
+// #3532 P06 / #4091 - TypeScript mirror of the schema-version-3 context-history DTOs
 // served by the four `get_context_history_*` commands. Field names, nulls and
 // enum spellings follow the Rust serde output exactly; the frontend never
 // recomputes a mean, a selection or a scope from these values.
 
-export const CONTEXT_HISTORY_SCHEMA_VERSION = 2;
+export const CONTEXT_HISTORY_SCHEMA_VERSION = 3;
 export const DAY_MS = 86_400_000;
 
 /** A launch-metadata filter: any value, an unknown (null) value, or one exact value. */
@@ -22,6 +22,8 @@ export interface ReportQuery {
   model: LaunchFilter;
   effort: LaunchFilter;
   cursor: string | null;
+  /** #4091 count mode: newest N sessions per scope before `toUtcMs`; null is date mode. */
+  sessionCount?: number | null;
 }
 
 /** Changes of one logical session; `query.agentKey` is required. */
@@ -47,7 +49,8 @@ export type InitialKind = "confirmed_zero_transition" | "first_observed" | "unkn
 export interface RequestedPeriod {
   fromUtcMs: number;
   toUtcMs: number;
-  selection: "session_started";
+  sessionCount?: number | null;
+  selection: "recent_sessions" | "session_started";
 }
 
 export interface Coverage {
@@ -83,13 +86,30 @@ export interface Aggregate {
   positiveSum: number;
   mean: number | null;
   sessionsCount: number;
+  /** #4091 `recordsCount / sessionsCount` from the backend; never derived here. */
+  recordsPerSession?: number | null;
   incomplete: boolean;
+}
+
+/** #4091 Requested versus available sessions of one scope in count mode. */
+export interface ScopeWindowCoverage {
+  teamAttribution: TeamAttribution;
+  teamIds: string[];
+  requestedSessions: number;
+  availableSessions: number;
+}
+
+/** #4091 The newest `requestedSessions` sessions of a known scope. */
+export interface SessionWindowBucket extends Aggregate {
+  requestedSessions: number;
 }
 
 export interface AgentSummary extends Aggregate {
   agentKey: string;
   agentName: string;
   metadataBuckets: MetadataBucket[];
+  /** Count mode only; null in date mode. Optional until P06. */
+  scopeWindows?: ScopeWindowCoverage[] | null;
 }
 
 export interface ReportResponse extends ResponseHeader {
@@ -128,6 +148,7 @@ export interface SessionSummary extends SessionStats, SessionMetadata {
 
 export interface AgentDetailResponse extends ResponseHeader, Aggregate {
   agentKey: string;
+  scopeWindows?: ScopeWindowCoverage[] | null;
   sessionsPage: SessionSummary[];
   nextSessionCursor: string | null;
 }
@@ -197,6 +218,8 @@ export interface SidebarEntry {
   runtimeSessionId: string;
   scope: SidebarScope;
   windows: SidebarWindows | null;
+  /** #4091 One bucket per configured count, in order; optional until P06. */
+  sessionWindows?: SessionWindowBucket[] | null;
 }
 
 export interface SidebarMeansResponse {
@@ -235,4 +258,33 @@ export function periodEndingAt(toUtcMs: number, days: number): {
   toUtcMs: number;
 } {
   return { fromUtcMs: toUtcMs - days * DAY_MS, toUtcMs };
+}
+
+/** #4091 "Últimas N sesiones" ("Última sesión" for 1), noting fewer available. */
+export function sessionWindowLabel(requested: number, available?: number | null): string {
+  const base = requested === 1 ? "Última sesión" : `Últimas ${requested} sesiones`;
+  if (available === undefined || available === null || available >= requested) return base;
+  return `${base} (${available} disponibles)`;
+}
+
+/**
+ * #4091 Resolves the colour window: `preferred` when it is a configured
+ * count, otherwise the last configured count; plus its bucket, if served.
+ */
+export function selectSessionWindow(
+  counts: readonly number[],
+  preferred: number | null | undefined,
+  buckets: readonly SessionWindowBucket[] | null | undefined,
+): { requestedSessions: number; bucket: SessionWindowBucket | null } | null {
+  if (counts.length === 0) return null;
+  const isMember = preferred !== undefined && preferred !== null && counts.includes(preferred);
+  const requestedSessions = isMember ? preferred : counts[counts.length - 1];
+  const bucket = buckets?.find((item) => item.requestedSessions === requestedSessions) ?? null;
+  return { requestedSessions, bucket };
+}
+
+/** #4091 Backend records per session with one decimal; "—" when absent. */
+export function formatRecordsPerSession(value: number | null | undefined): string {
+  if (value === undefined || value === null) return "—";
+  return value.toFixed(1);
 }

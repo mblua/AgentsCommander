@@ -802,6 +802,10 @@ export interface AppSettings {
   contextHistoryEnabled?: boolean;
   /** #4049 Days of context history to keep, 1..365; omitted resolves to 30. */
   contextHistoryRetentionDays?: number;
+  /** #4091 1..8 ascending unique session counts (1..10000); omitted resolves in Rust. */
+  contextHistorySessionWindows?: number[];
+  /** #4091 Session count for the sidebar colour; falls back to the last window. */
+  contextHistoryColorSessions?: number;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
   geminiModel: string;
