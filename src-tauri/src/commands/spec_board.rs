@@ -19,14 +19,14 @@ use crate::spec_board::{
 use crate::SpecBoardState;
 
 mod paths;
-mod snapshots;
 
+use crate::spec_board::{
+    ensure_snapshot_directory, list_snapshots_from_dir, prune_snapshots, read_snapshot_files,
+    write_snapshot_atomic,
+};
 #[cfg(test)]
 use paths::path_compare_key;
 use paths::{resolve_repo_root, validate_existing_user_path, validate_new_or_existing_user_path};
-#[cfg(test)]
-use snapshots::write_snapshot_atomic;
-use snapshots::{create_snapshot_for_doc, list_snapshots_from_dir, read_snapshot_files};
 
 const STARTER_CONTENT: &str = "flowchart TD\n  A[Start] --> B[Spec]\n";
 const MAX_SNAPSHOT_CONTENT_BYTES: usize = 1_048_576;
@@ -829,6 +829,68 @@ fn hash_prefix(hash: &str) -> &str {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+async fn create_snapshot_for_doc(
+    state: SpecBoardState,
+    doc_id: &str,
+    source: SpecBoardSnapshotSource,
+) -> Result<(), String> {
+    let (snapshot_dir, snapshot, skip_for_size) = {
+        let mut mgr = state.write().await;
+        let doc = mgr
+            .docs
+            .get_mut(doc_id)
+            .ok_or_else(|| format!("Spec board document not found: {doc_id}"))?;
+        if doc.document.content.len() > MAX_SNAPSHOT_CONTENT_BYTES {
+            log::warn!(
+                target: "agentscommander_lib::commands::spec_board::snapshots",
+                "[spec-board] skipping oversized snapshot for {}",
+                doc.document.doc_id
+            );
+            (doc.snapshot_dir.clone(), None, true)
+        } else {
+            doc.snapshot_sequence += 1;
+            let created_at_ms = now_ms();
+            let hash = hash_str(&doc.document.content);
+            let id = format!(
+                "{}-{}-{}",
+                created_at_ms,
+                doc.snapshot_sequence,
+                hash_prefix(&hash)
+            );
+            let label = format!("{:?} {}", source, doc.snapshot_sequence);
+            let snapshot = SnapshotFile {
+                id,
+                label,
+                created_at_ms,
+                sequence: doc.snapshot_sequence,
+                source,
+                content: doc.document.content.clone(),
+                diagram_source: doc.document.diagram_source.clone(),
+                file_kind: doc.document.file_kind,
+                path: doc.document.path.clone(),
+                hash,
+            };
+            (doc.snapshot_dir.clone(), Some(snapshot), false)
+        }
+    };
+
+    if skip_for_size {
+        return Ok(());
+    }
+    let snapshot = snapshot.expect("snapshot present when not skipped");
+    ensure_snapshot_directory(&snapshot_dir).await?;
+    write_snapshot_atomic(&snapshot_dir, &snapshot).await?;
+    prune_snapshots(&snapshot_dir).await?;
+
+    let snapshots = list_snapshots_from_dir(&snapshot_dir).await?;
+    let mut mgr = state.write().await;
+    if let Some(doc) = mgr.docs.get_mut(doc_id) {
+        doc.document.version_count = snapshots.len();
+        doc.document.version_index = snapshots.len().saturating_sub(1);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
