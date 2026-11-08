@@ -7,12 +7,19 @@ mod protocol;
 
 #[cfg(test)]
 use self::protocol::UiTerminalOperation;
+#[cfg(test)]
+use self::protocol::DEFAULT_TIMEOUT_MS;
+use self::protocol::POLL_MS;
 use self::protocol::{
     parse_terminal_operation, valid_key_chord, valid_pointer_operation, valid_terminal_session_id,
     CliRequest,
 };
 pub use self::protocol::{
     UiAutomationAction, UiAutomationRequest, UiAutomationResponse, UiAutomationSession,
+};
+pub use self::protocol::{
+    BACKEND_AUTOMATION_WINDOW, ENV_ENABLE, REQUESTS_DIR, RESOURCE_WATCHDOG_BACKEND_SELECTOR,
+    RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
 };
 use crate::shutdown::ShutdownSignal;
 pub use args::{
@@ -32,16 +39,16 @@ use cli_run::{
     request_expired, run_cli_request,
 };
 #[cfg(test)]
+use files::read_session_file_with_retry;
+#[cfg(test)]
 use files::SessionReadHookGuard;
 use files::{
-    cleanup_stale_automation_files, read_session_file_with_retry, retry_remove_file, retry_rename,
-    write_json_atomic_new, write_json_atomic_replace,
+    cleanup_stale_automation_files, retry_remove_file, retry_rename, write_json_atomic_new,
+    write_json_atomic_replace,
 };
 use futures::future::BoxFuture;
 pub use liveness::pid_is_alive;
-#[cfg(target_os = "windows")]
-use liveness::process_path;
-use liveness::{current_exe_path_string, now_unix_ms, paths_equal_for_compare, sorted_labels};
+use liveness::{current_exe_path_string, now_unix_ms, sorted_labels};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
@@ -52,23 +59,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-
-pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
-pub const SESSION_FILE: &str = "session.json";
-pub const REQUESTS_DIR: &str = "requests";
-pub const RESPONSES_DIR: &str = "responses";
-pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
-pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
-pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
-
-const DEFAULT_TIMEOUT_MS: u64 = 5_000;
-const POLL_MS: u64 = 50;
-const FS_RETRY_COUNT: usize = 8;
-const FS_RETRY_DELAY_MS: u64 = 25;
-const SESSION_READ_RETRY_COUNT: usize = 8;
-const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
-const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
-const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
 
 pub trait UiAutomationEvents {
     fn automation_request(&self, window: &str, request: &UiAutomationRequest)
