@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "3a3ab4cda4dca076",
+      "id": "e8a27cb4482caab2",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -148,7 +148,6 @@
         "agentscommander_lib::config::config_seed::copy",
         "agentscommander_lib::config::config_seed::perform",
         "agentscommander_lib::config::coordinator_clocks",
-        "agentscommander_lib::config::daemon_pid",
         "agentscommander_lib::config::entity_creation::copies",
         "agentscommander_lib::config::entity_creation::teams",
         "agentscommander_lib::config::entity_creation::teams::raw",
@@ -350,10 +349,6 @@
         "agentscommander_lib::telegram::bridge::poll",
         "agentscommander_lib::telegram::manager",
         "agentscommander_lib::testability::reset",
-        "agentscommander_lib::testability::ui_automation",
-        "agentscommander_lib::testability::ui_automation::args",
-        "agentscommander_lib::testability::ui_automation::cli_run",
-        "agentscommander_lib::testability::ui_automation::files",
         "agentscommander_lib::testability::window_info",
         "agentscommander_lib::update_check",
         "agentscommander_lib::web",
@@ -381,6 +376,16 @@
       "members": [
         "agentscommander_lib::cli::send",
         "agentscommander_lib::cli::send::pty_input"
+      ]
+    },
+    {
+      "id": "b2640baf29803e8a",
+      "members": [
+        "agentscommander_lib::config::daemon_pid",
+        "agentscommander_lib::testability::ui_automation",
+        "agentscommander_lib::testability::ui_automation::args",
+        "agentscommander_lib::testability::ui_automation::cli_run",
+        "agentscommander_lib::testability::ui_automation::files"
       ]
     },
     {
