@@ -31,7 +31,8 @@ impl HistoryConfig {
 /// Where the effective configuration came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigStatus {
-    /// No configuration source: disabled.
+    /// No configuration source: disabled. Only test ports report it.
+    #[cfg(test)]
     Missing,
     /// A Settings snapshot was read.
     Loaded,
