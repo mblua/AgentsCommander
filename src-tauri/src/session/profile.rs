@@ -14,8 +14,7 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
+mod kind;
 mod pi_command;
 mod pty_submission;
 
@@ -32,24 +31,7 @@ pub use pty_submission::detect_pty_submission_agent;
 use pty_submission::detect_pty_submission_agent_with_provenance;
 pub use pty_submission::PtySubmissionAgent;
 
-/// Identity of a coding agent. `Option<CodingAgentKind>` on a session: `None`
-/// means "not a recognised coding agent" (a plain shell).
-///
-/// Mutual exclusion is **structural** — a session is exactly one kind or none.
-/// This enum is what let #260 delete the `debug_assert!` that guarded the old
-/// three-bool representation in `derive_reader`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodingAgentKind {
-    Claude,
-    Codex,
-    Antigravity,
-    Pi,
-    /// #1873 - Muse Code. Detected only as a direct shell whose exact stem is
-    /// `muse` (bare or absolute path); prefix names and argument-only identity
-    /// inside `env`/shell/PowerShell/`cmd`/compound wrappers are never Muse.
-    Muse,
-}
+pub use kind::CodingAgentKind;
 
 impl CodingAgentKind {
     /// Detect the coding agent from a spawn command (`shell` + `args`).

@@ -27,6 +27,7 @@ use crate::config::instance_artifacts::{
 use crate::config::local_overlay::LocalSettingsOverlay;
 #[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
+use crate::resource_monitor::types::ResourceLimits;
 use crate::telegram::types::TelegramBotConfig;
 #[cfg(test)]
 use agent::{
@@ -915,6 +916,18 @@ pub(crate) const REMOTE_AGENT_HELP_URL: &str = concat!(
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/",
     "remote-resources/agent-help/v1/agent-help.json",
 );
+
+impl From<&AppSettings> for ResourceLimits {
+    fn from(value: &AppSettings) -> Self {
+        Self {
+            monitor_enabled: value.resource_monitor_enabled,
+            max_concurrent_agent_processes: value.max_concurrent_agent_processes,
+            group_warn_private_bytes: value.agent_group_warn_private_bytes,
+            group_kill_private_bytes: value.agent_group_kill_private_bytes,
+            process_kill_private_bytes: value.agent_process_kill_private_bytes,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

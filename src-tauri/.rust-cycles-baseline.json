@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "cd361f9ca2d1da52",
+      "id": "2981838eaf93e795",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -287,7 +287,6 @@
         "agentscommander_lib::pty::input_route",
         "agentscommander_lib::pty::local_backend",
         "agentscommander_lib::pty::local_backend::git_guard",
-        "agentscommander_lib::pty::local_backend::instance",
         "agentscommander_lib::pty::local_backend::launch",
         "agentscommander_lib::pty::local_backend::liveness",
         "agentscommander_lib::pty::manager",
@@ -318,10 +317,6 @@
         "agentscommander_lib::pty::watchers::resolution",
         "agentscommander_lib::pty_wiring",
         "agentscommander_lib::reader_demand",
-        "agentscommander_lib::resource_monitor",
-        "agentscommander_lib::resource_monitor::registry",
-        "agentscommander_lib::resource_monitor::registry::snapshot",
-        "agentscommander_lib::resource_monitor::types",
         "agentscommander_lib::restore",
         "agentscommander_lib::restore::native",
         "agentscommander_lib::screenshot",
@@ -445,13 +440,6 @@
       ]
     },
     {
-      "id": "1e99d7b564d4bc9b",
-      "members": [
-        "agentscommander_lib::process::host::job",
-        "agentscommander_lib::process::host::job::windows_impl"
-      ]
-    },
-    {
       "id": "8b956eab6329b261",
       "members": [
         "agentscommander_lib::pty::spawn_diagnostics",
@@ -460,10 +448,10 @@
       ]
     },
     {
-      "id": "e5ddddcbb6ecd07a",
+      "id": "105668e38beb5bd2",
       "members": [
-        "agentscommander_lib::session::profile",
-        "agentscommander_lib::session::profile::pty_submission"
+        "agentscommander_lib::resource_monitor::registry",
+        "agentscommander_lib::resource_monitor::registry::snapshot"
       ]
     }
   ],
