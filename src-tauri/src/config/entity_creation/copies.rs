@@ -39,7 +39,7 @@ pub(crate) fn copy_agent_matrix_strict_with_hooks(
     destination_ref: &str,
     hooks: &mut MatrixCopyHooks<'_>,
 ) -> Result<OwnedCopyArtifacts, String> {
-    let project = crate::config::projects::canonical_source_project(source_project)
+    let project = crate::filesystem::projects::canonical_project_path(source_project)
         .map_err(|e| e.to_string())?;
     let ac = disk::canonical_source_ac(&selected_ac_root(&project)?)?;
     let source_ref = resolve_agent_ref(&ac, source_ref)?;
@@ -138,7 +138,7 @@ pub(crate) fn project_directory_identity(
     project: &Path,
 ) -> Result<(PathBuf, MatrixCopyIdentity), String> {
     let canonical =
-        crate::config::projects::canonical_source_project(project).map_err(|e| e.to_string())?;
+        crate::filesystem::projects::canonical_project_path(project).map_err(|e| e.to_string())?;
     selected_ac_root(&canonical)?;
     let identity = disk::identity_existing_directory(&canonical)?;
     Ok((canonical, identity))
