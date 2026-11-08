@@ -119,6 +119,104 @@ function parameterReceiver(scan, T, at, fns) {
   return true;
 }
 
+// #4025: one immutable local, seeded directly by a standard constructor or parameter.
+// This finite proof accepts PathBuf trait overrides as the documented lexical limit.
+function oneArgument(T, open) {
+  const close = T[open]?.mate;
+  if (T[open]?.text !== '(' || close === undefined || open + 1 === close) return false;
+  for (let k = open + 1; k < close; k++) {
+    if (T[k].text === ',') return k === close - 1 && k > open + 1;
+    if (T[k].mate > k) k = T[k].mate;
+  }
+  return true;
+}
+
+function localInitializer(scan, T, start, end, fns) {
+  let next = start;
+  while (next < end && (T[next].kind === 'ident' || T[next].text === '::')) next++;
+  if (T[next]?.text === '(' && T[next].mate < end) {
+    const close = T[next].mate;
+    if (!constructorReceiver(scan, T, close)) return false;
+    if (T[next - 1].name !== 'new' || next + 1 !== close) {
+      if (!oneArgument(T, next)) return false;
+    }
+    next = close + 1;
+  } else {
+    const fn = fns.filter(f => f.body < start && start < T[f.body].mate)
+      .sort((a, b) => b.body - a.body)[0];
+    if (!fn || T[start]?.kind !== 'ident' ||
+      !parameterType(scan, fn.item, T, T[start].name)) return false;
+    for (let k = fn.body + 1; k < start; k++) {
+      if (T[k].name !== 'let') continue;
+      const d = localDeclaration(T, k, T[fn.body].mate);
+      if (!d || T[d.name].name === T[start].name) return false;
+    }
+    next = start + 1;
+    // Unlike constructors, a parameter must have at least one join suffix.
+    if (T[next]?.text !== '.') return false;
+  }
+  while (next < end) {
+    if (T[next]?.text !== '.' || T[next + 1]?.name !== 'join' ||
+      !oneArgument(T, next + 2)) return false;
+    next = T[next + 2].mate + 1;
+  }
+  return next === end;
+}
+
+// A complete ordinary let can be crossed, but only its exact immutable form is a seed.
+function localDeclaration(T, at, limit) {
+  let name = at + 1;
+  if (T[name]?.name === 'ref') name++;
+  if (T[name]?.name === 'mut') name++;
+  if (T[name]?.kind !== 'ident' || ![':', '=', ';'].includes(T[name + 1]?.text))
+    return null;
+  if (['if', 'while', '&&'].includes(T[at - 1]?.text)) return null;
+  let equal = null;
+  for (let k = name + 1; k < limit; k++) {
+    if (T[k].name === 'else') return null;
+    if (T[k].text === '=' && equal === null) equal = k;
+    if (T[k].text === ';') return { at, name, equal, end: k,
+      exact: name === at + 1 && equal === name + 1 };
+    if (T[k].mate > k) k = T[k].mate;
+  }
+  return null;
+}
+
+function localReceiver(scan, T, at, fns) {
+  const p = T[at];
+  if (p?.kind !== 'ident' || ['.', '::'].includes(T[at - 1]?.text)) return false;
+  const fn = fns.filter(f => f.body < at && at < T[f.body].mate)
+    .sort((a, b) => b.body - a.body)[0];
+  if (!fn) return false;
+  const limit = T[fn.body].mate;
+  // Later items also shadow earlier bindings. Only original item declarations count.
+  if (scan.items.some(i => i.first > fn.body && i.first < limit) ||
+    T.slice(fn.body + 1, limit).some((t, n) =>
+      (t.name === 'extern' || t.name === 'macro_rules') &&
+      !['.', '::'].includes(T[fn.body + n]?.text))) return false;
+  const declarations = [];
+  for (let k = fn.body + 1; k < at; k++) {
+    const t = T[k];
+    if (['|', '||'].includes(t.text) || ['for', 'match'].includes(t.name)) return false;
+    if (t.text === '!' && T[k - 1]?.kind === 'ident' && !notMacro.has(T[k - 1].name) &&
+      ['(', '[', '{'].includes(T[k + 1]?.text)) return false;
+    if (t.name !== 'let') continue;
+    const declaration = localDeclaration(T, k, limit);
+    if (!declaration) return false;
+    declarations.push(declaration);
+  }
+  const matches = declarations.filter(d => T[d.name].name === p.name);
+  if (matches.length !== 1) return false;
+  const d = matches[0];
+  // A parameter of any type already declares the same name.
+  if (T.slice(fn.item.first, fn.body).some((t, k, ts) =>
+    t.name === p.name && ts[k + 1]?.text === ':')) return false;
+  if (!d.exact || d.end >= at) return false;
+  let scope = p.scope;
+  while (scope && scope !== T[d.at].scope) scope = scope.parent;
+  return !!scope && localInitializer(scan, T, d.equal + 1, d.end, fns);
+}
+
 function receiverSites(m, scan) {
   if (!stdGuard(scan)) return;
   const T = scan.tokens, ranges = [
@@ -135,7 +233,8 @@ function receiverSites(m, scan) {
       T[k + 1]?.text !== '(' || T[k + 1].mate !== k + 2) continue;
     if (ranges.some(r => k > r.start && k < r.end) ||
       generic.some(i => t.start >= i.start && t.start < i.end)) continue;
-    if (constructorReceiver(scan, T, k - 2) || parameterReceiver(scan, T, k - 2, fns))
+    if (constructorReceiver(scan, T, k - 2) || parameterReceiver(scan, T, k - 2, fns) ||
+      localReceiver(scan, T, k - 2, fns))
       hit(m, 'receiver_disk_sites', t.line);
   }
 }

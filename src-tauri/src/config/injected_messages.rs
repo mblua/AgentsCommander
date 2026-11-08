@@ -17,7 +17,7 @@
 //!   re-parsed first, so AC can never turn the operator's own config into an
 //!   invalid file.
 //! - **One authoritative forbidden-scalar set.** [`sanitize`] derives its filter
-//!   from `crate::pty::inject::is_forbidden_pty_scalar`, the same predicate
+//!   from `crate::pty_input::is_forbidden_pty_scalar`, the same predicate
 //!   `validate_pty_input_text` uses, so the two can never drift.
 
 use std::collections::{BTreeMap, HashSet};
