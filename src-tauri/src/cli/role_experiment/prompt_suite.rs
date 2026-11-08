@@ -1,10 +1,10 @@
+use super::artifacts::CliError;
+use super::artifacts::ParsedPromptSuite;
+use super::artifacts::PromptCase;
 use super::support::err_at_line;
 use super::support::err_at_path;
 use super::support::sha256_hex;
 use super::validation::reject_link_or_reparse;
-use super::CliError;
-use super::ParsedPromptSuite;
-use super::PromptCase;
 use std::collections::BTreeMap;
 use std::path::Path;
 

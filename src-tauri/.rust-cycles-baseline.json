@@ -355,20 +355,6 @@
       ]
     },
     {
-      "id": "c0080581b143777c",
-      "members": [
-        "agentscommander_lib::cli::role_experiment",
-        "agentscommander_lib::cli::role_experiment::commands",
-        "agentscommander_lib::cli::role_experiment::fake_run",
-        "agentscommander_lib::cli::role_experiment::prompt_suite",
-        "agentscommander_lib::cli::role_experiment::report",
-        "agentscommander_lib::cli::role_experiment::resume",
-        "agentscommander_lib::cli::role_experiment::storage",
-        "agentscommander_lib::cli::role_experiment::support",
-        "agentscommander_lib::cli::role_experiment::validation"
-      ]
-    },
-    {
       "id": "b2640baf29803e8a",
       "members": [
         "agentscommander_lib::config::daemon_pid",
