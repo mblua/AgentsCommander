@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "1f85d8d1d3a2f0fa",
+      "id": "b8f2a4aad5d3608c",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -68,7 +68,6 @@
         "agentscommander_lib::commands::entity_creation::delete_guard",
         "agentscommander_lib::commands::entity_creation::matrix_layout",
         "agentscommander_lib::commands::entity_creation::room_number",
-        "agentscommander_lib::commands::entity_creation::team_config",
         "agentscommander_lib::commands::entity_creation::team_create",
         "agentscommander_lib::commands::entity_creation::team_delete",
         "agentscommander_lib::commands::entity_creation::team_update",
@@ -143,8 +142,6 @@
         "agentscommander_lib::config::config_seed::copy",
         "agentscommander_lib::config::config_seed::perform",
         "agentscommander_lib::config::coordinator_clocks",
-        "agentscommander_lib::config::entity_creation::teams",
-        "agentscommander_lib::config::entity_creation::teams::sources",
         "agentscommander_lib::config::loops",
         "agentscommander_lib::config::loops::lock",
         "agentscommander_lib::config::loops::storage",
