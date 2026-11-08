@@ -1,5 +1,6 @@
-use super::pair_image::read_config_pair_physical;
-use super::{PhysicalState, PreparedConfigPairPlan, PreparedPairError};
+use super::pair_image::{
+    read_config_pair_physical, PhysicalState, PreparedConfigPairPlan, PreparedPairError,
+};
 use crate::filesystem::local_config;
 use serde_json::Value;
 use std::path::{Path, PathBuf};

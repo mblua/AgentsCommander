@@ -1,15 +1,20 @@
-use super::pair_revision::{
-    pair_target_identity, read_pair_reservation, read_pair_tuple, validate_pair_binding,
-    validate_pair_paths,
+use super::pair_image::{
+    prepared_pair_image, read_config_pair_physical, ConfigPairCleanup, PairTargetGuard,
+    PhysicalState, PreparedPairError,
 };
-use super::{
-    acquire_config_file_write_lock, changed_pair_sides, lock_local_config_writes,
-    merge_monotonic_activity, pair_plan_digest, prepare_config_pair_plan_inner,
-    prepared_pair_image, protected_matches, protected_plan, protected_revision,
-    publish_coordination_bytes_guarded, publish_prepared_pair_image,
-    publish_prepared_pair_image_guarded, read_config_pair_physical, timestamp_physical,
-    timestamp_value, ConfigPairCleanup, ConfigWriterActive, PairActivityIntent, PairReservation,
-    PairReservationRequest, PairTargetGuard, PhysicalState, PreparedPairError, TimestampPhysical,
+use super::pair_revision::{
+    changed_pair_sides, merge_monotonic_activity, pair_plan_digest, pair_target_identity,
+    protected_matches, protected_plan, protected_revision, read_pair_reservation, read_pair_tuple,
+    timestamp_physical, timestamp_value, validate_pair_binding, validate_pair_paths,
+    PairActivityIntent, PairReservation, PairReservationRequest, TimestampPhysical,
+};
+use super::prepared_pair::{
+    prepare_config_pair_plan_inner, publish_prepared_pair_image,
+    publish_prepared_pair_image_guarded,
+};
+use super::source_publication::publish_coordination_bytes_guarded;
+use super::write_lock::{
+    acquire_config_file_write_lock, lock_local_config_writes, ConfigWriterActive,
     CONFIG_LOCK_TIMEOUT,
 };
 use crate::filesystem::local_config;

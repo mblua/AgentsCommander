@@ -1,12 +1,13 @@
 use super::pair_image::{
-    prepared_pair_image, read_config_pair_physical, PhysicalState, PreparedConfigPairPlan,
-    PreparedPairError,
+    log_unverified_cleanup_refusal, prepared_pair_image, read_config_pair_physical,
+    ConfigPairCleanup, PairTargetGuard, PhysicalState, PreparedConfigPairPlan, PreparedPairError,
 };
-use super::{
-    acquire_config_file_write_lock, acquire_fresh_config_stage_with_sequence,
-    lock_local_config_writes, log_unverified_cleanup_refusal, next_shared_staging_sequence,
-    publish_temp_config_guarded, read_pair_reservation, validate_pair_paths, ConfigPairCleanup,
-    ConfigWriterActive, PairTargetGuard, CONFIG_LOCK_TIMEOUT,
+use super::pair_revision::{read_pair_reservation, validate_pair_paths};
+use super::publish::publish_temp_config_guarded;
+use super::staging::{acquire_fresh_config_stage_with_sequence, next_shared_staging_sequence};
+use super::write_lock::{
+    acquire_config_file_write_lock, lock_local_config_writes, ConfigWriterActive,
+    CONFIG_LOCK_TIMEOUT,
 };
 #[cfg(not(windows))]
 use crate::filesystem::local_config::sync_local_config_directory;
