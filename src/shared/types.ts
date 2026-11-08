@@ -798,6 +798,10 @@ export interface AppSettings {
   roomIdleConfirmationSeconds?: number;
   /** #3532 Window (days) for the sidebar context-average color; omitted resolves to 30. */
   contextHistoryColorDays?: ContextHistoryColorDays;
+  /** #4049 Record context history (desktop); omitted resolves to false. */
+  contextHistoryEnabled?: boolean;
+  /** #4049 Days of context history to keep, 1..365; omitted resolves to 30. */
+  contextHistoryRetentionDays?: number;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
   geminiModel: string;

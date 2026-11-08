@@ -12,10 +12,9 @@ use crate::phone::mailbox::settle::{finish_owned_pty_work, OwnedPtyWorkTransfer}
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use context::{
-    BoundaryAuthority, DispatchSelection, InitialDispatchContext, PtyDispatchContext,
-    PtyDispatchGuards, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
+    BoundaryAuthority, BoundaryWriteGuards, DispatchSelection, InitialDispatchContext,
+    PtyDispatchContext, PtyDispatchGuards, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
 };
-use select::BoundaryWriteGuards;
 use std::sync::Arc;
 use uuid::Uuid;
 

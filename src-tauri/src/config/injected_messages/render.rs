@@ -124,7 +124,7 @@ pub(super) fn sanitize(value: &str) -> String {
     //    two it allows. Derived, never restated.
     let mut out: String = converted
         .chars()
-        .filter(|ch| matches!(ch, '\n' | '\t') || !crate::pty::inject::is_forbidden_pty_scalar(*ch))
+        .filter(|ch| matches!(ch, '\n' | '\t') || !crate::pty_input::is_forbidden_pty_scalar(*ch))
         .collect();
     // 3. Neutralize the reply-marker prefix `pty/output.rs` scans for in PTY
     //    output, which injected text echoes into. Stays after step 2, which can

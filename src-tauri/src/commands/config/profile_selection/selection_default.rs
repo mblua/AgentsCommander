@@ -1,6 +1,9 @@
 use std::path::Path;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::session::selection_executor::{
+    run_owned_selection_operation, run_owned_selection_read_timed,
+};
 use crate::config::settings::SettingsState;
 
 use super::wire::{
@@ -23,10 +26,9 @@ pub async fn get_replica_selection_default(
     request: GetReplicaSelectionDefaultRequest,
 ) -> Result<ReplicaSelectionDefaultResult, String> {
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_read_timed(
-        "get_replica_selection_default",
-        move || async move { get_replica_selection_default_inner(&settings, request).await },
-    )
+    run_owned_selection_read_timed("get_replica_selection_default", move || async move {
+        get_replica_selection_default_inner(&settings, request).await
+    })
     .await
 }
 
@@ -60,7 +62,7 @@ pub async fn set_replica_selection_default<R: tauri::Runtime>(
 ) -> Result<ReplicaSelectionDefaultResult, String> {
     let app_handle = app.clone();
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || {
+    run_owned_selection_operation(move || {
         let app = app_handle.clone();
         async move {
             let (result, payload) = set_replica_selection_default_inner(&settings, request).await?;

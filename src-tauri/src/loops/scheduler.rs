@@ -12,13 +12,14 @@ use uuid::Uuid;
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     acquire_loop_lock_for_dir, baseline_loop_state, details_from_parts, latest_due_between,
-    loop_delivery_config_matches, loop_dir, read_loop_config_if_present, LoopAuditEntry,
-    LoopAuditKind, LoopConfigDetails, LoopConfigToml, LoopState, LOOP_LOCK_TIMEOUT,
+    loop_delivery_config_matches, loop_dir, read_loop_config, read_loop_config_if_present,
+    resolve_loop_target, LoopAuditEntry, LoopAuditKind, LoopConfigDetails, LoopConfigToml,
+    LoopState, LOOP_LOCK_TIMEOUT,
 };
 use crate::config::projects::ProjectResolution;
 use crate::config::settings::SettingsState;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryHost, LoopDeliveryReport};
-use crate::loops::events::LoopEvents;
+use crate::loops::events::{emit_loop_change, LoopEvents};
 use crate::shutdown::ShutdownSignal;
 
 mod record;
@@ -26,7 +27,7 @@ mod state;
 
 use state::{
     active_project_candidates_for_owner, generation_key, loop_dirs, loop_is_current_for_delivery,
-    read_state_snapshot, unresolved_targets_in_project,
+    read_state_snapshot,
 };
 
 pub(crate) trait SchedulerHost: LoopDeliveryHost + LoopEvents + Send + Sync {
@@ -636,6 +637,84 @@ fn due_scan_run(
 
 async fn active_project_candidates(owner: &SettingsState) -> Vec<ProjectResolution> {
     active_project_candidates_for_owner(owner).await
+}
+
+fn unresolved_targets_in_project(project_dir: &Path) -> Vec<UnresolvedLoopTarget> {
+    let mut alerts = Vec::new();
+    let Some(ac_root) = existing_ac_root(project_dir) else {
+        return alerts;
+    };
+    let dirs = match loop_dirs(&ac_root) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            log::warn!(
+                "[loops] Failed to list Loops for project {}: {}",
+                project_dir.display(),
+                e
+            );
+            return alerts;
+        }
+    };
+    for dir in dirs {
+        let config = match read_loop_config(&dir) {
+            Ok(config) => config,
+            Err(e) => {
+                log::warn!(
+                    "[loops] Failed to read Loop config {}: {}",
+                    dir.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        if !config.loop_def.enabled {
+            continue;
+        }
+        if let Err(e) = resolve_loop_target(project_dir, &config) {
+            alerts.push(UnresolvedLoopTarget {
+                project_path: project_dir.to_string_lossy().into(),
+                loop_id: config.loop_def.id.clone(),
+                loop_name: config.loop_def.name.clone(),
+                workgroup: config.target.workgroup.clone(),
+                error: e,
+            });
+        }
+    }
+    alerts
+}
+
+fn emit_transition(
+    context: &SchedulerContext,
+    project_dir: &Path,
+    dir: &Path,
+    config: &LoopConfigToml,
+    state: &LoopState,
+    kind: &str,
+    message: Option<String>,
+) {
+    let details = details_from_parts(dir, config, state);
+    match context {
+        SchedulerContext::Native(app) => emit_loop_change(
+            app.as_ref(),
+            project_dir,
+            dir,
+            &config.loop_def.id,
+            kind,
+            Some(details.summary),
+            message,
+        ),
+        #[cfg(test)]
+        SchedulerContext::Headless { transitions, .. } => {
+            transitions.lock().expect("scheduler transitions").push((
+                project_dir.to_path_buf(),
+                dir.to_path_buf(),
+                config.loop_def.id.clone(),
+                kind.to_owned(),
+                Some(details.summary),
+                message,
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

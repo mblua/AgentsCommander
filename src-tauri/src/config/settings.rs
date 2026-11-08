@@ -15,8 +15,11 @@ mod source;
 pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
 pub(crate) use naming::{migrate_instance_settings_families, SettingsNamingError};
 
-use self::context_history::deserialize_context_history_color_days;
-pub use self::context_history::ContextHistoryColorDays;
+use self::context_history::{
+    deserialize_context_history_color_days, deserialize_context_history_enabled,
+    deserialize_context_history_retention_days,
+};
+pub use self::context_history::{ContextHistoryColorDays, ContextHistoryRetentionDays};
 #[cfg(test)]
 use super::projects;
 #[cfg(test)]
@@ -875,6 +878,17 @@ pub struct AppSettings {
     /// Any other stored value loads as 30 in memory and is never rewritten.
     #[serde(default, deserialize_with = "deserialize_context_history_color_days")]
     pub context_history_color_days: ContextHistoryColorDays,
+    /// #4049: app-wide Context Heat Map switch; off by default. Only a JSON
+    /// boolean is accepted; any other stored value loads as false.
+    #[serde(default, deserialize_with = "deserialize_context_history_enabled")]
+    pub context_history_enabled: bool,
+    /// #4049: days (1..=365) of stored context history to keep; default 30.
+    /// Any other stored value loads as 30 in memory and is never rewritten.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context_history_retention_days"
+    )]
+    pub context_history_retention_days: ContextHistoryRetentionDays,
 }
 
 fn default_jev_model() -> String {
