@@ -423,13 +423,6 @@
       ]
     },
     {
-      "id": "99ca20000995b5ac",
-      "members": [
-        "agentscommander_lib::process::agent::owner",
-        "agentscommander_lib::process::agent::owner::command_run"
-      ]
-    },
-    {
       "id": "8b956eab6329b261",
       "members": [
         "agentscommander_lib::pty::spawn_diagnostics",
