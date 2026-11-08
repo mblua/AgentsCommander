@@ -352,7 +352,7 @@ export function measureSource(path, text, scan = scanRust(path, text)) {
 // literal-files-v1: complete decoded strings, with no runtime path inference.
 function literalIdentity(value) {
   if (typeof value !== 'string') return null;
-  const literal = value.replaceAll(String.fromCharCode(92), '/');
+  const literal = value.replaceAll(String.fromCodePoint(92), '/');
   const relative = literal.replace(/^(?:[A-Za-z]:)?\//, '');
   const segments = relative.split('/');
   const segment = /^(?:[A-Za-z0-9_.*-]|\{(?:[A-Za-z_][A-Za-z0-9_]*)?\})+$/;

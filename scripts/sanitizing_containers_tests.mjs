@@ -85,7 +85,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createSnapshot, gitRunner, parseArgs } from './sanitizing_baseline.mjs';
+import { createSnapshot, gitRunner, parseArgs, codeOrder } from './sanitizing_baseline.mjs';
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const candidateSnapshot = () => {
   const oid = gitRunner(['rev-parse', 'HEAD'], { cwd: repo });
@@ -537,7 +537,7 @@ const sourceLiteral = literal => 'const N: &str = ' + JSON.stringify(literal) + 
 const distributed = (literal, paths = ['a.rs', 'b.rs']) =>
   Object.fromEntries(paths.map(p => [root + p, sourceLiteral(literal)]));
 const debtEntry = (literal, paths = ['a.rs', 'b.rs'], line = 1) => ({ literal,
-  files: paths.map(p => root + p).sort(),
+  files: paths.map(p => root + p).sort(codeOrder),
   sites: paths.map(p => ({ path: root + p, line })).sort((a, b) => a.path.localeCompare(b.path)),
 });
 const countsOf = entries => ({ identities: entries.length,
@@ -566,7 +566,7 @@ test('04 unregistered explicit debt sets and shrinking controls', t => {
   const cases = [
     ['empty', {}, []],
     ['singleton', distributed('run.json', ['a.rs']), []],
-    ['same file repetitions', { [root + 'a.rs']: Array(3).fill(sourceLiteral('run.json'))
+    ['same file repetitions', { [root + 'a.rs']: new Array(3).fill(sourceLiteral('run.json'))
       .join('\n') }, []],
     ['unchanged', distributed('run.json'), [debtEntry('run.json')]],
   ];
@@ -616,8 +616,8 @@ test('04 unregistered rejects growth and file/identity replacements with receipt
 
 test('04 literal-files-v1 exact grammar and lexical limits', t => {
   const accepted = ['run.json', 'a.jsonl', 'a.toml', 'a.yaml', 'a.yml', 'a.db', 'a.sqlite',
-    'a.sqlite3', '.team.lock', 'Role.md', 'a.txt', '/tmp/a.json', 'C:/tmp/a.json',
-    'x' + String.fromCharCode(92) + 'a.json', '{}.json', '{name}_*.json',
+    'a.sqlite3', '.team.lock', 'Role.md', 'a.txt', '/fixture/a.json', 'C:/fixture/a.json',
+    'x' + String.fromCodePoint(92) + 'a.json', '{}.json', '{name}_*.json',
     'a/{_id9}/report.json', 'RUN.json'];
   const rejected = ['', '.json', './run.json', '../run.json', 'a//run.json',
     'a/./run.json', 'a/../run.json', 'run.JSON', 'a.csv', ' run.json', 'a b.json',
@@ -625,7 +625,7 @@ test('04 literal-files-v1 exact grammar and lexical limits', t => {
   for (const value of [...accepted, ...rejected]) {
     const fixture = ratchetTree(distributed(value));
     const entries = accepted.includes(value) ?
-      [debtEntry(value.replaceAll(String.fromCharCode(92), '/'))] : [];
+      [debtEntry(value.replaceAll(String.fromCodePoint(92), '/'))] : [];
     const result = containersGate(fixture);
     assert.equal(result.exit, 0, JSON.stringify(result));
     assertDebt(result, 'head', entries);
@@ -662,13 +662,13 @@ test('04 discovery scoped exclusions, templates, metadata and test layouts', t =
     [root + 'names.rs']: sourceLiteral('artifact.json'),
     [root + 'template.rs']: sourceLiteral('{}.json'),
     [root + 'template2.rs']: sourceLiteral('{}.json'),
-    [root + 'full.rs']: sourceLiteral('/tmp/attempts.jsonl'),
-    [root + 'full2.rs']: sourceLiteral('/tmp/attempts.jsonl'),
+    [root + 'full.rs']: sourceLiteral('/fixture/attempts.jsonl'),
+    [root + 'full2.rs']: sourceLiteral('/fixture/attempts.jsonl'),
     [root + 'lib.rs']: '#[cfg(test)] mod proof;',
     [root + 'proof.rs']: sourceLiteral('test-only.json'),
     [root + 'proof2.rs']: '#[cfg(test)] fn f(){let _="test-only.json";}',
   };
-  const expected = [debtEntry('/tmp/attempts.jsonl', ['full.rs', 'full2.rs']),
+  const expected = [debtEntry('/fixture/attempts.jsonl', ['full.rs', 'full2.rs']),
     debtEntry('artifact.json', ['meta.rs', 'names.rs']), debtEntry(c.name),
     debtEntry('{}.json', ['template.rs', 'template2.rs'])];
   const result = containersGate(ratchetTree(files));
@@ -716,9 +716,9 @@ test('04 independent registry snapshots, errors and ordering', t => {
     ['missing source blob', s => {
       s.baseTree.set(root + 'missing.rs', {});
     }, 'blob'],
-    ['unsupported mode', s => { s.readBlob = () => { throw Error('unsupported mode'); }; },
+    ['unsupported mode', s => { s.readBlob = () => { throw new Error('unsupported mode'); }; },
       'unsupported mode'],
-    ['HEAD drift', s => { s.assertStableHead = () => { throw Error('HEAD drift'); }; },
+    ['HEAD drift', s => { s.assertStableHead = () => { throw new Error('HEAD drift'); }; },
       'HEAD drift'],
   ];
   for (const [label, mutate, cause] of errors) {
@@ -774,7 +774,7 @@ test('04 real default snapshot exposes debt and rejects exact memory injection',
     assertDebt(before, side, entries);
     for (const e of entries) {
       assert.ok(e.files.length >= 2 && e.sites.length > 0);
-      assert.deepEqual([...new Set(e.sites.map(site => site.path))].sort(), e.files);
+      assert.deepEqual([...new Set(e.sites.map(site => site.path))].sort(codeOrder), e.files);
       for (const site of e.sites) assert.ok(Number.isInteger(site.line) && site.line > 0);
     }
     // Independent direct-source witnesses, without the discovery helper's matcher.
