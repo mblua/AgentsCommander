@@ -48,7 +48,7 @@ const bucket = (
 const known = (id: string, agentKey = "dev"): SidebarEntry => ({
   runtimeSessionId: id,
   scope: { kind: "known", agentKey, teamIds: ["t1"] },
-  windows: null,
+  ...{ windows: null },
   sessionWindows: [bucket(25, 12.5, 2, 2), bucket(100, 20, 3, 3), bucket(300, null, 0, 0)],
 });
 
@@ -62,7 +62,7 @@ const acq = (n: number, projectPath = P) =>
 const neutral = (id: string, kind: "ambiguous" | "unknown", teamIds: string[]): SidebarEntry => ({
   runtimeSessionId: id,
   scope: { kind, agentKey: null, teamIds },
-  windows: null,
+  ...{ windows: null },
   sessionWindows: null,
 });
 
@@ -144,7 +144,8 @@ describe("sidebar context-history owner (#3532 P10)", () => {
     const a = acq(1);
     const b = acq(2);
     await settle();
-    const legacy = { ...known(uuid(1)), sessionWindows: undefined };
+    // Deliberately malformed IPC reply: bypasses the required-field type on purpose.
+    const legacy = { ...known(uuid(1)), sessionWindows: undefined } as unknown as SidebarEntry;
     answer(0, [legacy, { ...known(uuid(2)), sessionWindows: [] }]);
     await settle();
     expect(a.state()).toEqual({ status: "error", message: "No session windows in response" });
