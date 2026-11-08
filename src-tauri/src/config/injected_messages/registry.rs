@@ -7,9 +7,12 @@ use sha2::{Digest, Sha256};
 
 use crate::filesystem::injected_documents;
 
-pub(crate) const INJECTED_MESSAGES_FILENAME: &str = "injected-messages.toml";
-pub(crate) const INJECTED_MESSAGES_REFERENCE_FILENAME: &str = "injected-messages.default.toml";
-pub(crate) const INJECTED_MESSAGES_STATE_FILENAME: &str = ".agentscommander-injected-messages.json";
+pub(crate) const INJECTED_MESSAGES_FILENAME: &str =
+    crate::config::instance_artifacts::INJECTED_MESSAGES_FILENAME;
+pub(crate) const INJECTED_MESSAGES_REFERENCE_FILENAME: &str =
+    crate::config::instance_artifacts::INJECTED_MESSAGES_REFERENCE_FILENAME;
+pub(crate) const INJECTED_MESSAGES_STATE_FILENAME: &str =
+    crate::config::instance_artifacts::INJECTED_MESSAGES_STATE_FILENAME;
 
 /// Versions the file's STRUCTURE only. Independent of AC's semver and of the
 /// sidecar's own version. Never bumped by adding message ids or by improving a
