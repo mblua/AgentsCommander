@@ -82,7 +82,7 @@ function parseBlobBatch(bytes, oids) {
     const end = bytes.indexOf(10, offset);
     if (end < 0) throw new Error('missing batch header');
     const header = bytes.subarray(offset, end).toString('latin1');
-    const match = /^([a-f0-9]{40}(?:[a-f0-9]{24})?) blob ([0-9]+)$/.exec(header);
+    const match = /^([a-f0-9]{40}(?:[a-f0-9]{24})?) blob (\d+)$/.exec(header);
     const size = Number(match?.[2]);
     if (!match || match[1] !== oid || !Number.isSafeInteger(size) || size < 0)
       throw new Error('invalid batch header');
@@ -135,22 +135,20 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
     };
     if (!entry.path.endsWith('.rs')) return oids;
     const changedIndex = changedRust.findIndex(item => item.path === entry.path);
+    let candidates;
     if (changedIndex >= 0) {
-      for (const item of changedRust.slice(changedIndex)) {
-        append(baseTree.get(item.path));
-        if (oids.length === 128) break;
-        append(headTree.get(item.path));
-        if (oids.length === 128) break;
-      }
+      candidates = changedRust.slice(changedIndex).flatMap(item => [
+        baseTree.get(item.path), headTree.get(item.path),
+      ]);
     } else {
-      const tree = baseTree.get(entry.path) === entry ? baseTree :
-        headTree.get(entry.path) === entry ? headTree : null;
+      const tree = [baseTree, headTree].find(tree => tree.get(entry.path) === entry);
       if (!tree) return oids;
       const names = tree === baseTree ? baseRust : headRust;
-      for (const name of names.slice(names.indexOf(entry.path))) {
-        append(tree.get(name));
-        if (oids.length === 128) break;
-      }
+      candidates = names.slice(names.indexOf(entry.path)).map(name => tree.get(name));
+    }
+    for (const candidate of candidates) {
+      append(candidate);
+      if (oids.length === 128) break;
     }
     return oids;
   }

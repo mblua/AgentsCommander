@@ -245,8 +245,8 @@ test('gitRunner accepts binary stdin with cwd/env and leaves no child; import is
     const input = Buffer.from('λ\0binary\r\n');
     const hashed = gitRunner(['hash-object', '--stdin'], { cwd, env, input });
     assert.equal(hashed.status, 0);
-    const expected = createHash('sha1').update(`blob ${input.length}\0`).update(input)
-      .digest('hex');
+    // Fixed Git blob identity for the exact binary fixture above.
+    const expected = '0ceb68948535f606523552259bfcf748248d124f';
     assert.equal(hashed.stdout.toString().trim(), expected);
     assert.equal(gitRunner(['config', 'test.batch'], { cwd, env }).stdout.toString(),
       'forwarded\n');
@@ -262,7 +262,12 @@ test('gitRunner accepts binary stdin with cwd/env and leaves no child; import is
     assert.equal(imported.stdout.length, 0);
     assert.equal(imported.stderr.length, 0);
     assert.equal(decode(input, 'binary'), input.toString());
-  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  } finally {
+    const resolved = fs.realpathSync(cwd), parent = fs.realpathSync(os.tmpdir());
+    assert.equal(path.dirname(resolved), parent);
+    assert.ok(path.basename(resolved).startsWith('blob-batch-'));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  }
 });
 
 test('changed base/head adjacency at the cap does not overfill or lose the next read', () => {
