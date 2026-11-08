@@ -1,3 +1,4 @@
+use super::storage::{report_name, report_path_display, run_path_display};
 use super::support::{err, err_at_path};
 use super::validation::reject_link_or_reparse;
 use super::AttemptArtifact;
@@ -16,10 +17,6 @@ use super::VariantMetadata;
 use crate::filesystem::directories;
 use std::path::Path;
 use std::path::PathBuf;
-
-pub(super) fn experiments_dir(ac_root: &Path) -> PathBuf {
-    ac_root.join("experiments")
-}
 
 pub(super) fn runs_dir(loaded: &LoadedExperiment) -> PathBuf {
     loaded.experiment_dir.join("runs")
@@ -151,7 +148,7 @@ pub(super) fn generated_seed_from_uuid(uuid: uuid::Uuid) -> u64 {
 pub(super) fn default_run_artifact_paths(attempts: String) -> RunArtifactPaths {
     RunArtifactPaths {
         attempts,
-        report_json: "report.json".to_string(),
+        report_json: report_name(),
         report_markdown: "report.md".to_string(),
         prompts: "prompts".to_string(),
         outputs: "outputs".to_string(),
@@ -162,9 +159,9 @@ pub(super) fn default_run_artifact_paths(attempts: String) -> RunArtifactPaths {
 
 pub(super) fn report_artifact_paths(run_dir: &Path, attempts: String) -> ReportArtifactPaths {
     ReportArtifactPaths {
-        run: run_dir.join("run.json").to_string_lossy().to_string(),
+        run: run_path_display(run_dir),
         attempts,
-        report_json: run_dir.join("report.json").to_string_lossy().to_string(),
+        report_json: report_path_display(run_dir),
         report_markdown: run_dir.join("report.md").to_string_lossy().to_string(),
     }
 }
