@@ -852,7 +852,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     String(seededSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
   );
   const [ctxRetentionText, setCtxRetentionText] = createSignal(String(
-    seededSettings?.contextHistoryRetentionDays ?? ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
+    seededSettings?.contextHistoryRetentionDays ??
+      ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
   ));
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
@@ -1625,7 +1626,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         String(nextSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
       );
       setCtxRetentionText(String(
-        nextSettings?.contextHistoryRetentionDays ?? ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
+        nextSettings?.contextHistoryRetentionDays ??
+          ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
       ));
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
