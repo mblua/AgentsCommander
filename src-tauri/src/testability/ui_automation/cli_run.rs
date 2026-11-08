@@ -444,11 +444,11 @@ pub(super) fn add_cli_truncation_diagnostics(
 
 pub(super) fn print_stdout_json<T: Serialize>(value: &T) {
     match serde_json::to_string(value) {
-        Ok(json) => crate::cli_println!("{json}"),
-        Err(e) => crate::cli_println!(
+        Ok(json) => crate::cli::stdout::print_stdout(format_args!("{json}")),
+        Err(e) => crate::cli::stdout::print_stdout(format_args!(
             "{{\"ok\":false,\"error\":\"json_serialize_failed\",\"message\":{}}}",
             serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"unknown\"".to_string())
-        ),
+        )),
     }
 }
 
