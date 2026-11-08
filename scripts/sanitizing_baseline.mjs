@@ -32,9 +32,10 @@ function resolveGitExecutable({ cwd, env }) {
   }
   throw unavailable();
 }
-export function gitRunner(args, { cwd, env = process.env }) {
+export function gitRunner(args, { cwd, env = process.env, input }) {
   return spawnSync(resolveGitExecutable({ cwd, env }), args, {
-    cwd, env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
+    cwd, env, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    timeout: 120_000,
     maxBuffer: 64 * 1024 * 1024, windowsHide: true,
   });
 }
@@ -72,6 +73,28 @@ export function parseChanged(bytes) {
   }
   return changed.sort((a, b) => codeOrder(a.path, b.path));
 }
+// Parse framing as bytes; speculative bodies must never be decoded here.
+function parseBlobBatch(bytes, oids) {
+  const staged = new Map();
+  let offset = 0;
+  for (const oid of oids) {
+    const end = bytes.indexOf(10, offset);
+    if (end < 0) throw new Error('missing batch header');
+    const header = bytes.subarray(offset, end).toString('latin1');
+    const match = /^([a-f0-9]{40}(?:[a-f0-9]{24})?) blob ([0-9]+)$/.exec(header);
+    const size = Number(match?.[2]);
+    if (!match || match[1] !== oid || !Number.isSafeInteger(size) || size < 0)
+      throw new Error('invalid batch header');
+    offset = end + 1;
+    if (size >= bytes.length - offset || bytes[offset + size] !== 10)
+      throw new Error('truncated batch body');
+    // Copy to avoid retaining the full batch buffer after individual cache eviction.
+    staged.set(oid, Buffer.from(bytes.subarray(offset, offset + size)));
+    offset += size + 1;
+  }
+  if (offset !== bytes.length) throw new Error('extra batch output');
+  return staged;
+}
 export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunner } = {}) {
   if (typeof baseRef !== 'string' || !baseRef.trim()) throw new GateError('empty base ref', 2);
   if (!cwd) throw new GateError('explicit repository cwd required', 2);
@@ -95,12 +118,66 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
   const baseTree = parseTree(git(['ls-tree', '-r', '-z', '--full-tree', baseOid]));
   const headTree = parseTree(git(['ls-tree', '-r', '-z', '--full-tree', headOid]));
   const changed = parseChanged(git(['diff', '--no-renames', '--name-status', '-z', baseOid, headOid, '--']));
-  const blobs = new Map();
+  const blobs = new Map(), rawBlobs = new Map(), attempted = new Set();
+  const regular = entry => entry && ['100644', '100755'].includes(entry.mode) &&
+    entry.type === 'blob';
+  const changedRust = changed.filter(entry => entry.path.endsWith('.rs'));
+  const treeRust = tree => [...tree.keys()].filter(name => name.endsWith('.rs')).sort(codeOrder);
+  const baseRust = treeRust(baseTree), headRust = treeRust(headTree);
+  function batchOids(entry) {
+    const oids = [entry.oid], seen = new Set(oids);
+    const append = candidate => {
+      if (!regular(candidate) || seen.has(candidate.oid) || blobs.has(candidate.oid) ||
+          rawBlobs.has(candidate.oid) || attempted.has(candidate.oid)) return;
+      seen.add(candidate.oid);
+      oids.push(candidate.oid);
+    };
+    if (!entry.path.endsWith('.rs')) return oids;
+    const changedIndex = changedRust.findIndex(item => item.path === entry.path);
+    if (changedIndex >= 0) {
+      for (const item of changedRust.slice(changedIndex)) {
+        append(baseTree.get(item.path));
+        if (oids.length === 128) break;
+        append(headTree.get(item.path));
+        if (oids.length === 128) break;
+      }
+    } else {
+      const tree = baseTree.get(entry.path) === entry ? baseTree :
+        headTree.get(entry.path) === entry ? headTree : null;
+      if (!tree) return oids;
+      const names = tree === baseTree ? baseRust : headRust;
+      for (const name of names.slice(names.indexOf(entry.path))) {
+        append(tree.get(name));
+        if (oids.length === 128) break;
+      }
+    }
+    return oids;
+  }
+  function prefetch(entry) {
+    const oids = batchOids(entry);
+    for (const oid of oids) attempted.add(oid);
+    try {
+      const input = Buffer.from(oids.join('\n') + '\n');
+      const r = runner(['cat-file', '--batch'], { cwd, input });
+      if (r.error || r.signal || r.status !== 0 || !Buffer.isBuffer(r.stdout) ||
+          r.stdout.length > 64 * 1024 * 1024 || (r.stderr?.length ?? 0) > 64 * 1024 * 1024)
+        return;
+      const staged = parseBlobBatch(r.stdout, oids);
+      for (const [oid, bytes] of staged) rawBlobs.set(oid, bytes);
+    } catch {
+      // Batch failures are invisible until the original individual read fails.
+    }
+  }
   function readBlob(entry) {
     if (!entry) return '';
     if (!['100644', '100755'].includes(entry.mode) || entry.type !== 'blob')
       throw new GateError(`${entry.path}: unsupported mode/type ${entry.mode}/${entry.type}; use a regular tracked file`);
-    if (!blobs.has(entry.oid)) blobs.set(entry.oid, decode(git(['cat-file', 'blob', entry.oid]), entry.path));
+    if (!blobs.has(entry.oid)) {
+      if (!rawBlobs.has(entry.oid) && !attempted.has(entry.oid)) prefetch(entry);
+      const bytes = rawBlobs.get(entry.oid) ?? git(['cat-file', 'blob', entry.oid]);
+      blobs.set(entry.oid, decode(bytes, entry.path));
+      rawBlobs.delete(entry.oid);
+    }
     return blobs.get(entry.oid);
   }
   function addedLines(name) {
