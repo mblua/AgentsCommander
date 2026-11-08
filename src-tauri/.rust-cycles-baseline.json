@@ -348,13 +348,6 @@
       ]
     },
     {
-      "id": "629bffdade5ff28c",
-      "members": [
-        "agentscommander_lib::cli::list_peers",
-        "agentscommander_lib::cli::list_peers::snapshot"
-      ]
-    },
-    {
       "id": "c0080581b143777c",
       "members": [
         "agentscommander_lib::cli::role_experiment",
