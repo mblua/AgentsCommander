@@ -649,17 +649,19 @@ fn sidebar_known_scope_has_windows_and_others_stay_null() {
         entries[0]["scope"],
         json!({ "kind": "known", "agentKey": "dev", "teamIds": ["team-a"] })
     );
-    let day = &entries[0]["windows"]["day"];
-    assert_eq!(
-        (day["days"].clone(), day["recordsCount"].clone()),
-        (json!(1), json!(1))
-    );
-    assert_eq!(entries[0]["windows"]["month"]["days"], 30);
-    let generated = response["generatedAtUtcMs"].clone();
-    assert_eq!(
-        entries[0]["windows"]["week"]["toUtcMs"], generated,
-        "one now for every window"
-    );
+    for entry in entries {
+        let keys: Vec<&str> = entry
+            .as_object()
+            .expect("entry object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["runtimeSessionId", "scope", "sessionWindows"],
+            "count-only wire keys, no calendar buckets"
+        );
+    }
     let buckets = entries[0]["sessionWindows"]
         .as_array()
         .expect("known buckets");
@@ -673,16 +675,12 @@ fn sidebar_known_scope_has_windows_and_others_stay_null() {
         "configured order"
     );
     assert_eq!(buckets[0]["sessionsCount"], 1);
+    assert_eq!(buckets[0]["recordsCount"], 1);
     assert_eq!(buckets[0]["recordsPerSession"], 1.0);
-    assert_eq!(
-        day["recordsPerSession"], 1.0,
-        "transitional buckets carry the ratio"
-    );
     assert_eq!(entries[1]["scope"]["kind"], "ambiguous");
     assert_eq!(entries[1]["scope"]["teamIds"], json!(["team-a", "team-b"]));
     assert_eq!(entries[2]["scope"]["kind"], "unknown");
     for entry in &entries[1..] {
-        assert_eq!(entry["windows"], Value::Null, "never a known-looking zero");
         assert_eq!(
             entry["sessionWindows"],
             Value::Null,

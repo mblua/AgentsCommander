@@ -37,8 +37,6 @@ pub(crate) const PAGE_LIMIT: usize = 100;
 pub(crate) const MAX_SIDEBAR_SESSIONS: usize = 100;
 pub(crate) const SELECTION_SESSION_STARTED: &str = "session_started";
 pub(crate) const SELECTION_RECENT_SESSIONS: &str = "recent_sessions";
-/// Sidebar windows in days: day, week and month.
-pub(crate) const SIDEBAR_WINDOW_DAYS: [u32; 3] = [1, 7, 30];
 
 const CURSOR_VERSION: u32 = 2;
 const CURSOR_PREFIX: &str = "ctxh2.";
@@ -813,24 +811,6 @@ pub(crate) struct SidebarTarget {
     pub(crate) scope: SidebarScope,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SidebarBucket {
-    pub(crate) days: u32,
-    pub(crate) from_utc_ms: i64,
-    pub(crate) to_utc_ms: i64,
-    #[serde(flatten)]
-    pub(crate) totals: Aggregate,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SidebarWindows {
-    pub(crate) day: SidebarBucket,
-    pub(crate) week: SidebarBucket,
-    pub(crate) month: SidebarBucket,
-}
-
 /// The newest `requestedSessions` sessions of a known scope.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -845,8 +825,6 @@ pub(crate) struct SessionWindowBucket {
 pub(crate) struct SidebarEntry {
     pub(crate) runtime_session_id: Uuid,
     pub(crate) scope: SidebarScope,
-    /// Transitional day/week/month buckets, retired once the UI reads sessions.
-    pub(crate) windows: Option<SidebarWindows>,
     /// One bucket per configured count, in configured order.
     pub(crate) session_windows: Option<Vec<SessionWindowBucket>>,
 }
@@ -874,23 +852,6 @@ pub(crate) fn validate_sidebar_ids(ids: &[Uuid]) -> Result<(), ReportError> {
     Ok(())
 }
 
-fn sidebar_bucket(selection: &Selection, days: u32, now: i64) -> SidebarBucket {
-    let from = now - i64::from(days) * DAY_MS;
-    let sessions: Vec<&SessionView> = selection
-        .sessions
-        .iter()
-        .filter(|session| session.started_at_utc_ms >= from)
-        .collect();
-    let mut totals = aggregate(&sessions);
-    totals.incomplete |= selection.unknown_start > 0;
-    SidebarBucket {
-        days,
-        from_utc_ms: from,
-        to_utc_ms: now,
-        totals,
-    }
-}
-
 /// The unfiltered launch query of one known `(agent, team)` scope.
 fn scope_query(project_path: &str, scope: (&str, &str), from: i64, now: i64) -> ReportQuery {
     ReportQuery {
@@ -907,26 +868,15 @@ fn scope_query(project_path: &str, scope: (&str, &str), from: i64, now: i64) -> 
     }
 }
 
-type KnownBuckets = (SidebarWindows, Vec<SessionWindowBucket>);
-
-/// Both bucket families of one known scope, from one `now`: transitional day,
-/// week and month, and one bucket per configured count, where the newest
-/// `max(counts)` sessions before `now` are selected once and then prefixed.
+/// One bucket per configured count of one known scope, from one `now`: the
+/// newest `max(counts)` sessions before `now` are selected once and then prefixed.
 fn known_buckets(
     records: &[HistoryRecord],
     project_path: &str,
     scope: (&str, &str),
     counts: &[u32],
     now: i64,
-) -> KnownBuckets {
-    let [day, week, month] = SIDEBAR_WINDOW_DAYS;
-    let widest = now - i64::from(month) * DAY_MS;
-    let dated = select(records, &scope_query(project_path, scope, widest, now));
-    let windows = SidebarWindows {
-        day: sidebar_bucket(&dated, day, now),
-        week: sidebar_bucket(&dated, week, now),
-        month: sidebar_bucket(&dated, month, now),
-    };
+) -> Vec<SessionWindowBucket> {
     let mut query = scope_query(project_path, scope, 0, now);
     query.session_count = Some(counts.iter().copied().max().unwrap_or(0));
     let recent = select(records, &query);
@@ -939,10 +889,10 @@ fn known_buckets(
             totals,
         }
     });
-    (windows, buckets.collect())
+    buckets.collect()
 }
 
-/// Sidebar means per runtime session. Only a known scope computes windows;
+/// Sidebar means per runtime session. Only a known scope computes session windows;
 /// ambiguous and unknown scopes return null windows, never an empty count.
 /// `counts` are the effective session windows the edge read from Settings.
 pub(crate) fn sidebar_means(
@@ -958,7 +908,7 @@ pub(crate) fn sidebar_means(
         .collect();
     validate_sidebar_ids(&ids)?;
     check_identity(project_path, "project_path_empty", "project_path_too_long")?;
-    let mut cache: BTreeMap<(&str, &str), KnownBuckets> = BTreeMap::new();
+    let mut cache: BTreeMap<(&str, &str), Vec<SessionWindowBucket>> = BTreeMap::new();
     for target in targets {
         if let Some(key) = target.scope.known_key() {
             cache
@@ -973,8 +923,7 @@ pub(crate) fn sidebar_means(
             SidebarEntry {
                 runtime_session_id: target.runtime_session_id,
                 scope: target.scope.clone(),
-                windows: known.map(|(windows, _)| windows.clone()),
-                session_windows: known.map(|(_, buckets)| buckets.clone()),
+                session_windows: known.cloned(),
             }
         })
         .collect();

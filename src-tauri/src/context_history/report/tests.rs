@@ -431,26 +431,37 @@ fn known(id: u128) -> SidebarTarget {
 }
 
 #[test]
-fn sidebar_windows_use_one_now_and_session_start() {
+fn sidebar_session_windows_ignore_calendar_age_and_share_one_scan() {
     let mut records = session(1, NOW - 2 * HOUR_MS, &[(NOW - HOUR_MS, 10)]);
     records.extend(session(2, NOW - 3 * DAY_MS, &[(NOW - HOUR_MS, 20)]));
     records.extend(session(3, NOW - 20 * DAY_MS, &[(NOW - HOUR_MS, 30)]));
     records.extend(session(4, NOW - 40 * DAY_MS, &[(NOW - HOUR_MS, 50)]));
     let response =
         sidebar_means(&records, PROJECT, &[known(1), known(2)], &COUNTS, NOW).expect("means");
-    let windows = response.entries[0].windows.clone().expect("known windows");
-    assert_eq!(windows.day.totals.mean, Some(10.0));
-    assert_eq!(windows.week.totals.mean, Some(15.0));
-    assert_eq!(windows.month.totals.mean, Some(20.0));
-    assert_eq!((windows.week.days, windows.week.to_utc_ms), (7, NOW));
-    assert_eq!(response.entries[1].windows, response.entries[0].windows);
-    let month = report(&records, &{
-        let mut parity = last_days(30);
-        parity.agent_key = Some("dev".to_string());
-        parity.team_id = Some("team-a".to_string());
-        parity
-    });
-    assert_eq!(only_agent(&month), windows.month.totals);
+    let buckets = response.entries[0].session_windows.clone().expect("known");
+    assert_eq!(
+        buckets[0].totals.sessions_count, 4,
+        "40-day-old session counts"
+    );
+    assert_eq!(buckets[0].totals.mean, Some(27.5));
+    assert_eq!(
+        response.entries[1].session_windows,
+        response.entries[0].session_windows
+    );
+    assert_entry_keys(&response.entries[0]);
+}
+
+/// A sidebar entry serializes only the count-only keys, never calendar buckets.
+fn assert_entry_keys(entry: &SidebarEntry) {
+    let json = serde_json::to_value(entry).expect("json");
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .expect("entry object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["runtimeSessionId", "scope", "sessionWindows"]);
 }
 
 #[test]
@@ -464,20 +475,24 @@ fn sidebar_ambiguous_and_unknown_scopes_have_null_windows() {
     unknown.scope.team_ids.clear();
     let response =
         sidebar_means(&records, PROJECT, &[ambiguous, unknown], &COUNTS, NOW).expect("means");
-    assert!(response.entries.iter().all(|entry| entry.windows.is_none()));
+    assert!(response
+        .entries
+        .iter()
+        .all(|entry| entry.session_windows.is_none()));
+    response.entries.iter().for_each(assert_entry_keys);
     let json = serde_json::to_value(&response.entries[0]).expect("json");
-    assert!(json["windows"].is_null());
     assert_eq!(json["scope"]["kind"], "ambiguous");
 }
 
 #[test]
 fn sidebar_known_scope_without_records_is_an_empty_count_not_null() {
     let response = sidebar_means(&[], PROJECT, &[known(1)], &COUNTS, NOW).expect("means");
-    let windows = response.entries[0].windows.clone().expect("known windows");
+    let buckets = response.entries[0].session_windows.clone().expect("known");
     assert_eq!(
-        (windows.day.totals.records_count, windows.day.totals.mean),
+        (buckets[0].totals.records_count, buckets[0].totals.mean),
         (0, None)
     );
+    assert_entry_keys(&response.entries[0]);
 }
 
 #[test]
@@ -802,15 +817,11 @@ fn sidebar_session_windows_follow_configured_order_and_actual_counts() {
     assert_eq!(shape, [(2, 2, 80), (1, 1, 60), (25, 3, 120)]);
     assert_eq!(buckets[1].totals.mean, Some(60.0));
     assert_eq!(buckets[2].totals.records_per_session, Some(4.0 / 3.0));
-    assert!(
-        response.entries[0].windows.is_some(),
-        "transitional buckets stay"
-    );
     let json = serde_json::to_value(&response.entries[0]).expect("json");
     assert_eq!(json["sessionWindows"][0]["requestedSessions"], 2);
     assert_eq!(json["sessionWindows"][0]["recordsPerSession"], 1.0);
     assert!(json["sessionWindows"][0].get("fromUtcMs").is_none());
-    assert_eq!(json["windows"]["week"]["recordsPerSession"], 1.0);
+    assert!(json.get("windows").is_none(), "no calendar buckets");
     let parity = report(&records, &{
         let mut parity = recent(2);
         parity.team_id = Some("team-a".to_string());
