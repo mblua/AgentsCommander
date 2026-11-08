@@ -446,13 +446,6 @@
         "agentscommander_lib::pty::spawn_diagnostics::registry",
         "agentscommander_lib::pty::spawn_diagnostics::thresholds"
       ]
-    },
-    {
-      "id": "105668e38beb5bd2",
-      "members": [
-        "agentscommander_lib::resource_monitor::registry",
-        "agentscommander_lib::resource_monitor::registry::snapshot"
-      ]
     }
   ],
   "functionCycles": []
