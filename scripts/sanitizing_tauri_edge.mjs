@@ -1,4 +1,5 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
+import { createReceiverClassifier, PROVEN_PORT, UNKNOWN } from './sanitizing_tauri_receivers.mjs';
 import { runMeasuredGate, metric, hit, warning, occurrenceIdentity, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
 const relevantPath = new RegExp("^(?:tauri(?:::|$)|(?:(?:std|tokio)::)?fs::|(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$))");
@@ -14,13 +15,22 @@ function signals(scan, item) {
   return item.attributes.flatMap(a => a.signals.map(meta => ({ ...resolveAlias(scan,meta.name,a.scope), meta, line: a.line })));
 }
 export function runGate(snapshot) {
-  const measureFile = (path, scan) => {
-    const m = measure(path, scan);
+  // One receiver classifier per side, keyed by that side's scan lookup; never cross-snapshot.
+  const classifiers = new WeakMap();
+  const receivers = context => {
+    if (!context?.scan) return null;
+    if (!classifiers.has(context.scan))
+      classifiers.set(context.scan, createReceiverClassifier(context));
+    return classifiers.get(context.scan);
+  };
+  const measureFile = (path, scan, context) => {
+    const m = measure(path, scan, receivers(context));
     // Production debt stays comparable. New core files must also be Tauri-free
     // in test-only code, using the same alias-aware analysis as production.
     if (!snapshot.baseTree.has(path)) {
       const testTokens = scan.tokens.filter(t => scan.isTestOffset(t.start));
-      m.testTauri = measure(path, { ...scan, productionTokens: testTokens }).sites.tauri_files;
+      const testScan = { ...scan, productionTokens: testTokens };
+      m.testTauri = measure(path, testScan, receivers(context)).sites.tauri_files;
     }
     return m;
   };
@@ -40,14 +50,22 @@ function extraChecks(path, m, before, violation, moved) {
   for (const [id, site] of m.commands) if (!before?.commandIds.has(id) && !moved.has(site))
     violation('new_disk_command', path, site.line, 0, 1, `new command with disk access: ${id}`);
 }
-function measure(path, scan) {
+function measure(path, scan, receivers) {
   const m = metric(), ts = scan.productionTokens;
   const edge = /^src-tauri\/src\/(?:(?:lib|main|commands|events)\.rs$|(?:commands|events)\/)/.test(path);
   const imports = scan.items.filter(item => item.kind === 'use'), imported = [], references = [];
   const record = (rule, t) => { if (!edge) hit(m,rule,t.line,occurrenceIdentity(scan,t)); };
   for (let i = 0; i < ts.length; i++) {
     const t = ts[i];
-    if (t.text === '.' && ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(') record('emit_files',t);
+    const emit = ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(';
+    if (t.text === '.' && emit && !edge) {
+      // Only a proven port emit is not core Tauri use; REAL and UNKNOWN stay counted.
+      const proof = receivers?.classify(path, scan, t) ??
+        { kind: UNKNOWN, reason: 'missing receiver context' };
+      if (proof.kind === UNKNOWN)
+        warning(m, path, t.line, { ambiguous: true, reason: proof.reason });
+      if (proof.kind !== PROVEN_PORT) record('emit_files', t);
+    }
     if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
     if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');

@@ -264,8 +264,6 @@ impl HistoryScopeState {
     /// project, from the same owner capture uses; `None` is unknown. Any
     /// present session outside `project_paths`, Root included, refuses the whole request
     /// before discovery, teams or store. Works with capture disabled.
-    // P05 consumer; retained scoped compatibility allowance
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn snapshot_sidebar_scopes(
         &self,
         project_paths: &[PathBuf],
