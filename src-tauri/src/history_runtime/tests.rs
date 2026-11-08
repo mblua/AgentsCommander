@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use futures::future::BoxFuture;
 
 use super::*;
+use crate::config::settings::{AppSettings, SettingsState};
 use crate::context_history::config::{ConfigStatus, LoadedHistoryConfig};
 use crate::context_history::observation::TeamMembers;
 use crate::context_history::store::{AppendOutcome, HistoryWriter};
@@ -51,6 +52,8 @@ struct Shared {
     /// While set, the writer thread blocks inside `append`.
     hold: AtomicBool,
     stored: Mutex<Vec<HistoryRecord>>,
+    /// Retention of every writer opened, in order.
+    opened: Mutex<Vec<u32>>,
 }
 
 struct FakeEnv(Arc<Shared>);
@@ -100,8 +103,9 @@ impl ProjectEnvironment for FakeEnv {
     fn open_writer(
         &self,
         _ac_root: &Path,
-        _config: &HistoryConfig,
+        config: &HistoryConfig,
     ) -> Result<Box<dyn HistoryAppend>, StoreError> {
+        self.0.opened.lock().unwrap().push(config.retention_days);
         Ok(Box::new(FakeWriter(Arc::clone(&self.0))))
     }
     fn is_root_directory(&self, _working_directory: &str) -> bool {
@@ -897,4 +901,133 @@ async fn a_pending_session_is_captured_once_finished_without_any_memo() {
     let stored = shared.stored.lock().unwrap();
     let values: Vec<Option<u8>> = stored.iter().map(|record| record.percent).collect();
     assert_eq!(values, [Some(40)]);
+}
+
+// ---- #4049 P03: live Settings polling through the production adapter ----------------------
+
+/// The production Settings adapter for configuration; the fake for the rest.
+struct SettingsEnv {
+    settings: crate::app_run::history_environment::DiskProjectEnvironment,
+    fake: FakeEnv,
+}
+
+impl ProjectEnvironment for SettingsEnv {
+    fn load_config(&self, ac_root: &Path) -> LoadedHistoryConfig {
+        self.settings.load_config(ac_root)
+    }
+    fn authoritative_ac_root(&self, ac_root: &Path) -> bool {
+        self.fake.authoritative_ac_root(ac_root)
+    }
+    fn teams(&self, project_path: &Path) -> Vec<TeamMembers> {
+        self.fake.teams(project_path)
+    }
+    fn open_writer(
+        &self,
+        ac_root: &Path,
+        config: &HistoryConfig,
+    ) -> Result<Box<dyn HistoryAppend>, StoreError> {
+        self.fake.open_writer(ac_root, config)
+    }
+    fn is_root_directory(&self, working_directory: &str) -> bool {
+        self.fake.is_root_directory(working_directory)
+    }
+}
+
+fn start_on_settings(shared: &Arc<Shared>, state: &SettingsState) -> Started {
+    let token = CancellationToken::new();
+    let env = Arc::new(SettingsEnv {
+        settings: crate::app_run::history_environment::DiskProjectEnvironment::new(Arc::clone(
+            state,
+        )),
+        fake: FakeEnv(Arc::clone(shared)),
+    });
+    let sessions = Arc::new(FakeSessions::default());
+    let scopes = Arc::new(HistoryScopeState::new(sessions, env));
+    let (ingress, actor) = HistoryRuntime::start(scopes, token.clone());
+    (ingress, token, tokio::spawn(actor))
+}
+
+/// Publish the two history fields, then wait past one configuration poll.
+async fn set_history(state: &SettingsState, enabled: bool, retention: u32) {
+    let mut raw = serde_json::to_value(AppSettings::default()).expect("settings json");
+    raw["contextHistoryEnabled"] = serde_json::json!(enabled);
+    raw["contextHistoryRetentionDays"] = serde_json::json!(retention);
+    let next: AppSettings = serde_json::from_value(raw).expect("settings");
+    {
+        let mut guard = state.write().await;
+        guard.context_history_enabled = next.context_history_enabled;
+        guard.context_history_retention_days = next.context_history_retention_days;
+    }
+    tokio::time::sleep(CONFIG_POLL_INTERVAL + Duration::from_millis(500)).await;
+}
+
+fn percents(shared: &Shared) -> Vec<Option<u8>> {
+    shared
+        .stored
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|record| record.percent)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_settings_toggle_off_on_off_on_keeps_rows_and_drops_stale_epochs() {
+    let shared = Arc::new(Shared::default());
+    let state = crate::config::settings::new_settings_state(AppSettings::default());
+    let (ingress, token, task) = start_on_settings(&shared, &state);
+    let id = Uuid::new_v4();
+    ingress.offer(id, ObservedValue::Reading(20));
+    settle().await;
+    assert!(
+        percents(&shared).is_empty(),
+        "default Settings capture nothing"
+    );
+
+    set_history(&state, true, 30).await;
+    ingress.offer(id, ObservedValue::Reading(30));
+    stored_at_least(&shared, 1).await;
+    assert_eq!(percents(&shared), [Some(30)]);
+
+    // 40 is inside the writer when disable lands; 50 waits behind it in the old epoch.
+    shared.hold.store(true, Ordering::SeqCst);
+    ingress.offer(id, ObservedValue::Reading(40));
+    settle().await;
+    ingress.offer(id, ObservedValue::Reading(50));
+    settle().await;
+    set_history(&state, false, 30).await;
+    shared.hold.store(false, Ordering::SeqCst);
+    settle().await;
+    ingress.offer(id, ObservedValue::Reading(60));
+    settle().await;
+    assert_eq!(
+        percents(&shared),
+        [Some(30), Some(40)],
+        "old rows stay; none after"
+    );
+
+    set_history(&state, true, 30).await;
+    ingress.offer(id, ObservedValue::Reading(70));
+    stored_at_least(&shared, 3).await;
+    token.cancel();
+    task.await.unwrap();
+    assert_eq!(percents(&shared), [Some(30), Some(40), Some(70)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_settings_retention_reaches_the_writer() {
+    let shared = Arc::new(Shared::default());
+    let state = crate::config::settings::new_settings_state(AppSettings::default());
+    let (ingress, token, task) = start_on_settings(&shared, &state);
+    set_history(&state, true, 30).await;
+    let id = Uuid::new_v4();
+    ingress.offer(id, ObservedValue::Reading(10));
+    stored_at_least(&shared, 1).await;
+    set_history(&state, true, 7).await;
+    ingress.offer(id, ObservedValue::Reading(20));
+    stored_at_least(&shared, 2).await;
+    token.cancel();
+    task.await.unwrap();
+    assert_eq!(*shared.opened.lock().unwrap(), [30, 7]);
+    assert_eq!(percents(&shared), [Some(10), Some(20)]);
 }
