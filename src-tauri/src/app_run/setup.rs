@@ -526,11 +526,14 @@ fn start_session_observers(
     // #3532 context history. Its ingress is an independent fanout of the same
     // bounded sample bridge; shutdown cancels the actor, which flushes for at most
     // `SHUTDOWN_FLUSH` and never blocks quit.
+    let settings = app.state::<SettingsState>().inner().clone();
     let history_scopes = Arc::new(crate::history_runtime::HistoryScopeState::new(
         Arc::new(HistorySessions {
             session_mgr: Arc::clone(&session_mgr_for_scraper),
         }),
-        Arc::new(crate::app_run::history_environment::DiskProjectEnvironment),
+        Arc::new(
+            crate::app_run::history_environment::DiskProjectEnvironment::new(settings.clone()),
+        ),
     ));
     let history_ingress = crate::start_context_history_runtime(
         Arc::clone(&history_scopes),
@@ -548,9 +551,7 @@ fn start_session_observers(
             pty_mgr: pty_mgr.clone(),
             poison_logged: AtomicBool::new(false),
         }),
-        Arc::new(ScraperPatterns {
-            settings: app.state::<SettingsState>().inner().clone(),
-        }),
+        Arc::new(ScraperPatterns { settings }),
         Arc::new(ScraperSink {
             app_handle: app.handle().clone(),
         }),
