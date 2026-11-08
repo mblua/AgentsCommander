@@ -5,7 +5,6 @@ import {
   CONTEXT_HISTORY_SCHEMA_VERSION,
   formatRecordsPerSession,
   isHistoryIpcError,
-  periodEndingAt,
   selectSessionWindow,
   sessionWindowLabel,
   type AgentDetailResponse,
@@ -113,7 +112,7 @@ describe("ContextHistoryAPI wire contract", () => {
         {
           runtimeSessionId: L,
           scope: { kind: "unknown", agentKey: null, teamIds: [] },
-          windows: null,
+          sessionWindows: null,
         },
       ],
     };
@@ -126,7 +125,8 @@ describe("ContextHistoryAPI wire contract", () => {
       cmd: "get_context_history_sidebar_means",
       args: { request: { projectPath: "__PROJECT__", runtimeSessionIds: [L] } },
     });
-    expect(got.entries[0].windows).toBeNull();
+    expect(got.entries[0].sessionWindows).toBeNull();
+    expect(got.entries[0]).not.toHaveProperty("windows");
   });
 
   it("sends a count-mode query nested and keeps it in the date representation", async () => {
@@ -180,13 +180,11 @@ describe("ContextHistoryAPI wire contract", () => {
         {
           runtimeSessionId: L,
           scope: { kind: "known", agentKey: "dev", teamIds: ["t"] },
-          windows: null,
           sessionWindows: [bucket],
         },
         {
           runtimeSessionId: L,
           scope: { kind: "ambiguous", agentKey: null, teamIds: [] },
-          windows: null,
           sessionWindows: null,
         },
       ],
@@ -208,10 +206,6 @@ describe("ContextHistoryAPI wire contract", () => {
 });
 
 describe("context-history helpers", () => {
-  it("builds a half-open UTC period ending at the refresh time", () => {
-    expect(periodEndingAt(7 * 86400000, 7)).toEqual({ fromUtcMs: 0, toUtcMs: 7 * 86400000 });
-  });
-
   it("labels session windows and notes fewer available sessions", () => {
     expect(sessionWindowLabel(1)).toBe("Última sesión");
     expect(sessionWindowLabel(25)).toBe("Últimas 25 sesiones");
@@ -240,9 +234,12 @@ describe("context-history helpers", () => {
       incomplete: false,
     };
     const five: SessionWindowBucket = { ...two, requestedSessions: 5 };
-    expect(selectSessionWindow(counts, 2, [two, five])).toEqual({ requestedSessions: 2, bucket: two });
-    expect(selectSessionWindow(counts, 300, [two, five])).toEqual({ requestedSessions: 5, bucket: five });
-    expect(selectSessionWindow(counts, undefined, null)).toEqual({ requestedSessions: 5, bucket: null });
+    expect(selectSessionWindow(counts, 2, [two, five]))
+      .toEqual({ requestedSessions: 2, bucket: two });
+    expect(selectSessionWindow(counts, 300, [two, five]))
+      .toEqual({ requestedSessions: 5, bucket: five });
+    expect(selectSessionWindow(counts, undefined, null))
+      .toEqual({ requestedSessions: 5, bucket: null });
     expect(selectSessionWindow([], 2, [two])).toBeNull();
     expect(sessionWindowLabel(5)).toBe("Últimas 5 sesiones");
   });

@@ -4,7 +4,6 @@
 // recomputes a mean, a selection or a scope from these values.
 
 export const CONTEXT_HISTORY_SCHEMA_VERSION = 3;
-export const DAY_MS = 86_400_000;
 
 /** A launch-metadata filter: any value, an unknown (null) value, or one exact value. */
 export type LaunchFilter =
@@ -49,7 +48,8 @@ export type InitialKind = "confirmed_zero_transition" | "first_observed" | "unkn
 export interface RequestedPeriod {
   fromUtcMs: number;
   toUtcMs: number;
-  sessionCount?: number | null;
+  /** #4091 Requested count in count mode; null in date mode. */
+  sessionCount: number | null;
   selection: "recent_sessions" | "session_started";
 }
 
@@ -87,7 +87,7 @@ export interface Aggregate {
   mean: number | null;
   sessionsCount: number;
   /** #4091 `recordsCount / sessionsCount` from the backend; never derived here. */
-  recordsPerSession?: number | null;
+  recordsPerSession: number | null;
   incomplete: boolean;
 }
 
@@ -108,8 +108,8 @@ export interface AgentSummary extends Aggregate {
   agentKey: string;
   agentName: string;
   metadataBuckets: MetadataBucket[];
-  /** Count mode only; null in date mode. Optional until P06. */
-  scopeWindows?: ScopeWindowCoverage[] | null;
+  /** Count mode only; null in date mode. */
+  scopeWindows: ScopeWindowCoverage[] | null;
 }
 
 export interface ReportResponse extends ResponseHeader {
@@ -148,7 +148,8 @@ export interface SessionSummary extends SessionStats, SessionMetadata {
 
 export interface AgentDetailResponse extends ResponseHeader, Aggregate {
   agentKey: string;
-  scopeWindows?: ScopeWindowCoverage[] | null;
+  /** Count mode only; null in date mode. */
+  scopeWindows: ScopeWindowCoverage[] | null;
   sessionsPage: SessionSummary[];
   nextSessionCursor: string | null;
 }
@@ -201,25 +202,12 @@ export interface SidebarScope {
   teamIds: string[];
 }
 
-export interface SidebarBucket extends Aggregate {
-  days: number;
-  fromUtcMs: number;
-  toUtcMs: number;
-}
-
-export interface SidebarWindows {
-  day: SidebarBucket;
-  week: SidebarBucket;
-  month: SidebarBucket;
-}
-
 /** Only a known scope carries windows; ambiguous/unknown are null, never zero. */
 export interface SidebarEntry {
   runtimeSessionId: string;
   scope: SidebarScope;
-  windows: SidebarWindows | null;
-  /** #4091 One bucket per configured count, in order; optional until P06. */
-  sessionWindows?: SessionWindowBucket[] | null;
+  /** #4091 One bucket per configured count, in order. */
+  sessionWindows: SessionWindowBucket[] | null;
 }
 
 export interface SidebarMeansResponse {
@@ -250,14 +238,6 @@ export function isHistoryIpcError(value: unknown): value is HistoryIpcError {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.code === "string" && typeof candidate.message === "string";
-}
-
-/** Half-open UTC period `[to - days, to)` fixed at refresh time. */
-export function periodEndingAt(toUtcMs: number, days: number): {
-  fromUtcMs: number;
-  toUtcMs: number;
-} {
-  return { fromUtcMs: toUtcMs - days * DAY_MS, toUtcMs };
 }
 
 /** #4091 "Últimas N sesiones" ("Última sesión" for 1), noting fewer available. */

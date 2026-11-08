@@ -3,14 +3,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
 import { readFileSync } from "node:fs";
 import { FakeTransport } from "../shared/testing/fake-transport";
-import { click, renderWithFakeTransport, waitFor } from "../shared/testing/ui-harness";
+import {
+  click,
+  renderWithFakeTransport,
+  settingsSnapshot,
+  waitFor,
+} from "../shared/testing/ui-harness";
 import type {
   AgentDetailResponse,
   AgentSummary,
   ChangesPageResponse,
   HistoryRecord,
   ReportResponse,
+  ScopeWindowCoverage,
   SessionSummary,
+  TeamAttribution,
 } from "../shared/context-history";
 import ContextHistoryApp, { BOUNDARY_TEXT, TEXT } from "./App";
 
@@ -33,7 +40,12 @@ const L = "11111111-1111-4111-8111-111111111111";
 
 const header = {
   schemaVersion: 2,
-  requestedPeriod: { fromUtcMs: 0, toUtcMs: NOW, selection: "session_started" as const },
+  requestedPeriod: {
+    fromUtcMs: 0,
+    toUtcMs: NOW,
+    sessionCount: 300,
+    selection: "recent_sessions" as const,
+  },
   generatedAtUtcMs: NOW,
   coverage: {
     retentionDays: 30,
@@ -62,7 +74,9 @@ const agent: AgentSummary = {
   positiveSum: 0,
   mean: 42.25,
   sessionsCount: 2,
+  recordsPerSession: 3.5,
   incomplete: false,
+  scopeWindows: null,
 };
 
 const reportResponse = (agents: AgentSummary[]): ReportResponse => ({
@@ -110,7 +124,9 @@ const detailResponse: AgentDetailResponse = {
   positiveSum: 0,
   mean: 42.25,
   sessionsCount: 1,
+  recordsPerSession: 7,
   incomplete: false,
+  scopeWindows: null,
   sessionsPage: [session],
   nextSessionCursor: null,
 };
@@ -127,7 +143,20 @@ const changesResponse = {
   nextRecordCursor: null,
 } as ChangesPageResponse;
 
-function mount(fake: FakeTransport, onClose = () => {}) {
+const WINDOWS = [25, 100, 300];
+
+/** #4091 The App reads the configured session windows before any history query. */
+function serveSettings(fake: FakeTransport, windows: number[] | null = WINDOWS) {
+  const snapshot = settingsSnapshot(windows ? { contextHistorySessionWindows: windows } : {});
+  if (!windows) delete snapshot.contextHistorySessionWindows;
+  fake.resolve("get_settings", snapshot);
+}
+
+const historyCalls = (fake: FakeTransport) =>
+  fake.calls.filter((c) => c.cmd.startsWith("get_context_history_"));
+
+function mount(fake: FakeTransport, onClose = () => {}, windows: number[] | null = WINDOWS) {
+  if (windows !== null && !fake.calls.length) serveSettings(fake, windows);
   return renderWithFakeTransport(
     () => <ContextHistoryApp projectPath="C:/p" onClose={onClose} now={() => NOW} />,
     fake,
@@ -249,6 +278,7 @@ describe("ContextHistoryApp", () => {
     click(must(view.root, '[data-ac-testid="contextHistory.retry"]'));
     await waitFor(() => expect(must(view.root, "[role='status']").textContent).toBe(TEXT.empty));
     expect(fake.calls.filter((c) => c.cmd === "get_context_history_report")).toHaveLength(2);
+    expect(fake.calls.filter((c) => c.cmd === "get_settings")).toHaveLength(2);
   });
 
   it("offers Todos and Desconocido distinctly and sends the chosen filter", async () => {
@@ -262,8 +292,9 @@ describe("ContextHistoryApp", () => {
     expect([...model.options].map((o) => o.value)).toEqual(["any", "unknown", "exact:opus"]);
     model.value = "unknown";
     model.dispatchEvent(new Event("change", { bubbles: true }));
-    await waitFor(() => expect(fake.calls).toHaveLength(2));
-    expect(fake.calls[1].args.request).toMatchObject({ model: { kind: "unknown" } });
+    await waitFor(() => expect(historyCalls(fake)).toHaveLength(2));
+    expect(historyCalls(fake)[1].args.request).toMatchObject({ model: { kind: "unknown" } });
+    expect(fake.calls.filter((c) => c.cmd === "get_settings")).toHaveLength(1);
   });
 
   it("opens sessions and the timeline with backend labels", async () => {
@@ -288,6 +319,178 @@ describe("ContextHistoryApp", () => {
     expect(must(view.root, ".ch-panel").classList.contains("ch-has-selection")).toBe(true);
     click(must(view.root, ".ch-back"));
     await waitFor(() => expect(view.root.querySelector(".ch-detail")).toBeNull());
+  });
+
+  it("reads settings first and queries the last configured count", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([]));
+    const view = mount(fake, () => {}, [3, 40]);
+    cleanup = view.cleanup;
+    await waitFor(() => expect(historyCalls(fake)).toHaveLength(1));
+    expect(fake.calls[0].cmd).toBe("get_settings");
+    expect(historyCalls(fake)[0].args.request).toMatchObject({
+      fromUtcMs: 0,
+      toUtcMs: NOW,
+      sessionCount: 40,
+    });
+    const select = must(view.root, '[data-ac-testid="contextHistory.sessionCount"]');
+    const options = [...(select as HTMLSelectElement).options];
+    expect(options.map((o) => o.value)).toEqual(["3", "40"]);
+    expect(options.map((o) => o.textContent))
+      .toEqual(["Últimas 3 sesiones", "Últimas 40 sesiones"]);
+    expect((select as HTMLSelectElement).value).toBe("40");
+    (select as HTMLSelectElement).value = "3";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(historyCalls(fake)).toHaveLength(2));
+    expect(historyCalls(fake)[1].args.request).toMatchObject({ sessionCount: 3, cursor: null });
+    expect(fake.calls.filter((c) => c.cmd === "get_settings")).toHaveLength(1);
+  });
+
+  for (const failure of ["reject", "missing", "empty"] as const) {
+    it(`shows an error and sends no history request when settings are ${failure}`, async () => {
+      const fake = new FakeTransport();
+      if (failure === "reject") fake.reject("get_settings", "settings unavailable");
+      else serveSettings(fake, failure === "empty" ? [] : null);
+      fake.resolve("get_context_history_report", reportResponse([agent]));
+      const view = mount(fake, () => {}, null);
+      cleanup = view.cleanup;
+      await waitFor(() =>
+        expect(must(view.root, "[role='status']").textContent).toBe(TEXT.settingsError),
+      );
+      expect(historyCalls(fake)).toEqual([]);
+      serveSettings(fake, [10]);
+      click(must(view.root, '[data-ac-testid="contextHistory.retry"]'));
+      await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+      expect(historyCalls(fake)[0].args.request).toMatchObject({ sessionCount: 10 });
+    });
+  }
+
+  it("refresh re-reads settings and follows a changed list", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("get_context_history_report", reportResponse([agent]));
+    fake.resolve("get_context_history_agent_detail", detailResponse);
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    click(must(view.root, "[data-agent-key='dev']"));
+    await waitFor(() => void must(view.root, ".ch-detail"));
+    serveSettings(fake, [100, 200]);
+    const refresh = [...view.root.querySelectorAll("button")]
+      .find((b) => b.textContent === TEXT.refresh)!;
+    click(refresh);
+    await waitFor(() => expect(fake.calls.filter((c) => c.cmd === "get_settings")).toHaveLength(2));
+    await waitFor(() => expect(historyCalls(fake).length).toBeGreaterThan(2));
+    const last = historyCalls(fake)[historyCalls(fake).length - 1];
+    expect(last.cmd).toBe("get_context_history_report");
+    expect(last.args.request).toMatchObject({ sessionCount: 200, cursor: null });
+    expect(view.root.querySelector(".ch-detail")).toBeNull();
+  });
+
+  it("ignores a late settings reply after the project changes", async () => {
+    const fake = new FakeTransport();
+    let release!: (value: unknown) => void;
+    let settingsCalls = 0;
+    fake.onInvoke("get_settings", () => {
+      settingsCalls += 1;
+      if (settingsCalls === 1) return new Promise((resolve) => { release = resolve; });
+      return settingsSnapshot({ contextHistorySessionWindows: [9] });
+    });
+    fake.resolve("get_context_history_report", reportResponse([]));
+    const [project, setProject] = createSignal("C:/a");
+    const view = renderWithFakeTransport(
+      () => <ContextHistoryApp projectPath={project()} onClose={() => {}} now={() => NOW} />,
+      fake,
+    );
+    cleanup = view.cleanup;
+    setProject("C:/b");
+    await waitFor(() => expect(historyCalls(fake)).toHaveLength(1));
+    release(settingsSnapshot({ contextHistorySessionWindows: [1, 2] }));
+    await flush();
+    expect(historyCalls(fake)).toHaveLength(1);
+    expect(historyCalls(fake)[0].args.request).toMatchObject({
+      projectPath: "C:/b",
+      sessionCount: 9,
+    });
+  });
+
+  it("renders backend records per session for agents and detail, never derived", async () => {
+    const fake = new FakeTransport();
+    const rows: AgentSummary[] = [
+      { ...agent, agentKey: "a", recordsCount: 1560, sessionsCount: 100, recordsPerSession: 15.6 },
+      { ...agent, agentKey: "b", recordsCount: 21, sessionsCount: 2, recordsPerSession: 10.5 },
+      { ...agent, agentKey: "c", recordsCount: 0, sessionsCount: 0, recordsPerSession: null },
+      {
+        ...agent, agentKey: "d", recordsCount: 0, sessionsCount: 3, recordsPerSession: 0,
+        mean: null,
+      },
+      { ...agent, agentKey: "e", recordsCount: 10, sessionsCount: 3, recordsPerSession: 9.9 },
+    ];
+    fake.resolve("get_context_history_report", reportResponse(rows));
+    fake.resolve("get_context_history_agent_detail", {
+      ...detailResponse,
+      recordsCount: 1560,
+      sessionsCount: 100,
+      recordsPerSession: 15.6,
+    });
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='e']"));
+    const perSession = (key: string) =>
+      must(must(view.root, `[data-agent-key='${key}']`), "[data-metric='records-per-session']")
+        .textContent;
+    expect(perSession("a")).toBe("15.6 registros/sesión");
+    expect(perSession("b")).toBe("10.5 registros/sesión");
+    expect(perSession("c")).toBe("— registros/sesión");
+    expect(perSession("d")).toBe("0.0 registros/sesión");
+    expect(perSession("e")).toBe("9.9 registros/sesión");
+    const metrics = [...must(view.root, "[data-agent-key='a']").querySelectorAll("[data-metric]")]
+      .map((el) => el.getAttribute("data-metric"));
+    expect(metrics.slice(0, 3)).toEqual(["count", "records-per-session", "mean"]);
+    click(must(view.root, "[data-agent-key='a']"));
+    await waitFor(() => void must(view.root, '[data-ac-testid="contextHistory.detailTotals"]'));
+    const totals = must(view.root, '[data-ac-testid="contextHistory.detailTotals"]');
+    expect(must(totals, "[data-metric='records-per-session']").textContent)
+      .toBe("15.6 registros/sesión");
+    expect(must(totals, "[data-metric='mean']").textContent).toBe(`${TEXT.meanLabel}: 42.3`);
+  });
+
+  it("shows each scope's requested and available sessions with its team", async () => {
+    const fake = new FakeTransport();
+    const scope = (
+      teamAttribution: TeamAttribution,
+      teamIds: string[],
+      availableSessions: number,
+    ): ScopeWindowCoverage =>
+      ({ teamAttribution, teamIds, requestedSessions: 300, availableSessions });
+    const scoped: AgentSummary = {
+      ...agent,
+      scopeWindows: [
+        scope("known", ["team-a"], 300),
+        scope("known", ["team-b"], 2),
+        scope("unknown", [], 1),
+        scope("ambiguous", [], 0),
+      ],
+    };
+    fake.resolve("get_context_history_report", reportResponse([scoped]));
+    fake.resolve("get_context_history_agent_detail", {
+      ...detailResponse,
+      scopeWindows: scoped.scopeWindows,
+    });
+    const view = mount(fake);
+    cleanup = view.cleanup;
+    await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+    const texts = (root: Element) =>
+      [...root.querySelectorAll("[data-metric='scope-window']")].map((el) => el.textContent);
+    const expected = [
+      "team-a: Últimas 300 sesiones",
+      "team-b: Últimas 300 sesiones (2 disponibles)",
+      `${TEXT.unknown}: Últimas 300 sesiones (1 disponibles)`,
+      `${TEXT.ambiguous}: Últimas 300 sesiones (0 disponibles)`,
+    ];
+    expect(texts(must(view.root, "[data-agent-key='dev']"))).toEqual(expected);
+    click(must(view.root, "[data-agent-key='dev']"));
+    await waitFor(() => void must(view.root, '[data-ac-testid="contextHistory.detailTotals"]'));
+    expect(texts(must(view.root, '[data-ac-testid="contextHistory.detailTotals"]'))).toEqual(expected);
   });
 
   it("closes on Escape", async () => {
