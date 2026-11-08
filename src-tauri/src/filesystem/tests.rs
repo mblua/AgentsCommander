@@ -951,3 +951,29 @@ fn issue_3329_plain_clear_ports_preserve_native_results() {
         assert_eq!(directories::cli_discovery_is_dir(&path), path.is_dir());
     }
 }
+
+#[test]
+fn loop_directory_probe_preserves_path_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("loop.json");
+    std::fs::write(&file, b"{}").unwrap();
+    assert!(loop_files::loop_path_is_directory(dir.path()));
+    for path in [file.clone(), dir.path().join("missing"), file.join("child")] {
+        assert!(!loop_files::loop_path_is_directory(&path));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn room_lock_resource_probe_preserves_existence() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("index.lock");
+    std::fs::write(&file, b"lock").unwrap();
+    assert!(room_diagnostics::room_lock_resource_exists(dir.path()));
+    assert!(room_diagnostics::room_lock_resource_exists(&file));
+    for path in [dir.path().join("missing"), file.join("child")] {
+        assert!(!room_diagnostics::room_lock_resource_exists(&path));
+    }
+    std::fs::remove_file(&file).unwrap();
+    assert!(!room_diagnostics::room_lock_resource_exists(&file));
+}
