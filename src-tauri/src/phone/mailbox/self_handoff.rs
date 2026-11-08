@@ -21,6 +21,7 @@ use super::settle::{
 };
 use crate::config::agent_command::build_configured_agent_spawn_for_cwd;
 use crate::config::settings::AppSettings;
+use crate::filesystem::phone_mailbox::mailbox_path_is_file;
 use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::session::maintenance::{MaintenanceError, PendingSelfClear};
@@ -921,7 +922,7 @@ fn resolve_self_switch_request(
     validate_self_switch_spawn(settings, &replica_path, &targets)?;
 
     let handoff_path = replica_path.join(SELF_HANDOFF_ROOT_NAME);
-    if !handoff_path.is_file() {
+    if !mailbox_path_is_file(&handoff_path) {
         return Err(format!(
             "self-handoff-and-switch: SELF-HANDOFF.md not found in your root ({}); \
             write it before requesting self-handoff-and-switch.",
@@ -944,7 +945,7 @@ fn resolve_self_restart_request(session: &SessionInfo) -> Result<SelfRestartReci
     //    session cwd is the only correct source for a Root Agent or an origin matrix agent.
     let handoff_path =
         std::path::Path::new(&session.working_directory).join(SELF_HANDOFF_ROOT_NAME);
-    if !handoff_path.is_file() {
+    if !mailbox_path_is_file(&handoff_path) {
         return Err(format!(
             "self-handoff-and-restart: SELF-HANDOFF.md not found in your root ({}); \
             write it before requesting self-handoff-and-restart.",
