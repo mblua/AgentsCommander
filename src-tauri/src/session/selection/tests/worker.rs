@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
+use crate::commands::session::selection_executor::run_owned_selection_operation;
 
 #[tokio::test]
 async fn create_auto_selection_precondition_exists_only_for_starting_none() {

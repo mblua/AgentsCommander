@@ -386,7 +386,7 @@ async fn self_switch_persist_under_turn(
     agent: String,
     profile: String,
 ) -> Result<(), String> {
-    use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
+    use crate::commands::session::selection_executor::run_owned_selection_operation;
     let SelfSwitchPersistHeld {
         events,
         persisted,

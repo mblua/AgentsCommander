@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::host::CoManagedHost;
+use super::CoManagedHost;
 use tokio_util::sync::CancellationToken;
 
 use super::{

@@ -11,7 +11,7 @@ use crate::capture::key::ConsumptionKey;
 use crate::capture::registry::CaptureRegistry;
 use crate::capture::sink::CaptureSlot;
 use crate::capture::state::{AbstainReason, CaptureState, CommittedEffect, EffectPreconditions};
-use crate::co_managed::host::CoManagedHost;
+use crate::co_managed::CoManagedHost;
 use crate::commands::session::selection_executor::turn::NATIVE_SELECTION_TASKS;
 use crate::config::co_managed::CoManagedState;
 use crate::config::settings::SettingsState;

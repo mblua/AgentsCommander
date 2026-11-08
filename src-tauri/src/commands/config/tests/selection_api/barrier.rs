@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
+use crate::commands::session::selection_executor::run_owned_selection_operation;
 
 #[tokio::test]
 async fn issue_1937_selection_api_barrier_unlock_waits_for_paused_apply_publication() {

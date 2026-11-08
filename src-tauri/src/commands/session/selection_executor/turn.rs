@@ -40,53 +40,5 @@ impl SelectionTasks for NativeSelectionTasks {
     }
 }
 
-pub(crate) async fn run_owned_selection_operation<F, Fut, T>(operation: F) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    crate::session::selection::run_owned_selection_operation_with_tasks(
-        &NATIVE_SELECTION_TASKS,
-        operation,
-    )
-    .await
-}
-
-pub(crate) async fn run_owned_selection_read_timed<F, Fut, T>(
-    command: &'static str,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    crate::session::selection::run_owned_selection_read_timed_with_tasks(
-        &NATIVE_SELECTION_TASKS,
-        command,
-        operation,
-    )
-    .await
-}
-
-#[cfg(test)]
-pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
-    command: &'static str,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    crate::session::selection::run_owned_selection_operation_timed_with_tasks(
-        &NATIVE_SELECTION_TASKS,
-        command,
-        operation,
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests;

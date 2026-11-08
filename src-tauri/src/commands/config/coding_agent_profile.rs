@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 
-use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
+use crate::commands::session::selection_executor::run_owned_selection_operation;
 use crate::config::settings::{
     save_settings, validate_and_repair_settings, AppSettings, CodingAgentEnv,
     CodingAgentProfilesConfig, SettingsState,

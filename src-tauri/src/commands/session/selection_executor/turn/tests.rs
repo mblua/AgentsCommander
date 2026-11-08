@@ -99,7 +99,7 @@ async fn issue_3950_typed_resource() {
     struct Resource(Box<usize>);
     let resource = Resource(Box::new(42));
     let address = (&*resource.0) as *const usize as usize;
-    let result = super::run_owned_selection_operation(move || async move { Ok(resource) })
+    let result = super::super::run_owned_selection_operation(move || async move { Ok(resource) })
         .await
         .unwrap();
     assert_eq!((&*result.0) as *const usize as usize, address);
@@ -110,7 +110,7 @@ async fn issue_3950_typed_resource() {
 #[tokio::test]
 async fn issue_3950_body_error() {
     let result =
-        super::run_owned_selection_operation(|| async { Err::<(), _>("body".into()) }).await;
+        super::super::run_owned_selection_operation(|| async { Err::<(), _>("body".into()) }).await;
     assert_eq!(result, Err("body".into()));
     println!("\nISSUE3950_CONTROL_OK case=issue_3950_body_error");
 }
@@ -185,8 +185,9 @@ async fn issue_3950_turn_panic() {
         "native join must be polled before typed receiver"
     );
 
-    let panic =
-        super::run_owned_selection_operation::<_, _, ()>(|| async { panic!("owned body panic") });
+    let panic = super::super::run_owned_selection_operation::<_, _, ()>(|| async {
+        panic!("owned body panic")
+    });
     assert_eq!(
         timeout(PRESENCE, panic).await.unwrap(),
         Err("selectionOperationTurnJoinFailed".into())
@@ -294,13 +295,13 @@ async fn issue_3950_read_write() {
     let turn = Arc::new(tokio::sync::RwLock::new(()));
     let first_reader = turn.read().await;
     let operation = TEST_SELECTION_TURN.scope(Arc::clone(&turn), async {
-        super::run_owned_selection_read_timed("issue3950-overlap", || async { Ok(()) }).await
+        super::super::run_owned_selection_read_timed("issue3950-overlap", || async { Ok(()) }).await
     });
     assert_eq!(timeout(PRESENCE, operation).await.unwrap(), Ok(()));
     let (entered, mut entry) = oneshot::channel();
     let writer_turn = Arc::clone(&turn);
     let writer = tokio::spawn(TEST_SELECTION_TURN.scope(writer_turn, async move {
-        super::run_owned_selection_operation(move || async move {
+        super::super::run_owned_selection_operation(move || async move {
             entered.send(()).unwrap();
             Ok(())
         })
@@ -329,8 +330,10 @@ async fn issue_3950_release_before_log() {
     );
     let result = TEST_SELECTION_TURN
         .scope(turn, async {
-            super::run_owned_selection_operation_timed("issue3950-release", || async { Ok(()) })
-                .await
+            super::super::run_owned_selection_operation_timed("issue3950-release", || async {
+                Ok(())
+            })
+            .await
         })
         .await;
     assert_eq!(result, Ok(()));

@@ -232,7 +232,7 @@ impl<R: Runtime> crate::session::selection::SelectionEvents for AppHandle<R> {
     }
 }
 
-impl<R: Runtime> crate::co_managed::host::CoManagedEvents for AppHandle<R> {
+impl<R: Runtime> crate::co_managed::CoManagedEvents for AppHandle<R> {
     fn co_managed_event(&self, event: &'static str, value: serde_json::Value) {
         let _ = self.emit(event, value);
     }

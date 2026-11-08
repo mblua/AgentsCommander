@@ -1,6 +1,6 @@
 //! The issue's core cut stays independent of native state, events and tasks.
 
-const CORE_PATHS: [&str; 11] = [
+const CORE_PATHS: [&str; 10] = [
     "session/selection.rs",
     "session/selection/coordinator_runtime.rs",
     "session/selection/execute.rs",
@@ -11,7 +11,6 @@ const CORE_PATHS: [&str; 11] = [
     "co_managed.rs",
     "co_managed/route.rs",
     "session/selection/task.rs",
-    "co_managed/host.rs",
 ];
 
 fn boundary_violations(source: &str) -> Vec<&'static str> {
@@ -96,7 +95,7 @@ fn issue_3950_boundary_scrub() {
 #[test]
 fn issue_3950_boundary_each_path() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    assert_eq!(CORE_PATHS.len(), 11);
+    assert_eq!(CORE_PATHS.len(), 10);
     for path in CORE_PATHS {
         let source = std::fs::read_to_string(root.join(path)).expect("core source exists");
         assert!(

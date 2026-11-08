@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::commands::session::selection_executor::turn::{
+use crate::commands::session::selection_executor::{
     run_owned_selection_operation, run_owned_selection_read_timed,
 };
 use crate::config::settings::SettingsState;

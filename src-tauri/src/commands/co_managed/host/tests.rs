@@ -1,6 +1,6 @@
 //! Capability compatibility and co-managed publication controls.
 use super::*;
-use crate::co_managed::host::CoManagedEvents;
+use crate::co_managed::CoManagedEvents;
 use crate::co_managed::{
     co_managed_jev_settings, emit_co_managed_state, emit_session_idle_edge,
     surface_co_managed_user_message, CoManagedSupervisorHandle, CoManagedTrigger,

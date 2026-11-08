@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::session::selection_executor::turn::run_owned_selection_operation;
+use crate::commands::session::selection_executor::run_owned_selection_operation;
 use crate::config::coding_agent_profiles::SelectionWriteIntent;
 
 fn selection_lock_web_fixture(

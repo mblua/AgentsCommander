@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::session::selection_executor::turn::run_owned_selection_operation_timed;
+use crate::commands::session::selection_executor::run_owned_selection_operation_timed;
 
 // ── #2475 synthetic selection-lock bench ─────────────────────────
 //
