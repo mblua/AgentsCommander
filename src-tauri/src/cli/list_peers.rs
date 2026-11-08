@@ -1,25 +1,25 @@
 use clap::Args;
-use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
-use crate::api::schema::is_false;
-pub use crate::api::schema::LeanPeerInfo;
-use crate::config::agent_config::CodingAgentEntry;
+pub use crate::config::teams::peer_projection::LeanPeerInfo;
+#[cfg(test)]
+use crate::config::teams::{
+    build_root_agent_synthetic_peer, detect_wg_replica,
+    discover_root_coordinator_peers_from_project_paths, discover_wg_peers, lean_role_summary,
+    WgReplicaInfo, ROLE_SUMMARY_MAX,
+};
+use crate::config::teams::{discover_peers, PeerInfo};
 #[cfg(test)]
 use crate::session::session::SessionCommunicationKind;
 
-mod discovery;
 mod snapshot;
-mod status;
 
-use discovery::{apply_peer_filter, discover_peers, report_unknown_peers};
 #[cfg(test)]
-use discovery::{
-    build_root_agent_synthetic_peer, detect_wg_replica,
-    discover_root_coordinator_peers_from_project_paths, discover_wg_peers, WgReplicaInfo,
+use crate::config::sessions_persistence::{
+    build_session_index_from, canon_or_norm, compute_peer_status, norm_path, CandidateSession,
+    PeerStatus,
 };
 use snapshot::{
     apply_snapshot_target_filter, discover_snapshot_targets, serialize_snapshot_targets,
@@ -27,11 +27,6 @@ use snapshot::{
 };
 #[cfg(test)]
 use snapshot::{snapshot_targets_reason_note, SnapshotTargetsSilentReason};
-#[cfg(test)]
-use status::{
-    build_session_index_from, canon_or_norm, compute_peer_status, norm_path, CandidateSession,
-    PeerStatus,
-};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -209,223 +204,61 @@ pub struct ListPeersLeanArgs {
     pub snapshot_targets: bool,
 }
 
-/// Maximum length (in Unicode chars) of `roleSummary`, **including any
-/// trailing ellipsis**. Any input longer than this limit is truncated to
-/// `ROLE_SUMMARY_MAX - 1` chars plus `…`, so the final string is always
-/// `≤ ROLE_SUMMARY_MAX` chars.
+/// Apply the `--peer` filter to a discovered peer list.
 ///
-/// Chosen to be:
-///   - long enough to convey a one-line role hint;
-///   - short enough that a list of 20 peers stays under ~5 KB of JSON
-///     worst-case (multi-byte scripts like CJK), well within the 32 KB
-///     notification-line budget agents have to read.
-const ROLE_SUMMARY_MAX: usize = 80;
-
-/// Compute a single-line, length-capped summary from a full `role` string.
-///
-/// - Takes the first non-empty trimmed line.
-/// - Returns `""` for empty/whitespace-only input, the documented
-///   "no-role" sentinels, or the standard `AgentsCommander` CLAUDE.md
-///   preamble openings (which are uniform across replicas and carry no
-///   role-hint signal).
-/// - If the surviving line is ≤ `ROLE_SUMMARY_MAX` chars, returns it
-///   unchanged.
-/// - Otherwise returns the first `ROLE_SUMMARY_MAX - 1` chars followed by
-///   `…`, so the result is always ≤ `ROLE_SUMMARY_MAX` chars total.
-///
-/// Note: `roleSummary` is best-effort. When a peer's role document has no
-/// `## Role` section (or no `# Role:` heading for WG replicas), the field
-/// reflects the first non-heading lines that `extract_role_section` falls
-/// back to — which may not be a true role description. Treat the field as
-/// a hint, not authoritative.
-fn lean_role_summary(role: &str) -> String {
-    const NO_ROLE_SENTINELS: &[&str] = &["No role description available.", "Room replica agent."];
-    // Standard AgentsCommander preamble openings. These appear verbatim in
-    // every replica's CLAUDE.md by design, so when they surface through the
-    // `extract_role_section` fallback they carry no discriminating signal —
-    // suppress them rather than ship 20 peers with identical roleSummary.
-    const PREAMBLE_PREFIXES: &[&str] = &[
-        "You are running inside an AgentsCommander session",
-        "# AgentsCommander Context",
-    ];
-
-    let line = role
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
-
-    if line.is_empty() || NO_ROLE_SENTINELS.contains(&line) {
-        return String::new();
-    }
-    if PREAMBLE_PREFIXES.iter().any(|p| line.starts_with(p)) {
-        return String::new();
+/// Consumes `peers` by value so filtering does not require `PeerInfo: Clone`.
+pub(super) fn apply_peer_filter(
+    peers: Vec<PeerInfo>,
+    requested: &[String],
+) -> Result<Vec<PeerInfo>, Vec<String>> {
+    if requested.is_empty() {
+        return Ok(peers);
     }
 
-    let char_count = line.chars().count();
-    if char_count <= ROLE_SUMMARY_MAX {
-        return line.to_string();
-    }
-    // Truncate to MAX-1 chars + ellipsis → exactly MAX chars total.
-    let truncated: String = line.chars().take(ROLE_SUMMARY_MAX - 1).collect();
-    format!("{truncated}…")
-}
-
-impl From<&PeerInfo> for LeanPeerInfo {
-    fn from(p: &PeerInfo) -> Self {
-        LeanPeerInfo {
-            name: p.name.clone(),
-            working: p.working,
-            session_status: p.session_status.clone(),
-            waiting_for_input: p.waiting_for_input,
-            blocked_menu: p.blocked_menu,
-            blocked_menu_message: p.blocked_menu_message.clone(),
-            reachable: p.reachable,
-            teams: p.teams.clone(),
-            role_summary: lean_role_summary(&p.role),
-            context_percent: p.context_percent,
-            agent: p.agent.clone(),
-            profile: p.profile.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PeerInfo {
-    name: String,
-    path: String,
-    /// Legacy: "active" iff working==true, else "unknown".
-    /// Preserved verbatim for callers that string-match the old field.
-    /// New callers should read `working` / `sessionStatus`.
-    status: String,
-    role: String,
-    teams: Vec<String>,
-    reachable: bool,
-    last_coding_agent: Option<String>,
-
-    // ── NEW (issue #206) ────────────────────────────────────────────
-    /// True iff the peer has a matching session in Running or Active
-    /// state AND `waiting_for_input == false`. Mirrors the sidebar
-    /// `running-peer` badge predicate (ProjectPanel.tsx:780-786).
-    working: bool,
-    /// Fine-grained status. One of:
-    ///   "active"   — `SessionStatus::Active` (focused session)
-    ///   "running"  — `SessionStatus::Running`
-    ///   "idle"     — `SessionStatus::Idle`
-    ///   "waiting"  — any matching session has `waiting_for_input==true`
-    ///                (overrides underlying `SessionStatus`, mirrors
-    ///                `replicaDotClass()` at ProjectPanel.tsx:60)
-    ///   "exited"   — `SessionStatus::Exited(_)`
-    ///   "none"     — no session matches this peer (WG peers match by
-    ///                name+cwd, non-WG peers match by cwd only)
-    session_status: String,
-    /// UUID of the matched session, when one was found.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    /// True if the matched session has `waiting_for_input`.
-    waiting_for_input: bool,
-    /// #1669 - true when the matched session is parked on a blocking terminal
-    /// menu (a folder-trust prompt detected by the #1646/#1647 menu guard).
-    /// OMITTED entirely when the session is not blocked, so existing consumers
-    /// are unaffected. `working`, `sessionStatus` and `waitingForInput` keep
-    /// their normal values in this state: the blocked condition is communicated
-    /// ONLY through this field and `blockedMenuMessage`.
-    #[serde(skip_serializing_if = "is_false")]
-    blocked_menu: bool,
-    /// #1669 - the agent-specific notice for that menu, e.g. "codex is waiting
-    /// for you to answer the folder-trust menu in this terminal". Omitted when
-    /// the session is not blocked or the row carries no message.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    blocked_menu_message: Option<String>,
-    /// Exit code, present iff `session_status` == "exited".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exit_code: Option<i32>,
-    /// #1088 - the peer's live context-usage percent (0-100), the same figure
-    /// the Sidebar badge shows, read from the matched session's persisted row.
-    /// Omitted when there is no reading (agent has no `context_regex`, the
-    /// session was not sampled yet, or no session matches this peer).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context_percent: Option<u8>,
-    /// Effective coding-agent id of the peer's chosen live session (the
-    /// session the peer status was computed from). None when no session matched.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent: Option<String>,
-    /// Effective profile letter of that session (post-fallback). None when no
-    /// session matched or the session is not an agent session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    profile: Option<String>,
-    // ────────────────────────────────────────────────────────────────
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    coding_agents: HashMap<String, CodingAgentEntry>,
-}
-
-// Shadow `agent_name_from_path`/`strip_agent_prefix` removed — canonical
-// helpers live in `config::teams` (§AR2-order step 7 / §DR2). Origin agents
-// use `agent_name_from_path` (project/agent); WG replicas use
-// `agent_fqn_from_path` (project:wg-N/agent).
-
-/// Extract a role description from markdown content: finds the `## Role` section
-/// and returns up to 3 lines. Falls back to the first `fallback_lines` non-heading lines.
-fn extract_role_section(content: &str, fallback_lines: usize, default_msg: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_role = false;
-    let mut role_lines: Vec<&str> = Vec::new();
-
-    for line in &lines {
-        if line.starts_with("## Role Prompt") || line.starts_with("## Role") {
-            in_role = true;
-            continue;
-        }
-        if in_role {
-            if line.starts_with("## ") || line.starts_with("---") {
-                break;
-            }
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                role_lines.push(trimmed);
-            }
+    // Dedupe `requested` while preserving the user's order for unique entries.
+    let mut unique: Vec<String> = Vec::with_capacity(requested.len());
+    for name in requested {
+        if !unique.iter().any(|n| n == name) {
+            unique.push(name.clone());
         }
     }
 
-    if !role_lines.is_empty() {
-        return role_lines.into_iter().take(3).collect::<Vec<_>>().join(" ");
-    }
+    // Move peers into a name→PeerInfo map so emission is O(1) per requested
+    // name and we don't need PeerInfo: Clone. Discovery never produces
+    // duplicate names (see `discover_origin_peers` / `discover_wg_peers`),
+    // so this collapse is lossless.
+    let mut by_name: HashMap<String, PeerInfo> =
+        peers.into_iter().map(|p| (p.name.clone(), p)).collect();
 
-    let fallback: Vec<&str> = lines
+    let unknown: Vec<String> = unique
         .iter()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .take(fallback_lines)
+        .filter(|n| !by_name.contains_key(n.as_str()))
+        .cloned()
         .collect();
+    if !unknown.is_empty() {
+        return Err(unknown);
+    }
 
-    if fallback.is_empty() {
-        default_msg.to_string()
+    let filtered: Vec<PeerInfo> = unique
+        .into_iter()
+        .filter_map(|name| by_name.remove(&name))
+        .collect();
+    Ok(filtered)
+}
+
+/// Emit the unknown-peer error to stderr and return exit code 1. Used by
+/// both `execute` and `execute_lean` so the message shape is identical.
+pub(super) fn report_unknown_peers(unknown: &[String], available: &[String]) -> i32 {
+    eprintln!(
+        "Error: unknown peer(s) requested via --peer: {}",
+        unknown.join(", ")
+    );
+    if available.is_empty() {
+        eprintln!("No peers were discovered for this --root.");
     } else {
-        fallback.join(" ")
+        eprintln!("Available peers: {}", available.join(", "));
     }
-}
-
-/// Read role from CLAUDE.md: extract ## Role section, or first 5 lines.
-fn read_role(repo_path: &str) -> String {
-    let claude_md = Path::new(repo_path).join("CLAUDE.md");
-    match crate::filesystem::documents::read_repository_role(&claude_md) {
-        Ok(content) => extract_role_section(&content, 5, "No role description available."),
-        Err(_) => "No role description available.".to_string(),
-    }
-}
-
-/// #791 §8.2 - public in-process `list-peers-lean` for the in-daemon API.
-///
-/// Runs the SAME discovery as `execute_lean` (WG-replica / origin / root
-/// dispatch) and the SAME `reachable` computation (via `can_communicate`),
-/// returning the lean projection directly instead of printing to stdout. The
-/// API handler calls this with the caller's bound replica root, so an API
-/// `peers` response is byte-identical to the CLI's for the same fixture. Keeps
-/// `PeerInfo` and `discover_peers` private; only `LeanPeerInfo` is exposed.
-pub fn lean_peers(root: &str) -> Result<Vec<LeanPeerInfo>, String> {
-    let peers = discover_peers(root)?;
-    Ok(peers.iter().map(LeanPeerInfo::from).collect())
+    1
 }
 
 fn serialize_full_peers(peers: &[PeerInfo]) -> i32 {

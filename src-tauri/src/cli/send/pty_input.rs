@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use super::{derive_root_project_dir, OutboxMessage, SendArgs};
+use super::arguments::SendArgs;
+use super::project::derive_root_project_dir;
+use crate::phone::types::OutboxMessage;
 
 pub(super) fn read_bounded_pty_input<R: Read>(reader: R) -> Result<String, &'static str> {
     let mut bytes = Vec::with_capacity(crate::pty::backend::PTY_INPUT_MAX_BYTES + 1);

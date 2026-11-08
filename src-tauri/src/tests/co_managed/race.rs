@@ -622,6 +622,9 @@ async fn the_blocking_commit_does_not_park_a_current_thread_worker() {
     // commit cannot win the race and find it free, and it holds the lock
     // until the async worker proves progress instead of for a fixed sleep,
     // so a descheduled test thread cannot make the commit run uncontended.
+    let commit_host = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build commit host");
     let lock_path = crate::config::co_managed::lock_path(&fixture.room_root);
     std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
     let lock_path_for_thread = lock_path.clone();
@@ -675,6 +678,7 @@ async fn the_blocking_commit_does_not_park_a_current_thread_worker() {
         kind: crate::capture::state::EffectKind::Automatic,
     };
     let commit = super::commit_co_managed_effect(
+        commit_host.handle(),
         fixture.room_root.clone(),
         slot.clone(),
         expected_seq,
