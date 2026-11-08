@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
  * ------------------------------------------------------------------ */
 
 const TOOL_NAME = 'rust-module-dependency-cycles';
-const TOOL_VERSION = '1.1.1';
+const TOOL_VERSION = '1.2.0';
 const SCHEMA_VERSION = 1;
 const BASELINE_SCHEMA_VERSION = 1;
 const BASELINE_KIND = 'rust-cycles-baseline';
