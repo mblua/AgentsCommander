@@ -21,7 +21,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DETECTOR = path.join(ROOT, 'scripts', '01-rust_module-dependency-cycles.mjs');
 const TARGET = path.join(ROOT, 'src-tauri');
 const BASELINE = path.join(ROOT, 'src-tauri', '.rust-cycles-baseline.json');
-const EXPECTED_TOOL_VERSION = '1.1.1';
+const EXPECTED_TOOL_VERSION = '1.2.0';
 const FUNCTION_SCOPE = 'cross-module';
 
 const UPDATE = `To accept a new cycle state, from the repo root:
