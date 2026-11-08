@@ -27,6 +27,27 @@ import type {
   WatcherMatchPayload,
 } from "../shared/types";
 
+// A call that lands after `rendered.cleanup()` restores the test transport falls through to
+// the default one, which outside Tauri is a real `WsTransport`. Under jsdom that opens a `ws`
+// client and leaves an unhandled rejection (#4103). An inert stand-in keeps those late calls
+// pending instead of reaching the network.
+vi.mock("../shared/transport-ws", () => ({
+  WsTransport: class {
+    invoke(): Promise<never> {
+      return new Promise<never>(() => {});
+    }
+    listen(): Promise<() => void> {
+      return Promise.resolve(() => {});
+    }
+    emit(): Promise<void> {
+      return Promise.resolve();
+    }
+    connectionState(): { state: "disconnected"; generation: number } {
+      return { state: "disconnected", generation: 0 };
+    }
+  },
+}));
+
 function snapshot(
   overrides: Partial<WatcherActivitySnapshot> = {}
 ): WatcherActivitySnapshot {

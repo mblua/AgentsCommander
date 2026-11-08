@@ -1,12 +1,13 @@
-use super::pid_is_alive;
+use super::files::{read_session_file_with_retry, retry_remove_file, write_json_atomic_new};
 #[cfg(target_os = "windows")]
-use super::process_path;
-use super::{
-    current_exe_path_string, now_unix_ms, paths_equal_for_compare, read_session_file_with_retry,
-    retry_remove_file, write_json_atomic_new, CliRequest, UiAutomationRequest,
-    UiAutomationResponse, UiAutomationSession, BACKEND_AUTOMATION_WINDOW,
-    CLI_MAX_AVAILABLE_TARGETS, CLI_MAX_TARGET_TEXT_CHARS, ENV_ENABLE, POLL_MS, REQUESTS_DIR,
-    RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
+use super::liveness::process_path;
+use super::liveness::{
+    current_exe_path_string, now_unix_ms, paths_equal_for_compare, pid_is_alive,
+};
+use super::protocol::{
+    CliRequest, UiAutomationRequest, UiAutomationResponse, UiAutomationSession,
+    BACKEND_AUTOMATION_WINDOW, CLI_MAX_AVAILABLE_TARGETS, CLI_MAX_TARGET_TEXT_CHARS, ENV_ENABLE,
+    POLL_MS, REQUESTS_DIR, RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
 };
 use crate::filesystem::{directories, documents};
 use crate::testability::window_placement::TESTABLE_EXE_NAME;

@@ -1,8 +1,17 @@
+#[cfg(windows)]
+use super::registry::is_link_or_reparse;
+use super::registry::{
+    analyze_source, canonical_reference_bytes, canonical_seed_bytes, has_conflict_markers,
+    is_literal_quotable, load_registry_from_dir, normalize_parsed_template, quote_literal,
+    sha256_hex, warn_once, EntryValue, InjectedMessagesState, MessageRegistry, MessageSpec,
+    WriteDoc, CONTEXT_ALERT_DOC_COMMENT, KNOWN_MESSAGES,
+};
 use super::*;
 use crate::pty::inject::validate_pty_input_text;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 mod engine;
 mod n_cases;
