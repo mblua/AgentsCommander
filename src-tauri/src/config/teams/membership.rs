@@ -8,6 +8,7 @@ use super::DiscoveredTeam;
 use super::ResolutionError;
 use crate::config::ac_root::existing_ac_root;
 use crate::config::ac_root::find_ac_root_segment;
+use crate::filesystem::projects::entities::agent_matrix_directory_present;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -76,7 +77,7 @@ pub fn resolve_agent_target(
                 continue;
             };
             let candidate = ac_root.join(wg).join(&replica_dir);
-            if candidate.is_dir() {
+            if agent_matrix_directory_present(&candidate) {
                 return Ok(target.to_string());
             }
         }
@@ -94,7 +95,7 @@ pub fn resolve_agent_target(
                 continue;
             };
             let candidate = ac_root.join(wg).join(&replica_dir);
-            if candidate.is_dir() {
+            if agent_matrix_directory_present(&candidate) {
                 let fqn = format!("{name}:{wg}/{agent}");
                 if !candidates.contains(&fqn) {
                     candidates.push(fqn);
@@ -164,14 +165,14 @@ pub(super) fn resolve_agent_path(ac_root: &Path, agent_ref: &str) -> Option<Path
 
     // Relative to the Project AC Root directory.
     let candidate = ac_root.join(trimmed);
-    if candidate.is_dir() {
+    if agent_matrix_directory_present(&candidate) {
         return Some(candidate);
     }
 
     // Try parent of the Project AC Root directory (project root).
     if let Some(project_root) = ac_root.parent() {
         let candidate = project_root.join(trimmed);
-        if candidate.is_dir() {
+        if agent_matrix_directory_present(&candidate) {
             return Some(candidate);
         }
     }
