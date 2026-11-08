@@ -4,7 +4,6 @@ use super::replacement::OwnedReplacementContinuation;
 
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, Runtime};
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
@@ -13,7 +12,6 @@ use crate::session::manager::{
 };
 use crate::session::session::{SessionInfo, SessionStatus};
 use crate::session::warnings::emit_session_warning;
-use crate::DetachedSessionsState;
 
 use super::payload::{
     DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionCoordinatorError,
@@ -25,13 +23,15 @@ use super::replacement::{
 };
 use super::shutdown_cleanup::{execute_rollback_create_parts, retained_entry_owns_binding};
 use super::transaction::SelectionTransaction;
-use super::{DormantRestoreRequest, FinalizeCreateRequest, SelectionRequest};
+use super::{
+    DormantRestoreRequest, FinalizeCreateRequest, SelectionContext, SelectionHost, SelectionRequest,
+};
 
 #[cfg(test)]
 use super::replacement_fixture::{ReplacementFixtureAction, ReplacementFixtureCut};
 
-pub(super) async fn execute_transition<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_transition<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: SelectionRequest,
 ) -> Result<Option<SessionSelection>, String> {
     match request {
@@ -44,8 +44,8 @@ pub(super) async fn execute_transition<R: Runtime>(
     }
 }
 
-pub(super) async fn execute_owned_finalize_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_owned_finalize_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: FinalizeCreateRequest,
 ) -> Option<Result<SessionInfo, String>> {
     let continuation = request.owned_replacement?;
@@ -109,14 +109,14 @@ pub(super) async fn execute_owned_finalize_create<R: Runtime>(
     transaction.publish_destroyed(previous);
     transaction.publish_selection(&selection);
     for warning in warnings {
-        emit_session_warning(transaction.app(), warning);
+        emit_session_warning(transaction.host(), warning);
     }
     publication.complete(Ok(Some(info.id.clone())));
     Some(Ok(info))
 }
 
-pub(super) async fn execute_finalize_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_finalize_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: FinalizeCreateRequest,
 ) -> Result<SessionInfo, String> {
     let session_id = request.binding.session_id();
@@ -188,7 +188,7 @@ pub(super) async fn execute_finalize_create<R: Runtime>(
         transaction.publish_selection(payload);
     }
     for warning in request.warnings {
-        emit_session_warning(transaction.app(), warning);
+        emit_session_warning(transaction.host(), warning);
     }
     if let Some(publication) = publication {
         publication.complete(Ok(Some(info.id.clone())));
@@ -196,8 +196,8 @@ pub(super) async fn execute_finalize_create<R: Runtime>(
     Ok(info)
 }
 
-pub(super) async fn execute_restore_dormant<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_restore_dormant<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: DormantRestoreRequest,
 ) -> Result<SessionInfo, String> {
     let id = Uuid::new_v4();
@@ -332,15 +332,12 @@ fn restored_dormant_session(
     }
 }
 
-pub(super) async fn execute_rollback_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_rollback_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     binding: PendingCreateBinding,
 ) {
     let manager = transaction.manager().await;
-    let pty = transaction
-        .app()
-        .try_state::<Arc<Mutex<PtyManager>>>()
-        .map(|state| state.inner().clone());
+    let pty = transaction.host().pty_optional().cloned();
     if transaction.has_lifecycle_entry() {
         execute_entry_rollback_create(transaction, manager, pty, binding).await;
     } else {
@@ -357,8 +354,8 @@ pub(super) async fn execute_rollback_create<R: Runtime>(
 
 /// An entry's own stopped setup body calls this on its real error exit. Neither
 /// a missing pending row nor an Err grants authority to kill a finalized B.
-pub(super) async fn execute_entry_rollback_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_entry_rollback_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     manager: SessionManager,
     pty: Option<Arc<Mutex<PtyManager>>>,
     binding: PendingCreateBinding,
@@ -453,8 +450,8 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
     drop(permit);
 }
 
-pub(super) async fn execute_route_loss<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_route_loss<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     session_id: Uuid,
     exit_code: i32,
 ) -> Result<(), String> {
@@ -475,19 +472,17 @@ pub(super) async fn execute_route_loss<R: Runtime>(
     let mut runtime = transaction.runtime_snapshot(session_id);
     if runtime.detached {
         transaction
-            .app()
-            .state::<DetachedSessionsState>()
+            .host()
+            .detached_required()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
-        if let Some(window) = transaction.app().get_webview_window(&label) {
-            if let Err(error) = window.destroy() {
-                log::warn!(
-                    "[selection] route-loss detached window close failed \
+        if let Some(Err(error)) = transaction.host().destroy_window(&label) {
+            log::warn!(
+                "[selection] route-loss detached window close failed \
                         session={session_id}: {error}"
-                );
-            }
+            );
         }
         runtime = transaction.runtime_snapshot(session_id);
     }
@@ -523,7 +518,7 @@ pub(super) async fn execute_route_loss<R: Runtime>(
     Ok(())
 }
 
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
     async fn execute_user_switch(
         &self,
         session_id: Uuid,
@@ -538,13 +533,11 @@ impl<R: Runtime> SelectionTransaction<R> {
         let runtime = self.runtime_snapshot(session_id);
         if runtime.detached {
             let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
-            if let Some(window) = self.app().get_webview_window(&label) {
-                if let Err(error) = window.set_focus() {
-                    log::warn!(
-                        "[selection] failed to focus detached target session={session_id} \
+            if let Some(Err(error)) = self.host().focus_window(&label) {
+                log::warn!(
+                    "[selection] failed to focus detached target session={session_id} \
                             source=userSwitch: {error}"
-                    );
-                }
+                );
             }
             return Ok(None);
         }

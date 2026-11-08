@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tauri::{AppHandle, Runtime};
 use tokio::sync::mpsc;
 
 use super::envelope::CoordinatorEnvelope;
@@ -10,21 +9,24 @@ use super::execute::{
 };
 use super::payload::SelectionCoordinatorError;
 use super::transaction::SelectionTransaction;
-use super::{CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor};
+use super::{
+    CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor, SelectionContext,
+    SelectionResourceEffects, SelectionWindowEffects,
+};
 
 #[cfg(test)]
 use super::replacement_fixture::{
     ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureEnvelopeTrace,
 };
 
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
     pub(super) async fn worker_loop(
-        app: AppHandle<R>,
+        host: C::Host,
         inner: Arc<CoordinatorInner>,
         mut receiver: mpsc::Receiver<CoordinatorEnvelope>,
-        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>,
+        executor: Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>,
     ) {
-        let transaction = SelectionTransaction::new(app, Arc::downgrade(&inner))
+        let transaction = SelectionTransaction::<C>::new_host(host, Arc::downgrade(&inner))
             .with_lifecycle_executor(executor);
         loop {
             let envelope = tokio::select! {
@@ -44,7 +46,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     pub(super) async fn drain_after_shutdown(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         receiver: &mut mpsc::Receiver<CoordinatorEnvelope>,
     ) {
         while let Some(envelope) = receiver.recv().await {
@@ -75,54 +77,52 @@ impl<R: Runtime> SelectionTransaction<R> {
                     hold.release();
                 }
                 CoordinatorJob::Transition { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued transition caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued transition caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::Snapshot { response } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued snapshot caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued snapshot caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RouteLoss { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued route-loss caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued route-loss caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::ConditionalResponseClose { .. } => {
                     hold.release();
                 }
                 CoordinatorJob::Destroy { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued destroy caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued destroy caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RestartLifecycle { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued restart caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued restart caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RootLifecycle { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued Root caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued Root caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::ResourceKill { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!(
-                            "[selection] queued resource-kill caller dropped during shutdown"
-                        );
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued resource-kill caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::Detach { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued detach caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued detach caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::Attach { response, .. } => {
-                    if Self::respond_unavailable(&mut hold, response) {
-                        log::debug!("[selection] queued attach caller dropped during shutdown");
-                    }
+                    let result = Err(SelectionCoordinatorError::Unavailable.to_string());
+                    let message = "[selection] queued attach caller dropped during shutdown";
+                    Self::respond_result_logged(&mut hold, response, result, message);
                 }
                 CoordinatorJob::RestoreBarrier { started, .. } => {
                     if started.send(()).is_err() {
@@ -139,7 +139,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     pub(super) async fn execute_envelope(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         envelope: CoordinatorEnvelope,
     ) {
         let (job, mut hold) = envelope.into_parts();
@@ -154,15 +154,13 @@ impl<R: Runtime> SelectionTransaction<R> {
             }
             CoordinatorJob::Transition { request, response } => {
                 let result = execute_transition(transaction, request).await;
-                if hold.respond(response, result).is_err() {
-                    log::debug!("[selection] transition caller dropped before result delivery");
-                }
+                let message = "[selection] transition caller dropped before result delivery";
+                Self::respond_result_logged(&mut hold, response, result, message);
             }
             CoordinatorJob::Snapshot { response } => {
                 let snapshot = transaction.manager().await.selection_payload().await;
-                if hold.respond(response, Ok(snapshot)).is_err() {
-                    log::debug!("[selection] snapshot caller dropped before result delivery");
-                }
+                let message = "[selection] snapshot caller dropped before result delivery";
+                Self::respond_result_logged(&mut hold, response, Ok(snapshot), message);
             }
             CoordinatorJob::FinalizeCreate { request, response } => {
                 Self::execute_finalize_job(transaction, &mut hold, request, response).await;
@@ -201,9 +199,8 @@ impl<R: Runtime> SelectionTransaction<R> {
                     "selection start contract violated: lifecycle executor binding missing",
                 );
                 let result = executor.destroy(transaction, request).await;
-                if hold.respond(response, result).is_err() {
-                    log::debug!("[selection] destroy caller dropped before result delivery");
-                }
+                let message = "[selection] destroy caller dropped before result delivery";
+                Self::respond_result_logged(&mut hold, response, result, message);
             }
             CoordinatorJob::RestartLifecycle {
                 request,
@@ -239,6 +236,17 @@ impl<R: Runtime> SelectionTransaction<R> {
         );
     }
 
+    fn respond_result_logged<T>(
+        hold: &mut super::envelope::EnvelopeHold,
+        response: tokio::sync::oneshot::Sender<Result<T, String>>,
+        result: Result<T, String>,
+        message: &'static str,
+    ) {
+        if hold.respond(response, result).is_err() {
+            log::debug!("{message}");
+        }
+    }
+
     fn respond_unavailable<T>(
         hold: &mut super::envelope::EnvelopeHold,
         response: tokio::sync::oneshot::Sender<Result<T, String>>,
@@ -251,7 +259,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_restart_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::RestartJobRequest,
         mut entry: super::replacement::OwnedLifecycleEntry,
@@ -358,7 +366,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_root_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::RootJobRequest,
         mut entry: super::replacement::OwnedLifecycleEntry,
@@ -465,7 +473,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_finalize_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::FinalizeCreateRequest,
         response: tokio::sync::oneshot::Sender<
@@ -509,7 +517,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_window_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         job: CoordinatorJob,
     ) {
@@ -519,12 +527,10 @@ impl<R: Runtime> SelectionTransaction<R> {
                 intent,
                 response,
             } => {
-                let result = crate::commands::resource_monitor::execute_resource_kill_transaction(
-                    transaction,
-                    session_id,
-                    intent,
-                )
-                .await;
+                let result = transaction
+                    .host()
+                    .resource_kill(transaction, session_id, intent)
+                    .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
                         "[selection] resource-kill caller dropped before result delivery \
@@ -538,13 +544,10 @@ impl<R: Runtime> SelectionTransaction<R> {
                 suppress_selection,
                 response,
             } => {
-                let result = crate::commands::window::execute_detach_transaction(
-                    transaction,
-                    session_id,
-                    geometry,
-                    suppress_selection,
-                )
-                .await;
+                let result = transaction
+                    .host()
+                    .detach(transaction, session_id, geometry, suppress_selection)
+                    .await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
                         "[selection] detach caller dropped before result delivery \
@@ -556,9 +559,7 @@ impl<R: Runtime> SelectionTransaction<R> {
                 session_id,
                 response,
             } => {
-                let result =
-                    crate::commands::window::execute_attach_transaction(transaction, session_id)
-                        .await;
+                let result = transaction.host().attach(transaction, session_id).await;
                 if hold.respond(response, result).is_err() {
                     log::debug!(
                         "[selection] attach caller dropped before result delivery \
@@ -572,7 +573,7 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     #[cfg(test)]
     async fn execute_fixture_job(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         input: super::OpaqueFixtureInput,
         control: Arc<ReplacementFixtureControl>,
@@ -616,7 +617,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn execute_restore_barrier(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         nonce: uuid::Uuid,
         started: tokio::sync::oneshot::Sender<()>,
@@ -638,7 +639,7 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     async fn drain_finalizer(
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         hold: &mut super::envelope::EnvelopeHold,
         request: super::FinalizeCreateRequest,
         response: tokio::sync::oneshot::Sender<
