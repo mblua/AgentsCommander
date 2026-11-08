@@ -426,13 +426,6 @@
       ]
     },
     {
-      "id": "c44ae1cfc325d1ba",
-      "members": [
-        "agentscommander_lib::phone::mailbox::pty_dispatch",
-        "agentscommander_lib::phone::mailbox::pty_dispatch::select"
-      ]
-    },
-    {
       "id": "99ca20000995b5ac",
       "members": [
         "agentscommander_lib::process::agent::owner",
