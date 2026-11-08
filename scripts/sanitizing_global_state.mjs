@@ -32,13 +32,15 @@ function extraChecks(path, m, before, violation, moved) {
 }
 function explicitVisibility(scan, item) {
   const ts = scan.tokens;
-  for (let i = 0; i < item.first; i++) {
-    if (ts[i].start < item.start) continue;
-    if (ts[i].text === '#' && ts[i + 1]?.text === '[') {
-      i = ts[i + 1].mate;
+  let i = 0;
+  while (i < item.first) {
+    const token = ts[i++];
+    if (token.start < item.start) continue;
+    if (token.text === '#' && ts[i]?.text === '[') {
+      i = ts[i].mate + 1;
       continue;
     }
-    if (ts[i].name === 'pub') return true;
+    if (token.name === 'pub') return true;
   }
   return false;
 }

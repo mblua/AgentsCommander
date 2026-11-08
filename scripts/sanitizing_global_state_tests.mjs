@@ -22,7 +22,9 @@ function fail(base, head, rules, expected = [{ path: p, line: 1 }]) {
   const result = runGate(trees(base, head));
   assert.equal(result.exit, 1, JSON.stringify(result));
   const failures = result.diagnostics.filter(d => d.status === 'FAIL');
-  assert.deepEqual([...new Set(failures.map(d => d.rule))].sort(), [...rules].sort());
+  const compare = (a, b) => a.localeCompare(b);
+  assert.deepEqual([...new Set(failures.map(d => d.rule))].sort(compare),
+    [...rules].sort(compare));
   const exposed = failures.filter(d => d.rule === 'new_exposed_global');
   assert.deepEqual(exposed.map(({ path, line }) => ({ path, line })), expected);
   for (const d of exposed) {
