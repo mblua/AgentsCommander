@@ -6,9 +6,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::types::{
-    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, ResourceGroupState,
-    ResourceKillReason, ResourceKillResult, ResourceLaunchMetadata, ResourceLimits,
-    ResourceSnapshot, TerminateOutcome,
+    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory,
+    ResourceAgentGroupSnapshot, ResourceGroupState, ResourceKillReason, ResourceKillResult,
+    ResourceLaunchMetadata, ResourceLimits, ResourceProcessSnapshot, ResourceSnapshot,
+    TerminateOutcome,
 };
 
 mod sampling;
@@ -501,7 +502,13 @@ impl ResourceMonitorState {
 
         let snapshot = {
             let inner = self.inner.lock().expect("resource monitor lock poisoned");
-            build_snapshot(&inner, limits, app_memory, warnings)
+            let groups = inner
+                .groups
+                .values()
+                .map(group_snapshot)
+                .collect::<Vec<_>>();
+            let active = active_count(&inner);
+            build_snapshot(groups, active, limits, app_memory, warnings)
         };
         if let Ok(mut inner) = self.inner.lock() {
             inner.last_snapshot = Some(snapshot.clone());
@@ -619,6 +626,52 @@ fn root_placeholder(identity: ProcessIdentity) -> ObservedProcess {
         cpu_percent: None,
         kill_allowed: true,
     }
+}
+
+fn group_snapshot(group: &ResourceAgentGroup) -> ResourceAgentGroupSnapshot {
+    let mut processes = group
+        .observed_processes
+        .values()
+        .map(ResourceProcessSnapshot::from)
+        .collect::<Vec<_>>();
+    processes.sort_by_key(|process| (process.name.clone(), process.pid));
+    let private_bytes = sum_optional(processes.iter().map(|p| p.private_bytes));
+    let working_set_bytes = sum_optional(processes.iter().map(|p| p.working_set_bytes));
+    ResourceAgentGroupSnapshot {
+        session_id: group.session_id.to_string(),
+        name: group
+            .agent_label
+            .clone()
+            .or_else(|| group.agent_id.clone())
+            .unwrap_or_else(|| group.name.clone()),
+        workgroup: group.workgroup.clone(),
+        agent: group.agent.clone(),
+        project: group.project.clone(),
+        root_pid: group.root_identity.pid,
+        root_identity: group.root_identity,
+        state: group.state,
+        descendants_observed: group.descendants_observed,
+        process_count: processes.len(),
+        private_bytes,
+        working_set_bytes,
+        cpu_percent: None,
+        processes,
+        kill_allowed: matches!(
+            group.state,
+            ResourceGroupState::Running | ResourceGroupState::Terminating
+        ),
+        last_error: group.last_error.clone(),
+    }
+}
+
+fn sum_optional(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    let mut any = false;
+    let mut total = 0_u64;
+    for value in values.flatten() {
+        any = true;
+        total = total.saturating_add(value);
+    }
+    any.then_some(total)
 }
 
 #[cfg(test)]
