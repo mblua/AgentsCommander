@@ -40,17 +40,14 @@ use validation::{
 };
 
 pub use arguments::RoleExperimentArgs;
-pub(crate) use arguments::{
-    ExperimentArgs, InitArgs, ProjectArgs, ReportArgs, RunArgs, ValidateArgs, VariantDiffArgs,
-    VariantSetArgs,
-};
+#[cfg(test)]
+use arguments::{InitArgs, RunArgs, VariantDiffArgs};
 use arguments::{RoleExperimentCommand, VariantCommand};
-pub(crate) use artifacts::{
-    AttemptArtifact, AttemptExecutionResult, AttemptOwnershipArtifact, CliEnvelope, CliError,
-    CliWarning, CommandOutput, DiffStats, ExecutionPlan, ExperimentMetadata, ExperimentValidation,
-    LoadedExperiment, ParsedPromptSuite, PromptCase, ReportArtifact, ReportArtifactPaths,
-    ReportPromptArtifact, ReportSummaryArtifact, ReportVariantArtifact, RunArtifact,
-    RunArtifactPaths, RunExecutionArtifact, RunSuiteArtifact, RunVariantArtifact,
+use artifacts::CliEnvelope;
+#[cfg(test)]
+use artifacts::{
+    AttemptArtifact, CliError, ExperimentMetadata, LoadedExperiment, ParsedPromptSuite, PromptCase,
+    ReportArtifact, RunArtifact, RunExecutionArtifact, RunSuiteArtifact, RunVariantArtifact,
     RunWorkgroupArtifact, VariantMetadata,
 };
 
