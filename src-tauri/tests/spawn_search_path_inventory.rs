@@ -122,6 +122,8 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 // Batch #3503: recertified by the workspace source walk after merging main.
 // Extracted helpers add no constructor sites; all 99 classified rows still match.
+// #4016: recertified by the source walk; cli/stdout/tests.rs adds one TestOnly
+// child-runner constructor, for 100 classified rows.
 const INVENTORY: &[Row] = &[
     ("src-tauri/src/events/pty/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
@@ -196,6 +198,7 @@ const INVENTORY: &[Row] = &[
         2,
         &[(WindowsOnly, 1)],
     ),
+    ("src-tauri/src/cli/stdout/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/cli/tests/startup_message_tests.rs",
         1,
