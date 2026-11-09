@@ -473,7 +473,8 @@ function containerPrerequisites(tree, containers) {
   for (const c of containers) if (c.ownerModule && ![...tree.keys()].some(p =>
     p.startsWith(c.owner.slice(0, -3) + '/')))
     throw new GateError('containers.json: owner subtree missing: ' + c.owner);
-  for (const c of containers) if (c.metadataPolicy)
+  // Every policy container checks the same files, so one pass gives the same first error.
+  if (containers.some(c => c.metadataPolicy))
     for (const p of metadataFiles)
       if (!tree.has(p)) throw new GateError('metadata source missing: ' + p);
 }
