@@ -3235,7 +3235,7 @@ const ProjectPanel: Component = () => {
                     <ContextBadge
                       percent={ctxPercent()}
                       historyScope={historyScope()}
-                      colorDays={settingsStore.current?.contextHistoryColorDays}
+                      colorSessions={settingsStore.current?.contextHistoryColorSessions}
                       testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
                     />
                   </Show>

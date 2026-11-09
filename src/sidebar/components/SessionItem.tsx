@@ -499,7 +499,7 @@ const SessionItem: Component<{
                 percent={ctxPercent()}
                 testId={`session.${props.session.id}.contextBadge`}
                 historyScope={historyScope()}
-                colorDays={settingsStore.current?.contextHistoryColorDays}
+                colorSessions={settingsStore.current?.contextHistoryColorSessions}
               />
             </Show>
             <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>

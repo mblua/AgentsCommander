@@ -11,7 +11,7 @@ vi.mock("../shared/platform", () => ({
 import { __setTransportForTests } from "../shared/ipc";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import type {
-  SidebarBucket,
+  SessionWindowBucket,
   SidebarEntry,
   SidebarMeansQuery,
   SidebarMeansResponse,
@@ -24,7 +24,7 @@ import {
   __contextHistoryStatsForTests as stats,
   __resetContextHistoryForTests,
   acquireContextHistory,
-  bucketForDays,
+  bucketForSessions,
   refreshContextHistoryOnHover,
 } from "./context-history";
 
@@ -35,14 +35,21 @@ const CMD = "get_context_history_sidebar_means";
 const P = "C:/proj";
 const uuid = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 
-const bucket = (days: number, mean: number | null, count: number): SidebarBucket => ({
-  days, fromUtcMs: 0, toUtcMs: days, recordsCount: count, positiveSum: (mean ?? 0) * count,
-  mean, sessionsCount: 1, incomplete: days === 30,
+const bucket = (
+  requestedSessions: number,
+  mean: number | null,
+  count: number,
+  sessions: number,
+): SessionWindowBucket => ({
+  requestedSessions, recordsCount: count, positiveSum: (mean ?? 0) * count, mean,
+  sessionsCount: sessions, recordsPerSession: sessions === 0 ? null : count / sessions,
+  incomplete: requestedSessions === 300,
 });
 const known = (id: string, agentKey = "dev"): SidebarEntry => ({
   runtimeSessionId: id,
   scope: { kind: "known", agentKey, teamIds: ["t1"] },
-  windows: { day: bucket(1, 12.5, 2), week: bucket(7, 20, 3), month: bucket(30, null, 0) },
+  ...{ windows: null },
+  sessionWindows: [bucket(25, 12.5, 2, 2), bucket(100, 20, 3, 3), bucket(300, null, 0, 0)],
 });
 
 interface Pending {
@@ -55,7 +62,8 @@ const acq = (n: number, projectPath = P) =>
 const neutral = (id: string, kind: "ambiguous" | "unknown", teamIds: string[]): SidebarEntry => ({
   runtimeSessionId: id,
   scope: { kind, agentKey: null, teamIds },
-  windows: null,
+  ...{ windows: null },
+  sessionWindows: null,
 });
 
 describe("sidebar context-history owner (#3532 P10)", () => {
@@ -119,12 +127,29 @@ describe("sidebar context-history owner (#3532 P10)", () => {
     expect(b.state()).toBe(s);
     if (s.status !== "ready") throw new Error("not ready");
     expect(s.generatedAtUtcMs).toBe(1234);
-    expect(s.windows.day.mean).toBe(12.5);
-    expect(s.windows.month).toMatchObject({ mean: null, recordsCount: 0, incomplete: true });
-    expect(bucketForDays(s.windows, 7)).toBe(s.windows.week);
-    expect(bucketForDays(s.windows, undefined)).toBe(s.windows.month);
+    expect(s.sessionWindows.map((b) => b.requestedSessions)).toEqual([25, 100, 300]);
+    expect(s.sessionWindows[0].mean).toBe(12.5);
+    expect(s.sessionWindows[2]).toMatchObject({
+      mean: null, recordsCount: 0, recordsPerSession: null, incomplete: true,
+    });
+    expect(bucketForSessions(s.sessionWindows, 100)).toBe(s.sessionWindows[1]);
+    expect(bucketForSessions(s.sessionWindows, undefined)).toBe(s.sessionWindows[2]);
+    expect(bucketForSessions(s.sessionWindows, 7)).toBe(s.sessionWindows[2]);
+    expect(bucketForSessions([], 25)).toBeNull();
     const other = c.state();
     expect(other.status === "ready" && other.scope.agentKey).toBe("other");
+  });
+
+  it("turns a known entry without session windows into an error, never legacy means", async () => {
+    const a = acq(1);
+    const b = acq(2);
+    await settle();
+    // Deliberately malformed IPC reply: bypasses the required-field type on purpose.
+    const legacy = { ...known(uuid(1)), sessionWindows: undefined } as unknown as SidebarEntry;
+    answer(0, [legacy, { ...known(uuid(2)), sessionWindows: [] }]);
+    await settle();
+    expect(a.state()).toEqual({ status: "error", message: "No session windows in response" });
+    expect(b.state()).toEqual({ status: "error", message: "No session windows in response" });
   });
 
   it("maps ambiguous and unknown to neutral states with text, never zero", async () => {
