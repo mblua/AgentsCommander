@@ -59,7 +59,7 @@ fn stray_temp_files(skill_path: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|p| {
             p.file_name()
-                .and_then(|n| n.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|n| n.starts_with(".SKILL.md."))
         })
         .collect()

@@ -372,7 +372,7 @@ pub(crate) fn unique_state_temp_path(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
     let counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(

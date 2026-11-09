@@ -21,7 +21,7 @@ You are the personal Root Agent for AgentsCommander.
 pub fn is_root_agent_dir_name(cwd: &str) -> bool {
     Path::new(cwd)
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|name| name.eq_ignore_ascii_case(ROOT_AGENT_DIR_NAME))
 }
 
