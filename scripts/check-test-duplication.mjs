@@ -13,9 +13,14 @@
  *   run exits 0 even with 148 clones).
  * - `--fail-on-empty` makes a scan of zero sources red instead of a warning.
  * - `--no-gitignore` keeps an ignore entry from silently shrinking the scan.
- *   `.jscpd.json` cancels the `node_modules` files and the local gate
- *   evidence under `artifacts/` that flag would otherwise pull in, so the scan
- *   set is exactly the config's `pattern` minus `ignore`.
+ *
+ * The scan set is an explicit file list from git (#4115): `git ls-files
+ * --cached --others --exclude-standard` over the config's `pattern`, minus
+ * files missing from disk. Tracked files are listed even under a gitignored
+ * path, untracked new tests are listed unless ignored, and only untracked
+ * *and* ignored files (local evidence copies under `target/`, `artifacts/`,
+ * ...) are left out, with no denylist. jscpd still filters the list through
+ * `pattern`/`ignore`, so the list cannot widen the scan.
  *
  * The base ref is always resolved through `git merge-base`, never forwarded
  * raw: a raw branch tip would report the base branch's own commits as new.
@@ -26,7 +31,7 @@
  * only `workRoot`, so the runner, version probe, config bytes and argv under
  * test are the shipped ones.
  *
- * `git` is never searched through `PATH`: both call sites spawn the absolute
+ * `git` is never searched through `PATH`: every call site spawns the absolute
  * path returned by `resolveGit()` — a fixed system location, or the
  * `GATE_GIT_BIN` override, which must itself be absolute. `GATE_BASE_REF` and
  * `GATE_GIT_BIN` are the only two environment controls this script reads.
@@ -49,6 +54,10 @@ const CONFIG_RELATIVE = '.jscpd.json';
 const PINNED_VERSION = '5.2.1';
 const DEFAULT_BASE_REF = 'origin/main';
 const DOC_PATH = 'docs/testing/test-code-duplication.md';
+// CreateProcess limit for the whole command line. The child is spawned with
+// `shell: false` straight from `process.execPath`, never through `npx`, a
+// `.cmd` shim or `shell: true`, so cmd.exe's 8,191 limit does not apply.
+export const MAX_COMMAND_LINE = 32_767;
 
 export const GATE_FLAGS = Object.freeze([
   '--fail-on-new-clones',
@@ -63,6 +72,62 @@ function fail(message) {
 
 function resolveRunner(toolRoot) {
   return path.join(toolRoot, ...JSCPD_RELATIVE);
+}
+
+/**
+ * Git pathspecs equal to the config's `pattern`. One `{a,b}` group expands to
+ * one pathspec per alternative; `:(glob)` makes `**` + `/` also match zero
+ * folders, as jscpd's pattern does.
+ */
+export function pathspecsFromPattern(pattern) {
+  const group = /\{([^{}]*)\}/.exec(pattern);
+  const expanded = group
+    ? group[1].split(',').map((option) => pattern.replace(group[0], option))
+    : [pattern];
+  if (expanded.some((entry) => /[{}]/.test(entry))) {
+    throw new Error(`unsupported .jscpd.json pattern '${pattern}': at most one {a,b} group.`);
+  }
+  return expanded.map((entry) => `:(glob)${entry}`);
+}
+
+/**
+ * Files the gate scans: tracked plus untracked-not-ignored files matching the
+ * config's `pattern`, minus those missing from disk (an unstaged deletion is
+ * still in `--cached`, and jscpd errors on a missing path). Sorted, unique.
+ */
+export function listScanFiles({ git, workRoot, configPath }) {
+  const { pattern } = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const args = ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--'];
+  const listed = spawnSync(git, [...args, ...pathspecsFromPattern(pattern)], {
+    cwd: workRoot,
+    shell: false,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (listed.error) throw new Error(`cannot spawn git ls-files: ${listed.error.message}`);
+  if (listed.status !== 0) {
+    throw new Error(
+      `'git ls-files' failed in ${workRoot} (git exit ${listed.status}): ` +
+        `${String(listed.stderr ?? '').trim()}`,
+    );
+  }
+  const files = String(listed.stdout ?? '').split('\0').filter(Boolean);
+  return [...new Set(files)].filter((file) => fs.existsSync(path.join(workRoot, file))).sort();
+}
+
+/**
+ * jscpd's positional paths. With no file, `.git` stands in: it exists inside
+ * the work tree (jscpd finds the repository for `--baseline-from-ref` from the
+ * first path) and never matches `pattern`, so jscpd analyzes no files (and
+ * `--fail-on-empty` turns that red) instead of scanning its whole cwd.
+ */
+function scanPaths(files) {
+  return files.length > 0 ? files : ['.git'];
+}
+
+/** Length of the command line `spawnSync` builds on Windows, every argument quoted. */
+export function commandLineLength(command, args) {
+  return [command, ...args].reduce((total, arg) => total + arg.length + 3, 0);
 }
 
 /**
@@ -81,6 +146,7 @@ export async function runGate({
   baseRef,
   configPath = path.join(toolRoot, CONFIG_RELATIVE),
   flags = GATE_FLAGS,
+  maxCommandLine = MAX_COMMAND_LINE,
 } = {}) {
   const runner = resolveRunner(toolRoot);
   if (!fs.existsSync(runner)) {
@@ -141,11 +207,34 @@ export async function runGate({
   }
   console.log(`test-code duplication base: ${base} (from '${requestedRef}')`);
 
-  const child = spawnSync(
-    process.execPath,
-    [runner, '--config', configPath, '--reporters', 'console', '--baseline-from-ref', base, ...flags],
-    { cwd: workRoot, shell: false, stdio: 'inherit' },
-  );
+  let files;
+  try {
+    files = listScanFiles({ git, workRoot, configPath });
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+  const args = [
+    runner,
+    '--config',
+    configPath,
+    '--reporters',
+    'console',
+    '--baseline-from-ref',
+    base,
+    ...flags,
+    ...scanPaths(files),
+  ];
+  const length = commandLineLength(process.execPath, args);
+  if (length > maxCommandLine) {
+    return fail(
+      `the jscpd command line for ${files.length} files is ${length} characters, over the ` +
+        `${maxCommandLine} limit; refusing to truncate the scan. jscpd ${PINNED_VERSION} has no ` +
+        `file-list input, so the gate needs another way to pass the list (see ${DOC_PATH}).`,
+    );
+  }
+  console.log(`test-code duplication scan: ${files.length} files (tracked + untracked, not ignored)`);
+
+  const child = spawnSync(process.execPath, args, { cwd: workRoot, shell: false, stdio: 'inherit' });
   if (child.error) {
     return fail(`cannot spawn pinned jscpd at ${runner}: ${child.error.message}`);
   }
@@ -292,6 +381,7 @@ function replaceLine(directory, relative, lineNumber, replacement) {
  * exit code, captured stderr and the statistics the case assertions read.
  */
 function measure({ workRoot, base, flags = GATE_FLAGS, configPath = SHIPPED_CONFIG }) {
+  const files = listScanFiles({ git: resolveGit(), workRoot, configPath });
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-dup-report-'));
   try {
     const result = spawnSync(
@@ -307,6 +397,7 @@ function measure({ workRoot, base, flags = GATE_FLAGS, configPath = SHIPPED_CONF
         '--baseline-from-ref',
         base,
         ...flags,
+        ...scanPaths(files),
       ],
       { cwd: workRoot, shell: false, encoding: 'utf8' },
     );
@@ -605,39 +696,91 @@ export async function runSelfTest() {
     });
     expectContains('--no-gitignore output', withFlagMeasured.stderr, 'found 2 new clones');
 
+    // #4115: the explicit git file list already holds the tracked file, so the
+    // scan set no longer shrinks without the flag; the flag stays as a second
+    // guard and this half pins that the list alone keeps the file.
     const flags = GATE_FLAGS.filter((flag) => flag !== '--no-gitignore');
     const withoutFlag = await runGate({ workRoot: directory, baseRef: base, flags });
     const withoutFlagMeasured = measure({ workRoot: directory, base, flags });
-    expectEqual('gitignored-shrink exit code', withoutFlag, 0);
-    expectCounts('gitignored-shrink counts', withoutFlagMeasured.statistics, {
-      sources: 1,
-      clones: 1,
-      newClones: 0,
+    expectEqual('file-list-holds exit code', withoutFlag, 1);
+    expectCounts('file-list-holds counts', withoutFlagMeasured.statistics, {
+      sources: 2,
+      clones: 3,
+      newClones: 2,
     });
   });
 
-  await withCase('case 12: local artifacts/ evidence stays out of the scan (contrast pair)', async (temp) => {
+  await withCase('case 12: untracked, ignored evidence stays out of the scan (contrast pair)', async (temp) => {
     const directory = temp('ac-dup-fixture-');
-    const base = createRepo(directory, { ...BASE_FILES, '.gitignore': 'artifacts/\n' });
-    writeFiles(directory, { 'artifacts/9999/src/root.test.ts': rootTs(['a', 'a2']) });
+    const base = createRepo(directory, { ...BASE_FILES, '.gitignore': 'src/evidence/\n' });
+    writeFiles(directory, { 'src/evidence/9999/root.test.ts': rootTs(['a', 'a2']) });
 
-    const shipped = await runGate({ workRoot: directory, baseRef: base });
-    const shippedMeasured = measure({ workRoot: directory, base });
-    expectEqual('artifacts-ignored exit code', shipped, 0);
-    expectCounts('artifacts-ignored counts', shippedMeasured.statistics, {
+    const ignored = await runGate({ workRoot: directory, baseRef: base });
+    const ignoredMeasured = measure({ workRoot: directory, base });
+    expectEqual('ignored-copy exit code', ignored, 0);
+    expectCounts('ignored-copy counts', ignoredMeasured.statistics, {
       sources: 2,
       clones: 2,
       newClones: 0,
     });
 
-    const modified = JSON.parse(fs.readFileSync(SHIPPED_CONFIG, 'utf8'));
-    modified.ignore = modified.ignore.filter((entry) => entry !== '**/artifacts/**');
-    const configPath = path.join(temp('ac-dup-config-'), '.jscpd.json');
-    fs.writeFileSync(configPath, `${JSON.stringify(modified, null, 2)}\n`);
-    const unignored = await runGate({ workRoot: directory, baseRef: base, configPath });
-    const unignoredMeasured = measure({ workRoot: directory, base, configPath });
-    expectEqual('artifacts-scanned exit code', unignored, 1);
-    expectEqual('artifacts-scanned sources', unignoredMeasured.statistics?.sources, 3);
+    fs.rmSync(path.join(directory, '.gitignore'));
+    const unignored = await runGate({ workRoot: directory, baseRef: base });
+    const unignoredMeasured = measure({ workRoot: directory, base });
+    expectEqual('unignored-copy exit code', unignored, 1);
+    expectEqual('unignored-copy sources', unignoredMeasured.statistics?.sources, 3);
+  });
+
+  await withCase('case 13: work tree under a parent folder named artifacts is scanned', async (temp) => {
+    const directory = path.join(temp('ac-dup-fixture-'), 'artifacts', 'repo');
+    fs.mkdirSync(directory, { recursive: true });
+    const base = createRepo(directory, BASE_FILES);
+    commitChanges(directory, { 'src/root.test.ts': rootTs(['a', 'a2', 'a3']) });
+    const code = await runGate({ workRoot: directory, baseRef: base });
+    const measured = measure({ workRoot: directory, base });
+    expectEqual('exit code', code, 1);
+    expectCounts('counts', measured.statistics, { sources: 2, clones: 3, newClones: 2 });
+  });
+
+  await withCase('case 14: a tracked file deleted without staging is skipped', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    fs.rmSync(path.join(directory, 'src/sub/deep.test.tsx'));
+    const code = await runGate({ workRoot: directory, baseRef: base });
+    const measured = measure({ workRoot: directory, base });
+    expectEqual('exit code', code, 0);
+    expectCounts('counts', measured.statistics, { sources: 1, clones: 1, newClones: 0 });
+  });
+
+  await withCase('case 15: an untracked, not-ignored new test with a clone is red', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    writeFiles(directory, { 'src/copy.test.ts': rootTs(['c']) });
+    const code = await runGate({ workRoot: directory, baseRef: base });
+    const measured = measure({ workRoot: directory, base });
+    expectEqual('exit code', code, 1);
+    expectEqual('sources', measured.statistics?.sources, 3);
+    expectEqual('new clones > 0', (measured.statistics?.newClones ?? 0) > 0, true);
+  });
+
+  await withCase('case 16: an over-long command line is red, never truncated', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    const run = await captureScriptStderr(() =>
+      runGate({ workRoot: directory, baseRef: base, maxCommandLine: 100 }),
+    );
+    expectEqual('exit code', run.code, 1);
+    expectContains('message', run.text, 'check:test-duplication FAILED');
+    expectContains('message', run.text, 'over the 100 limit; refusing to truncate the scan');
+  });
+
+  await withCase('pathspecs mirror the shipped pattern', async () => {
+    const { pattern } = JSON.parse(fs.readFileSync(SHIPPED_CONFIG, 'utf8'));
+    expectEqual(
+      'pathspecs',
+      JSON.stringify(pathspecsFromPattern(pattern)),
+      JSON.stringify([':(glob)src/**/*.test.ts', ':(glob)src/**/*.test.tsx']),
+    );
   });
 
   await withCase('case 10: no git at a fixed location is a hard failure', async (temp) => {
