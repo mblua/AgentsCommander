@@ -27,7 +27,7 @@ pub(super) fn repo_dir_name_from_url(url: &str) -> String {
 pub(super) fn agent_matches(team_agent_entry: &str, agent_name: &str) -> bool {
     let entry_dir = Path::new(team_agent_entry)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(team_agent_entry);
     entry_dir == format!("_agent_{agent_name}") || entry_dir == agent_name
 }
@@ -96,7 +96,7 @@ pub(crate) struct CreatedAgentMatrixOnDisk {
 pub(super) fn agent_matrix_display_name(project_path: &Path, safe_name: &str) -> String {
     let project_folder = project_path
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map_or_else(
             || project_path.to_string_lossy().to_string(),
             str::to_string,

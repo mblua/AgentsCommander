@@ -468,7 +468,7 @@ fn derive_identity() -> String {
 
     std::path::Path::new(&root)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(|s| s.trim_start_matches("__agent_").to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unidentified_agent".to_string())

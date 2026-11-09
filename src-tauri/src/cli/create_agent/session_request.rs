@@ -118,7 +118,7 @@ pub(crate) fn session_request_result_path(config_dir: &Path, id: &str) -> PathBu
 /// True when `path` is a result sidecar (`<id>.result.json`), never a request.
 pub(crate) fn is_session_request_result_path(path: &Path) -> bool {
     path.file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|stem| stem.ends_with(".result"))
 }
 

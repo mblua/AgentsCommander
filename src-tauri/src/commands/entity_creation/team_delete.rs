@@ -188,7 +188,10 @@ fn finish_team_deletion_clocks(
     // Post-commit (guards released): drop coordinator-clock keys for removed
     // workgroups and persist once; the caller refreshes afterward.
     let mut team_clock_removed = 0usize;
-    if let Some(project_name) = Path::new(project_path).file_name().and_then(|n| n.to_str()) {
+    if let Some(project_name) = Path::new(project_path)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+    {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {

@@ -25,7 +25,7 @@ pub(super) fn resolve_agent_delete_identity(
     }
     let final_segment = agent_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "Agent path must end with an agent matrix directory".to_string())?;
     let agent_name = final_segment
         .strip_prefix("_agent_")

@@ -739,7 +739,7 @@ async fn schedule_edit_snapshot(state: SpecBoardState, doc_id: String, content_h
 fn file_kind_for_path(path: &Path) -> Result<SpecBoardFileKind, String> {
     let ext = path
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("mmd" | "mermaid") => Ok(SpecBoardFileKind::Mermaid),
