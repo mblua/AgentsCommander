@@ -3187,6 +3187,19 @@ function expectProbe({ capture, probeExit, expected, histogram = [] }) {
   return fixture;
 }
 
+function historicalRemovalTuples(before, after) {
+  return before.entries.flatMap((entry) =>
+    Object.entries(entry.sites).flatMap(([platform, anchors]) => {
+      const remaining = [...(after.entries.find((e) => e.id === entry.id)
+        ?.sites[platform] ?? [])];
+      return [...new Set(anchors)].flatMap((anchor) => {
+        const index = remaining.indexOf(anchor);
+        if (index !== -1) { remaining.splice(index, 1); return []; }
+        return [{ id: entry.id, anchor, platform }];
+      });
+    }));
+}
+
 function selfTestCases() {
   return [
     ['case 29: a raw-identifier span slice is kept as the name, not {closure}', () => {
@@ -4445,16 +4458,6 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       head.entries = [clone(extra)];
       const paths = HISTORICAL_3527_PINS.map(([file]) => file);
       const tupleText = ({ id, anchor, platform }) => `${id}#${anchor} (${platform})`;
-      const removed = (before, after) => before.entries.flatMap((entry) =>
-        Object.entries(entry.sites).flatMap(([platform, anchors]) => {
-          const remaining = [...(after.entries.find((e) => e.id === entry.id)
-            ?.sites[platform] ?? [])];
-          return [...new Set(anchors)].flatMap((anchor) => {
-            const index = remaining.indexOf(anchor);
-            if (index !== -1) { remaining.splice(index, 1); return []; }
-            return [{ id: entry.id, anchor, platform }];
-          });
-        }));
       const sameLines = (actual, expected, label) => expectEqual(
         JSON.stringify([...actual].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)),
         JSON.stringify([...expected].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)), label);
@@ -4466,7 +4469,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         const result = fixture.run();
         const historical = fixture.state.stdout.filter((line) =>
           line.startsWith('historical-cleanup#3527: '));
-        const removals = removed(before, after);
+        const removals = historicalRemovalTuples(before, after);
         if (kind === 'positive') {
           expectEqual(result, 0, name);
           sameLines(historical.map((line) => line.slice('historical-cleanup#3527: '.length)),
