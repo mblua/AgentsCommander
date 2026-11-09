@@ -4,7 +4,8 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use super::{CancellableProbeOutcome, ProbeOutcome, ProbeProcessOwner, ProbeWait};
+use super::containment::{ProbeProcessOwner, ProbeWait};
+use super::outcome::{CancellableProbeOutcome, ProbeOutcome};
 
 const CONTAINMENT_PROBE_TEXT: &str = "Version probe process-tree containment unavailable.";
 
