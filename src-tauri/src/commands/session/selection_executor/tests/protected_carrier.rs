@@ -33,33 +33,7 @@ impl ProtectedFixture {
         let room = ac.join("wg-1-dev-team");
         let sender = room.join("__agent_tech-lead");
         let target = room.join("__agent_dev-rust");
-        let team = ac.join("_team_dev-team");
-        for path in [
-            &sender,
-            &target,
-            &team,
-            &ac.join("_agent_tech-lead"),
-            &ac.join("_agent_dev-rust"),
-        ] {
-            std::fs::create_dir_all(path).unwrap();
-        }
-        let config = serde_json::json!({
-            "agents": ["../_agent_dev-rust", "../_agent_tech-lead"],
-            "coordinator": "../_agent_tech-lead"
-        });
-        std::fs::write(
-            team.join("config.json"),
-            serde_json::to_vec(&config).unwrap(),
-        )
-        .unwrap();
-        for (path, origin) in [(&sender, "tech-lead"), (&target, "dev-rust")] {
-            let config = serde_json::json!({ "identity": format!("../../_agent_{origin}") });
-            std::fs::write(
-                path.join("config.json"),
-                serde_json::to_vec(&config).unwrap(),
-            )
-            .unwrap();
-        }
+        write_team_layout(&ac, &sender, &target);
         f.coordinator.start(f.app.handle().clone()).unwrap();
         f.coordinator.submit_restore_first().await.unwrap().finish();
         f.coordinator.snapshot().await.unwrap();
@@ -86,34 +60,7 @@ impl ProtectedFixture {
         )
         .unwrap();
         let manager = f.manager.read().await.clone();
-        manager
-            .rename_session(sender_id, "coordinator".into())
-            .await
-            .unwrap();
-        manager
-            .rename_session(f.source, "member".into())
-            .await
-            .unwrap();
-        manager.set_is_coordinator(sender_id, true).await;
-        manager.mark_idle(f.source).await;
-        manager
-            .set_agent_kind(
-                f.source,
-                Some(crate::session::profile::CodingAgentKind::Codex),
-            )
-            .await;
-        let settings = f
-            .app
-            .state::<crate::config::settings::SettingsState>()
-            .read()
-            .await
-            .clone();
-        crate::config::settings::save_settings_with_project_paths(&settings).unwrap();
-        let written = crate::config::settings::save_settings(&settings).unwrap();
-        *f.app
-            .state::<crate::config::settings::SettingsState>()
-            .write()
-            .await = written;
+        prepare_sessions(&f, &manager, sender_id).await;
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let (token, version) = manager
             .with_current_carrier_snapshot(&permit, |current| {
@@ -149,7 +96,7 @@ impl ProtectedFixture {
 
 impl ProtectedFixture {
     pub(crate) async fn retire(&self) {
-        use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
+        use crate::pty::manager::ResponseRouteIdentity;
         use std::time::Duration;
         let manager = self.native.manager.read().await.clone();
         let tracker = self.native.pty.lock().unwrap().response_close_state();
@@ -180,46 +127,7 @@ impl ProtectedFixture {
         admission.accept_durable("prepare-body").unwrap();
         drop(admission);
         let past = std::time::Instant::now() - Duration::from_secs(120);
-        for publisher in [
-            P::Manager,
-            P::Pty,
-            P::RawOutput,
-            P::Detector,
-            P::Menu,
-            P::Hold,
-        ] {
-            tracker.bind_publisher(publisher);
-        }
-        tracker.mark_work_bootstrapped();
-        tracker.try_enable_readiness().unwrap();
-        tracker.apply_settings(true, 30, past);
-        // Re-publish the real route identities on the fake Instant timeline
-        // before admitting this test's first policy. No retirement is forged.
-        for (identity, eligible) in [(&member, true), (&leader, false)] {
-            tracker.register_route(identity.session_id, identity.generation, past);
-            tracker.publish_manager_row(
-                identity.session_id,
-                identity.token,
-                identity.generation,
-                identity.carrier_version,
-                eligible,
-                false,
-                past,
-            );
-            tracker.publish_manager_facts(identity.clone(), eligible, false, past);
-        }
-        tracker.observe_detector(previous, false, past);
-        tracker.publish_menu(previous, Some(false), past);
-        tracker.publish_hold(previous, None, true, past);
-        let context = tracker
-            .reserve_policy_candidate(
-                member.clone(),
-                leader.clone(),
-                key,
-                "prepare-body".into(),
-                past,
-            )
-            .unwrap();
+        let context = prime_policy(&tracker, &member, &leader, previous, key, past);
         tracker.mark_request_submitted(&context, true);
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         manager
@@ -273,6 +181,122 @@ impl ProtectedFixture {
             .await;
         self.native.coordinator.snapshot().await.unwrap();
     }
+}
+
+fn write_team_layout(ac: &std::path::Path, sender: &std::path::Path, target: &std::path::Path) {
+    let team = ac.join("_team_dev-team");
+    for path in [
+        sender,
+        target,
+        team.as_path(),
+        ac.join("_agent_tech-lead").as_path(),
+        ac.join("_agent_dev-rust").as_path(),
+    ] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let config = serde_json::json!({
+        "agents": ["../_agent_dev-rust", "../_agent_tech-lead"],
+        "coordinator": "../_agent_tech-lead"
+    });
+    std::fs::write(
+        team.join("config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    for (path, origin) in [(sender, "tech-lead"), (target, "dev-rust")] {
+        let config = serde_json::json!({ "identity": format!("../../_agent_{origin}") });
+        std::fs::write(
+            path.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+async fn prepare_sessions(
+    f: &NativeFixture,
+    manager: &crate::session::manager::SessionManager,
+    sender_id: Uuid,
+) {
+    manager
+        .rename_session(sender_id, "coordinator".into())
+        .await
+        .unwrap();
+    manager
+        .rename_session(f.source, "member".into())
+        .await
+        .unwrap();
+    manager.set_is_coordinator(sender_id, true).await;
+    manager.mark_idle(f.source).await;
+    manager
+        .set_agent_kind(
+            f.source,
+            Some(crate::session::profile::CodingAgentKind::Codex),
+        )
+        .await;
+    let settings = f
+        .app
+        .state::<crate::config::settings::SettingsState>()
+        .read()
+        .await
+        .clone();
+    crate::config::settings::save_settings_with_project_paths(&settings).unwrap();
+    let written = crate::config::settings::save_settings(&settings).unwrap();
+    *f.app
+        .state::<crate::config::settings::SettingsState>()
+        .write()
+        .await = written;
+}
+
+fn prime_policy(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    leader: &crate::pty::manager::ResponseRouteIdentity,
+    previous: Uuid,
+    key: String,
+    past: std::time::Instant,
+) -> crate::pty::manager::ResponseDeliveryContext {
+    use crate::pty::manager::ResponseClosePublisher as P;
+    for publisher in [
+        P::Manager,
+        P::Pty,
+        P::RawOutput,
+        P::Detector,
+        P::Menu,
+        P::Hold,
+    ] {
+        tracker.bind_publisher(publisher);
+    }
+    tracker.mark_work_bootstrapped();
+    tracker.try_enable_readiness().unwrap();
+    tracker.apply_settings(true, 30, past);
+    // Re-publish the real route identities on the fake Instant timeline
+    // before admitting this test's first policy. No retirement is forged.
+    for (identity, eligible) in [(member, true), (leader, false)] {
+        tracker.register_route(identity.session_id, identity.generation, past);
+        tracker.publish_manager_row(
+            identity.session_id,
+            identity.token,
+            identity.generation,
+            identity.carrier_version,
+            eligible,
+            false,
+            past,
+        );
+        tracker.publish_manager_facts(identity.clone(), eligible, false, past);
+    }
+    tracker.observe_detector(previous, false, past);
+    tracker.publish_menu(previous, Some(false), past);
+    tracker.publish_hold(previous, None, true, past);
+    tracker
+        .reserve_policy_candidate(
+            member.clone(),
+            leader.clone(),
+            key,
+            "prepare-body".into(),
+            past,
+        )
+        .unwrap()
 }
 
 fn isolated_identity(name: &str) -> (String, std::path::PathBuf) {
