@@ -32,10 +32,13 @@ pub use agent_op::{
     DEFAULT_CUSTOM_COLOR,
 };
 pub use request_queue::{
-    process_coding_agent_request, read_coding_agent_result, write_coding_agent_request,
-    CodingAgentRequest, CodingAgentResult, RequestDisposition, CODING_AGENT_REQUESTS_DIR,
-    RESULTS_SUBDIR,
+    cancel_coding_agent_request, coding_agent_queue_directories, pending_coding_agent_requests,
+    process_coding_agent_request, take_coding_agent_result, write_coding_agent_request,
+    CodingAgentRequest, CodingAgentResult, RequestDisposition,
 };
+
+#[cfg(test)]
+pub use request_queue::{read_coding_agent_result, CODING_AGENT_REQUESTS_DIR, RESULTS_SUBDIR};
 
 #[cfg(test)]
 use request_queue::{is_expired, write_coding_agent_result, REQUEST_EXPIRY_MS};

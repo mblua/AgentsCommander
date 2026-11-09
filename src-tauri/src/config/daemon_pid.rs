@@ -126,10 +126,12 @@ fn is_pid_alive(pid: u32) -> bool {
 
 /// #2394: Unix liveness shares the #2382 probe (`kill(pid, 0)`, EPERM = alive,
 /// Linux zombie = dead, pid 0 and non-`pid_t` values = dead). `testability`
-/// is compiled in every build, so this is not a test-only dependency.
+/// is compiled in every build, so this is not a test-only dependency. #4066: call
+/// the `liveness` leaf directly, not the `ui_automation` facade, so the facade's
+/// CLI code can depend on this module without forming a cycle.
 #[cfg(not(target_os = "windows"))]
 fn is_pid_alive(pid: u32) -> bool {
-    crate::testability::ui_automation::pid_is_alive(pid)
+    crate::testability::ui_automation::liveness::pid_is_alive(pid)
 }
 
 #[cfg(test)]

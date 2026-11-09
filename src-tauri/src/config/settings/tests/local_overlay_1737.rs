@@ -312,8 +312,21 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
     assert!(!object.contains_key("roomIdleConfirmationSeconds"));
     // #3123 adds a default-15 field; preserve the historical captured control.
     object.insert("roomIdleConfirmationSeconds".to_string(), Value::from(15));
+    // #4091 P08 retired contextHistoryColorDays; the projection never carries it.
     assert!(!object.contains_key("contextHistoryColorDays"));
-    object.insert("contextHistoryColorDays".to_string(), Value::from(30));
+    assert!(!object.contains_key("contextHistoryEnabled"));
+    assert!(!object.contains_key("contextHistoryRetentionDays"));
+    // #4049 adds the default-off switch and default-30 retention.
+    object.insert("contextHistoryEnabled".to_string(), Value::Bool(false));
+    object.insert("contextHistoryRetentionDays".to_string(), Value::from(30));
+    assert!(!object.contains_key("contextHistorySessionWindows"));
+    assert!(!object.contains_key("contextHistoryColorSessions"));
+    // #4091 adds the default session windows and their last-member colour.
+    object.insert(
+        "contextHistorySessionWindows".to_string(),
+        json!([25, 100, 300]),
+    );
+    object.insert("contextHistoryColorSessions".to_string(), Value::from(300));
     // H02 adds backend-derived metadata; never rewrite the frozen control.
     for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
         assert!(raw.get("id_hash").is_none());
@@ -376,6 +389,34 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
         object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let expected = serde_json::to_string_pretty(&sorted).unwrap();
     assert_eq!(s6_normalized_non_project_settings(), expected);
+}
+
+/// #4091: the defaults-plus-overlay loader keeps an absent colour absent until
+/// normalization, and keeps an explicit valid colour.
+#[test]
+fn alternate_loader_resolves_absent_colour_to_the_last_overlay_window() {
+    for (colour, expected) in [(None, 1000), (Some(300), 300)] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut local = json!({
+            "contextHistorySessionWindows": [25, 100, 300, 1000],
+            "mainZoom": 1.75,
+        });
+        if let Some(colour) = colour {
+            local["contextHistoryColorSessions"] = json!(colour);
+        }
+        let path = seed(temp.path(), None, Some(&local));
+        let overlay_path = temp.path().join("settings.50.personal.no-git.json");
+        let overlay_bytes = std::fs::read(&overlay_path).unwrap();
+        let settings = load::default_settings_with_overlay_captured(&path, "test", &Map::new());
+        assert_eq!(settings.context_history_color_sessions, Some(expected));
+        assert_eq!(
+            settings.context_history_session_windows.counts(),
+            [25, 100, 300, 1000]
+        );
+        assert_eq!(settings.main_zoom, 1.75);
+        assert!(!path.exists(), "the base file must not be created");
+        assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_bytes);
+    }
 }
 
 // S7

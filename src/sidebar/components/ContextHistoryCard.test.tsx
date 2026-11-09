@@ -6,29 +6,39 @@ import ContextHistoryCard, {
   GAP,
   formatMean,
   type CardHistoryState as SidebarHistoryState,
-  type HistoryDays,
 } from "./ContextHistoryCard";
-import type { SidebarBucket } from "../../shared/context-history";
+import type { SessionWindowBucket } from "../../shared/context-history";
 
 // #3532 P11 - the card only renders the state it is given.
 
-const bucket = (days: number, mean: number | null, count: number, incomplete = false) =>
+/** recordsPerSession = records / actual sessions; null without sessions. */
+const bucket = (
+  requestedSessions: number,
+  mean: number | null,
+  count: number,
+  sessions: number,
+  incomplete = false,
+) =>
   ({
-    days, fromUtcMs: 0, toUtcMs: 1, recordsCount: count, positiveSum: (mean ?? 0) * count,
-    mean, sessionsCount: count, incomplete,
-  }) satisfies SidebarBucket;
+    requestedSessions, recordsCount: count, positiveSum: (mean ?? 0) * count, mean,
+    sessionsCount: sessions, recordsPerSession: sessions === 0 ? null : count / sessions,
+    incomplete,
+  }) satisfies SessionWindowBucket;
 
-const ready = (month = bucket(30, 55.04, 9, true)): SidebarHistoryState => ({
+const readyWith = (sessionWindows: SessionWindowBucket[]): SidebarHistoryState => ({
   status: "ready",
   scope: { kind: "known", agentKey: "dev-rust", teamIds: ["team-a"] },
   generatedAtUtcMs: 1,
-  windows: { day: bucket(1, null, 0), week: bucket(7, 35, 2), month },
+  sessionWindows,
 });
+
+const ready = (last = bucket(300, 55.04, 9, 3, true)): SidebarHistoryState =>
+  readyWith([bucket(25, null, 0, 0), bucket(100, 35, 2, 2), last]);
 
 function renderCard(
   state: SidebarHistoryState,
   percent: number | null = 35,
-  colorDays: HistoryDays = 30,
+  colorSessions: number | null = 300,
 ) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -41,7 +51,7 @@ function renderCard(
         state={state}
         percent={percent}
         projectPath="C:/proj"
-        colorDays={colorDays}
+        colorSessions={colorSessions}
         warning="Live warning."
       />
     ),
@@ -70,24 +80,25 @@ describe("ContextHistoryCard (#3532 P11)", () => {
     expect(text).toContain("C:/proj");
     const rows = card.querySelectorAll(".ctx-history-row");
     expect(rows.length).toBe(3);
-    expect(rows[0].textContent).toContain("Último día");
-    expect(rows[0].textContent).toContain("Sin datos · 0 registros");
+    expect(rows[0].textContent).toContain("Últimas 25 sesiones (0 disponibles)");
+    expect(rows[0].textContent).toContain("Sin datos · 0 registros · — registros/sesión");
     expect(rows[0].querySelector(".ctx-history-fill")).toBeNull();
-    expect(rows[1].textContent).toContain("Últimos 7 días");
-    expect(rows[1].textContent).toContain("35.0% · 2 registros");
-    expect(rows[2].textContent).toContain("55.0% · 9 registros");
+    expect(rows[1].textContent).toContain("Últimas 100 sesiones (2 disponibles)");
+    expect(rows[1].textContent).toContain("35.0% · 2 registros · 1.0 registros/sesión");
+    expect(rows[2].textContent).toContain("Últimas 300 sesiones (3 disponibles)");
+    expect(rows[2].textContent).toContain("55.0% · 9 registros · 3.0 registros/sesión");
     expect(rows[2].textContent).toContain("cobertura parcial");
     expect(rows[2].classList.contains("selected")).toBe(true);
-    expect(text).toContain("Color basado en: últimos 30 días");
-    expect(text).toContain("Sesiones iniciadas en cada período; sesión entera.");
+    expect(text).toContain("Color basado en: últimas 300 sesiones");
+    expect(text).toContain("Sesiones más recientes de este agente y team; sesión entera.");
     expect(text).toContain("Live warning.");
     expect(text).toContain("una media alta no ordena reiniciar");
   });
 
-  it("marks the saved period and says when the reading is missing", () => {
-    const { card } = renderCard(ready(), null, 1);
+  it("marks the saved count and says when the reading is missing", () => {
+    const { card } = renderCard(ready(), null, 25);
     expect(card.textContent).toContain("Contexto actual de esta sesión: no disponible");
-    expect(card.textContent).toContain("Color basado en: último día");
+    expect(card.textContent).toContain("Color basado en: últimas 25 sesiones");
     const rows = card.querySelectorAll(".ctx-history-row");
     expect(rows[0].classList.contains("selected")).toBe(true);
     expect(rows[2].classList.contains("selected")).toBe(false);
@@ -115,6 +126,34 @@ describe("ContextHistoryCard (#3532 P11)", () => {
     expect(card.textContent).toContain(expected);
     expect(card.querySelectorAll(".ctx-history-row").length).toBe(0);
     expect(card.getAttribute("data-ac-state")).toBe(state.status);
+  });
+
+  it("renders exactly the returned custom [2,5] buckets with full availability", () => {
+    const { card } = renderCard(readyWith([bucket(2, 40, 4, 2), bucket(5, 30, 10, 5)]), 35, 5);
+    const rows = card.querySelectorAll(".ctx-history-row");
+    expect(rows.length).toBe(2);
+    expect(rows[0].textContent).toContain("Últimas 2 sesiones");
+    expect(rows[0].textContent).not.toContain("disponibles");
+    expect(rows[1].getAttribute("data-ac-sessions")).toBe("5");
+    expect(rows[1].classList.contains("selected")).toBe(true);
+    expect(card.textContent).toContain("Color basado en: últimas 5 sesiones");
+  });
+
+  it("shows backend records per session after the record count (criterion 8)", () => {
+    const { card } = renderCard(readyWith([
+      bucket(25, 20, 1560, 100),
+      bucket(100, 30, 21, 2),
+      bucket(200, null, 0, 0),
+      bucket(300, null, 0, 1),
+    ]), 35, 25);
+    const rows = card.querySelectorAll(".ctx-history-row");
+    expect(rows[0].textContent).toContain("20.0% · 1560 registros · 15.6 registros/sesión");
+    expect(rows[1].textContent).toContain("Últimas 100 sesiones (2 disponibles)");
+    expect(rows[1].textContent).toContain("30.0% · 21 registros · 10.5 registros/sesión");
+    expect(rows[2].textContent).toContain("Sin datos · 0 registros · — registros/sesión");
+    // A boundary-only session: zero records, null context mean, 0.0 per session.
+    expect(rows[3].textContent).toContain("Sin datos · 0 registros · 0.0 registros/sesión");
+    expect(rows[3].querySelector(".ctx-history-fill")).toBeNull();
   });
 
   it("is a tooltip that hides when closed", () => {
@@ -168,7 +207,7 @@ describe("ContextHistoryCard placement (#3532 P11)", () => {
       () => (
         <ContextHistoryCard
           id="card-1" open anchor={() => anchor} state={state()} percent={35}
-          projectPath="C:/proj" colorDays={30} warning="w"
+          projectPath="C:/proj" colorSessions={300} warning="w"
         />
       ),
       host,
@@ -210,6 +249,17 @@ describe("ContextHistoryCard placement (#3532 P11)", () => {
     expect(top()).toBe(400 + 16 + GAP);
   });
 
+  it("updates label, mean and records per session on ready -> ready", () => {
+    viewport(800, 600);
+    const { card, setState } = mount(100, readyWith([bucket(100, 35, 21, 2)]));
+    expect(card.textContent).toContain("Últimas 100 sesiones (2 disponibles)");
+    expect(card.textContent).toContain("35.0% · 21 registros · 10.5 registros/sesión");
+    setState(readyWith([bucket(100, 50, 1560, 100)]));
+    expect(card.textContent).toContain("Últimas 100 sesiones");
+    expect(card.textContent).not.toContain("disponibles");
+    expect(card.textContent).toContain("50.0% · 1560 registros · 15.6 registros/sesión");
+  });
+
   it("removes its window listeners when it closes", () => {
     viewport(800, 600);
     const remove = vi.spyOn(window, "removeEventListener");
@@ -240,7 +290,7 @@ describe("ContextHistoryCard P18 native listeners", () => {
         <div onClick={parentClick} onPointerDown={parentPointer} data-testid="parent">
           <ContextHistoryCard
             id="card-1" open anchor={() => host} state={ready()} percent={35}
-            projectPath="C:/proj" colorDays={30} warning="w"
+            projectPath="C:/proj" colorSessions={300} warning="w"
             onEnter={() => handlers().enter()}
             onLeave={(related) => handlers().leave(related)}
           />

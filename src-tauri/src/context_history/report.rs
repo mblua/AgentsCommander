@@ -1,10 +1,14 @@
 //! Pure context-history report (#3532 P04), shared by CLI, IPC and sidebar.
 //!
 //! Input is the retained `HistoryRecord` snapshot plus values the caller has
-//! already resolved (project, scopes, retention, `now`). Sessions are selected
-//! by `logical_started_at_utc_ms` inside `[from, to)`; every retained positive
-//! `change` record of a selected session counts, even one observed after `to`.
+//! already resolved (project, scopes, retention, `now`). Date mode selects
+//! sessions by `logical_started_at_utc_ms` inside `[from, to)`; count mode
+//! (`sessionCount = N`) selects the newest N known starts before the `to`
+//! cutoff in every scope. Every retained positive `change` record of a
+//! selected session counts, even one observed after `to`.
 //! Means are always `sum / count` over records, never a mean of means.
+
+mod session_windows;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -13,25 +17,29 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::context_history::{
-    BoundaryReason, HistoryRecord, InitialKind, MatrixType, MetadataSource, RecordKind,
-    TeamAttribution, MAX_IDENTITY_BYTES, MAX_METADATA_BYTES,
+    HistoryRecord, InitialKind, MatrixType, MetadataSource, TeamAttribution, MAX_IDENTITY_BYTES,
+    MAX_METADATA_BYTES,
+};
+pub(crate) use session_windows::SessionStats;
+use session_windows::{
+    agent_windows, mean_of, newest, recent_per_scope, record_order, session_order, ScopeWindow,
+    SessionView,
 };
 
 /// Response schema written by this build.
-pub(crate) const REPORT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const REPORT_SCHEMA_VERSION: u32 = 3;
 pub(crate) const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub(crate) const MAX_PERIOD_MS: i64 = 31 * DAY_MS;
+/// Largest `sessionCount` any query may ask for.
+pub(crate) const MAX_SESSION_COUNT: u32 = 10_000;
 /// Maximum rows in one page; also the maximum sidebar session ids.
 pub(crate) const PAGE_LIMIT: usize = 100;
 pub(crate) const MAX_SIDEBAR_SESSIONS: usize = 100;
 pub(crate) const SELECTION_SESSION_STARTED: &str = "session_started";
-/// Label of a session whose retained data is known to be incomplete.
-pub(crate) const INCOMPLETE_SESSION_LABEL: &str = "Datos conservados de sesión incompleta";
-/// Sidebar windows in days: day, week and month.
-pub(crate) const SIDEBAR_WINDOW_DAYS: [u32; 3] = [1, 7, 30];
+pub(crate) const SELECTION_RECENT_SESSIONS: &str = "recent_sessions";
 
-const CURSOR_VERSION: u32 = 1;
-const CURSOR_PREFIX: &str = "ctxh1.";
+const CURSOR_VERSION: u32 = 2;
+const CURSOR_PREFIX: &str = "ctxh2.";
 const MAX_CURSOR_BYTES: usize = 32 * 1024;
 const VERBATIM_PREFIX: &str = "//?/";
 
@@ -97,6 +105,9 @@ pub(crate) struct ReportQuery {
     pub(crate) model: LaunchFilter,
     pub(crate) effort: LaunchFilter,
     pub(crate) cursor: Option<String>,
+    /// Count mode: newest N sessions per scope before `to_utc_ms`; `from_utc_ms` is 0.
+    #[serde(default)]
+    pub(crate) session_count: Option<u32>,
 }
 
 fn check_identity(value: &str, empty: &'static str, long: &'static str) -> Result<(), ReportError> {
@@ -117,15 +128,8 @@ impl ReportQuery {
             "project_path_empty",
             "project_path_too_long",
         )?;
-        if self.from_utc_ms >= self.to_utc_ms {
-            return Err(ReportError::InvalidQuery("from_not_before_to"));
-        }
-        if self
-            .to_utc_ms
-            .checked_sub(self.from_utc_ms)
-            .is_none_or(|ms| ms > MAX_PERIOD_MS)
-        {
-            return Err(ReportError::InvalidQuery("period_longer_than_31_days"));
+        if let Some(reason) = self.selection_error() {
+            return Err(ReportError::InvalidQuery(reason));
         }
         if let Some(agent_key) = &self.agent_key {
             check_identity(agent_key, "agent_key_empty", "agent_key_too_long")?;
@@ -136,6 +140,24 @@ impl ReportQuery {
         self.coding_agent_id.validate()?;
         self.model.validate()?;
         self.effort.validate()
+    }
+
+    /// Date mode: `[from, to)` of at most 31 days. Count mode: 1..=10000
+    /// sessions, sentinel `from` 0 and a positive cutoff, with no date bound.
+    fn selection_error(&self) -> Option<&'static str> {
+        let (from, to) = (self.from_utc_ms, self.to_utc_ms);
+        match self.session_count {
+            None if from >= to => Some("from_not_before_to"),
+            None if to.checked_sub(from).is_none_or(|ms| ms > MAX_PERIOD_MS) => {
+                Some("period_longer_than_31_days")
+            }
+            Some(count) if !(1..=MAX_SESSION_COUNT).contains(&count) => {
+                Some("session_count_out_of_range")
+            }
+            Some(_) if from != 0 => Some("count_mode_from_not_zero"),
+            Some(_) if to <= 0 => Some("count_mode_cutoff_not_positive"),
+            _ => None,
+        }
     }
 
     /// The query a cursor is bound to: normalized project and no cursor.
@@ -184,6 +206,7 @@ fn normalized_path(path: &str) -> String {
 pub(crate) struct RequestedPeriod {
     pub(crate) from_utc_ms: i64,
     pub(crate) to_utc_ms: i64,
+    pub(crate) session_count: Option<u32>,
     pub(crate) selection: &'static str,
 }
 
@@ -228,7 +251,8 @@ pub(crate) struct MetadataBucket {
     pub(crate) sessions_count: u64,
 }
 
-/// Totals over whole selected sessions: `mean = positiveSum / recordsCount`.
+/// Totals over whole selected sessions: `mean = positiveSum / recordsCount`
+/// and `recordsPerSession = recordsCount / sessionsCount`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Aggregate {
@@ -236,6 +260,7 @@ pub(crate) struct Aggregate {
     pub(crate) positive_sum: u64,
     pub(crate) mean: Option<f64>,
     pub(crate) sessions_count: u64,
+    pub(crate) records_per_session: Option<f64>,
     pub(crate) incomplete: bool,
 }
 
@@ -245,6 +270,8 @@ pub(crate) struct AgentSummary {
     pub(crate) agent_key: String,
     pub(crate) agent_name: String,
     pub(crate) metadata_buckets: Vec<MetadataBucket>,
+    /// Count mode only: per-scope availability; null in date mode.
+    pub(crate) scope_windows: Option<Vec<ScopeWindow>>,
     #[serde(flatten)]
     pub(crate) totals: Aggregate,
 }
@@ -285,6 +312,7 @@ pub(crate) struct AgentDetailResponse {
     #[serde(flatten)]
     pub(crate) header: ResponseHeader,
     pub(crate) agent_key: String,
+    pub(crate) scope_windows: Option<Vec<ScopeWindow>>,
     #[serde(flatten)]
     pub(crate) totals: Aggregate,
     pub(crate) sessions_page: Vec<SessionSummary>,
@@ -422,98 +450,14 @@ fn cursor_after<K: serde::de::DeserializeOwned>(
         .or(Err(ReportError::InvalidCursor("cursor_malformed")))
 }
 
-/// The positive value of a `change` record; zero, null and boundaries never count.
-fn positive(record: &HistoryRecord) -> Option<u8> {
-    (record.kind == RecordKind::Change)
-        .then_some(record.percent)
-        .flatten()
-        .filter(|percent| *percent > 0)
-}
-
-fn record_order(record: &HistoryRecord) -> (i64, u64, Uuid) {
-    (record.observed_at_utc_ms, record.sequence, record.record_id)
-}
-
-/// One selected logical session: its retained records in stable order.
-#[derive(Debug, Clone)]
-struct SessionView<'a> {
-    id: Uuid,
-    started_at_utc_ms: i64,
-    records: Vec<&'a HistoryRecord>,
-}
-
-/// Values of one whole retained session.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SessionStats {
-    pub(crate) boundary_reason: Option<BoundaryReason>,
-    pub(crate) records_count: u64,
-    pub(crate) positive_sum: u64,
-    pub(crate) mean: Option<f64>,
-    pub(crate) max: Option<u8>,
-    pub(crate) max_partial: bool,
-    pub(crate) initial_value: Option<u8>,
-    pub(crate) partial_start: bool,
-    pub(crate) partial_end: bool,
-    pub(crate) retention_clipped: bool,
-    pub(crate) coverage_label: Option<&'static str>,
-}
-
-impl SessionStats {
-    fn incomplete(self) -> bool {
-        self.partial_start || self.partial_end || self.retention_clipped
-    }
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn mean_of(sum: u64, count: u64) -> Option<f64> {
-    (count > 0).then(|| sum as f64 / count as f64)
-}
-
-impl<'a> SessionView<'a> {
-    fn first(&self) -> &'a HistoryRecord {
-        self.records[0]
-    }
-
-    fn stats(&self) -> SessionStats {
-        let first = self.first();
-        let mut stats = SessionStats::default();
-        let mut initial_retained = false;
-        for record in &self.records {
-            if let Some(percent) = positive(record) {
-                stats.records_count += 1;
-                stats.positive_sum += u64::from(percent);
-                stats.max = stats.max.max(Some(percent));
-            }
-            if Some(record.record_id) == first.initial_record_id {
-                initial_retained = true;
-                stats.initial_value = positive(record);
-            }
-            stats.partial_start |= record.partial_start;
-            stats.partial_end |= record.partial_end;
-            if record.boundary_reason.is_some() {
-                stats.boundary_reason = record.boundary_reason;
-            }
-        }
-        let initial_lost = first.initial_record_id.is_some() && !initial_retained;
-        stats.retention_clipped = initial_lost || first.observed_at_utc_ms > self.started_at_utc_ms;
-        stats.mean = mean_of(stats.positive_sum, stats.records_count);
-        stats.max_partial = stats.incomplete();
-        stats.coverage_label = stats.incomplete().then_some(INCOMPLETE_SESSION_LABEL);
-        stats
-    }
-}
-
-fn session_order(session: &SessionView) -> (i64, Uuid) {
-    (session.started_at_utc_ms, session.id)
-}
-
 #[derive(Debug, Clone, Default)]
 struct Selection<'a> {
     sessions: Vec<SessionView<'a>>,
     unknown_start: u64,
     earliest: Option<i64>,
     latest: Option<i64>,
+    /// Count mode only: every matching scope and its availability.
+    scope_windows: Option<Vec<ScopeWindow>>,
 }
 
 /// Every retained record of the project, once per record id, grouped by session.
@@ -544,8 +488,10 @@ fn project_sessions<'a>(
     (groups, earliest, latest)
 }
 
-/// Sessions started in `[from, to)` that pass every filter, ordered by start and id.
+/// Sessions that pass every filter, ordered by start and id: started in
+/// `[from, to)`, or in count mode the newest N per scope started before `to`.
 fn select<'a>(records: &'a [HistoryRecord], query: &ReportQuery) -> Selection<'a> {
+    let from = query.session_count.map_or(query.from_utc_ms, |_| i64::MIN);
     let (groups, earliest, latest) = project_sessions(records, &query.project_path);
     let mut selection = Selection {
         earliest,
@@ -560,7 +506,7 @@ fn select<'a>(records: &'a [HistoryRecord], query: &ReportQuery) -> Selection<'a
         }
         match first.logical_started_at_utc_ms {
             None => selection.unknown_start += 1,
-            Some(started) if (query.from_utc_ms..query.to_utc_ms).contains(&started) => {
+            Some(started) if (from..query.to_utc_ms).contains(&started) => {
                 selection.sessions.push(SessionView {
                     id,
                     started_at_utc_ms: started,
@@ -570,17 +516,25 @@ fn select<'a>(records: &'a [HistoryRecord], query: &ReportQuery) -> Selection<'a
             Some(_) => {}
         }
     }
+    if let Some(count) = query.session_count {
+        let (sessions, windows) = recent_per_scope(std::mem::take(&mut selection.sessions), count);
+        selection.sessions = sessions;
+        selection.scope_windows = Some(windows);
+    }
     selection.sessions.sort_by_key(session_order);
     selection
 }
 
 fn header(query: &ReportQuery, coverage: Coverage, context: ReportContext) -> ResponseHeader {
+    let recent = query.session_count.is_some();
+    let selection = [SELECTION_SESSION_STARTED, SELECTION_RECENT_SESSIONS][usize::from(recent)];
     ResponseHeader {
         schema_version: REPORT_SCHEMA_VERSION,
         requested_period: RequestedPeriod {
             from_utc_ms: query.from_utc_ms,
             to_utc_ms: query.to_utc_ms,
-            selection: SELECTION_SESSION_STARTED,
+            session_count: query.session_count,
+            selection,
         },
         generated_at_utc_ms: context.generated_at_utc_ms,
         coverage,
@@ -605,11 +559,13 @@ fn aggregate(sessions: &[&SessionView]) -> Aggregate {
         positive_sum += stats.positive_sum;
         incomplete |= stats.incomplete();
     }
+    let sessions_count = sessions.len() as u64;
     Aggregate {
         records_count,
         positive_sum,
         mean: mean_of(positive_sum, records_count),
-        sessions_count: sessions.len() as u64,
+        sessions_count,
+        records_per_session: mean_of(records_count, sessions_count),
         incomplete,
     }
 }
@@ -666,11 +622,16 @@ fn metadata_buckets(sessions: &[&SessionView]) -> Vec<MetadataBucket> {
     buckets.into_values().collect()
 }
 
-fn agent_summary(agent_key: &str, sessions: &[&SessionView]) -> AgentSummary {
+fn agent_summary(
+    selection: &Selection,
+    agent_key: &str,
+    sessions: &[&SessionView],
+) -> AgentSummary {
     AgentSummary {
         agent_key: agent_key.to_string(),
         agent_name: agent_key.to_string(),
         metadata_buckets: metadata_buckets(sessions),
+        scope_windows: agent_windows(selection.scope_windows.as_deref(), agent_key),
         totals: aggregate(sessions),
     }
 }
@@ -696,7 +657,7 @@ pub(crate) fn build_report(
         header: header(query, coverage(&selection, &all, context), context),
         agents_page: page
             .iter()
-            .map(|(key, sessions)| agent_summary(key, sessions))
+            .map(|(key, sessions)| agent_summary(&selection, key, sessions))
             .collect(),
         next_agent_cursor,
         total_agents: agents.len() as u64,
@@ -766,6 +727,7 @@ pub(crate) fn build_agent_detail(
     Ok(AgentDetailResponse {
         header: header(query, coverage(&selection, &sessions, context), context),
         agent_key: agent_key.to_string(),
+        scope_windows: agent_windows(selection.scope_windows.as_deref(), agent_key),
         totals: aggregate(&sessions),
         sessions_page: page
             .iter()
@@ -849,22 +811,13 @@ pub(crate) struct SidebarTarget {
     pub(crate) scope: SidebarScope,
 }
 
+/// The newest `requestedSessions` sessions of a known scope.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SidebarBucket {
-    pub(crate) days: u32,
-    pub(crate) from_utc_ms: i64,
-    pub(crate) to_utc_ms: i64,
+pub(crate) struct SessionWindowBucket {
+    pub(crate) requested_sessions: u32,
     #[serde(flatten)]
     pub(crate) totals: Aggregate,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SidebarWindows {
-    pub(crate) day: SidebarBucket,
-    pub(crate) week: SidebarBucket,
-    pub(crate) month: SidebarBucket,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -872,7 +825,8 @@ pub(crate) struct SidebarWindows {
 pub(crate) struct SidebarEntry {
     pub(crate) runtime_session_id: Uuid,
     pub(crate) scope: SidebarScope,
-    pub(crate) windows: Option<SidebarWindows>,
+    /// One bucket per configured count, in configured order.
+    pub(crate) session_windows: Option<Vec<SessionWindowBucket>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -898,58 +852,54 @@ pub(crate) fn validate_sidebar_ids(ids: &[Uuid]) -> Result<(), ReportError> {
     Ok(())
 }
 
-fn sidebar_bucket(selection: &Selection, days: u32, now: i64) -> SidebarBucket {
-    let from = now - i64::from(days) * DAY_MS;
-    let sessions: Vec<&SessionView> = selection
-        .sessions
-        .iter()
-        .filter(|session| session.started_at_utc_ms >= from)
-        .collect();
-    let mut totals = aggregate(&sessions);
-    totals.incomplete |= selection.unknown_start > 0;
-    SidebarBucket {
-        days,
+/// The unfiltered launch query of one known `(agent, team)` scope.
+fn scope_query(project_path: &str, scope: (&str, &str), from: i64, now: i64) -> ReportQuery {
+    ReportQuery {
+        project_path: project_path.to_string(),
         from_utc_ms: from,
         to_utc_ms: now,
-        totals,
-    }
-}
-
-/// Day, week and month buckets of one known scope, from one scan and one `now`.
-fn known_windows(
-    records: &[HistoryRecord],
-    project_path: &str,
-    agent_key: &str,
-    team_id: &str,
-    now: i64,
-) -> SidebarWindows {
-    let [day, week, month] = SIDEBAR_WINDOW_DAYS;
-    let widest = now - i64::from(month) * DAY_MS;
-    let query = ReportQuery {
-        project_path: project_path.to_string(),
-        from_utc_ms: widest,
-        to_utc_ms: now,
-        agent_key: Some(agent_key.to_string()),
-        team_id: Some(team_id.to_string()),
+        agent_key: Some(scope.0.to_string()),
+        team_id: Some(scope.1.to_string()),
         coding_agent_id: LaunchFilter::Any,
         model: LaunchFilter::Any,
         effort: LaunchFilter::Any,
         cursor: None,
-    };
-    let selection = select(records, &query);
-    SidebarWindows {
-        day: sidebar_bucket(&selection, day, now),
-        week: sidebar_bucket(&selection, week, now),
-        month: sidebar_bucket(&selection, month, now),
+        session_count: None,
     }
 }
 
-/// Sidebar means per runtime session. Only a known scope computes windows;
-/// ambiguous and unknown scopes return `windows: null`, never an empty count.
+/// One bucket per configured count of one known scope, from one `now`: the
+/// newest `max(counts)` sessions before `now` are selected once and then prefixed.
+fn known_buckets(
+    records: &[HistoryRecord],
+    project_path: &str,
+    scope: (&str, &str),
+    counts: &[u32],
+    now: i64,
+) -> Vec<SessionWindowBucket> {
+    let mut query = scope_query(project_path, scope, 0, now);
+    query.session_count = Some(counts.iter().copied().max().unwrap_or(0));
+    let recent = select(records, &query);
+    let buckets = counts.iter().map(|&count| {
+        let sessions: Vec<&SessionView> = newest(&recent.sessions, count).iter().collect();
+        let mut totals = aggregate(&sessions);
+        totals.incomplete |= recent.unknown_start > 0;
+        SessionWindowBucket {
+            requested_sessions: count,
+            totals,
+        }
+    });
+    buckets.collect()
+}
+
+/// Sidebar means per runtime session. Only a known scope computes session windows;
+/// ambiguous and unknown scopes return null windows, never an empty count.
+/// `counts` are the effective session windows the edge read from Settings.
 pub(crate) fn sidebar_means(
     records: &[HistoryRecord],
     project_path: &str,
     targets: &[SidebarTarget],
+    counts: &[u32],
     now: i64,
 ) -> Result<SidebarMeansResponse, ReportError> {
     let ids: Vec<Uuid> = targets
@@ -958,23 +908,23 @@ pub(crate) fn sidebar_means(
         .collect();
     validate_sidebar_ids(&ids)?;
     check_identity(project_path, "project_path_empty", "project_path_too_long")?;
-    let mut cache: BTreeMap<(&str, &str), SidebarWindows> = BTreeMap::new();
+    let mut cache: BTreeMap<(&str, &str), Vec<SessionWindowBucket>> = BTreeMap::new();
     for target in targets {
         if let Some(key) = target.scope.known_key() {
             cache
                 .entry(key)
-                .or_insert_with(|| known_windows(records, project_path, key.0, key.1, now));
+                .or_insert_with(|| known_buckets(records, project_path, key, counts, now));
         }
     }
     let entries = targets
         .iter()
-        .map(|target| SidebarEntry {
-            runtime_session_id: target.runtime_session_id,
-            scope: target.scope.clone(),
-            windows: target
-                .scope
-                .known_key()
-                .and_then(|key| cache.get(&key).cloned()),
+        .map(|target| {
+            let known = target.scope.known_key().and_then(|key| cache.get(&key));
+            SidebarEntry {
+                runtime_session_id: target.runtime_session_id,
+                scope: target.scope.clone(),
+                session_windows: known.cloned(),
+            }
         })
         .collect();
     Ok(SidebarMeansResponse {

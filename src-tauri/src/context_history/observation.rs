@@ -430,6 +430,7 @@ fn record(
 
 impl InstanceState {
     /// The instance ended; later observations write nothing.
+    #[cfg(test)]
     pub(crate) fn is_retired(&self) -> bool {
         self.retired
     }

@@ -161,6 +161,9 @@ pub(crate) struct InstanceArtifact {
 /// generated file is rewritten, or names whose writer is deliberately left
 /// alone and guarded by the git fixture instead.
 pub(crate) const RETAINED_PROMPTS: &str = "last-prompts.retained.json";
+pub(crate) const INJECTED_MESSAGES_FILENAME: &str = "injected-messages.toml";
+pub(crate) const INJECTED_MESSAGES_REFERENCE_FILENAME: &str = "injected-messages.default.toml";
+pub(crate) const INJECTED_MESSAGES_STATE_FILENAME: &str = ".agentscommander-injected-messages.json";
 
 pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
     InstanceArtifact {
@@ -192,7 +195,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: seeded context-template ownership state",
     },
     InstanceArtifact {
-        name: ".agentscommander-injected-messages.json",
+        name: INJECTED_MESSAGES_STATE_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: injected-messages ownership state",
@@ -549,13 +552,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: generated git-guard shim scripts",
     },
     InstanceArtifact {
-        name: "injected-messages.default.toml",
+        name: INJECTED_MESSAGES_REFERENCE_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: injected-messages reference defaults",
     },
     InstanceArtifact {
-        name: "injected-messages.toml",
+        name: INJECTED_MESSAGES_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: injected-messages configuration",

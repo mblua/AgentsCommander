@@ -5,6 +5,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::session::selection_executor::{
+    run_owned_selection_operation, run_owned_selection_read_timed,
+};
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -46,7 +49,7 @@ pub async fn preview_coding_agent_profile_selection(
     // (the transport discards the late response) without cancelling the read.
     let session_mgr = Arc::clone(session_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_read_timed(
+    run_owned_selection_read_timed(
         "preview_coding_agent_profile_selection",
         move || async move {
             preview_coding_agent_profile_selection_inner(&session_mgr, &settings, request).await
@@ -123,7 +126,7 @@ pub async fn apply_coding_agent_profile_selection(
     let session_mgr = Arc::clone(session_mgr.inner());
     let pty_mgr = Arc::clone(pty_mgr.inner());
     let settings = settings.inner().clone();
-    crate::session::selection::run_owned_selection_operation(move || {
+    run_owned_selection_operation(move || {
         let app = app_handle.clone();
         async move {
             let (result, payload) = apply_coding_agent_profile_selection_inner(

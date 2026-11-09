@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::{api, ApiServerHandle, ApiServerTask, WebServerHandle, WEB_SERVER_START_CANCELLED};
 
@@ -448,12 +448,7 @@ fn start_remote_activity(
     let (remote_sweeper, remote_transitions) = RemoteSweeper::with_state(
         git_rows,
         settings,
-        Box::new({
-            let app_for_remote_activity = app.handle().clone();
-            move |payload: &crate::pty::remote_watcher::RemoteActivityPayload| {
-                let _ = app_for_remote_activity.emit("ac_remote_activity_updated", payload);
-            }
-        }),
+        crate::events::pty::remote_activity_emitter(app.handle().clone()),
         crate::remote_sweeper_seams(),
         git,
         remote,
@@ -526,11 +521,14 @@ fn start_session_observers(
     // #3532 context history. Its ingress is an independent fanout of the same
     // bounded sample bridge; shutdown cancels the actor, which flushes for at most
     // `SHUTDOWN_FLUSH` and never blocks quit.
+    let settings = app.state::<SettingsState>().inner().clone();
     let history_scopes = Arc::new(crate::history_runtime::HistoryScopeState::new(
         Arc::new(HistorySessions {
             session_mgr: Arc::clone(&session_mgr_for_scraper),
         }),
-        Arc::new(crate::app_run::history_environment::DiskProjectEnvironment),
+        Arc::new(
+            crate::app_run::history_environment::DiskProjectEnvironment::new(settings.clone()),
+        ),
     ));
     let history_ingress = crate::start_context_history_runtime(
         Arc::clone(&history_scopes),
@@ -548,9 +546,7 @@ fn start_session_observers(
             pty_mgr: pty_mgr.clone(),
             poison_logged: AtomicBool::new(false),
         }),
-        Arc::new(ScraperPatterns {
-            settings: app.state::<SettingsState>().inner().clone(),
-        }),
+        Arc::new(ScraperPatterns { settings }),
         Arc::new(ScraperSink {
             app_handle: app.handle().clone(),
         }),

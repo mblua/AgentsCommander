@@ -327,6 +327,7 @@ pub(crate) fn compare_and_set_terminal_snapshots_enabled_at_path(
                 })?
                 .projection;
             apply_selected_project_state(&mut fresh, &projection);
+            fresh.normalize_context_history_sessions();
             fresh
         }
     };
@@ -434,6 +435,8 @@ pub(crate) fn decode_disk_settings_for_terminal_snapshot_cas(
         &mut settings,
         &settings_path.display().to_string(),
     );
+    // #4091: coherent colour before the no-op return or the write.
+    settings.normalize_context_history_sessions();
     Ok(settings)
 }
 

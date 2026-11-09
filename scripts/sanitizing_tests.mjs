@@ -1,6 +1,8 @@
+import './sanitizing_global_state_tests.mjs';
 import './sanitizing_rust_scan_tests.mjs';
 import './sanitizing_containers_tests.mjs';
 import './sanitizing_disk_access_tests.mjs';
+import { registerTauriEdgeTests } from './sanitizing_tauri_edge_tests.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -517,6 +519,7 @@ test('06 new disk command in existing file cannot hide behind reductions; cfg id
   assert.equal(edgeGate(trees({[p]:old},{[p]:old.replace('fs::read("a");','')})).exit,0);
   assert.equal(edgeGate(trees({}, {[p]:'#[tauri::command] fn f() { #[cfg(test)] fn test_only() { fs::read("a"); } }'})).exit,0);
 });
+registerTauriEdgeTests({trees, control});
 test('08 static mutation, state wrappers/aliases/multiline and thread_local each reject increase', () => {
   for(const bad of [
     'static mut X: usize = 0;', 'static X: std::sync::Mutex<u8> = Mutex::new(0);',

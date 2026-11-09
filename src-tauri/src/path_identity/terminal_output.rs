@@ -1,8 +1,8 @@
-use super::regular::same_object;
-use super::retain_immutable_directory;
-use super::verify_directory;
-use super::RetainedDirectory;
-use super::VerifiedPathIdentity;
+use super::identity::retain_immutable_directory;
+use super::identity::same_object;
+use super::identity::verify_directory;
+use super::identity::RetainedDirectory;
+use super::identity::VerifiedPathIdentity;
 use std::fs::File;
 use std::io::Write;
 use std::path::Component;

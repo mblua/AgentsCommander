@@ -1,7 +1,6 @@
 import { createSignal, type Accessor } from "solid-js";
 import { ContextHistoryAPI } from "../shared/ipc";
 import {
-  periodEndingAt,
   type AgentDetailResponse,
   type AgentSummary,
   type ChangesPageResponse,
@@ -17,12 +16,13 @@ import {
 // so a late response of an older request is ignored (there is no IPC cancel;
 // the backend bounds each read). Nothing is aggregated or persisted here: the
 // view shows the backend's counts and means as served.
-
-export type PeriodDays = 1 | 7 | 30;
+// #4091 Count mode: the newest `sessionCount` sessions per scope before a
+// cutoff pinned at refresh. Counts come only from the loaded settings list.
 
 export interface HistoryFilters {
   teamId: string | null;
-  days: PeriodDays;
+  /** A member of the loaded session-window list; null until one is loaded. */
+  sessionCount: number | null;
   codingAgentId: LaunchFilter;
   model: LaunchFilter;
   effort: LaunchFilter;
@@ -30,7 +30,7 @@ export interface HistoryFilters {
 
 export const DEFAULT_FILTERS: HistoryFilters = {
   teamId: null,
-  days: 7,
+  sessionCount: null,
   codingAgentId: { kind: "any" },
   model: { kind: "any" },
   effort: { kind: "any" },
@@ -48,6 +48,8 @@ const idle = <T>(): Section<T> => ({ loading: false, error: false, data: null })
 export interface HistoryState {
   projectPath: Accessor<string>;
   filters: Accessor<HistoryFilters>;
+  /** Loaded session-window counts; null when none is configured. */
+  windows: Accessor<readonly number[] | null>;
   report: Accessor<Section<ReportResponse>>;
   detail: Accessor<Section<AgentDetailResponse>>;
   changes: Accessor<Section<ChangesPageResponse>>;
@@ -55,6 +57,8 @@ export interface HistoryState {
   selectedSession: Accessor<string | null>;
   setProject: (projectPath: string) => void;
   setFilters: (patch: Partial<HistoryFilters>) => void;
+  /** Loads the configured counts; a changed list resets pages and selection. */
+  setWindows: (counts: readonly number[] | null) => void;
   refresh: () => Promise<void>;
   loadMoreAgents: () => Promise<void>;
   selectAgent: (agentKey: string | null) => Promise<void>;
@@ -70,6 +74,7 @@ export function createHistoryState(
 ): HistoryState {
   const [projectPath, setProjectPath] = createSignal(initialProject);
   const [filters, setFiltersSignal] = createSignal<HistoryFilters>({ ...DEFAULT_FILTERS });
+  const [windows, setWindowsSignal] = createSignal<readonly number[] | null>(null);
   const [report, setReport] = createSignal<Section<ReportResponse>>(idle());
   const [detail, setDetail] = createSignal<Section<AgentDetailResponse>>(idle());
   const [changes, setChanges] = createSignal<Section<ChangesPageResponse>>(idle());
@@ -82,21 +87,33 @@ export function createHistoryState(
   let detailGen = 0;
   let changesGen = 0;
   let disposed = false;
-  let period = periodEndingAt(now(), filters().days);
+  let cutoffUtcMs = now();
 
-  const baseQuery = (cursor: string | null, agentKey: string | null): ReportQuery => {
+  const configured = (count: number | null): count is number =>
+    count !== null && (windows()?.includes(count) ?? false);
+
+  // fromUtcMs 0 and the pinned cutoff are compatibility fields, not a date range.
+  const baseQuery = (cursor: string | null, agentKey: string | null): ReportQuery | null => {
     const f = filters();
+    if (!configured(f.sessionCount)) return null;
     return {
       projectPath: projectPath(),
-      fromUtcMs: period.fromUtcMs,
-      toUtcMs: period.toUtcMs,
+      fromUtcMs: 0,
+      toUtcMs: cutoffUtcMs,
       agentKey,
       teamId: f.teamId,
       codingAgentId: f.codingAgentId,
       model: f.model,
       effort: f.effort,
       cursor,
+      sessionCount: f.sessionCount,
     };
+  };
+
+  const resetAll = () => {
+    reportGen += 1;
+    setReport(idle<ReportResponse>());
+    clearDetail();
   };
 
   const clearChanges = () => {
@@ -116,10 +133,12 @@ export function createHistoryState(
     const current = report().data;
     const cursor = append ? current?.nextAgentCursor ?? null : null;
     if (append && cursor === null) return;
+    const query = baseQuery(cursor, null);
+    if (query === null) return;
     const gen = ++reportGen;
     setReport({ loading: true, error: false, data: append ? current : null });
     try {
-      const page = await ContextHistoryAPI.report(baseQuery(cursor, null));
+      const page = await ContextHistoryAPI.report(query);
       if (disposed || gen !== reportGen) return;
       const data =
         append && current
@@ -136,10 +155,12 @@ export function createHistoryState(
     const current = detail().data;
     const cursor = append ? current?.nextSessionCursor ?? null : null;
     if (append && cursor === null) return;
+    const query = baseQuery(cursor, agentKey);
+    if (query === null) return;
     const gen = ++detailGen;
     setDetail({ loading: true, error: false, data: append ? current : null });
     try {
-      const page = await ContextHistoryAPI.agentDetail(baseQuery(cursor, agentKey));
+      const page = await ContextHistoryAPI.agentDetail(query);
       if (disposed || gen !== detailGen) return;
       const data =
         append && current
@@ -156,11 +177,13 @@ export function createHistoryState(
     const current = changes().data;
     const cursor = append ? current?.nextRecordCursor ?? null : null;
     if (append && cursor === null) return;
+    const query = baseQuery(cursor, agentKey);
+    if (query === null) return;
     const gen = ++changesGen;
     setChanges({ loading: true, error: false, data: append ? current : null });
     try {
       const page = await ContextHistoryAPI.changes({
-        query: baseQuery(cursor, agentKey),
+        query,
         logicalSessionId: sessionId,
       });
       if (disposed || gen !== changesGen) return;
@@ -176,7 +199,8 @@ export function createHistoryState(
   };
 
   const refresh = async () => {
-    period = periodEndingAt(now(), filters().days);
+    if (!configured(filters().sessionCount)) return;
+    cutoffUtcMs = now();
     const agent = selectedAgent();
     const session = selectedSession();
     const work = [loadReport(false)];
@@ -190,6 +214,7 @@ export function createHistoryState(
   return {
     projectPath,
     filters,
+    windows,
     report,
     detail,
     changes,
@@ -197,16 +222,31 @@ export function createHistoryState(
     selectedSession,
     setProject: (next) => {
       if (next === projectPath()) return;
-      reportGen += 1;
       setProjectPath(next);
-      setReport(idle<ReportResponse>());
-      clearDetail();
+      resetAll();
     },
     setFilters: (patch) => {
-      setFiltersSignal({ ...filters(), ...patch });
-      reportGen += 1;
-      setReport(idle<ReportResponse>());
-      clearDetail();
+      const next = { ...filters(), ...patch };
+      // An unconfigured count never reaches a query.
+      if (!configured(next.sessionCount)) return;
+      setFiltersSignal(next);
+      resetAll();
+    },
+    setWindows: (counts) => {
+      const list = counts && counts.length > 0 ? [...counts] : null;
+      const current = windows();
+      const same =
+        current !== null && list !== null &&
+        current.length === list.length && current.every((count, i) => count === list[i]);
+      if (same) return;
+      setWindowsSignal(list);
+      const selected = filters().sessionCount;
+      const sessionCount =
+        list === null ? null : selected !== null && list.includes(selected)
+          ? selected
+          : list[list.length - 1];
+      setFiltersSignal({ ...filters(), sessionCount });
+      resetAll();
     },
     refresh,
     loadMoreAgents: () => loadReport(true),

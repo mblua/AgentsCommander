@@ -1,8 +1,9 @@
 //! `context-history` (#3532 P04): print the context-history report as JSON.
 //!
 //! The report core is pure; this edge validates arguments, resolves the
-//! Project AC Root, reads the retained snapshot once and streams every page of
-//! agents as one schema 2 JSON document on stdout. Errors go to stderr with
+//! Project AC Root, reads the retained snapshot once (retention from the
+//! read-only CLI Settings snapshot, #4049) and streams every page of
+//! agents as one schema 3 JSON document on stdout. Errors go to stderr with
 //! exit code 1 and never produce an empty successful result.
 
 use std::io::{self, Write};
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-use crate::context_history::config::load_history_config;
+use crate::config::settings::load_settings_for_cli;
 use crate::context_history::report::{
     build_report, LaunchFilter, ReportContext, ReportError, ReportQuery,
 };
@@ -38,8 +39,10 @@ PROJECT: Query with the same --project path that was used while capturing. \
 Records match the verified canonical path or the typed path; physical aliases \
 such as a subst drive against its real folder are not treated as the same \
 project unless the query uses the captured spelling.\n\n\
-OUTPUT: One JSON object, schemaVersion 2, with requestedPeriod, generatedAtUtcMs, \
-coverage, totalAgents and agents. A missing history database prints an empty \
+OUTPUT: One JSON object, schemaVersion 3, with requestedPeriod, generatedAtUtcMs, \
+coverage, totalAgents and agents. This date report always prints \
+requestedPeriod.sessionCount=null and scopeWindows=null on every agent; \
+recordsPerSession = recordsCount / sessionsCount. A missing history database prints an empty \
 report. Times are RFC3339 with an explicit timezone; the period is at most 31 days.\n\n\
 EXAMPLES:\n  \
   {bin} context-history --project C:/repos/demo --from 2026-11-01T00:00:00Z \
@@ -143,6 +146,7 @@ fn query_from_args(args: &ContextHistoryArgs) -> Result<ReportQuery, CliError> {
         model: launch_filter(args.model.as_ref(), args.unknown_model),
         effort: launch_filter(args.effort.as_ref(), args.unknown_effort),
         cursor: None,
+        session_count: None,
     };
     query.validate()?;
     Ok(query)
@@ -202,7 +206,13 @@ fn verified_project(project: &Path) -> Result<VerifiedProject, CliError> {
         .map_err(|error| CliError::Usage(format!("--project {error}")))
 }
 
-fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Result<(), CliError> {
+/// `retention_days` comes from one Settings snapshot taken by [`execute`].
+fn run(
+    args: &ContextHistoryArgs,
+    retention_days: u32,
+    now_utc_ms: i64,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
     let mut query = query_from_args(args)?;
     let project = verified_project(&args.project)?;
     query.project_path = project
@@ -211,7 +221,7 @@ fn run(args: &ContextHistoryArgs, now_utc_ms: i64, out: &mut dyn Write) -> Resul
         .ok_or_else(|| CliError::Usage("--project must be valid UTF-8".to_string()))?
         .to_string();
     let context = ReportContext {
-        retention_days: load_history_config(&project.ac_root).config.retention_days,
+        retention_days,
         generated_at_utc_ms: now_utc_ms,
     };
     let mut records = read_records(&project.ac_root)?;
@@ -238,9 +248,13 @@ fn exit_code(result: Result<(), CliError>) -> i32 {
 }
 
 pub fn execute(args: ContextHistoryArgs) -> i32 {
+    let retention_days = load_settings_for_cli()
+        .context_history_retention_days
+        .days();
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    exit_code(run(&args, chrono::Utc::now().timestamp_millis(), &mut out))
+    let now = chrono::Utc::now().timestamp_millis();
+    exit_code(run(&args, retention_days, now, &mut out))
 }
 
 #[cfg(test)]

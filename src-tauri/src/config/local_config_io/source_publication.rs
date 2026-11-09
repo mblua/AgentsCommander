@@ -1,9 +1,12 @@
-use super::{
-    acquire_fresh_config_stage, log_unverified_cleanup_refusal, next_shared_staging_sequence,
-    publish_prepared_pair_image_guarded, publish_prepared_pair_image_with_source_parent,
-    read_config_pair_physical, PairTargetGuard, PhysicalState, PreparedPairError,
-    SourceNativePublication,
+use super::pair_image::{
+    log_unverified_cleanup_refusal, read_config_pair_physical, PairTargetGuard, PhysicalState,
+    PreparedPairError,
 };
+use super::prepared_pair::{
+    publish_prepared_pair_image_guarded, publish_prepared_pair_image_with_source_parent,
+    validate_source_publication_children, SourceNativePublication,
+};
+use super::staging::{acquire_fresh_config_stage, next_shared_staging_sequence};
 #[cfg(not(windows))]
 use crate::filesystem::local_config::sync_local_config_directory;
 use crate::filesystem::local_config::{
@@ -365,28 +368,6 @@ pub(crate) fn publish_source_coordination_bytes_with_validation(
         #[cfg(test)]
         guard_rejected: guard.failed.get(),
     }
-}
-
-pub(super) fn validate_source_publication_children(
-    parent: &crate::path_identity::RetainedDirectory,
-    stage: &Path,
-    target: &Path,
-) -> Result<(), PreparedPairError> {
-    parent.verify_current().map_err(PreparedPairError::Io)?;
-    for child in [stage, target] {
-        let directory = child
-            .parent()
-            .ok_or(PreparedPairError::InvalidPlan("source target parent"))?;
-        let identity =
-            crate::path_identity::verify_directory(directory).map_err(PreparedPairError::Io)?;
-        if child.file_name().is_none()
-            || !crate::path_identity::same_object(parent.identity(), &identity)
-            || !crate::path_identity::paths_equivalent(directory, &parent.identity().canonical_path)
-        {
-            return Err(PreparedPairError::Conflict);
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn publish_coordination_bytes_guarded(
