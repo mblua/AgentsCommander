@@ -1,5 +1,11 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
-import { runMeasuredGate, metric, hit, warning, resolveAlias as resolveGateAlias } from './sanitizing_gate_support.mjs';
+import {
+  runMeasuredGate,
+  metric,
+  hit,
+  warning,
+  resolveAlias as resolveGateAlias
+} from './sanitizing_gate_support.mjs';
 
 const relevantPath = new RegExp("(?:^|::)(?:test)$");
 function resolveAlias(scan, input, scope) {
@@ -12,7 +18,9 @@ export function runGate(snapshot) {
 }
 
 const gate = '05';
-const rules = ['mod_rs', 'test_files', 'inline_mod', 'path', 'glob', 'pub_mod', 'pub_super_mod', 'pub_in_mod'];
+const rules = [
+  'mod_rs', 'test_files', 'inline_mod', 'path', 'glob', 'pub_mod', 'pub_super_mod', 'pub_in_mod'
+];
 const newFileRules = rules.slice(0, 5);
 const inUniverse = p => /^src-tauri\/(?:src|tests)\/.*\.rs$/.test(p);
 const extraChecks = () => {};
