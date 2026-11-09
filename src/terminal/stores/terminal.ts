@@ -65,7 +65,7 @@ function normalizeTaskPath(path: string): string {
   let normalized = path;
   if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
   else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
-  return normalized.replace(/\\/g, "/").toLowerCase();
+  return normalized.replaceAll("\\", "/").toLowerCase();
 }
 
 function cwdUnderWorkgroupRoot(cwd: string, workgroupRoot: string): boolean {

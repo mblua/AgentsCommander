@@ -571,7 +571,7 @@ function decodeEscape(text, i) {
     if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
       return { ok: false, reason: 'a double-quoted scalar with a malformed \\u escape' };
     }
-    return { ok: true, value: String.fromCharCode(parseInt(hex, 16)), width: 6 };
+    return { ok: true, value: String.fromCharCode(Number.parseInt(hex, 16)), width: 6 };
   }
   return { ok: false,
     reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
