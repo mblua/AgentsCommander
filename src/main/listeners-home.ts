@@ -44,10 +44,7 @@ export async function wireHomeListeners(): Promise<UnlistenFn[]> {
       if (id && userInitiated === true) {
         homeStore.hide();
       }
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onSessionDestroyed(async () => {
       await Promise.resolve();
       try {
@@ -58,10 +55,7 @@ export async function wireHomeListeners(): Promise<UnlistenFn[]> {
       } catch (e) {
         console.error("[home] Failed to query session list after destroy:", e);
       }
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onSessionViewRequested(({ id }) => {
       if (id) homeStore.hide();
     })

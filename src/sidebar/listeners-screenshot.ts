@@ -30,10 +30,7 @@ export async function wireScreenshotListeners(): Promise<UnlistenFn[]> {
       toastStore.success(`Screenshot saved. Path copied: ${result.path}`, {
         durationMs: SCREENSHOT_TOAST_DURATION_MS,
       });
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onScreenshotCaptureFailed(({ message }) => {
       toastStore.error(message, { durationMs: null });
     })

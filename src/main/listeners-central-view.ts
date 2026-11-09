@@ -31,16 +31,10 @@ export async function wireCentralViewListeners(): Promise<UnlistenFn[]> {
   unlisteners.push(
     await onSessionSwitched(({ id, userInitiated }) => {
       if (id && userInitiated === true) centralViewStore.showTerminal();
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onSessionViewRequested(({ id }) => {
       if (id) centralViewStore.showTerminal();
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onResourceMonitorAttach(() => centralViewStore.showResourceMonitor())
   );
 
