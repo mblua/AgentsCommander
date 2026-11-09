@@ -271,7 +271,8 @@ function selfTest() {
       `property and data escaping wrong: ${lines[0]}`
     );
     // An ordinary single colon survives unescaped, in both annotation and summary.
-    assertSelf(lines[0].includes('AssertionError: expected 1 to be 2'), 'a single colon must stay readable');
+    assertSelf(lines[0].includes('AssertionError: expected 1 to be 2'),
+      'a single colon must stay readable');
     assertSelf(
       lines[1] === '::notice::1 failing test(s): suite > it injects, 100%25 of the time',
       `summary wrong: ${lines[1]}`
@@ -287,7 +288,8 @@ function selfTest() {
             name: path.join(root, 'src', 'hostile.test.ts'),
             status: 'failed',
             assertionResults: [
-              { status: 'failed', fullName: hostile, location: { line: 1, column: 1 }, failureMessages: ['boom'] },
+              { status: 'failed', fullName: hostile, location: { line: 1, column: 1 },
+                failureMessages: ['boom'] },
             ],
           },
         ],
@@ -301,7 +303,8 @@ function selfTest() {
     for (const hostile of HOSTILE_NAMES) {
       write({
         testResults: [
-          { name: path.join(root, 'src', 'broken.test.ts'), status: 'failed', message: hostile, assertionResults: [] },
+          { name: path.join(root, 'src', 'broken.test.ts'), status: 'failed', message: hostile,
+            assertionResults: [] },
         ],
       });
       lines = captureReport(reportPath, root);
@@ -312,7 +315,8 @@ function selfTest() {
     for (const hostile of ['a::error::b.test.ts', 'ordinary::stop-commands::tok.test.ts']) {
       write({
         testResults: [
-          { name: path.join(root, 'src', hostile), status: 'failed', message: 'boom', assertionResults: [] },
+          { name: path.join(root, 'src', hostile), status: 'failed', message: 'boom',
+            assertionResults: [] },
         ],
       });
       lines = captureReport(reportPath, root);
@@ -376,7 +380,8 @@ function selfTest() {
             name,
             status: 'failed',
             assertionResults: [
-              { status: 'failed', fullName: 'outside', location: { line: 3, column: 1 }, failureMessages: ['boom'] },
+              { status: 'failed', fullName: 'outside', location: { line: 3, column: 1 },
+                failureMessages: ['boom'] },
             ],
           },
         ],
@@ -394,7 +399,8 @@ function selfTest() {
           name: path.join(root, 'src', 'inside.test.ts'),
           status: 'failed',
           assertionResults: [
-            { status: 'failed', fullName: 'inside', location: { line: 3, column: 1 }, failureMessages: ['boom'] },
+            { status: 'failed', fullName: 'inside', location: { line: 3, column: 1 },
+              failureMessages: ['boom'] },
           ],
         },
       ],
@@ -411,7 +417,8 @@ function selfTest() {
         {
           name: path.join(root, 'src', 'noloc.test.ts'),
           status: 'failed',
-          assertionResults: [{ status: 'failed', fullName: 'no location', failureMessages: ['boom'] }],
+          assertionResults: [{ status: 'failed', fullName: 'no location',
+            failureMessages: ['boom'] }],
         },
       ],
     });
@@ -443,9 +450,11 @@ function selfTest() {
           name: path.join(root, 'src', 'many.test.ts'),
           status: 'failed',
           assertionResults: [
-            { status: 'failed', fullName: 'first', location: { line: 1, column: 1 }, failureMessages: ['a'] },
+            { status: 'failed', fullName: 'first', location: { line: 1, column: 1 },
+              failureMessages: ['a'] },
             { status: 'passed', fullName: 'second', failureMessages: [] },
-            { status: 'failed', fullName: 'third', location: { line: 9, column: 2 }, failureMessages: ['b'] },
+            { status: 'failed', fullName: 'third', location: { line: 9, column: 2 },
+              failureMessages: ['b'] },
           ],
         },
       ],
@@ -457,16 +466,19 @@ function selfTest() {
     // Missing and corrupt reports are reported, never thrown.
     fs.rmSync(reportPath);
     lines = captureReport(reportPath, root);
-    assertSelf(lines.length === 1 && lines[0].includes('no vitest JSON report'), 'missing report not handled');
+    assertSelf(lines.length === 1 && lines[0].includes('no vitest JSON report'),
+      'missing report not handled');
     assertOnlyIntendedCommands(lines);
 
     write('{ not json');
     lines = captureReport(reportPath, root);
-    assertSelf(lines.length === 1 && lines[0].includes('does not parse'), 'corrupt report not handled');
+    assertSelf(lines.length === 1 && lines[0].includes('does not parse'),
+      'corrupt report not handled');
 
     write({ numFailedTests: 0 });
     lines = captureReport(reportPath, root);
-    assertSelf(lines.length === 1 && lines[0].includes('no testResults'), 'report without testResults not handled');
+    assertSelf(lines.length === 1 && lines[0].includes('no testResults'),
+      'report without testResults not handled');
 
     // A green report emits no annotation at all.
     write({
@@ -479,7 +491,8 @@ function selfTest() {
       ],
     });
     lines = captureReport(reportPath, root);
-    assertSelf(lines.length === 1 && lines[0].includes('lists no failed test'), 'green report emitted an annotation');
+    assertSelf(lines.length === 1 && lines[0].includes('lists no failed test'),
+      'green report emitted an annotation');
 
     console.log('report-failed-tests self-test passed');
     return 0;

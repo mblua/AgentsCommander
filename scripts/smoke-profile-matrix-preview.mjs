@@ -50,7 +50,8 @@ const assertNoRuntimeErrors = () => {
   );
 };
 
-const headers = Array.from(dom.window.document.querySelectorAll('table[aria-label="Coding agent profile matrix"] thead th'), (th) =>
+const headers = Array.from(dom.window.document.querySelectorAll(
+  'table[aria-label="Coding agent profile matrix"] thead th'), (th) =>
   th.textContent?.trim()
 );
 assert.deepEqual(headers, ['Profile', 'Codex', 'Claude Code', 'OpenCode']);
@@ -86,8 +87,10 @@ assert.ok(
   text.includes(expectedEscapedAcRoot),
   'serialized JSON preview should show the escaped Windows AC root path'
 );
-assert.ok(!text.includes('\\u0000'), 'serialized JSON preview should not contain escaped NUL bytes');
-assert.ok(!text.includes('C:Usersmaria'), 'serialized JSON preview should not collapse path separators');
+assert.ok(!text.includes('\\u0000'),
+  'serialized JSON preview should not contain escaped NUL bytes');
+assert.ok(!text.includes('C:Usersmaria'),
+  'serialized JSON preview should not collapse path separators');
 
 let data = parsePreview();
 assert.equal(data.acRoot, expectedAcRoot);
@@ -171,9 +174,11 @@ const individualAgentHeaderToken = dom.window.document.getElementById('individua
 const individualAgentSource = dom.window.document.getElementById('individualAgentSource');
 const individualAgentRequested = dom.window.document.getElementById('individualAgentRequested');
 const individualAgentEffective = dom.window.document.getElementById('individualAgentEffective');
-const individualAgentFallbackNotice = dom.window.document.getElementById('individualAgentFallbackNotice');
+const individualAgentFallbackNotice = dom.window.document.getElementById(
+  'individualAgentFallbackNotice');
 const legacyAgentAssignProfile = dom.window.document.getElementById('legacyAgentAssignProfile');
-const legacyAgentAssignmentNotice = dom.window.document.getElementById('legacyAgentAssignmentNotice');
+const legacyAgentAssignmentNotice = dom.window.document.getElementById(
+  'legacyAgentAssignmentNotice');
 assert.ok(individualAgentTool, 'individual agent coding tool selector should exist');
 assert.ok(individualAgentProfile, 'individual agent profile selector should exist');
 assert.equal(individualAgentTool?.value, 'opencode');
@@ -219,7 +224,8 @@ const matrixWrap = dom.window.document.querySelector('.matrix-wrap');
 assert.ok(addProfileBtn, '+ Profile button should be present');
 assert.ok(matrixWrap, 'matrix wrapper should be present');
 assert.equal(
-  Boolean(matrixWrap.compareDocumentPosition(addProfileBtn) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING),
+  Boolean(matrixWrap.compareDocumentPosition(
+    addProfileBtn) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING),
   true,
   '+ Profile should render after the matrix'
 );
@@ -252,7 +258,8 @@ assert.deepEqual(data.profiles.D['claude-code'], {
   usesFixedFallback: 'C-REVIEW',
 });
 
-const addCell = dom.window.document.querySelector('[data-add-agent="claude-code"][data-add-letter="D"]');
+const addCell = dom.window.document.querySelector(
+  '[data-add-agent="claude-code"][data-add-letter="D"]');
 assert.ok(addCell, 'removed non-A cell should expose an add button');
 click(addCell);
 data = parsePreview();
@@ -260,7 +267,8 @@ assert.equal(data.profiles.D['claude-code'].model, 'claude/default');
 assert.equal(data.profiles.D['claude-code'].enabled, true);
 assertNoRuntimeErrors();
 
-const captureTarget = dom.window.document.querySelector('[data-agent="claude-code"][data-letter="D"] .cell-value');
+const captureTarget = dom.window.document.querySelector(
+  '[data-agent="claude-code"][data-letter="D"] .cell-value');
 assert.ok(captureTarget, 'profile cell content should exist for component capture');
 const capturedCell = captureTarget.closest('[data-component]');
 assert.ok(capturedCell, 'profile cell should expose a data-component capture marker');
@@ -288,7 +296,8 @@ dom.window.clearTimeout = (id) => {
   clearedTimers.push(id);
   activeTimers.delete(id);
 };
-const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([, timer]) => timer.delay === delay);
+const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([, timer]) =>
+  timer.delay === delay);
 
 const contextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
@@ -296,14 +305,16 @@ const contextMenu = new dom.window.MouseEvent('contextmenu', {
 });
 const contextMenuAllowed = captureTarget.dispatchEvent(contextMenu);
 assert.equal(contextMenuAllowed, false, 'right click should prevent the native context menu path');
-assert.equal(contextMenu.defaultPrevented, true, 'contextmenu event should be marked defaultPrevented');
+assert.equal(contextMenu.defaultPrevented, true,
+  'contextmenu event should be marked defaultPrevented');
 
 const captureResult = await dom.window.__componentCaptureLastResult;
 assert.equal(
   captureResult.quotedIdentifier,
   '"Coding Agent Profile Matrix / td / Claude Code D-LOW COST configured profile cell"'
 );
-assert.equal(copiedText, captureResult.quotedIdentifier, 'fallback clipboard copy should include double quotes');
+assert.equal(copiedText, captureResult.quotedIdentifier,
+  'fallback clipboard copy should include double quotes');
 
 const toast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(toast, 'component capture toast should appear');
@@ -311,7 +322,8 @@ assert.match(toast?.textContent ?? '', /"Coding Agent Profile Matrix \/ td \/ Cl
 assert.match(toast?.textContent ?? '', /td \.profile-cell/);
 
 const toastTimers = getTimersByDelay(15000);
-assert.equal(toastTimers.length, 1, 'component capture toast should schedule a 15-second removal timer');
+assert.equal(toastTimers.length, 1,
+  'component capture toast should schedule a 15-second removal timer');
 assert.equal(
   dom.window.document.querySelector('.component-capture-toast'),
   toast,
@@ -329,7 +341,8 @@ assert.equal(
   'component capture highlight should remove after its two-blink animation completes'
 );
 
-const secondCaptureResult = await dom.window.captureComponentAtTarget('Coding Agent Profile Matrix', captureTarget);
+const secondCaptureResult = await dom.window.captureComponentAtTarget('Coding Agent Profile Matrix',
+  captureTarget);
 assert.equal(secondCaptureResult.quotedIdentifier, captureResult.quotedIdentifier);
 assert.equal(
   clearedTimers.includes(toastTimers[0][0]),

@@ -1,6 +1,8 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
 import { createReceiverClassifier, PROVEN_PORT, UNKNOWN } from './sanitizing_tauri_receivers.mjs';
-import { runMeasuredGate, metric, hit, warning, occurrenceIdentity, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
+import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
+  resolveAlias as resolveGateAlias,
+  qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
 const relevantPath = new RegExp("^(?:tauri(?:::|$)|(?:(?:std|tokio)::)?fs::|(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$))");
 function resolveAlias(scan, input, scope) {
@@ -12,7 +14,8 @@ function qualified(scan, tokens, i) {
   return qualifiedGatePath(scan, tokens, i, relevantPath);
 }
 function signals(scan, item) {
-  return item.attributes.flatMap(a => a.signals.map(meta => ({ ...resolveAlias(scan,meta.name,a.scope), meta, line: a.line })));
+  return item.attributes.flatMap(a => a.signals.map(meta =>
+    ({ ...resolveAlias(scan,meta.name,a.scope), meta, line: a.line })));
 }
 export function runGate(snapshot) {
   // One receiver classifier per side, keyed by that side's scan lookup; never cross-snapshot.
@@ -66,27 +69,32 @@ function measure(path, scan, receivers) {
         warning(m, path, t.line, { ambiguous: true, reason: proof.reason });
       if (proof.kind !== PROVEN_PORT) record('emit_files', t);
     }
-    if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
+    if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
+      ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
     else if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
       ts[i + 2]?.text === '(' && ts[i + 2].mate === ts[i + 3]?.index &&
       receivers?.proveState(path, scan, t).proved === true) record('state_files',t);
-    if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident')) continue;
+    if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
+      ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (value.startsWith('tauri::') || value === 'tauri' || /(?:^|::)AppHandle$/.test(value)) {
       // Imports establish names; repeated imports needed by a split are not
       // additional uses. An unused import still contributes its own signal.
-      if (imports.some(item => item.start <= t.start && t.start < item.end)) imported.push({t,value});
+      if (imports.some(item => item.start <= t.start && t.start < item.end))
+        imported.push({t,value});
       else { references.push(value); record('tauri_files',t); }
       warning(m,path,t.line,r);
     }
     i = r.end - 1;
   }
-  for (const {t,value} of imported) if (!references.some(ref => ref === value || ref.startsWith(value + '::')))
+  for (const {t,value} of imported) if (!references.some(
+    ref => ref === value || ref.startsWith(value + '::')))
     record('tauri_files',t);
   const ordinals = new Map(); m.commandIds = new Set();
   for (const item of scan.items) {
     if (item.kind !== 'fn' || item.testOnly) continue;
-    const containers = scan.items.filter(c => c !== item && c.start <= item.start && c.end >= item.end)
+    const containers = scan.items.filter(c => c !== item && c.start <= item.start &&
+      c.end >= item.end)
       .map(c => `${c.kind}:${c.name ?? scan.tokens.slice(c.first,c.last).filter(t => t.start < c.bodyStart).map(t => t.text).join('')}`);
     const key = [...containers,item.name].join('/'), ordinal = ordinals.get(key) ?? 0;
     ordinals.set(key,ordinal + 1);
@@ -98,7 +106,9 @@ function measure(path, scan, receivers) {
     let disk = false;
     for (let i = 0; i < ts.length; i++) {
       const t = ts[i];
-      if (item.bodyStart === null || t.start <= item.bodyStart || t.start >= item.end || t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident')) continue;
+      if (item.bodyStart === null || t.start <= item.bodyStart || t.start >= item.end ||
+        t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
+          ts[i - 2]?.kind === 'ident')) continue;
       const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
       if (/^(?:(?:std|tokio)::)?fs::/.test(value) || /^(?:(?:std|tokio)::fs::)?File::(?:open|create)$/.test(value) ||
         /^(?:(?:std|tokio)::fs::)?OpenOptions(?:::|$)/.test(value) || /^(?:(?:std|tokio)::fs::)?read_dir$/.test(value)) {
@@ -106,7 +116,8 @@ function measure(path, scan, receivers) {
       }
       i = r.end - 1;
     }
-    if (disk) m.commands.set(identity,hit(m,'disk_commands',item.line,occurrenceIdentity(scan,scan.tokens[item.first])));
+    if (disk) m.commands.set(identity,
+      hit(m,'disk_commands',item.line,occurrenceIdentity(scan,scan.tokens[item.first])));
   }
   return m;
 }
