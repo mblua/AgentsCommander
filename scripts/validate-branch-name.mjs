@@ -138,10 +138,10 @@ async function verifyIssueOpen(issue) {
     `Issue #${issue} is ${data.state}. Branch must reference an OPEN issue.`);
 }
 
-(async () => {
+void (async () => {
   try {
     const args   = parseArgs(process.argv.slice(2));
-    try { resolveGit(); } catch (e) { die(e.message); }
+    try { resolveGit(); } catch (e) { die(printable(e.message)); }
     const branch = args.branch || resolveBranch();
 
     if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0);
