@@ -342,13 +342,6 @@
         "agentscommander_lib::web::commands::agent_update_dispatch",
         "agentscommander_lib::window"
       ]
-    },
-    {
-      "id": "629bffdade5ff28c",
-      "members": [
-        "agentscommander_lib::cli::list_peers",
-        "agentscommander_lib::cli::list_peers::snapshot"
-      ]
     }
   ],
   "functionCycles": []
