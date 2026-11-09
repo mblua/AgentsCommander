@@ -53,7 +53,10 @@ const SURFACES = {
 
 function git(args) {
   try {
-    return execFileSync(resolveGit(), ["-C", REPO, ...args], { encoding: "utf8", maxBuffer: 1 << 29 });
+    return execFileSync(resolveGit(), ["-C", REPO, ...args], {
+      encoding: "utf8",
+      maxBuffer: 1 << 29
+    });
   } catch (e) {
     if (e.status === 1 && typeof e.stdout === "string") return e.stdout; // no matches
     throw e;
@@ -86,7 +89,12 @@ function parseGrepLine(line, surface, s, rev) {
   if (i1 < 0 || i2 < 0) return null;
   const path = body.slice(0, i1);
   if (!s.keep(path)) return null;
-  return { surface, path, lineno: Number(body.slice(i1 + 1, i2)), content: body.slice(i2 + 1).trim() };
+  return {
+    surface,
+    path,
+    lineno: Number(body.slice(i1 + 1, i2)),
+    content: body.slice(i2 + 1).trim()
+  };
 }
 
 export const key = (r) => `${r.path}\t${r.content}`;

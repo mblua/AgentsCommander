@@ -72,7 +72,11 @@ function run(command, options = {}) {
   const started = Date.now();
   console.log(`\n=== ${command}`);
   const result = spawnSync(command, { cwd: ROOT, shell: true, stdio: 'inherit', ...options });
-  return { ok: result.status === 0, status: result.status ?? 1, seconds: (Date.now() - started) / 1000 };
+  return {
+    ok: result.status === 0,
+    status: result.status ?? 1,
+    seconds: (Date.now() - started) / 1000
+  };
 }
 
 function capture(command, cwd) {
@@ -82,7 +86,10 @@ function capture(command, cwd) {
 
 function rustChecks(results) {
   const srcTauri = path.join(ROOT, 'src-tauri');
-  results.push(['cargo fmt --all -- --check', run('cargo fmt --all -- --check', { cwd: srcTauri })]);
+  results.push([
+    'cargo fmt --all -- --check',
+    run('cargo fmt --all -- --check', { cwd: srcTauri })
+  ]);
 
   const pin = JSON.parse(fs.readFileSync(BASELINE, 'utf8')).toolchain;
   const toolchains = capture('rustup toolchain list', ROOT) ?? '';
