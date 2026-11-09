@@ -295,7 +295,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
             &changed_path,
             changed_path
                 .file_name()
-                .and_then(|n| n.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or("workgroup"),
             "workgroupCreated",
             Some(&mut operation),

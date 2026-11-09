@@ -292,7 +292,7 @@ fn validate_attempt_state_entry(
         ));
         return Ok(());
     }
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(file_name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         errors.push(err_at_path(
             "run_artifact_mismatch",
             format!("Attempt-state entry has invalid name: {}", path.display()),

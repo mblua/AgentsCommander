@@ -28,7 +28,7 @@ use crate::reader_demand::{
 /// let a verified coordinator reach Root (F4).
 pub(crate) fn co_managed_project_paths(settings_paths: &[String], room_root: &Path) -> Vec<String> {
     let mut paths = settings_paths.to_vec();
-    let Some(project_dir) = room_root.parent().and_then(|ac_root| ac_root.parent()) else {
+    let Some(project_dir) = room_root.parent().and_then(std::path::Path::parent) else {
         return paths;
     };
     let canon_project = crate::filesystem::projects::canonical_refresh_project(project_dir).ok();
