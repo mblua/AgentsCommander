@@ -101,7 +101,7 @@ fn project_refresh_request_paths(config_dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
         .expect("read project-refresh-requests")
         .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("json"))
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
         .collect();
     paths.sort();
     paths
@@ -271,7 +271,7 @@ fn assert_no_ac_side_effect_dirs(root: &Path) {
             if path.is_dir() {
                 let name = path
                     .file_name()
-                    .and_then(std::ffi::OsStr::to_str)
+                    .and_then(|name| name.to_str())
                     .unwrap_or("");
                 assert!(
                     !(name.starts_with("wg-")
