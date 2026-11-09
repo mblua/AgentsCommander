@@ -104,7 +104,8 @@ function readBaseline(baselinePath) {
 }
 
 function unusable(detail, stderr) {
-  return new GateError(`the detector report is unusable (${detail}); this is not a verdict about the tree\n${stderr}`);
+  return new GateError(
+    `the detector report is unusable (${detail}); this is not a verdict about the tree\n${stderr}`);
 }
 
 function parseReport(stdout, stderr) {
@@ -116,9 +117,12 @@ function parseReport(stdout, stderr) {
     throw unusable(`stdout is not JSON: ${err.message}`, stderr);
   }
   const version = report?.tool?.version;
-  if (!report || report.schemaVersion !== 1) throw unusable(`schemaVersion is ${JSON.stringify(report?.schemaVersion)}`, stderr);
+  if (!report || report.schemaVersion !== 1) throw unusable(
+    `schemaVersion is ${JSON.stringify(report?.schemaVersion)}`, stderr);
   if (version !== EXPECTED_TOOL_VERSION) {
-    throw unusable(`detector TOOL_VERSION is ${JSON.stringify(version)}, expected '${EXPECTED_TOOL_VERSION}'`, stderr);
+    throw unusable(
+      `detector TOOL_VERSION is ${JSON.stringify(version)}, expected '${EXPECTED_TOOL_VERSION}'`,
+      stderr);
   }
   if (!Array.isArray(report.moduleCycles)) throw unusable('moduleCycles is not an array', stderr);
   if (report.baseline?.used !== true) throw unusable('baseline.used is not true', stderr);
@@ -135,8 +139,10 @@ async function runDetector(runner, argv) {
   } catch (err) {
     throw new GateError(`could not start the detector: ${err.message}`);
   }
-  if (result.exit === 2) throw new GateError(`detector exit 2: bad baseline or invocation\n${result.stderr}`, 2);
-  if (result.exit === 3) throw new GateError(`detector exit 3: analysis incomplete, never a pass\n${result.stderr}`);
+  if (result.exit === 2) throw new GateError(
+    `detector exit 2: bad baseline or invocation\n${result.stderr}`, 2);
+  if (result.exit === 3) throw new GateError(
+    `detector exit 3: analysis incomplete, never a pass\n${result.stderr}`);
   if (result.exit !== 0 && result.exit !== 1) {
     throw new GateError(`detector exit ${result.exit}: unexpected exit code (only 0 and 1 are accepted)\n${result.stderr}`);
   }
@@ -233,7 +239,8 @@ export function formatEvent(event) {
   return `${event.label}: retired ${list(event.retired)} new ${list(event.added)} left ${list(event.left)} joined ${list(event.joined)}`;
 }
 
-const REMOVAL_REASON = 'A cycle in the baseline no longer exists. Leaving it there would read that exact cycle as '
+const REMOVAL_REASON =
+  'A cycle in the baseline no longer exists. Leaving it there would read that exact cycle as '
   + '`known` if it ever returns, so the removal must be pruned from the baseline now.';
 
 // Gate mode. `target` and `baselinePath` are the private injection seam: the command line never
@@ -265,7 +272,8 @@ export async function checkModuleCycles({ runner = realRunner, target = TARGET, 
   const outcome = { exit, events, detectorExit: result.exit, newCycles, resolvedCycles, stderr:
     result.stderr };
   if (exit === 0) {
-    return { ...outcome, ok: true, message: `no new module dependency cycle.\n${summary.join('\n')}` };
+    return { ...outcome, ok: true, message:
+      `no new module dependency cycle.\n${summary.join('\n')}` };
   }
   const headline = removed
     ? `check-module-cycles: gate error: ${REMOVAL_REASON}`
@@ -276,7 +284,8 @@ export async function checkModuleCycles({ runner = realRunner, target = TARGET, 
     'retired cycles (ids no longer present):',
     ...(resolvedCycles.length > 0 ? resolvedCycles.map(describeCycle) : ['  none']),
   ];
-  return { ...outcome, ok: false, message: `${headline}\n${summary.join('\n')}\n${details.join('\n')}` };
+  return { ...outcome, ok: false, message:
+    `${headline}\n${summary.join('\n')}\n${details.join('\n')}` };
 }
 
 // Write mode. Never reads an existing baseline, so the first write works.
@@ -288,7 +297,8 @@ export async function writeCyclesBaseline({ runner = realRunner, target = TARGET
   } catch (err) {
     throw new GateError(`could not start the detector: ${err.message}`);
   }
-  if (result.exit !== 0) throw new GateError(`detector exit ${result.exit}: baseline not written\n${result.stderr}`);
+  if (result.exit !== 0) throw new GateError(
+    `detector exit ${result.exit}: baseline not written\n${result.stderr}`);
   const baseline = readBaseline(baselinePath);
   return `wrote ${baselinePath}: ${baseline.moduleCycles.length} module cycles, ${baseline.functionCycles.length} function cycles.`;
 }
@@ -358,8 +368,10 @@ async function expectGateError(content, runner, needle) {
       await checkModuleCycles({ runner, baselinePath, target: path.dirname(baselinePath) });
     } catch (err) {
       if (!(err instanceof GateError)) throw err;
-      if (!err.message.includes(needle)) throw new Error(`gate error lacks "${needle}": ${err.message}`);
-      if (/no new module dependency cycle/.test(err.message)) throw new Error('a gate error must not read as a clean tree');
+      if (!err.message.includes(needle)) throw new Error(
+        `gate error lacks "${needle}": ${err.message}`);
+      if (/no new module dependency cycle/.test(err.message)) throw new Error(
+        'a gate error must not read as a clean tree');
       return;
     }
     throw new Error('expected a gate error, got a result');
@@ -407,7 +419,8 @@ const CASES = [
     await checkModuleCycles({ runner: stubRunner({ seen }), baselinePath, target: 'T' });
     const want = [DETECTOR, 'T', '--baseline', baselinePath, '--fail-on', 'module',
       '--function-scope', FUNCTION_SCOPE, '--json'];
-    if (JSON.stringify(seen[0]) !== JSON.stringify(want)) throw new Error(`argv ${JSON.stringify(seen[0])}`);
+    if (JSON.stringify(seen[0]) !== JSON.stringify(want)) throw new Error(
+      `argv ${JSON.stringify(seen[0])}`);
   })],
   ['stub exit 0 with a known cycle passes', () => withBaseline(GOOD_BASELINE, async (
     baselinePath) => {
@@ -435,7 +448,8 @@ const CASES = [
     }));
     const result = await checkModuleCycles({ runner: stubRunner({ stdout }), baselinePath });
     const ids = result.resolvedCycles.map((c) => c.id);
-    if (JSON.stringify(ids) !== '["cccccccccccccccc"]') throw new Error(`resolved ${JSON.stringify(ids)}`);
+    if (JSON.stringify(ids) !== '["cccccccccccccccc"]') throw new Error(
+      `resolved ${JSON.stringify(ids)}`);
   })],
   ['stub exit 3 is a gate error', () => expectGateError(GOOD_BASELINE, stubRunner({ exit: 3 }),
     'detector exit 3')],
@@ -480,14 +494,16 @@ const CASES = [
       return { exit: 0, stdout: '', stderr: '' };
     };
     await writeCyclesBaseline({ runner, baselinePath, target: 'T' });
-    if (seen[0].includes('--baseline') || !seen[0].includes('--write-baseline')) throw new Error(`argv ${JSON.stringify(seen[0])}`);
+    if (seen[0].includes('--baseline') || !seen[0].includes('--write-baseline')) throw new Error(
+      `argv ${JSON.stringify(seen[0])}`);
   })],
   ['real detector through the seam: first write on a temp crate, then the gate passes and a new cycle fails', () => withTemp(async (dir) => {
     const target = writeFixtureCrate(dir);
     const baselinePath = path.join(dir, 'baseline.json');
     await writeCyclesBaseline({ target, baselinePath });
     const written = readBaseline(baselinePath);
-    if (written.moduleCycles.length !== 1) throw new Error(`expected one fixture cycle, got ${written.moduleCycles.length}`);
+    if (written.moduleCycles.length !== 1) throw new Error(
+      `expected one fixture cycle, got ${written.moduleCycles.length}`);
     const pass = await checkModuleCycles({ target, baselinePath });
     if (!pass.ok) throw new Error(pass.message);
     fs.writeFileSync(path.join(target, 'src', 'lib.rs'), 'pub mod a;\npub mod b;\npub mod c;\n');
@@ -513,7 +529,8 @@ function writeLoops(crate, loops) {
   fs.mkdirSync(path.join(crate, 'src'), { recursive: true });
   fs.writeFileSync(path.join(crate, 'Cargo.toml'),
     '[package]\nname = "fixture"\nversion = "0.1.0"\n\n[lib]\npath = "src/lib.rs"\n');
-  fs.writeFileSync(path.join(crate, 'src', 'lib.rs'), FIXTURE_MODULES.map((m) => `pub mod ${m};\n`).join(''));
+  fs.writeFileSync(path.join(crate, 'src', 'lib.rs'), FIXTURE_MODULES.map((m) =>
+    `pub mod ${m};\n`).join(''));
   for (const m of FIXTURE_MODULES) {
     const lines = uses.get(m).map((t) => `use crate::${t}::f as _${t};\n`);
     fs.writeFileSync(path.join(crate, 'src', `${m}.rs`), `${lines.join('')}pub fn f() {}\n`);
@@ -565,7 +582,8 @@ function expectedLine([label, left, joined, retired, added]) {
 // Asserts the exits and the full lines the gate emitted, in order.
 async function expectPair({ before, after, want, detector, gate, editBaseline }) {
   const { result, report } = await runPair(before, after, editBaseline);
-  if (result.detectorExit !== detector) throw new Error(`detector exit ${result.detectorExit}, expected ${detector}`);
+  if (result.detectorExit !== detector) throw new Error(
+    `detector exit ${result.detectorExit}, expected ${detector}`);
   if (result.exit !== gate) throw new Error(`gate exit ${result.exit}, expected ${gate}`);
   const expected = want.map(expectedLine).join('\n');
   const got = result.events.join('\n');
@@ -647,7 +665,8 @@ function unicodeOrderCase() {
     `NEW: retired [] new [1111111111111111] left [] joined [${wide}, ${high}x]`,
     `NEW: retired [] new [2222222222222222] left [] joined [${high}]`,
   ];
-  if (lines.join('\n') !== expected.join('\n')) throw new Error(`byte order broken:\n${lines.join('\n')}`);
+  if (lines.join('\n') !== expected.join('\n')) throw new Error(
+    `byte order broken:\n${lines.join('\n')}`);
 }
 
 CASES.push(

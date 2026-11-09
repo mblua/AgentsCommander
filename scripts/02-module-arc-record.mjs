@@ -310,7 +310,8 @@ function reduceGraph(graph, file) {
       && typeof edge.from === 'string' && edge.from !== ''
       && typeof edge.to === 'string' && edge.to !== '';
     if (!usable) {
-      throw new GraphError(`graph file '${file}' edge at index ${index} has no usable 'from' and 'to'`);
+      throw new GraphError(
+        `graph file '${file}' edge at index ${index} has no usable 'from' and 'to'`);
     }
     if (edge.from === edge.to) continue;
     seen.add(`${edge.from}\u0000${edge.to}`);
@@ -384,7 +385,8 @@ function runCli(argv, out, err) {
     const lines = reduceGraph(readGraph(graphFile), graphFile);
     const body = renderBody(lines);
     writeRecord(recordFile, body);
-    out(`${TAG} wrote ${recordFile}: ${lines.length} arcs, ${Buffer.byteLength(body, 'utf8')} bytes`);
+    out(
+      `${TAG} wrote ${recordFile}: ${lines.length} arcs, ${Buffer.byteLength(body, 'utf8')} bytes`);
     return 0;
   } catch (error) {
     if (error instanceof GraphError) {
@@ -501,7 +503,8 @@ function selfTest(out) {
   run('A2', () => {
     const result = invoke(['--version']);
     assertSelf(result.code === 0, '--version must exit 0');
-    assertSelf(result.out.includes(`${TOOL} ${VERSION}`), '--version must print the tool name and version');
+    assertSelf(result.out.includes(`${TOOL} ${VERSION}`),
+      '--version must print the tool name and version');
   });
 
   run('A3', () => {
@@ -683,7 +686,8 @@ function selfTest(out) {
     assertSelf(result.code === 0, 'a valid graph must exit 0');
     const text = fs.readFileSync(result.target, 'utf8');
     for (const line of text.slice(0, -1).split('\n')) {
-      assertSelf(line.split(ARC_SEPARATOR).length === 2, `line '${line}' must contain the separator exactly once`);
+      assertSelf(line.split(ARC_SEPARATOR).length === 2,
+        `line '${line}' must contain the separator exactly once`);
     }
   });
 
@@ -839,7 +843,8 @@ function selfTest(out) {
     assertSelf(result.err.includes('cannot write record'),
       'the message must say it could not write the record');
     const leftovers = filesUnder(root).filter((file) => file.endsWith('.tmp'));
-    assertSelf(leftovers.length === 0, `a failed write must leave no temp file: ${leftovers.join(', ')}`);
+    assertSelf(leftovers.length === 0,
+      `a failed write must leave no temp file: ${leftovers.join(', ')}`);
   });
 
   // ---- Group E: the default path (1 case) ----

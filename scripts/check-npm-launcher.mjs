@@ -167,7 +167,8 @@ function assertThrows(fn, needles, label) {
   return message;
 }
 function expectEqual(actual, expected, label) {
-  assert(actual === expected, `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  assert(actual === expected,
+    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 function expectExit(r, code, label) {
   assert(
@@ -470,7 +471,8 @@ function runPackageChecks() {
     );
     const rootVersion = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'),
       'utf8')).version;
-    assert(packed.version === rootVersion, `P1: packed version ${packed.version} != root package.json ${rootVersion}`);
+    assert(packed.version === rootVersion,
+      `P1: packed version ${packed.version} != root package.json ${rootVersion}`);
   });
 
   test('P2', () => {
@@ -489,7 +491,8 @@ function runPackageChecks() {
       const code = source.replace(/^\s*\/\/.*$/gm, '');
       assert(!/\bxattr\b/.test(code), `P5: ${name} must not call xattr`);
       assert(!/\bspctl\b/.test(code), `P5: ${name} must not call spctl`);
-      assert(!/com\.apple\.quarantine/.test(code), `P5: ${name} must not touch the quarantine attribute`);
+      assert(!/com\.apple\.quarantine/.test(code),
+        `P5: ${name} must not touch the quarantine attribute`);
       assert(!/\bcodesign\b/.test(code), `P5: ${name} must not call codesign`);
     }
   });
@@ -596,7 +599,8 @@ function runShortcutChecks(requireFromWork) {
       expectEqual(first.path, shortcutMod.shortcutPath(env), 'S3 path');
       const again = shortcutMod.createStartMenuShortcut(target, { env });
       expectEqual(again.created, true, 'S3 idempotent re-run');
-      const ps = path.join(process.env.SystemRoot || String.raw`C:\Windows`, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const ps = path.join(process.env.SystemRoot || String.raw`C:\Windows`, 'System32',
+        'WindowsPowerShell', 'v1.0', 'powershell.exe');
       const read = spawnSync(
         ps,
         ['-NoProfile', '-NonInteractive', '-Command', '$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:P); $s.TargetPath; $s.IconLocation'],
@@ -872,7 +876,8 @@ function runArtifactCheck(resolveBinPath, tarInfo) {
       const expected = path.join(realBin, 'Agents Commander.app', 'Contents', 'MacOS',
         'agentscommander');
       expectEqual(resolveBinPath('darwin', realBin), expected, 'A1');
-      assert(fs.statSync(expected).isFile(), `A1: resolved path is not a regular file: ${expected}`);
+      assert(fs.statSync(expected).isFile(),
+        `A1: resolved path is not a regular file: ${expected}`);
       return `resolved ${expected}`;
     });
   }
@@ -1056,11 +1061,13 @@ function runDarwinInstallChecks(tarInfo, symlinkProbe) {
         assertIncludes(r.stdout, 'Installation completed successfully.', `${job.id} stdout`);
         const alias = path.join(home, 'Applications', 'AgentsCommander.app');
         if (!job.expectAlias) {
-          assert(!fs.existsSync(path.join(home, 'Applications')), `${job.id}: opt-out must create nothing`);
+          assert(!fs.existsSync(path.join(home, 'Applications')),
+            `${job.id}: opt-out must create nothing`);
           return 'opt-out created nothing';
         }
         assert(fs.lstatSync(alias).isSymbolicLink(), `${job.id}: alias is not a symlink`);
-        expectEqual(fs.readlinkSync(alias), path.join(binDir, 'Agents Commander.app'), `${job.id} target`);
+        expectEqual(fs.readlinkSync(alias), path.join(binDir, 'Agents Commander.app'),
+          `${job.id} target`);
         assert(
           fs.existsSync(path.join(alias, 'Contents', 'MacOS', FIXTURE_EXE)),
           `${job.id}: the alias does not resolve into the installed bundle`,
