@@ -6,8 +6,7 @@
   "seedCommit": "dd307c2a662d65608aa93c06490f3cc06973b626",
   "platforms": [
     "linux",
-    "linux",
-        "windows"
+    "windows"
   ],
   "entries": [
     {
