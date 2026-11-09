@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "b8f2a4aad5d3608c",
+      "id": "40a128fabdd0dd95",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -283,7 +283,6 @@
         "agentscommander_lib::pty::output::markers",
         "agentscommander_lib::pty::remote_watcher",
         "agentscommander_lib::pty::remote_watcher::ci_parse",
-        "agentscommander_lib::pty::remote_watcher::gh_command",
         "agentscommander_lib::pty::remote_watcher::outcome",
         "agentscommander_lib::pty::remote_watcher::query",
         "agentscommander_lib::pty::remote_watcher::schedule",
@@ -342,21 +341,6 @@
         "agentscommander_lib::web::commands",
         "agentscommander_lib::web::commands::agent_update_dispatch",
         "agentscommander_lib::window"
-      ]
-    },
-    {
-      "id": "9cc5d31519f8d48a",
-      "members": [
-        "agentscommander_lib::path_identity",
-        "agentscommander_lib::path_identity::regular",
-        "agentscommander_lib::path_identity::terminal_output"
-      ]
-    },
-    {
-      "id": "99ca20000995b5ac",
-      "members": [
-        "agentscommander_lib::process::agent::owner",
-        "agentscommander_lib::process::agent::owner::command_run"
       ]
     }
   ],

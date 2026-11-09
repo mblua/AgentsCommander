@@ -426,15 +426,15 @@ pub(crate) fn canonical_real_dir(path: &Path, label: &str) -> Result<PathBuf, St
 pub(crate) fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !name.starts_with("__agent_") {
         return Err(format!("Target '{}' is not a Room replica", path.display()));
     }
     let wg_name = path
         .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
@@ -499,12 +499,12 @@ pub(crate) fn build_profile_assignment_target(
     let wg_dir = replica_dir.parent().unwrap_or_else(|| Path::new(""));
     let workgroup_name = wg_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("")
         .to_string();
     let replica_name = replica_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))
         .unwrap_or("")
         .to_string();

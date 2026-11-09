@@ -58,12 +58,14 @@ function rustToken(source, index) {
     /\\(?:\r?\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[\s\S])/g,
     (escape) => {
       if (/^\\\r?\n/.test(escape)) return '';
-      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"', "\\'": "'" };
+      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"',
+        "\\'": "'" };
       if (escape in simple) return simple[escape];
       if (escape.startsWith('\\x')) return String.fromCharCode(parseInt(escape.slice(2), 16));
       if (escape.startsWith('\\u{')) {
         const code = parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
-        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)) return String.fromCodePoint(code);
+        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff))
+          return String.fromCodePoint(code);
       }
       valid = false;
       return escape;
@@ -197,7 +199,8 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
 }
 
 function loadTrackedFiles() {
-  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024 });
   return output.split('\0').filter((file) => file.length > 0);
 }
 
@@ -238,7 +241,8 @@ function runCheck(options) {
 
   for (const warning of result.warnings) console.warn(`served-paths warning: ${warning}`);
   if (result.errors.length === 0) {
-    console.log(`served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
+    console.log(
+      `served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
     return 0;
   }
   const prefix = process.env.GITHUB_ACTIONS === 'true' ? '::error::' : '';
@@ -320,13 +324,15 @@ function selfTestCases() {
     }],
     ['case 4: a fetched ref that differs from the row', () => {
       const result = runServedPathsFixture({
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/home-en.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/home-en.md\n' },
       });
       expectError(result, 'has no row');
     }],
     ['case 5: owner and repo are compared case-insensitively', () => {
       const result = runServedPathsFixture({
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/new.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/new.md\n' },
       });
       expectError(result, 'has no row');
     }],
@@ -334,7 +340,8 @@ function selfTestCases() {
       const result = runServedPathsFixture({
         inventoryText: selfTestInventory(['| `docs/home-en.md` | `main` | 0.8.43 |']),
         trackedFiles: ['docs/home-en.md', 'src/main.ts'],
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/home-en.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/home-en.md\n' },
       });
       expectNoErrors(result);
       if (result.literals.length !== 1) {
@@ -343,7 +350,8 @@ function selfTestCases() {
     }],
     ['case 7: a malformed inventory row', () => {
       const result = runServedPathsFixture({
-        inventoryText: selfTestInventory([...SELF_TEST_ROWS, '| docs/home-en.md | main | 0.8.43 |']),
+        inventoryText: selfTestInventory(
+          [...SELF_TEST_ROWS, '| docs/home-en.md | main | 0.8.43 |']),
       });
       expectError(result, 'malformed inventory row');
     }],
@@ -375,7 +383,8 @@ function selfTestCases() {
         sources: { 'src/main.ts': crlf(SELF_TEST_GOOD_SOURCE) },
       });
       expectNoErrors(result);
-      if (result.rows.length !== baseline.rows.length || result.literals.length !== baseline.literals.length) {
+      if (result.rows.length !== baseline.rows.length ||
+        result.literals.length !== baseline.literals.length) {
         throw new Error(`expected ${baseline.rows.length} rows and ${baseline.literals.length} literals, got ${result.rows.length} and ${result.literals.length}`);
       }
     }],
@@ -446,7 +455,8 @@ function selfTest() {
     }
   }
   if (failures.length > 0) {
-    for (const failure of failures) console.error(`check-served-paths self-test failed: ${failure}`);
+    for (const failure of failures) console.error(
+      `check-served-paths self-test failed: ${failure}`);
     return 4;
   }
   console.log(`check-served-paths self-test passed (${selfTestCases().length} cases)`);

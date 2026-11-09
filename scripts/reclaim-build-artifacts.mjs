@@ -208,7 +208,8 @@ function inspectCandidate(repoRootReal, rel) {
   if (st.isSymbolicLink()) return { path, rel, ok: false, reason: 'symlink (skipped)' };
   if (!st.isDirectory()) return { path, rel, ok: false, reason: 'not a directory' };
   // Final-segment guard: whatever the relative path, the thing we delete is a `target` dir.
-  if (basename(path) !== 'target') return { path, rel, ok: false, reason: 'basename is not target' };
+  if (basename(path) !== 'target')
+    return { path, rel, ok: false, reason: 'basename is not target' };
 
   // Containment guard: the resolved path must sit inside the resolved repo root.
   let real;
@@ -220,7 +221,8 @@ function inspectCandidate(repoRootReal, rel) {
   if (real !== repoRootReal && !real.startsWith(repoRootReal + sep)) {
     return { path, rel, ok: false, reason: 'resolves outside repo root (skipped)' };
   }
-  if (real === repoRootReal) return { path, rel, ok: false, reason: 'resolves to repo root (skipped)' };
+  if (real === repoRootReal)
+    return { path, rel, ok: false, reason: 'resolves to repo root (skipped)' };
 
   return { path, rel, ok: true, reason: 'artifact', real };
 }
@@ -326,7 +328,8 @@ function printTextReport(apply, repoRoots, reclaimable, skipped, totalBytes) {
     // Only surface skips that are not the boring "absent" case.
     console.log(`${TAG}   skipped: ${s.path}  (${s.reason})`);
   }
-  console.log(`${TAG} reclaimable total: ${humanBytes(totalBytes)} across ${reclaimable.length} dir(s)`);
+  console.log(
+    `${TAG} reclaimable total: ${humanBytes(totalBytes)} across ${reclaimable.length} dir(s)`);
   if (!apply && reclaimable.length > 0) {
     console.log(`${TAG} re-run with --apply to delete.`);
   }

@@ -42,7 +42,7 @@ export function isTimeoutKeyOfAgent(key: string, agentId: string): boolean {
 export function preflightFingerprint(settings: AppSettings, agentId: string): string {
   const row = settings.agents.find((agent) => agent.id === agentId);
   const cells = settings.codingAgentProfiles?.profilesByAgent?.[agentId] ?? {};
-  const cellInputs = Object.keys(cells).sort().map((letter) => {
+  const cellInputs = Object.keys(cells).sort((a, b) => a.localeCompare(b)).map((letter) => {
     const cell = cells[letter];
     return [letter, {
       command: cell.command,

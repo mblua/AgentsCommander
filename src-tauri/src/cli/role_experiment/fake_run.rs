@@ -81,7 +81,9 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
     );
     replace_report(&plan.run_dir, &report_artifact)?;
     atomic_write_bytes(
-        &plan.run_dir.join("report.md"),
+        &plan
+            .run_dir
+            .join(default_run_artifact_paths(String::new()).report_markdown),
         render_report_markdown(&report_artifact).as_bytes(),
     )?;
 
@@ -105,7 +107,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
                 "run": run_name(),
                 "attempts": attempts_name(),
                 "reportJson": report_name(),
-                "reportMarkdown": "report.md",
+                "reportMarkdown": default_run_artifact_paths(String::new()).report_markdown,
                 "prompts": "prompts",
                 "outputs": "outputs",
                 "transcripts": "transcripts",

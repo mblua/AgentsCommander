@@ -322,6 +322,7 @@ fn finalize_composed_settings(
     finalize_agent_order(&mut settings.agents);
     refresh_agent_id_hashes(&mut settings.agents);
     refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
+    settings.normalize_context_history_sessions();
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
     if settings.local_overlay_state.owns_top_level("agents") {
@@ -492,6 +493,11 @@ pub(crate) fn default_settings_with_overlay_captured(
     let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
         return AppSettings::default();
     };
+    // #4091: drop only the synthetic default colour, so an absent overlay key
+    // decodes as `None` and normalizes to the effective last window.
+    if let Some(defaults) = value.as_object_mut() {
+        defaults.remove("contextHistoryColorSessions");
+    }
     let overlay = crate::config::settings::overlay::load_settings_overlay(
         settings_path,
         &mut value,
@@ -530,6 +536,7 @@ pub(crate) fn default_settings_with_overlay_captured(
             settings.local_overlay_state = Arc::new(overlay);
             repair_loaded_response_close_settings(&mut settings, source);
             repair_loaded_room_idle_confirmation_settings(&mut settings, source);
+            settings.normalize_context_history_sessions();
             settings
         }
         Err(e) => {

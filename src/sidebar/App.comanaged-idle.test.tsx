@@ -282,7 +282,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       window.dispatchEvent(new Event("focus"));
       // Real timers: the debounced refresh fires after 250 ms and lists once.
       await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(fake.callsFor("list_sessions").length).toBe(listsBefore + 1);
+      expect(fake.callsFor("list_sessions")).toHaveLength(listsBefore + 1);
       expect(currentRow(SESSION_B)?.waitingForInput).toBe(true);
       fake.emitFromBackend("session_comanaged_state", { id: SESSION_B, active: false, reason: null });
       expect(activity(SESSION_B)).toBe("pendingReview");

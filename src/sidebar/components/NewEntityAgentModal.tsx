@@ -136,7 +136,7 @@ const NewEntityAgentModal: Component<{
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      handleCreate();
+      void handleCreate();
     }
   };
 

@@ -133,7 +133,7 @@ describe("TerminalView hotkey handler (#2236 D9a)", () => {
     container.remove();
     unregisterShortcuts(shortcuts);
     release();
-    expect(toggle.mock.calls.length).toBe(flips);
+    expect(toggle.mock.calls).toHaveLength(flips);
     return flips;
   }
 

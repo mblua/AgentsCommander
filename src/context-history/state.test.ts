@@ -19,14 +19,18 @@ function agent(agentKey: string, mean: number | null, recordsCount: number): Age
     positiveSum: 0,
     mean,
     sessionsCount: 1,
+    recordsPerSession: recordsCount,
     incomplete: false,
+    scopeWindows: null,
   };
 }
 
 function report(agents: AgentSummary[], next: string | null, total: number): ReportResponse {
   return {
     schemaVersion: 2,
-    requestedPeriod: { fromUtcMs: 0, toUtcMs: NOW, selection: "session_started" },
+    requestedPeriod: {
+      fromUtcMs: 0, toUtcMs: NOW, sessionCount: 100, selection: "recent_sessions",
+    },
     generatedAtUtcMs: NOW,
     coverage: {
       retentionDays: 30,
@@ -51,6 +55,15 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const WINDOWS = [25, 100, 300];
+
+/** #4091 A state with the loaded settings list, as the App provides it. */
+function configured(project: string, now: () => number = () => NOW) {
+  const state = createHistoryState(project, now);
+  state.setWindows(WINDOWS);
+  return state;
+}
+
 describe("createHistoryState", () => {
   let fake: FakeTransport;
   let restore: () => void;
@@ -64,16 +77,17 @@ describe("createHistoryState", () => {
 
   const sentQuery = (index: number) => fake.calls[index].args.request as ReportQuery;
 
-  it("fixes a half-open period from the refresh clock and sends filters as given", async () => {
+  it("pins the cutoff from the refresh clock and sends the count and filters", async () => {
     fake.resolve("get_context_history_report", report([], null, 0));
-    const state = createHistoryState("C:/p", () => NOW);
-    state.setFilters({ days: 1, teamId: null, model: { kind: "unknown" } });
+    const state = configured("C:/p");
+    state.setFilters({ sessionCount: 25, teamId: null, model: { kind: "unknown" } });
     await state.refresh();
     const query = sentQuery(0);
     expect(query).toMatchObject({
       projectPath: "C:/p",
-      fromUtcMs: NOW - 86_400_000,
+      fromUtcMs: 0,
       toUtcMs: NOW,
+      sessionCount: 25,
       agentKey: null,
       teamId: null,
       model: { kind: "unknown" },
@@ -89,7 +103,7 @@ describe("createHistoryState", () => {
       calls += 1;
       return calls === 1 ? first.promise : report([agent("b", 2, 2)], null, 1);
     });
-    const state = createHistoryState("C:/a", () => NOW);
+    const state = configured("C:/a");
     const stale = state.refresh();
     state.setProject("C:/b");
     await state.refresh();
@@ -106,7 +120,7 @@ describe("createHistoryState", () => {
         ? report([agent("a", 1.25, 3)], "c1", 2)
         : report([agent("b", 4, 5)], null, 2);
     });
-    const state = createHistoryState("C:/p", () => NOW);
+    const state = configured("C:/p");
     await state.refresh();
     await state.loadMoreAgents();
     expect(sentQuery(1).cursor).toBe("c1");
@@ -122,7 +136,7 @@ describe("createHistoryState", () => {
       if (fail) throw { code: "Busy", message: "history is busy; retry" };
       return report([agent("a", 1, 1)], null, 1);
     });
-    const state = createHistoryState("C:/p", () => NOW);
+    const state = configured("C:/p");
     state.setFilters({ teamId: "t1" });
     await state.refresh();
     fail = true;
@@ -137,7 +151,7 @@ describe("createHistoryState", () => {
   it("loads detail and nested changes for the selected agent and session", async () => {
     fake.resolve("get_context_history_agent_detail", { sessionsPage: [] });
     fake.resolve("get_context_history_changes", { recordsPage: [] });
-    const state = createHistoryState("C:/p", () => NOW);
+    const state = configured("C:/p");
     await state.selectAgent("dev");
     await state.selectSession("11111111-1111-4111-8111-111111111111");
     expect(fake.calls[0].args.request).toMatchObject({ agentKey: "dev" });
@@ -149,9 +163,9 @@ describe("createHistoryState", () => {
 
   it("drops the selection when filters change", async () => {
     fake.resolve("get_context_history_agent_detail", { sessionsPage: [] });
-    const state = createHistoryState("C:/p", () => NOW);
+    const state = configured("C:/p");
     await state.selectAgent("dev");
-    state.setFilters({ days: 30 });
+    state.setFilters({ sessionCount: 300 });
     expect(state.selectedAgent()).toBeNull();
     expect(state.detail().data).toBeNull();
   });
@@ -159,11 +173,118 @@ describe("createHistoryState", () => {
   it("ignores responses that arrive after dispose", async () => {
     const pending = deferred<ReportResponse>();
     fake.onInvoke("get_context_history_report", () => pending.promise);
-    const state = createHistoryState("C:/p", () => NOW);
+    const state = configured("C:/p");
     const work = state.refresh();
     state.dispose();
     pending.resolve(report([agent("a", 1, 1)], null, 1));
     await work;
     expect(state.report().data).toBeNull();
+  });
+
+  it("starts on the last configured count and sends nothing without a list", async () => {
+    fake.resolve("get_context_history_report", report([], null, 0));
+    const bare = createHistoryState("C:/p", () => NOW);
+    await bare.refresh();
+    await bare.selectAgent("dev");
+    expect(fake.calls).toEqual([]);
+    bare.setWindows([]);
+    await bare.refresh();
+    expect(fake.calls).toEqual([]);
+    expect(bare.filters().sessionCount).toBeNull();
+    const state = configured("C:/p");
+    expect(state.windows()).toEqual(WINDOWS);
+    expect(state.filters().sessionCount).toBe(300);
+    await state.refresh();
+    expect(sentQuery(0).sessionCount).toBe(300);
+  });
+
+  it("ignores a filter patch with an unconfigured count", async () => {
+    fake.resolve("get_context_history_report", report([], null, 0));
+    const state = configured("C:/p");
+    state.setFilters({ sessionCount: 7, teamId: "t1" });
+    expect(state.filters().sessionCount).toBe(300);
+    expect(state.filters().teamId).toBeNull();
+    await state.refresh();
+    expect(sentQuery(0)).toMatchObject({ sessionCount: 300, teamId: null });
+  });
+
+  it("a changed list keeps a present count, else the last; drops pages and selection", async () => {
+    fake.resolve("get_context_history_report", report([agent("a", 1, 1)], "c1", 2));
+    fake.resolve("get_context_history_agent_detail", { sessionsPage: [] });
+    const state = configured("C:/p");
+    state.setFilters({ sessionCount: 100 });
+    await state.refresh();
+    await state.selectAgent("a");
+    state.setWindows(WINDOWS);
+    expect(state.selectedAgent()).toBe("a");
+    state.setWindows([50, 100]);
+    expect(state.filters().sessionCount).toBe(100);
+    expect(state.report().data).toBeNull();
+    expect(state.selectedAgent()).toBeNull();
+    state.setWindows([5, 10]);
+    expect(state.filters().sessionCount).toBe(10);
+    await state.refresh();
+    expect(sentQuery(fake.calls.length - 1)).toMatchObject({ sessionCount: 10, cursor: null });
+  });
+
+  it("drops a late page of the old list after the list changes", async () => {
+    const first = deferred<ReportResponse>();
+    let calls = 0;
+    fake.onInvoke("get_context_history_report", () => {
+      calls += 1;
+      return calls === 1 ? first.promise : report([agent("new", 2, 2)], null, 1);
+    });
+    const state = configured("C:/p");
+    const stale = state.refresh();
+    state.setWindows([10]);
+    await state.refresh();
+    first.resolve(report([agent("old", 1, 1)], null, 1));
+    await stale;
+    expect(state.report().data?.agentsPage.map((a) => a.agentKey)).toEqual(["new"]);
+  });
+
+  it("keeps the count and cutoff across pagination, detail and changes", async () => {
+    let clock = NOW;
+    fake.onInvoke("get_context_history_report", (args) =>
+      (args.request as ReportQuery).cursor === null
+        ? report([agent("a", 1, 3)], "c1", 2)
+        : report([agent("b", 4, 5)], null, 2),
+    );
+    fake.resolve("get_context_history_agent_detail", { sessionsPage: [], nextSessionCursor: "s1" });
+    fake.resolve("get_context_history_changes", { recordsPage: [], nextRecordCursor: "r1" });
+    const state = configured("C:/p", () => clock);
+    state.setFilters({ sessionCount: 25 });
+    await state.refresh();
+    clock = NOW + 60_000;
+    await state.loadMoreAgents();
+    await state.selectAgent("a");
+    await state.loadMoreSessions();
+    await state.selectSession("11111111-1111-4111-8111-111111111111");
+    await state.loadMoreRecords();
+    const queries = fake.calls.map((c) => {
+      const request = c.args.request as ReportQuery | { query: ReportQuery };
+      return "query" in request ? request.query : request;
+    });
+    expect(queries).toHaveLength(6);
+    for (const query of queries) {
+      expect(query).toMatchObject({ fromUtcMs: 0, toUtcMs: NOW, sessionCount: 25 });
+    }
+    expect(queries.map((q) => q.cursor)).toEqual([null, "c1", null, "s1", null, "r1"]);
+    clock = NOW + 120_000;
+    await state.refresh();
+    const last = fake.calls[fake.calls.length - 1].args.request as { query: ReportQuery };
+    expect(last.query).toMatchObject({ toUtcMs: NOW + 120_000, sessionCount: 25, cursor: null });
+  });
+
+  it("keeps the backend records-per-session of each appended agent", async () => {
+    fake.onInvoke("get_context_history_report", (args) =>
+      (args.request as ReportQuery).cursor === null
+        ? report([{ ...agent("a", 1, 1560), sessionsCount: 100, recordsPerSession: 15.6 }], "c1", 2)
+        : report([{ ...agent("b", 1, 21), sessionsCount: 2, recordsPerSession: 9.9 }], null, 2),
+    );
+    const state = configured("C:/p");
+    await state.refresh();
+    await state.loadMoreAgents();
+    expect(state.report().data?.agentsPage.map((a) => a.recordsPerSession)).toEqual([15.6, 9.9]);
   });
 });

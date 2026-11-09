@@ -352,7 +352,7 @@ describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", ()
           if (instance === visible) {
             expect(instance.writes.length).toBeGreaterThan(count);
           } else {
-            expect(instance.writes.length).toBe(count);
+            expect(instance.writes).toHaveLength(count);
           }
         }
 

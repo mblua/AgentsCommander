@@ -652,7 +652,7 @@ pub(crate) fn compute_pending_update(
 
 pub(crate) fn validate_project_ac_root(ac_root: &Path) -> Result<PathBuf, String> {
     validate_existing_dir(ac_root, "Project AC Root")?;
-    let name = ac_root.file_name().and_then(|name| name.to_str());
+    let name = ac_root.file_name().and_then(std::ffi::OsStr::to_str);
     if name != Some(crate::config::ac_root::canonical_ac_root_label()) {
         return Err(format!(
             "{} is not a Project AC Root directory",

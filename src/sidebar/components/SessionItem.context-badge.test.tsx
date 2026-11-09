@@ -178,7 +178,7 @@ describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
 
   function chip(root: ParentNode, id = sessionId): HTMLElement {
     const all = root.querySelectorAll<HTMLElement>(`[data-ac-testid="session.${id}"] .ac-discovery-badge.agent`);
-    expect(all.length).toBe(1);
+    expect(all).toHaveLength(1);
     return all[0];
   }
 

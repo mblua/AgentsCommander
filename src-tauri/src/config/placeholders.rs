@@ -95,7 +95,7 @@ fn derive_matrix_root(canonical: &Path, ac_root: Option<&Path>) -> Option<PathBu
     }
     let agent_name = canonical
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))
         .filter(|name| {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -261,20 +261,20 @@ fn strip_extended_prefix(path: PathBuf) -> PathBuf {
 }
 
 fn is_ac_replica_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
     if !name.starts_with("__agent_") {
         return false;
     }
     path.parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(crate::config::entity_prefix::has_entity_prefix)
 }
 
 fn is_root_agent_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
     name.eq_ignore_ascii_case(crate::config::root_agent::ROOT_AGENT_DIR_NAME)

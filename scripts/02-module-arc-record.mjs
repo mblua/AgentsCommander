@@ -114,7 +114,8 @@ const USAGE = [
 // Resolved from the script's own location, never from process.cwd(): the default record is a
 // fixed file in this repository, not "wherever the caller happened to be standing".
 function defaultRecordPath() {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'module-arcs.txt');
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri',
+    'module-arcs.txt');
 }
 
 function printUsage(out) {
@@ -182,7 +183,8 @@ function finalArgsError(result, argv) {
 }
 
 function parseArgs(argv) {
-  const result = { help: false, version: false, selfTest: false, graph: null, out: null, error: null };
+  const result = { help: false, version: false, selfTest: false, graph: null, out: null, error:
+    null };
 
   // First pass: --help wins over every other argument, including an invalid one, and
   // --version wins over everything except --help.
@@ -308,7 +310,8 @@ function reduceGraph(graph, file) {
       && typeof edge.from === 'string' && edge.from !== ''
       && typeof edge.to === 'string' && edge.to !== '';
     if (!usable) {
-      throw new GraphError(`graph file '${file}' edge at index ${index} has no usable 'from' and 'to'`);
+      throw new GraphError(
+        `graph file '${file}' edge at index ${index} has no usable 'from' and 'to'`);
     }
     if (edge.from === edge.to) continue;
     seen.add(`${edge.from}\u0000${edge.to}`);
@@ -382,7 +385,8 @@ function runCli(argv, out, err) {
     const lines = reduceGraph(readGraph(graphFile), graphFile);
     const body = renderBody(lines);
     writeRecord(recordFile, body);
-    out(`${TAG} wrote ${recordFile}: ${lines.length} arcs, ${Buffer.byteLength(body, 'utf8')} bytes`);
+    out(
+      `${TAG} wrote ${recordFile}: ${lines.length} arcs, ${Buffer.byteLength(body, 'utf8')} bytes`);
     return 0;
   } catch (error) {
     if (error instanceof GraphError) {
@@ -433,7 +437,8 @@ function baseGraph(edges) {
 }
 
 function edge(from, to, extra) {
-  return { from, to, item: null, file: 'src/x.rs', line: 1, column: 1, kind: 'path', cfgGated: false, text: 't', ...extra };
+  return { from, to, item: null, file: 'src/x.rs', line: 1, column: 1, kind: 'path', cfgGated:
+    false, text: 't', ...extra };
 }
 
 function filesUnder(dir) {
@@ -498,55 +503,65 @@ function selfTest(out) {
   run('A2', () => {
     const result = invoke(['--version']);
     assertSelf(result.code === 0, '--version must exit 0');
-    assertSelf(result.out.includes(`${TOOL} ${VERSION}`), '--version must print the tool name and version');
+    assertSelf(result.out.includes(`${TOOL} ${VERSION}`),
+      '--version must print the tool name and version');
   });
 
   run('A3', () => {
     const result = invoke([]);
     assertSelf(result.code === 2, 'no arguments must exit 2');
-    assertSelf(result.err.includes('--graph <file> is required'), 'the message must say --graph is required');
+    assertSelf(result.err.includes('--graph <file> is required'),
+      'the message must say --graph is required');
   });
 
   run('A4', () => {
     const result = invoke(['--bogus']);
     assertSelf(result.code === 2, 'an unknown option must exit 2');
-    assertSelf(result.err.includes("unknown option '--bogus'"), 'the message must name the unknown option');
+    assertSelf(result.err.includes("unknown option '--bogus'"),
+      'the message must name the unknown option');
   });
 
   run('A5', () => {
     const result = invoke(['--graph', 'g.json', 'extra.json']);
     assertSelf(result.code === 2, 'a positional argument must exit 2');
-    assertSelf(result.err.includes("unexpected positional argument 'extra.json'"), 'the message must name the positional');
+    assertSelf(result.err.includes("unexpected positional argument 'extra.json'"),
+      'the message must name the positional');
   });
 
   run('A6', () => {
     const bare = invoke(['--graph']);
     assertSelf(bare.code === 2, '--graph with no value must exit 2');
-    assertSelf(bare.err.includes('--graph requires a file path'), 'the message must say --graph needs a path');
+    assertSelf(bare.err.includes('--graph requires a file path'),
+      'the message must say --graph needs a path');
     const empty = invoke(['--graph=']);
     assertSelf(empty.code === 2, '--graph= must exit 2');
-    assertSelf(empty.err.includes('--graph requires a file path'), 'the message must say --graph needs a path');
+    assertSelf(empty.err.includes('--graph requires a file path'),
+      'the message must say --graph needs a path');
   });
 
   run('A7', () => {
     const result = invoke(['--graph', 'a', '--graph', 'b']);
     assertSelf(result.code === 2, 'a repeated --graph must exit 2');
-    assertSelf(result.err.includes('--graph may be given at most once'), 'the message must say --graph is once only');
+    assertSelf(result.err.includes('--graph may be given at most once'),
+      'the message must say --graph is once only');
   });
 
   run('A8', () => {
     const bare = invoke(['--out']);
     assertSelf(bare.code === 2, '--out with no value must exit 2');
-    assertSelf(bare.err.includes('--out requires a file path'), 'the message must say --out needs a path');
+    assertSelf(bare.err.includes('--out requires a file path'),
+      'the message must say --out needs a path');
     const repeated = invoke(['--graph', 'g.json', '--out', 'a', '--out', 'b']);
     assertSelf(repeated.code === 2, 'a repeated --out must exit 2');
-    assertSelf(repeated.err.includes('--out may be given at most once'), 'the message must say --out is once only');
+    assertSelf(repeated.err.includes('--out may be given at most once'),
+      'the message must say --out is once only');
   });
 
   run('A9', () => {
     const result = invoke(['--self-test', '--graph', 'g.json']);
     assertSelf(result.code === 2, '--self-test with another argument must exit 2');
-    assertSelf(result.err.includes('may not be combined'), 'the message must say it may not be combined');
+    assertSelf(result.err.includes('may not be combined'),
+      'the message must say it may not be combined');
   });
 
   run('A10', () => {
@@ -556,13 +571,15 @@ function selfTest(out) {
   });
 
   run('A11', (root) => {
-    const graph = writeGraph(root, 'g.json', baseGraph([edge('a::b', 'a::c'), edge('a::c', 'a::d')]));
+    const graph = writeGraph(root, 'g.json', baseGraph([edge('a::b', 'a::c'), edge('a::c',
+      'a::d')]));
     const joined = path.join(root, 'joined.txt');
     const spaced = path.join(root, 'spaced.txt');
     const first = invoke([`--graph=${graph}`, `--out=${joined}`]);
     const second = invoke(['--graph', graph, '--out', spaced]);
     assertSelf(first.code === 0 && second.code === 0, 'both argument forms must exit 0');
-    assertSelf(fs.readFileSync(joined).equals(fs.readFileSync(spaced)), 'both argument forms must write identical bytes');
+    assertSelf(fs.readFileSync(joined).equals(fs.readFileSync(spaced)),
+      'both argument forms must write identical bytes');
   });
 
   // ---- Group B: reduction semantics (10 cases) ----
@@ -573,29 +590,35 @@ function selfTest(out) {
       edge('a::b', 'a::c', { file: 'src/two.rs', line: 20, column: 7 }),
     ], 'b1');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b -> a::c\n', 'two sites of one arc must collapse to one line');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b -> a::c\n',
+      'two sites of one arc must collapse to one line');
   });
 
   run('B2', (root) => {
     const result = record(root, [
-      edge('a::b', 'a::c', { kind: 'path', item: 'Alpha', cfgGated: false, text: 'crate::a::c::Alpha' }),
-      edge('a::b', 'a::c', { kind: 'use', item: 'Beta', cfgGated: true, text: 'use crate::a::c::Beta' }),
+      edge('a::b', 'a::c', { kind: 'path', item: 'Alpha', cfgGated: false, text:
+        'crate::a::c::Alpha' }),
+      edge('a::b', 'a::c', { kind: 'use', item: 'Beta', cfgGated: true, text:
+        'use crate::a::c::Beta' }),
     ], 'b2');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b -> a::c\n', 'differing edge metadata must not defeat dedup');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b -> a::c\n',
+      'differing edge metadata must not defeat dedup');
   });
 
   run('B3', (root) => {
     const result = record(root, [edge('a::b', 'a::b'), edge('a::b', 'a::c')], 'b3');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b -> a::c\n', 'a self-arc must be excluded');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b -> a::c\n',
+      'a self-arc must be excluded');
   });
 
   run('B4', (root) => {
     const result = record(root, [edge('a::b', 'a::b'), edge('a::c', 'a::c')], 'b4');
     assertSelf(result.code === 0, 'an all-self-arc graph must still exit 0');
     assertSelf(fs.statSync(result.target).size === 0, 'an empty arc set must be a zero-byte file');
-    assertSelf(result.out.includes('0 arcs, 0 bytes'), 'the confirmation must report zero arcs and zero bytes');
+    assertSelf(result.out.includes('0 arcs, 0 bytes'),
+      'the confirmation must report zero arcs and zero bytes');
   });
 
   run('B5', (root) => {
@@ -607,7 +630,8 @@ function selfTest(out) {
   run('B6', (root) => {
     const result = record(root, [edge('z', 'a'), edge('a', 'z')], 'b6');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a -> z\nz -> a\n', 'the output must be sorted, not emission-ordered');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a -> z\nz -> a\n',
+      'the output must be sorted, not emission-ordered');
   });
 
   run('B7', (root) => {
@@ -618,7 +642,8 @@ function selfTest(out) {
     const forward = record(root, six, 'b7-forward');
     const reversed = record(root, [...six].reverse(), 'b7-reversed');
     assertSelf(forward.code === 0 && reversed.code === 0, 'both permutations must exit 0');
-    assertSelf(fs.readFileSync(forward.target).equals(fs.readFileSync(reversed.target)), 'edge order must not reach the output');
+    assertSelf(fs.readFileSync(forward.target).equals(fs.readFileSync(reversed.target)),
+      'edge order must not reach the output');
   });
 
   run('B8', (root) => {
@@ -626,19 +651,22 @@ function selfTest(out) {
     assertSelf(result.code === 0, 'a valid graph must exit 0');
     // Pins the separator: its leading 0x20 sorts below ':' (0x3A), so line order is pair
     // order. A '>' separator (0x3E) would put 'a::b -> y' first and invert every such pair.
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a -> x\na::b -> y\n', 'a parent arc must precede its descendant arc');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a -> x\na::b -> y\n',
+      'a parent arc must precede its descendant arc');
   });
 
   run('B9', (root) => {
     const result = record(root, [edge('a', 'z'), edge('a', 'b')], 'b9');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a -> b\na -> z\n', 'arcs sharing a source must sort by target');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a -> b\na -> z\n',
+      'arcs sharing a source must sort by target');
   });
 
   run('B10', (root) => {
     const result = record(root, [edge('a::b_2', 'a::c')], 'b10');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
-    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b_2 -> a::c\n', 'module ids must be recorded verbatim');
+    assertSelf(fs.readFileSync(result.target, 'utf8') === 'a::b_2 -> a::c\n',
+      'module ids must be recorded verbatim');
   });
 
   // ---- Group C: byte format (4 cases) ----
@@ -653,11 +681,13 @@ function selfTest(out) {
   });
 
   run('C2', (root) => {
-    const result = record(root, [edge('a::b', 'a::c'), edge('a::c', 'a::d'), edge('a::d', 'a::b')], 'c2');
+    const result = record(root, [edge('a::b', 'a::c'), edge('a::c', 'a::d'), edge('a::d', 'a::b')],
+      'c2');
     assertSelf(result.code === 0, 'a valid graph must exit 0');
     const text = fs.readFileSync(result.target, 'utf8');
     for (const line of text.slice(0, -1).split('\n')) {
-      assertSelf(line.split(ARC_SEPARATOR).length === 2, `line '${line}' must contain the separator exactly once`);
+      assertSelf(line.split(ARC_SEPARATOR).length === 2,
+        `line '${line}' must contain the separator exactly once`);
     }
   });
 
@@ -670,7 +700,8 @@ function selfTest(out) {
     const second = invoke(['--graph', graph, '--out', target]);
     const secondBytes = fs.readFileSync(target);
     assertSelf(first.code === 0 && second.code === 0, 'both runs must exit 0');
-    assertSelf(firstBytes.equals(secondBytes), 'a second run must produce identical bytes, not appended ones');
+    assertSelf(firstBytes.equals(secondBytes),
+      'a second run must produce identical bytes, not appended ones');
   });
 
   run('C4', (root) => {
@@ -685,7 +716,8 @@ function selfTest(out) {
     const missing = path.join(root, 'nope.json');
     const result = invoke(['--graph', missing, '--out', path.join(root, 'r.txt')]);
     assertSelf(result.code === 3, 'a nonexistent graph must exit 3');
-    assertSelf(result.err.includes('cannot read graph file'), 'the message must say it could not read the graph');
+    assertSelf(result.err.includes('cannot read graph file'),
+      'the message must say it could not read the graph');
     assertSelf(result.err.includes(missing), 'the message must name the resolved path');
   });
 
@@ -698,14 +730,16 @@ function selfTest(out) {
     const graph = writeGraph(root, 'd3.json', '{ not json');
     const result = invoke(['--graph', graph, '--out', path.join(root, 'r.txt')]);
     assertSelf(result.code === 3, 'malformed JSON must exit 3');
-    assertSelf(result.err.includes('is not valid JSON'), 'the message must say the JSON is invalid');
+    assertSelf(result.err.includes('is not valid JSON'),
+      'the message must say the JSON is invalid');
   });
 
   run('D4', (root) => {
     const graph = writeGraph(root, 'd4.json', []);
     const result = invoke(['--graph', graph, '--out', path.join(root, 'r.txt')]);
     assertSelf(result.code === 3, 'a JSON array must exit 3');
-    assertSelf(result.err.includes('is not a JSON object'), 'the message must say it is not an object');
+    assertSelf(result.err.includes('is not a JSON object'),
+      'the message must say it is not an object');
   });
 
   run('D5', (root) => {
@@ -715,8 +749,10 @@ function selfTest(out) {
     fs.writeFileSync(target, 'SENTINEL', 'utf8');
     const result = invoke(['--graph', graph, '--out', target]);
     assertSelf(result.code === 3, 'the wrong kind must exit 3');
-    assertSelf(result.err.includes('expected "dependency-graph"'), 'the message must name the expected kind');
-    assertSelf(fs.readFileSync(target, 'utf8') === 'SENTINEL', 'a refusal must leave an existing record untouched');
+    assertSelf(result.err.includes('expected "dependency-graph"'),
+      'the message must name the expected kind');
+    assertSelf(fs.readFileSync(target, 'utf8') === 'SENTINEL',
+      'a refusal must leave an existing record untouched');
   });
 
   run('D6', (root) => {
@@ -796,16 +832,19 @@ function selfTest(out) {
     const graph = writeGraph(root, 'd15.json', fixture);
     const result = invoke(['--graph', graph, '--out', path.join(root, 'r.txt')]);
     assertSelf(result.code === 3, 'a graph of another workspace member must exit 3');
-    assertSelf(result.err.includes(EXPECTED_TARGET_SEGMENT), 'the message must name the expected segment');
+    assertSelf(result.err.includes(EXPECTED_TARGET_SEGMENT),
+      'the message must name the expected segment');
   });
 
   run('D16', (root) => {
     const graph = writeGraph(root, 'd16.json', baseGraph([edge('a', 'b')]));
     const result = invoke(['--graph', graph, '--out', path.join(root, 'missing', 'r.txt')]);
     assertSelf(result.code === 3, 'an unwritable destination must exit 3');
-    assertSelf(result.err.includes('cannot write record'), 'the message must say it could not write the record');
+    assertSelf(result.err.includes('cannot write record'),
+      'the message must say it could not write the record');
     const leftovers = filesUnder(root).filter((file) => file.endsWith('.tmp'));
-    assertSelf(leftovers.length === 0, `a failed write must leave no temp file: ${leftovers.join(', ')}`);
+    assertSelf(leftovers.length === 0,
+      `a failed write must leave no temp file: ${leftovers.join(', ')}`);
   });
 
   // ---- Group E: the default path (1 case) ----
@@ -815,7 +854,8 @@ function selfTest(out) {
     const suffix = path.join(...RECORD_RELATIVE.split('/'));
     assertSelf(resolved.endsWith(suffix), `the default record path must end with ${suffix}`);
     const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-    assertSelf(path.dirname(path.dirname(resolved)) === path.dirname(scriptDir), 'the default record path must be resolved from the script location');
+    assertSelf(path.dirname(path.dirname(resolved)) === path.dirname(scriptDir),
+      'the default record path must be resolved from the script location');
   });
 
   if (failure !== null) {

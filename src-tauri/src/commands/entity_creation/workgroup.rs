@@ -71,7 +71,7 @@ pub(crate) fn parse_team_from_workgroup_name(workgroup_name: &str) -> Result<Str
 pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
     let dir_name = Path::new(agent_ref)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(agent_ref);
     dir_name
         .strip_prefix("_agent_")

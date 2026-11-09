@@ -14,6 +14,7 @@ W, H = 2560, 1440
 OUT = Path(__file__).resolve().parent
 LOGO = Image.open(OUT.parents[2] / "src-tauri" / "icons" / "icon.png").convert("RGB")
 FONT = "C:/Windows/Fonts/bahnschrift.ttf"
+PRODUCT_TITLE = "AGENTS COMMANDER"
 
 
 def font(size, variation="Bold"):
@@ -81,8 +82,8 @@ def v2_minimal():
     bg = starfield([])
     put_logo(bg, W - 420, H - 420, 440, fade=45)
     f = font(44)
-    tw = ImageDraw.Draw(bg).textlength("AGENTS COMMANDER", font=f)
-    bg, _ = put_text(bg, "AGENTS COMMANDER", W - 420 - (tw + 8 * 15) / 2, H - 175, f, 8, glow_alpha=0.5)
+    tw = ImageDraw.Draw(bg).textlength(PRODUCT_TITLE, font=f)
+    bg, _ = put_text(bg, PRODUCT_TITLE, W - 420 - (tw + 8 * 15) / 2, H - 175, f, 8, glow_alpha=0.5)
     return bg
 
 
@@ -90,7 +91,7 @@ def v3_centered():
     cx, cy, size = W // 2, int(H * 0.44), 820
     bg = starfield([("ellipse", (cx - 330, cy - 330, cx + 330, cy + 330))])
     put_logo(bg, cx, cy, size)
-    bg, _ = put_text(bg, "AGENTS COMMANDER", 0, cy + size // 2 + 10, font(96), 18, center=True)
+    bg, _ = put_text(bg, PRODUCT_TITLE, 0, cy + size // 2 + 10, font(96), 18, center=True)
     return bg
 
 

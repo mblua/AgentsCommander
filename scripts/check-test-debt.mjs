@@ -131,7 +131,8 @@ function literalStopAt(source, i, singleQuote) {
     if (byteStop !== -1) return byteStop;
   }
   const ch = source[i];
-  if (ch === '"' || ch === '`' || (singleQuote && ch === '\'')) return quotedStringStop(source, i, ch);
+  if (ch === '"' || ch === '`' || (singleQuote && ch === '\'')) return quotedStringStop(source, i,
+    ch);
   if (!singleQuote && ch === '\'') return rustCharLiteralStop(source, i);
   return -1;
 }
@@ -139,7 +140,8 @@ function literalStopAt(source, i, singleQuote) {
 function commentStopAt(source, i) {
   if (source.startsWith('//', i)) {
     const end = source.indexOf('\n', i);
-    return end === -1 ? { stop: source.length, keepNewline: false } : { stop: end, keepNewline: true };
+    return end === -1 ? { stop: source.length, keepNewline: false } : { stop: end, keepNewline:
+      true };
   }
   if (source.startsWith('/*', i)) {
     const end = source.indexOf('*/', i + 2);
@@ -274,11 +276,14 @@ function hasExecutableRustBody(originalBody, strippedBody) {
   if (/^(todo!\s*\(\s*\)|unimplemented!\s*\(\s*\)|panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\))\s*;?$/.test(compact)) {
     return false;
   }
-  if (/\b(?:assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(/.test(withoutComments)) return true;
+  if (/\b(?:assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(/.test(
+    withoutComments)) return true;
   if (/\?/.test(withoutComments)) return true;
   if (/\.(?:unwrap|expect)\s*\(/.test(withoutComments)) return true;
-  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*!\s*[\(\[]/.test(withoutComments)) return true;
-  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
+  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*!\s*[\(\[]/.test(
+    withoutComments)) return true;
+  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(
+    withoutComments)) return true;
   if (/\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
   return false;
 }
@@ -316,13 +321,16 @@ function rustFnTailAt(source, index, tail, memo) {
   return source[open] === '(' ? { end: open + 1, name: match[1] } : null;
 }
 
-// `pub(?:\s*\([^)]*\))?\s+`, `async\s+`, `fn name`, `<[^>{}]*>`, `(` at `index`: { end, name } or null.
+// `pub(?:\s*\([^)]*\))?\s+`, `async\s+`, `fn name`, `<[^>{}]*>`, `(` at `index`: { end, name } or
+// null.
 function rustFnHeaderAt(source, index, memo) {
   if (source.startsWith('pub', index)) {
     const open = skipWhitespace(source, index + 3);
-    const close = source[open] === '(' ? rustScanFrom(source, open + 1, memo.parens, RUST_PAREN_CLOSE) : -1;
+    const close = source[open] === '(' ? rustScanFrom(source, open + 1, memo.parens,
+      RUST_PAREN_CLOSE) : -1;
     const body = close === -1 ? -1 : skipWhitespace(source, close + 1);
-    const header = body > close + 1 ? rustFnTailAt(source, body, RUST_FN_TAIL_AFTER_PUB_PAREN, memo) : null;
+    const header = body > close + 1 ? rustFnTailAt(source, body, RUST_FN_TAIL_AFTER_PUB_PAREN,
+      memo) : null;
     if (header !== null) return header;
   }
   return rustFnTailAt(source, index, RUST_FN_TAIL, memo);
@@ -332,7 +340,8 @@ function rustFnHeaderAt(source, index, memo) {
 function rustFindFnHeader(source, from, memo) {
   memo.headerIndex = -1;
   RUST_FN_CANDIDATE.lastIndex = from;
-  for (let hit = RUST_FN_CANDIDATE.exec(source); hit !== null; hit = RUST_FN_CANDIDATE.exec(source)) {
+  for (let hit = RUST_FN_CANDIDATE.exec(source); hit !== null; hit = RUST_FN_CANDIDATE.exec(
+    source)) {
     const simple = hit[0][0] !== 'p' && hit[0].endsWith('(');
     const header = simple ? null : rustFnHeaderAt(source, hit.index, memo);
     if (simple || header !== null) {
@@ -344,7 +353,8 @@ function rustFindFnHeader(source, from, memo) {
   }
 }
 
-// End of the leftmost fn header starting in [cursor, hash), or -1. A `pub ` or `pub async ` prefix is
+// End of the leftmost fn header starting in [cursor, hash), or -1. A `pub ` or `pub async ` prefix
+// is
 // found at its `async`/`fn`, which cannot change the comparison with `hash`.
 function rustFnHeaderEndBefore(source, cursor, hash, memo) {
   if (memo.headerIndex === -2 || (memo.headerIndex >= 0 && memo.headerIndex < cursor)) {
@@ -361,7 +371,8 @@ function rustAttributeEnd(source, index, memo) {
   return close === -1 ? -1 : close + 1;
 }
 
-// The former regex's match at the whitespace before `hash` (not before `cursor`): attributes from `hash`,
+// The former regex's match at the whitespace before `hash` (not before `cursor`): attributes from
+// `hash`,
 // whitespace, a fn header. Positions whose attribute chain already failed are kept in memo.failed.
 function rustAttributedFnAt(source, cursor, hash, memo) {
   const chain = [];
@@ -372,7 +383,8 @@ function rustAttributedFnAt(source, cursor, hash, memo) {
     end = skipWhitespace(source, attrEnd);
     attrEnd = source[end] === '#' ? rustAttributeEnd(source, end, memo) : -1;
   }
-  const header = chain.length === 0 || memo.failed.has(end) ? null : rustFnHeaderAt(source, end, memo);
+  const header = chain.length === 0 || memo.failed.has(end) ? null : rustFnHeaderAt(source, end,
+    memo);
   if (header === null) {
     for (const position of chain) memo.failed.add(position);
     memo.failed.add(end);
@@ -380,16 +392,20 @@ function rustAttributedFnAt(source, cursor, hash, memo) {
   }
   let runStart = hash;
   while (runStart > cursor && /\s/.test(source[runStart - 1])) runStart -= 1;
-  return { index: runStart, end: header.end, attrs: source.slice(runStart, end), name: header.name };
+  return { index: runStart, end: header.end, attrs: source.slice(runStart, end), name:
+    header.name };
 }
 
-// Matches of the former `fn` regex that carry attributes ({ index, end, attrs, name }), in source order;
-// attribute-free matches are only skipped. Worst case O(n^2) when close searches restart behind their
+// Matches of the former `fn` regex that carry attributes ({ index, end, attrs, name }), in source
+// order;
+// attribute-free matches are only skipped. Worst case O(n^2) when close searches restart behind
+// their
 // cached answer; see .ac/plans/2088-sonar-regex-backtracking.md.
 function rustAttributedFnMatches(source) {
   const matches = [];
   const scan = () => ({ from: Infinity, at: -1 });
-  const memo = { headerIndex: -2, headerEnd: -1, failed: new Set(), brackets: scan(), parens: scan(), generics: scan() };
+  const memo = { headerIndex: -2, headerEnd: -1, failed: new Set(), brackets: scan(), parens: scan(
+    ), generics: scan() };
   let cursor = 0;
   let hash = source.indexOf('#');
   while (hash !== -1) {
@@ -450,7 +466,8 @@ function scanRustFile(root, filePath) {
       });
       continue;
     }
-    const { bodyClose, usedFallbackClose } = resolveRustBodyClose(masked, maskedComments, bodyOpen, source.length);
+    const { bodyClose, usedFallbackClose } = resolveRustBodyClose(masked, maskedComments, bodyOpen,
+      source.length);
 
     const modulePath = rustModulePath(modules, fnStart);
     const id = rustTestId(rel, modulePath, fnName);
@@ -483,7 +500,8 @@ function scanRustFile(root, filePath) {
 function describeRanges(source) {
   const masked = maskCommentsAndStrings(source);
   const ranges = [];
-  const re = /\bdescribe(?:\s*\.\s*(?:only|skip|concurrent|each))*\s*\(\s*(['"`])([^'"`]+)\1[\s\S]*?\{/g;
+  const re =
+    /\bdescribe(?:\s*\.\s*(?:only|skip|concurrent|each))*\s*\(\s*(['"`])([^'"`]+)\1[\s\S]*?\{/g;
   let match;
   while ((match = re.exec(source)) !== null) {
     const open = masked.indexOf('{', match.index);
@@ -553,19 +571,23 @@ function addFrontendSkippedFindings(source, rel, ranges, findings) {
   const masked = maskCommentsAndStrings(source);
 
   let direct;
-  const directRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\(/g;
+  const directRe =
+    /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\(/g;
   while ((direct = directRe.exec(masked)) !== null) {
-    addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, direct.index, directRe.lastIndex);
+    addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, direct.index,
+      directRe.lastIndex);
   }
 
   let skipEach;
-  const skipEachRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\.\s*each\s*\(/g;
+  const skipEachRe =
+    /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\.\s*each\s*\(/g;
   while ((skipEach = skipEachRe.exec(masked)) !== null) {
     const eachClose = findMatchingParen(masked, skipEachRe.lastIndex - 1);
     if (eachClose === -1) continue;
     const nameOpen = masked.indexOf('(', eachClose + 1);
     if (nameOpen !== -1) {
-      addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, skipEach.index, nameOpen + 1);
+      addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, skipEach.index,
+        nameOpen + 1);
     }
   }
 
@@ -633,7 +655,8 @@ function isFrontendPlaceholder(body) {
 }
 
 function pushFrontendPlaceholder(source, masked, rel, ranges, findings, matchIndex, nameStart) {
-  const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, matchIndex, nameStart);
+  const added = addFrontendFinding([], 'placeholder-frontend-test', source, rel, ranges, matchIndex,
+    nameStart);
   if (!added) return;
   const comma = masked.indexOf(',', added.literal.end);
   if (comma === -1) return;
@@ -749,15 +772,18 @@ function compare(findings, warnings, entries) {
 function summarizeCategory(findings, comparison, category) {
   const discovered = findings.filter((item) => item.category === category).length;
   const allowlisted = comparison.allowlisted.filter((item) => item.category === category).length;
-  const unallowlisted = comparison.unallowlisted.filter((item) => item.category === category).length;
+  const unallowlisted = comparison.unallowlisted.filter((item) => item.category ===
+    category).length;
   return { discovered, allowlisted, unallowlisted };
 }
 
 function printReport(findings, comparison, shapeErrors) {
   const ignoredRust = summarizeCategory(findings, comparison, 'ignored-rust-test');
   const placeholders = findings.filter((item) => item.category.includes('placeholder'));
-  const placeholderAllowlisted = comparison.allowlisted.filter((item) => item.category.includes('placeholder')).length;
-  const placeholderUnallowlisted = comparison.unallowlisted.filter((item) => item.category.includes('placeholder')).length;
+  const placeholderAllowlisted = comparison.allowlisted.filter((item) => item.category.includes(
+    'placeholder')).length;
+  const placeholderUnallowlisted = comparison.unallowlisted.filter((item) => item.category.includes(
+    'placeholder')).length;
   const skippedFrontend = summarizeCategory(findings, comparison, 'skipped-frontend-test');
 
   console.log(`Ignored Rust tests: ${ignoredRust.discovered} discovered, ${ignoredRust.allowlisted} allowlisted, ${ignoredRust.unallowlisted} unallowlisted`);
@@ -765,11 +791,13 @@ function printReport(findings, comparison, shapeErrors) {
   console.log(`Skipped frontend tests: ${skippedFrontend.discovered} discovered, ${skippedFrontend.allowlisted} allowlisted, ${skippedFrontend.unallowlisted} unallowlisted`);
 
   for (const finding of findings) {
-    const status = comparison.allowlisted.some((item) => keyOf(item) === keyOf(finding)) ? 'allowlisted' : 'unallowlisted';
+    const status = comparison.allowlisted.some((item) => keyOf(item) === keyOf(finding)) ?
+      'allowlisted' : 'unallowlisted';
     console.log(`${status}: ${finding.category} ${finding.id} (${finding.file}:${finding.line})`);
   }
   for (const warning of comparison.warnings) {
-    console.log(`parse-warning: ${warning.id} (${warning.file}:${warning.line}) ${warning.message}`);
+    console.log(
+      `parse-warning: ${warning.id} (${warning.file}:${warning.line}) ${warning.message}`);
   }
   for (const stale of comparison.stale) {
     console.log(`stale-allowlist: ${stale.category} ${stale.id}`);
@@ -810,7 +838,8 @@ function assertSelf(condition, message) {
 function runFixture(root, entries = []) {
   writeAllowlist(root, entries);
   const { findings, warnings } = scan(root);
-  const { entries: allowEntries, errors } = loadAllowlist(path.join(root, 'test-debt.allowlist.json'));
+  const { entries: allowEntries, errors } = loadAllowlist(path.join(root,
+    'test-debt.allowlist.json'));
   const comparison = compare(findings, warnings, allowEntries);
   return {
     findings,
@@ -879,11 +908,13 @@ it("function callback", function () { expect(1).toBe(1); });
     let result = runFixture(root);
     assertSelf(result.code === 0, 'clean fixture should pass');
     assertSelf(
-      !result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('clean.rs::string_with_line_comment_marker_is_not_placeholder')),
+      !result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(
+        'clean.rs::string_with_line_comment_marker_is_not_placeholder')),
       'line comment marker in Rust string false positive detected',
     );
     assertSelf(
-      !result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('clean.rs::string_with_block_comment_marker_is_not_placeholder')),
+      !result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(
+        'clean.rs::string_with_block_comment_marker_is_not_placeholder')),
       'block comment marker in Rust string false positive detected',
     );
     assertSelf(
@@ -942,15 +973,24 @@ fn real_test() {
 `);
     result = runFixture(root);
     assertSelf(result.code === 1, 'debt fixture without allowlist should fail');
-    assertSelf(result.findings.some((f) => f.category === 'ignored-rust-test' && f.id.endsWith('ignored.rs::ignored_case')), 'ignored Rust finding missing');
-    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::empty_case')), 'empty Rust finding missing');
-    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::comment_only_case')), 'comment-only Rust finding missing');
-    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::assignment_only_placeholder')), 'assignment-only Rust finding missing');
-    assertSelf(result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('skip each')), 'skip.each finding missing');
-    assertSelf(result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('each skip')), 'each(...).skip finding missing');
-    assertSelf(result.findings.some((f) => f.category === 'placeholder-frontend-test' && f.id.includes('empty parameterized')), 'parameterized frontend placeholder missing');
-    assertSelf(!result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes('not real debt')), 'commented frontend skip false positive detected');
-    assertSelf(!result.findings.some((f) => f.id.endsWith('comment_false_positive.rs::real_test') && f.category === 'ignored-rust-test'), 'comment false positive detected');
+    assertSelf(result.findings.some((f) => f.category === 'ignored-rust-test' && f.id.endsWith(
+      'ignored.rs::ignored_case')), 'ignored Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(
+      'ignored.rs::empty_case')), 'empty Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(
+      'ignored.rs::comment_only_case')), 'comment-only Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(
+      'ignored.rs::assignment_only_placeholder')), 'assignment-only Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes(
+      'skip each')), 'skip.each finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes(
+      'each skip')), 'each(...).skip finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'placeholder-frontend-test' &&
+      f.id.includes('empty parameterized')), 'parameterized frontend placeholder missing');
+    assertSelf(!result.findings.some((f) => f.category === 'skipped-frontend-test' && f.id.includes(
+      'not real debt')), 'commented frontend skip false positive detected');
+    assertSelf(!result.findings.some((f) => f.id.endsWith('comment_false_positive.rs::real_test') &&
+      f.category === 'ignored-rust-test'), 'comment false positive detected');
 
     writeFile(path.join(root, 'src/expression-debt.test.ts'), `
 it("bare tautology", () => expect(true).toBe(true));
@@ -983,12 +1023,16 @@ it("last bare tautology", async () => expect(true).toBe(true));
     result = runFixture(root, entries);
     assertSelf(result.code === 0, 'exact allowlist should pass');
 
-    const ignoredOnly = entries.filter((entry) => !(entry.category === 'placeholder-rust-test' && entry.id.endsWith('ignored.rs::ignored_empty_case')));
+    const ignoredOnly = entries.filter((entry) => !(entry.category === 'placeholder-rust-test' &&
+      entry.id.endsWith('ignored.rs::ignored_empty_case')));
     result = runFixture(root, ignoredOnly);
-    assertSelf(result.code === 1, 'ignored empty Rust test needs separate placeholder allowlist entry');
-    assertSelf(result.comparison.unallowlisted.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith('ignored.rs::ignored_empty_case')), 'missing placeholder debt was not reported');
+    assertSelf(result.code === 1,
+      'ignored empty Rust test needs separate placeholder allowlist entry');
+    assertSelf(result.comparison.unallowlisted.some((f) => f.category === 'placeholder-rust-test' &&
+    f.id.endsWith('ignored.rs::ignored_empty_case')), 'missing placeholder debt was not reported');
 
-    result = runFixture(root, entries.filter((entry) => !entry.id.endsWith('ignored.rs::ignored_case')));
+    result = runFixture(root, entries.filter((entry) => !entry.id.endsWith(
+      'ignored.rs::ignored_case')));
     assertSelf(result.code === 1, 'missing allowlist entry should fail');
 
     result = runFixture(root, [...entries, {
@@ -999,15 +1043,19 @@ it("last bare tautology", async () => expect(true).toBe(true));
       reason: 'stale entry self-test',
       resolution: 'remove stale entry',
     }]);
-    assertSelf(result.code === 1 && result.comparison.stale.length === 1, 'stale allowlist entry should fail');
+    assertSelf(result.code === 1 && result.comparison.stale.length === 1,
+      'stale allowlist entry should fail');
 
-    const missingReason = entries.map((entry, index) => index === 0 ? { ...entry, reason: '' } : entry);
+    const missingReason = entries.map((entry, index) => index === 0 ? { ...entry, reason: '' } :
+      entry);
     result = runFixture(root, missingReason);
-    assertSelf(result.code === 1 && result.errors.some((error) => error.includes('reason')), 'missing rationale should fail');
+    assertSelf(result.code === 1 && result.errors.some((error) => error.includes('reason')),
+      'missing rationale should fail');
 
     const duplicate = [...entries, entries[0]];
     result = runFixture(root, duplicate);
-    assertSelf(result.code === 1 && result.errors.some((error) => error.includes('duplicates')), 'duplicate category/id should fail');
+    assertSelf(result.code === 1 && result.errors.some((error) => error.includes('duplicates')),
+      'duplicate category/id should fail');
 
     console.log('check-test-debt self-test passed');
     return 0;

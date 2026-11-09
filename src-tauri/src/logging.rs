@@ -335,7 +335,7 @@ fn rotate(state: &AppLogFile) {
             return;
         }
     };
-    let stem = match base.file_name().and_then(|n| n.to_str()) {
+    let stem = match base.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(s) => s,
         None => {
             if !machine_output_enabled() {

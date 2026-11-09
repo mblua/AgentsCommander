@@ -1,15 +1,7 @@
-//! Physical access to `SelfClear` outbox pointers, messages, and replies.
+//! Physical access to `SelfClear` reply files.
 
 use std::io;
 use std::path::Path;
-
-pub(crate) fn read_self_clear_outbox_pointer(path: &Path) -> io::Result<String> {
-    std::fs::read_to_string(path)
-}
-
-pub(crate) fn self_clear_path_is_directory(path: &Path) -> bool {
-    path.is_dir()
-}
 
 pub(crate) fn self_clear_path_exists(path: &Path) -> bool {
     path.exists()

@@ -383,7 +383,7 @@ pub(crate) fn backup_master_dir(dir: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("master {} has no parent", dir.display()))?;
     let name = dir
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("master {} has no name", dir.display()))?;
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%SZ").to_string();
     for index in 0..1000u32 {
@@ -415,7 +415,10 @@ pub(crate) fn unique_suffix() -> String {
 
 pub(crate) fn staging_sibling(dir: &Path, tag: &str, sfx: &str) -> PathBuf {
     let parent = dir.parent().unwrap_or_else(|| Path::new("."));
-    let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("_seed");
+    let name = dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("_seed");
     parent.join(format!("{name}.{tag}-{sfx}"))
 }
 

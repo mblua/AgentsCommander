@@ -119,7 +119,7 @@ describe("SidebarApp communication reconcile from the polled listing (#1856)", (
 
     rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
     await vi.advanceTimersByTimeAsync(MOUNT_MS);
-    expect(fake.callsFor("list_sessions").length).toBe(1);
+    expect(fake.callsFor("list_sessions")).toHaveLength(1);
     return fake;
   }
 
@@ -134,7 +134,7 @@ describe("SidebarApp communication reconcile from the polled listing (#1856)", (
     expect(storedCommunication(SESSION_A)).toBeNull();
 
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(fake.callsFor("list_sessions").length).toBe(2);
+    expect(fake.callsFor("list_sessions")).toHaveLength(2);
 
     expect(storedCommunication(SESSION_A)).toEqual(blockedMenu(message));
   });
@@ -191,7 +191,7 @@ describe("SidebarApp communication reconcile from the polled listing (#1856)", (
     gate.on = true;
     await vi.advanceTimersByTimeAsync(POLL_MS);
     // The poll has asked for the listing and is provably still waiting on it.
-    expect(fake.callsFor("list_sessions").length).toBe(2);
+    expect(fake.callsFor("list_sessions")).toHaveLength(2);
 
     // The edge lands while the listing is in flight; it must not be overwritten.
     sessionsStore.setCommunication(SESSION_A, blockedMenu(eventMessage));
@@ -209,7 +209,7 @@ describe("SidebarApp communication reconcile from the polled listing (#1856)", (
     listing = () => [];
     const generationBefore = sessionsStore.communicationGeneration;
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(fake.callsFor("list_sessions").length).toBe(2);
+    expect(fake.callsFor("list_sessions")).toHaveLength(2);
 
     expect(sessionsStore.communicationGeneration).toBe(generationBefore);
     expect(storedCommunication(SESSION_A)).toEqual(blockedMenu(message));

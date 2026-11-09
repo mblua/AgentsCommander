@@ -594,7 +594,7 @@ test('04 unregistered explicit debt sets and shrinking controls', t => {
   assert.equal(r.exit, 0); assertDebt(r, 'head', [entry]);
 });
 
-test('04 unregistered rejects growth and file/identity replacements with receipts', t => {
+test('04 unregistered rejects per-literal growth and identity replacements with receipts', t => {
   const old = distributed('run.json'), fresh = distributed('ledger.json');
   rejection(t, 'new identity', {}, {}, fresh, expectedSites(growth, 'ledger.json',
     ['a.rs', 'b.rs']));
@@ -604,14 +604,36 @@ test('04 unregistered rejects growth and file/identity replacements with receipt
     expectedSites(newFile, 'run.json', ['c.rs']));
   rejection(t, 'equal identity totals and compensating deletion', old, old, fresh,
     expectedSites(growth, 'ledger.json', ['a.rs', 'b.rs']));
-  rejection(t, 'equal pair totals and rename', old, old,
-    distributed('run.json', ['a.rs', 'c.rs']), expectedSites(newFile, 'run.json', ['c.rs']));
+  const moved = distributed('run.json', ['a.rs', 'c.rs']);
+  const movedGrowth = rejection(t, 'move plus growth', old, moved,
+    distributed('run.json', ['b.rs', 'c.rs', 'd.rs']),
+    expectedSites(newFile, 'run.json', ['c.rs', 'd.rs']));
+  assertDebt(movedGrowth, 'base', [debtEntry('run.json')]);
+  assertDebt(movedGrowth, 'head', [debtEntry('run.json', ['b.rs', 'c.rs', 'd.rs'])]);
   rejection(t, 'repaired debt resurrection', {}, {}, old,
     expectedSites(growth, 'run.json', ['a.rs', 'b.rs']));
   const recovery = containersGate(ratchetTree(fresh));
   assert.equal(recovery.exit, 0); assertDebt(recovery, 'head', [debtEntry('ledger.json')]);
   t.diagnostic(JSON.stringify({ control: 'base advancement accepts merged debt', exits: [0],
     base: recovery.unregistered.base, head: recovery.unregistered.head }));
+});
+
+test('04 unregistered accepts relocation and shrinking per literal', t => {
+  for (const [label, basePaths, headPaths] of [
+    ['partial replacement', ['a.rs', 'b.rs'], ['a.rs', 'c.rs']],
+    ['full replacement', ['a.rs', 'b.rs'], ['c.rs', 'd.rs']],
+    ['shrinking relocation', ['a.rs', 'b.rs', 'c.rs'], ['a.rs', 'd.rs']],
+  ]) {
+    const result = containersGate(ratchetTree(distributed('run.json', basePaths),
+      distributed('run.json', headPaths)));
+    assert.equal(result.exit, 0, JSON.stringify(result));
+    assert.equal(result.status, 'PASS');
+    assert.ok(!result.diagnostics.some(d => d.status === 'FAIL'));
+    assertDebt(result, 'base', [debtEntry('run.json', basePaths)]);
+    assertDebt(result, 'head', [debtEntry('run.json', headPaths)]);
+    t.diagnostic(JSON.stringify({ control: label, exits: [0],
+      base: result.unregistered.base, head: result.unregistered.head }));
+  }
 });
 
 test('04 literal-files-v1 exact grammar and lexical limits', t => {
@@ -734,6 +756,41 @@ test('04 independent registry snapshots, errors and ordering', t => {
   const r = containersGate(ratchetTree(unordered));
   assertDebt(r, 'head', [debtEntry('a.json', ['b.rs', 'c.rs']),
     debtEntry('z.json', ['a.rs', 'z.rs'])]);
+});
+
+test('04 committed relocation uses immutable HEAD and base trees', t => {
+  const f = gitFixture(t), initial = containerTree(distributed('run.json'));
+  for (const [p, entry] of initial.headTree) f.write(p, initial.readBlob(entry));
+  const base = f.commit();
+  f.write(root + 'b.rs', '');
+  f.write(root + 'c.rs', sourceLiteral('run.json'));
+  const dirty = containersGate(f.snapshot(base));
+  assert.equal(dirty.exit, 0); assert.equal(dirty.status, 'PASS');
+  assertDebt(dirty, 'head', [debtEntry('run.json')]);
+  f.commit();
+  const moved = containersGate(f.snapshot(base));
+  assert.equal(moved.exit, 0); assert.equal(moved.status, 'PASS');
+  assertDebt(moved, 'base', [debtEntry('run.json')]);
+  assertDebt(moved, 'head', [debtEntry('run.json', ['a.rs', 'c.rs'])]);
+  f.write(root + 'd.rs', sourceLiteral('run.json'));
+  const dirtyGrowth = containersGate(f.snapshot(base));
+  assert.equal(dirtyGrowth.exit, 0);
+  assertDebt(dirtyGrowth, 'head', [debtEntry('run.json', ['a.rs', 'c.rs'])]);
+  f.commit();
+  const grown = containersGate(f.snapshot(base));
+  assert.equal(grown.exit, 1); assert.equal(grown.status, 'FAIL');
+  assertDebt(grown, 'base', [debtEntry('run.json')]);
+  assertDebt(grown, 'head', [debtEntry('run.json', ['a.rs', 'c.rs', 'd.rs'])]);
+  const matched = grown.diagnostics.filter(d => d.rule?.startsWith('unregistered_container_'));
+  assert.deepEqual(matched.map(({ rule, literal, path, line }) =>
+    ({ rule, literal, path, line })), expectedSites(newFile, 'run.json', ['c.rs', 'd.rs']));
+  f.write(root + 'd.rs', ''); f.commit();
+  const restored = containersGate(f.snapshot(base));
+  assert.equal(restored.exit, 0); assert.equal(restored.status, 'PASS');
+  assertDebt(restored, 'head', [debtEntry('run.json', ['a.rs', 'c.rs'])]);
+  t.diagnostic(JSON.stringify({ control: 'committed relocation then growth',
+    exits: [moved.exit, grown.exit, restored.exit], matched,
+    base: grown.unregistered.base, head: grown.unregistered.head }));
 });
 
 test('04 committed source and registry inputs stay distinct from dirty files', t => {

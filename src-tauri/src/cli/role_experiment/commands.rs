@@ -655,7 +655,10 @@ fn write_dry_run_artifacts(
     create_run(run_dir, run_artifact)?;
     create_attempts(run_dir, attempts)?;
     create_report(run_dir, report_artifact)?;
-    write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())
+    write_new_file(
+        &run_dir.join(default_run_artifact_paths(String::new()).report_markdown),
+        report_markdown.as_bytes(),
+    )
 }
 
 /// Warns when the run has more than 50 attempts.
@@ -779,7 +782,9 @@ pub(super) fn load_report_command_artifacts(
     validate_run_presence(dir)?;
     validate_required_artifact_file(&attempts_path(dir))?;
     validate_report_presence(dir)?;
-    validate_required_artifact_file(&dir.join("report.md"))?;
+    validate_required_artifact_file(
+        &dir.join(default_run_artifact_paths(String::new()).report_markdown),
+    )?;
     let run_artifact = load_run(dir)?;
     let report_artifact = load_report(dir)?;
     Ok((run_artifact, report_artifact))
@@ -812,7 +817,7 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             &dir,
         )]);
     }
-    let markdown_path = dir.join("report.md");
+    let markdown_path = dir.join(default_run_artifact_paths(String::new()).report_markdown);
     let (run_artifact, report_artifact) = load_report_command_artifacts(&dir)?;
     validate_report_artifacts(
         &loaded,
