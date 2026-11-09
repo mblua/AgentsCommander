@@ -180,6 +180,63 @@
         "files": 0,
         "sites": 0
       }
+    },
+    {
+      "id": "AppOutbox/Pointer",
+      "name": "app-outbox-path.txt",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/app_outbox_pointer.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "Instance/MasterToken",
+      "name": "master-token.txt",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/master_token.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "CodingAgentMaster/OpenCode",
+      "name": "opencode.json",
+      "scope": "src-tauri/src/config/coding_agents_catalog/",
+      "owner": "src-tauri/src/config/coding_agents_catalog/seed_master.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "Instance/UpdateCache",
+      "name": "update-check.json",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/update_cache.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "Web/Token",
+      "name": "web-token.txt",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/documents.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
     }
   ]
 }
