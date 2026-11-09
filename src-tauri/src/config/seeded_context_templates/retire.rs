@@ -212,7 +212,7 @@ pub(crate) fn reserve_retired_backup_path(live_path: &Path) -> Result<PathBuf, S
     })?;
     let filename = live_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("Invalid standalone global context {}", live_path.display()))?;
     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%SZ").to_string();
 

@@ -72,7 +72,7 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
     let Some(outbox_dir) = origin.parent() else {
         return Ok(false);
     };
-    let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
+    let Some(id) = origin.file_stem().and_then(std::ffi::OsStr::to_str) else {
         return Ok(false);
     };
     let is_regular_receipt =
@@ -693,7 +693,7 @@ pub(crate) fn validate_self_switch_wg_replica(
 ) -> Result<PathBuf, String> {
     let name = cwd
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
             format!(
             "self-handoff-and-switch is only supported from a Room replica (__agent_* under room-* \

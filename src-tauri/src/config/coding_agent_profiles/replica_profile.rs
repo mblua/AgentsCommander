@@ -51,7 +51,7 @@ pub fn read_replica_profile_content_hash(launch_path: &Path) -> Option<String> {
 pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Result<(), String> {
     let is_agent_dir = launch_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|name| name.starts_with("__agent_") || name.starts_with("_agent_"));
     // #592 - the Root Agent (`ac-root-agent`) is a legitimate replica that runs a
     // coding agent and must support drift like any other; its dir name does not

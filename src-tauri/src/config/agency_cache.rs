@@ -458,7 +458,7 @@ fn normalize_agency_role_tree(
         }
         let meta = lstat_no_links(&path, "Agency role entry")?;
         if meta.is_dir() {
-            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            if path.extension().and_then(std::ffi::OsStr::to_str) == Some("md") {
                 return Err(format!(
                     "Agency role entry {} is not a regular file",
                     path.display()
@@ -480,7 +480,7 @@ fn normalize_agency_role_tree(
                 path.display()
             ));
         }
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("md") {
             continue;
         }
         normalize_agency_role_file(&path, division_root, division_slug, staging, ids, paths_ci)?;
@@ -508,7 +508,7 @@ fn normalize_agency_role_file(
         let segment = if relative.file_name() == Some(component.as_os_str()) {
             Path::new(value)
                 .file_stem()
-                .and_then(|s| s.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .ok_or_else(|| format!("Agency role file has invalid name: {}", path.display()))?
         } else {
             value

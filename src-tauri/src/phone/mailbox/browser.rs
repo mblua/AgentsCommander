@@ -101,7 +101,7 @@ impl MailboxPoller {
             if !is_app_outbox {
                 dirs.extend(
                     path.parent()
-                        .and_then(|p| p.parent())
+                        .and_then(std::path::Path::parent)
                         .map(|ac| ac.join("responses")),
                 );
             }

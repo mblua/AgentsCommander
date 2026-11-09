@@ -72,7 +72,7 @@ pub(crate) enum ScopeResolution {
 }
 
 fn name_of(path: &Path) -> Option<&str> {
-    path.file_name().and_then(|name| name.to_str())
+    path.file_name().and_then(std::ffi::OsStr::to_str)
 }
 
 fn path_text(path: &Path) -> Option<String> {

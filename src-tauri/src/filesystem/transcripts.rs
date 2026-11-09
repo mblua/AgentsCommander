@@ -14,7 +14,7 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("jsonl") {
             continue;
         }
         if let Ok(meta) = entry.metadata() {
@@ -43,10 +43,10 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
 pub(crate) fn find_pinned_jsonl(project_dir: &Path, transcript_id: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(project_dir).ok()?;
     entries.flatten().map(|entry| entry.path()).find(|path| {
-        path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        path.extension().and_then(std::ffi::OsStr::to_str) == Some("jsonl")
             && path
                 .file_stem()
-                .and_then(|s| s.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|stem| stem.eq_ignore_ascii_case(transcript_id))
             && path.is_file()
     })
@@ -267,7 +267,7 @@ pub(crate) fn visit_codex_rollout_candidates(
     };
     for entry in read.flatten() {
         let path = entry.path();
-        let fname = match path.file_name().and_then(|n| n.to_str()) {
+        let fname = match path.file_name().and_then(std::ffi::OsStr::to_str) {
             Some(n) => n,
             None => continue,
         };

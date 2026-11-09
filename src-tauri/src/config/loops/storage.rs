@@ -186,7 +186,7 @@ pub(super) fn write_loop_state_atomic_at(
     ensure_loop_config_present(loop_dir)?;
     let state_name = state_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(LOOP_STATE_FILE);
     let tmp_path = loop_dir.join(format!("{}.{}.tmp", state_name, Uuid::new_v4()));
     let content = serde_json::to_string_pretty(state)

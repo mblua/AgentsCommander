@@ -144,7 +144,7 @@ pub(crate) fn unique_context_template_temp_path(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("Context.template.md");
     let counter = CONTEXT_TEMPLATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let process_id = std::process::id();

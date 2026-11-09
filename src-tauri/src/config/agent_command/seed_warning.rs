@@ -36,7 +36,7 @@ pub fn compute_config_dir_warning(
         }
     };
 
-    let dest_seg = dest.file_name().and_then(|s| s.to_str())?;
+    let dest_seg = dest.file_name().and_then(std::ffi::OsStr::to_str)?;
 
     // CODEX_HOME already went through the full resolver (isolation/profile/agent/
     // inherited); prefer its resolved value. Others: profile over agent layer.
@@ -105,7 +105,7 @@ fn final_segment(value: &str) -> Option<String> {
     let trimmed = value.trim_end_matches(['/', '\\']);
     Path::new(trimmed)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(ToString::to_string)
 }
 

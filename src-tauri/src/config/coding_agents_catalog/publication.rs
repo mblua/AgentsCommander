@@ -153,7 +153,7 @@ pub(crate) fn publish_exclusive(path: &Path, bytes: &[u8]) -> Result<(), String>
         .ok_or_else(|| format!("publication path {} has no parent", path.display()))?;
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("publication path {} has no file name", path.display()))?;
     let temp = publication_temp_path(parent, name);
     write_synced_temp(&temp, bytes)?;
@@ -183,7 +183,7 @@ pub(crate) fn publish_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| format!("publication path {} has no parent", path.display()))?;
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("publication path {} has no file name", path.display()))?;
     let temp = publication_temp_path(parent, name);
     write_synced_temp(&temp, bytes)?;
