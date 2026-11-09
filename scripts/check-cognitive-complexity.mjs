@@ -451,7 +451,8 @@ function parseAttribute(tokens, openIndex, source, file, hits) {
     }
     if (token.type === 'punct' && CLOSE_BRACKETS.has(token.value)) {
       if (stack[stack.length - 1] !== CLOSE_BRACKETS.get(token.value)) {
-        throw new RustSourceError(`unbalanced ${JSON.stringify(token.value)} in attribute`, token.start);
+        throw new RustSourceError(`unbalanced ${JSON.stringify(token.value)} in attribute`,
+          token.start);
       }
       stack.pop();
       if (stack.length === 0) {
@@ -633,7 +634,8 @@ function runScan({ listDir, readSource, readBytes, stdout, stderr, getEnv }) {
     return 0;
   }
   for (const hit of hits) stderr(`${prefix}${formatHit(hit)}`);
-  stderr(`cognitive-complexity scan: ${hits.length} suppression${hits.length === 1 ? '' : 's'} found`);
+  stderr(
+    `cognitive-complexity scan: ${hits.length} suppression${hits.length === 1 ? '' : 's'} found`);
   return 1;
 }
 
@@ -672,7 +674,8 @@ function parsePlatform(argv, i) {
   if (value_ ===
     undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
   if (!PLATFORMS.includes(value_)) {
-    throw new UsageError(`--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
+    throw new UsageError(
+      `--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
   }
   return value_;
 }
@@ -1562,7 +1565,8 @@ function validateBaseline(document, rustcVersion) {
     throw new ConfigError(`baseline version must be 1, got ${JSON.stringify(document.version)}`);
   }
   if (document.threshold !== 25) {
-    throw new ConfigError(`baseline threshold must be 25, got ${JSON.stringify(document.threshold)}`);
+    throw new ConfigError(
+      `baseline threshold must be 25, got ${JSON.stringify(document.threshold)}`);
   }
   if (rustcVersion === undefined) {
     // `--baseline-diff` has no run toolchain to agree with, but the refresh
@@ -1604,11 +1608,13 @@ function validateBaseline(document, rustcVersion) {
     }
     for (const platform of platforms) {
       if (!PLATFORMS.includes(platform)) {
-        throw new ConfigError(`baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
+        throw new ConfigError(
+          `baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
       }
       const anchors = sites[platform];
       if (!Array.isArray(anchors) || anchors.length === 0) {
-        throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
+        throw new ConfigError(
+          `baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
       }
       for (let index = 0; index < anchors.length; index += 1) {
         if (typeof anchors[index] !== 'string' || !ANCHOR_RE.test(anchors[index])) {
@@ -1905,7 +1911,8 @@ export function runCapture(options, io = {}) {
         `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} (baseline ${finding.baseline}, observed ${finding.observed}) on ${options.platform}`,
       );
     }
-    for (const entry of accepted.unusedEntries) stderr(`${prefix}${staleAllowlistLine(entry, options.platform)}`);
+    for (const entry of accepted.unusedEntries) stderr(
+      `${prefix}${staleAllowlistLine(entry, options.platform)}`);
     return 0;
   }
   const prefix = underActions ? '::error::' : '';
@@ -1978,7 +1985,8 @@ function acceptFindings(newFindings, staleFindings, entries) {
   const used = new Set();
   const listed = (rule) => (finding) => {
     const entry = entries.find((candidate) => !used.has(candidate) && candidate.rule === rule
-      && `rust:${candidate.path}::${candidate.symbol}` === finding.id && candidate.hash === finding.anchor);
+      && `rust:${candidate.path}::${candidate.symbol}` === finding.id &&
+        candidate.hash === finding.anchor);
     if (entry === undefined) return true;
     used.add(entry);
     return false;
@@ -2703,7 +2711,8 @@ export function runClassifyProbe(options, io = {}) {
     return 0;
   }
   if (histogram.has(RUSTC_HISTOGRAM_KEY)) {
-    stdout('STOP: the histogram carries a <rustc> key; a workspace member does not compile on macOS');
+    stdout(
+      'STOP: the histogram carries a <rustc> key; a workspace member does not compile on macOS');
     return 1;
   }
   if (exit !== 0 && histogram.size === 0) {
@@ -2741,7 +2750,8 @@ function runFixture(files, sources = {}, bytes = {}) {
 function expectHit(hits, rule, file, line) {
   const found = hits.some((hit) => hit.rule === rule && hit.file === file && hit.line === line);
   if (!found) {
-    throw new Error(`expected ${rule} at ${file}${line === null ? '' : `:${line}`}, got ${JSON.stringify(hits)}`);
+    throw new Error(
+      `expected ${rule} at ${file}${line === null ? '' : `:${line}`}, got ${JSON.stringify(hits)}`);
   }
 }
 
@@ -3170,7 +3180,8 @@ function expectProbe({ capture, probeExit, expected, histogram = [] }) {
   }
   for (const line of histogram) {
     if (!lines.includes(line)) {
-      throw new Error(`expected histogram line ${JSON.stringify(line)}, got ${JSON.stringify(lines)}`);
+      throw new Error(
+        `expected histogram line ${JSON.stringify(line)}, got ${JSON.stringify(lines)}`);
     }
   }
   return fixture;
@@ -3257,7 +3268,8 @@ mod m {
       });
       expectHit(hits, 'S1', 'src/legacy.rs', 1);
     }],
-    ['case 48: every clippy cfg token variant fails S2 with its exact text, the string does not', () => {
+    ['case 48: every clippy cfg token variant fails S2 with its exact text, the string does not', (
+      ) => {
       const variants = [
         ['cfg(not(clippy))', '#[cfg(not(clippy))]\nfn a() {}\n', 'clippy'],
         ['cfg_attr(clippy, ...)', '#[cfg_attr(clippy, allow(dead_code))]\n', 'clippy'],
@@ -3422,7 +3434,8 @@ impl From<&str> for E {
         ['from(value: String)', 'from', 1],
         ['from(value: &str)', 'from', 1],
       ].map(([needle, sliceText, occurrence]) => idAt(fix, needle, sliceText, occurrence));
-      if (new Set(ids).size !== 4) throw new Error(`expected four distinct ids, got ${JSON.stringify(ids)}`);
+      if (new Set(ids).size !== 4) throw new Error(
+        `expected four distinct ids, got ${JSON.stringify(ids)}`);
       expectEqual(ids[2], 'rust:src/four.rs::impl:From<String> for E::from', 'String impl');
       expectEqual(ids[3], 'rust:src/four.rs::impl:From<&str> for E::from', '&str impl');
     }],
@@ -3515,7 +3528,8 @@ ${base.source}`);
         throw new Error(`expected exactly impl:P::p inserted, got ${JSON.stringify(added)}`);
       }
       if (removed.length !== 0) throw new Error(`unrelated ids moved: ${JSON.stringify(removed)}`);
-      if (insertedIds.size !== 3) throw new Error(`struct P must contribute no id, got ${JSON.stringify([...insertedIds])}`);
+      if (insertedIds.size !== 3) throw new Error(
+        `struct P must contribute no id, got ${JSON.stringify([...insertedIds])}`);
     }],
     ['case 63: closures on their fn header line stay under their own method', () => {
       const fix = fixture('src/same-line.rs', `impl P {
@@ -3564,7 +3578,8 @@ trait T {
 `);
       const frames = lexFile(fix.file, fix.reader);
       if (frames.length === 0 || frames[0].token !== 'impl:Foo<') {
-        throw new Error(`expected the header to end at the const-generic brace, got ${JSON.stringify(frames)}`);
+        throw new Error(
+          `expected the header to end at the const-generic brace, got ${JSON.stringify(frames)}`);
       }
       expectEqual(containerAtNeedle(fix, 'f()'), '', 'truncated impl frame is closed');
     }],
@@ -3578,7 +3593,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(containers[0], 'fn:f', 'fn f container');
       expectEqual(containers[1], 'fn:g', 'fn g container');
       expectEqual(containers[2], 'impl:Tr for [u8; 4]::fn:m', 'impl method container');
-      if (new Set(ids).size !== 3) throw new Error(`expected three distinct ids, got ${JSON.stringify(ids)}`);
+      if (new Set(ids).size !== 3) throw new Error(
+        `expected three distinct ids, got ${JSON.stringify(ids)}`);
       if (containers.some((container) => container ===
         '')) throw new Error('a frame was lost to the array semicolon');
     }],
@@ -3606,7 +3622,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 74: a braceless tail anchors over the capped text without raising', () => {
       const fix = fixture('src/capped.rs', `fn f() ${'x'.repeat(600)}\n`);
       const anchor = anchorAt(fix, 'f(');
-      if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(`expected 12 hex characters, got ${JSON.stringify(anchor)}`);
+      if (!/^[0-9a-f]{12}$/.test(anchor)) throw new Error(
+        `expected 12 hex characters, got ${JSON.stringify(anchor)}`);
       const expected = sha256(Buffer.from(`f() ${'x'.repeat(396)}`, 'utf8')).slice(0, 12);
       expectEqual(anchor, expected, 'capped anchor');
     }],
@@ -3673,7 +3690,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       }
       expectEqual(findingLines(fixture, 'STALE').length, 0, 'the listed STALE is accepted');
       if (!fixture.state.stdout.some((line) => line.includes('ACCEPTED 2 finding(s)'))) {
-        throw new Error(`expected two accepted findings, got ${JSON.stringify(fixture.state.stdout)}`);
+        throw new Error(
+          `expected two accepted findings, got ${JSON.stringify(fixture.state.stdout)}`);
       }
     }],
     ['case 81: #3182 an allowlist entry that matches no finding fails the gate', () => {
@@ -3694,7 +3712,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(fixture.run(), STALE_ALLOWLIST_EXIT, 'a stale allowlist entry exits 3');
       if (!fixture.state.stderr.some((line) =>
         line.startsWith('STALE allowlist entry: rust:src/gone.rs::heavy#'))) {
-        throw new Error(`expected the stale allowlist line, got ${JSON.stringify(fixture.state.stderr)}`);
+        throw new Error(
+          `expected the stale allowlist line, got ${JSON.stringify(fixture.state.stderr)}`);
       }
       if (!fixture.state.stderr.includes(STALE_ALLOWLIST_REMEDIAL)) throw new Error(
         'the remedial line was not printed');
@@ -3739,7 +3758,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       fixture.workspace['cognitive-complexity.baseline.json'] = baselineJson([]);
       expectEqual(fixture.run(), 1, 'a NEW exits 1');
       const lines = findingLines(fixture, 'NEW');
-      if (lines.length !== 1) throw new Error(`expected one NEW line, got ${JSON.stringify(lines)}`);
+      if (lines.length !== 1) throw new Error(
+        `expected one NEW line, got ${JSON.stringify(lines)}`);
       if (!lines[0].startsWith('::error::')) {
         throw new Error(`expected the ::error:: annotation, got ${lines[0]}`);
       }
@@ -4284,11 +4304,13 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const alphaLines = lines.filter((line) => line.includes('::alpha#'));
       const betaLines = lines.filter((line) => line.includes('::beta#'));
       if (alphaLines.length !== 1 || betaLines.length !== 1) {
-        throw new Error(`expected one site for each same-line function, got ${JSON.stringify(lines)}`);
+        throw new Error(
+          `expected one site for each same-line function, got ${JSON.stringify(lines)}`);
       }
       const closures = lines.filter((line) => line.includes('::fn:f::{closure}#'));
       if (closures.length !== 2) {
-        throw new Error(`expected two sites for the same-line closures, got ${JSON.stringify(lines)}`);
+        throw new Error(
+          `expected two sites for the same-line closures, got ${JSON.stringify(lines)}`);
       }
     }],
     ['case 75: an equal-count anchor replacement is one NEW and one STALE', () => {
@@ -4361,7 +4383,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(changed.run(), 1, 'a changed second site is refused');
       if (findingLines(changed, 'NEW').length !== 1 || findingLines(changed,
         'STALE').length !== 1) {
-        throw new Error(`expected one NEW and one STALE, got ${JSON.stringify(changed.state.stderr)}`);
+        throw new Error(
+          `expected one NEW and one STALE, got ${JSON.stringify(changed.state.stderr)}`);
       }
     }],
     ['case 36: an addition with the same toolchain fails', () => {
@@ -4370,7 +4393,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const head = baselineJson([{ id, sites: { windows: [A12, B12] } }]);
       const fixture = baselineDiffFixture({ base, head, diffPaths: ['src/a.rs'] });
       expectEqual(fixture.run(), 1, 'an addition fails');
-      if (!stderrText(fixture).includes(`Baseline grew without a toolchain refresh: ${id}#${B12} (windows)`)) {
+      if (!stderrText(fixture).includes(
+        `Baseline grew without a toolchain refresh: ${id}#${B12} (windows)`)) {
         throw new Error(`expected the addition message, got ${stderrText(fixture)}`);
       }
     }],
@@ -4664,7 +4688,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const untouched = baselineDiffFixture({ base, head, diffPaths: [],
         workingFiles: ['src/a.rs'] });
       expectEqual(untouched.run(), 1, 'an untouched-file removal fails');
-      if (!stderrText(untouched).includes(`Baseline entry removed without touching its file: ${id}`)) {
+      if (!stderrText(untouched).includes(
+        `Baseline entry removed without touching its file: ${id}`)) {
         throw new Error(`expected the removal failure, got ${stderrText(untouched)}`);
       }
       const gone = baselineDiffFixture({ base, head, diffPaths: [], workingFiles: [] });
@@ -4728,16 +4753,20 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         showFailure: new GitError('fatal: bad object origin/nope', false),
       });
       expectEqual(failed.run(), 1, 'a non-missing git failure is CONFIG');
-      if (!stderrText(failed).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(failed)}`);
+      if (!stderrText(failed).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(failed)}`);
       const badHead = baselineDiffFixture({ base: valid, head: invalid });
       expectEqual(badHead.run(), 1, 'an invalid head is CONFIG');
-      if (!stderrText(badHead).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(badHead)}`);
+      if (!stderrText(badHead).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(badHead)}`);
       const badBase = baselineDiffFixture({ base: invalid, head: valid });
       expectEqual(badBase.run(), 1, 'an invalid base is CONFIG');
-      if (!stderrText(badBase).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(badBase)}`);
+      if (!stderrText(badBase).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(badBase)}`);
       const headGone = baselineDiffFixture({ base: valid, head: null });
       expectEqual(headGone.run(), 1, 'a head without the baseline is CONFIG');
-      if (!stderrText(headGone).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(headGone)}`);
+      if (!stderrText(headGone).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(headGone)}`);
     }],
     ['case 43: a new platform key, an added anchor and an untouched-file removal all fail', () => {
       const id = 'rust:src/a.rs::heavy';
@@ -4747,7 +4776,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         diffPaths: ['src/a.rs'],
       });
       expectEqual(platformKey.run(), 1, 'a new platform key fails');
-      if (!stderrText(platformKey).includes(`Baseline grew without a toolchain refresh: ${id}#${B12} (linux)`)) {
+      if (!stderrText(platformKey).includes(
+        `Baseline grew without a toolchain refresh: ${id}#${B12} (linux)`)) {
         throw new Error(`expected the linux addition, got ${stderrText(platformKey)}`);
       }
       const addedAnchor = baselineDiffFixture({
@@ -4756,7 +4786,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         diffPaths: ['src/a.rs'],
       });
       expectEqual(addedAnchor.run(), 1, 'an added anchor fails');
-      if (!stderrText(addedAnchor).includes(`Baseline grew without a toolchain refresh: ${id}#${B12} (windows)`)) {
+      if (!stderrText(addedAnchor).includes(
+        `Baseline grew without a toolchain refresh: ${id}#${B12} (windows)`)) {
         throw new Error(`expected the windows addition, got ${stderrText(addedAnchor)}`);
       }
       const removedAnchor = baselineDiffFixture({
@@ -4766,7 +4797,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         workingFiles: ['src/a.rs'],
       });
       expectEqual(removedAnchor.run(), 1, 'an untouched-file removal fails');
-      if (!stderrText(removedAnchor).includes(`Baseline entry removed without touching its file: ${id}`)) {
+      if (!stderrText(removedAnchor).includes(
+        `Baseline entry removed without touching its file: ${id}`)) {
         throw new Error(`expected the removal failure, got ${stderrText(removedAnchor)}`);
       }
     }],
@@ -4825,7 +4857,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const duplicate = mergeFixture({ files: { 'w1.json': windows, 'w2.json': windows,
         'm.json': macos } });
       expectEqual(duplicate.run(['w1.json', 'w2.json', 'm.json']), 1, 'a duplicate platform fails');
-      if (!stderrText(duplicate).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(duplicate)}`);
+      if (!stderrText(duplicate).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(duplicate)}`);
       const missing = mergeFixture({ files: {
         'n.json': JSON.stringify({ commit: MERGE_COMMIT, rustcVersion: MERGE_TOOLCHAIN,
           entries: [] }),
@@ -4833,17 +4866,20 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         'm.json': macos,
       } });
       expectEqual(missing.run(['n.json', 'l.json', 'm.json']), 1, 'a missing platform fails');
-      if (!stderrText(missing).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(missing)}`);
+      if (!stderrText(missing).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(missing)}`);
       const single = mergeFixture({ files: { 'w.json': windows } });
       expectEqual(single.run(['w.json']), 1, 'one input fails');
-      if (!stderrText(single).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(single)}`);
+      if (!stderrText(single).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(single)}`);
       const commitMismatch = mergeFixture({ files: {
         'w.json': emissionDocument({ platform: 'windows', entries: [], commit: 'a'.repeat(40) }),
         'l.json': linux,
         'm.json': macos,
       } });
       expectEqual(commitMismatch.run(['w.json', 'l.json', 'm.json']), 1, 'a commit mismatch fails');
-      if (!stderrText(commitMismatch).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(commitMismatch)}`);
+      if (!stderrText(commitMismatch).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(commitMismatch)}`);
       const versionMismatch = mergeFixture({ files: {
         'w.json': emissionDocument({ platform: 'windows', entries: [], rustcVersion: '1.97.2' }),
         'l.json': linux,
@@ -4851,7 +4887,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       } });
       expectEqual(versionMismatch.run(['w.json', 'l.json', 'm.json']), 1,
         'a rustcVersion mismatch fails');
-      if (!stderrText(versionMismatch).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(versionMismatch)}`);
+      if (!stderrText(versionMismatch).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(versionMismatch)}`);
     }],
     ['case 67: --merge rejects two inputs and accepts the three platforms', () => {
       const windows = emissionDocument({ platform: 'windows',
@@ -4862,7 +4899,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         anchors: [C12] }] });
       const two = mergeFixture({ files: { 'w.json': windows, 'l.json': linux } });
       expectEqual(two.run(['w.json', 'l.json']), 1, 'two inputs fail');
-      if (!stderrText(two).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(two)}`);
+      if (!stderrText(two).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(two)}`);
       const three = mergeFixture({ files: { 'w.json': windows, 'l.json': linux,
         'm.json': macos } });
       expectEqual(three.run(['w.json', 'l.json', 'm.json']), 0, 'three platforms pass');
@@ -4884,7 +4922,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         expected: 'SHAPE_A',
       });
       if (stdoutText(first) !== 'SHAPE_A') {
-        throw new Error(`expected only the verdict line, got ${JSON.stringify(first.state.stdout)}`);
+        throw new Error(
+          `expected only the verdict line, got ${JSON.stringify(first.state.stdout)}`);
       }
       expectProbe({
         capture: jsonl(
@@ -4972,7 +5011,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         diffPaths: ['src/a.rs'],
       });
       expectEqual(fixture.run(), 1, 'R-C1 is closed at the ratchet');
-      if (!stderrText(fixture).includes(`Baseline grew without a toolchain refresh: ${id}#${C12} (windows)`)) {
+      if (!stderrText(fixture).includes(
+        `Baseline grew without a toolchain refresh: ${id}#${C12} (windows)`)) {
         throw new Error(`expected ${C12} named as the addition, got ${stderrText(fixture)}`);
       }
     }],
@@ -4990,14 +5030,16 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         diffPaths: ['src/a.rs'],
       });
       expectEqual(unsorted.run(), 1, 'an unsorted head is CONFIG');
-      if (!stderrText(unsorted).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(unsorted)}`);
+      if (!stderrText(unsorted).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(unsorted)}`);
       const malformed = baselineDiffFixture({
         base: baselineJson([{ id, sites: { windows: [A12] } }]),
         head: baselineJson([{ id, sites: { windows: ['ZZZZZZZZZZZZ'] } }]),
         diffPaths: ['src/a.rs'],
       });
       expectEqual(malformed.run(), 1, 'a malformed anchor head is CONFIG');
-      if (!stderrText(malformed).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(malformed)}`);
+      if (!stderrText(malformed).includes('CONFIG')) throw new Error(
+        `expected CONFIG, got ${stderrText(malformed)}`);
     }],
   ];
 }
@@ -5013,7 +5055,8 @@ function selfTest({ stdout, stderr }) {
     }
   }
   if (failures.length > 0) {
-    for (const failure of failures) stderr(`check-cognitive-complexity self-test failed: ${failure}`);
+    for (const failure of failures) stderr(
+      `check-cognitive-complexity self-test failed: ${failure}`);
     return 1;
   }
   stdout(`check-cognitive-complexity self-test passed (${cases.length} cases; scan-contract-v2)`);
