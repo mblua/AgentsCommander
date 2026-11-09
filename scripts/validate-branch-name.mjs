@@ -38,7 +38,7 @@ function parseArgs(argv) {
 }
 
 function die(msg) {
-  console.error(`[branch-name] ${msg}`);
+  console.error(`[branch-name] ${String(msg).replace(/[\r\n]+/g, ' ')}`);
   process.exit(1);
 }
 
@@ -134,7 +134,7 @@ async function verifyIssueOpen(issue) {
   if (data.state !== 'open') die(`Issue #${issue} is ${data.state}. Branch must reference an OPEN issue.`);
 }
 
-(async () => {
+void (async () => {
   try {
     const args   = parseArgs(process.argv.slice(2));
     try { resolveGit(); } catch (e) { die(e.message); }
