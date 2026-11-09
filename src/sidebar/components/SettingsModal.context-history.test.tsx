@@ -111,7 +111,7 @@ describe("SettingsModal Context Heat Map section (#4049)", () => {
       expect(m.$(RETENTION_ERROR)).toBeNull();
       expect(m.$<HTMLInputElement>(WINDOWS)!.value).toBe("");
       expect(m.$(WINDOWS_ERROR)).toBeTruthy();
-      expect(m.$<HTMLSelectElement>(COLOR)!.options.length).toBe(0);
+      expect(m.$<HTMLSelectElement>(COLOR)!.options).toHaveLength(0);
     } finally { m.rendered.cleanup(); }
   });
 

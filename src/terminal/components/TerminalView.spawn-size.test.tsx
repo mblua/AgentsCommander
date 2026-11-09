@@ -612,7 +612,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       spawned.emitResize(74, 24);
 
       await waitFor(() =>
-        expect(resizesFor(fake, SPAWNED).length).toBe(settleSends + 1)
+        expect(resizesFor(fake, SPAWNED)).toHaveLength(settleSends + 1)
       );
       const resizes = resizesFor(fake, SPAWNED);
       expect(resizes[resizes.length - 1].args).toEqual({
