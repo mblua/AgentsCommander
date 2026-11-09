@@ -130,7 +130,8 @@ test('special Git modes and UTF8 are ERROR, never absent', t => {
   assert.throws(() => parseTree(Buffer.from('100644 blob bad\tx.rs\0')), e => e.exit === 3);
   assert.throws(() => parseChanged(Buffer.from('M\0x.rs')), e => e.exit === 3);
 });
-test('Git failures/spawn/signal/timeout/maxBuffer and missing object cannot give partial verdicts', t => {
+test('Git failures/spawn/signal/timeout/maxBuffer and missing object cannot give partial verdicts',
+  t => {
   const f = fixture(t); f.write('x.rs', 'x'); f.commit();
   for (const failure of [{status:1}, {status:null,signal:'SIGTERM'}, {status:null,
       error:Object.assign(new Error('timeout'),{code:'ETIMEDOUT'})}, {status:null,
@@ -262,7 +263,8 @@ test('nested imports/self/as and nearest parameter/block bindings', () => {
   assert.equal(a.resolvePath('disk::write',calls[0].scope).shadowed,true);
   assert.equal(a.resolvePath('disk::write',calls[1].scope).path,'tokio::fs::write');
 });
-test('one-hop path aliases, destructuring/glob/reassignment/cyclic constants retain uncertainty', () => {
+test('one-hop path aliases, destructuring/glob/reassignment/cyclic constants retain uncertainty', (
+  ) => {
   const a=scanRust('x.rs','use std::fs as disk; const A: &str = B; const B: &str = A; fn f(){let d = disk;d::write();let (x,y)=pair; x::write();let r=disk;r=disk;r::write();}');
   const fn=a.items.find(i=>i.name==='f').bodyScope;
   assert.equal(a.resolvePath('d::write',fn).path,'std::fs::write');
@@ -292,7 +294,8 @@ test('malformed lexer/meta/items fail closed; reversal restores scan', () => {
   }
 });
 test('compatibility ordinals include tests and homonymous items before exclusions', () => {
-  const source='#[test] fn same(){fs::write("x",b"x");} mod m{fn same(){p.join("a");File::open("a");}}';
+  const source=
+    '#[test] fn same(){fs::write("x",b"x");} mod m{fn same(){p.join("a");File::open("a");}}';
   const a=scanRust('x.rs',source);assert.deepEqual(a.sites.map(s=>s.ordinal),[1,2,3]);
   assert.equal(a.sites[0].item,'same');assert.ok(a.sites[0].tokens.length);
       assert.equal(a.sites[0].evidence,source);
@@ -367,7 +370,8 @@ test('ERROR dominates FAIL and exact path identity is preserved', t => {
   const map=parseTree(Buffer.from(names.map(n=>'100644 blob '+oid+'\t'+n+'\0').join('')));
   assert.equal(map.size,names.length);for(const n of names)assert.ok(map.has(n));
 });
-test('opaque byte literals still validate escapes; Unicode identifiers and arbitrary raw hashes', () => {
+test('opaque byte literals still validate escapes; Unicode identifiers and arbitrary raw hashes', (
+  ) => {
   const slash=String.fromCharCode(92);
   assert.throws(()=>scanRust('x.rs','fn f(){let b=b"'+slash+'xFF'+slash+'q";}'),e=>e.exit===3);
   const a=scanRust('x.rs','fn 𐐀(){let s=r########"raw"########;}');
@@ -430,7 +434,8 @@ test('const generic parameters are not items; actual body constants stay visible
 
 test('absolute test attributes resolve without shadowing or hiding later production', () => {
   for (const attribute of ['::tokio::test', '::async_std::test']) {
-    const a = scanRust('x.rs', `mod tokio {} #[${attribute}] async fn t(){work();} fn production(){work();}`);
+    const a = scanRust('x.rs',
+      `mod tokio {} #[${attribute}] async fn t(){work();} fn production(){work();}`);
     const t = a.items.find(i => i.name === 't'), p = a.items.find(i => i.name === 'production');
     assert.equal(t.directTest, true); assert.equal(a.isTestOffset(t.bodyStart + 1), true);
     assert.equal(a.isTestOffset(t.start), false); assert.equal(p.testOnly, false);
@@ -489,7 +494,8 @@ test('05 every independent counter: PASS → FAIL with diagnostic → restored P
     } else control(layoutGate,rule,p,clean,bad);
   }
 });
-test('05 grouped globs, test/path cfg_attr, async aliases, integration and visibility boundaries', () => {
+test('05 grouped globs, test/path cfg_attr, async aliases, integration and visibility boundaries', (
+  ) => {
   for(const attr of ['#[tokio::test]','#[async_std::test]','use tokio::test as check; #[check]',
       '#[cfg_attr(feature="x",tokio::test)]'])
     control(layoutGate,'test_files','x.rs','fn f() {}',attr+' async fn f() {}');
@@ -547,13 +553,16 @@ test('06 every counter and exact boundary, alias imports and homonymous methods'
     ['disk_commands','#[tauri::command] fn f() { std::fs::read("a"); }'],
   ]) control(edgeGate,rule,'x.rs','fn f() {}',bad);
   for(const p of ['lib.rs','main.rs','commands.rs','events.rs','commands/a.rs','events/a.rs'])
-    assert.equal(edgeGate(trees({}, {[rustRoot+p]:'fn f(x: tauri::AppHandle) { x.emit("a",0); x.state::<X>(); x.try_state::<X>(); }'})).exit,0,p);
+    assert.equal(edgeGate(trees({}, {[rustRoot+p]:
+      'fn f(x: tauri::AppHandle) { x.emit("a",0); x.state::<X>(); x.try_state::<X>(); }'})).exit,0,
+      p);
   for(const p of ['cli/a.rs','api/a.rs','web/a.rs','window.rs'])
     control(edgeGate,'tauri_files',p,'','use tauri::AppHandle as Handle; fn f(x: Handle) {}');
   control(edgeGate,'disk_commands','commands.rs','use tauri::command as cmd; #[cmd] fn f() {}',
     'use tauri::command as cmd; use std::fs::read as disk; #[cmd] fn f() { disk("a"); }');
 });
-test('06 state and try_state share the ratchet, including existing debt and lexical exclusions', () => {
+test('06 state and try_state share the ratchet, including existing debt and lexical exclusions', (
+  ) => {
   const p=rustRoot+'state.rs',old='fn f(x: X) { x.try_state::<X>(); }';
   const baseline=edgeGate(trees({[p]:old}));
   assert.equal(baseline.exit,0);
@@ -576,7 +585,8 @@ test('06 state and try_state share the ratchet, including existing debt and lexi
   assert.equal(syntax.totals[1].state_files,2);
   assert.equal(syntax.exit,1);
 });
-test('06 new disk command in existing file cannot hide behind reductions; cfg identity and renames', () => {
+test('06 new disk command in existing file cannot hide behind reductions; cfg identity and renames',
+  () => {
   const p=rustRoot+'commands.rs';
   const old='#[tauri::command] fn old() { fs::read("a"); }';
   for(const bad of ['#[tauri::command] fn fresh() { fs::read("a"); }',
@@ -589,7 +599,8 @@ test('06 new disk command in existing file cannot hide behind reductions; cfg id
       p]:'#[tauri::command] fn f() { #[cfg(test)] fn test_only() { fs::read("a"); } }'})).exit,0);
 });
 registerTauriEdgeTests({trees, control});
-test('08 static mutation, state wrappers/aliases/multiline and thread_local each reject increase', () => {
+test('08 static mutation, state wrappers/aliases/multiline and thread_local each reject increase', (
+  ) => {
   for(const bad of [
     'static mut X: usize = 0;', 'static X: std::sync::Mutex<u8> = Mutex::new(0);',
     'static X: Arc<RwLock<u8>> = init();','static X: AtomicUsize = init();',
@@ -755,7 +766,8 @@ test('P02 actual Git OID mutation/reversion and ERROR precedence for every detec
   }
 });
 
-test('P02 relevant ambiguous aliases count with diagnostics instead of erasing the previous import', () => {
+test('P02 relevant ambiguous aliases count with diagnostics instead of erasing the previous import',
+  () => {
   for(const [gate,rule,source] of [
     [processGate,'env_read_files',
         'use std::env::var as read; use other::read; fn f() { read("x"); }'],
@@ -779,7 +791,9 @@ test('P02 absolute paths retain syntactic signals', () => {
     [processGate,'launch_files','fn f() { ::tokio::process::Command::new("x"); }']]) control(gate,
         rule,'x.rs','',code);
 });
-test('06 existing command may gain disk when another loses it; only NEW command has strict condition', () => {
+test(
+  '06 existing command may gain disk when another loses it; only NEW command has strict condition',
+  () => {
   const p=rustRoot+'commands.rs';
   const base='#[tauri::command] fn a() { fs::read("a"); } #[tauri::command] fn b() {}';
   const head='#[tauri::command] fn a() {} #[tauri::command] fn b() { fs::read("a"); }';
@@ -870,6 +884,7 @@ test('05 glob ambiguity warnings are distinct from stale allowlist warnings', ()
   const warning=result.diagnostics.find(d=>d.status==='WARN'); assert.ok(warning);
   assert.match(formatWarning(warning),/^WARN scan ambiguity:/);
   assert.doesNotMatch(formatWarning(warning),/stale allowlist/);
-  assert.match(formatWarning({gate:'05',path:p,rule:'stale_allowlist',reason:'unused'}),/^WARN stale allowlist entry:/);
+  assert.match(formatWarning({gate:'05',path:p,rule:'stale_allowlist',reason:'unused'}),
+    /^WARN stale allowlist entry:/);
 });
 registerSnapshotBoundaryTests({trees, control, fixture, rustRoot, allow});

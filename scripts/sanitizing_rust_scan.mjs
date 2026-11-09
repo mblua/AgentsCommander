@@ -3,7 +3,8 @@ import { GateError } from './sanitizing_baseline.mjs';
 const identStart = /[\p{ID_Start}_]/u, identPart = /[\p{ID_Continue}_]/u;
 const opens = { '(': ')', '[': ']', '{': '}' };
 const closes = new Set(Object.values(opens));
-function error(path, line, reason) { throw new GateError(`${path}:${line}: ${reason}; review Rust syntax`); }
+function error(path, line, reason) { throw new GateError(
+  `${path}:${line}: ${reason}; review Rust syntax`); }
 
 // Rust escapes, rather than JSON/JavaScript string escapes.
 export function decodeRustString(raw, byte = false) {
@@ -26,7 +27,8 @@ export function decodeRustString(raw, byte = false) {
       value += String.fromCharCode(code); i += 2;
     } else if (e === 'u' && source[i + 1] === '{' && !byte) {
       const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
-      if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError('invalid Rust Unicode escape');
+      if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
+        'invalid Rust Unicode escape');
       const code = parseInt(hex, 16);
       if (code > 0x10ffff || code >= 0xd800 &&
         code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
@@ -67,7 +69,8 @@ export function lexRust(path, text) {
       advance(end + suffix.length);
       const byte = raw[0].startsWith('b');
       const value = decodeRustString(text.slice(start, i), byte);
-      add(byte ? 'byteString' : 'string', start, i, tokenLine, { value: byte && /[^\x00-\x7f]/.test(value) ? null : value, opaque: byte && /[^\x00-\x7f]/.test(value) }); continue;
+      add(byte ? 'byteString' : 'string', start, i, tokenLine, { value: byte && /[^\x00-\x7f]/.test(
+        value) ? null : value, opaque: byte && /[^\x00-\x7f]/.test(value) }); continue;
     }
     if (c === '"' || c === 'b' && text[i + 1] === '"') {
       const byte = c === 'b'; advance(i + (byte ? 2 : 1)); let closed = false;
@@ -106,7 +109,8 @@ export function lexRust(path, text) {
       if (rawIdent) advance(i + rawIdent[0].length);
       else { advance(i + c.length); while (i < text.length && identPart.test(String.fromCodePoint(
         text.codePointAt(i)))) advance(i + (text.codePointAt(i) > 0xffff ? 2 : 1)); }
-      add('ident', start, i, tokenLine, { name: text.slice(start, i).replace(/^r#/, '') }); continue;
+      add('ident', start, i, tokenLine, { name: text.slice(start, i).replace(/^r#/, '') });
+        continue;
     }
     if (/\d/.test(c)) {
       // A tuple index cannot absorb the following projection, call or range.
@@ -142,7 +146,8 @@ function splitTop(tokens, separator = ',') {
 }
 export function parseMeta(tokens) {
   let i = 0;
-  const fail = () => { throw new GateError(`line ${tokens[i]?.line ?? tokens.at(-1)?.line ?? 1}: invalid attribute meta`); };
+  const fail = () => { throw new GateError(
+    `line ${tokens[i]?.line ?? tokens.at(-1)?.line ?? 1}: invalid attribute meta`); };
   function parse() {
     const absolute = tokens[i]?.text === '::'; if (absolute) i++;
     if (tokens[i]?.kind !== 'ident') fail();
@@ -250,7 +255,8 @@ export function resolvePath(input, scope) {
     else if (other && other.kind !== 'import') return { path: null, shadowed: true,
       ambiguous: false, binding };
   }
-  return { path: [target, ...parts.slice(1)].join('::').replace(/^::/, ''), ambiguous: false, binding };
+  return { path: [target, ...parts.slice(1)].join('::').replace(/^::/, ''), ambiguous: false,
+    binding };
 }
 
 export function scanRust(path, text) {
@@ -468,7 +474,16 @@ export function scanRust(path, text) {
 // round3-dev-extract.cjs SHA256 7A6CCF4529F9420887A3BF8EEC8F7A811929FFB3C5598B8C773BD4720DD511A6
 // round3-dev-build.cjs SHA256 54AAA090354596DD1971833047FA84249546D046955759001071CC19583B8951
 // Deliberately preserves historical function matching; not the production lexer.
-function mask(s){let a=s.split(''),i=0;const blank=(b,e)=>{for(let j=b;j<e;j++)if(a[j]!='\n')a[j]=' ';};while(i<s.length){let b=i;if(s.startsWith('//',i)){i=s.indexOf('\n',i);if(i<0)i=s.length;blank(b,i);}else if(s.startsWith('/*',i)){i+=2;let n=1;while(i<s.length&&n){if(s.startsWith('/*',i)){n++;i+=2;}else if(s.startsWith('*/',i)){n--;i+=2;}else i++;}blank(b,i);}else{const raw=/^(?:br|r)(#*)"/.exec(s.slice(i));if(raw){const end='"'+raw[1];let e=s.indexOf(end,i+raw[0].length);i=e<0?s.length:e+end.length;blank(b,i);}else if(s[i]=='"'){i++;while(i<s.length){if(s.charCodeAt(i)==92){i+=2;continue;}if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+1;if(s.charCodeAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);k=close<0?k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;if(s[k]=="'"){i=k+1;blank(b,i);}else i++;}else i++;}}return a.join('');}
+function mask(s){let a=s.split(''),i=0;const blank=(b,e)=>{for(let j=b;j<e;j++)if(a[j]!='\n')a[j]=
+  ' ';};while(i<s.length){let b=i;if(s.startsWith('//',i)){i=s.indexOf('\n',i);if(i<0)i=s.length;
+  blank(b,i);}else if(s.startsWith('/*',i)){i+=2;let n=1;while(i<s.length&&n){if(s.startsWith('/*',
+  i)){n++;i+=2;}else if(s.startsWith('*/',i)){n--;i+=2;}else i++;}blank(b,i);}else{const raw=
+  /^(?:br|r)(#*)"/.exec(s.slice(i));if(raw){const end='"'+raw[1];let e=s.indexOf(end,i+raw[
+  0].length);i=e<0?s.length:e+end.length;blank(b,i);}else if(s[i]=='"'){i++;while(i<s.length){if(
+  s.charCodeAt(i)==92){i+=2;continue;}if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+
+  1;if(s.charCodeAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);k=close<0?
+  k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;if(s[k]=="'"){i=k+
+  1;blank(b,i);}else i++;}else i++;}}return a.join('');}
 export function compatibilitySites(p,text,tokens=[]) {
 const code=mask(text),lines=text.split('\n'),starts=[0];for(let i=0;i<text.length;i++)if(text[i]=='\n')starts.push(i+1);const functions=[];for(const m of code.matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()/g)){let b=code.indexOf('{',m.index),semi=code.indexOf(';',m.index);if(b<0||semi>=0&&semi<b)continue;let d=1,e=b+1;while(e<code.length&&d){if(code[e]=='{')d++;if(code[e]=='}')d--;e++;}functions.push({name:m[1],start:m.index,end:e});}const sinks=[];const re=/\.(?:join|push|with_file_name|with_extension|open|create_new_private_file|write_all|write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|write_to)\s*\(|\b(?:Path|PathBuf)::(?:new|from)\s*\(|\b(?:fs|filesystem)::[A-Za-z_]+\s*\(|\b(?:File|OpenOptions|Connection)::[A-Za-z_]+\s*\(|\b(?:write_file_atomic|atomic_write\w*|write_json\w*|rename_with_retry|CreateFileW|MoveFileExW|ReplaceFileW|writeln|write)\s*!?\s*\(/g;for(const m of code.matchAll(re)){const f=functions.filter(f=>m.index>=f.start&&m.index<f.end).sort((a,b)=>(a.end-a.start)-(b.end-b.start))[0];const item=f?f.name:'<module>';const ordinal=sinks.filter(x=>x.item===item).length+1;let line=starts.findIndex(x=>x>m.index);if(line<0)line=starts.length;sinks.push({path:p,item,ordinal,line,offset:m.index,operation:m[0],evidence:lines[line-1].trim()});}
 return sinks.map(site=>({...site,

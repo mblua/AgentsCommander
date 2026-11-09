@@ -55,7 +55,8 @@ function extraChecks(path, m, before, violation, moved) {
 }
 function measure(path, scan, receivers) {
   const m = metric(), ts = scan.productionTokens;
-  const edge = /^src-tauri\/src\/(?:(?:lib|main|commands|events)\.rs$|(?:commands|events)\/)/.test(path);
+  const edge = /^src-tauri\/src\/(?:(?:lib|main|commands|events)\.rs$|(?:commands|events)\/)/.test(
+    path);
   const imports = scan.items.filter(item => item.kind === 'use'), imported = [], references = [];
   const record = (rule, t) => { if (!edge) hit(m,rule,t.line,occurrenceIdentity(scan,t)); };
   for (let i = 0; i < ts.length; i++) {
@@ -98,7 +99,8 @@ function measure(path, scan, receivers) {
       .map(c => `${c.kind}:${c.name ?? scan.tokens.slice(c.first,c.last).filter(t => t.start < c.bodyStart).map(t => t.text).join('')}`);
     const key = [...containers,item.name].join('/'), ordinal = ordinals.get(key) ?? 0;
     ordinals.set(key,ordinal + 1);
-    const attrs = signals(scan,item).filter(a => a.path === 'tauri::command' || a.ambiguous && /(?:^|::)command$/.test(a.path ?? a.meta.name));
+    const attrs = signals(scan,item).filter(a => a.path === 'tauri::command' || a.ambiguous &&
+      /(?:^|::)command$/.test(a.path ?? a.meta.name));
     if (!attrs.length) continue;
     record('command_files',scan.tokens[item.first]);
     for (const a of attrs) warning(m,path,a.line,a);
@@ -110,8 +112,10 @@ function measure(path, scan, receivers) {
         t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
           ts[i - 2]?.kind === 'ident')) continue;
       const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
-      if (/^(?:(?:std|tokio)::)?fs::/.test(value) || /^(?:(?:std|tokio)::fs::)?File::(?:open|create)$/.test(value) ||
-        /^(?:(?:std|tokio)::fs::)?OpenOptions(?:::|$)/.test(value) || /^(?:(?:std|tokio)::fs::)?read_dir$/.test(value)) {
+      if (/^(?:(?:std|tokio)::)?fs::/.test(value) ||
+        /^(?:(?:std|tokio)::fs::)?File::(?:open|create)$/.test(value) ||
+        /^(?:(?:std|tokio)::fs::)?OpenOptions(?:::|$)/.test(value) ||
+          /^(?:(?:std|tokio)::fs::)?read_dir$/.test(value)) {
         disk = true; warning(m,path,t.line,r);
       }
       i = r.end - 1;

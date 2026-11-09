@@ -32,13 +32,15 @@ const dom = new JSDOM(html, {
 
 const documentText = () => dom.window.document.body.textContent ?? '';
 const cssBlockFor = (selector) => {
-  const blockPattern = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{(?<body>[^}]*)\\}`);
+  const blockPattern = new RegExp(
+    `${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{(?<body>[^}]*)\\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
 const cssBlockForInMedia = (mediaQuery, selector) => {
   const escapedMediaQuery = mediaQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const blockPattern = new RegExp(`@media\\s*${escapedMediaQuery}\\s*\\{[\\s\\S]*?${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`);
+  const blockPattern = new RegExp(
+    `@media\\s*${escapedMediaQuery}\\s*\\{[\\s\\S]*?${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
 const cssSelectorListBlockForInMedia = (mediaQuery, selector) => {
@@ -107,7 +109,8 @@ const clickVisibleModalVariant = (variant) => {
   assert.ok(overlay?.classList.contains('open'),
     'profile modal should be open before switching variants');
   assert.ok(button, `variant ${variant} button should exist`);
-  assert.ok(modal?.contains(button), `variant ${variant} button should render inside the profile modal layer`);
+  assert.ok(modal?.contains(button),
+    `variant ${variant} button should render inside the profile modal layer`);
   assert.ok(isBrowserVisible(button), `variant ${variant} button should be browser-visible`);
 
   const rect = button.getBoundingClientRect();
@@ -135,8 +138,10 @@ assert.equal(typeof dom.window.closeProfileModalContextMenu, 'function');
 assert.equal(typeof dom.window.openCodingAgentProfileModal, 'function');
 assert.equal(typeof dom.window.closeCodingAgentProfileModal, 'function');
 assert.match(html, /installComponentCapture\("AgentsCommander Current App"\)/);
-assert.ok(dom.window.document.querySelector('[data-component="top header with brand version workgroup identity and window controls"]'));
-assert.ok(dom.window.document.querySelector('[data-component="terminal transcript area with current task prompt and command blocks"]'));
+assert.ok(dom.window.document.querySelector(
+  '[data-component="top header with brand version workgroup identity and window controls"]'));
+assert.ok(dom.window.document.querySelector(
+  '[data-component="terminal transcript area with current task prompt and command blocks"]'));
 assert.ok(dom.window.document.querySelector(
   '[data-component="right AgentsCommander navigation control sidebar"]'));
 assert.ok(dom.window.document.querySelector(
@@ -170,28 +175,40 @@ assert.match(html, /Set just for instance/);
 assert.doesNotMatch(html, /Gemini/);
 assert.doesNotMatch(html, /Priority/);
 assert.doesNotMatch(html, /configurable fallback selector/i);
-assert.doesNotMatch(html, /<select[\s>]/i, 'current app modal should not use dropdown selectors for profile/model choices');
+assert.doesNotMatch(html, /<select[\s>]/i,
+  'current app modal should not use dropdown selectors for profile/model choices');
 const sideScrollCss = cssBlockFor('.side-scroll');
-assert.match(sideScrollCss, /overflow-y:\s*auto;/, 'sidebar content should allow vertical scrolling');
-assert.match(sideScrollCss, /overflow-x:\s*hidden;/, 'sidebar content should keep horizontal overflow hidden');
+assert.match(sideScrollCss, /overflow-y:\s*auto;/,
+  'sidebar content should allow vertical scrolling');
+assert.match(sideScrollCss, /overflow-x:\s*hidden;/,
+  'sidebar content should keep horizontal overflow hidden');
 const profileModalBodyCss = cssBlockFor('.profile-modal-body');
-assert.match(profileModalBodyCss, /overflow:\s*hidden;/, 'profile modal body should not drag all Variant C columns while scrolling profiles');
-assert.match(profileModalBodyCss, /padding:\s*16px;/, 'profile modal body should provide the larger usable area for Variant C');
+assert.match(profileModalBodyCss, /overflow:\s*hidden;/,
+  'profile modal body should not drag all Variant C columns while scrolling profiles');
+assert.match(profileModalBodyCss, /padding:\s*16px;/,
+  'profile modal body should provide the larger usable area for Variant C');
 const profileModalCss = cssBlockFor('.profile-modal');
-assert.match(profileModalCss, /width:\s*min\(1180px,\s*calc\(100vw - 40px\)\);/, 'profile modal should be wider for the three-column desktop layout');
-assert.match(profileModalCss, /max-height:\s*min\(820px,\s*calc\(100vh - 40px\)\);/, 'profile modal should provide more vertical room while respecting the viewport');
+assert.match(profileModalCss, /width:\s*min\(1180px,\s*calc\(100vw - 40px\)\);/,
+  'profile modal should be wider for the three-column desktop layout');
+assert.match(profileModalCss, /max-height:\s*min\(820px,\s*calc\(100vh - 40px\)\);/,
+  'profile modal should provide more vertical room while respecting the viewport');
 const variantCDesktopMinWidth = 220 + 340 + 340 + 12 * 2;
 const profileModalViewportInset = 40;
 const profileModalBodyPaddingX = 16 * 2;
 const variantCStackBreakpoint = profileModalViewportInset + profileModalBodyPaddingX +
   variantCDesktopMinWidth;
 const intermediateViewportWidth = 900;
-assert.equal(variantCDesktopMinWidth, 924, 'Variant C desktop min column math should include all three columns and two gaps');
-assert.equal(variantCStackBreakpoint, 996, 'Variant C should stack before the modal body becomes narrower than the desktop columns');
+assert.equal(variantCDesktopMinWidth, 924,
+  'Variant C desktop min column math should include all three columns and two gaps');
+assert.equal(variantCStackBreakpoint, 996,
+  'Variant C should stack before the modal body becomes narrower than the desktop columns');
 const variantCScrollCss = cssBlockFor('.profile-variant-c-scroll');
-assert.match(variantCScrollCss, /grid-column:\s*2\s*\/\s*-1;/, 'Variant C scroll area should span both remaining outer grid columns');
-assert.match(variantCScrollCss, /overflow-y:\s*auto;/, 'Variant C profile area should own vertical scrolling');
-assert.match(variantCScrollCss, /overflow-x:\s*hidden;/, 'Variant C profile area should not introduce horizontal scrolling');
+assert.match(variantCScrollCss, /grid-column:\s*2\s*\/\s*-1;/,
+  'Variant C scroll area should span both remaining outer grid columns');
+assert.match(variantCScrollCss, /overflow-y:\s*auto;/,
+  'Variant C profile area should own vertical scrolling');
+assert.match(variantCScrollCss, /overflow-x:\s*hidden;/,
+  'Variant C profile area should not introduce horizontal scrolling');
 assert.match(
   variantCScrollCss,
   /grid-template-columns:\s*minmax\(340px,\s*0\.92fr\)\s*minmax\(340px,\s*0\.9fr\);/,
@@ -215,7 +232,8 @@ assert.doesNotMatch(
   /overflow-x:\s*(auto|scroll);/,
   'Variant C profile selector panel should not request a horizontal scrollbar'
 );
-const variantCProfileSelectorListCss = cssBlockFor('.profile-variant-c [data-component="Coding Agent profile selector panel"] .profile-picker-list');
+const variantCProfileSelectorListCss = cssBlockFor(
+  '.profile-variant-c [data-component="Coding Agent profile selector panel"] .profile-picker-list');
 assert.match(
   variantCProfileSelectorListCss,
   /min-width:\s*0;/,
@@ -226,7 +244,8 @@ assert.match(
   /width:\s*100%;/,
   'Variant C profile selector list should use the available panel width'
 );
-const variantCProjectedPanelCss = cssBlockFor('.profile-variant-c [data-component="Selected profile projected parameters panel"]');
+const variantCProjectedPanelCss = cssBlockFor(
+  '.profile-variant-c [data-component="Selected profile projected parameters panel"]');
 assert.match(
   variantCProjectedPanelCss,
   /overflow-x:\s*hidden;/,
@@ -239,7 +258,8 @@ assert.match(
 );
 const variantCIntermediateCss = cssSelectorListBlockForInMedia('(max-width: 996px)',
   '.profile-variant-c.active');
-assert.match(variantCIntermediateCss, /grid-template-columns:\s*1fr;/, 'Variant C intermediate layout should stack before min desktop columns would clip');
+assert.match(variantCIntermediateCss, /grid-template-columns:\s*1fr;/,
+  'Variant C intermediate layout should stack before min desktop columns would clip');
 const variantCIntermediateScrollCss = cssBlockForInMedia('(max-width: 996px)',
   '.profile-variant-c-scroll');
 assert.match(
@@ -313,7 +333,8 @@ assert.equal(sideScroll.scrollTop > 0, true, 'sidebar should accept a positive s
 assert.equal(isWorkgroupsReachable(), true,
   'workgroups should be reachable after scrolling the sidebar');
 
-const sidebarCaptureTarget = dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"] .card-title');
+const sidebarCaptureTarget = dom.window.document.querySelector(
+  '[data-component="selected project coding agent model and effort task"] .card-title');
 assert.ok(sidebarCaptureTarget, 'selected project capture target should exist');
 const capturedComponent = sidebarCaptureTarget.closest('[data-component]');
 capturedComponent.getBoundingClientRect = () => ({
@@ -368,7 +389,8 @@ assert.match(sideScrollMenu?.textContent ?? '', /New Project/);
 assert.match(sideScrollMenu?.textContent ?? '', /Open Project/);
 assert.match(sideScrollMenu?.textContent ?? '', /Refresh Projects/);
 assert.match(sideScrollMenu?.textContent ?? '', /Settings/);
-assert.doesNotMatch(sideScrollMenu?.textContent ?? '', /Remove Project|Delete Workgroup|Delete Team|Delete Agent/);
+assert.doesNotMatch(sideScrollMenu?.textContent ?? '',
+  /Remove Project|Delete Workgroup|Delete Team|Delete Agent/);
 assert.match(sideScrollMenu?.textContent ?? '', /Copy component description/);
 assert.equal(dom.window.__sidebarContextLastMenu.kind, 'sidebar');
 
@@ -432,9 +454,12 @@ assert.equal(
   null,
   'Coding Agent action should close the sidebar context menu'
 );
-assert.match(dom.window.document.querySelector('#profileContextName')?.textContent ?? '', /architect/);
-assert.match(dom.window.document.querySelector('#profileContextProject')?.textContent ?? '', /AgentsCommander_ac/);
-assert.match(dom.window.document.querySelector('#profileContextWorkgroup')?.textContent ?? '', /WG-7-DEV-TEAM/);
+assert.match(dom.window.document.querySelector('#profileContextName')?.textContent ?? '',
+  /architect/);
+assert.match(dom.window.document.querySelector('#profileContextProject')?.textContent ?? '',
+  /AgentsCommander_ac/);
+assert.match(dom.window.document.querySelector('#profileContextWorkgroup')?.textContent ?? '',
+  /WG-7-DEV-TEAM/);
 assert.equal(dom.window.document.querySelectorAll('[data-tool-card]').length, 9);
 assert.match(profileModal?.textContent ?? '', /Codex/);
 assert.match(profileModal?.textContent ?? '', /Claude Code/);
@@ -448,7 +473,8 @@ assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProject,
 assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultAgent, 'architect');
 assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProfile, 'B');
 assert.match(profileModal?.textContent ?? '', /architect configured default B - BALANCED/);
-assert.match(profileModal?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
+assert.match(profileModal?.textContent ?? '',
+  /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
 stubRect(profileModal, { left: 0, top: 0, width: 1365, height: 768 });
 stubRect(profileModal.querySelector('.profile-modal'), { left: 96, top: 28, width: 1180,
@@ -473,7 +499,8 @@ assert.deepEqual(modalActionLabels, [
   'Set selected profile as default for AgentsCommander_ac:architect',
   'Set just for instance'
 ]);
-assert.match(dom.window.document.querySelector('#profileDefaultButton')?.textContent ?? '', /AgentsCommander_ac:architect/);
+assert.match(dom.window.document.querySelector('#profileDefaultButton')?.textContent ?? '',
+  /AgentsCommander_ac:architect/);
 assert.equal(
   dom.window.document.querySelector('#profileDefaultButton')?.getAttribute('data-component'),
   'Set selected Coding Agent profile as default for AgentsCommander_ac:architect'
@@ -481,13 +508,20 @@ assert.equal(
 
 for (const variant of ['A', 'B', 'C']) {
   clickVisibleModalVariant(variant);
-  assert.equal(dom.window.__codingAgentProfileModalState.variant, variant, `variant ${variant} should be selected`);
-  const activeVariant = dom.window.document.querySelector(`[data-profile-variant-panel="${variant}"]`);
-  assert.ok(activeVariant?.classList.contains('active'), `variant ${variant} panel should be active`);
-  assert.ok(activeVariant.querySelector('[data-component="Coding Agents selector title"]'), `variant ${variant} should expose Coding Agents title`);
-  assert.ok(activeVariant.querySelector('[data-component="Coding agent selector"]'), `variant ${variant} should expose a Coding Agent selector`);
-  assert.ok(activeVariant.querySelector('[data-component="Coding Agent profile selector panel"]'), `variant ${variant} should expose Profiles area`);
-  assert.ok(activeVariant.querySelector('[data-profile-card].default'), `variant ${variant} should show the current default profile marker`);
+  assert.equal(dom.window.__codingAgentProfileModalState.variant, variant,
+    `variant ${variant} should be selected`);
+  const activeVariant = dom.window.document.querySelector(
+    `[data-profile-variant-panel="${variant}"]`);
+  assert.ok(activeVariant?.classList.contains('active'),
+    `variant ${variant} panel should be active`);
+  assert.ok(activeVariant.querySelector('[data-component="Coding Agents selector title"]'),
+    `variant ${variant} should expose Coding Agents title`);
+  assert.ok(activeVariant.querySelector('[data-component="Coding agent selector"]'),
+    `variant ${variant} should expose a Coding Agent selector`);
+  assert.ok(activeVariant.querySelector('[data-component="Coding Agent profile selector panel"]'),
+    `variant ${variant} should expose Profiles area`);
+  assert.ok(activeVariant.querySelector('[data-profile-card].default'),
+    `variant ${variant} should show the current default profile marker`);
   assert.match(activeVariant.textContent ?? '', /Model/);
   assert.match(activeVariant.textContent ?? '', /Effort/);
   assert.match(activeVariant.textContent ?? '', /Default args/);
@@ -509,7 +543,8 @@ assert.ok(variantCCodingAgentsPanel,
 assert.ok(variantCProfileScroll, 'Variant C should expose an independent profiles scroll area');
 assert.ok(variantCProfilePanel,
   'Variant C should keep the profile selector panel inside the scroll area');
-assert.ok(variantCProjectedPanel, 'Variant C should expose projected parameters inside the independent scroll area');
+assert.ok(variantCProjectedPanel,
+  'Variant C should expose projected parameters inside the independent scroll area');
 assert.equal(variantCProfileScroll.contains(variantCProfilePanel), true,
   'Variant C profile selector should be inside the independent scroll area');
 assert.equal(variantCProfileScroll.contains(variantCProjectedPanel), true,
@@ -587,8 +622,12 @@ dom.window.document.querySelector(
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'claude-code');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected coding agent: Claude Code/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '',
+  /Selected coding agent: Claude Code/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '',
+  /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
 dom.window.document.querySelector(
   '[data-profile-variant-panel="A"] [data-tool-card="opencode"]')?.click();
@@ -637,12 +676,24 @@ for (const summary of dom.window.document.querySelectorAll('[data-active-profile
   assert.match(text, /--profile a/);
   assert.match(text, /B missing; A final fallback/);
 }
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected coding agent: OpenCode/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Available profiles: A - FULL POWER, C - REVIEW/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved A - FULL POWER via fallback/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /architect requests B - BALANCED by default/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /OpenCode has no B - BALANCED profile/);
-assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /A remains the immutable final fallback/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '',
+  /Selected coding agent: OpenCode/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '',
+  /Available profiles: A - FULL POWER, C - REVIEW/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '',
+  /Requested\/default B - BALANCED -> resolved A - FULL POWER via fallback/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '',
+  /architect requests B - BALANCED by default/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '',
+  /OpenCode has no B - BALANCED profile/);
+assert.match(dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '',
+  /A remains the immutable final fallback/);
 
 const modalProfileCard =
   dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]');
@@ -743,7 +794,8 @@ assert.equal(copiedText, modalCaptureResult.quotedIdentifier,
   'modal copy should use the shared capture helper');
 const modalToast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(modalToast, 'modal copy should show the component capture toast');
-assert.match(modalToast?.textContent ?? '', /"AgentsCommander Current App \/ button \/ OpenCode B - BALANCED profile selector card"/);
+assert.match(modalToast?.textContent ?? '',
+  /"AgentsCommander Current App \/ button \/ OpenCode B - BALANCED profile selector card"/);
 assert.ok(
   Number(dom.window.getComputedStyle(modalToast).zIndex) > profileModalOverlayZIndex,
   'modal capture toast should render above the open profile modal overlay'
