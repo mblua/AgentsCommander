@@ -99,8 +99,8 @@ class AnalysisError extends Error {}
 
 function printHelp() {
   const lines = [];
-  lines.push(`${TOOL_NAME} ${TOOL_VERSION}`);
   lines.push(
+    `${TOOL_NAME} ${TOOL_VERSION}`,
     '',
     'Detect Rust dependency cycles at module and function granularity.',
     'Zero dependencies, no build step, no Rust toolchain, target need not compile.',
@@ -3169,17 +3169,15 @@ function renderHuman(result, baselineInfo, exitCode) {
   const out = [];
   const targetCount = result.crates.length;
 
-  out.push(`${TOOL_NAME} ${TOOL_VERSION}`);
   out.push(
+    `${TOOL_NAME} ${TOOL_VERSION}`,
     `target: ${path.basename(result.rootAbs)}  (${result.crateDiscovery} discovery, ` +
       `${targetCount} crate target${targetCount === 1 ? '' : 's'})`,
-  );
-  out.push('');
-  out.push(
+    '',
     `scanned ${summary.filesScanned} files, resolved ${summary.modulesResolved} modules ` +
       `and ${summary.functionsResolved} functions`,
+    ''
   );
-  out.push('');
 
   const newSuffix = (cycles) =>
     baselineInfo.used ? ` (${cycles.filter((c) => c.status === 'new').length} new)` : '';
@@ -3213,10 +3211,10 @@ function renderHuman(result, baselineInfo, exitCode) {
       }
     }
   }
-  out.push('');
   out.push(
+    '',
     `RECURSION (not a dependency cycle, never gates): ${result.recursion.length} function` +
-      `${result.recursion.length === 1 ? '' : 's'}`,
+      `${result.recursion.length === 1 ? '' : 's'}`
   );
   for (const entry of result.recursion) {
     out.push(`  ${entry.function}  ${entry.file}:${entry.line}`);
