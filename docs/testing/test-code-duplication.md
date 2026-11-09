@@ -38,11 +38,17 @@ assertSessionVisible({ id: "s-x", name: "wg-9/x", path: "C:\\Project\\x" });
 
 `.jscpd.json` at the repository root is the single source of the thresholds (`minLines` 10, `minTokens` 100); no command line or document restates them independently.
 
-- `npm run dup` — advisory, whole tree. Prints the console report and exits 0 even on findings. Use it to see the shape of the current tree.
-- `npm run dup:changed` — the blocking gate. Scans the working tree with the same configuration, scoped to new code against `git merge-base HEAD origin/main` (or the ref in `GATE_BASE_REF`, which CI sets to the PR's base branch). New clones and edits inside baseline clones fail; the recorded baseline clones do not.
+- `npm run dup` — advisory, whole tree. Prints the console report and exits 0 even on findings. Use it to see the shape of the current tree. It still walks every folder `pattern` matches, so local, gitignored copies of test files (for example evidence under `target/` or `artifacts/`) can show up there as junk clones; the gate below does not scan them.
+- `npm run dup:changed` — the blocking gate. Scans the test files git knows (see below) with the same configuration, scoped to new code against `git merge-base HEAD origin/main` (or the ref in `GATE_BASE_REF`, which CI sets to the PR's base branch). New clones and edits inside baseline clones fail; the recorded baseline clones do not.
 - `npm run dup:changed:self` — the gate's self-test. Builds throwaway git repositories under the system temp directory and proves the gate goes red and green for the right reasons. It changes nothing in this repository.
 
-The gate also fails when the scan finds **zero** files (`--fail-on-empty`) and scans without `.gitignore` (`--no-gitignore`), so an ignore entry cannot silently shrink the scan; `.jscpd.json` ignores `**/node_modules/**` to keep dependency test files out of that wider scan, and `**/artifacts/**` to keep local gate evidence out of it: `artifacts/` is gitignored, can hold copies of real test files (for example `artifacts/<n>/src/foo.test.ts`), and without the entry each copy is reported as a new clone. No tracked file lives under `artifacts/`, so the entry does not shrink the scan of versioned files (#4111). Copies are detected across `.test.ts` and `.test.tsx` as well as within each format.
+The gate passes jscpd an explicit file list: `git ls-files --cached --others --exclude-standard` over `.jscpd.json`'s `pattern` (as `:(glob)` pathspecs), minus files missing from disk (#4115). So:
+
+- every **tracked** test file is scanned, even under a gitignored path;
+- a new test file not yet `git add`-ed is scanned, unless it is gitignored;
+- only files that are both untracked **and** ignored are skipped — local evidence copies of the repo under `target/`, `src-tauri/target/`, `artifacts/` and similar — with no denylist to keep up to date.
+
+In CI (a clean checkout) the list is exactly the tracked files. The gate also fails when the scan finds **zero** files (`--fail-on-empty`), keeps `--no-gitignore` (and `gitignore: false` in `.jscpd.json`) as a second guard so an ignore entry cannot shrink the scan, and goes red, never truncating, if the full command line passes the 32,767-character Windows limit (jscpd 5.2.1 has no file-list input; the child is spawned with `shell: false`, never through `npx` or a `.cmd` shim). `.jscpd.json` ignores `**/node_modules/**`. Copies are detected across `.test.ts` and `.test.tsx` as well as within each format.
 
 ## The recorded `main` baseline
 
