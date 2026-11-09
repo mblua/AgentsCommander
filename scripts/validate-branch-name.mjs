@@ -135,7 +135,7 @@ async function verifyIssueOpen(issue) {
   }
   if (data.pull_request) die(`#${issue} is a pull request, not an issue.`);
   if (data.state !== 'open') die(
-    `Issue #${issue} is ${data.state}. Branch must reference an OPEN issue.`);
+    `Issue #${issue} is ${printable(data.state)}. Branch must reference an OPEN issue.`);
 }
 
 void (async () => {
