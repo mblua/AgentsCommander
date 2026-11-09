@@ -3,7 +3,6 @@ import { createStore, produce } from "solid-js/store";
 import { isTauri, isWindows } from "../../shared/platform";
 import type {
   AppSettings,
-  ContextHistoryColorDays,
   AgentConfig,
   CodingAgentEnv,
   CodingAgentDefinition,
@@ -48,6 +47,8 @@ import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { GripIcon } from "./settings/GripIcon";
 import { PreflightFields } from "./settings/PreflightFields";
 import { PreflightTestPanel } from "./settings/PreflightTestPanel";
+import ContextHistorySettings, * as ctxHistory from "./settings/ContextHistorySettings";
+import { selectSessionWindow } from "../../shared/context-history";
 import {
   TIMEOUT_SAVE_ERROR, isTimeoutKeyOfAgent, parseTimeoutInput, timeoutKey,
 } from "./settings/preflightModel";
@@ -122,9 +123,6 @@ import {
 type ProfileCellEnvRow = { key: string; value: string };
 
 const DEFAULT_ROOM_NUMBER_MASK = "#";
-// #3532 Allowed windows for the sidebar context-average color;
-// the select maps back to these numbers.
-const CONTEXT_HISTORY_COLOR_DAYS: readonly ContextHistoryColorDays[] = [1, 7, 30];
 const ROOM_NUMBER_MASK_MAX_WIDTH = 9;
 
 const AC_PLACEHOLDER_HELP = [
@@ -223,14 +221,17 @@ const TERMINAL_SNAPSHOT_SETTING_CONFLICT = "terminal_snapshot_setting_conflict";
 const TERMINAL_SNAPSHOT_CONFLICT_MESSAGE =
   "Terminal snapshots changed in another settings window. The current value was reloaded.";
 
-type SettingsTab = "general" | "agents" | "resources" | "integrations" | "watchers";
+type SettingsTab =
+  "general" | "agents" | "resources" | "integrations" | "watchers" | "context-history";
 
+// #4049 Context Heat Map is desktop-only: the browser never lists or opens it.
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" },
   { key: "agents", label: "Coding Agents" },
   { key: "resources", label: "Resources" },
   { key: "watchers", label: "Watchers" },
   { key: "integrations", label: "Integrations" },
+  { key: "context-history", label: "Context Heat Map" },
 ];
 
 /**
@@ -250,7 +251,9 @@ export const resolveSettingsSection = (s: string | undefined): SettingsTab =>
       ? "integrations"
       : s === "watchers"
         ? "watchers"
-        : "general";
+        : s === "context-history" && isTauri
+          ? "context-history"
+          : "general";
 
 const BYTES_PER_GIB = 1024 ** 3;
 const CONTAINER_IMAGE_EXAMPLE = "agentscommander/ac-claude:latest";
@@ -849,6 +852,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [roomIdleConfirmationSecondsText, setRoomIdleConfirmationSecondsText] = createSignal(
     String(seededSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
   );
+  const [ctxRetentionText, setCtxRetentionText] = createSignal(String(
+    seededSettings?.contextHistoryRetentionDays ??
+      ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
+  ));
+  const [ctxWindowsText, setCtxWindowsText] = createSignal(
+    (seededSettings?.contextHistorySessionWindows ?? []).join(", "),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -863,8 +873,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [generalQuery, setGeneralQuery] = createSignal("");
   const containerOptionsEnabled = () => settings.data?.containerOptionsEnabled === true;
   const generalResults = createMemo(() => searchGeneralSettings(generalQuery())
-    .filter((entry) => containerOptionsEnabled() || entry.key !== "containerCredentialsFromHost")
-    .filter((entry) => isTauri || entry.key !== "contextHistoryColorDays"));
+    .filter((entry) => containerOptionsEnabled() || entry.key !== "containerCredentialsFromHost"));
   const generalCounts = createMemo(() => countByCategory(generalResults()));
   const generalSearching = () => generalQuery().trim() !== "";
   let generalLayoutRef: HTMLDivElement | undefined;
@@ -1620,6 +1629,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setRoomIdleConfirmationSecondsText(
         String(nextSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
       );
+      setCtxRetentionText(String(
+        nextSettings?.contextHistoryRetentionDays ??
+          ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
+      ));
+      setCtxWindowsText((nextSettings?.contextHistorySessionWindows ?? []).join(", "));
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
   });
@@ -2621,6 +2635,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       : null;
   };
 
+  const validateContextHistoryRetention = (): string | null =>
+    settings.data && ctxHistory.parseContextHistoryRetentionDays(ctxRetentionText()) === null
+      ? "Context Heat Map: keep history must be a whole number of days from 1 to 365"
+      : null;
+
+  const validateContextHistorySessionWindows = (): string | null =>
+    settings.data && ctxHistory.parseContextHistorySessionWindows(ctxWindowsText()) === null
+      ? "Context Heat Map: session windows must be 1 to 8 ascending, distinct whole " +
+        "numbers from 1 to 10000"
+      : null;
+
   // #2704 - which General category holds a blocking validation error (red dot cue).
   const generalInvalid = createMemo((): Record<GeneralCategoryId, boolean> => ({
     appearance: !!(validateScreenshotHotkey() || validateSidebarCompactHotkey() || validateRoomNumberMask()),
@@ -2637,6 +2662,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateTypingHoldSeconds() ??
     validateResponseCloseIdleSeconds() ??
     validateRoomIdleConfirmationSeconds() ??
+    validateContextHistoryRetention() ??
+    validateContextHistorySessionWindows() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
     validateSidebarCompactHotkey() ??
@@ -3059,37 +3086,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 </Show>
               </label>
             </div>
-
-            <Show when={isTauri}>
-              <div class="settings-section">
-                <div class="settings-section-title">Contexto en la barra lateral</div>
-                <label data-ac-setting="contextHistoryColorDays" class="settings-field">
-                  <span class="settings-label">Período para el color de la media de contexto</span>
-                  <select
-                    class="settings-input"
-                    value={String(settings.data?.contextHistoryColorDays ?? 30)}
-                    onChange={(e) => {
-                      const raw = e.currentTarget.value;
-                      const days = CONTEXT_HISTORY_COLOR_DAYS.find((d) => String(d) === raw);
-                      if (days !== undefined) updateField("contextHistoryColorDays", days);
-                    }}
-                    data-ac-testid="settings.general.contextHistoryColorDays"
-                  >
-                    <option value="1">Último día</option>
-                    <option value="7">Últimos 7 días</option>
-                    <option value="30">Últimos 30 días (predeterminado)</option>
-                  </select>
-                  <div
-                    class="settings-hint"
-                    data-ac-testid="settings.general.contextHistoryColorDays.hint"
-                  >
-                    Colorea la media de contexto del agente o del team, no el CTX vivo; el hover
-                    muestra siempre las medias de 1, 7 y 30 días. No cambia la captura ni el
-                    período del historial.
-                  </div>
-                </label>
-              </div>
-            </Show>
 
             <div class="settings-section">
               <div class="settings-section-title">Hotkeys</div>
@@ -5724,7 +5720,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
         {/* Tab bar */}
         <div class="settings-tabs">
-          <For each={TABS}>
+          <For each={TABS.filter((tab) => isTauri || tab.key !== "context-history")}>
             {(tab) => (
               <button
                 class={`settings-tab ${activeTab() === tab.key ? "active" : ""}`}
@@ -5764,6 +5760,38 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <Show when={activeTab() === "watchers"}>{renderWatchersTab()}</Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
+            </Show>
+            <Show when={isTauri && activeTab() === "context-history"}>
+              <ContextHistorySettings
+                enabled={settings.data!.contextHistoryEnabled ?? false}
+                retentionText={ctxRetentionText()}
+                retentionError={validateContextHistoryRetention()}
+                windowsText={ctxWindowsText()}
+                windowsError={validateContextHistorySessionWindows()}
+                windows={settings.data!.contextHistorySessionWindows ?? []}
+                colorSessions={selectSessionWindow(
+                  settings.data!.contextHistorySessionWindows ?? [],
+                  settings.data!.contextHistoryColorSessions,
+                  null,
+                )?.requestedSessions ?? null}
+                onEnabled={(on) => updateField("contextHistoryEnabled", on)}
+                onRetentionText={(raw) => {
+                  setCtxRetentionText(raw);
+                  const days = ctxHistory.parseContextHistoryRetentionDays(raw);
+                  if (days !== null) updateField("contextHistoryRetentionDays", days);
+                }}
+                onWindowsText={(raw) => {
+                  setCtxWindowsText(raw);
+                  const counts = ctxHistory.parseContextHistorySessionWindows(raw);
+                  if (counts === null) return;
+                  updateField("contextHistorySessionWindows", counts);
+                  const colour = settings.data!.contextHistoryColorSessions;
+                  if (colour === undefined || !counts.includes(colour)) {
+                    updateField("contextHistoryColorSessions", counts[counts.length - 1]);
+                  }
+                }}
+                onColorSessions={(sessions) => updateField("contextHistoryColorSessions", sessions)}
+              />
             </Show>
             <Show when={preflightTest()} keyed>
               {(test) => (

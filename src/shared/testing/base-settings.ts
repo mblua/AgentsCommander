@@ -106,6 +106,8 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     containerCredentialsFromHost: true,
     logLevel: null,
     activityLogEnabled: false,
+    contextHistorySessionWindows: [25, 100, 300],
+    contextHistoryColorSessions: 300,
     ...overrides,
     codingAgentProfiles: overrides.codingAgentProfiles ?? defaultCodingAgentProfiles(),
   };

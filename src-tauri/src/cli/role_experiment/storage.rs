@@ -1,17 +1,18 @@
-use super::report::experiments_dir;
+use super::artifacts::AttemptArtifact;
+use super::artifacts::CliError;
+use super::artifacts::ExperimentMetadata;
+use super::artifacts::LoadedExperiment;
+use super::artifacts::PromptCase;
+use super::artifacts::ReportArtifact;
+use super::artifacts::RunArtifact;
+use super::artifacts::RunWorkgroupArtifact;
+use super::artifacts::VariantMetadata;
 use super::support::err;
 use super::support::err_at_line;
 use super::support::err_at_path;
 use super::support::variant_matrix_path;
 use super::validation::reject_link_or_reparse;
 use super::validation::validate_slug_identity;
-use super::AttemptArtifact;
-use super::CliError;
-use super::ExperimentMetadata;
-use super::LoadedExperiment;
-use super::PromptCase;
-use super::RunWorkgroupArtifact;
-use super::VariantMetadata;
 use crate::cli::workgroup;
 use crate::commands::entity_creation::sanitize_name;
 use crate::filesystem::projects::entities::roles;
@@ -132,6 +133,84 @@ pub(super) fn attempts_path(run_dir: &Path) -> PathBuf {
 
 pub(super) fn attempts_path_display(run_dir: &Path) -> String {
     attempts_path(run_dir).to_string_lossy().to_string()
+}
+
+const RUN_FILE_NAME: &str = "run.json";
+const REPORT_FILE_NAME: &str = "report.json";
+
+pub(super) fn experiments_dir(ac_root: &Path) -> PathBuf {
+    ac_root.join("experiments")
+}
+
+pub(super) fn run_name() -> String {
+    RUN_FILE_NAME.to_string()
+}
+
+pub(super) fn report_name() -> String {
+    REPORT_FILE_NAME.to_string()
+}
+
+fn run_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(RUN_FILE_NAME)
+}
+
+fn report_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(REPORT_FILE_NAME)
+}
+
+pub(super) fn run_path_display(run_dir: &Path) -> String {
+    run_path(run_dir).to_string_lossy().to_string()
+}
+
+pub(super) fn report_path_display(run_dir: &Path) -> String {
+    report_path(run_dir).to_string_lossy().to_string()
+}
+
+pub(super) fn create_run(run_dir: &Path, run: &RunArtifact) -> Result<(), Vec<CliError>> {
+    write_json_new(&run_path(run_dir), run)
+}
+
+pub(super) fn create_report(run_dir: &Path, report: &ReportArtifact) -> Result<(), Vec<CliError>> {
+    write_json_new(&report_path(run_dir), report)
+}
+
+pub(super) fn replace_run(run_dir: &Path, run: &RunArtifact) -> Result<(), Vec<CliError>> {
+    atomic_write_json(&run_path(run_dir), run)
+}
+
+pub(super) fn replace_report(run_dir: &Path, report: &ReportArtifact) -> Result<(), Vec<CliError>> {
+    atomic_write_json(&report_path(run_dir), report)
+}
+
+pub(super) fn load_run(run_dir: &Path) -> Result<RunArtifact, Vec<CliError>> {
+    let file_path = run_path(run_dir);
+    read_json(&file_path).map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &file_path)])
+}
+
+pub(super) fn load_report(run_dir: &Path) -> Result<ReportArtifact, Vec<CliError>> {
+    let file_path = report_path(run_dir);
+    read_json(&file_path).map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &file_path)])
+}
+
+pub(super) fn validate_run_presence(run_dir: &Path) -> Result<(), Vec<CliError>> {
+    validate_required_artifact_file(&run_path(run_dir))
+}
+
+pub(super) fn validate_report_presence(run_dir: &Path) -> Result<(), Vec<CliError>> {
+    validate_required_artifact_file(&report_path(run_dir))
+}
+
+/// Rejects a linked or missing required run artifact file.
+pub(super) fn validate_required_artifact_file(path: &Path) -> Result<(), Vec<CliError>> {
+    reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+    if !directories::experiment_path_is_file(path) {
+        return Err(vec![err_at_path(
+            "run_artifact_missing",
+            format!("Run artifact not found: {}", path.display()),
+            path,
+        )]);
+    }
+    Ok(())
 }
 
 pub(super) fn load_attempts(run_dir: &Path) -> Result<Vec<AttemptArtifact>, Vec<CliError>> {

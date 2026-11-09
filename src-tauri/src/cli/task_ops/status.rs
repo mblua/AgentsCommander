@@ -1,4 +1,4 @@
-use super::TaskOpError;
+use super::operation::TaskOpError;
 use crate::filesystem::tasks::{
     create_task_artifact, io_boundary, open_status_repair, read_status_window,
 };

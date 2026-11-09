@@ -145,27 +145,29 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     projectPath: "C:/proj",
     runtimeSessionId: "00000000-0000-4000-8000-000000000001",
   };
-  const bucket = (days: number, mean: number | null, count: number) => ({
-    days, fromUtcMs: 0, toUtcMs: 1, recordsCount: count, positiveSum: 0, mean,
-    sessionsCount: count, incomplete: false,
+  const bucket = (requestedSessions: number, mean: number | null, count: number) => ({
+    requestedSessions, recordsCount: count, positiveSum: 0, mean,
+    sessionsCount: count, recordsPerSession: count === 0 ? null : 1, incomplete: false,
   });
-  const ready = (month: number | null, week = 10): SidebarHistoryState => ({
+  const readyWith = (sessionWindows: ReturnType<typeof bucket>[]): SidebarHistoryState => ({
     status: "ready",
     scope: { kind: "known", agentKey: "dev", teamIds: ["t1"] },
     generatedAtUtcMs: 1,
-    windows: {
-      day: bucket(1, 90, 1),
-      week: bucket(7, week, 2),
-      month: bucket(30, month, month === null ? 0 : 4),
-    },
+    sessionWindows,
   });
+  const ready = (last: number | null, middle = 10): SidebarHistoryState =>
+    readyWith([
+      bucket(25, 90, 1),
+      bucket(100, middle, 2),
+      bucket(300, last, last === null ? 0 : 4),
+    ]);
   const cardOf = (badge: HTMLElement) =>
     document.getElementById(badge.getAttribute("aria-describedby")!)!;
 
   function renderScoped(
     percent: number | null,
     initial: SidebarHistoryState,
-    extra: { colorDays?: 1 | 7 | 30; scope?: Accessor<typeof SCOPE | undefined> } = {},
+    extra: { colorSessions?: number; scope?: Accessor<typeof SCOPE | undefined> } = {},
   ) {
     history.state = () => initial;
     const root = document.createElement("div");
@@ -176,7 +178,7 @@ describe("ContextBadge history scope (#3532 P11)", () => {
           percent={percent}
           testId={TESTID}
           historyScope={extra.scope ? extra.scope() : SCOPE}
-          colorDays={extra.colorDays}
+          colorSessions={extra.colorSessions}
         />
       ),
       root,
@@ -213,7 +215,7 @@ describe("ContextBadge history scope (#3532 P11)", () => {
   });
 
   it("colors from the saved bucket and keeps the live meter value", () => {
-    renderScoped(82, ready(55), { colorDays: 30 });
+    renderScoped(82, ready(55), { colorSessions: 300 });
     const badge = target(TESTID);
     expect(badge.getAttribute("aria-valuenow")).toBe("82");
     expect(badge.textContent).toBe("CTX 82%");
@@ -236,10 +238,30 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     expect(target(TESTID).style.getPropertyValue("--ctx-history-tone-dark")).not.toBe(a);
   });
 
-  it("selects the bucket of the saved period", () => {
-    renderScoped(10, ready(55, 10), { colorDays: 7 });
+  it("selects the bucket of the saved session count", () => {
+    renderScoped(10, ready(55, 10), { colorSessions: 100 });
     expect(target(TESTID).style.getPropertyValue("--ctx-history-tone-dark"))
       .toBe(rampColor(10, "dark"));
+  });
+
+  it("falls back to the last returned bucket for tone and card basis alike", () => {
+    for (const colorSessions of [999, undefined]) {
+      document.body.innerHTML = "";
+      renderScoped(10, ready(55, 10), { colorSessions });
+      const badge = target(TESTID);
+      expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(55, "dark"));
+      expect(cardOf(badge).textContent).toContain("Color basado en: últimas 300 sesiones");
+    }
+  });
+
+  it("uses a custom [2,5] list and keeps an empty list neutral", () => {
+    renderScoped(10, readyWith([bucket(2, 30, 2), bucket(5, 70, 5)]), { colorSessions: 2 });
+    const badge = target(TESTID);
+    expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(30, "dark"));
+    expect(cardOf(badge).querySelectorAll(".ctx-history-row").length).toBe(2);
+    document.body.innerHTML = "";
+    renderScoped(10, readyWith([]), { colorSessions: 2 });
+    expect(target(TESTID).classList.contains("toned")).toBe(false);
   });
 
   it("stays neutral without positive data, loading, error or ambiguity", () => {

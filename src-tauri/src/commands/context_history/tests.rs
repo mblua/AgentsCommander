@@ -191,6 +191,15 @@ struct Harness {
 }
 
 fn harness(registered: &[&str], teams: Vec<TeamMembers>, fallback_result: bool) -> Harness {
+    let settings = AppSettings {
+        project_paths: registered.iter().map(|path| path.to_string()).collect(),
+        ..AppSettings::default()
+    };
+    harness_with(settings, teams, fallback_result)
+}
+
+/// #4049: a harness over an explicit Settings snapshot.
+fn harness_with(settings: AppSettings, teams: Vec<TeamMembers>, fallback_result: bool) -> Harness {
     let fallbacks = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&fallbacks);
     let fallback = move |_invoke: tauri::ipc::Invoke<tauri::test::MockRuntime>| {
@@ -201,10 +210,6 @@ fn harness(registered: &[&str], teams: Vec<TeamMembers>, fallback_result: bool) 
         .invoke_handler(move |invoke| dispatch(invoke, &fallback))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    let settings = AppSettings {
-        project_paths: registered.iter().map(|path| path.to_string()).collect(),
-        ..AppSettings::default()
-    };
     app.manage(new_settings_state(settings));
     let sessions = Arc::new(Sessions::default());
     let env = Arc::new(Env {
@@ -293,7 +298,7 @@ fn the_four_history_names_answer_without_the_fallback() {
     let report = h
         .invoke(NAMES[0], query(&project.text, None))
         .expect("report");
-    assert_eq!(report["schemaVersion"], 2);
+    assert_eq!(report["schemaVersion"], 3);
     assert_eq!(
         h.fallbacks(),
         0,
@@ -495,7 +500,8 @@ fn ipc_and_cli_build_the_same_report_from_one_fixture() {
     let h = harness(&[&project.text], Vec::new(), false);
     let request = query(&project.text, None);
     let ipc = h.invoke(NAMES[0], request.clone()).expect("report");
-    let (canonical, retention, records) = read_project(&project.text).expect("read");
+    let (canonical, records) = read_project(&project.text).expect("read");
+    let retention = 30;
     let mut core_query: ReportQuery = serde_json::from_value(request).expect("query");
     core_query.project_path = canonical;
     let generated = ipc["generatedAtUtcMs"].as_i64().expect("now");
@@ -643,22 +649,43 @@ fn sidebar_known_scope_has_windows_and_others_stay_null() {
         entries[0]["scope"],
         json!({ "kind": "known", "agentKey": "dev", "teamIds": ["team-a"] })
     );
-    let day = &entries[0]["windows"]["day"];
+    for entry in entries {
+        let keys: Vec<&str> = entry
+            .as_object()
+            .expect("entry object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["runtimeSessionId", "scope", "sessionWindows"],
+            "count-only wire keys, no calendar buckets"
+        );
+    }
+    let buckets = entries[0]["sessionWindows"]
+        .as_array()
+        .expect("known buckets");
+    let requested: Vec<Value> = buckets
+        .iter()
+        .map(|b| b["requestedSessions"].clone())
+        .collect();
     assert_eq!(
-        (day["days"].clone(), day["recordsCount"].clone()),
-        (json!(1), json!(1))
+        requested,
+        [json!(25), json!(100), json!(300)],
+        "configured order"
     );
-    assert_eq!(entries[0]["windows"]["month"]["days"], 30);
-    let generated = response["generatedAtUtcMs"].clone();
-    assert_eq!(
-        entries[0]["windows"]["week"]["toUtcMs"], generated,
-        "one now for every window"
-    );
+    assert_eq!(buckets[0]["sessionsCount"], 1);
+    assert_eq!(buckets[0]["recordsCount"], 1);
+    assert_eq!(buckets[0]["recordsPerSession"], 1.0);
     assert_eq!(entries[1]["scope"]["kind"], "ambiguous");
     assert_eq!(entries[1]["scope"]["teamIds"], json!(["team-a", "team-b"]));
     assert_eq!(entries[2]["scope"]["kind"], "unknown");
     for entry in &entries[1..] {
-        assert_eq!(entry["windows"], Value::Null, "never a known-looking zero");
+        assert_eq!(
+            entry["sessionWindows"],
+            Value::Null,
+            "never a known-looking zero"
+        );
     }
     for entry in &entries[3..] {
         assert_eq!(
@@ -724,5 +751,196 @@ fn sidebar_exited_local_session_is_unknown() {
         .invoke(NAMES[3], sidebar(&project.text, &[exited.to_string()]))
         .expect("means");
     assert_eq!(response["entries"][0]["scope"]["kind"], "unknown");
-    assert_eq!(response["entries"][0]["windows"], Value::Null);
+    assert_eq!(response["entries"][0]["sessionWindows"], Value::Null);
+    assert!(response["entries"][0].get("windows").is_none());
+}
+
+// ---- Settings retention (#4049) ----------------------------------------------------------
+
+/// Settings registering `project` with history off and the given retention.
+fn disabled_settings(project: &str, retention: u32) -> AppSettings {
+    let base = AppSettings {
+        project_paths: vec![project.to_string()],
+        ..AppSettings::default()
+    };
+    let mut raw = serde_json::to_value(&base).expect("settings json");
+    raw["contextHistoryEnabled"] = json!(false);
+    raw["contextHistoryRetentionDays"] = json!(retention);
+    let settings: AppSettings = serde_json::from_value(raw).expect("settings");
+    assert!(!settings.context_history_enabled);
+    assert_eq!(settings.context_history_retention_days.days(), retention);
+    settings
+}
+
+#[test]
+fn settings_retention_overrides_any_heatmap_file_for_every_report() {
+    let legacy = [
+        None,
+        Some(r#"{"version":1,"enabled":true,"retentionDays":5}"#),
+        Some(r#"{"version":1,"enabled":false,"retentionDays":365}"#),
+        Some("{ not json"),
+    ];
+    for heatmap in legacy {
+        let project = Project::new();
+        let started = now_utc_ms() - HOUR_MS;
+        project.seed(&[record(&project.text, "dev", "team-a", 1, started)]);
+        let heatmap_path = project.dir.path().join(".ac/heatmap.json");
+        if let Some(text) = heatmap {
+            std::fs::write(&heatmap_path, text).expect("write heatmap");
+        }
+        let h = harness_with(disabled_settings(&project.text, 120), Vec::new(), false);
+        let report = h
+            .invoke(NAMES[0], query(&project.text, None))
+            .expect("disabled history still reads");
+        assert_eq!(report["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        assert_eq!(report["totalAgents"], 1, "{heatmap:?}");
+        let detail = h
+            .invoke(NAMES[1], query(&project.text, Some("dev")))
+            .expect("detail");
+        assert_eq!(detail["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        let logical = detail["sessionsPage"][0]["logicalSessionId"].clone();
+        let changes =
+            json!({ "query": query(&project.text, Some("dev")), "logicalSessionId": logical });
+        let page = h.invoke(NAMES[2], changes).expect("changes");
+        assert_eq!(page["coverage"]["retentionDays"], 120, "{heatmap:?}");
+        let stranger = Project::new();
+        assert_eq!(
+            h.error_code(NAMES[0], query(&stranger.text, None)),
+            "InvalidProject",
+            "registration still precedes the store"
+        );
+        let after = std::fs::read_to_string(&heatmap_path).ok();
+        assert_eq!(
+            after.as_deref(),
+            heatmap,
+            "the legacy file is never written"
+        );
+        assert_eq!(h.fallbacks(), 0);
+    }
+}
+
+// ---- Session windows (#4091) -------------------------------------------------------------
+
+/// A count-mode query: the newest `count` sessions before a fixed cutoff.
+fn recent(project: &str, agent: Option<&str>, count: u32) -> Value {
+    let mut request = query(project, agent);
+    request["fromUtcMs"] = json!(0);
+    request["sessionCount"] = json!(count);
+    request
+}
+
+/// Settings registering `project` with the given session windows.
+fn windowed_settings(project: &str, windows: &[u32]) -> AppSettings {
+    let base = AppSettings {
+        project_paths: vec![project.to_string()],
+        ..AppSettings::default()
+    };
+    let mut raw = serde_json::to_value(&base).expect("settings json");
+    raw["contextHistorySessionWindows"] = json!(windows);
+    let settings: AppSettings = serde_json::from_value(raw).expect("settings");
+    assert_eq!(settings.context_history_session_windows.counts(), windows);
+    settings
+}
+
+#[test]
+fn session_count_must_be_configured_and_is_checked_before_disk() {
+    let project = Project::new();
+    let directory = project.dir.path().join(".ac/context-history");
+    std::fs::create_dir_all(&directory).expect("dir");
+    std::fs::write(directory.join("history.sqlite3"), b"not a database at all").expect("write");
+    let h = harness_with(windowed_settings(&project.text, &[3, 7]), Vec::new(), false);
+    for count in [0, 25, 10_001] {
+        for name in [NAMES[0], NAMES[1]] {
+            let request = recent(&project.text, Some("dev"), count);
+            assert_eq!(
+                h.error_code(name, request),
+                "InvalidQuery",
+                "{name} {count}"
+            );
+        }
+        let changes = json!({
+            "query": recent(&project.text, Some("dev"), count),
+            "logicalSessionId": WIRE_L,
+        });
+        assert_eq!(h.error_code(NAMES[2], changes), "InvalidQuery", "{count}");
+    }
+    let configured = h.error_code(NAMES[0], recent(&project.text, None, 7));
+    assert_ne!(
+        configured, "InvalidQuery",
+        "a configured count reaches the store"
+    );
+    let mut dated = recent(&project.text, None, 7);
+    dated["fromUtcMs"] = json!(1);
+    assert_eq!(h.error_code(NAMES[0], dated), "InvalidQuery");
+}
+
+#[test]
+fn count_report_over_ipc_matches_the_core_and_carries_scope_windows() {
+    let project = Project::new();
+    let started = now_utc_ms() - HOUR_MS;
+    project.seed(&[
+        record(&project.text, "dev", "team-a", 1, started),
+        record(&project.text, "dev", "team-a", 2, started + 1),
+        record(&project.text, "dev", "team-b", 3, started + 2),
+    ]);
+    let h = harness(&[&project.text], Vec::new(), false);
+    let request = recent(&project.text, None, 25);
+    let ipc = h.invoke(NAMES[0], request.clone()).expect("report");
+    assert_eq!(ipc["requestedPeriod"]["selection"], "recent_sessions");
+    assert_eq!(ipc["requestedPeriod"]["sessionCount"], 25);
+    let agent = &ipc["agentsPage"][0];
+    assert_eq!(
+        (
+            agent["sessionsCount"].clone(),
+            agent["recordsPerSession"].clone()
+        ),
+        (json!(3), json!(1.0))
+    );
+    let windows = agent["scopeWindows"].as_array().expect("scope windows");
+    let available: Vec<Value> = windows
+        .iter()
+        .map(|w| w["availableSessions"].clone())
+        .collect();
+    assert_eq!(available, [json!(2), json!(1)]);
+    let (canonical, records) = read_project(&project.text).expect("read");
+    let mut core_query: ReportQuery = serde_json::from_value(request).expect("query");
+    core_query.project_path = canonical;
+    let generated = ipc["generatedAtUtcMs"].as_i64().expect("now");
+    let core = build_report(&records, &core_query, context(30, generated)).expect("core");
+    assert_eq!(ipc, serde_json::to_value(core).expect("json"));
+    let detail = h
+        .invoke(NAMES[1], recent(&project.text, Some("dev"), 25))
+        .expect("detail");
+    assert_eq!(detail["recordsPerSession"], 1.0);
+    assert_eq!(detail["scopeWindows"].as_array().map(Vec::len), Some(2));
+    let date = h
+        .invoke(NAMES[0], query(&project.text, None))
+        .expect("date");
+    assert_eq!(date["requestedPeriod"]["sessionCount"], Value::Null);
+    assert_eq!(date["agentsPage"][0]["scopeWindows"], Value::Null);
+}
+
+#[test]
+fn sidebar_session_windows_follow_the_settings_snapshot_order() {
+    let project = Project::new();
+    let started = now_utc_ms() - HOUR_MS;
+    project.seed(&[
+        record(&project.text, "dev", "team-a", 1, started),
+        record(&project.text, "dev", "team-a", 2, started + 1),
+    ]);
+    let settings = windowed_settings(&project.text, &[1, 9]);
+    let h = harness_with(settings, vec![project.team("team-a", &["dev"])], false);
+    let known = h.sessions.add(&project.replica("dev"), false, false);
+    let response = h
+        .invoke(NAMES[3], sidebar(&project.text, &[known.to_string()]))
+        .expect("means");
+    let buckets = response["entries"][0]["sessionWindows"]
+        .as_array()
+        .expect("buckets");
+    let shape: Vec<(Value, Value)> = buckets
+        .iter()
+        .map(|b| (b["requestedSessions"].clone(), b["sessionsCount"].clone()))
+        .collect();
+    assert_eq!(shape, [(json!(1), json!(1)), (json!(9), json!(2))]);
+    assert_eq!(buckets[1]["recordsPerSession"], 1.0);
 }

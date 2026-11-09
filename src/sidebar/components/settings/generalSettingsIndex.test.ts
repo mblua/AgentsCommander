@@ -67,19 +67,17 @@ describe("response close search (#2851)", () => {
   });
 });
 
-describe("context history color search (#3532)", () => {
-  it("finds the color window in its own Appearance section between Window and Hotkeys", () => {
-    for (const q of ["contexto media", "CTX", "período", "sidebar 30"]) {
-      expect(keys(q)).toContain("contextHistoryColorDays");
+describe("context history color moved out of General (#4049)", () => {
+  it("has no General entry or section for the color window", () => {
+    expect(GENERAL_SETTINGS_INDEX.some((e) => e.key === "contextHistoryColorDays")).toBe(false);
+    expect(GENERAL_SETTINGS_INDEX.some((e) => e.section === "Contexto en la barra lateral"))
+      .toBe(false);
+    for (const q of ["contexto media", "CTX", "período", "context history"]) {
+      expect(keys(q)).not.toContain("contextHistoryColorDays");
     }
-    const entry = GENERAL_SETTINGS_INDEX.find((e) => e.key === "contextHistoryColorDays")!;
-    expect(entry.category).toBe("appearance");
-    expect(entry.section).toBe("Contexto en la barra lateral");
     const sections = GENERAL_SETTINGS_INDEX
       .filter((e) => e.category === "appearance")
       .map((e) => e.section);
-    const at = sections.indexOf(entry.section);
-    expect(sections[at - 1]).toBe("Window");
-    expect(sections[at + 1]).toBe("Hotkeys");
+    expect(sections[sections.lastIndexOf("Window") + 1]).toBe("Hotkeys");
   });
 });

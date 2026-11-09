@@ -475,8 +475,7 @@ fn dispatch_via_daemon(
     op: CodingAgentOp,
     confirm_timeout: u64,
 ) -> Result<(), String> {
-    let requests_dir = config_dir.join(ops::CODING_AGENT_REQUESTS_DIR);
-    let results_dir = requests_dir.join(ops::RESULTS_SUBDIR);
+    let (requests_dir, results_dir) = ops::coding_agent_queue_directories(config_dir);
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let request = CodingAgentRequest {
@@ -500,7 +499,7 @@ fn dispatch_via_daemon(
     }
 
     // Timeout: cancel by removing our own request file (R2/R3).
-    match crate::filesystem::documents::remove_cli_session_artifact(&request_path) {
+    match ops::cancel_coding_agent_request(&request_path) {
         Ok(()) => Err(format!(
             "GUI did not process the request within {confirm_timeout}s; \
              request cancelled (safe to retry)"
@@ -534,11 +533,7 @@ applied. Run `coding-agent show --id <id>` before retrying. Do NOT blind-retry."
 
 /// Read a result and best-effort delete the result file.
 fn take_result(results_dir: &Path, request_id: &str) -> Option<CodingAgentResult> {
-    let result = ops::read_coding_agent_result(results_dir, request_id)?;
-    let _ = crate::filesystem::documents::remove_cli_session_artifact(
-        &results_dir.join(format!("{request_id}.json")),
-    );
-    Some(result)
+    ops::take_coding_agent_result(results_dir, request_id)
 }
 
 fn finish_daemon_result(result: CodingAgentResult) -> Result<(), String> {

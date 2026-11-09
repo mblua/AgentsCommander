@@ -35,7 +35,11 @@ const EXPANDED_ONLY_TEST_IDS = [
 
 function setup(overrides: Partial<AppSettings> = {}): FakeTransport {
   const fake = new FakeTransport();
-  fake.resolve("get_settings", baseSettings(overrides));
+  fake.resolve(
+    "get_settings",
+    // #4049 CTX is default-off; keep the original toolbar composition here.
+    baseSettings({ contextHistoryEnabled: true, ...overrides }),
+  );
   fake.resolve("get_resource_snapshot", null);
   return fake;
 }

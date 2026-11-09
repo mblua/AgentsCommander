@@ -18,7 +18,39 @@ const gate = '08';
 const rules = ['globals'];
 const newFileRules = rules;
 const inUniverse = p => /^src-tauri\/src\/.*\.rs$/.test(p);
-const extraChecks = () => {};
+function extraChecks(path, m, before, violation, moved) {
+  const available = new Map();
+  for (const site of before?.exposedGlobals ?? []) if (site.identity)
+    available.set(site.identity, (available.get(site.identity) ?? 0) + 1);
+  for (const site of m.exposedGlobals) {
+    const count = available.get(site.identity) ?? 0;
+    if (count) available.set(site.identity, count - 1);
+    else if (!moved.has(site))
+      violation('new_exposed_global', path, site.line, 0, 1,
+        'recognized mutable global has new explicit visibility');
+  }
+}
+function explicitVisibility(scan, item) {
+  const ts = scan.tokens;
+  let i = 0;
+  while (i < item.first) {
+    const token = ts[i++];
+    if (token.start < item.start) continue;
+    if (token.text === '#' && ts[i]?.text === '[') {
+      i = ts[i].mate + 1;
+      continue;
+    }
+    if (token.name === 'pub') return true;
+  }
+  return false;
+}
+function threadIdentityStart(ts, first) {
+  if (ts[first - 1]?.name === 'pub') return first - 1;
+  const previous = ts[first - 1];
+  if (previous?.text === ')' && ts[previous.mate - 1]?.name === 'pub')
+    return previous.mate - 1;
+  return first;
+}
 const stateType = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock)$/;
 function canonical(scan, tokens) {
   const out = [];
@@ -68,6 +100,7 @@ function readonlyRegex(scan, item, type, init) {
 }
 function measure(path, scan) {
   const m = metric(), ts = scan.tokens;
+  m.exposedGlobals = [];
   // The scanner deliberately does not expand macros. Inspect only the explicit
   // static declarations in thread_local!'s token tree, never arbitrary macros.
   const threadGroups = scan.groups.filter(g => ts[g.start - 1]?.text === '!' && ts[g.start - 2]?.name === 'thread_local');
@@ -93,7 +126,12 @@ function measure(path, scan) {
     }
     if (!state) continue;
     if (segment[1]?.name !== 'mut' && readonlyRegex(scan,d.item,type,init)) continue;
-    hit(m,'globals',ts[d.first].line,occurrenceIdentity(scan,ts[d.first],segment));
+    const identityStart = d.thread ? threadIdentityStart(ts, d.first) : d.first;
+    const identityTokens = d.thread ? ts.slice(identityStart, d.last) : segment;
+    const site = hit(m, 'globals', ts[d.first].line,
+      occurrenceIdentity(scan, ts[d.first], identityTokens));
+    const exposed = d.thread ? identityStart !== d.first : explicitVisibility(scan, d.item);
+    if (exposed) m.exposedGlobals.push(site);
   }
   return m;
 }

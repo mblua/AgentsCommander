@@ -15,6 +15,32 @@
       }
     },
     {
+      "id": "RoleExperiment/Run",
+      "name": "run.json",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "RoleExperiment/ReportJson",
+      "name": "report.json",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
       "id": "Sessions/Snapshot",
       "name": "sessions.json",
       "scope": "src-tauri/src/config/sessions_persistence/",
@@ -125,6 +151,30 @@
         "crate::config::instance_artifacts::names::SETTINGS_TARGET_NAME"
       ],
       "metadataPolicy": "instance-settings-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "CodingAgentMutation/Requests",
+      "name": "coding-agent-requests",
+      "scope": "src-tauri/src/config/coding_agent_mutations/",
+      "owner": "src-tauri/src/config/coding_agent_mutations/request_queue.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "CodingAgentMutation/Results",
+      "name": "results",
+      "scope": "src-tauri/src/config/coding_agent_mutations/",
+      "owner": "src-tauri/src/config/coding_agent_mutations/request_queue.rs",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,

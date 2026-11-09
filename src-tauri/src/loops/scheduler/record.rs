@@ -4,10 +4,10 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::state::{
-    audit_kind_event, audit_kind_name, emit_transition, generation_key, guarded_state_write,
+    audit_kind_event, audit_kind_name, generation_key, guarded_state_write,
     loop_is_current_for_delivery, read_raw_loop_state,
 };
-use super::{LoopScheduler, SchedulerContext, UnrecordedDelivery};
+use super::{emit_transition, LoopScheduler, SchedulerContext, UnrecordedDelivery};
 use crate::config::loops::{
     acquire_loop_lock_for_dir, append_loop_audit_once, latest_due_between, next_due_after,
     read_loop_config_if_present, revalidate_loop_current, LoopAuditEntry, LoopAuditKind,

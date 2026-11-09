@@ -9,14 +9,12 @@ vi.mock("../context-history", async (importOriginal) => {
     status: "ready",
     scope: { kind: "known", agentKey: "dev", teamIds: ["t1"] },
     generatedAtUtcMs: 1,
-    windows: {
-      day: { days: 1, fromUtcMs: 0, toUtcMs: 1, recordsCount: 1, positiveSum: 40, mean: 40,
-        sessionsCount: 1, incomplete: false },
-      week: { days: 7, fromUtcMs: 0, toUtcMs: 1, recordsCount: 1, positiveSum: 40, mean: 40,
-        sessionsCount: 1, incomplete: false },
-      month: { days: 30, fromUtcMs: 0, toUtcMs: 1, recordsCount: 2, positiveSum: 110, mean: 55,
-        sessionsCount: 2, incomplete: false },
-    },
+    sessionWindows: [
+      { requestedSessions: 25, recordsCount: 1, positiveSum: 40, mean: 40,
+        sessionsCount: 1, recordsPerSession: 1, incomplete: false },
+      { requestedSessions: 100, recordsCount: 2, positiveSum: 110, mean: 55,
+        sessionsCount: 2, recordsPerSession: 1, incomplete: false },
+    ],
   };
   history.acquire.mockImplementation(() => ({ state: () => ready, release: history.release }));
   return { ...actual, acquireContextHistory: history.acquire };
@@ -38,6 +36,7 @@ import {
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
+import { rampColor } from "./ContextBadge";
 import type { AppSettings } from "../../shared/types";
 
 // #3532 P11 - rows hand the live runtime UUID and their project to the badge;
@@ -54,7 +53,7 @@ const settings = (): AppSettings =>
       id: "claude", label: "Claude Code", command: "claude", color: "#d97757",
       envs: [], isolatedHome: false, contextRegex: String.raw`(\d+)%`,
     }],
-    contextHistoryColorDays: 7,
+    contextHistoryColorSessions: 25,
   });
 
 const badges = () =>
@@ -98,7 +97,8 @@ describe("ProjectPanel CTX history scope (#3532 P11)", () => {
       expect(history.acquire).toHaveBeenCalledWith({ projectPath: root, runtimeSessionId: ID });
       const badge = badges()[0];
       expect(badge.classList.contains("toned")).toBe(true);
-      expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).not.toBe("");
+      // The saved colour count 25 selects the 40% bucket, not the last one (55%).
+      expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(40, "dark"));
       fake.clearCalls();
       click(badge);
       badge.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -145,6 +145,8 @@ describe("ProjectPanel CTX history scope (#3532 P11)", () => {
     try {
       await settingsStore.load();
       await waitFor(() => expect(badges().length).toBe(1));
+      expect(badges()[0].style.getPropertyValue("--ctx-history-tone-dark"))
+        .toBe(rampColor(40, "dark"));
       expect(history.acquire).toHaveBeenCalledTimes(1);
       expect(history.acquire).toHaveBeenCalledWith({ projectPath: root, runtimeSessionId: ID });
       const plain = document.querySelector<HTMLElement>(
