@@ -107,7 +107,12 @@ baseline, or classifies a macOS -D warnings probe capture.
   --out <file>        Where --merge writes the merged baseline.
   --classify-probe <file> Classify a probe capture: integrity, then the shape.
   --probe-exit <n>    The exit code of the probe run that produced <file>.
-  --help              Print this usage and exit 0.`;
+  --help              Print this usage and exit 0.
+
+Exit codes: 0 pass (and always in --report mode), 1 a NEW or STALE baseline
+finding or a capture/config failure, 2 a usage error, and 3 (#4166) when any
+cog entry of sanitizing.allowlist.json matches no finding, even alongside
+other findings. CI blocks only on 3.`;
 
 export class UsageError extends Error {}
 
@@ -1921,9 +1926,12 @@ export function runCapture(options, io = {}) {
     );
     stderr(STALE_REMEDIAL);
   }
-  return newFindings.length > 0 || staleFindings.length > 0 ||
-    accepted.unusedEntries.length > 0 ? 1 : 0;
+  if (accepted.unusedEntries.length > 0) return STALE_ALLOWLIST_EXIT;
+  return newFindings.length > 0 || staleFindings.length > 0 ? 1 : 0;
 }
+
+/** #4166: the one exit CI blocks on; NEW and STALE baseline findings stay advisory (1). */
+export const STALE_ALLOWLIST_EXIT = 3;
 
 const STALE_ALLOWLIST_REMEDIAL =
   `Remove this entry from ${ALLOWLIST_FILE}; the finding it accepted is gone.`;
@@ -3683,13 +3691,41 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         path: 'src/gone.rs', symbol: 'heavy', hash: otherAnchor(anchor), reason: 'moved',
           issue: 3182,
         since: '2026-10-23' }] });
-      expectEqual(fixture.run(), 1, 'a stale allowlist entry exits 1');
+      expectEqual(fixture.run(), STALE_ALLOWLIST_EXIT, 'a stale allowlist entry exits 3');
       if (!fixture.state.stderr.some((line) =>
         line.startsWith('STALE allowlist entry: rust:src/gone.rs::heavy#'))) {
         throw new Error(`expected the stale allowlist line, got ${JSON.stringify(fixture.state.stderr)}`);
       }
       if (!fixture.state.stderr.includes(STALE_ALLOWLIST_REMEDIAL)) throw new Error(
         'the remedial line was not printed');
+    }],
+    ['case 81b: #4166 a stale allowlist entry beside a NEW still exits 3; report exits 0', () => {
+      const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished()),
+        workspace,
+      });
+      const anchor = anchorFor('src/a.rs', 1, 1, fixture.reader);
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([]);
+      workspace[ALLOWLIST_FILE] = JSON.stringify({ version: 1, entries: [{ gate: 'cog', rule: 'new',
+        path: 'src/gone.rs', symbol: 'heavy', hash: otherAnchor(anchor), reason: 'moved',
+        issue: 4166, since: '2026-11-09' }] });
+      expectEqual(fixture.run(), STALE_ALLOWLIST_EXIT, 'mixed NEW + stale allowlist exits 3');
+      expectEqual(findingLines(fixture, 'NEW').length, 1, 'the NEW is still reported');
+      expectEqual(fixture.run(['--report']), 0, 'report mode with a stale entry returns 0');
+    }],
+    ['case 81c: #4166 the stale-allowlist phrase in rendered text alone exits 1, not 3', () => {
+      const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const fixture = captureFixture({
+        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy',
+          rendered: 'STALE allowlist entry: rust:src/x.rs::f#000000000000 (new) '
+            + 'matches no finding\n' }),
+        buildFinished()),
+        workspace,
+      });
+      workspace['cognitive-complexity.baseline.json'] = baselineJson([]);
+      expectEqual(fixture.run(), 1, 'a NEW whose rendered text quotes the stale phrase exits 1');
     }],
     ['case 2: an observed id absent from the baseline is a NEW in enforcing mode', () => {
       const fixture = captureFixture({
