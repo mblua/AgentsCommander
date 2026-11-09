@@ -79,7 +79,7 @@ pub(crate) fn persist_attempt(
     }
     let name = source
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or(AttemptError::InvalidDocument)?;
     let logical_name = name.strip_suffix(".in-flight").unwrap_or(name);
     if logical_name.strip_suffix(".json") != Some(authorized.id.as_str()) {

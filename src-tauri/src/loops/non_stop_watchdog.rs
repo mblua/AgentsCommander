@@ -320,7 +320,7 @@ async fn send_telegram(app: &impl WatchdogHost, r: &NonStopReport) {
 fn project_folder_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(path)
         .to_string()
 }
