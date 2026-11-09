@@ -200,6 +200,16 @@ export function parseCapture(text, exit, { root, source }) {
 const isIdentStart = ch => /^[A-Za-z_]$/.test(ch ?? '');
 const isIdentContinue = ch => /^[A-Za-z0-9_]$/.test(ch ?? '');
 
+function declarationBlockCommentEnd(text, i, limit) {
+  let depth = 0;
+  while (i < limit) {
+    if (text.startsWith('/*', i)) { depth++; i += 2; }
+    else if (text.startsWith('*/', i)) { depth--; i += 2; if (!depth) break; }
+    else i++;
+  }
+  need(depth === 0, 'unterminated block comment in declaration prefix');
+  return i;
+}
 /** Skips whitespace, line comments and nested block comments; fails on an unterminated one. */
 function skipTrivia(text, i, limit) {
   for (;;) {
@@ -210,13 +220,7 @@ function skipTrivia(text, i, limit) {
       continue;
     }
     if (text.startsWith('/*', i)) {
-      let depth = 0;
-      while (i < limit) {
-        if (text.startsWith('/*', i)) { depth++; i += 2; }
-        else if (text.startsWith('*/', i)) { depth--; i += 2; if (!depth) break; }
-        else i++;
-      }
-      need(depth === 0, 'unterminated block comment in declaration prefix');
+      i = declarationBlockCommentEnd(text, i, limit);
       continue;
     }
     return i;
@@ -234,32 +238,35 @@ function keyword(text, i, value) {
   return w && w.value === value ? w.end : null;
 }
 
+function visibilityPathEnd(text, i, limit) {
+  for (;;) {
+    const seg = word(text, i);
+    need(seg, 'invalid pub(in path)');
+    i = skipTrivia(text, seg.end, limit);
+    if (!text.startsWith('::', i)) break;
+    i = skipTrivia(text, i + 2, limit);
+  }
+  return i;
+}
+function declarationVisibilityEnd(text, i, limit) {
+  const pub = keyword(text, i, 'pub');
+  if (pub === null) return i;
+  i = skipTrivia(text, pub, limit);
+  if (text[i] !== '(') return i;
+  i = skipTrivia(text, i + 1, limit);
+  const scope = word(text, i);
+  need(scope && ['crate', 'self', 'super', 'in'].includes(scope.value),
+    'unsupported visibility');
+  i = skipTrivia(text, scope.end, limit);
+  if (scope.value === 'in') i = visibilityPathEnd(text, i, limit);
+  need(text[i] === ')', 'unterminated visibility');
+  return skipTrivia(text, i + 1, limit);
+}
+
 /** Name and JS-string index of `[visibility] struct <ident>` at index; fails closed. */
 export function declarationName(text, index) {
   const limit = Math.min(text.length, index + PREFIX_CAP);
-  let i = skipTrivia(text, index, limit);
-  const pub = keyword(text, i, 'pub');
-  if (pub !== null) {
-    i = skipTrivia(text, pub, limit);
-    if (text[i] === '(') {
-      i = skipTrivia(text, i + 1, limit);
-      const scope = word(text, i);
-      need(scope && ['crate', 'self', 'super', 'in'].includes(scope.value),
-        'unsupported visibility');
-      i = skipTrivia(text, scope.end, limit);
-      if (scope.value === 'in') {
-        for (;;) {
-          const seg = word(text, i);
-          need(seg, 'invalid pub(in path)');
-          i = skipTrivia(text, seg.end, limit);
-          if (!text.startsWith('::', i)) break;
-          i = skipTrivia(text, i + 2, limit);
-        }
-      }
-      need(text[i] === ')', 'unterminated visibility');
-      i = skipTrivia(text, i + 1, limit);
-    }
-  }
+  const i = declarationVisibilityEnd(text, skipTrivia(text, index, limit), limit);
   const struct = keyword(text, i, 'struct');
   need(struct !== null, 'span does not start with a struct declaration');
   const after = skipTrivia(text, struct, limit);
