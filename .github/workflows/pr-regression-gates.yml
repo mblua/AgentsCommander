@@ -345,6 +345,12 @@ jobs:
           npm run sanitizing:line_length -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:file_size -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
+      - name: "Check sanitizing container regressions (#4098)"
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: npm run sanitizing:containers -- --base-ref "${GATE_BASE_REF:-origin/main}"
+
       - name: "Check sanitizing layout and boundary regressions (#3168)"
         timeout-minutes: 10
         env:
