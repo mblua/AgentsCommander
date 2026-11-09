@@ -391,7 +391,8 @@ test('test-debt runs the self-test and committed ratchet blocking', () => {
   assert.ok(self && diff);
   assert.ok(self.text.includes('node --test scripts/check-struct-excessive-bools.test.mjs'));
   assert.ok(diff.text.replace(/\n\s+/g, ' ').includes(
-    'node scripts/check-struct-excessive-bools.mjs --baseline-diff --base-ref "${GATE_BASE_REF:-origin/main}"'));
+    'node scripts/check-struct-excessive-bools.mjs --baseline-diff ' +
+    '--base-ref "${GATE_BASE_REF:-origin/main}"'));
   assert.ok(diff.text.includes("format('origin/{0}', github.event.pull_request.base.ref)"));
   for (const s of [self, diff]) {
     assert.doesNotMatch(s.text, /continue-on-error/);
