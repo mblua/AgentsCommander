@@ -232,9 +232,15 @@ export async function runGate({
         `file-list input, so the gate needs another way to pass the list (see ${DOC_PATH}).`,
     );
   }
-  console.log(`test-code duplication scan: ${files.length} files (tracked + untracked, not ignored)`);
+  console.log(
+    `test-code duplication scan: ${files.length} files (tracked + untracked, not ignored)`,
+  );
 
-  const child = spawnSync(process.execPath, args, { cwd: workRoot, shell: false, stdio: 'inherit' });
+  const child = spawnSync(process.execPath, args, {
+    cwd: workRoot,
+    shell: false,
+    stdio: 'inherit',
+  });
   if (child.error) {
     return fail(`cannot spawn pinned jscpd at ${runner}: ${child.error.message}`);
   }
@@ -710,7 +716,8 @@ export async function runSelfTest() {
     });
   });
 
-  await withCase('case 12: untracked, ignored evidence stays out of the scan (contrast pair)', async (temp) => {
+  const case12 = 'case 12: untracked, ignored evidence stays out of the scan (contrast pair)';
+  await withCase(case12, async (temp) => {
     const directory = temp('ac-dup-fixture-');
     const base = createRepo(directory, { ...BASE_FILES, '.gitignore': 'src/evidence/\n' });
     writeFiles(directory, { 'src/evidence/9999/root.test.ts': rootTs(['a', 'a2']) });
@@ -731,7 +738,8 @@ export async function runSelfTest() {
     expectEqual('unignored-copy sources', unignoredMeasured.statistics?.sources, 3);
   });
 
-  await withCase('case 13: work tree under a parent folder named artifacts is scanned', async (temp) => {
+  const case13 = 'case 13: work tree under a parent folder named artifacts is scanned';
+  await withCase(case13, async (temp) => {
     const directory = path.join(temp('ac-dup-fixture-'), 'artifacts', 'repo');
     fs.mkdirSync(directory, { recursive: true });
     const base = createRepo(directory, BASE_FILES);
@@ -752,7 +760,19 @@ export async function runSelfTest() {
     expectCounts('counts', measured.statistics, { sources: 1, clones: 1, newClones: 0 });
   });
 
-  await withCase('case 15: an untracked, not-ignored new test with a clone is red', async (temp) => {
+  const case17 = 'case 17: untracked, not-ignored target/<n>/src copy is out of pattern';
+  await withCase(case17, async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    writeFiles(directory, { 'target/9999/src/root.test.ts': rootTs(['a', 'a2']) });
+    const code = await runGate({ workRoot: directory, baseRef: base });
+    const measured = measure({ workRoot: directory, base });
+    expectEqual('exit code', code, 0);
+    expectCounts('counts', measured.statistics, { sources: 2, clones: 2, newClones: 0 });
+  });
+
+  const case15 = 'case 15: an untracked, not-ignored new test with a clone is red';
+  await withCase(case15, async (temp) => {
     const directory = temp('ac-dup-fixture-');
     const base = createRepo(directory, BASE_FILES);
     writeFiles(directory, { 'src/copy.test.ts': rootTs(['c']) });
