@@ -74,39 +74,52 @@ function rustToken(source, index) {
   return { end: index + quoted[0].length, ...(valid ? { value } : {}) };
 }
 
+// Read one concat! body after its opener; the caller publishes only valid results.
+function readConcatBody(source, index, opener) {
+  const state = {
+    stack: [({ '(': ')', '[': ']', '{': '}' })[opener]],
+    index,
+    value: '',
+    expectString: true,
+    valid: true,
+    strings: [],
+  };
+  while (state.index < source.length && state.stack.length > 0) {
+    const token = rustToken(source, state.index);
+    const char = source[state.index];
+    if (token.trivia) { state.index = token.end; continue; }
+    advanceConcatToken(state, token, char);
+    state.index = token.end;
+  }
+  if (state.stack.length !== 0) state.valid = false;
+  return { end: state.index, value: state.value, strings: state.strings, valid: state.valid };
+}
+
+function advanceConcatToken(state, token, char) {
+  if (token.value !== undefined) {
+    state.strings.push({ start: state.index, end: token.end });
+    if (!state.expectString || state.stack.length !== 1) state.valid = false;
+    state.value += token.value;
+    state.expectString = false;
+  } else if (char === state.stack.at(-1)) {
+    state.stack.pop();
+  } else if ('([{'.includes(char)) {
+    state.stack.push(({ '(': ')', '[': ']', '{': '}' })[char]);
+    state.valid = false;
+  } else if (char === ',' && !state.expectString && state.stack.length === 1) {
+    state.expectString = true;
+  } else {
+    state.valid = false;
+  }
+}
+
 function concatSources(source, file, warnings) {
   const expressions = [];
   const start = /\bconcat\s*!\s*([([{])/g;
   let match;
   while ((match = start.exec(source)) !== null) {
-    const stack = [({ '(': ')', '[': ']', '{': '}' })[match[1]]];
-    let index = start.lastIndex;
-    let value = '';
-    let expectString = true;
-    let valid = true;
-    const strings = [];
-    while (index < source.length && stack.length > 0) {
-      const token = rustToken(source, index);
-      const char = source[index];
-      if (token.trivia) { index = token.end; continue; }
-      if (token.value !== undefined) {
-        strings.push({ start: index, end: token.end });
-        if (!expectString || stack.length !== 1) valid = false;
-        value += token.value;
-        expectString = false;
-      } else if (char === stack.at(-1)) {
-        stack.pop();
-      } else if ('([{'.includes(char)) {
-        stack.push(({ '(': ')', '[': ']', '{': '}' })[char]);
-        valid = false;
-      } else if (char === ',' && !expectString && stack.length === 1) {
-        expectString = true;
-      } else {
-        valid = false;
-      }
-      index = token.end;
-    }
-    if (stack.length !== 0) valid = false;
+    const { end: index, value, strings, valid } = readConcatBody(
+      source, start.lastIndex, match[1]);
     if (valid) {
       // All reconstructed URLs report the line of concat!, including multiline macros.
       expressions.push({ start: match.index, end: index, value, strings });
