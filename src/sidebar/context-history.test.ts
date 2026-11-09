@@ -48,7 +48,6 @@ const bucket = (
 const known = (id: string, agentKey = "dev"): SidebarEntry => ({
   runtimeSessionId: id,
   scope: { kind: "known", agentKey, teamIds: ["t1"] },
-  ...{ windows: null },
   sessionWindows: [bucket(25, 12.5, 2, 2), bucket(100, 20, 3, 3), bucket(300, null, 0, 0)],
 });
 
@@ -62,7 +61,6 @@ const acq = (n: number, projectPath = P) =>
 const neutral = (id: string, kind: "ambiguous" | "unknown", teamIds: string[]): SidebarEntry => ({
   runtimeSessionId: id,
   scope: { kind, agentKey: null, teamIds },
-  ...{ windows: null },
   sessionWindows: null,
 });
 
