@@ -96,38 +96,54 @@ impl ProtectedFixture {
 
 impl ProtectedFixture {
     pub(crate) async fn retire(&self) {
-        use crate::pty::manager::ResponseRouteIdentity;
+        use crate::pty::manager::ResponseClosePublisher as P;
         use std::time::Duration;
         let manager = self.native.manager.read().await.clone();
         let tracker = self.native.pty.lock().unwrap().response_close_state();
         let previous = self.native.source;
-        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let (member, leader) = manager
-            .with_current_carrier_snapshot(&permit, |current| {
-                let identity = |id, target| {
-                    let row = current.rows.iter().find(|row| row.id == id).unwrap();
-                    ResponseRouteIdentity {
-                        target,
-                        session_id: id,
-                        token: row.token,
-                        generation: tracker.generation(id).unwrap(),
-                        carrier_version: current.versions[&id],
-                        backend: row.backend_kind,
-                    }
-                };
-                (
-                    identity(previous, self.route.target.canonical_fqn.clone()),
-                    identity(self.sender, self.route.sender.canonical_fqn.clone()),
-                )
-            })
-            .await;
-        drop(permit);
-        let key = format!("prepare:{}", Uuid::new_v4());
-        let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
-        admission.accept_durable("prepare-body").unwrap();
-        drop(admission);
+        let (member, leader) = self.route_identities(&manager, &tracker).await;
+        let key = reserve_prepare_work(&tracker, &member);
         let past = std::time::Instant::now() - Duration::from_secs(120);
-        let context = prime_policy(&tracker, &member, &leader, previous, key, past);
+        for publisher in [
+            P::Manager,
+            P::Pty,
+            P::RawOutput,
+            P::Detector,
+            P::Menu,
+            P::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.mark_work_bootstrapped();
+        tracker.try_enable_readiness().unwrap();
+        tracker.apply_settings(true, 30, past);
+        // Re-publish the real route identities on the fake Instant timeline
+        // before admitting this test's first policy. No retirement is forged.
+        for (identity, eligible) in [(&member, true), (&leader, false)] {
+            tracker.register_route(identity.session_id, identity.generation, past);
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                identity.carrier_version,
+                eligible,
+                false,
+                past,
+            );
+            tracker.publish_manager_facts(identity.clone(), eligible, false, past);
+        }
+        tracker.observe_detector(previous, false, past);
+        tracker.publish_menu(previous, Some(false), past);
+        tracker.publish_hold(previous, None, true, past);
+        let context = tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                leader.clone(),
+                key,
+                "prepare-body".into(),
+                past,
+            )
+            .unwrap();
         tracker.mark_request_submitted(&context, true);
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         manager
@@ -181,6 +197,51 @@ impl ProtectedFixture {
             .await;
         self.native.coordinator.snapshot().await.unwrap();
     }
+
+    async fn route_identities(
+        &self,
+        manager: &crate::session::manager::SessionManager,
+        tracker: &crate::pty::manager::ResponseCloseState,
+    ) -> (
+        crate::pty::manager::ResponseRouteIdentity,
+        crate::pty::manager::ResponseRouteIdentity,
+    ) {
+        use crate::pty::manager::ResponseRouteIdentity;
+        let previous = self.native.source;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let identities = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let identity = |id, target| {
+                    let row = current.rows.iter().find(|row| row.id == id).unwrap();
+                    ResponseRouteIdentity {
+                        target,
+                        session_id: id,
+                        token: row.token,
+                        generation: tracker.generation(id).unwrap(),
+                        carrier_version: current.versions[&id],
+                        backend: row.backend_kind,
+                    }
+                };
+                (
+                    identity(previous, self.route.target.canonical_fqn.clone()),
+                    identity(self.sender, self.route.sender.canonical_fqn.clone()),
+                )
+            })
+            .await;
+        drop(permit);
+        identities
+    }
+}
+
+fn reserve_prepare_work(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+) -> String {
+    let key = format!("prepare:{}", Uuid::new_v4());
+    let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
+    admission.accept_durable("prepare-body").unwrap();
+    drop(admission);
+    key
 }
 
 fn write_team_layout(ac: &std::path::Path, sender: &std::path::Path, target: &std::path::Path) {
@@ -246,57 +307,6 @@ async fn prepare_sessions(
         .state::<crate::config::settings::SettingsState>()
         .write()
         .await = written;
-}
-
-fn prime_policy(
-    tracker: &crate::pty::manager::ResponseCloseState,
-    member: &crate::pty::manager::ResponseRouteIdentity,
-    leader: &crate::pty::manager::ResponseRouteIdentity,
-    previous: Uuid,
-    key: String,
-    past: std::time::Instant,
-) -> crate::pty::manager::ResponseDeliveryContext {
-    use crate::pty::manager::ResponseClosePublisher as P;
-    for publisher in [
-        P::Manager,
-        P::Pty,
-        P::RawOutput,
-        P::Detector,
-        P::Menu,
-        P::Hold,
-    ] {
-        tracker.bind_publisher(publisher);
-    }
-    tracker.mark_work_bootstrapped();
-    tracker.try_enable_readiness().unwrap();
-    tracker.apply_settings(true, 30, past);
-    // Re-publish the real route identities on the fake Instant timeline
-    // before admitting this test's first policy. No retirement is forged.
-    for (identity, eligible) in [(member, true), (leader, false)] {
-        tracker.register_route(identity.session_id, identity.generation, past);
-        tracker.publish_manager_row(
-            identity.session_id,
-            identity.token,
-            identity.generation,
-            identity.carrier_version,
-            eligible,
-            false,
-            past,
-        );
-        tracker.publish_manager_facts(identity.clone(), eligible, false, past);
-    }
-    tracker.observe_detector(previous, false, past);
-    tracker.publish_menu(previous, Some(false), past);
-    tracker.publish_hold(previous, None, true, past);
-    tracker
-        .reserve_policy_candidate(
-            member.clone(),
-            leader.clone(),
-            key,
-            "prepare-body".into(),
-            past,
-        )
-        .unwrap()
 }
 
 fn isolated_identity(name: &str) -> (String, std::path::PathBuf) {
