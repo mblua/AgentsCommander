@@ -184,7 +184,8 @@ export function commandLineLength(command, args) {
  * @param {string} [options.baseRef] base ref; defaults to GATE_BASE_REF or origin/main
  * @param {string} [options.configPath] absolute .jscpd.json path; defaults under toolRoot
  * @param {readonly string[]} [options.flags] jscpd gating flags; defaults to GATE_FLAGS
- * @param {Function} [options.buildScan] scan argv builder (self-test seam); defaults to buildScanArgs
+ * @param {Function} [options.buildScan] scan argv builder (self-test seam);
+ *   defaults to buildScanArgs
  */
 export async function runGate({
   toolRoot = REPO_ROOT,
