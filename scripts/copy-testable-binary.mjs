@@ -36,8 +36,10 @@ export async function runCopyTestableBinary({ platform, releaseDir }) {
       return { code: 1, logs, errors };
     }
   } catch (error) {
-    errors.push(`Production binary is missing: ${source}`);
-    errors.push(`Run the production Tauri build before copying the testable binary.`);
+    errors.push(
+      `Production binary is missing: ${source}`,
+      `Run the production Tauri build before copying the testable binary.`
+    );
     if (error?.message) {
       errors.push(error.message);
     }
@@ -51,8 +53,10 @@ export async function runCopyTestableBinary({ platform, releaseDir }) {
     return { code: 1, logs, errors };
   }
 
-  logs.push(`Copied production binary: ${source}`);
-  logs.push(`Created testable binary: ${destination}`);
+  logs.push(
+    `Copied production binary: ${source}`,
+    `Created testable binary: ${destination}`
+  );
   return { code: 0, logs, errors };
 }
 
