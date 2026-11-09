@@ -513,7 +513,7 @@ pub(super) fn verify_replica(
 ) -> Result<VerifiedPtyInputIdentity, String> {
     let actual_project = project_dir
         .file_name()
-        .and_then(|value| value.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "invalid_target".to_string())?;
     if actual_project != parsed.project {
         return Err("invalid_target".to_string());
