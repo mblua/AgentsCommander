@@ -318,6 +318,22 @@ jobs:
             format('origin/{0}', github.event.pull_request.base.ref) || '' }}
         run: npm run seven:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
+      - name: Struct-excessive-bools self-test (#4143)
+        shell: bash
+        timeout-minutes: 5
+        run: node --test scripts/check-struct-excessive-bools.test.mjs
+
+      - name: Struct-excessive-bools baseline ratchet (#4143)
+        shell: bash
+        timeout-minutes: 5
+        env:
+          GATE_BASE_REF: >-
+            ${{ github.event.pull_request.base.ref &&
+            format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: >-
+          node scripts/check-struct-excessive-bools.mjs --baseline-diff
+          --base-ref "${GATE_BASE_REF:-origin/main}"
+
       - name: Length gate self-test
         shell: bash
         run: npm run tml:self
@@ -493,6 +509,7 @@ jobs:
             --force-warn clippy::semicolon_if_nothing_returned \
             --force-warn clippy::unnested_or_patterns \
             --force-warn clippy::map_err_ignore \
+            --force-warn clippy::struct_excessive_bools \
             > "${RUNNER_TEMP}/cog-windows.jsonl" 2> "${RUNNER_TEMP}/cog-windows.stderr"
           code=$?
           printf '%s\n' "$code" > "${RUNNER_TEMP}/seven-windows.exit"
@@ -517,6 +534,16 @@ jobs:
           node scripts/check-clippy-seven.mjs \
             --check "${RUNNER_TEMP}/seven-windows.json" \
             --baseline clippy-seven.baseline.json --workspace-root "$GITHUB_WORKSPACE"
+
+      - name: Struct-excessive-bools gate (#4143)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          node scripts/check-struct-excessive-bools.mjs \
+            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform windows \
+            --rustc-version "$COG_RUSTC_VERSION" --workspace-root "$GITHUB_WORKSPACE" \
+            --baseline struct-excessive-bools.baseline.json
 
       - name: Seven-lint evidence metadata
         if: always()
@@ -1321,6 +1348,7 @@ jobs:
             --force-warn clippy::semicolon_if_nothing_returned \
             --force-warn clippy::unnested_or_patterns \
             --force-warn clippy::map_err_ignore \
+            --force-warn clippy::struct_excessive_bools \
             > "${RUNNER_TEMP}/cog-linux.jsonl" 2> "${RUNNER_TEMP}/cog-linux.stderr"
           code=$?
           printf '%s\n' "$code" > "${RUNNER_TEMP}/seven-linux.exit"
@@ -1345,6 +1373,16 @@ jobs:
           node scripts/check-clippy-seven.mjs \
             --check "${RUNNER_TEMP}/seven-linux.json" \
             --baseline clippy-seven.baseline.json --workspace-root "$GITHUB_WORKSPACE"
+
+      - name: Struct-excessive-bools gate (#4143)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          node scripts/check-struct-excessive-bools.mjs \
+            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform linux \
+            --rustc-version "$COG_RUSTC_VERSION" --workspace-root "$GITHUB_WORKSPACE" \
+            --baseline struct-excessive-bools.baseline.json
 
       - name: Seven-lint evidence metadata
         if: always()
