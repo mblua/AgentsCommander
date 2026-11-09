@@ -7,12 +7,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GateError } from './sanitizing_baseline.mjs';
+import { GateError, codeOrder, gitRunner } from './sanitizing_baseline.mjs';
 import { isScriptPath, longLineNumbers, runGate } from './sanitizing_script_line_length.mjs';
 
 const long = (n = 101) => 'x'.repeat(n);
 const lines = (count, n = 101) => Array.from({ length: count }, () => long(n)).join('\n') + '\n';
 
+function changeStatus(p, base, head) {
+  if (!(p in base)) return 'A';
+  return p in head ? 'M' : 'D';
+}
 // Fake snapshot: base/head map path -> text; a missing path is absent from that tree.
 function fakeSnapshot(base, head, options = {}) {
   const tree = (files, side) => new Map(Object.keys(files).map(p => [p,
@@ -20,12 +24,12 @@ function fakeSnapshot(base, head, options = {}) {
   const baseTree = tree(base, 'base'), headTree = tree(head, 'head');
   const texts = new Map([...Object.entries(base).map(([p, t]) => [`base:${p}`, t]),
     ...Object.entries(head).map(([p, t]) => [`head:${p}`, t])]);
-  const paths = [...new Set([...Object.keys(base), ...Object.keys(head)])].sort()
+  const paths = [...new Set([...Object.keys(base), ...Object.keys(head)])].sort(codeOrder)
     .filter(p => base[p] !== head[p]);
   return {
     requestedRef: 'origin/main', refOid: 'r'.repeat(40), baseOid: 'b'.repeat(40),
     headOid: 'h'.repeat(40), baseTree, headTree,
-    changed: paths.map(p => ({ status: !(p in base) ? 'A' : !(p in head) ? 'D' : 'M', path: p })),
+    changed: paths.map(p => ({ status: changeStatus(p, base, head), path: p })),
     readBlob(entry) {
       if (!entry) return '';
       if (options.readError?.(entry)) throw new GateError(`${entry.path}: invalid UTF8`);
@@ -156,9 +160,10 @@ test('real Git fixture: merge-base, committed blobs, dirty worktree and CLI exit
     fs.mkdirSync(path.join(root, 'hooks'));
     const env = fixtureEnv(root);
     const git = (args, input) => {
-      const r = spawnSync('git', args, { cwd: repo, env, input, encoding: 'utf8' });
+      // Reuse the gate's Git resolver: an absolute git path, never a bare name.
+      const r = gitRunner(args, { cwd: repo, env, input });
       assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
-      return r.stdout.trim();
+      return r.stdout.toString('utf8').trim();
     };
     const cli = (...args) => spawnSync(process.execPath,
       [path.join(repo, 'scripts', 'sanitizing_script_line_length.mjs'), ...args],
