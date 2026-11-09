@@ -97,12 +97,29 @@ export const parseBaseline = text => validateBaseline(parseJSON(text));
 // ---- threshold guard ----
 
 const CONFIG_NAMES = new Set(['clippy.toml', '.clippy.toml']);
-const OVERRIDE = /^[ \t]*(?:max-struct-bools|"max-struct-bools"|'max-struct-bools')[ \t]*=/m;
-export const isClippyConfig = file => CONFIG_NAMES.has(file.split('/').at(-1));
+// A line-leading TOML key (bare, "basic" with escapes, or 'literal') before `=` or a dot.
+const KEY = /^[ \t]*("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[A-Za-z0-9_-]+)[ \t]*[=.]/;
+// Case-insensitive: Windows file systems resolve Clippy.toml as clippy.toml.
+export const isClippyConfig = file => CONFIG_NAMES.has(file.split('/').at(-1).toLowerCase());
+/** Decoded key; an undecodable quoted key fails closed. */
+function decodeKey(raw, file) {
+  if (raw.startsWith("'")) return raw.slice(1, -1);
+  if (!raw.startsWith('"')) return raw;
+  try { return JSON.parse(raw); }
+  catch { throw new InputError(`${file} has an undecodable quoted key ${raw}`); }
+}
+/** True when a config text assigns max-struct-bools under any spelling or quoting. */
+export function assignsThreshold(text, file = 'clippy.toml') {
+  return text.replace(/^﻿/, '').split(/\r?\n/).some(line => {
+    const m = KEY.exec(line);
+    return m !== null &&
+      decodeKey(m[1], file).toLowerCase().replaceAll('_', '-') === 'max-struct-bools';
+  });
+}
 /** Throws when any tracked Clippy config assigns max-struct-bools (any value, even 3). */
 export function assertDefaultThreshold(trackedFiles, readText) {
   for (const file of trackedFiles.filter(isClippyConfig)) {
-    need(!OVERRIDE.test(readText(file)),
+    need(!assignsThreshold(readText(file), file),
       `${file} assigns max-struct-bools; the default threshold 3 must not be overridden`);
   }
 }

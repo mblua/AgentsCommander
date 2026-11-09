@@ -129,12 +129,36 @@ test('max-struct-bools override is rejected before equality, root and nested', (
     assert.equal(r.code, 2, file);
     assert.match(r.err, /max-struct-bools/);
   }
+  const other0 = native({ files: { [A]: SRC_A, 'clippy.toml': '# max-struct-bools = 9\n' },
+    base: baseline([]) });
+  assert.equal(other0.code, 0, 'a comment is not an assignment');
   const other = native({ files: { [A]: SRC_A, 'clippy.toml': 'too-many-lines-threshold = 1\n' },
     base: baseline([]) });
   assert.equal(other.code, 0, other.err);
   const untracked = native({ files: { [A]: SRC_A, 'clippy.toml': 'max-struct-bools = 9\n' },
     tracked: [A], base: baseline([]) });
   assert.equal(untracked.code, 0, 'only tracked config files are policy');
+});
+
+test('B1: escaped quoted keys, BOM and spelling variants cannot hide the override', () => {
+  for (const text of ['"max\\u002dstruct-bools" = 100\n', '"max-struct\\u002Dbools"=100\n',
+    '﻿max-struct-bools = 100\n', '﻿"max-struct-bools" = 100\r\n',
+    'max_struct_bools = 100\n', 'MAX-STRUCT-BOOLS = 100\n', 'x = 1\r\nmax-struct-bools = 100\r\n',
+    '"\\U0000006dax-struct-bools" = 100\n']) {
+    const r = native({ files: { [A]: SRC_A, 'clippy.toml': text }, base: baseline([]) });
+    assert.equal(r.code, 2, JSON.stringify(text));
+    assert.match(r.err, /max-struct-bools|undecodable/);
+  }
+});
+
+test('B2: config file names match without case', () => {
+  for (const file of ['Clippy.toml', 'src-tauri/CLIPPY.TOML', 'crates/x/.Clippy.Toml']) {
+    const r = native({ files: { [A]: SRC_A, [file]: 'max-struct-bools = 100\n' },
+      base: baseline([]) });
+    assert.equal(r.code, 2, file);
+    assert.match(r.err, /max-struct-bools/);
+  }
+  assert.equal(m.isClippyConfig('src/clippy.toml.bak'), false);
 });
 
 test('identity is stable across comments, line moves, CRLF and Unicode text', () => {
