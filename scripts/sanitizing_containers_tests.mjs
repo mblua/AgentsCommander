@@ -263,28 +263,30 @@ function aliasClassControls(t) {
   ].map(([id, source]) => [id, { [root + 'other.rs']: expand(source) },
     root + 'other.rs', id === 'R16' ? direct.replace('::SETTINGS', '::names::SETTINGS') : direct]);
   const child = 'fn f(){ let _ = super::a::X; }';
-  cases.push(['R4', {
+  cases.push(
+    ['R4', {
     [root + 'other.rs']: expand('pub(crate) use IA as a; mod c;'),
     [root + 'other/c.rs']: expand(child),
-  }, root + 'other/c.rs', direct]);
-  cases.push(['R13', {
+  }, root + 'other/c.rs', direct],
+    ['R13', {
     [root + 'config.rs']: 'mod instance_artifacts; mod settings; mod x; ' +
       'use instance_artifacts as ia;',
     [root + 'config/x.rs']: expand('fn f(){ let _ = super::ia::X; }'),
-  }, root + 'config/x.rs', direct]);
-  cases.push(['R14', {
+  }, root + 'config/x.rs', direct],
+    ['R14', {
     [root + 'config.rs']: expand('mod instance_artifacts; mod settings; ' +
       'use self::instance_artifacts as ia; fn f(){ let _ = self::ia::X; }'),
-  }, root + 'config.rs', direct]);
-  cases.push(['b-1', {
+  }, root + 'config.rs', direct],
+    ['b-1', {
     [artifactsPath]: artifactsSource + '\npub(crate) use names as n;',
     [root + 'other.rs']: expand('fn f(){ let _ = IA::n::X; }'),
-  }, root + 'other.rs', direct.replace('::SETTINGS', '::names::SETTINGS')]);
-  cases.push(['b-2', {
+  }, root + 'other.rs', direct.replace('::SETTINGS', '::names::SETTINGS')],
+    ['b-2', {
     [root + 'config.rs']: 'mod instance_artifacts; mod settings; mod y;',
     [root + 'config/y.rs']: expand('pub(crate) use IA as ia2;'),
     [root + 'other.rs']: expand('fn f(){ let _ = crate::config::y::ia2::X; }'),
-  }, root + 'other.rs', direct]);
+  }, root + 'other.rs', direct]
+  );
   for (const [id, files, path, symbol] of cases) {
     const source = files[path], line = source.slice(0, source.indexOf('let _')).split('\n').length;
     const result = control(t, 'AC-3843-003 ' + id,
