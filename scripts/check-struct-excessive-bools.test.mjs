@@ -424,3 +424,55 @@ test('test-debt runs the self-test and committed ratchet blocking', () => {
   }
   assert.match(jobBody('test-debt'), /node-version: 22/);
 });
+
+// #4192: trivia starting exactly at the 4096-character prefix cap must fail closed, not hang.
+// Each case runs in a child with a 5 s timeout: a synchronous loop cannot be interrupted here.
+function declarationInChild(text, index) {
+  const url = new URL('./check-struct-excessive-bools.mjs', import.meta.url).href;
+  const childSource = `import * as m from ${JSON.stringify(url)};
+const [text, index] = JSON.parse(process.argv[1]);
+let out;
+try { out = { value: m.declarationName(text, index) }; }
+catch (e) { out = { inputError: e instanceof m.InputError, message: e.message, exit: e.exit }; }
+process.stdout.write(JSON.stringify(out));`;
+  const r = spawnSync(process.execPath,
+    ['--input-type=module', '-e', childSource, JSON.stringify([text, index])],
+    { encoding: 'utf8', timeout: 5000, shell: false });
+  assert.equal(r.error, undefined, `child error: ${r.error?.code}`);
+  assert.equal(r.signal, null);
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+const NOT_STRUCT = 'span does not start with a struct declaration';
+const UNTERMINATED = 'unterminated block comment in declaration prefix';
+const capCase = (id, text, index, message) => ({ id, text, index, message });
+const pad = n => ' '.repeat(n);
+const CAP_CASES = [
+  capCase('AC-4190-001/idx0-line', pad(4096) + '// x\nstruct A {}', 0, NOT_STRUCT),
+  capCase('AC-4190-001/idx0-block', pad(4096) + '/* x */ struct A {}', 0, NOT_STRUCT),
+  capCase('AC-4190-001/idx7-line', 'abcdefg' + pad(4096) + '// x\nstruct A {}', 7, NOT_STRUCT),
+  capCase('AC-4190-001/idx7-block', 'abcdefg' + pad(4096) + '/* x */ struct A {}', 7,
+    NOT_STRUCT),
+  capCase('AC-4190-001/B1-blockclose-then-line', '/*' + pad(4092) + '*/' + '//\nstruct A {}', 0,
+    NOT_STRUCT),
+  capCase('decl/cap/pubparen/open-comment@4096', 'pub(' + pad(4092) + '/* c */ struct A {}', 0,
+    'unsupported visibility'),
+  capCase('decl/cap/pubparen/line-comment@4096', 'pub(' + pad(4092) + '// c\n struct A {}', 0,
+    'unsupported visibility'),
+];
+const COMMENTS = { 'open-comment': '/* c */', 'line-comment': '// c\n' };
+for (const at of [4095, 4096, 4097]) {
+  for (const [label, piece] of Object.entries(COMMENTS)) {
+    const tail = `${piece} struct A {}`;
+    const message = label === 'open-comment' && at === 4095 ? UNTERMINATED : NOT_STRUCT;
+    CAP_CASES.push(capCase(`decl/cap/idx0/${label}@${at}`, pad(at) + tail, 0, message));
+    CAP_CASES.push(capCase(`decl/cap/idx7/${label}@${at}`, 'abcdefg' + pad(at) + tail, 7,
+      message));
+  }
+}
+for (const c of CAP_CASES) {
+  test(`declarationName fails closed at the prefix cap: ${c.id} (#4192)`, () => {
+    assert.deepEqual(declarationInChild(c.text, c.index),
+      { inputError: true, message: c.message, exit: 2 });
+  });
+}
