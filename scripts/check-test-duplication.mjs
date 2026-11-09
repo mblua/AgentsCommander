@@ -13,8 +13,9 @@
  *   run exits 0 even with 148 clones).
  * - `--fail-on-empty` makes a scan of zero sources red instead of a warning.
  * - `--no-gitignore` keeps an ignore entry from silently shrinking the scan.
- *   `.jscpd.json` cancels the `node_modules` files that flag would otherwise
- *   pull in, so the scan set is exactly the config's `pattern` minus `ignore`.
+ *   `.jscpd.json` cancels the `node_modules` files and the local gate
+ *   evidence under `artifacts/` that flag would otherwise pull in, so the scan
+ *   set is exactly the config's `pattern` minus `ignore`.
  *
  * The base ref is always resolved through `git merge-base`, never forwarded
  * raw: a raw branch tip would report the base branch's own commits as new.
@@ -613,6 +614,30 @@ export async function runSelfTest() {
       clones: 1,
       newClones: 0,
     });
+  });
+
+  await withCase('case 12: local artifacts/ evidence stays out of the scan (contrast pair)', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, { ...BASE_FILES, '.gitignore': 'artifacts/\n' });
+    writeFiles(directory, { 'artifacts/9999/src/root.test.ts': rootTs(['a', 'a2']) });
+
+    const shipped = await runGate({ workRoot: directory, baseRef: base });
+    const shippedMeasured = measure({ workRoot: directory, base });
+    expectEqual('artifacts-ignored exit code', shipped, 0);
+    expectCounts('artifacts-ignored counts', shippedMeasured.statistics, {
+      sources: 2,
+      clones: 2,
+      newClones: 0,
+    });
+
+    const modified = JSON.parse(fs.readFileSync(SHIPPED_CONFIG, 'utf8'));
+    modified.ignore = modified.ignore.filter((entry) => entry !== '**/artifacts/**');
+    const configPath = path.join(temp('ac-dup-config-'), '.jscpd.json');
+    fs.writeFileSync(configPath, `${JSON.stringify(modified, null, 2)}\n`);
+    const unignored = await runGate({ workRoot: directory, baseRef: base, configPath });
+    const unignoredMeasured = measure({ workRoot: directory, base, configPath });
+    expectEqual('artifacts-scanned exit code', unignored, 1);
+    expectEqual('artifacts-scanned sources', unignoredMeasured.statistics?.sources, 3);
   });
 
   await withCase('case 10: no git at a fixed location is a hard failure', async (temp) => {
