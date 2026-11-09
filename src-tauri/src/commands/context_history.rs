@@ -129,11 +129,12 @@ struct SidebarMeansRequest {
     runtime_session_ids: Vec<String>,
 }
 
-/// One Settings snapshot of a request: the registered spellings of the project
-/// and the app-wide history retention (#4049).
+/// One Settings snapshot of a request: the registered spellings of the project,
+/// the app-wide history retention (#4049) and the effective session windows.
 struct Registration {
     paths: Vec<PathBuf>,
     retention_days: u32,
+    session_windows: Vec<u32>,
 }
 
 /// The registered spellings equivalent to the requested project, compared in
@@ -161,6 +162,7 @@ async fn registered_paths(settings: &SettingsState, project: &str) -> IpcResult<
     Ok(Registration {
         paths,
         retention_days: snapshot.context_history_retention_days.days(),
+        session_windows: snapshot.context_history_session_windows.counts().to_vec(),
     })
 }
 
@@ -206,10 +208,18 @@ fn now_utc_ms() -> i64 {
 }
 
 /// Validate a report-family query and its registration; returns the project
-/// and the Settings retention.
+/// and the Settings retention. A `sessionCount` must be one of the configured
+/// session windows of the same Settings snapshot, checked before any IO.
 async fn checked_query(settings: &SettingsState, query: &ReportQuery) -> IpcResult<(String, u32)> {
     query.validate().map_err(report_error)?;
     let registration = registered_paths(settings, &query.project_path).await?;
+    if let Some(count) = query.session_count {
+        if !registration.session_windows.contains(&count) {
+            return Err(invalid_query(
+                "sessionCount is not a configured session window",
+            ));
+        }
+    }
     Ok((query.project_path.clone(), registration.retention_days))
 }
 
@@ -342,11 +352,12 @@ pub(crate) async fn get_context_history_sidebar_means(
         })
         .collect();
     let now = now_utc_ms();
+    let counts = registration.session_windows;
     blocking(
         request.project_path,
         registration.retention_days,
         move |canonical, _retention, records| {
-            sidebar_means(&records, &canonical, &targets, now).map_err(report_error)
+            sidebar_means(&records, &canonical, &targets, &counts, now).map_err(report_error)
         },
     )
     .await

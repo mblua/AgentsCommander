@@ -1,12 +1,15 @@
-// #3532 P11 - presentational card with the three context means of a row.
+// #3532 P11 / #4091 - presentational card with the session-window means of a row.
 // It only renders the state it is given: no owner, no IPC, no settings writes.
 import {
   Component, For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount,
 } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { SidebarBucket, SidebarScope, SidebarWindows } from "../../shared/context-history";
-
-export type HistoryDays = 1 | 7 | 30;
+import {
+  formatRecordsPerSession,
+  sessionWindowLabel,
+  type SessionWindowBucket,
+  type SidebarScope,
+} from "../../shared/context-history";
 
 /** What the card renders; the badge hands the sidebar owner's state as is. */
 export type CardHistoryState =
@@ -14,7 +17,12 @@ export type CardHistoryState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ambiguous" | "unknown"; scope: SidebarScope; generatedAtUtcMs: number; text: string }
-  | { status: "ready"; scope: SidebarScope; windows: SidebarWindows; generatedAtUtcMs: number };
+  | {
+      status: "ready";
+      scope: SidebarScope;
+      sessionWindows: SessionWindowBucket[];
+      generatedAtUtcMs: number;
+    };
 
 const MARGIN = 8;
 /** Space between trigger and card; the badge bridges it with a delayed close. */
@@ -24,24 +32,25 @@ export function formatMean(mean: number): string {
   return `${mean.toFixed(1)}%`;
 }
 
-function periodLabel(days: number): string {
-  return days === 1 ? "Último día" : `Últimos ${days} días`;
+function basisLabel(sessions: number | null): string {
+  return sessions === null ? "—" : sessionWindowLabel(sessions).toLowerCase();
 }
 
-function basisLabel(days: HistoryDays): string {
-  return days === 1 ? "último día" : `últimos ${days} días`;
+/** Record count, then backend records per session: "1560 registros · 15.6 registros/sesión". */
+function records(bucket: SessionWindowBucket): string {
+  const count = bucket.recordsCount;
+  const perSession = formatRecordsPerSession(bucket.recordsPerSession);
+  return `${count} ${count === 1 ? "registro" : "registros"} · ${perSession} registros/sesión`;
 }
 
-function records(count: number): string {
-  return `${count} ${count === 1 ? "registro" : "registros"}`;
-}
-
-const Bar: Component<{ bucket: SidebarBucket; selected: boolean }> = (props) => (
+const Bar: Component<{ bucket: SessionWindowBucket; selected: boolean }> = (props) => (
   <div
     class={`ctx-history-row${props.selected ? " selected" : ""}`}
-    data-ac-days={props.bucket.days}
+    data-ac-sessions={props.bucket.requestedSessions}
   >
-    <span class="ctx-history-period">{periodLabel(props.bucket.days)}</span>
+    <span class="ctx-history-period">
+      {sessionWindowLabel(props.bucket.requestedSessions, props.bucket.sessionsCount)}
+    </span>
     <span class="ctx-history-track">
       <Show when={props.bucket.mean}>
         {(mean) => (
@@ -52,9 +61,9 @@ const Bar: Component<{ bucket: SidebarBucket; selected: boolean }> = (props) => 
     <span class="ctx-history-value">
       <Show
         when={props.bucket.mean !== null && props.bucket.recordsCount > 0}
-        fallback={`Sin datos · ${records(props.bucket.recordsCount)}`}
+        fallback={`Sin datos · ${records(props.bucket)}`}
       >
-        {`${formatMean(props.bucket.mean ?? 0)} · ${records(props.bucket.recordsCount)}`}
+        {`${formatMean(props.bucket.mean ?? 0)} · ${records(props.bucket)}`}
       </Show>
       <Show when={props.bucket.incomplete}>
         <span class="ctx-history-partial"> · cobertura parcial</span>
@@ -70,7 +79,8 @@ const ContextHistoryCard: Component<{
   state: CardHistoryState;
   percent: number | null;
   projectPath: string;
-  colorDays: HistoryDays;
+  /** requestedSessions of the bucket the badge colour uses; null when none. */
+  colorSessions: number | null;
   warning: string;
   cardRef?: (el: HTMLDivElement) => void;
   onEnter?: () => void;
@@ -178,12 +188,17 @@ const ContextHistoryCard: Component<{
                     <dt>Proyecto</dt>
                     <dd>{props.projectPath}</dd>
                   </dl>
-                  <For each={[s().windows.day, s().windows.week, s().windows.month]}>
-                    {(bucket) => <Bar bucket={bucket} selected={bucket.days === props.colorDays} />}
+                  <For each={s().sessionWindows}>
+                    {(bucket) => (
+                      <Bar
+                        bucket={bucket}
+                        selected={bucket.requestedSessions === props.colorSessions}
+                      />
+                    )}
                   </For>
-                  <p class="ctx-history-note">Color basado en: {basisLabel(props.colorDays)}</p>
+                  <p class="ctx-history-note">Color basado en: {basisLabel(props.colorSessions)}</p>
                   <p class="ctx-history-note">
-                    Sesiones iniciadas en cada período; sesión entera.
+                    Sesiones más recientes de este agente y team; sesión entera.
                   </p>
                   <p class="ctx-history-legend">
                     <span class="ctx-history-swatch low" />{" "}menor media

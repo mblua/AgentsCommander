@@ -8,10 +8,10 @@ import { ContextHistoryAPI } from "../shared/ipc";
 import { isTauri } from "../shared/platform";
 import {
   isHistoryIpcError,
-  type SidebarBucket,
+  selectSessionWindow,
+  type SessionWindowBucket,
   type SidebarEntry,
   type SidebarScope,
-  type SidebarWindows,
 } from "../shared/context-history";
 
 export const MAX_ACTIVE_KEYS = 4096;
@@ -33,7 +33,13 @@ export type SidebarHistoryState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ambiguous" | "unknown"; scope: SidebarScope; generatedAtUtcMs: number; text: string }
-  | { status: "ready"; scope: SidebarScope; windows: SidebarWindows; generatedAtUtcMs: number };
+  | {
+      status: "ready";
+      scope: SidebarScope;
+      /** #4091 Backend buckets in configured order; never regrouped here. */
+      sessionWindows: SessionWindowBucket[];
+      generatedAtUtcMs: number;
+    };
 
 export interface ContextHistoryHandle {
   state: Accessor<SidebarHistoryState>;
@@ -126,14 +132,16 @@ export function refreshContextHistoryOnHover(scope: SidebarHistoryScope): void {
   enqueue(owner, id);
 }
 
-/** The bucket the saved Settings window selects; never recomputed here. */
-export function bucketForDays(
-  windows: SidebarWindows,
-  days: 1 | 7 | 30 | undefined,
-): SidebarBucket {
-  if (days === 1) return windows.day;
-  if (days === 7) return windows.week;
-  return windows.month;
+/**
+ * #4091 The bucket the saved colour count selects among the returned buckets:
+ * the exact member, otherwise the last one; null for an empty list.
+ */
+export function bucketForSessions(
+  buckets: readonly SessionWindowBucket[],
+  sessions: number | null | undefined,
+): SessionWindowBucket | null {
+  const counts = buckets.map((bucket) => bucket.requestedSessions);
+  return selectSessionWindow(counts, sessions, buckets)?.bucket ?? null;
 }
 
 function createOwner(projectPath: string): ProjectOwner {
@@ -237,8 +245,12 @@ function flush(owner: ProjectOwner): void {
 }
 
 function toState(entry: SidebarEntry, generatedAtUtcMs: number): SidebarHistoryState {
-  if (entry.scope.kind === "known" && entry.windows) {
-    return { status: "ready", scope: entry.scope, windows: entry.windows, generatedAtUtcMs };
+  if (entry.scope.kind === "known") {
+    const sessionWindows = entry.sessionWindows;
+    if (!Array.isArray(sessionWindows) || sessionWindows.length === 0) {
+      return { status: "error", message: "No session windows in response" };
+    }
+    return { status: "ready", scope: entry.scope, sessionWindows, generatedAtUtcMs };
   }
   const kind = entry.scope.kind === "ambiguous" ? "ambiguous" : "unknown";
   return { status: kind, scope: entry.scope, generatedAtUtcMs, text: NEUTRAL_TEXT[kind] };
