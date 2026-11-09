@@ -79,10 +79,12 @@ async fn missing_directory_preserves_operation_failure_results() {
 #[tokio::test]
 async fn real_repository_preserves_branch_remote_and_project_output() {
     let dir = tempfile::tempdir().unwrap();
-    let status = std::process::Command::new("git")
+    let status = tokio::process::Command::new("git")
         .args(["init", "--initial-branch=owner-test"])
         .arg(dir.path())
+        .kill_on_drop(true)
         .output()
+        .await
         .unwrap();
     assert!(status.status.success());
     let path = dir.path().to_str().unwrap();
@@ -104,7 +106,7 @@ async fn real_repository_preserves_branch_remote_and_project_output() {
         .await
         .unwrap();
     assert_eq!(String::from_utf8(output).unwrap().trim(), "owner-test");
-    let status = std::process::Command::new("git")
+    let status = tokio::process::Command::new("git")
         .current_dir(dir.path())
         .args([
             "remote",
@@ -112,7 +114,9 @@ async fn real_repository_preserves_branch_remote_and_project_output() {
             "origin",
             "https://example.invalid/owner.git",
         ])
+        .kill_on_drop(true)
         .output()
+        .await
         .unwrap();
     assert!(status.status.success());
     let remote = remote_origin_output(path).await.unwrap();
