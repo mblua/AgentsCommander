@@ -19,7 +19,9 @@
 //   1 → bad arguments, missing input, or the zip step failed
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
@@ -61,7 +63,8 @@ function zipDirectory(stageDir, outPath) {
   const env = { ...process.env, AC_PACK_STAGE: stageDir, AC_PACK_OUT: outPath };
   for (const shell of ['pwsh', 'powershell']) {
     try {
-      execFileSync(shell, ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'pipe', env });
+      execFileSync(shell, ['-NoProfile', '-NonInteractive', '-Command', command],
+        { stdio: 'pipe', env });
       return shell;
     } catch (err) {
       // A missing shell is a resolution failure; anything else is a real zip
