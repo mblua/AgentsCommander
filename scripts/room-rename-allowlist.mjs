@@ -286,7 +286,8 @@ function blob(rev, path) {
   // against the current checkout and not only against a committed revision.
   const k = `${rev ?? "<worktree>"}:${path}`;
   if (!blobCache.has(k)) {
-    blobCache.set(k, rev ? git(["cat-file", "blob", `${rev}:${path}`]) : readFileSync(join(REPO, path), "utf8"));
+    blobCache.set(k, rev ? git(["cat-file", "blob", `${rev}:${path}`]) : readFileSync(join(REPO,
+      path), "utf8"));
   }
   return blobCache.get(k);
 }
@@ -455,7 +456,8 @@ function analysisOf(rev, path) {
 const WORD = "(?:[Ww]orkgroups?|WORKGROUPS?|WG|Wg|wg)";
 // The concept word as a free-standing word: not glued to identifier
 // characters, not a field access, not a path or module segment.
-const PROSE = new RegExp(`(?:^|[^A-Za-z0-9_%$./])${WORD}(?![A-Za-z0-9_%$])(?!\\s*::)(?!\\.(rs|ts|tsx|md|js))`);
+const PROSE = new RegExp(
+  `(?:^|[^A-Za-z0-9_%$./])${WORD}(?![A-Za-z0-9_%$])(?!\\s*::)(?!\\.(rs|ts|tsx|md|js))`);
 // A wg- directory shape written into text (plan 5.1's last substitution row).
 const PROSE_WG_DIR = /(?:^|[^A-Za-z0-9_])wg-|<wgN>|\bwg\d/;
 
@@ -542,10 +544,12 @@ function classifyFrontend(r) {
   if (/^\s*(\/\/|\/\*|\*)/.test(c)) return "P1-comment";
   if (r.path === "src/shared/testing/ui-harness.tsx") return "P2-fixture";
   if (/data-ac-testid/.test(c)) return "P0-testid";
-  if (/class(Name)?\s*=|ac-wg-|workgroup-group|workgroup-groups|\.wg-|css`/.test(c)) return "P0-css";
+  if (/class(Name)?\s*=|ac-wg-|workgroup-group|workgroup-groups|\.wg-|css`/.test(
+    c)) return "P0-css";
   if (/"workgroup_task_updated"|"workgroupCreated"|"workgroupRemoved"/.test(c)) return "P0-event";
   if (/%WORKGROUP%/.test(c)) return "P0-token";
-  if (/"workgroupCoordinator"|"selected-workgroup"|"workgroups"|"workgroup"/.test(c)) return "P0-key";
+  if (/"workgroupCoordinator"|"selected-workgroup"|"workgroups"|"workgroup"/.test(
+    c)) return "P0-key";
   return "P0-identifier";
 }
 
