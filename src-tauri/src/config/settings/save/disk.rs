@@ -512,7 +512,7 @@ pub(crate) fn project_lists_from_projection(
     projection: &Map<String, Value>,
 ) -> Result<Option<DiskProjectLists>, String> {
     let value = Value::Object(projection.clone());
-    let path = Path::new("project-paths.json");
+    let path = Path::new(crate::config::instance_artifacts::PROJECT_PATHS_FILE_NAME);
     let project_paths = match value.get("projectPaths") {
         None | Some(serde_json::Value::Null) => value
             .get(FIELD_PROJECT_PATH)

@@ -49,7 +49,9 @@ pub(super) fn load_and_validate_resume_artifacts(
     validate_run_presence(run_dir)?;
     validate_required_artifact_file(&attempts_path(run_dir))?;
     validate_report_presence(run_dir)?;
-    validate_required_artifact_file(&run_dir.join("report.md"))?;
+    validate_required_artifact_file(
+        &run_dir.join(default_run_artifact_paths(String::new()).report_markdown),
+    )?;
     validate_attempt_state_dir(&state_dir)?;
 
     let run_artifact = load_run(run_dir)?;
