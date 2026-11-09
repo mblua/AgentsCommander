@@ -594,7 +594,7 @@ fn configured_powershell_host_shutdown_reaps_agent() {
             if !process_exists(host_pid) {
                 return;
             }
-            std::thread::sleep(POLL_INTERVAL);
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
         panic!("tracked PowerShell host {host_pid} still alive after destroy");
     });

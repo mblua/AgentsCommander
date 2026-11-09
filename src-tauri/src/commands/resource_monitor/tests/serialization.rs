@@ -36,7 +36,7 @@ async fn force_kill_settles_past_concurrent_terminating() {
     // Wait until the watchdog kill has parked the group in `Terminating`.
     let mut waited_ms = 0;
     while !backend.entered.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
         waited_ms += 5;
         assert!(waited_ms < 2000, "watchdog kill never entered Terminating");
     }
