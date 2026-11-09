@@ -79,7 +79,7 @@ fn discover_source_candidates(
         witness.parents.push(base.clone());
         if base
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(is_ac_root_name)
         {
             candidates.push(base.clone());
