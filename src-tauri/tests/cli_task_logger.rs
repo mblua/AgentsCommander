@@ -111,7 +111,7 @@ fn backup_paths(task_path: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.expect("entry").path())
         .filter(|path| {
             path.file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|name| name.starts_with("TASK.") && name.ends_with(".bak.md"))
         })
         .collect();

@@ -74,7 +74,7 @@ impl CodingAgentKind {
         fn basename(token: &str) -> String {
             std::path::Path::new(token)
                 .file_stem()
-                .and_then(|s| s.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or(token)
                 .to_lowercase()
         }

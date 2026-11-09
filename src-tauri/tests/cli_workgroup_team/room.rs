@@ -287,7 +287,7 @@ fn outbox_files(root: &Path) -> Vec<PathBuf> {
         };
         for f in files.flatten() {
             let p = f.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("json") {
+            if p.extension().and_then(std::ffi::OsStr::to_str) == Some("json") {
                 out.push(p);
             }
         }

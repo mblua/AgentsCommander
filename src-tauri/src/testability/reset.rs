@@ -169,7 +169,10 @@ fn validate_candidate(exe_parent: &Path, candidate: &Path) -> Result<(), String>
         return Err("reset_candidate_parent_mismatch".to_string());
     }
 
-    let file_name = candidate.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let file_name = candidate
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("");
     if file_name != TESTABLE_CONFIG_DIR && file_name != TESTABLE_PROJECT_DIR {
         return Err("reset_candidate_name_not_allowed".to_string());
     }
