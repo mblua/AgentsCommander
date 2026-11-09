@@ -342,5 +342,9 @@ pub(crate) fn cleanup_stale_instance_directories(instances_dir: &Path) -> io::Re
     Ok(())
 }
 
+pub(crate) fn api_bound_root_exists(path: &Path) -> bool {
+    path.exists()
+}
+
 #[cfg(test)]
 mod tests;

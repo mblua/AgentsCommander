@@ -8,6 +8,7 @@
 
 use super::auth::ApiClient;
 use super::error::ApiError;
+use crate::filesystem::directories;
 
 /// Resolve the sender FQN for an authenticated client.
 ///
@@ -18,7 +19,7 @@ use super::error::ApiError;
 /// - Logs a `WARN` if the freshly-derived FQN differs from the stored
 ///   `boundFqn` hint (replica moved since mint), and uses the fresh value.
 pub fn resolve_from(client: &ApiClient) -> Result<String, ApiError> {
-    if !std::path::Path::new(&client.bound_root).exists() {
+    if !directories::api_bound_root_exists(std::path::Path::new(&client.bound_root)) {
         return Err(ApiError::Unauthorized(
             "bound replica no longer exists; re-mint".to_string(),
         ));
