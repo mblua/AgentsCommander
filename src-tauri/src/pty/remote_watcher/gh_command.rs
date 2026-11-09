@@ -1,7 +1,7 @@
 use std::path::Path;
 
 #[cfg(windows)]
-use super::CREATE_NO_WINDOW;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub(crate) use crate::process::github::GhCommandSpec;
 
