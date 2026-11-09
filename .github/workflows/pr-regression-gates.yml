@@ -220,7 +220,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g --ignore-scripts npm@11.6.2
 
       - name: Install frontend dependencies
         # Never pass --omit=optional: jscpd's native runner arrives through
@@ -407,7 +407,7 @@ jobs:
         run: npm install -g --ignore-scripts npm@11.6.2
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
