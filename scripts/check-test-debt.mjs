@@ -276,11 +276,14 @@ function hasExecutableRustBody(originalBody, strippedBody) {
   if (/^(todo!\s*\(\s*\)|unimplemented!\s*\(\s*\)|panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\))\s*;?$/.test(compact)) {
     return false;
   }
-  if (/\b(?:assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(/.test(withoutComments)) return true;
+  if (/\b(?:assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(/.test(
+    withoutComments)) return true;
   if (/\?/.test(withoutComments)) return true;
   if (/\.(?:unwrap|expect)\s*\(/.test(withoutComments)) return true;
-  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*!\s*[\(\[]/.test(withoutComments)) return true;
-  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
+  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*!\s*[\(\[]/.test(
+    withoutComments)) return true;
+  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(
+    withoutComments)) return true;
   if (/\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
   return false;
 }
@@ -497,7 +500,8 @@ function scanRustFile(root, filePath) {
 function describeRanges(source) {
   const masked = maskCommentsAndStrings(source);
   const ranges = [];
-  const re = /\bdescribe(?:\s*\.\s*(?:only|skip|concurrent|each))*\s*\(\s*(['"`])([^'"`]+)\1[\s\S]*?\{/g;
+  const re =
+    /\bdescribe(?:\s*\.\s*(?:only|skip|concurrent|each))*\s*\(\s*(['"`])([^'"`]+)\1[\s\S]*?\{/g;
   let match;
   while ((match = re.exec(source)) !== null) {
     const open = masked.indexOf('{', match.index);
@@ -567,14 +571,16 @@ function addFrontendSkippedFindings(source, rel, ranges, findings) {
   const masked = maskCommentsAndStrings(source);
 
   let direct;
-  const directRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\(/g;
+  const directRe =
+    /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\(/g;
   while ((direct = directRe.exec(masked)) !== null) {
     addFrontendFinding(findings, 'skipped-frontend-test', source, rel, ranges, direct.index,
       directRe.lastIndex);
   }
 
   let skipEach;
-  const skipEachRe = /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\.\s*each\s*\(/g;
+  const skipEachRe =
+    /\b(describe|it|test)(?:\s*\.\s*(?:only|concurrent))*\s*\.\s*(?:skip|todo)\s*\.\s*each\s*\(/g;
   while ((skipEach = skipEachRe.exec(masked)) !== null) {
     const eachClose = findMatchingParen(masked, skipEachRe.lastIndex - 1);
     if (eachClose === -1) continue;
@@ -790,7 +796,8 @@ function printReport(findings, comparison, shapeErrors) {
     console.log(`${status}: ${finding.category} ${finding.id} (${finding.file}:${finding.line})`);
   }
   for (const warning of comparison.warnings) {
-    console.log(`parse-warning: ${warning.id} (${warning.file}:${warning.line}) ${warning.message}`);
+    console.log(
+      `parse-warning: ${warning.id} (${warning.file}:${warning.line}) ${warning.message}`);
   }
   for (const stale of comparison.stale) {
     console.log(`stale-allowlist: ${stale.category} ${stale.id}`);

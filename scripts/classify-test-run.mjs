@@ -422,7 +422,8 @@ function selfTestClauseC() {
     'two #480 blocks must be rejected'
   );
   assertSelf(
-    classify(validReport(), unhandledLog(1, `Error: ${WS_480_MESSAGE.replace('browser.', 'browsers.')}`)) !== null,
+    classify(validReport(), unhandledLog(1,
+      `Error: ${WS_480_MESSAGE.replace('browser.', 'browsers.')}`)) !== null,
     'a one-character-different message must be rejected'
   );
   assertSelf(
@@ -790,7 +791,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     tolerate = main(process.argv.slice(2)) === true;
   } catch (error) {
-    writeLine(`#480 guard: not tolerated — ${error instanceof Error ? error.message : String(error)}`);
+    writeLine(
+      `#480 guard: not tolerated — ${error instanceof Error ? error.message : String(error)}`);
     tolerate = false;
   }
 

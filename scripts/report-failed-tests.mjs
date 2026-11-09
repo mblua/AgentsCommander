@@ -155,11 +155,13 @@ function readReport(reportPath) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { report: null, reason: `vitest JSON report at ${normalizePath(reportPath)} does not parse` };
+    return { report: null, reason:
+      `vitest JSON report at ${normalizePath(reportPath)} does not parse` };
   }
 
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.testResults)) {
-    return { report: null, reason: `vitest JSON report at ${normalizePath(reportPath)} has no testResults` };
+    return { report: null, reason:
+      `vitest JSON report at ${normalizePath(reportPath)} has no testResults` };
   }
 
   return { report: parsed, reason: null };
@@ -209,7 +211,8 @@ function captureReport(reportPath, root) {
 const LEADING_COMMAND = /^::(?:error|warning|notice)(?: [^:]*)?::/;
 
 function assertEmittedLine(line) {
-  assertSelf(!line.includes('\n'), `an emitted record is more than one line: ${JSON.stringify(line)}`);
+  assertSelf(!line.includes('\n'),
+    `an emitted record is more than one line: ${JSON.stringify(line)}`);
   assertSelf(!line.includes('\r'), `an emitted record carries a raw CR: ${JSON.stringify(line)}`);
   const intended = LEADING_COMMAND.exec(line);
   assertSelf(intended !== null, `line is not an intended workflow command: ${line}`);
@@ -296,7 +299,8 @@ function selfTest() {
       });
       lines = captureReport(reportPath, root);
       assertOnlyIntendedCommands(lines);
-      assertSelf(lines.length === 2, `expected one annotation and one summary for ${JSON.stringify(hostile)}`);
+      assertSelf(lines.length === 2,
+        `expected one annotation and one summary for ${JSON.stringify(hostile)}`);
     }
 
     // The sentinel in a suite name, reached through the failed-suite path.
@@ -423,7 +427,8 @@ function selfTest() {
       ],
     });
     lines = captureReport(reportPath, root);
-    assertSelf(lines[0] === '::error file=src/noloc.test.ts::no location: boom', `no-location fallback wrong: ${lines[0]}`);
+    assertSelf(lines[0] === '::error file=src/noloc.test.ts::no location: boom',
+      `no-location fallback wrong: ${lines[0]}`);
 
     // A file that fails to import has a failed suite and no failed assertion.
     write({
@@ -438,10 +443,12 @@ function selfTest() {
     });
     lines = captureReport(reportPath, root);
     assertSelf(
-      lines[0] === '::error file=src/broken.test.ts::src/broken.test.ts: SyntaxError: Unexpected token',
+      lines[
+        0] === '::error file=src/broken.test.ts::src/broken.test.ts: SyntaxError: Unexpected token',
       `failed suite with no assertions not reported: ${lines[0]}`
     );
-    assertSelf(lines[1] === '::notice::1 failing test file(s): src/broken.test.ts', `suite summary wrong: ${lines[1]}`);
+    assertSelf(lines[1] === '::notice::1 failing test file(s): src/broken.test.ts',
+      `suite summary wrong: ${lines[1]}`);
 
     // More than one failure names the first and counts the rest.
     write({
@@ -461,7 +468,8 @@ function selfTest() {
     });
     lines = captureReport(reportPath, root);
     assertSelf(lines.length === 3, `expected two annotations and a summary, got ${lines.length}`);
-    assertSelf(lines[2] === '::notice::2 failing test(s): first and 1 more', `plural summary wrong: ${lines[2]}`);
+    assertSelf(lines[2] === '::notice::2 failing test(s): first and 1 more',
+      `plural summary wrong: ${lines[2]}`);
 
     // Missing and corrupt reports are reported, never thrown.
     fs.rmSync(reportPath);
@@ -514,7 +522,8 @@ if (argv[0] === '--self-test') {
   try {
     report(argv[0] ?? 'npm-test-results.json', process.cwd(), (line) => console.log(line));
   } catch (error) {
-    console.log(note(`report-failed-tests: ${error instanceof Error ? error.message : String(error)}`));
+    console.log(note(
+      `report-failed-tests: ${error instanceof Error ? error.message : String(error)}`));
   }
   process.exitCode = 0;
 }
