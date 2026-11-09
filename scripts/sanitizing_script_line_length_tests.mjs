@@ -181,9 +181,7 @@ test('real Git fixture: merge-base, committed blobs, dirty worktree and CLI exit
     const blob = git(['hash-object', '-w', '--stdin'], `${long()}\n${long()}\n`);
     const entries = git(['ls-tree', 'HEAD:scripts']).split('\n')
       .filter(line => !line.endsWith('\tprobe.js'));
-    const listing = [...entries, `100644 blob ${blob}	probe.js`].join('
-') + '
-';
+    const listing = [...entries, `100644 blob ${blob}\tprobe.js`].join('\n') + '\n';
     const scripts = git(['mktree'], listing);
     const tree = git(['mktree'], `040000 tree ${scripts}\tscripts\n`);
     const d = git(['commit-tree', tree, '-p', a, '-m', 'D']);
