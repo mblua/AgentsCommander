@@ -314,8 +314,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
 
 fn strict_project_ac_root(project: &Path) -> Result<Option<PathBuf>, String> {
     let ac_root = project.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
-    if !ac_root
-        .try_exists()
+    if !crate::filesystem::projects::project_ac_root_try_exists(&ac_root)
         .map_err(|_| "unsafe_path".to_string())?
     {
         return Ok(None);

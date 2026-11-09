@@ -12,6 +12,10 @@ pub(crate) fn project_path_exists(path: &Path) -> bool {
     path.exists()
 }
 
+pub(crate) fn project_ac_root_try_exists(ac_root: &Path) -> io::Result<bool> {
+    ac_root.try_exists()
+}
+
 pub(crate) fn project_path_is_dir(path: &Path) -> bool {
     path.is_dir()
 }
