@@ -44,6 +44,18 @@ pub(super) struct RetainedNonRuntimeCleanup {
     pub(super) container_credential_path: Option<PathBuf>,
 }
 
+enum RouteCleanupFailure {
+    PreRemoverDeadline,
+    Remover(RouteRemovalError),
+    Failed(AppError),
+}
+
+impl From<AppError> for RouteCleanupFailure {
+    fn from(error: AppError) -> Self {
+        Self::Failed(error)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RetainedContainerCleanupAttempt {
     pub(super) in_flight: bool,
@@ -77,36 +89,34 @@ impl RetainedContainerCleanup {
         }
     }
 
-    pub(super) fn remove_route_before_cleanup(
+    fn remove_route_before_cleanup(
         &self,
         control: &ContainerRuntimeControl,
-    ) -> Result<(), AppError> {
+        now: &impl Fn() -> Instant,
+    ) -> Result<(), RouteCleanupFailure> {
         let remover = match self.route_removal.lock() {
             Ok(route_removal) => match &*route_removal {
                 RetainedRouteRemoval::NotRequired => return Ok(()),
                 RetainedRouteRemoval::Pending(remover) => Arc::clone(remover),
                 RetainedRouteRemoval::Unavailable(error) => {
-                    return Err(AppError::Other(format!(
-                        "route removal unavailable: {error}"
-                    )))
+                    return Err(
+                        AppError::Other(format!("route removal unavailable: {error}")).into(),
+                    )
                 }
             },
             Err(_) => {
-                return Err(AppError::Other(
-                    "route-removal ownership lock poisoned".to_string(),
-                ))
+                return Err(
+                    AppError::Other("route-removal ownership lock poisoned".to_string()).into(),
+                )
             }
         };
         let deadline = control.shutdown_deadline().ok_or_else(|| {
             AppError::Other("route removal missing global-sweep deadline".to_string())
         })?;
-        if Instant::now() >= deadline {
-            return Err(AppError::Other(
-                RouteRemovalError::Deadline("globalSweep").to_string(),
-            ));
+        if now() >= deadline {
+            return Err(RouteCleanupFailure::PreRemoverDeadline);
         }
-        remover(self.session_id, deadline)
-            .map_err(|error| AppError::Other(format!("route removal failed: {error}")))?;
+        remover(self.session_id, deadline).map_err(RouteCleanupFailure::Remover)?;
         match self.route_removal.lock() {
             Ok(mut route_removal) => {
                 *route_removal = RetainedRouteRemoval::NotRequired;
@@ -114,7 +124,8 @@ impl RetainedContainerCleanup {
             }
             Err(_) => Err(AppError::Other(
                 "route-removal ownership lock poisoned after removal".to_string(),
-            )),
+            )
+            .into()),
         }
     }
 }
@@ -293,6 +304,16 @@ impl RetainedContainerCleanupRegistry {
         epoch: u64,
         control: &ContainerRuntimeControl,
     ) {
+        self.attempt_with_clock(entry, epoch, control, &Instant::now);
+    }
+
+    pub(super) fn attempt_with_clock(
+        self: &Arc<Self>,
+        entry: Arc<RetainedContainerCleanup>,
+        epoch: u64,
+        control: &ContainerRuntimeControl,
+        now: &impl Fn() -> Instant,
+    ) {
         {
             let mut attempt = entry
                 .attempt
@@ -305,8 +326,8 @@ impl RetainedContainerCleanupRegistry {
             attempt.last_epoch = Some(epoch);
         }
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            entry.remove_route_before_cleanup(control)?;
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), RouteCleanupFailure> {
+            entry.remove_route_before_cleanup(control, now)?;
             if let Some(non_runtime) = entry
                 .non_runtime
                 .lock()
@@ -325,20 +346,21 @@ impl RetainedContainerCleanupRegistry {
             }
 
             match (&entry.runtime, &entry.runtime_handle) {
-                (Some(runtime), Some(handle)) => {
-                    runtime.stop(handle, CONTAINER_STOP_TIMEOUT, control)
-                }
+                (Some(runtime), Some(handle)) => runtime
+                    .stop(handle, CONTAINER_STOP_TIMEOUT, control)
+                    .map_err(RouteCleanupFailure::Failed),
                 (None, Some(_)) => Err(AppError::Other(
                     "container runtime handle retained without a configured runtime".to_string(),
-                )),
+                )
+                .into()),
                 (_, None) => Ok(()),
             }
         }));
 
         let terminal = match result {
             Ok(Ok(())) => true,
-            Ok(Err(error)) => {
-                let message = error.to_string();
+            Ok(Err(failure)) => {
+                let message = record_cleanup_failure(&entry, failure);
                 log::warn!(
                     "[container-transport] retained cleanup failed session={} reason={} \
                         state=retained error={}",
@@ -346,12 +368,6 @@ impl RetainedContainerCleanupRegistry {
                     entry.reason,
                     crate::pty::container_runtime::redact_container_diagnostic_text(&message)
                 );
-                let mut attempt = entry
-                    .attempt
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                attempt.in_flight = false;
-                attempt.last_error = Some(message);
                 false
             }
             Err(_) => {
@@ -396,5 +412,30 @@ impl RetainedContainerCleanupRegistry {
                 entry.reason
             );
         }
+    }
+}
+
+/// Deadline-only attempts keep the last real failure; other failures replace it.
+fn record_cleanup_failure(
+    entry: &RetainedContainerCleanup,
+    failure: RouteCleanupFailure,
+) -> String {
+    let mut attempt = entry
+        .attempt
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    attempt.in_flight = false;
+    let last_error = &mut attempt.last_error;
+    match failure {
+        RouteCleanupFailure::PreRemoverDeadline => last_error
+            .get_or_insert_with(|| RouteRemovalError::Deadline("globalSweep").to_string())
+            .clone(),
+        RouteCleanupFailure::Remover(error @ RouteRemovalError::Deadline(_)) => last_error
+            .get_or_insert_with(|| format!("route removal failed: {error}"))
+            .clone(),
+        RouteCleanupFailure::Remover(error) => last_error
+            .insert(format!("route removal failed: {error}"))
+            .clone(),
+        RouteCleanupFailure::Failed(error) => last_error.insert(error.to_string()).clone(),
     }
 }
