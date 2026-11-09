@@ -71,6 +71,18 @@ test('08 exposure: attribute payload, strings and comments do not supply visibil
   fail({ [p]: code }, { [p]: external }, ['new_exposed_global'], [{ path: p, line: 2 }]);
 });
 
+test('08 exposure: adding an attribute pub token keeps a static private', () => {
+  const result = pass({ [p]: mutex }, { [p]: '#[marker(pub)]\n' + mutex });
+  assert.deepEqual(result.totals, [{ globals: 1 }, { globals: 1 }]);
+});
+
+test('08 exposure: earlier public function does not expose an edited private static', () => {
+  const prefix = 'pub fn g() {}\n';
+  const result = pass({ [p]: prefix + mutex },
+    { [p]: prefix + mutex.replace('new(0)', 'new(1)') });
+  assert.deepEqual(result.totals, [{ globals: 1 }, { globals: 1 }]);
+});
+
 test('08 exposure: static mut and recognized mutable aliases', () => {
   visibility('static mut X: u8 = 0;');
   for (const type of ['Mutex', 'RwLock', 'OnceLock', 'AtomicU8']) {
