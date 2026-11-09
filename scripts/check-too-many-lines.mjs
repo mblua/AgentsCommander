@@ -201,45 +201,79 @@ export function counts(baseline) {
 }
 
 // Tokenize only what the macro guard needs; strings/comments cannot name a declaration.
+function donorBlockCommentEnd(source, i) {
+  let depth = 1; i += 2;
+  while (i < source.length && depth) {
+    if (source.startsWith('/*', i)) { depth++; i += 2; }
+    else if (source.startsWith('*/', i)) { depth--; i += 2; }
+    else i++;
+  }
+  requireInput(depth === 0, 'unterminated donor comment');
+  return i;
+}
+function donorQuotedStringEnd(source, i) {
+  let closed = false;
+  while (i < source.length) {
+    if (source[i] === '\\') { i += 2; continue; }
+    if (source[i++] === '"') { closed = true; break; }
+  }
+  requireInput(closed, 'unterminated donor string');
+  return i;
+}
+function donorTriviaEnd(source, i) {
+  const rest = source.slice(i);
+  if (/^\s/.test(rest)) return i + 1;
+  if (rest.startsWith('//')) {
+    const end = source.indexOf('\n', i); return end < 0 ? source.length : end;
+  }
+  if (rest.startsWith('/*')) return donorBlockCommentEnd(source, i);
+  return null;
+}
+function donorLiteralEnd(source, i) {
+  const rest = source.slice(i);
+  const raw = /^(?:br|cr|r)(#*)"/.exec(rest);
+  if (raw) {
+    const end = source.indexOf(`"${raw[1]}`, i + raw[0].length);
+    requireInput(end >= 0, 'unterminated donor raw string');
+    return end + 1 + raw[1].length;
+  }
+  const quoted = /^(?:b|c)?"/.exec(rest);
+  if (quoted) return donorQuotedStringEnd(source, i + quoted[0].length);
+  const character = /^(?:b)?'(?:\\(?:u\{[\da-fA-F_]+\}|.)|[^'\\\r\n])'/u.exec(rest);
+  if (character) return i + character[0].length;
+  return null;
+}
 function macroTokens(source) {
   const tokens = [];
   for (let i = 0; i < source.length;) {
-    const rest = source.slice(i);
-    if (/^\s/.test(rest)) { i++; continue; }
-    if (rest.startsWith('//')) {
-      const end = source.indexOf('\n', i); i = end < 0 ? source.length : end; continue;
-    }
-    if (rest.startsWith('/*')) {
-      let depth = 1; i += 2;
-      while (i < source.length && depth) {
-        if (source.startsWith('/*', i)) { depth++; i += 2; }
-        else if (source.startsWith('*/', i)) { depth--; i += 2; }
-        else i++;
-      }
-      requireInput(depth === 0, 'unterminated donor comment'); continue;
-    }
-    const raw = /^(?:br|cr|r)(#*)"/.exec(rest);
-    if (raw) {
-      const end = source.indexOf(`"${raw[1]}`, i + raw[0].length);
-      requireInput(end >= 0, 'unterminated donor raw string');
-      i = end + 1 + raw[1].length; continue;
-    }
-    const quoted = /^(?:b|c)?"/.exec(rest);
-    if (quoted) {
-      i += quoted[0].length; let closed = false;
-      while (i < source.length) {
-        if (source[i] === '\\') { i += 2; continue; }
-        if (source[i++] === '"') { closed = true; break; }
-      }
-      requireInput(closed, 'unterminated donor string'); continue;
-    }
-    const character = /^(?:b)?'(?:\\(?:u\{[\da-fA-F_]+\}|.)|[^'\\\r\n])'/u.exec(rest);
-    if (character) { i += character[0].length; continue; }
-    const name = /^(?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*/u.exec(rest);
+    const trivia = donorTriviaEnd(source, i);
+    if (trivia !== null) { i = trivia; continue; }
+    const literal = donorLiteralEnd(source, i);
+    if (literal !== null) { i = literal; continue; }
+    const name = /^(?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*/u.exec(source.slice(i));
     if (name) { tokens.push(name[0]); i += name[0].length; }
     else tokens.push(source[i++]);
   }
   return tokens;
+}
+function macroTokenMayCarry(tokens, j, macro, name) {
+  const token = tokens[j];
+  return token.replace(/^r#/, '') === name.replace(/^r#/, '') ||
+    /paste|concat_idents/.test(macro) || token === '[' && tokens[j + 1] === '<';
+}
+function macroBodyMayCarry(tokens, start, macro, name, matching) {
+  const stack = [matching[tokens[start]]];
+  for (let j = start + 1; j < tokens.length; j++) {
+    if (macroTokenMayCarry(tokens, j, macro, name)) return true;
+    const token = tokens[j];
+    if (matching[token]) stack.push(matching[token]);
+    else if ([')', ']', '}'].includes(token)) {
+      requireInput(stack.pop() === token, 'unbalanced donor macro');
+      if (!stack.length) break;
+    }
+    requireInput(j + 1 < tokens.length || !stack.length, 'unterminated donor macro');
+  }
+  return false;
 }
 function macroMayCarry(source, name) {
   const tokens = macroTokens(source), matching = { '(': ')', '[': ']', '{': '}' };
@@ -249,18 +283,7 @@ function macroMayCarry(source, name) {
     let start = i + 1;
     if (macro === 'macro_rules' && NAME.test(tokens[start] ?? '')) start++;
     if (!matching[tokens[start]]) continue;
-    const stack = [matching[tokens[start]]];
-    for (let j = start + 1; j < tokens.length; j++) {
-      const token = tokens[j];
-      if (token.replace(/^r#/, '') === name.replace(/^r#/, '') ||
-        /paste|concat_idents/.test(macro) || token === '[' && tokens[j + 1] === '<') return true;
-      if (matching[token]) stack.push(matching[token]);
-      else if ([')', ']', '}'].includes(token)) {
-        requireInput(stack.pop() === token, 'unbalanced donor macro');
-        if (!stack.length) break;
-      }
-      requireInput(j + 1 < tokens.length || !stack.length, 'unterminated donor macro');
-    }
+    if (macroBodyMayCarry(tokens, start, macro, name, matching)) return true;
   }
   return false;
 }
@@ -281,6 +304,21 @@ export function originalAbsent(entry, { readSource, stat = fs.statSync, root = R
   }
   return true;
 }
+function unmatchedComparison(e, base, unmatched, used, absent, p) {
+  const donors = base.filter(b => pair(b) === pair(e));
+  const receivers = unmatched.filter(h => pair(h) === pair(e));
+  if (donors.length > 1 || receivers.length > 1) {
+    return { ...e, status: 'AMBIGUOUS', ceiling: null };
+  }
+  const donor = donors[0];
+  if (!donor || used.has(key(donor)) || !absent(donor)) {
+    return { ...e, status: 'NEW', ceiling: null };
+  }
+  used.add(key(donor));
+  const ceiling = donor.sites[p].lines;
+  return { ...e, status: e.lines <= ceiling ? 'MOVED' : 'GROWN',
+    donor: donor.id, ceiling };
+}
 export function compare(observed, baseline, absent) {
   validateEnvelope(observed); validateBaseline(baseline);
   const p = observed.platform;
@@ -294,21 +332,8 @@ export function compare(observed, baseline, absent) {
     const ceiling = donor.sites[p].lines;
     result.push({ ...e, status: e.lines > ceiling ? 'GROWN' : 'EXACT', ceiling });
   }
-  for (const e of unmatched) {
-    const donors = base.filter(b => pair(b) === pair(e));
-    const receivers = unmatched.filter(h => pair(h) === pair(e));
-    if (donors.length > 1 || receivers.length > 1) {
-      result.push({ ...e, status: 'AMBIGUOUS', ceiling: null }); continue;
-    }
-    const donor = donors[0];
-    if (!donor || used.has(key(donor)) || !absent(donor)) {
-      result.push({ ...e, status: 'NEW', ceiling: null }); continue;
-    }
-    used.add(key(donor));
-    const ceiling = donor.sites[p].lines;
-    result.push({ ...e, status: e.lines <= ceiling ? 'MOVED' : 'GROWN',
-      donor: donor.id, ceiling });
-  }
+  for (const e of unmatched)
+    result.push(unmatchedComparison(e, base, unmatched, used, absent, p));
   for (const e of base) if (!used.has(key(e)))
     result.push({ ...e, status: 'ABSENT', ceiling: e.sites[p].lines });
   return { platform: p, sourceCommit: observed.sourceCommit, results: result,
