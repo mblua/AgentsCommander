@@ -16,17 +16,23 @@ class Unknown extends Error {}
 const unknown = reason => { throw new Unknown(reason); };
 const need = (ok, reason) => { if (!ok) unknown(reason); };
 
+// Angle depth after token t; a negative depth is unbalanced.
+function angleDepth(angle, t) {
+  if (t.text === '<') angle++;
+  else if (t.text === '>') angle--;
+  else if (t.text === '>>') angle -= 2;
+  else if (t.text === '->') { /* arrow is not a closing angle */ }
+  if (angle < 0) unknown('unbalanced angle brackets');
+  return angle;
+}
+
 // Depth-aware split of tokens on a separator, counting angle brackets as nesting.
 function split(tokens, separator) {
   const parts = [[]];
   let angle = 0;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t.text === '<') angle++;
-    else if (t.text === '>') angle--;
-    else if (t.text === '>>') angle -= 2;
-    else if (t.text === '->') { /* arrow is not a closing angle */ }
-    if (angle < 0) unknown('unbalanced angle brackets');
+    angle = angleDepth(angle, t);
     if (['(', '[', '{'].includes(t.text) && t.mate !== undefined) {
       const end = tokens.findIndex(x => x.index === t.mate);
       need(end > i, 'unbalanced delimiter');
@@ -264,44 +270,61 @@ export function createReceiverClassifier(context) {
   function competition(scan, module, chosen, method) {
     for (const s of scan.scopes) {
       need(!s.globs.length, 'glob import may supply competing method');
-      for (const b of s.bindings.values()) {
-        if (b.kind === 'shadow') {
-          // Same-file traits are in scope too.
-          const local = scan.items.find(i => i.kind === 'trait' && i.name === b.name &&
-            i.scope === s);
-          if (!local || local === chosen.trait.item) continue;
-          const declares = scan.items.some(i => i.kind === 'fn' && i.name === method &&
-            i.start > local.start && i.end <= local.end);
-          if (declares && openImpls({ item: local })) unknown('competing same-file trait method');
-          continue;
-        }
-        if (b.kind !== 'import') continue;
-        if (/^tauri(?:::|$)/.test(b.target ?? '')) unknown('Tauri trait import in scope');
-        if (/^(?:std|core|alloc)::/.test(b.target ?? '') || b.target === undefined) continue;
-        let local;
-        try { local = traitAt(canonical(b.target, module)); }
-        catch (e) { if (e instanceof Unknown) continue; throw e; }
-        if (local.item === chosen.trait.item) continue;
-        const declares = local.scan.items.some(i => i.kind === 'fn' && i.name === method &&
-          i.start > local.item.start && i.end <= local.item.end);
-        if (declares && openImpls(local)) unknown('competing in-scope trait method');
-      }
+      for (const b of s.bindings.values()) competingBinding(scan, module, chosen, method, s, b);
     }
     for (const path of tree.keys()) {
       if (!/^src-tauri\/src\/.*\.rs$/.test(path)) continue;
-      const other = scanOf(path);
-      for (const impl of other.items.filter(i => i.kind === 'impl')) {
-        const head = other.tokens.slice(impl.first + 1,
-          other.tokens.findIndex(t => t.start === impl.bodyStart));
-        const isTraitImpl = head.some(t => t.name === 'for');
-        const target = isTraitImpl ? head.slice(head.findIndex(t => t.name === 'for') + 1) : head;
-        if (!target.some(t => t.name === 'dyn')) continue;
-        if (!target.some(t => t.name === chosen.trait.item.name)) continue;
-        const named = other.items.some(i => i.kind === 'fn' && i.name === method &&
-          i.start > impl.start && i.end <= impl.end);
-        if (named) unknown('inherent or trait impl method on dyn port');
+      competingDynImpls(scanOf(path), chosen, method);
+    }
+  }
+  function competingBinding(scan, module, chosen, method, s, b) {
+    if (b.kind === 'shadow') {
+      competingShadow(scan, chosen, method, s, b);
+      return;
+    }
+    if (b.kind !== 'import') return;
+    competingImport(module, chosen, method, b);
+  }
+  function competingShadow(scan, chosen, method, s, b) {
+    // Same-file traits are in scope too.
+    const local = scan.items.find(i => i.kind === 'trait' && i.name === b.name &&
+      i.scope === s);
+    if (!local || local === chosen.trait.item) return;
+    const declares = scan.items.some(i => i.kind === 'fn' && i.name === method &&
+      i.start > local.start && i.end <= local.end);
+    if (declares && openImpls({ item: local })) unknown('competing same-file trait method');
+  }
+  function competingImport(module, chosen, method, b) {
+    if (/^tauri(?:::|$)/.test(b.target ?? '')) unknown('Tauri trait import in scope');
+    if (/^(?:std|core|alloc)::/.test(b.target ?? '') || b.target === undefined) return;
+    const local = importedTrait(module, b.target);
+    if (local === null) return;
+    if (local.item === chosen.trait.item) return;
+    const declares = local.scan.items.some(i => i.kind === 'fn' && i.name === method &&
+      i.start > local.item.start && i.end <= local.item.end);
+    if (declares && openImpls(local)) unknown('competing in-scope trait method');
+  }
+  // Only Unknown means the import does not resolve to a trait; other errors propagate.
+  function importedTrait(module, target) {
+    try { return traitAt(canonical(target, module)); }
+    catch (e) { if (e instanceof Unknown) return null; throw e; }
+  }
+  function competingDynImpls(other, chosen, method) {
+    for (const impl of other.items.filter(i => i.kind === 'impl')) {
+      if (dynImplCompetes(other, impl, chosen, method)) {
+        unknown('inherent or trait impl method on dyn port');
       }
     }
+  }
+  function dynImplCompetes(other, impl, chosen, method) {
+    const head = other.tokens.slice(impl.first + 1,
+      other.tokens.findIndex(t => t.start === impl.bodyStart));
+    const isTraitImpl = head.some(t => t.name === 'for');
+    const target = isTraitImpl ? head.slice(head.findIndex(t => t.name === 'for') + 1) : head;
+    if (!target.some(t => t.name === 'dyn')) return false;
+    if (!target.some(t => t.name === chosen.trait.item.name)) return false;
+    return other.items.some(i => i.kind === 'fn' && i.name === method &&
+      i.start > impl.start && i.end <= impl.end);
   }
   // True when a trait has an impl for a generic, object, reference, Box or Arc target.
   function openImpls(trait) {
@@ -326,30 +349,41 @@ export function createReceiverClassifier(context) {
 
   // Receiver type grammar: [&['a][mut]] (dyn Bounds | Arc<dyn Bounds>).
   function objectType(scan, module, tokens) {
+    let rest = tokens.slice(referenceEnd(tokens));
+    if (rest[0]?.name !== 'dyn') {
+      const wrapped = objectWrapper(scan, module, rest);
+      if (wrapped.real) return wrapped;
+      rest = wrapped.rest;
+    }
+    const b = bounds(scan, module, rest.slice(1));
+    if (b.real) return b;
+    need(b.traits.length === 1, 'trait object needs exactly one port trait');
+    return { traits: b.traits };
+  }
+  // Length of the optional `&['a][mut]` reference prefix.
+  function referenceEnd(tokens) {
     let k = 0;
     if (tokens[k]?.text === '&') {
       k++;
       if (tokens[k]?.kind === 'lifetime') k++;
       if (tokens[k]?.name === 'mut') k++;
     }
-    let rest = tokens.slice(k);
-    if (rest[0]?.name !== 'dyn') {
-      const open = rest.findIndex(t => t.text === '<');
-      if (open < 0 && simplePath(rest)) {
-        const plain = resolveType(scan, module, rest);
-        if (plain.tauri && TAURI_REAL.test(plain.tauri)) return { real: plain.tauri };
-      }
-      need(open > 0 && closeAngle(rest, open) === rest.length - 1, 'unsupported receiver type');
-      const head = resolveType(scan, module, rest.slice(0, open));
-      if (head.tauri) return { real: head.tauri };
-      need(head.arc, 'unsupported wrapper type');
-      rest = rest.slice(open + 1, -1);
-      need(rest[0]?.name === 'dyn', 'Arc without trait object');
+    return k;
+  }
+  // Non-dyn receiver: a plain Tauri path ({real}) or `Arc<dyn ...>` ({rest}: the dyn tokens).
+  function objectWrapper(scan, module, rest) {
+    const open = rest.findIndex(t => t.text === '<');
+    if (open < 0 && simplePath(rest)) {
+      const plain = resolveType(scan, module, rest);
+      if (plain.tauri && TAURI_REAL.test(plain.tauri)) return { real: plain.tauri };
     }
-    const b = bounds(scan, module, rest.slice(1));
-    if (b.real) return b;
-    need(b.traits.length === 1, 'trait object needs exactly one port trait');
-    return { traits: b.traits };
+    need(open > 0 && closeAngle(rest, open) === rest.length - 1, 'unsupported receiver type');
+    const head = resolveType(scan, module, rest.slice(0, open));
+    if (head.tauri) return { real: head.tauri };
+    need(head.arc, 'unsupported wrapper type');
+    const inner = rest.slice(open + 1, -1);
+    need(inner[0]?.name === 'dyn', 'Arc without trait object');
+    return { rest: inner };
   }
 
   // Generic parameter list `<A: B, C>` plus `where` clauses; returns name -> bound tokens.
@@ -439,24 +473,30 @@ export function createReceiverClassifier(context) {
   function captured(tokens, body, dot) {
     for (let k = body.start; k < body.end; k++) {
       const t = tokens[k];
-      if (t.name === 'async') {
-        let b = k + 1;
-        if (tokens[b]?.name === 'move') b++;
-        if (tokens[b]?.text === '{' && dot > b && dot < tokens[b].mate) return true;
-      }
-      if ((t.text === '|' || t.text === '||') && closureStart(tokens, k)) {
-        let e = k;
-        if (t.text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
-        if (tokens[e + 1]?.text === '{') {
-          if (dot > e && dot < tokens[e + 1].mate) return true;
-        } else {
-          // Expression closure: conservatively extends to the enclosing group's end.
-          const close = groupsAround(tokens, k)[0] ?? body.end;
-          if (dot > e && dot < close) return true;
-        }
-      }
+      if (t.name === 'async' && asyncContains(tokens, k, dot)) return true;
+      if ((t.text === '|' || t.text === '||') && closureStart(tokens, k) &&
+        closureContains(tokens, body, k, dot)) return true;
     }
     return false;
+  }
+  function asyncContains(tokens, k, dot) {
+    let b = k + 1;
+    if (tokens[b]?.name === 'move') b++;
+    return tokens[b]?.text === '{' && dot > b && dot < tokens[b].mate;
+  }
+  // Index of the closing pipe (`||`: the token itself); body.end when it is missing.
+  function closurePipeEnd(tokens, body, k) {
+    let e = k;
+    if (tokens[k].text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
+    return e;
+  }
+  // Block closure: inside its braces only. Expression closure: up to the enclosing group's end.
+  function closureContains(tokens, body, k, dot) {
+    const e = closurePipeEnd(tokens, body, k);
+    if (tokens[e + 1]?.text === '{') return dot > e && dot < tokens[e + 1].mate;
+    // Expression closure: conservatively extends to the enclosing group's end.
+    const close = groupsAround(tokens, k)[0] ?? body.end;
+    return dot > e && dot < close;
   }
   function groupsAround(tokens, k) {
     const out = [];
@@ -654,13 +694,8 @@ export function createReceiverClassifier(context) {
     const sh = header(scan, struct, struct.first + 2);
     need(!sh.rest.length, 'unsupported struct header');
     const bodyOpen = tokens.findIndex(t => t.start === struct.bodyStart);
-    const after = (p, k) => p.findIndex(t => t.index === p[k].mate) + 1;
-    const fields = split(tokens.slice(bodyOpen + 1, tokens[bodyOpen].mate), ',').map(p => {
-      let k = 0;
-      while (p[k]?.text === '#' && p[k + 1]?.text === '[') k = after(p, k + 1);
-      if (p[k]?.name === 'pub') { k++; if (p[k]?.text === '(') k = after(p, k); }
-      return p.slice(k);
-    });
+    const fields = split(tokens.slice(bodyOpen + 1, tokens[bodyOpen].mate), ',')
+      .map(p => normalizeField(p));
     const hits = fields.filter(p => p[0]?.name === field && p[1]?.text === ':');
     need(hits.length === 1, 'field not uniquely declared');
     const type = hits[0].slice(2);
@@ -668,24 +703,36 @@ export function createReceiverClassifier(context) {
     const structGenerics = genericBounds(scan, sh.generics, sh.where);
     if (type.length === 1 && structGenerics.has(type[0].name)) {
       need(policy === objectType, 'generic field does not prove a concrete state handle');
-      const position = [...structGenerics.keys()].indexOf(type[0].name);
-      const implGenerics = genericBounds(scan, ih.generics, ih.where);
-      need(args.length === structGenerics.size && args.every(a => a.length === 1),
-        'impl target arguments do not match struct binders');
-      const arg = args[position][0].name;
-      need(implGenerics.has(arg), 'impl target argument is not an impl generic');
-      need(new Set(args.map(a => a[0].name)).size === args.length, 'repeated impl binder');
-      const all = [];
-      for (const tokensOf of [structGenerics.get(type[0].name), implGenerics.get(arg)]) {
-        if (!tokensOf.length) continue;
-        const b = bounds(scan, module, tokensOf);
-        if (b.real) return { real: b.real };
-        all.push(...b.traits);
-      }
-      return { traits: all, declaration };
+      return genericFieldType(scan, module, ih, args, structGenerics, type, declaration);
     }
     const o = policy(scan, module, type);
     return { ...o, declaration };
+  }
+  // Field tokens after leading attributes and `pub`/`pub(...)` visibility.
+  function normalizeField(p) {
+    const after = (part, k) => part.findIndex(t => t.index === part[k].mate) + 1;
+    let k = 0;
+    while (p[k]?.text === '#' && p[k + 1]?.text === '[') k = after(p, k + 1);
+    if (p[k]?.name === 'pub') { k++; if (p[k]?.text === '(') k = after(p, k); }
+    return p.slice(k);
+  }
+  // Field typed by a struct binder: struct and matching impl bounds, in that order.
+  function genericFieldType(scan, module, ih, args, structGenerics, type, declaration) {
+    const position = [...structGenerics.keys()].indexOf(type[0].name);
+    const implGenerics = genericBounds(scan, ih.generics, ih.where);
+    need(args.length === structGenerics.size && args.every(a => a.length === 1),
+      'impl target arguments do not match struct binders');
+    const arg = args[position][0].name;
+    need(implGenerics.has(arg), 'impl target argument is not an impl generic');
+    need(new Set(args.map(a => a[0].name)).size === args.length, 'repeated impl binder');
+    const all = [];
+    for (const tokensOf of [structGenerics.get(type[0].name), implGenerics.get(arg)]) {
+      if (!tokensOf.length) continue;
+      const b = bounds(scan, module, tokensOf);
+      if (b.real) return { real: b.real };
+      all.push(...b.traits);
+    }
+    return { traits: all, declaration };
   }
 
   return {

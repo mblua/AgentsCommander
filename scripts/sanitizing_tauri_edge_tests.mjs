@@ -3,6 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runGate as edgeGate } from './sanitizing_tauri_edge.mjs';
+import { createReceiverClassifier } from './sanitizing_tauri_receivers.mjs';
+import { scanRust } from './sanitizing_rust_scan.mjs';
 
 const R = 'src-tauri/src/';
 const PORTS = 'pub trait Sink: Send + Sync + \'static {\n' +
@@ -402,5 +404,75 @@ export function registerTauriEdgeTests({ trees, control }) {
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].line, 5);
     assert.equal(warnings[0].reason, 'emit receiver not proved: unresolved type path: X');
+  });
+
+  // #4201: classifier over a fixture crate with fresh scans; optional throw on a file's first scan.
+  const classifyEmit = (files, throwOnce = null) => {
+    let calls = 0;
+    const tree = new Map(Object.keys(files).map(p => [p, { path: p }]));
+    const scan = p => {
+      if (p === throwOnce && calls++ === 0) throw new Error('4201 unexpected scan');
+      return scanRust(p, files[p]);
+    };
+    const classifier = createReceiverClassifier({ tree, scan });
+    const x = scanRust(R + 'x.rs', files[R + 'x.rs']);
+    const dot = x.tokens.find((t, i) => t.text === '.' && x.tokens[i + 1]?.name === 'emit');
+    return () => classifier.classify(R + 'x.rs', x, dot);
+  };
+  const warns = result => result.diagnostics.filter(d => d.status === 'WARN').map(d => d.reason);
+
+  test('06 4201 OBJECT_REAL_FILTER: generic Tauri wrapper REAL, plain unknown path UNKNOWN', () => {
+    const generic = use + 'fn f(app: tauri::Odd<R>) { app.emit(1); }';
+    const plain = use + 'fn f(app: tauri::Odd) { app.emit(1); }';
+    assert.deepEqual(classifyEmit(crate(generic))(),
+      { kind: 'REAL', reason: 'Tauri receiver tauri::Odd' });
+    assert.deepEqual(classifyEmit(crate(plain))(),
+      { kind: 'UNKNOWN', reason: 'emit receiver not proved: unsupported receiver type' });
+    assert.deepEqual(warns(counted(generic)), []);
+    assert.deepEqual(warns(counted(plain)),
+      ['emit receiver not proved: unsupported receiver type']);
+  });
+
+  test('06 4201 FIELD_BINDER_POSITION: field binder uses its own impl argument position', () => {
+    const x = use + 'struct W<A: tauri::Emitter, B: Sink> { app: B }\n' +
+      'impl<X: tauri::Emitter, Y: Sink> W<X,Y> { fn go(&self) { self.app.emit(1); } }';
+    const proof = classifyEmit(crate(x))();
+    assert.equal(proof.kind, 'PROVEN_PORT');
+    assert.equal(proof.reason, 'port trait Sink::emit');
+    assert.deepEqual(proof.evidence.declaration, { path: R + 'x.rs', line: 2 });
+    assert.deepEqual(proof.evidence.trait, { path: R + 'ports.rs', line: 1, name: 'Sink' });
+    const result = run({}, crate(x));
+    assert.equal(emits(result), 0);
+    assert.equal(result.measurements.head.find(m => m.path === R + 'x.rs').sites.emit_files,
+      undefined);
+    assert.deepEqual(warns(result), []);
+  });
+
+  test('06 4201 CAPTURE_OUTER_GROUP: only the innermost enclosing group bounds a closure', () => {
+    const inner = use + 'fn f(host: &dyn Sink) { consume((|| 1)); host.emit(1); }';
+    assert.equal(classifyEmit(crate(inner))().kind, 'PROVEN_PORT');
+    assert.deepEqual(warns(proven(inner)), []);
+    const captured = 'emit receiver not proved: receiver captured by closure or async block';
+    for (const x of [use + 'fn f(host: &dyn Sink) { consume((|| (host.emit(1)))); }',
+      use + 'fn f(host: &dyn Sink) { consume((|| 1)); async move { host.emit(1); }; }']) {
+      assert.deepEqual(classifyEmit(crate(x))(), { kind: 'UNKNOWN', reason: captured });
+      const result = counted(x);
+      assert.deepEqual(warns(result), [captured]);
+      assert.deepEqual(result.measurements.head.find(m => m.path === R + 'x.rs').sites.emit_files
+        .map(site => site.line), [2]);
+    }
+  });
+
+  test('06 4201 COMPETITION_SWALLOW_ALL: unexpected import resolution errors propagate', () => {
+    const x = use + 'use crate::q::Q;\nfn f(host: &dyn Sink) { host.emit(1); }';
+    const lib = 'mod ports;\nmod x;\nmod q;\n';
+    const q = text => files({ 'lib.rs': lib, 'ports.rs': PORTS, 'x.rs': x, 'q.rs': text });
+    const declared = q('pub trait Q { fn unrelated(&self); }\n');
+    assert.throws(classifyEmit(declared, R + 'q.rs'),
+      e => e.constructor === Error && e.message === '4201 unexpected scan');
+    const recovered = classifyEmit(q(''))();
+    assert.equal(recovered.kind, 'PROVEN_PORT');
+    assert.equal(recovered.reason, 'port trait Sink::emit');
+    assert.equal(classifyEmit(declared)().reason, 'port trait Sink::emit');
   });
 }
