@@ -405,12 +405,8 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
     }
 
     // Accept master token from persisted file
-    if let Some(master_path) = crate::config::config_dir().map(|d| d.join("master-token.txt")) {
-        if let Ok(master) = documents::read_cli_outbox_text(&master_path) {
-            if master.trim() == token {
-                return Ok((token, true));
-            }
-        }
+    if crate::filesystem::master_token::matches(crate::config::config_dir().as_deref(), &token) {
+        return Ok((token, true));
     }
 
     // Otherwise must be a valid UUID (all session tokens are UUIDs)
@@ -549,16 +545,10 @@ fn plain_clear_message(
 
 /// Picks the outbox: the app-published path for root tokens, else the agent's own.
 fn plain_clear_outbox_dir(is_root: bool, ac_dir: &std::path::Path) -> std::path::PathBuf {
-    if is_root {
-        crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| std::path::PathBuf::from(s.trim()))
-            .filter(|p| directories::cli_discovery_is_dir(p))
-            .unwrap_or_else(|| ac_dir.join("outbox"))
-    } else {
-        ac_dir.join("outbox")
-    }
+    crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        ac_dir,
+    )
 }
 
 fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
