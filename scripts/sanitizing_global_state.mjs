@@ -1,5 +1,7 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
-import { runMeasuredGate, metric, hit, warning, occurrenceIdentity, resolveAlias as resolveGateAlias, qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
+import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
+  resolveAlias as resolveGateAlias,
+    qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
 const relevantPath = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock|Cell|RefCell)$/;
 function resolveAlias(scan, input, scope) {
@@ -11,7 +13,8 @@ function qualified(scan, tokens, i) {
   return qualifiedGatePath(scan, tokens, i, relevantPath);
 }
 export function runGate(snapshot) {
-  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks, recognizeMoves: true });
+  return runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks,
+    recognizeMoves: true });
 }
 
 const gate = '08';
@@ -55,10 +58,12 @@ const stateType = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|Lazy
 function canonical(scan, tokens) {
   const out = [];
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].text === '::' && tokens[i + 1]?.kind === 'ident' && tokens[i - 1]?.kind !== 'ident') i++;
+    if (tokens[i].text === '::' && tokens[i + 1]?.kind === 'ident' &&
+      tokens[i - 1]?.kind !== 'ident') i++;
     const t = tokens[i];
     if (t.kind === 'string') { out.push('@literal'); continue; }
-    if (t.kind === 'ident' && tokens[i - 1]?.text !== '.' && !(tokens[i - 1]?.text === '::' && tokens[i - 2]?.kind === 'ident')) {
+    if (t.kind === 'ident' && tokens[i - 1]?.text !== '.' && !(tokens[i - 1]?.text === '::' &&
+      tokens[i - 2]?.kind === 'ident')) {
       const r = qualified(scan,tokens,i);
       if (r.ambiguous || r.shadowed || !r.path) return null;
       out.push(r.path); i = r.end - 1;
@@ -79,20 +84,25 @@ function readonlyRegex(scan, item, type, init) {
   if (typeText === 'std::sync::LazyLock < regex::Regex >') {
     const open = init.findIndex(t => t.text === '(');
     if (open < 0 || init[open].mate !== init.at(-1)?.index) return false;
-    return canonical(scan,init.slice(0,open)) === 'std::sync::LazyLock::new' && literalClosure(scan,init.slice(open + 1,-1));
+    return canonical(scan,init.slice(0,open)) === 'std::sync::LazyLock::new' && literalClosure(scan,
+      init.slice(open + 1,-1));
   }
   if (typeText !== 'std::sync::OnceLock < regex::Regex >' || !item ||
     canonical(scan,init) !== 'std::sync::OnceLock::new ( )') return false;
   const ts = scan.tokens;
-  if (ts.filter(t => t.start >= item.start && t.index < item.first).some(t => t.name === 'pub')) return false;
-  const fn = scan.items.filter(i => i.kind === 'fn' && i.bodyStart < item.start && i.end > item.end).at(-1);
+  if (ts.filter(t => t.start >= item.start &&
+    t.index < item.first).some(t => t.name === 'pub')) return false;
+  const fn = scan.items.filter(i => i.kind === 'fn' && i.bodyStart < item.start &&
+    i.end > item.end).at(-1);
   if (!fn) return false;
   const refs = ts.filter(t => t.start > fn.bodyStart && t.start < fn.end && t.name === item.name &&
     !(t.index >= item.first && t.index <= item.last));
   if (!refs.length) return false;
   for (const ref of refs) {
     const i = ref.index;
-    if ((ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident') || ts[i + 1]?.text !== '.' || ts[i + 2]?.name !== 'get_or_init' || ts[i + 3]?.text !== '(') return false;
+    if ((ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident') ||
+      ts[i + 1]?.text !== '.' || ts[i + 2]?.name !== 'get_or_init' ||
+        ts[i + 3]?.text !== '(') return false;
     const end = ts[i + 3].mate;
     if (!literalClosure(scan,ts.slice(i + 4,end))) return false;
   }
@@ -103,21 +113,28 @@ function measure(path, scan) {
   m.exposedGlobals = [];
   // The scanner deliberately does not expand macros. Inspect only the explicit
   // static declarations in thread_local!'s token tree, never arbitrary macros.
-  const threadGroups = scan.groups.filter(g => ts[g.start - 1]?.text === '!' && ts[g.start - 2]?.name === 'thread_local');
-  const declarations = scan.items.filter(i => i.kind === 'static').map(item => ({ item, first: item.first, last: item.last, thread: false }));
-  for (const group of threadGroups) for (let i = group.start + 1; i < group.end; i++) if (ts[i].name === 'static') {
+  const threadGroups = scan.groups.filter(g => ts[g.start - 1]?.text === '!' &&
+    ts[g.start - 2]?.name === 'thread_local');
+  const declarations = scan.items.filter(i => i.kind === 'static').map(item => ({ item,
+    first: item.first, last: item.last, thread: false }));
+  for (const group of threadGroups) for (let i = group.start + 1; i < group.end; i++)
+    if (ts[i].name === 'static') {
     let end = i + 1;
-    for (; end < group.end && ts[end].text !== ';'; end++) if (['(','[','{'].includes(ts[end].text)) end = ts[end].mate;
+    for (; end < group.end && ts[end].text !== ';'; end++)
+      if (['(','[','{'].includes(ts[end].text)) end = ts[end].mate;
     if (end === group.end) throw new Error(`${path}:${ts[i].line}: thread_local static not delimitable`);
     declarations.push({ item: null, first: i, last: end, thread: true }); i = end;
   }
   for (const d of declarations) {
     if (scan.isTestOffset(ts[d.first].start)) continue;
-    const segment = ts.slice(d.first,d.last), colon = segment.findIndex(t => t.text === ':'), eq = segment.findIndex(t => t.text === '=');
+    const segment = ts.slice(d.first,d.last), colon = segment.findIndex(t => t.text === ':'),
+      eq = segment.findIndex(t => t.text === '=');
     if (colon < 0 || eq < colon) throw new Error(`${path}:${ts[d.first].line}: static type/initializer not delimitable`);
     const type = segment.slice(colon + 1,eq), init = segment.slice(eq + 1);
     let state = segment[1]?.name === 'mut';
-    for (let i = 0; i < type.length; i++) if (type[i].kind === 'ident' && !(type[i - 1]?.text === '::' && type[i - 2]?.kind === 'ident')) {
+    for (let i = 0; i < type.length; i++)
+      if (type[i].kind === 'ident' && !(type[i - 1]?.text === '::' &&
+        type[i - 2]?.kind === 'ident')) {
       const r = qualified(scan,type,i), value = r.path ?? (r.ambiguous ? r.raw : '');
       if (stateType.test(value) || d.thread && /(?:^|::)(?:Cell|RefCell)$/.test(value)) {
         state = true; warning(m,path,type[i].line,r);
