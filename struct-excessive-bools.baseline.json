@@ -6,204 +6,238 @@
   "seedCommit": "dd307c2a662d65608aa93c06490f3cc06973b626",
   "platforms": [
     "linux",
-    "windows"
+    "linux",
+        "windows"
   ],
   "entries": [
     {
       "id": "rust:crates/terminal-snapshot-renderer/src/protocol.rs::TerminalCellStyle",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:crates/terminal-snapshot-renderer/src/protocol.rs::TerminalSnapshotFidelity",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/capture/state.rs::EffectPreconditions",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/cli/coding_agent.rs::UpdateArgs",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/cli/role_experiment/arguments.rs::RunArgs",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/commands/config/web_server.rs::WebServerOwnedStatus",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/commands/session/create/contracts.rs::PendingLaunch",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/commands/session/create/contracts.rs::PublicationInput",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/commands/session/restart/settlement.rs::RestartFinalizeOptions",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/config_seed/perform.rs::ConfigSeedTestHooks",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/sessions_persistence/record.rs::PersistedSession",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/settings.rs::AppSettings",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/settings/project_path/resolution.rs::ProjectPathPersistenceState",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/settings/source.rs::SourceCapabilities",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/settings/source/coordination.rs::SourceLocalProgress",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/teams.rs::PeerInfo",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/config/teams/peer_projection.rs::LeanPeerInfo",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/context_history/report/session_windows.rs::SessionStats",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/phone/mailbox/poller.rs::PurgePeerResult",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/phone/mailbox/pty_claim.rs::InternalSystemBookkeeping",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/phone/mailbox/pty_dispatch/context.rs::SelectionCandidates",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::CloseSessionOutcome",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/phone/mailbox/tests/support_retained_source.rs::RetainedSourceFlags",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/pty/response_close.rs::ResponseCloseInner",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/pty/terminal_snapshot/test_support.rs::TerminalSnapshotBlockingControlState",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/resource_monitor/watchdog.rs::ResourceWatchdogDecision",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/session/selection/payload.rs::SessionSelection",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/session/selection/replacement.rs::ReplacementProgress",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/session/selection/replacement.rs::ReplacementState",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/session/selection/replacement_fixture.rs::ReplacementFixtureOwnerObservation",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/session/session.rs::Session",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/session/session.rs::SessionInfo",
       "platforms": [
+        "linux",
         "windows"
       ]
     },
     {
       "id": "rust:src-tauri/src/telegram/claude_watcher.rs::ClaudeReader",
       "platforms": [
+        "linux",
         "windows"
       ]
     }

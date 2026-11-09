@@ -392,7 +392,7 @@ export function main(argv, io = {}) {
   try {
     const o = parseArgs(argv);
     const r = o.mode === 'diff' ? runDiff(o.baseRef, io.root ?? ROOT) : runNative(o, io);
-    r.lines.forEach(out);
+    for (const line of r.lines) out(line);
     out(r.exit ? 'struct-excessive-bools: FAIL' : 'struct-excessive-bools: PASS');
     return r.exit;
   } catch (e) {
