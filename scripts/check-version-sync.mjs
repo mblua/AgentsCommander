@@ -77,7 +77,8 @@ const broken = checks.filter(c => c.error || c.version === null);
 if (broken.length > 0) {
   console.error('[check-version-sync] could not read version from:');
   for (const b of broken) console.error(`  - ${b.label} (${b.file}): ${b.error || 'no match'}`);
-  console.error('Update scripts/check-version-sync.mjs anchors if a file was renamed or restructured.');
+  console.error(
+    'Update scripts/check-version-sync.mjs anchors if a file was renamed or restructured.');
   process.exit(1);
 }
 
@@ -91,5 +92,6 @@ if (versions.size === 1) {
 console.error('[check-version-sync] versions disagree:');
 for (const c of checks) console.error(`  - ${c.version}  ${c.label}  (${c.file})`);
 console.error('');
-console.error('Run `npm run version:bump -- patch|minor|major|X.Y.Z` to bring everything back in sync.');
+console.error(
+  'Run `npm run version:bump -- patch|minor|major|X.Y.Z` to bring everything back in sync.');
 process.exit(1);

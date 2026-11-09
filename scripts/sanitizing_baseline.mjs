@@ -18,7 +18,8 @@ function resolveGitExecutable({ cwd, env }) {
     Object.keys(env).sort(codeOrder).find(key => key.toUpperCase() === 'PATH') : 'PATH';
   const searchPath = (pathKey === undefined ? undefined : env[pathKey]) ??
     (windows ? process.env.PATH : '/usr/bin:/bin');
-  const unavailable = detail => new GateError(`Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
+  const unavailable = detail => new GateError(
+    `Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
   // Search only the configured PATH; no implicit Windows cwd-first lookup.
   for (let directory of (searchPath ?? '').split(path.delimiter)) {
     if (windows && directory.startsWith('"') && directory.endsWith('"'))
@@ -47,7 +48,8 @@ export function parseArgs(argv, env = process.env) {
   let baseRef;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] !== '--base-ref' || baseRef !== undefined || i + 1 === argv.length)
-      throw new GateError(`invalid or duplicate argument ${argv[i]}; use --base-ref <commit-ref>`, 2);
+      throw new GateError(`invalid or duplicate argument ${argv[i]}; use --base-ref <commit-ref>`,
+        2);
     baseRef = argv[++i];
     if (!baseRef.trim() || baseRef.startsWith('--'))
       throw new GateError('empty/invalid --base-ref', 2);
@@ -73,7 +75,8 @@ export function parseChanged(bytes) {
   if (parts.length % 2) throw new GateError('diff: malformed name-status');
   const changed = [];
   for (let i = 0; i < parts.length; i += 2) {
-    if (!/^[ADMT]$/.test(parts[i]) || !parts[i + 1]) throw new GateError('diff: unexpected status/path');
+    if (!/^[ADMT]$/.test(parts[i]) || !parts[i + 1]) throw new GateError(
+      'diff: unexpected status/path');
     changed.push({ status: parts[i], path: parts[i + 1] });
   }
   return changed.sort((a, b) => codeOrder(a.path, b.path));
@@ -114,7 +117,8 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
   };
   const oid = args => {
     const value = decode(git(args), 'Git OID').trim();
-    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value)) throw new GateError('Git returned invalid OID');
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value)) throw new GateError(
+      'Git returned invalid OID');
     return value;
   };
   const resolve = ref => oid(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
@@ -201,7 +205,8 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
   }
   return { requestedRef: baseRef, refOid, baseOid, headOid, baseTree, headTree,
     changed, readBlob, addedLines,
-    assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(`HEAD drift from ${headOid}; retry on a stable checkout`); } };
+    assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(
+      `HEAD drift from ${headOid}; retry on a stable checkout`); } };
 }
 // Versioned accepted findings (#3182). An entry turns a matching FAIL into ACCEPTED;
 // an entry that matches nothing is only a WARN: these gates compare against the PR base,
@@ -210,21 +215,26 @@ export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';
 const ALLOWLIST_GATES = ['01', '02', '05', '06', '07', '08', '09', 'cog'];
 export function parseAllowlist(text) {
   let document;
-  try { document = JSON.parse(text); } catch { throw new GateError(`${ALLOWLIST_FILE}: invalid JSON`); }
+  try { document = JSON.parse(text); } catch { throw new GateError(
+    `${ALLOWLIST_FILE}: invalid JSON`); }
   if (document?.version !== 1 || !Array.isArray(document.entries))
     throw new GateError(`${ALLOWLIST_FILE}: must be an object with version 1 and an entries array`);
   const keys = new Set();
   for (const [i, e] of document.entries.entries()) {
     const bad = reason => new GateError(`${ALLOWLIST_FILE}: entry ${i} ${reason}`);
     if (!e || typeof e !== 'object' || Array.isArray(e)) throw bad('must be an object');
-    if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(`gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
+    if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(
+      `gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
     for (const field of ['rule', 'path', 'reason', 'since'])
-      if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(`${field} must be a non-empty string`);
+      if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(
+        `${field} must be a non-empty string`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(e.since)) throw bad('since must be YYYY-MM-DD');
     if (!Number.isInteger(e.issue) || e.issue <= 0) throw bad('issue must be a positive integer');
     for (const field of ['symbol', 'hash'])
-      if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(`${field} must be a non-empty string when present`);
-    if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol || !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
+      if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(
+        `${field} must be a non-empty string when present`);
+    if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol ||
+      !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
       throw bad('cog entries need rule new|stale, symbol and a 12-hex hash');
     if (e.gate !== 'cog' && e.hash !== undefined) throw bad('hash only applies to cog entries');
     const key = JSON.stringify([e.gate, e.rule, e.path, e.symbol ?? null, e.hash ?? null]);

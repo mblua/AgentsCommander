@@ -271,7 +271,8 @@ function verifyFullRoot(result) {
       .filter((file) => /^src\/.*\.(ts|tsx)$/.test(file)),
   );
   const moduleSources = new Set(
-    result.modules.filter((m) => /^src\//.test(normalize(m.source))).map((m) => normalize(m.source)),
+    result.modules.filter((m) => /^src\//.test(normalize(m.source))).map((m) => normalize(
+      m.source)),
   );
   const missing = [...tracked].filter((file) => !moduleSources.has(file));
   if (missing.length > 0) {

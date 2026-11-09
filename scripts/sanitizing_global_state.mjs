@@ -3,7 +3,8 @@ import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
   resolveAlias as resolveGateAlias,
     qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
-const relevantPath = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock|Cell|RefCell)$/;
+const relevantPath =
+  /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock|Cell|RefCell)$/;
 function resolveAlias(scan, input, scope) {
   return resolveGateAlias(scan, input, scope, relevantPath);
 }
@@ -122,14 +123,16 @@ function measure(path, scan) {
     let end = i + 1;
     for (; end < group.end && ts[end].text !== ';'; end++)
       if (['(','[','{'].includes(ts[end].text)) end = ts[end].mate;
-    if (end === group.end) throw new Error(`${path}:${ts[i].line}: thread_local static not delimitable`);
+    if (end === group.end) throw new Error(
+      `${path}:${ts[i].line}: thread_local static not delimitable`);
     declarations.push({ item: null, first: i, last: end, thread: true }); i = end;
   }
   for (const d of declarations) {
     if (scan.isTestOffset(ts[d.first].start)) continue;
     const segment = ts.slice(d.first,d.last), colon = segment.findIndex(t => t.text === ':'),
       eq = segment.findIndex(t => t.text === '=');
-    if (colon < 0 || eq < colon) throw new Error(`${path}:${ts[d.first].line}: static type/initializer not delimitable`);
+    if (colon < 0 || eq < colon) throw new Error(
+      `${path}:${ts[d.first].line}: static type/initializer not delimitable`);
     const type = segment.slice(colon + 1,eq), init = segment.slice(eq + 1);
     let state = segment[1]?.name === 'mut';
     for (let i = 0; i < type.length; i++)

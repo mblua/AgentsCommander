@@ -148,8 +148,10 @@ function printHelp() {
   lines.push('BASELINE');
   lines.push('  There is no implicit baseline path and no auto-discovery. A baseline that');
   lines.push('  is picked up silently is a way to hide cycles by accident.');
-  lines.push('    node 01-rust_module-dependency-cycles.mjs . --write-baseline .rust-cycles-baseline.json');
-  lines.push('    node 01-rust_module-dependency-cycles.mjs . --baseline .rust-cycles-baseline.json');
+  lines.push(
+    '    node 01-rust_module-dependency-cycles.mjs . --write-baseline .rust-cycles-baseline.json');
+  lines.push(
+    '    node 01-rust_module-dependency-cycles.mjs . --baseline .rust-cycles-baseline.json');
   lines.push('');
   lines.push('GRAPH');
   lines.push('  There is no implicit graph path and no auto-discovery, for the same reason');
@@ -243,21 +245,24 @@ function parseArgs(argv) {
         break;
       case '--level': {
         const v = needValue(name, inline, iter);
-        if (!LEVELS.includes(v)) throw new UsageError(`invalid value for --level: ${v} (expected ${LEVELS.join(' | ')})`);
+        if (!LEVELS.includes(v)) throw new UsageError(
+          `invalid value for --level: ${v} (expected ${LEVELS.join(' | ')})`);
         opts.level = v;
         break;
       }
       case '--function-scope': {
         const v = needValue(name, inline, iter);
         if (!FUNCTION_SCOPES.includes(v)) {
-          throw new UsageError(`invalid value for --function-scope: ${v} (expected ${FUNCTION_SCOPES.join(' | ')})`);
+          throw new UsageError(
+            `invalid value for --function-scope: ${v} (expected ${FUNCTION_SCOPES.join(' | ')})`);
         }
         opts.functionScope = v;
         break;
       }
       case '--fail-on': {
         const v = needValue(name, inline, iter);
-        if (!FAIL_ON.includes(v)) throw new UsageError(`invalid value for --fail-on: ${v} (expected ${FAIL_ON.join(' | ')})`);
+        if (!FAIL_ON.includes(v)) throw new UsageError(
+          `invalid value for --fail-on: ${v} (expected ${FAIL_ON.join(' | ')})`);
         opts.failOn = v;
         break;
       }
@@ -291,7 +296,8 @@ function parseArgs(argv) {
     throw new UsageError('--emit-graph and --write-baseline are mutually exclusive');
   }
   if (positionals.length === 0) throw new UsageError('missing <path>');
-  if (positionals.length > 1) throw new UsageError(`unexpected extra positional: ${positionals[1]}`);
+  if (positionals.length > 1) throw new UsageError(
+    `unexpected extra positional: ${positionals[1]}`);
   opts.pathArg = positionals[0];
   return opts;
 }
@@ -1098,7 +1104,8 @@ function parseImplSelfType(header) {
     const ch = h[k];
     if (ch === '<' || ch === '(' || ch === '[') depth++;
     else if (ch === '>' || ch === ')' || ch === ']') depth = depth > 0 ? depth - 1 : 0;
-    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1) && /[\s<]/.test(h[k + 4] || ' ')) {
+    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1) && /[\s<]/.test(h[k + 4] ||
+      ' ')) {
       forIdx = k + 4;
     }
   }
@@ -1597,7 +1604,8 @@ function buildModuleTree(target, opts, ctx) {
       ctx.diagnostics.push({
         level: 'warn',
         code: 'duplicate-module-file',
-        message: `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
+        message:
+          `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
         file: relPath(ctx.root, fileAbs),
       });
       continue;
@@ -2030,7 +2038,8 @@ function sortedModules(tree) {
  * ------------------------------------------------------------------ */
 
 const MACRO_INVOCATION_RE = /\b([A-Za-z_][A-Za-z0-9_]*)\s*!\s*[([{]/g;
-const METHOD_CALL_RE = /[A-Za-z0-9_)\]]\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
+const METHOD_CALL_RE =
+  /[A-Za-z0-9_)\]]\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
 // The lookbehind keeps this to a bare first segment. `std::fs::File::open(`
 // must not read as `File::open(` on a locally defined `File`: without type
 // information that is a guess, and a guess is how an invented edge happens.
@@ -2255,7 +2264,8 @@ function buildCallGraph(targets, trees, opts, ctx) {
         if (!detailed) continue;
         let toId = null;
         if (detailed.rest.length === 1) toId = `${detailed.moduleId}::${detailed.rest[0]}`;
-        else if (detailed.rest.length === 2) toId = `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
+        else if (detailed.rest.length === 2) toId =
+          `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
         if (!emit(from, toId, found.start, 'path-call')) ctx.blindSpots.unresolvedBareCalls++;
       }
 
@@ -2742,7 +2752,8 @@ function analyze(opts) {
     const walk = findRustFiles(rootAbs, compiled, ctx);
     rustFiles = walk.rustFiles;
     manifests = walk.manifests;
-    if (rustFiles.length === 0) throw new AnalysisError(`no .rs files found under ${toPosix(rootAbs)}`);
+    if (rustFiles.length === 0) throw new AnalysisError(
+      `no .rs files found under ${toPosix(rootAbs)}`);
     targets = discoverTargets(rootAbs, manifests, opts, ctx);
     crateDiscovery = 'manifest';
     if (targets.length === 0) {
@@ -3228,7 +3239,8 @@ function renderHuman(result, baselineInfo, exitCode) {
   out.push(`  ${leader('unresolved internal paths', width)} ${bs.unresolvedInternalPaths}`);
   out.push(`  ${leader('external references ignored', width)} ${bs.externalReferences}`);
   out.push(`  ${leader('unreachable files excluded', width)} ${bs.unreachableFiles.length}`);
-  out.push(`  ${leader('unsupported #[path] attributes', width)} ${bs.unsupportedPathAttributes.length}`);
+  out.push(
+    `  ${leader('unsupported #[path] attributes', width)} ${bs.unsupportedPathAttributes.length}`);
   out.push(`  ${leader('mod decls inside inline mod blocks', width)} ${bs.inlineModuleFileDeclarations.length}`);
   out.push('  Function-level results are a LOWER BOUND. Zero is not proof of absence.');
   out.push('');
@@ -4334,7 +4346,8 @@ const FIXTURES = [
     // has to reach the dump.
     name: 'F39 a warn diagnostic still writes a graph and reaches the dump',
     files: {
-      'lib.rs': 'mod missing;\nmod b;\npub fn f() { crate::b::g(); }\npub fn h(_x: &super::Thing) {}\n',
+      'lib.rs':
+        'mod missing;\nmod b;\npub fn f() { crate::b::g(); }\npub fn h(_x: &super::Thing) {}\n',
       'b.rs': 'pub fn g() {}\n',
     },
     run: [],
@@ -4533,7 +4546,8 @@ const FIXTURES = [
       for (const m of ['wt', 'ut', 'nt', 'at', 'multi', 'sp']) {
         h.yes(isTestOnlyModule(res, `crate::${m}`), `crate::${m} is a test-only module`);
         h.no(hasModuleEdge(res, `crate::${m}`, 'crate::b'), `${m} -> b edge excluded by default`);
-        h.yes(hasModuleEdge(withTests, `crate::${m}`, 'crate::b'), `${m} -> b under --include-tests`);
+        h.yes(hasModuleEdge(withTests, `crate::${m}`, 'crate::b'),
+          `${m} -> b under --include-tests`);
       }
     },
   },
@@ -4593,7 +4607,8 @@ const FIXTURES = [
     run: [],
     assert(res, h) {
       for (const [m, attr] of RETAINED_CFG_CASES) {
-        h.yes(hasModuleEdge(res, 'crate::a', `crate::${m}`), `a -> ${m} retained under ${attr || 'no attribute'}`);
+        h.yes(hasModuleEdge(res, 'crate::a', `crate::${m}`),
+          `a -> ${m} retained under ${attr || 'no attribute'}`);
       }
       const calls = res.callGraph.edges.map((e) => e.to);
       h.yes(calls.includes('crate::call_any::g'), 'call under any(test, unix) retained');

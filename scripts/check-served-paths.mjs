@@ -241,7 +241,8 @@ function runCheck(options) {
 
   for (const warning of result.warnings) console.warn(`served-paths warning: ${warning}`);
   if (result.errors.length === 0) {
-    console.log(`served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
+    console.log(
+      `served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
     return 0;
   }
   const prefix = process.env.GITHUB_ACTIONS === 'true' ? '::error::' : '';
@@ -323,7 +324,8 @@ function selfTestCases() {
     }],
     ['case 4: a fetched ref that differs from the row', () => {
       const result = runServedPathsFixture({
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/home-en.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/home-en.md\n' },
       });
       expectError(result, 'has no row');
     }],
@@ -338,7 +340,8 @@ function selfTestCases() {
       const result = runServedPathsFixture({
         inventoryText: selfTestInventory(['| `docs/home-en.md` | `main` | 0.8.43 |']),
         trackedFiles: ['docs/home-en.md', 'src/main.ts'],
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/home-en.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/home-en.md\n' },
       });
       expectNoErrors(result);
       if (result.literals.length !== 1) {
@@ -452,7 +455,8 @@ function selfTest() {
     }
   }
   if (failures.length > 0) {
-    for (const failure of failures) console.error(`check-served-paths self-test failed: ${failure}`);
+    for (const failure of failures) console.error(
+      `check-served-paths self-test failed: ${failure}`);
     return 4;
   }
   console.log(`check-served-paths self-test passed (${selfTestCases().length} cases)`);

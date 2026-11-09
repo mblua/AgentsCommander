@@ -371,7 +371,8 @@ function runGit(cwd, args) {
     throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
   }
   if (result.status !== 0) {
-    throw new Error(`git ${args.join(' ')} exited ${result.status}: ${String(result.stderr ?? '').trim()}`);
+    throw new Error(
+      `git ${args.join(' ')} exited ${result.status}: ${String(result.stderr ?? '').trim()}`);
   }
   return String(result.stdout ?? '').trim();
 }

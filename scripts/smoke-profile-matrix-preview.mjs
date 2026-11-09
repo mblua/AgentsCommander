@@ -202,9 +202,11 @@ assert.match(individualAgentEffective?.textContent ?? '', /B - BALANCED for Code
 assert.equal(individualAgentFallbackNotice?.hidden, true);
 
 assert.ok(legacyAgentAssignProfile, 'legacy no-profile assignment selector should exist');
-assert.match(legacyAgentAssignmentNotice?.textContent ?? '', /until the user explicitly saves an assigned profile/);
+assert.match(legacyAgentAssignmentNotice?.textContent ?? '',
+  /until the user explicitly saves an assigned profile/);
 change(legacyAgentAssignProfile, 'B');
-assert.match(legacyAgentAssignmentNotice?.textContent ?? '', /Saving records explicit B - BALANCED/);
+assert.match(legacyAgentAssignmentNotice?.textContent ?? '',
+  /Saving records explicit B - BALANCED/);
 assert.match(legacyAgentAssignmentNotice?.textContent ?? '', /not silent migration/);
 assertNoRuntimeErrors();
 
@@ -318,7 +320,8 @@ assert.equal(copiedText, captureResult.quotedIdentifier,
 
 const toast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(toast, 'component capture toast should appear');
-assert.match(toast?.textContent ?? '', /"Coding Agent Profile Matrix \/ td \/ Claude Code D-LOW COST configured profile cell"/);
+assert.match(toast?.textContent ?? '',
+  /"Coding Agent Profile Matrix \/ td \/ Claude Code D-LOW COST configured profile cell"/);
 assert.match(toast?.textContent ?? '', /td \.profile-cell/);
 
 const toastTimers = getTimersByDelay(15000);

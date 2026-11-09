@@ -43,7 +43,8 @@ function die(msg) {
 }
 
 function printable(s) {
-  return String(s).replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+  return String(s).replace(/[\u0000-\u001f\u007f]/g, (c) =>
+    `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 }
 
 function git(args) {
@@ -105,7 +106,8 @@ function validateFormat(branch) {
 
 async function verifyIssueOpen(issue) {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  if (!token) die(`Missing GH_TOKEN / GITHUB_TOKEN in environment — cannot verify issue #${issue}.`);
+  if (!token) die(
+    `Missing GH_TOKEN / GITHUB_TOKEN in environment — cannot verify issue #${issue}.`);
   const url = `https://api.github.com/repos/${TARGET_REPO}/issues/${issue}`;
   let res, data;
   try {
@@ -118,7 +120,8 @@ async function verifyIssueOpen(issue) {
         'User-Agent': 'agentscommander-branch-validator',
       },
     });
-    if (res.status === 404) die(`Issue #${issue} not accessible in ${TARGET_REPO} (missing or auth-denied).`);
+    if (res.status === 404) die(
+      `Issue #${issue} not accessible in ${TARGET_REPO} (missing or auth-denied).`);
     if (!res.ok) die(`GitHub API error (${res.status}) while fetching issue #${issue}.`);
     data = await res.json();
   } catch (err) {
@@ -131,7 +134,8 @@ async function verifyIssueOpen(issue) {
     die(`Network error fetching issue #${issue}: ${printable(err?.message || err)}`);
   }
   if (data.pull_request) die(`#${issue} is a pull request, not an issue.`);
-  if (data.state !== 'open') die(`Issue #${issue} is ${data.state}. Branch must reference an OPEN issue.`);
+  if (data.state !== 'open') die(
+    `Issue #${issue} is ${data.state}. Branch must reference an OPEN issue.`);
 }
 
 void (async () => {
@@ -140,8 +144,10 @@ void (async () => {
     try { resolveGit(); } catch (e) { die(printable(e.message)); }
     const branch = args.branch || resolveBranch();
 
-    if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0); }
-    if (isGrandfathered(branch)) { console.log(`[branch-name] grandfathered (cut before enforcement): ${branch}`); process.exit(0); }
+    if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0);
+      }
+    if (isGrandfathered(branch)) { console.log(
+      `[branch-name] grandfathered (cut before enforcement): ${branch}`); process.exit(0); }
 
     const { issue } = validateFormat(branch);
     if (args.checkIssue) await verifyIssueOpen(issue);

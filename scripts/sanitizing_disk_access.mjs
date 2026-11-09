@@ -4,7 +4,8 @@ import { runMeasuredGate, metric, hit, warning, qualified } from './sanitizing_g
 
 const diskPath = /^(?:(?:std|tokio)::fs::|fs::|(?:File::(?:open|create)|OpenOptions::new)$)/;
 const bareOperation = /^(?:read|read_to_string|read_dir|write|metadata|symlink_metadata|canonicalize|copy|rename|create_dir|create_dir_all|remove_file|remove_dir|remove_dir_all|hard_link|soft_link|read_link|set_permissions|try_exists)$/;
-const receiverMethod = /^(?:exists|try_exists|metadata|symlink_metadata|canonicalize|is_file|is_dir|read_dir)$/;
+const receiverMethod =
+  /^(?:exists|try_exists|metadata|symlink_metadata|canonicalize|is_file|is_dir|read_dir)$/;
 const owner = p => /^src-tauri\/src\/(?:filesystem|path_identity|path_utils)(?:\.rs$|\/)/.test(p);
 const inUniverse = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 

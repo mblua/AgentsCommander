@@ -629,7 +629,8 @@ function splitPlainKey(body) {
   // line look like an ordinary entry for a key nothing reads, so a plain typo produced
   // a run with no finding at all, not even W-YAML-UNDECIDABLE. Leading whitespace is
   // already routed to W-YAML-UNDECIDABLE by the `indent > 0` branch of parseMiniYaml.
-  return { ok: true, key: body.slice(0, separator).replace(/[ \t]+$/, ''), rest: body.slice(separator + 1) };
+  return { ok: true, key: body.slice(0, separator).replace(/[ \t]+$/, ''), rest: body.slice(
+    separator + 1) };
 }
 
 // The block-scalar header at the start of a value, or null when it is not one.
@@ -1472,7 +1473,8 @@ function reportFrontmatterFailure(frontmatter, candidate, folder, collector) {
   const entrypoint = candidate.entrypoint;
   const detail = frontmatter.detail === undefined ? '' : frontmatter.detail;
   const messages = {
-    'E-ENTRYPOINT-UNREADABLE': `The entrypoint could not be ${frontmatter.verb === 'read' ? 'read' : 'opened'} (${detail}).`,
+    'E-ENTRYPOINT-UNREADABLE':
+      `The entrypoint could not be ${frontmatter.verb === 'read' ? 'read' : 'opened'} (${detail}).`,
     'E-FM-NO-OPEN':
       'No opening frontmatter delimiter on line 1. The first line must reduce to exactly `---` after stripping one terminator, an optional leading BOM and ASCII whitespace.',
     'E-FM-FIRST-LINE-TOO-LONG': `The first line, including its terminator, exceeds ${FIRST_LINE_MAX_BYTES} bytes. The indexer reports this as a missing opening delimiter (:342-345).`,
@@ -1687,7 +1689,8 @@ function renderFinding(finding, out) {
   out('');
   const anchor = finding.line === null ? finding.path : `${finding.path}:${finding.line}`;
   const suffix =
-    finding.reason === null ? `${finding.code}  (rule ${finding.rule ?? 'checker-only'})` : `${finding.code}  (reason: ${finding.reason})`;
+    finding.reason === null ? `${finding.code}  (rule ${finding.rule ?? 'checker-only'})` :
+      `${finding.code}  (reason: ${finding.reason})`;
   out(`${SEVERITY_LABEL[finding.severity]}${LABEL_GAP} ${anchor}  ${suffix}`);
   for (const line of wrapContinuation(finding.message)) out(`       ${line}`);
   if (finding.indexerMessage !== null) {
@@ -2460,7 +2463,8 @@ function selfTest(out) {
           `---\nname:${value === '' ? '' : ` ${value}`}\nwhen_to_use: 9\n---\n`,
         );
         const report = runCheck(inner);
-        assertSelf(hasCode(report, 'E-NAME-NOT-STRING'), `name: ${value} must be E-NAME-NOT-STRING`);
+        assertSelf(hasCode(report, 'E-NAME-NOT-STRING'),
+          `name: ${value} must be E-NAME-NOT-STRING`);
         // 6.6.1 step 2 says Stop, and :641-650 continues past the field layer, so an
         // indexerMessage about description or when_to_use would name a startup-log line
         // that is never printed.
@@ -2515,7 +2519,8 @@ function selfTest(out) {
     }
   });
   run('42d', (root) => {
-    const report = fm(root, '---\nname: ok-name\ndescription: |\n  \ttab-indented example line\n  plain line\n---\n');
+    const report = fm(root,
+      '---\nname: ok-name\ndescription: |\n  \ttab-indented example line\n  plain line\n---\n');
     assertSelf(report.findings.length === 0,
       'a tab INSIDE block-scalar content is not E-YAML-PARSE');
   });
@@ -2529,10 +2534,12 @@ function selfTest(out) {
     for (const value of ['!!str ok-name', '&a ok-name']) {
       const inner = tempRoot();
       try {
-        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ${value}\ndescription: x\n---\n`);
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md',
+          `---\nname: ${value}\ndescription: x\n---\n`);
         const report = runCheck(inner);
         assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), `${value} must be undecidable`);
-        assertSelf(hasCode(report, 'W-NAME-UNDECIDABLE'), `${value} must warn, never E-NAME-INVALID`);
+        assertSelf(hasCode(report, 'W-NAME-UNDECIDABLE'),
+          `${value} must warn, never E-NAME-INVALID`);
         assertSelf(!hasCode(report, 'E-NAME-INVALID'),
           'an undecidable value may never produce an error');
         assertSelf(report.exitCode === 0, 'and the run stays green');
@@ -2548,7 +2555,8 @@ function selfTest(out) {
     for (const header of ['|0', '>0']) {
       const inner = tempRoot();
       try {
-        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ok-name\ndescription: ${header}\n  text\n---\n`);
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md',
+          `---\nname: ok-name\ndescription: ${header}\n  text\n---\n`);
         const report = runCheck(inner);
         // A bare hasCode('W-YAML-UNDECIDABLE') pins NOTHING here: the orphaned `  text`
         // line is undecidable whether or not the header was rejected, so the assertion
@@ -2614,7 +2622,8 @@ function selfTest(out) {
     assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), 'a flow mapping value is undecidable');
   });
   run('45', (root) => {
-    const report = fm(root, '---\nname: ok-name\na: &anchor x\nb: *anchor\nc: !!str y\ndescription: z\n---\n');
+    const report = fm(root,
+      '---\nname: ok-name\na: &anchor x\nb: *anchor\nc: !!str y\ndescription: z\n---\n');
     assertSelf(countCode(report, 'W-YAML-UNDECIDABLE') === 3,
       'an anchor, an alias and a tag are each undecidable');
   });
@@ -2681,7 +2690,8 @@ function selfTest(out) {
     assertSelf(report.exitCode === 0, 'as a note only');
   });
   run('49', (root) => {
-    const report = fm(root, '---\n# a comment\n\nname: ok-name\n\n  # an indented comment\ndescription: x\n---\n');
+    const report = fm(root,
+      '---\n# a comment\n\nname: ok-name\n\n  # an indented comment\ndescription: x\n---\n');
     assertSelf(report.findings.length === 0, 'blank and comment lines are ignored');
   });
 
@@ -3092,7 +3102,8 @@ function selfTest(out) {
     return 1;
   }
 
-  const skippedNote = skipped.length === 0 ? '0 skipped' : `${skipped.length} skipped (${skipped.join(', ')})`;
+  const skippedNote = skipped.length === 0 ? '0 skipped' :
+    `${skipped.length} skipped (${skipped.join(', ')})`;
   out(`${TAG} self-test passed: ${total} cases, ${ran} run, ${skippedNote}`);
   return 0;
 }

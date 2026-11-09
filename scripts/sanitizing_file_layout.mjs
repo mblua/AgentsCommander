@@ -25,12 +25,14 @@ const newFileRules = rules.slice(0, 5);
 const inUniverse = p => /^src-tauri\/(?:src|tests)\/.*\.rs$/.test(p);
 const extraChecks = () => {};
 function measure(path, scan) {
-  const m = metric(), integration = path.startsWith('src-tauri/tests/') || /(?:^|\/)tests\//.test(path);
+  const m = metric(), integration = path.startsWith('src-tauri/tests/') || /(?:^|\/)tests\//.test(
+    path);
   if (path.endsWith('/mod.rs')) hit(m, 'mod_rs', 1);
   let testLine;
   for (const a of scan.attributes) for (const meta of a.signals) {
     const r = resolveAlias(scan,meta.name,a.scope);
-    if (['test', 'tokio::test', 'async_std::test'].includes(r.path) || r.ambiguous && /(?:^|::)test$/.test(r.path ?? meta.name)) {
+    if (['test', 'tokio::test', 'async_std::test'].includes(r.path) || r.ambiguous &&
+      /(?:^|::)test$/.test(r.path ?? meta.name)) {
       testLine ??= a.line; warning(m, path, a.line, r);
     }
     if (meta.name === 'path') hit(m, 'path', a.line);
