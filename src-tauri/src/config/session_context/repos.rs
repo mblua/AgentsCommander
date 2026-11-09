@@ -73,14 +73,14 @@ pub(crate) fn resolved_paths_include_path(
 
 pub(crate) fn has_agent_matrix_dir_name(path: &Path) -> bool {
     path.file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|name| name.starts_with("_agent_"))
 }
 
 pub(crate) fn path_parent_is_ac_root(path: &Path) -> bool {
     path.parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(crate::config::ac_root::is_ac_root_name)
 }
 
@@ -239,7 +239,10 @@ pub(crate) fn render_agent_repos_string(
             |p| display_path(&p),
         );
 
-        let repo_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
+        let repo_name = resolved
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or(rel);
 
         if !directories::context_repo_exists(&resolved) {
             md.push_str(&format!(
@@ -289,7 +292,7 @@ pub(crate) fn render_agent_repos_containerized(
             RepoOutcome::NotFound => {
                 let name = std::path::Path::new(&entry.config_entry)
                     .file_name()
-                    .and_then(|n| n.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or(&entry.config_entry);
                 md.push_str(&format!(
                     "- **{}** — Path: `{}/{}` — **(NOT FOUND)**\n",

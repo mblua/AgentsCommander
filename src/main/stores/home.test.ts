@@ -75,6 +75,6 @@ describe("homeStore", () => {
     const p2 = homeStore.fetch();
     resolveFn("ok");
     await Promise.all([p1, p2]);
-    expect((HomeAPI.fetchMarkdown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect((HomeAPI.fetchMarkdown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
   });
 });

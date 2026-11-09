@@ -1,5 +1,11 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
-import { runMeasuredGate, metric, hit, warning, resolveAlias as resolveGateAlias } from './sanitizing_gate_support.mjs';
+import {
+  runMeasuredGate,
+  metric,
+  hit,
+  warning,
+  resolveAlias as resolveGateAlias
+} from './sanitizing_gate_support.mjs';
 
 const relevantPath = new RegExp("(?:^|::)(?:test)$");
 function resolveAlias(scan, input, scope) {
@@ -12,17 +18,21 @@ export function runGate(snapshot) {
 }
 
 const gate = '05';
-const rules = ['mod_rs', 'test_files', 'inline_mod', 'path', 'glob', 'pub_mod', 'pub_super_mod', 'pub_in_mod'];
+const rules = [
+  'mod_rs', 'test_files', 'inline_mod', 'path', 'glob', 'pub_mod', 'pub_super_mod', 'pub_in_mod'
+];
 const newFileRules = rules.slice(0, 5);
 const inUniverse = p => /^src-tauri\/(?:src|tests)\/.*\.rs$/.test(p);
 const extraChecks = () => {};
 function measure(path, scan) {
-  const m = metric(), integration = path.startsWith('src-tauri/tests/') || /(?:^|\/)tests\//.test(path);
+  const m = metric(), integration = path.startsWith('src-tauri/tests/') || /(?:^|\/)tests\//.test(
+    path);
   if (path.endsWith('/mod.rs')) hit(m, 'mod_rs', 1);
   let testLine;
   for (const a of scan.attributes) for (const meta of a.signals) {
     const r = resolveAlias(scan,meta.name,a.scope);
-    if (['test', 'tokio::test', 'async_std::test'].includes(r.path) || r.ambiguous && /(?:^|::)test$/.test(r.path ?? meta.name)) {
+    if (['test', 'tokio::test', 'async_std::test'].includes(r.path) || r.ambiguous &&
+      /(?:^|::)test$/.test(r.path ?? meta.name)) {
       testLine ??= a.line; warning(m, path, a.line, r);
     }
     if (meta.name === 'path') hit(m, 'path', a.line);

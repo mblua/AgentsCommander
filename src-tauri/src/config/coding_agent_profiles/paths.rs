@@ -66,7 +66,7 @@ pub(crate) fn configured_ac_roots(settings: &AppSettings) -> Vec<PathBuf> {
         let base = Path::new(project_path);
         if base
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(is_ac_root_name)
         {
             collect_ac_root_candidate(&mut ac_roots, base);
@@ -104,7 +104,7 @@ pub(super) fn validate_authoritative_matrix_dir(matrix_dir: &Path) -> Result<Pat
     let matrix_dir = canonical_existing_dir(matrix_dir, "Agent Matrix")?;
     let dir_name = matrix_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("Agent Matrix '{}' has no valid name", matrix_dir.display()))?;
     if !dir_name.starts_with("_agent_") {
         return Err(format!(
@@ -126,7 +126,7 @@ pub(super) fn validated_replica_origin(replica_dir: &Path) -> Result<(PathBuf, P
     let replica_dir = canonical_existing_dir(replica_dir, "Room replica")?;
     let dir_name = replica_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("Room replica '{}' has no valid name", replica_dir.display()))?;
     if !dir_name.starts_with("__agent_") {
         return Err(format!(
@@ -142,7 +142,7 @@ pub(super) fn validated_replica_origin(replica_dir: &Path) -> Result<(PathBuf, P
     })?;
     let wg_name = wg_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
@@ -172,7 +172,7 @@ pub fn validate_profile_selection_agent_path(
 ) -> Result<ValidatedProfileAgentPath, String> {
     let dir_name = launch_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("Agent path '{}' has no valid name", launch_path.display()))?;
 
     if dir_name.starts_with("_agent_") {
@@ -221,7 +221,7 @@ pub(crate) fn agent_name_from_dir(path: &Path) -> Option<String> {
 pub(super) fn origin_matrix_dir_for_launch_path(
     launch_path: &Path,
 ) -> Result<Option<PathBuf>, String> {
-    let Some(dir_name) = launch_path.file_name().and_then(|name| name.to_str()) else {
+    let Some(dir_name) = launch_path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return Ok(None);
     };
 

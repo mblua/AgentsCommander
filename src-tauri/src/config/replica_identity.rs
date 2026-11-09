@@ -164,7 +164,7 @@ fn validate_local_matrix(
     let expected_dir_name = format!("_agent_{agent_name}");
     let actual_dir_name = matrix_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
             format!(
                 "Agent Matrix '{}' has no valid directory name",
@@ -229,7 +229,7 @@ fn validate_local_matrix(
 pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdentity, String> {
     let replica_dir_name = replica_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
             format!(
                 "Replica path '{}' has no valid directory name",
@@ -249,7 +249,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
     })?;
     let wg_name = wg_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(

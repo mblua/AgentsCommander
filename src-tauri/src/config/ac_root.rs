@@ -41,7 +41,7 @@ pub fn find_ac_root_ancestor(path: &Path) -> Option<PathBuf> {
         .find(|ancestor| {
             ancestor
                 .file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(is_ac_root_name)
         })
         .map(Path::to_path_buf)
@@ -60,7 +60,7 @@ fn same_existing_path(a: &Path, b: &Path) -> bool {
 pub fn ensure_authoritative_ac_root(ac_root: &Path) -> Result<(), String> {
     let ac_root_name = ac_root
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
             format!(
                 "Project AC Root path '{}' has no valid directory name",
@@ -133,7 +133,7 @@ pub fn wg_replica_layout_from_agent_dir(
 ) -> Result<Option<WgReplicaLayout>, String> {
     let Some(agent_name) = agent_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))
     else {
         return Ok(None);
@@ -143,7 +143,7 @@ pub fn wg_replica_layout_from_agent_dir(
     let Some(wg_dir) = agent_dir.parent() else {
         return Ok(None);
     };
-    let Some(wg_name) = wg_dir.file_name().and_then(|name| name.to_str()) else {
+    let Some(wg_name) = wg_dir.file_name().and_then(std::ffi::OsStr::to_str) else {
         return Ok(None);
     };
     if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
@@ -155,7 +155,7 @@ pub fn wg_replica_layout_from_agent_dir(
     };
     if !ac_root
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(is_ac_root_name)
     {
         return Ok(None);

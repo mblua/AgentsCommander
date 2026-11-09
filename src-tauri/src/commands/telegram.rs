@@ -838,7 +838,7 @@ pub(crate) async fn perform_send_image(
         crate::telegram::attachments::prepare_telegram_attachment(path, SEND_DOCUMENT_MAX_BYTES)
             .await?;
 
-    let filename = match p.file_name().and_then(|s| s.to_str()) {
+    let filename = match p.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(name) => name.to_string(),
         None => {
             log::warn!("telegram_send_image: non-UTF8 filename for {path}, sending as 'image'");
@@ -851,7 +851,7 @@ pub(crate) async fn perform_send_image(
 
     let ext = p
         .extension()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     let endpoint = choose_endpoint(size, &ext);

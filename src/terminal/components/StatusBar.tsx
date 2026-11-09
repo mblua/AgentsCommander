@@ -76,7 +76,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     if (!sessionId) return;
     // Ctrl+U: kills line backward in readline/bash/most coding agents
     const encoder = new TextEncoder();
-    PtyAPI.write(sessionId, encoder.encode("\x15"));
+    void PtyAPI.write(sessionId, encoder.encode("\x15"));
   };
 
   // #2337 - the snapshot is stored with the session it came from. Rendering only

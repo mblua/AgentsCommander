@@ -460,10 +460,13 @@ async fn issue_3189_cap_each_leg_all_actions() {
             let phase_complete = Arc::new(AtomicBool::new(false));
             let phase_seen = phase_complete.clone();
             let session_state = move |_| {
-                if second_leg && phase_seen.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(1100));
+                let delay = second_leg && phase_seen.load(Ordering::SeqCst);
+                async move {
+                    if delay {
+                        tokio::time::sleep(Duration::from_millis(1100)).await;
+                    }
+                    (true, true)
                 }
-                async move { (true, true) }
             };
             let cap = if second_leg {
                 Duration::from_secs(1)

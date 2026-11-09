@@ -345,7 +345,7 @@ fn stringify_agent_command_token(token: &str) -> String {
 pub(crate) fn executable_basename(s: &str) -> String {
     std::path::Path::new(s)
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(s)
         .to_lowercase()
 }
@@ -357,7 +357,7 @@ pub(crate) fn executable_basename(s: &str) -> String {
 fn executable_filename(s: &str) -> String {
     std::path::Path::new(s)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(s)
         .to_lowercase()
 }

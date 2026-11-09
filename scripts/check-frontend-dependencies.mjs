@@ -255,7 +255,11 @@ function verifyFullRoot(result) {
     failures.push(`cannot read tracked inventory: ${error.message}`);
     return failures;
   }
-  const git = spawnSync(gitBin, ["ls-files"], { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const git = spawnSync(gitBin, ["ls-files"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024
+  });
   if (git.error || git.status !== 0) {
     failures.push(`cannot read tracked inventory: ${git.error?.message ?? git.stderr}`);
     return failures;
@@ -267,7 +271,8 @@ function verifyFullRoot(result) {
       .filter((file) => /^src\/.*\.(ts|tsx)$/.test(file)),
   );
   const moduleSources = new Set(
-    result.modules.filter((m) => /^src\//.test(normalize(m.source))).map((m) => normalize(m.source)),
+    result.modules.filter((m) => /^src\//.test(normalize(m.source))).map((m) => normalize(
+      m.source)),
   );
   const missing = [...tracked].filter((file) => !moduleSources.has(file));
   if (missing.length > 0) {

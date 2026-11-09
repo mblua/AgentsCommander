@@ -84,10 +84,12 @@ fn discovery_scrubs_credentials_without_composed_search_or_cwd() {
 #[tokio::test]
 async fn status_returns_complete_output_nonzero_status_and_spawn_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let output = std::process::Command::new("git")
+    let output = tokio::process::Command::new("git")
         .args(["init", "--initial-branch=watcher-owner"])
         .arg(dir.path())
+        .kill_on_drop(true)
         .output()
+        .await
         .unwrap();
     assert!(output.status.success());
     std::fs::write(dir.path().join("untracked.txt"), "content").unwrap();

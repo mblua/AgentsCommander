@@ -133,7 +133,7 @@ pub(crate) fn build_replica_context_from_config(
             if documents::configured_context_exists(&abs) {
                 let label = abs
                     .file_name()
-                    .and_then(|n| n.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or(raw)
                     .to_string();
                 resolved_paths.push((label, abs));
@@ -163,7 +163,7 @@ pub(crate) fn build_replica_context_from_config(
     if !missing.is_empty() {
         let replica_name = cwd_path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("unknown");
         return Err(format!(
             "Replica '{}' has missing context files:\n{}",
@@ -423,7 +423,7 @@ pub(crate) fn render_root_repos_list(
                 RepoOutcome::NotFound => {
                     let name = Path::new(&entry.config_entry)
                         .file_name()
-                        .and_then(|n| n.to_str())
+                        .and_then(std::ffi::OsStr::to_str)
                         .unwrap_or(&entry.config_entry);
                     out.push_str(&format!(
                         "- **{}** — Path: `{}/{}` — **(NOT FOUND)**\n",
@@ -445,7 +445,10 @@ pub(crate) fn render_root_repos_list(
             let resolved = cwd.join(rel);
             let path = directories::canonical_context_repo(&resolved)
                 .map_or_else(|_| display_path(&resolved), |p| display_path(&p));
-            let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
+            let name = resolved
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or(rel);
             let status = if directories::context_repo_exists(&resolved) {
                 format!(
                     "Branch: `{}`",
@@ -596,7 +599,10 @@ pub(crate) fn build_root_agent_context_at(
             continue;
         }
         let path = cwd_path.join(raw);
-        let label = path.file_name().and_then(|n| n.to_str()).unwrap_or(raw);
+        let label = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or(raw);
         let is_template = match (
             crate::filesystem::session_context::canonical_context_source(&path),
             crate::filesystem::session_context::canonical_context_source(&canonical_template),
@@ -680,7 +686,7 @@ pub(crate) fn build_direct_matrix_context(
                         if !resolved_paths_include_path(&resolved_paths, &abs) {
                             let label = abs
                                 .file_name()
-                                .and_then(|n| n.to_str())
+                                .and_then(std::ffi::OsStr::to_str)
                                 .unwrap_or(raw)
                                 .to_string();
                             resolved_paths.push((label, abs));
@@ -696,7 +702,7 @@ pub(crate) fn build_direct_matrix_context(
     if !missing.is_empty() {
         let matrix_name = cwd_path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("unknown");
         return Err(format!(
             "Agent Matrix '{}' has missing context files:\n{}",

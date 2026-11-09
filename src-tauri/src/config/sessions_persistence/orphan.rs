@@ -318,7 +318,7 @@ pub(super) fn rotate_orphan_archive(archive_path: &Path) {
         Some(parent) => parent.to_path_buf(),
         None => return,
     };
-    let stem = match archive_path.file_name().and_then(|name| name.to_str()) {
+    let stem = match archive_path.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(stem) => stem.to_string(),
         None => return,
     };

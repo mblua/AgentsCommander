@@ -292,7 +292,7 @@ pub(crate) fn find_workgroup_task_path_for_cwd(cwd: &str) -> Option<std::path::P
     while let Some(path) = current {
         let is_workgroup_dir = path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(crate::config::entity_prefix::has_entity_prefix);
         if is_workgroup_dir {
             return Some(path.join(crate::filesystem::tasks::TASK_FILE_NAME));

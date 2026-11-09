@@ -125,7 +125,7 @@ async fn a_repeated_key_is_admitted_again_once_the_dedupe_window_has_passed() {
     harness.ticks(2).await;
     assert_eq!(harness.emitted().len(), 1);
 
-    std::thread::sleep(Duration::from_millis(5));
+    tokio::time::sleep(Duration::from_millis(5)).await;
     harness.backend.paint(id, &["c", "Done", "Done"]);
     harness.ticks(1).await;
 

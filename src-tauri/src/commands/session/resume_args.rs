@@ -387,7 +387,7 @@ pub(crate) fn trusted_muse_auto_resume_spawn(
     }
     if std::path::Path::new(shell)
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         != Some("muse")
     {
         return false;

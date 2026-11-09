@@ -165,7 +165,7 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
 
       // The delay, the count and the wiring in one assertion.
       const ticks = reconcileIntervals.ticks();
-      expect(ticks.length).toBe(1);
+      expect(ticks).toHaveLength(1);
 
       (ticks[0][0] as () => void)();
 
@@ -441,7 +441,7 @@ describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
       expect(dot(rendered.root, SESSION_B).classList.contains("pending")).toBe(true);
 
       const ticks = reconcileIntervals.ticks();
-      expect(ticks.length).toBe(1);
+      expect(ticks).toHaveLength(1);
       const hiddenBefore = fake.callsFor("list_sessions").length;
 
       // Shadowing jsdom's prototype getter on the document INSTANCE; the repo's own

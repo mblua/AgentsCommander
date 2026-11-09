@@ -209,7 +209,7 @@ pub(crate) fn rename_room_for_delete(
             ));
         }
     };
-    let original_name = match wg_dir.file_name().and_then(|n| n.to_str()) {
+    let original_name = match wg_dir.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(n) => n,
         None => {
             return WgDeleteOutcome::Other(std::io::Error::new(

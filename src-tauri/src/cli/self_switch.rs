@@ -293,18 +293,10 @@ pub fn execute(args: SelfSwitchArgs) -> i32 {
         pty_input: None,
     };
 
-    let outbox_dir = if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
-    } else {
-        ac_dir.join("outbox")
-    };
+    let outbox_dir = crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        &ac_dir,
+    );
     if let Err(error) =
         super::outbox_delivery::deliver(&outbox_dir, &message, "self-handoff-and-switch")
     {

@@ -184,6 +184,8 @@ export function commandLineLength(command, args) {
  * @param {string} [options.baseRef] base ref; defaults to GATE_BASE_REF or origin/main
  * @param {string} [options.configPath] absolute .jscpd.json path; defaults under toolRoot
  * @param {readonly string[]} [options.flags] jscpd gating flags; defaults to GATE_FLAGS
+ * @param {Function} [options.buildScan] scan argv builder (self-test seam);
+ *   defaults to buildScanArgs
  */
 export async function runGate({
   toolRoot = REPO_ROOT,
@@ -192,6 +194,7 @@ export async function runGate({
   configPath = path.join(toolRoot, CONFIG_RELATIVE),
   flags = GATE_FLAGS,
   maxCommandLine = MAX_COMMAND_LINE,
+  buildScan = buildScanArgs,
 } = {}) {
   const runner = resolveRunner(toolRoot);
   if (!fs.existsSync(runner)) {
@@ -252,8 +255,8 @@ export async function runGate({
   }
   console.log(`test-code duplication base: ${base} (from '${requestedRef}')`);
 
-  const scan = buildScanArgs({ git, workRoot, configPath, runner, base, flags, maxCommandLine });
-  if (scan.error) return fail(scan.error);
+  const scan = buildScan({ git, workRoot, configPath, runner, base, flags, maxCommandLine });
+  if ('error' in scan) return fail(scan.error);
   const { args } = scan;
 
   const child = spawnSync(process.execPath, args, {
@@ -368,7 +371,8 @@ function runGit(cwd, args) {
     throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
   }
   if (result.status !== 0) {
-    throw new Error(`git ${args.join(' ')} exited ${result.status}: ${String(result.stderr ?? '').trim()}`);
+    throw new Error(
+      `git ${args.join(' ')} exited ${result.status}: ${String(result.stderr ?? '').trim()}`);
   }
   return String(result.stdout ?? '').trim();
 }
@@ -812,6 +816,18 @@ export async function runSelfTest() {
     expectEqual('exit code', run.code, 1);
     expectContains('message', run.text, 'check:test-duplication FAILED');
     expectContains('message', run.text, 'over the 100 limit; refusing to truncate the scan');
+  });
+
+  await withCase('case 18: an empty scan error is red and spawns nothing', async (temp) => {
+    const directory = temp('ac-dup-fixture-');
+    const base = createRepo(directory, BASE_FILES);
+    // A spawned scan would exit 7: the gate must stop on the key, not its truthiness.
+    const buildScan = () => ({ error: '', args: ['-e', 'process.exit(7)'] });
+    const run = await captureScriptStderr(() =>
+      runGate({ workRoot: directory, baseRef: base, buildScan }),
+    );
+    expectEqual('exit code', run.code, 1);
+    expectContains('message', run.text, 'check:test-duplication FAILED');
   });
 
   await withCase('pathspecs mirror the shipped pattern', async () => {

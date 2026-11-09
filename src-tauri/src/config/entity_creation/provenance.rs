@@ -66,7 +66,7 @@ pub(crate) fn append_copy_provenance(
 ) -> Result<serde_json::Value, String> {
     let name = source_project
         .file_name()
-        .and_then(|v| v.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or("Invalid source project name")?;
     value["copies"]
         .as_array_mut()

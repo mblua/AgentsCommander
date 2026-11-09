@@ -37,7 +37,10 @@ fn collect_production_children(dir: &Path, out: &mut Vec<PathBuf>) {
     };
     for entry in entries {
         let path = entry.expect("read module dir entry").path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("");
         if path.is_dir() {
             if name != "tests" {
                 collect_production_children(&path, out);

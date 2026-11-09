@@ -378,12 +378,12 @@ pub(super) fn rollback_staged_targets_reporting(
 pub(super) fn replica_prefix_for_target(original_path: &Path) -> Option<(String, String)> {
     let agent = original_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))?;
     let workgroup = original_path
         .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())?;
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)?;
     Some((workgroup.to_string(), agent.to_string()))
 }
 

@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::{api, ApiServerHandle, ApiServerTask, WebServerHandle, WEB_SERVER_START_CANCELLED};
 
@@ -448,12 +448,7 @@ fn start_remote_activity(
     let (remote_sweeper, remote_transitions) = RemoteSweeper::with_state(
         git_rows,
         settings,
-        Box::new({
-            let app_for_remote_activity = app.handle().clone();
-            move |payload: &crate::pty::remote_watcher::RemoteActivityPayload| {
-                let _ = app_for_remote_activity.emit("ac_remote_activity_updated", payload);
-            }
-        }),
+        crate::events::pty::remote_activity_emitter(app.handle().clone()),
         crate::remote_sweeper_seams(),
         git,
         remote,

@@ -104,7 +104,7 @@ pub(crate) fn discover_teams_in_project_filtered(
 
     let project_folder = project_dir
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("unknown")
         .to_string();
 
@@ -126,7 +126,7 @@ pub(crate) fn discover_teams_in_project_filtered(
             continue;
         }
 
-        let dir_name = match team_dir.file_name().and_then(|n| n.to_str()) {
+        let dir_name = match team_dir.file_name().and_then(std::ffi::OsStr::to_str) {
             Some(n) if n.starts_with("_team_") => n,
             _ => continue,
         };
@@ -682,7 +682,7 @@ pub(crate) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec
                 continue;
             };
             // Project folder name (parent of Project AC Root) is the LHS of the canonical FQN.
-            let project_folder = match repo_dir.file_name().and_then(|n| n.to_str()) {
+            let project_folder = match repo_dir.file_name().and_then(std::ffi::OsStr::to_str) {
                 Some(n) => n.to_string(),
                 None => continue,
             };

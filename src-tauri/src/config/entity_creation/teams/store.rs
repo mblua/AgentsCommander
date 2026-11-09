@@ -23,7 +23,7 @@ pub(crate) enum TeamSkillSourceInspection {
 pub(crate) fn inspect_team_skill_source(root: &Path) -> TeamSkillSourceInspection {
     let Some(name) = root
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|n| n.strip_prefix("_team_"))
     else {
         return TeamSkillSourceInspection::NotTeam;

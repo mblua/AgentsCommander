@@ -344,7 +344,7 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &[u8]) -> io::Resu
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .and_then(|path| path.parent())
+        .and_then(std::path::Path::parent)
         .expect("repo root")
         .to_path_buf()
 }
