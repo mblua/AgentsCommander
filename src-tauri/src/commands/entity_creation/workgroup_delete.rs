@@ -111,7 +111,7 @@ pub async fn delete_workgroup(
     // and persist immediately (this command is not on the auto-close flush tick).
     if let Some(project_name) = Path::new(&project_path)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
     {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
