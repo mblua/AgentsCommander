@@ -1212,7 +1212,7 @@ describe("#2245 Resource Monitor integral view", () => {
       await waitFor(() => {
         expect(maybe(rendered.root, "resourceMonitor.group.session-a")).toBeNull();
       });
-      expect(harness.fake.callsFor("get_resource_snapshot").length).toBe(before + 1);
+      expect(harness.fake.callsFor("get_resource_snapshot")).toHaveLength(before + 1);
 
       const heading = must(rendered.root, "resourceMonitor.groups.heading");
       expect(document.activeElement).toBe(heading);

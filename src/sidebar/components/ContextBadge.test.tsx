@@ -258,7 +258,7 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     renderScoped(10, readyWith([bucket(2, 30, 2), bucket(5, 70, 5)]), { colorSessions: 2 });
     const badge = target(TESTID);
     expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(30, "dark"));
-    expect(cardOf(badge).querySelectorAll(".ctx-history-row").length).toBe(2);
+    expect(cardOf(badge).querySelectorAll(".ctx-history-row")).toHaveLength(2);
     document.body.innerHTML = "";
     renderScoped(10, readyWith([]), { colorSessions: 2 });
     expect(target(TESTID).classList.contains("toned")).toBe(false);

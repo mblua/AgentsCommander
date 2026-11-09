@@ -144,7 +144,7 @@ describe("ProjectPanel CTX history scope (#3532 P11)", () => {
     );
     try {
       await settingsStore.load();
-      await waitFor(() => expect(badges().length).toBe(1));
+      await waitFor(() => expect(badges()).toHaveLength(1));
       expect(badges()[0].style.getPropertyValue("--ctx-history-tone-dark"))
         .toBe(rampColor(40, "dark"));
       expect(history.acquire).toHaveBeenCalledTimes(1);

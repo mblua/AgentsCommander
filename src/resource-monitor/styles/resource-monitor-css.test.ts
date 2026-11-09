@@ -577,7 +577,7 @@ describe("#2245 resource-monitor.css byte contract", () => {
     // rule, so an empty or partial parse cannot satisfy the equality. Right:
     // every allowlist entry is still a real literal-bearing rule, so a stale
     // entry cannot quietly widen the permission.
-    expect(ALL_RULES.length).toBe(BASE_RULES.length + CONDITIONAL_RULES.length);
+    expect(ALL_RULES).toHaveLength(BASE_RULES.length + CONDITIONAL_RULES.length);
     expect(ALL_RULES.length).toBeGreaterThanOrEqual(100);
     expect(carrying).toHaveLength(LEGACY_COLOUR_LITERAL_SELECTORS.length);
     for (const selector of LEGACY_COLOUR_LITERAL_SELECTORS) {
