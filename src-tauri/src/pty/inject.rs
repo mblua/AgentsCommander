@@ -113,7 +113,7 @@ enum PtyInjectionProfile {
 fn shell_file_stem(shell: &str) -> String {
     std::path::Path::new(shell.trim())
         .file_stem()
-        .and_then(|value| value.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(shell.trim())
         .to_lowercase()
 }
