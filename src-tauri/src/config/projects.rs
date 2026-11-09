@@ -640,7 +640,7 @@ pub fn archived_projects_from_paths(archived_project_paths: &[String]) -> Vec<Ar
                 path: raw.clone(),
                 folder_name: path
                     .file_name()
-                    .and_then(|n| n.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or(raw)
                     .to_string(),
                 exists: is_real_directory(path),
@@ -669,7 +669,7 @@ pub fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<
             if !is_real_directory(&path) {
                 return ControlFlow::Continue(());
             }
-            let name = match path.file_name().and_then(|n| n.to_str()) {
+            let name = match path.file_name().and_then(std::ffi::OsStr::to_str) {
                 Some(name) => name,
                 None => return ControlFlow::Continue(()),
             };
@@ -701,7 +701,7 @@ fn push_project_candidate(
     }
     let Some(folder_name) = path
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(str::to_string)
     else {
         return;

@@ -39,7 +39,7 @@ pub(crate) fn unique_role_temp_path(role_path: &Path) -> std::path::PathBuf {
     let parent = role_path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = role_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(roles::ROLE_FILE_NAME);
     let counter = ROOT_ROLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
@@ -90,7 +90,7 @@ pub(crate) fn unique_default_skill_temp_path(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(SKILL_MD_FILENAME);
     let counter = ROOT_ROLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(

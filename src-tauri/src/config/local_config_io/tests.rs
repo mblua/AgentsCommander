@@ -157,7 +157,7 @@ fn scan_dir(root: &Path, offenders: &mut Vec<String>) {
         // what `strip_test_modules` cuts off when the tests live inline.
         let stem = path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("");
         if stem == "tests" || stem.ends_with("_tests") {
             continue;
@@ -166,7 +166,7 @@ fn scan_dir(root: &Path, offenders: &mut Vec<String>) {
             scan_dir(&path, offenders);
             continue;
         }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
             continue;
         }
         scan_file(&path, offenders);
