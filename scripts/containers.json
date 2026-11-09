@@ -186,6 +186,8 @@
       "name": "app-outbox-path.txt",
       "scope": "src-tauri/src/filesystem/",
       "owner": "src-tauri/src/filesystem/app_outbox_pointer.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 40,
@@ -197,6 +199,8 @@
       "name": "master-token.txt",
       "scope": "src-tauri/src/filesystem/",
       "owner": "src-tauri/src/filesystem/master_token.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 40,
