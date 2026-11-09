@@ -407,7 +407,7 @@ function unregisteredDiagnostics(base, head) {
       diagnostics.push({ gate: '04', status: 'FAIL',
         rule: old ? 'unregistered_container_file' : 'unregistered_container_growth',
         literal: entry.literal, ...site, baseFiles: old?.files ?? [], headFiles: entry.files,
-        reason: 'Distributed unregistered literal adds an identity or grows its production file count.',
+        reason: 'Unregistered literal adds an identity or grows its production file count.',
         remedy: 'Remove distributed names, use the owner API, or approve registration separately.'
       });
     }
