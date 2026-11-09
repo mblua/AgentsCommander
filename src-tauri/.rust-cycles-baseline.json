@@ -352,14 +352,6 @@
       ]
     },
     {
-      "id": "9cc5d31519f8d48a",
-      "members": [
-        "agentscommander_lib::path_identity",
-        "agentscommander_lib::path_identity::regular",
-        "agentscommander_lib::path_identity::terminal_output"
-      ]
-    },
-    {
       "id": "99ca20000995b5ac",
       "members": [
         "agentscommander_lib::process::agent::owner",
