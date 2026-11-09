@@ -79,7 +79,7 @@ describe("ContextHistoryCard (#3532 P11)", () => {
     expect(text).toContain("team-a");
     expect(text).toContain("C:/proj");
     const rows = card.querySelectorAll(".ctx-history-row");
-    expect(rows.length).toBe(3);
+    expect(rows).toHaveLength(3);
     expect(rows[0].textContent).toContain("Últimas 25 sesiones (0 disponibles)");
     expect(rows[0].textContent).toContain("Sin datos · 0 registros · — registros/sesión");
     expect(rows[0].querySelector(".ctx-history-fill")).toBeNull();
@@ -124,14 +124,14 @@ describe("ContextHistoryCard (#3532 P11)", () => {
   ])("renders the %s state without bars", (state, expected) => {
     const { card } = renderCard(state);
     expect(card.textContent).toContain(expected);
-    expect(card.querySelectorAll(".ctx-history-row").length).toBe(0);
+    expect(card.querySelectorAll(".ctx-history-row")).toHaveLength(0);
     expect(card.getAttribute("data-ac-state")).toBe(state.status);
   });
 
   it("renders exactly the returned custom [2,5] buckets with full availability", () => {
     const { card } = renderCard(readyWith([bucket(2, 40, 4, 2), bucket(5, 30, 10, 5)]), 35, 5);
     const rows = card.querySelectorAll(".ctx-history-row");
-    expect(rows.length).toBe(2);
+    expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain("Últimas 2 sesiones");
     expect(rows[0].textContent).not.toContain("disponibles");
     expect(rows[1].getAttribute("data-ac-sessions")).toBe("5");
