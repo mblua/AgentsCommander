@@ -360,14 +360,7 @@ impl RetainedContainerCleanupRegistry {
         let terminal = match result {
             Ok(Ok(())) => true,
             Ok(Err(failure)) => {
-                let message = {
-                    let mut attempt = entry
-                        .attempt
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    attempt.in_flight = false;
-                    record_cleanup_failure(&mut attempt.last_error, failure)
-                };
+                let message = record_cleanup_failure(&entry, failure);
                 log::warn!(
                     "[container-transport] retained cleanup failed session={} reason={} \
                         state=retained error={}",
@@ -423,7 +416,16 @@ impl RetainedContainerCleanupRegistry {
 }
 
 /// Deadline-only attempts keep the last real failure; other failures replace it.
-fn record_cleanup_failure(last_error: &mut Option<String>, failure: RouteCleanupFailure) -> String {
+fn record_cleanup_failure(
+    entry: &RetainedContainerCleanup,
+    failure: RouteCleanupFailure,
+) -> String {
+    let mut attempt = entry
+        .attempt
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    attempt.in_flight = false;
+    let last_error = &mut attempt.last_error;
     match failure {
         RouteCleanupFailure::PreRemoverDeadline => last_error
             .get_or_insert_with(|| RouteRemovalError::Deadline("globalSweep").to_string())
