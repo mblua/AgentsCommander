@@ -214,6 +214,7 @@ function declarationBlockCommentEnd(text, i, limit) {
 function skipTrivia(text, i, limit) {
   for (;;) {
     while (i < limit && /\s/.test(text[i])) i++;
+    if (i >= limit) return i;
     if (text.startsWith('//', i)) {
       const nl = text.indexOf('\n', i);
       i = nl < 0 || nl >= limit ? limit : nl + 1;
