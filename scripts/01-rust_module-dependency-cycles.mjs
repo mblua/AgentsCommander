@@ -100,68 +100,68 @@ class AnalysisError extends Error {}
 function printHelp() {
   const lines = [];
   lines.push(`${TOOL_NAME} ${TOOL_VERSION}`);
-  lines.push('');
-  lines.push('Detect Rust dependency cycles at module and function granularity.');
-  lines.push('Zero dependencies, no build step, no Rust toolchain, target need not compile.');
-  lines.push('');
-  lines.push('USAGE');
-  lines.push('  node 01-rust_module-dependency-cycles.mjs <path> [options]');
-  lines.push('  node 01-rust_module-dependency-cycles.mjs --self-test');
-  lines.push('  node 01-rust_module-dependency-cycles.mjs --help | --version');
-  lines.push('');
-  lines.push('  <path> is a directory or a single .rs file. Required except with');
-  lines.push('  --self-test, --help and --version. A second positional is a usage error.');
-  lines.push('');
-  lines.push('OPTIONS');
-  lines.push('  --json                     emit JSON on stdout and nothing else on stdout');
-  lines.push('  --level <v>                module | function | all            (default: all)');
-  lines.push('  --function-scope <v>       cross-module | all        (default: cross-module)');
-  lines.push('  --fail-on <v>              none | module | any           (default: module)');
-  lines.push('  --baseline <file>          compare against a baseline; only new cycles gate');
-  lines.push('  --write-baseline <file>    write the current cycles as a baseline and exit');
-  lines.push('  --emit-graph <file>        write the complete dependency graph to that file');
-  lines.push('  --include-tests            include #[cfg(test)] and compound test-gated items');
-  lines.push('                             (e.g. #[cfg(all(test, unix))]), mod tests blocks and');
-  lines.push('                             test/bench/example crate targets');
-  lines.push('  --exclude <pattern>        skip matching paths (repeatable)');
-  lines.push('  --quiet                    suppress the human summary; exit code only');
-  lines.push('  --self-test                run the embedded fixture suite');
-  lines.push('  -h, --help                 print this help and exit 0');
-  lines.push('  -V, --version              print the version and exit 0');
-  lines.push('');
-  lines.push('  Both --flag value and --flag=value are accepted.');
-  lines.push('');
-  lines.push('EXIT CODES');
-  lines.push('  0  analysis succeeded and nothing gates; also --help, --version,');
-  lines.push('     and a successful --write-baseline');
-  lines.push('  1  analysis succeeded and gating cycles were found');
-  lines.push('  2  usage error (unknown flag, bad value, bad or incompatible baseline file,');
-  lines.push('     --emit-graph together with --write-baseline)');
-  lines.push('  3  analysis error (path missing, no .rs files, no crate root, read error,');
-  lines.push('     or the graph file cannot be written or fails its integrity check,');
-  lines.push('     or any unexpected exception)');
-  lines.push('  4  --self-test had at least one failing assertion');
-  lines.push('');
-  lines.push('  1 and 3 are deliberately distinct: "there are cycles" and "I could not');
-  lines.push('  look properly" must never be confused by a CI gate.');
-  lines.push('');
-  lines.push('BASELINE');
-  lines.push('  There is no implicit baseline path and no auto-discovery. A baseline that');
-  lines.push('  is picked up silently is a way to hide cycles by accident.');
   lines.push(
-    '    node 01-rust_module-dependency-cycles.mjs . --write-baseline .rust-cycles-baseline.json');
-  lines.push(
-    '    node 01-rust_module-dependency-cycles.mjs . --baseline .rust-cycles-baseline.json');
-  lines.push('');
-  lines.push('GRAPH');
-  lines.push('  There is no implicit graph path and no auto-discovery, for the same reason');
-  lines.push('  as the baseline. The file carries every node and every edge, one record per');
-  lines.push('  reference site, never deduplicated. It never goes to stdout.');
-  lines.push('    node 01-rust_module-dependency-cycles.mjs . --emit-graph graph.json');
-  lines.push('  --emit-graph and --write-baseline are mutually exclusive (exit 2). No graph');
-  lines.push('  is written when the analysis produced error-level diagnostics.');
-  lines.push('');
-  lines.push('LIMITATIONS (what this tool structurally cannot see)');
+    '',
+    'Detect Rust dependency cycles at module and function granularity.',
+    'Zero dependencies, no build step, no Rust toolchain, target need not compile.',
+    '',
+    'USAGE',
+    '  node 01-rust_module-dependency-cycles.mjs <path> [options]',
+    '  node 01-rust_module-dependency-cycles.mjs --self-test',
+    '  node 01-rust_module-dependency-cycles.mjs --help | --version',
+    '',
+    '  <path> is a directory or a single .rs file. Required except with',
+    '  --self-test, --help and --version. A second positional is a usage error.',
+    '',
+    'OPTIONS',
+    '  --json                     emit JSON on stdout and nothing else on stdout',
+    '  --level <v>                module | function | all            (default: all)',
+    '  --function-scope <v>       cross-module | all        (default: cross-module)',
+    '  --fail-on <v>              none | module | any           (default: module)',
+    '  --baseline <file>          compare against a baseline; only new cycles gate',
+    '  --write-baseline <file>    write the current cycles as a baseline and exit',
+    '  --emit-graph <file>        write the complete dependency graph to that file',
+    '  --include-tests            include #[cfg(test)] and compound test-gated items',
+    '                             (e.g. #[cfg(all(test, unix))]), mod tests blocks and',
+    '                             test/bench/example crate targets',
+    '  --exclude <pattern>        skip matching paths (repeatable)',
+    '  --quiet                    suppress the human summary; exit code only',
+    '  --self-test                run the embedded fixture suite',
+    '  -h, --help                 print this help and exit 0',
+    '  -V, --version              print the version and exit 0',
+    '',
+    '  Both --flag value and --flag=value are accepted.',
+    '',
+    'EXIT CODES',
+    '  0  analysis succeeded and nothing gates; also --help, --version,',
+    '     and a successful --write-baseline',
+    '  1  analysis succeeded and gating cycles were found',
+    '  2  usage error (unknown flag, bad value, bad or incompatible baseline file,',
+    '     --emit-graph together with --write-baseline)',
+    '  3  analysis error (path missing, no .rs files, no crate root, read error,',
+    '     or the graph file cannot be written or fails its integrity check,',
+    '     or any unexpected exception)',
+    '  4  --self-test had at least one failing assertion',
+    '',
+    '  1 and 3 are deliberately distinct: "there are cycles" and "I could not',
+    '  look properly" must never be confused by a CI gate.',
+    '',
+    'BASELINE',
+    '  There is no implicit baseline path and no auto-discovery. A baseline that',
+    '  is picked up silently is a way to hide cycles by accident.',
+    '    node 01-rust_module-dependency-cycles.mjs . --write-baseline .rust-cycles-baseline.json',
+    '    node 01-rust_module-dependency-cycles.mjs . --baseline .rust-cycles-baseline.json',
+    '',
+    'GRAPH',
+    '  There is no implicit graph path and no auto-discovery, for the same reason',
+    '  as the baseline. The file carries every node and every edge, one record per',
+    '  reference site, never deduplicated. It never goes to stdout.',
+    '    node 01-rust_module-dependency-cycles.mjs . --emit-graph graph.json',
+    '  --emit-graph and --write-baseline are mutually exclusive (exit 2). No graph',
+    '  is written when the analysis produced error-level diagnostics.',
+    '',
+    'LIMITATIONS (what this tool structurally cannot see)'
+  );
   for (let i = 0; i < LIMITATIONS.length; i++) {
     lines.push(`  ${i + 1}. ${LIMITATIONS[i]}`);
   }
