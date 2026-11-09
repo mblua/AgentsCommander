@@ -64,7 +64,8 @@ const stubRect = (element, rect) => {
     toJSON: () => {},
   });
 };
-const containsPoint = (rect, x, y) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+const containsPoint = (rect, x,
+  y) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 const isBrowserVisible = (element) => {
   for (let node = element; node instanceof dom.window.Element; node = node.parentElement) {
     const style = dom.window.getComputedStyle(node);
@@ -95,14 +96,16 @@ const modalStackRank = (element) => {
 const topClickableElementAt = (x, y) => {
   const candidates = [
     ...dom.window.document.querySelectorAll('.profile-modal-overlay.open, .profile-modal, .profile-modal-controls, .modal-variant-switcher, [data-modal-variant]'),
-  ].filter((element) => isBrowserVisible(element) && containsPoint(element.getBoundingClientRect(), x, y));
+  ].filter((element) => isBrowserVisible(element) && containsPoint(element.getBoundingClientRect(),
+    x, y));
   return candidates.sort((left, right) => modalStackRank(right) - modalStackRank(left))[0] ?? null;
 };
 const clickVisibleModalVariant = (variant) => {
   const overlay = dom.window.document.getElementById('codingAgentProfileModal');
   const modal = overlay?.querySelector('.profile-modal');
   const button = dom.window.document.querySelector(`[data-modal-variant="${variant}"]`);
-  assert.ok(overlay?.classList.contains('open'), 'profile modal should be open before switching variants');
+  assert.ok(overlay?.classList.contains('open'),
+    'profile modal should be open before switching variants');
   assert.ok(button, `variant ${variant} button should exist`);
   assert.ok(modal?.contains(button), `variant ${variant} button should render inside the profile modal layer`);
   assert.ok(isBrowserVisible(button), `variant ${variant} button should be browser-visible`);
@@ -116,7 +119,8 @@ const clickVisibleModalVariant = (variant) => {
     `variant ${variant} button should be the top clickable target at its center`
   );
 
-  button.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, clientX, clientY }));
+  button.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, clientX,
+    clientY }));
   button.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, clientX, clientY }));
   button.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true, clientX, clientY }));
   button.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, clientX, clientY }));
@@ -133,12 +137,15 @@ assert.equal(typeof dom.window.closeCodingAgentProfileModal, 'function');
 assert.match(html, /installComponentCapture\("AgentsCommander Current App"\)/);
 assert.ok(dom.window.document.querySelector('[data-component="top header with brand version workgroup identity and window controls"]'));
 assert.ok(dom.window.document.querySelector('[data-component="terminal transcript area with current task prompt and command blocks"]'));
-assert.ok(dom.window.document.querySelector('[data-component="right AgentsCommander navigation control sidebar"]'));
-assert.ok(dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"]'));
+assert.ok(dom.window.document.querySelector(
+  '[data-component="right AgentsCommander navigation control sidebar"]'));
+assert.ok(dom.window.document.querySelector(
+  '[data-component="selected project coding agent model and effort task"]'));
 assert.ok(dom.window.document.querySelector('[data-component="selected workgroup panel"]'));
 assert.ok(dom.window.document.querySelector('[data-component="nested selected team row"]'));
 assert.ok(dom.window.document.querySelector('[data-sidebar-kind="session-agent"]'));
-assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile assignment modal"]'));
+assert.ok(dom.window.document.querySelector(
+  '[data-component="Coding Agent profile assignment modal"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal body"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agents selector panel"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agents selector title"]'));
@@ -176,7 +183,8 @@ assert.match(profileModalCss, /max-height:\s*min\(820px,\s*calc\(100vh - 40px\)\
 const variantCDesktopMinWidth = 220 + 340 + 340 + 12 * 2;
 const profileModalViewportInset = 40;
 const profileModalBodyPaddingX = 16 * 2;
-const variantCStackBreakpoint = profileModalViewportInset + profileModalBodyPaddingX + variantCDesktopMinWidth;
+const variantCStackBreakpoint = profileModalViewportInset + profileModalBodyPaddingX +
+  variantCDesktopMinWidth;
 const intermediateViewportWidth = 900;
 assert.equal(variantCDesktopMinWidth, 924, 'Variant C desktop min column math should include all three columns and two gaps');
 assert.equal(variantCStackBreakpoint, 996, 'Variant C should stack before the modal body becomes narrower than the desktop columns');
@@ -195,7 +203,8 @@ assert.match(
   /grid-template-columns:\s*minmax\(220px,\s*0\.58fr\)\s*minmax\(340px,\s*0\.92fr\)\s*minmax\(340px,\s*0\.9fr\);/,
   'Variant C outer grid should allocate enough desktop width for coding agents, profiles, and projected parameters'
 );
-const variantCProfileSelectorCss = cssBlockFor('.profile-variant-c [data-component="Coding Agent profile selector panel"]');
+const variantCProfileSelectorCss =
+  cssBlockFor('.profile-variant-c [data-component="Coding Agent profile selector panel"]');
 assert.match(
   variantCProfileSelectorCss,
   /overflow-x:\s*hidden;/,
@@ -228,9 +237,11 @@ assert.match(
   /overflow-wrap:\s*anywhere;/,
   'Variant C projected parameters panel should wrap long launch parameter text instead of scrolling sideways'
 );
-const variantCIntermediateCss = cssSelectorListBlockForInMedia('(max-width: 996px)', '.profile-variant-c.active');
+const variantCIntermediateCss = cssSelectorListBlockForInMedia('(max-width: 996px)',
+  '.profile-variant-c.active');
 assert.match(variantCIntermediateCss, /grid-template-columns:\s*1fr;/, 'Variant C intermediate layout should stack before min desktop columns would clip');
-const variantCIntermediateScrollCss = cssBlockForInMedia('(max-width: 996px)', '.profile-variant-c-scroll');
+const variantCIntermediateScrollCss = cssBlockForInMedia('(max-width: 996px)',
+  '.profile-variant-c-scroll');
 assert.match(
   variantCIntermediateScrollCss,
   /grid-column:\s*1\s*\/\s*-1;/,
@@ -266,7 +277,8 @@ assert.equal(/<img\b/i.test(html), false, 'mockup should not embed the screensho
 assertNoRuntimeErrors();
 
 const sideScroll = dom.window.document.querySelector('.side-scroll');
-const workgroupsLabel = dom.window.document.querySelector('[data-component="workgroups section label"]');
+const workgroupsLabel =
+  dom.window.document.querySelector('[data-component="workgroups section label"]');
 assert.ok(sideScroll, 'sidebar scroll container should exist');
 assert.ok(workgroupsLabel, 'workgroups label should exist');
 
@@ -290,13 +302,16 @@ workgroupsLabel.getBoundingClientRect = () => ({
 });
 const isWorkgroupsReachable = () => {
   const rect = workgroupsLabel.getBoundingClientRect();
-  return rect.top >= desktopSidebarTop && rect.bottom <= desktopSidebarTop + sideScroll.clientHeight;
+  return rect.top >= desktopSidebarTop &&
+    rect.bottom <= desktopSidebarTop + sideScroll.clientHeight;
 };
 
-assert.equal(isWorkgroupsReachable(), false, 'workgroups should start below the 1365x768 sidebar viewport');
+assert.equal(isWorkgroupsReachable(), false,
+  'workgroups should start below the 1365x768 sidebar viewport');
 sideScroll.scrollTop = sideScroll.scrollHeight - sideScroll.clientHeight;
 assert.equal(sideScroll.scrollTop > 0, true, 'sidebar should accept a positive scrollTop');
-assert.equal(isWorkgroupsReachable(), true, 'workgroups should be reachable after scrolling the sidebar');
+assert.equal(isWorkgroupsReachable(), true,
+  'workgroups should be reachable after scrolling the sidebar');
 
 const sidebarCaptureTarget = dom.window.document.querySelector('[data-component="selected project coding agent model and effort task"] .card-title');
 assert.ok(sidebarCaptureTarget, 'selected project capture target should exist');
@@ -325,7 +340,8 @@ dom.window.clearTimeout = (id) => {
   clearedTimers.push(id);
   activeTimers.delete(id);
 };
-const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([, timer]) => timer.delay === delay);
+const getTimersByDelay = (delay) => Array.from(activeTimers.entries()).filter(([,
+  timer]) => timer.delay === delay);
 
 dom.window.__componentCaptureLastResult = undefined;
 const sideScrollContextMenu = new dom.window.MouseEvent('contextmenu', {
@@ -335,8 +351,10 @@ const sideScrollContextMenu = new dom.window.MouseEvent('contextmenu', {
   clientY: 560,
 });
 const sideScrollContextMenuAllowed = sideScroll.dispatchEvent(sideScrollContextMenu);
-assert.equal(sideScrollContextMenuAllowed, false, 'sidebar container right click should prevent native menu');
-assert.equal(sideScrollContextMenu.defaultPrevented, true, 'sidebar container contextmenu should be marked defaultPrevented');
+assert.equal(sideScrollContextMenuAllowed, false,
+  'sidebar container right click should prevent native menu');
+assert.equal(sideScrollContextMenu.defaultPrevented, true,
+  'sidebar container contextmenu should be marked defaultPrevented');
 assert.equal(
   dom.window.__componentCaptureLastResult,
   undefined,
@@ -354,9 +372,11 @@ assert.doesNotMatch(sideScrollMenu?.textContent ?? '', /Remove Project|Delete Wo
 assert.match(sideScrollMenu?.textContent ?? '', /Copy component description/);
 assert.equal(dom.window.__sidebarContextLastMenu.kind, 'sidebar');
 
-const sideScrollCopyAction = Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
+const sideScrollCopyAction =
+  Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
   .find((button) => button.textContent === 'Copy component description');
-assert.ok(sideScrollCopyAction, 'sidebar container menu should include the copy component description action');
+assert.ok(sideScrollCopyAction,
+  'sidebar container menu should include the copy component description action');
 sideScrollCopyAction.click();
 assert.equal(
   dom.window.document.querySelector('.sidebar-context-menu'),
@@ -368,7 +388,8 @@ assert.equal(
   sideScrollCaptureResult.quotedIdentifier,
   '"AgentsCommander Current App / aside / right AgentsCommander navigation control sidebar"'
 );
-assert.equal(copiedText, sideScrollCaptureResult.quotedIdentifier, 'sidebar container copy should use capture helper');
+assert.equal(copiedText, sideScrollCaptureResult.quotedIdentifier,
+  'sidebar container copy should use capture helper');
 dom.window.document.querySelector('.component-capture-highlight')
   ?.dispatchEvent(new dom.window.Event('animationend', { bubbles: true }));
 getTimersByDelay(15000).forEach(([, timer]) => timer.callback(...timer.args));
@@ -377,7 +398,8 @@ clearedTimers.length = 0;
 copiedText = '';
 dom.window.__componentCaptureLastResult = undefined;
 
-const codingAgentTarget = dom.window.document.querySelector('[data-component="agent row architect"] .agent-name');
+const codingAgentTarget =
+  dom.window.document.querySelector('[data-component="agent row architect"] .agent-name');
 assert.ok(codingAgentTarget, 'session-agent target with Coding Agent action should exist');
 const codingAgentContextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
@@ -386,7 +408,8 @@ const codingAgentContextMenu = new dom.window.MouseEvent('contextmenu', {
   clientY: 470,
 });
 const codingAgentContextMenuAllowed = codingAgentTarget.dispatchEvent(codingAgentContextMenu);
-assert.equal(codingAgentContextMenuAllowed, false, 'session-agent right click should prevent the native context menu');
+assert.equal(codingAgentContextMenuAllowed, false,
+  'session-agent right click should prevent the native context menu');
 assert.equal(codingAgentContextMenu.defaultPrevented, true);
 const codingAgentMenu = dom.window.document.querySelector('.sidebar-context-menu');
 assert.ok(codingAgentMenu, 'session-agent right-click should open a custom context menu');
@@ -395,12 +418,14 @@ assert.match(codingAgentMenu?.textContent ?? '', /Coding Agent/);
 assert.match(codingAgentMenu?.textContent ?? '', /Copy component description/);
 assert.equal(dom.window.__sidebarContextLastMenu.kind, 'session-agent');
 
-const codingAgentAction = Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
+const codingAgentAction =
+  Array.from(dom.window.document.querySelectorAll('.sidebar-context-option'))
   .find((button) => button.textContent === 'Coding Agent');
 assert.ok(codingAgentAction, 'session-agent menu should include the Coding Agent action');
 codingAgentAction.click();
 const profileModal = dom.window.document.querySelector('#codingAgentProfileModal');
-assert.ok(profileModal?.classList.contains('open'), 'Coding Agent action should open the profile modal');
+assert.ok(profileModal?.classList.contains('open'),
+  'Coding Agent action should open the profile modal');
 assert.equal(profileModal?.getAttribute('aria-hidden'), 'false');
 assert.equal(
   dom.window.document.querySelector('.sidebar-context-menu'),
@@ -418,16 +443,20 @@ assert.equal(dom.window.__codingAgentProfileModalState.variant, 'A');
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'codex');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
-assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProject, 'AgentsCommander_ac');
+assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProject,
+  'AgentsCommander_ac');
 assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultAgent, 'architect');
 assert.equal(dom.window.__codingAgentProfileModalState.configuredDefaultProfile, 'B');
 assert.match(profileModal?.textContent ?? '', /architect configured default B - BALANCED/);
 assert.match(profileModal?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
 stubRect(profileModal, { left: 0, top: 0, width: 1365, height: 768 });
-stubRect(profileModal.querySelector('.profile-modal'), { left: 96, top: 28, width: 1180, height: 720 });
-stubRect(profileModal.querySelector('.profile-modal-controls'), { left: 782, top: 41, width: 470, height: 46 });
-stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 782, top: 45, width: 178, height: 38 });
+stubRect(profileModal.querySelector('.profile-modal'), { left: 96, top: 28, width: 1180,
+  height: 720 });
+stubRect(profileModal.querySelector('.profile-modal-controls'), { left: 782, top: 41, width: 470,
+  height: 46 });
+stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 782, top: 45, width: 178,
+  height: 38 });
 ['A', 'B', 'C'].forEach((variant, index) => {
   stubRect(dom.window.document.querySelector(`[data-modal-variant="${variant}"]`), {
     left: 888 + index * 41,
@@ -437,7 +466,8 @@ stubRect(profileModal.querySelector('.modal-variant-switcher'), { left: 782, top
   });
 });
 
-const modalActionLabels = Array.from(dom.window.document.querySelectorAll('.profile-modal-footer button'), (button) => button.textContent);
+const modalActionLabels = Array.from(dom.window.document.querySelectorAll(
+  '.profile-modal-footer button'), (button) => button.textContent);
 assert.deepEqual(modalActionLabels, [
   'Cancel',
   'Set selected profile as default for AgentsCommander_ac:architect',
@@ -466,22 +496,32 @@ for (const variant of ['A', 'B', 'C']) {
 
 clickVisibleModalVariant('C');
 const variantCPanel = dom.window.document.querySelector('[data-profile-variant-panel="C"]');
-const variantCCodingAgentsPanel = variantCPanel?.querySelector('[data-component="Coding Agents selector panel"]');
-const variantCProfileScroll = variantCPanel?.querySelector('[data-component="Coding Agent profile selector independent scroll area"]');
-const variantCProfilePanel = variantCPanel?.querySelector('[data-component="Coding Agent profile selector panel"]');
-const variantCProjectedPanel = variantCPanel?.querySelector('[data-component="Selected profile projected parameters panel"]');
-assert.ok(variantCCodingAgentsPanel, 'Variant C should expose a stable left Coding Agents selector panel');
+const variantCCodingAgentsPanel =
+  variantCPanel?.querySelector('[data-component="Coding Agents selector panel"]');
+const variantCProfileScroll = variantCPanel?.querySelector(
+  '[data-component="Coding Agent profile selector independent scroll area"]');
+const variantCProfilePanel =
+  variantCPanel?.querySelector('[data-component="Coding Agent profile selector panel"]');
+const variantCProjectedPanel =
+  variantCPanel?.querySelector('[data-component="Selected profile projected parameters panel"]');
+assert.ok(variantCCodingAgentsPanel,
+  'Variant C should expose a stable left Coding Agents selector panel');
 assert.ok(variantCProfileScroll, 'Variant C should expose an independent profiles scroll area');
-assert.ok(variantCProfilePanel, 'Variant C should keep the profile selector panel inside the scroll area');
+assert.ok(variantCProfilePanel,
+  'Variant C should keep the profile selector panel inside the scroll area');
 assert.ok(variantCProjectedPanel, 'Variant C should expose projected parameters inside the independent scroll area');
-assert.equal(variantCProfileScroll.contains(variantCProfilePanel), true, 'Variant C profile selector should be inside the independent scroll area');
-assert.equal(variantCProfileScroll.contains(variantCProjectedPanel), true, 'Variant C projected parameters should be inside the independent scroll area');
-assert.equal(variantCProfileScroll.contains(variantCCodingAgentsPanel), false, 'Variant C Coding Agents selector should sit outside the profile scroll area');
+assert.equal(variantCProfileScroll.contains(variantCProfilePanel), true,
+  'Variant C profile selector should be inside the independent scroll area');
+assert.equal(variantCProfileScroll.contains(variantCProjectedPanel), true,
+  'Variant C projected parameters should be inside the independent scroll area');
+assert.equal(variantCProfileScroll.contains(variantCCodingAgentsPanel), false,
+  'Variant C Coding Agents selector should sit outside the profile scroll area');
 stubRect(variantCProfileScroll, { left: 352, top: 118, width: 884, height: 564 });
 stubRect(variantCProfilePanel, { left: 352, top: 118, width: 430, height: 564 });
 stubRect(variantCProjectedPanel, { left: 794, top: 118, width: 430, height: 564 });
 assert.equal(
-  variantCProfileScroll.getBoundingClientRect().right >= variantCProjectedPanel.getBoundingClientRect().right,
+  variantCProfileScroll.getBoundingClientRect(
+    ).right >= variantCProjectedPanel.getBoundingClientRect().right,
   true,
   'Variant C scroll area should cover the projected parameters column without horizontal clipping'
 );
@@ -504,9 +544,12 @@ Object.defineProperties(variantCProjectedPanel, {
   scrollWidth: { configurable: true, value: 430 },
 });
 variantCCodingAgentsPanel.scrollTop = 0;
-variantCProfileScroll.scrollTop = variantCProfileScroll.scrollHeight - variantCProfileScroll.clientHeight;
-assert.equal(variantCProfileScroll.scrollTop > 0, true, 'Variant C profile scroll area should accept a positive scrollTop');
-assert.equal(variantCCodingAgentsPanel.scrollTop, 0, 'Variant C Coding Agents selector should remain stable when profiles scroll');
+variantCProfileScroll.scrollTop = variantCProfileScroll.scrollHeight -
+  variantCProfileScroll.clientHeight;
+assert.equal(variantCProfileScroll.scrollTop > 0, true,
+  'Variant C profile scroll area should accept a positive scrollTop');
+assert.equal(variantCCodingAgentsPanel.scrollTop, 0,
+  'Variant C Coding Agents selector should remain stable when profiles scroll');
 assert.equal(
   ['auto', 'scroll'].includes(dom.window.getComputedStyle(variantCProfilePanel).overflowX),
   false,
@@ -539,26 +582,31 @@ assert.equal(
 );
 
 clickVisibleModalVariant('A');
-dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="claude-code"]')?.click();
+dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-tool-card="claude-code"]')?.click();
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'claude-code');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'B');
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Selected coding agent: Claude Code/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-resolution-status]')?.textContent ?? '', /Requested\/default B - BALANCED -> resolved B - BALANCED as configured/);
 
-dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-tool-card="opencode"]')?.click();
+dom.window.document.querySelector(
+  '[data-profile-variant-panel="A"] [data-tool-card="opencode"]')?.click();
 assert.equal(dom.window.__codingAgentProfileModalState.provider, 'opencode');
 assert.equal(dom.window.__codingAgentProfileModalState.requested, 'B');
 assert.equal(dom.window.__codingAgentProfileModalState.resolved, 'A');
-const opencodeMissingDefaultCards = dom.window.document.querySelectorAll('[data-profile-variant-panel] [data-profile-card="B"]');
-assert.equal(opencodeMissingDefaultCards.length, 3, 'each variant should render the missing OpenCode default B card');
+const opencodeMissingDefaultCards =
+  dom.window.document.querySelectorAll('[data-profile-variant-panel] [data-profile-card="B"]');
+assert.equal(opencodeMissingDefaultCards.length, 3,
+  'each variant should render the missing OpenCode default B card');
 for (const card of opencodeMissingDefaultCards) {
   const text = card.textContent ?? '';
   assert.match(text, /Default/);
   assert.match(text, /missing; launches A - FULL POWER/);
   assert.match(text, /Unavailable for OpenCode/);
   assert.match(text, /Fallback B -> A/);
-  assert.equal(card.querySelectorAll('[data-profile-param]').length, 0, 'missing OpenCode B card should not render concrete parameter rows');
+  assert.equal(card.querySelectorAll('[data-profile-param]').length, 0,
+    'missing OpenCode B card should not render concrete parameter rows');
   assert.doesNotMatch(text, /Model/);
   assert.doesNotMatch(text, /Effort/);
   assert.doesNotMatch(text, /Default args/);
@@ -567,8 +615,10 @@ for (const card of opencodeMissingDefaultCards) {
   assert.doesNotMatch(text, /opencode\.json/);
   assert.doesNotMatch(text, /--profile a/);
 }
-const opencodeResolvedCards = dom.window.document.querySelectorAll('[data-profile-variant-panel] [data-profile-card="A"]');
-assert.equal(opencodeResolvedCards.length, 3, 'each variant should render the resolved OpenCode A card');
+const opencodeResolvedCards =
+  dom.window.document.querySelectorAll('[data-profile-variant-panel] [data-profile-card="A"]');
+assert.equal(opencodeResolvedCards.length, 3,
+  'each variant should render the resolved OpenCode A card');
 for (const card of opencodeResolvedCards) {
   const text = card.textContent ?? '';
   assert.match(text, /Model/);
@@ -594,7 +644,8 @@ assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"]
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /OpenCode has no B - BALANCED profile/);
 assert.match(dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-fallback-notice]')?.textContent ?? '', /A remains the immutable final fallback/);
 
-const modalProfileCard = dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]');
+const modalProfileCard =
+  dom.window.document.querySelector('[data-profile-variant-panel="A"] [data-profile-card="B"]');
 assert.ok(modalProfileCard, 'modal profile card capture target should exist');
 modalProfileCard.getBoundingClientRect = () => ({
   left: 420,
@@ -616,9 +667,12 @@ const modalContextMenuEvent = new dom.window.MouseEvent('contextmenu', {
   clientY: 516,
 });
 const modalContextMenuAllowed = modalProfileCard.dispatchEvent(modalContextMenuEvent);
-assert.equal(modalContextMenuAllowed, false, 'modal right-click should prevent the native context menu');
-assert.equal(modalContextMenuEvent.defaultPrevented, true, 'modal contextmenu should be marked defaultPrevented');
-assert.equal(dom.window.__componentCaptureLastResult, undefined, 'modal menu open should not immediately capture');
+assert.equal(modalContextMenuAllowed, false,
+  'modal right-click should prevent the native context menu');
+assert.equal(modalContextMenuEvent.defaultPrevented, true,
+  'modal contextmenu should be marked defaultPrevented');
+assert.equal(dom.window.__componentCaptureLastResult, undefined,
+  'modal menu open should not immediately capture');
 assert.equal(
   dom.window.document.querySelector('.sidebar-context-menu'),
   null,
@@ -636,7 +690,8 @@ assert.match(modalMenu?.textContent ?? '', /Inspect resolution details/);
 assert.match(modalMenu?.textContent ?? '', /Close modal/);
 assert.equal(dom.window.__profileModalContextLastMenu.target, modalProfileCard);
 
-const modalCopyAction = Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
+const modalCopyAction =
+  Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
   .find((button) => button.textContent === 'Copy component description');
 assert.ok(modalCopyAction, 'modal menu should include the copy component description action');
 modalCopyAction.getBoundingClientRect = () => ({
@@ -657,7 +712,8 @@ const modalMenuContextEvent = new dom.window.MouseEvent('contextmenu', {
   clientY: 544,
 });
 const modalMenuContextAllowed = modalCopyAction.dispatchEvent(modalMenuContextEvent);
-assert.equal(modalMenuContextAllowed, false, 'right-clicking the modal menu itself should still suppress the native menu');
+assert.equal(modalMenuContextAllowed, false,
+  'right-clicking the modal menu itself should still suppress the native menu');
 assert.equal(modalMenuContextEvent.defaultPrevented, true);
 assert.equal(
   dom.window.__componentCaptureLastResult,
@@ -679,9 +735,12 @@ assert.equal(
   modalCaptureResult.quotedIdentifier,
   '"AgentsCommander Current App / button / OpenCode B - BALANCED profile selector card"'
 );
-assert.equal(modalCaptureResult.component, modalProfileCard, 'modal capture should resolve to the original modal component');
-assert.notEqual(modalCaptureResult.component, modalCopyAction, 'modal capture must not highlight the context-menu action button');
-assert.equal(copiedText, modalCaptureResult.quotedIdentifier, 'modal copy should use the shared capture helper');
+assert.equal(modalCaptureResult.component, modalProfileCard,
+  'modal capture should resolve to the original modal component');
+assert.notEqual(modalCaptureResult.component, modalCopyAction,
+  'modal capture must not highlight the context-menu action button');
+assert.equal(copiedText, modalCaptureResult.quotedIdentifier,
+  'modal copy should use the shared capture helper');
 const modalToast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(modalToast, 'modal copy should show the component capture toast');
 assert.match(modalToast?.textContent ?? '', /"AgentsCommander Current App \/ button \/ OpenCode B - BALANCED profile selector card"/);
@@ -694,7 +753,8 @@ assert.ok(
   'modal capture toast should render above the profile modal context menu layer'
 );
 const modalToastTimers = getTimersByDelay(15000);
-assert.equal(modalToastTimers.length, 1, 'modal copy should schedule a 15-second toast removal timer');
+assert.equal(modalToastTimers.length, 1,
+  'modal copy should schedule a 15-second toast removal timer');
 const modalHighlight = dom.window.document.querySelector('.component-capture-highlight');
 assert.ok(modalHighlight, 'modal copy should show the component capture highlight');
 assert.equal(modalHighlight?.style.left, '420px');
@@ -719,7 +779,8 @@ modalToastTimers.forEach(([, timer]) => timer.callback(...timer.args));
 activeTimers.clear();
 copiedText = '';
 
-const modalHeader = dom.window.document.querySelector('[data-component="Coding Agent profile modal header"]');
+const modalHeader =
+  dom.window.document.querySelector('[data-component="Coding Agent profile modal header"]');
 assert.ok(modalHeader, 'modal header target should exist');
 const modalCloseContextMenu = new dom.window.MouseEvent('contextmenu', {
   bubbles: true,
@@ -728,9 +789,11 @@ const modalCloseContextMenu = new dom.window.MouseEvent('contextmenu', {
   clientY: 190,
 });
 const modalCloseContextMenuAllowed = modalHeader.dispatchEvent(modalCloseContextMenu);
-assert.equal(modalCloseContextMenuAllowed, false, 'modal close-menu right-click should prevent native context menu');
+assert.equal(modalCloseContextMenuAllowed, false,
+  'modal close-menu right-click should prevent native context menu');
 assert.equal(modalCloseContextMenu.defaultPrevented, true);
-const modalCloseAction = Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
+const modalCloseAction =
+  Array.from(dom.window.document.querySelectorAll('.profile-modal-context-option'))
   .find((button) => button.textContent === 'Close modal');
 assert.ok(modalCloseAction, 'modal menu should include a Close modal action');
 modalCloseAction.click();
@@ -760,8 +823,10 @@ const contextMenu = new dom.window.MouseEvent('contextmenu', {
 });
 const contextMenuAllowed = sidebarCaptureTarget.dispatchEvent(contextMenu);
 assert.equal(contextMenuAllowed, false, 'right click should prevent the native context menu path');
-assert.equal(contextMenu.defaultPrevented, true, 'contextmenu event should be marked defaultPrevented');
-assert.equal(dom.window.__componentCaptureLastResult, undefined, 'sidebar right-click should not immediately capture');
+assert.equal(contextMenu.defaultPrevented, true,
+  'contextmenu event should be marked defaultPrevented');
+assert.equal(dom.window.__componentCaptureLastResult, undefined,
+  'sidebar right-click should not immediately capture');
 
 const sidebarMenu = dom.window.document.querySelector('.sidebar-context-menu');
 assert.ok(sidebarMenu, 'sidebar right-click should open a custom context menu');
@@ -792,7 +857,8 @@ assert.equal(
   captureResult.quotedIdentifier,
   '"AgentsCommander Current App / article / selected project coding agent model and effort task"'
 );
-assert.equal(copiedText, captureResult.quotedIdentifier, 'fallback clipboard copy should include double quotes');
+assert.equal(copiedText, captureResult.quotedIdentifier,
+  'fallback clipboard copy should include double quotes');
 
 const toast = dom.window.document.querySelector('.component-capture-toast');
 assert.ok(toast, 'component capture toast should appear');
@@ -800,7 +866,8 @@ assert.match(toast?.textContent ?? '', /"AgentsCommander Current App \/ article 
 assert.match(toast?.textContent ?? '', /article \.project-card\.selected/);
 
 const toastTimers = getTimersByDelay(15000);
-assert.equal(toastTimers.length, 1, 'component capture toast should schedule a 15-second removal timer');
+assert.equal(toastTimers.length, 1,
+  'component capture toast should schedule a 15-second removal timer');
 assert.equal(
   dom.window.document.querySelector('.component-capture-toast'),
   toast,
@@ -821,7 +888,8 @@ assert.equal(
   'component capture highlight should remove after its two-blink animation completes'
 );
 
-const outsideCaptureTarget = dom.window.document.querySelector('[data-component="last prompt panel with copied message request"]');
+const outsideCaptureTarget = dom.window.document.querySelector(
+  '[data-component="last prompt panel with copied message request"]');
 assert.ok(outsideCaptureTarget, 'outside-sidebar capture target should exist');
 outsideCaptureTarget.getBoundingClientRect = () => ({
   left: 18,
@@ -841,7 +909,8 @@ const outsideContextMenu = new dom.window.MouseEvent('contextmenu', {
   clientY: 112,
 });
 const outsideContextMenuAllowed = outsideCaptureTarget.dispatchEvent(outsideContextMenu);
-assert.equal(outsideContextMenuAllowed, false, 'outside right click should also prevent native menu');
+assert.equal(outsideContextMenuAllowed, false,
+  'outside right click should also prevent native menu');
 assert.equal(outsideContextMenu.defaultPrevented, true);
 assert.equal(
   dom.window.document.querySelector('.sidebar-context-menu'),
@@ -853,7 +922,8 @@ assert.equal(
   secondCaptureResult.quotedIdentifier,
   '"AgentsCommander Current App / div / last prompt panel with copied message request"'
 );
-assert.equal(copiedText, secondCaptureResult.quotedIdentifier, 'outside direct capture should copy quoted identifier');
+assert.equal(copiedText, secondCaptureResult.quotedIdentifier,
+  'outside direct capture should copy quoted identifier');
 assert.equal(
   clearedTimers.includes(toastTimers[0][0]),
   true,
