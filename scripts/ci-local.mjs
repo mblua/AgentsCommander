@@ -62,7 +62,8 @@ export function testDebtCommands(workflowText, baseRef) {
   const commands = [];
   for (let i = start + 1; i < lines.length && !/^ {2}[a-z0-9-]+:\s*$/.test(lines[i]); i += 1) {
     const match = /^\s+(?:run:\s+)?(npm (?:run|test) .*)$/.exec(lines[i]);
-    if (match) commands.push(match[1].replaceAll('"${GATE_BASE_REF:-origin/main}"', `"${baseRef}"`));
+    if (match) commands.push(match[1].replaceAll('"${GATE_BASE_REF:-origin/main}"',
+      `"${baseRef}"`));
   }
   if (commands.length === 0) throw new Error('found no npm commands in the test-debt job');
   const unresolved = commands.find((c) => c.includes('${'));
@@ -136,10 +137,12 @@ function main() {
     throw new Error('node_modules is missing; run `npm ci` first');
   }
   const base = capture(`git rev-parse --short ${opts.baseRef}`, ROOT);
-  if (!base) throw new Error(`cannot resolve ${opts.baseRef}; run \`git fetch origin main\` or pass --base-ref`);
+  if (!base) throw new Error(
+    `cannot resolve ${opts.baseRef}; run \`git fetch origin main\` or pass --base-ref`);
   console.log(`Comparing against ${opts.baseRef} (${base.trim()}).`);
   if (capture('git status --porcelain --untracked-files=no', ROOT)?.trim()) {
-    console.log('Note: you have uncommitted changes. The --base-ref checks read the last commit, not them.');
+    console.log(
+      'Note: you have uncommitted changes. The --base-ref checks read the last commit, not them.');
   }
 
   const results = [];
@@ -150,7 +153,8 @@ function main() {
 
   console.log('\n=== Summary');
   for (const [name, result] of results) {
-    console.log(`${summaryLabel(result)} ${result.seconds.toFixed(0).padStart(4)}s  ${String(name)}`);
+    console.log(
+      `${summaryLabel(result)} ${result.seconds.toFixed(0).padStart(4)}s  ${String(name)}`);
   }
   const failed = failedCount(results);
   console.log(failed === 0 ? 'All checks passed.' : `${failed} check(s) failed.`);
