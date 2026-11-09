@@ -239,7 +239,7 @@ describe("ErrorModal popup mute (#3037)", () => {
     await hop();
     expect(ipc.setErrorPopupMuted).toHaveBeenLastCalledWith("A", false);
     expect(muteBox().checked).toBe(false);
-    expect(ipc.drainErrorLogs.mock.calls.length).toBe(drains); // no replay
+    expect(ipc.drainErrorLogs.mock.calls).toHaveLength(drains); // no replay
   });
 
   it("a late drain of earlier A entries is still queued after A is muted", async () => {
