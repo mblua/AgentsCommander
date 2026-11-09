@@ -350,13 +350,6 @@
         "agentscommander_lib::cli::list_peers",
         "agentscommander_lib::cli::list_peers::snapshot"
       ]
-    },
-    {
-      "id": "99ca20000995b5ac",
-      "members": [
-        "agentscommander_lib::process::agent::owner",
-        "agentscommander_lib::process::agent::owner::command_run"
-      ]
     }
   ],
   "functionCycles": []
