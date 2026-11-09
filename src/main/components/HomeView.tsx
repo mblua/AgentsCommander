@@ -13,7 +13,7 @@ const md = MarkdownIt({
 const HomeView: Component = () => {
   onMount(() => {
     if (homeStore.content === null && homeStore.error === null && !homeStore.loading) {
-      homeStore.fetch();
+      void homeStore.fetch();
     }
   });
 

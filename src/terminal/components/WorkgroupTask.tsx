@@ -221,7 +221,7 @@ const WorkgroupTask: Component = () => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      saveTitle();
+      void saveTitle();
     } else if (e.key === "Escape") {
       e.preventDefault();
       cancelEditing();
