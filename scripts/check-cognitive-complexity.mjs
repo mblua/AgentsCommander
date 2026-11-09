@@ -367,7 +367,8 @@ function splitTopLevelCommas(tokens) {
 
 function isPredicateTerminator(token) {
   return token === undefined
-    || (token.type === 'punct' && (token.value === ')' || token.value === ',' || token.value === '='));
+    || (token.type === 'punct' && (token.value === ')' || token.value === ',' ||
+      token.value === '='));
 }
 
 function scanPredicateTokens(tokens, source, file, hits) {
@@ -381,8 +382,10 @@ function scanPredicateTokens(tokens, source, file, hits) {
       });
       return;
     }
-    if (token.type === 'ident' && token.value === 'clippy' && isPredicateTerminator(tokens[index + 1])) {
-      hits.push({ rule: 'S2', file, line: lineOf(source, token.start), text: source.slice(token.start, token.end) });
+    if (token.type === 'ident' && token.value === 'clippy' &&
+      isPredicateTerminator(tokens[index + 1])) {
+      hits.push({ rule: 'S2', file, line: lineOf(source, token.start),
+        text: source.slice(token.start, token.end) });
     }
   });
 }
@@ -661,7 +664,8 @@ function requireValue(argv, index, name) {
 
 function parsePlatform(argv, i) {
   const value_ = argv[i + 1];
-  if (value_ === undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
+  if (value_ ===
+    undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
   if (!PLATFORMS.includes(value_)) {
     throw new UsageError(`--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
   }
@@ -686,7 +690,8 @@ function parseMergeFiles(argv, i) {
   return { files, nextIndex: next };
 }
 
-/** Applies the flag at `argv[i]` to `flags` and returns the index of the last argv entry it consumed. */
+/** Applies the flag at `argv[i]` to `flags` and returns the index of the last argv entry it
+ * consumed. */
 function applyFlag(argv, i, flags) {
   const arg = argv[i];
   if (BOOLEAN_FLAGS.has(arg)) {
@@ -734,7 +739,8 @@ function captureOptions(flags) {
     throw new UsageError('--capture requires --platform windows, linux or macos');
   }
   if (flags.clippyExit === undefined) throw new UsageError('--capture requires --clippy-exit <n>');
-  if (flags.rustcVersion === undefined) throw new UsageError('--capture requires --rustc-version <v>');
+  if (flags.rustcVersion ===
+    undefined) throw new UsageError('--capture requires --rustc-version <v>');
   return {
     mode: 'capture',
     captureFile: flags.capture,
@@ -1101,7 +1107,8 @@ function opaqueEnd(source, index) {
   if (ch === '/' && source[index + 1] === '*') {
     return { kind: 'comment', end: skipBlockComment(source, index) };
   }
-  if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) && !isIdentContinue(source[index - 1])) {
+  if ((ch === 'r' || (ch === 'b' && source[index + 1] === 'r')) &&
+    !isIdentContinue(source[index - 1])) {
     const end = rawStringEnd(source, index);
     if (end !== -1) return { kind: 'string', end };
   }
@@ -1228,7 +1235,8 @@ function lexIdentifier(lx) {
     && atItemPosition(lx.previousSignificantChar, lx.previousWord)
     && (value === 'impl' || nextItemNameStarts(lx.source, end))
   ) {
-    lx.pending = { kind: value, name: null, text: '', kwLine: lineNumberAt(lx.starts, lx.index), nest: 0 };
+    lx.pending = { kind: value, name: null, text: '', kwLine: lineNumberAt(lx.starts, lx.index),
+      nest: 0 };
   }
   lx.previousWord = value;
   lx.previousSignificantChar = value[value.length - 1];
@@ -1624,7 +1632,8 @@ export function runCapture(options, io = {}) {
     io.readWorkspace ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file), 'utf8'));
   const readWorkspaceBytes =
     io.readWorkspaceBytes ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file)));
-  const existsWorkspace = io.existsWorkspace ?? ((file) => fs.existsSync(path.join(workspaceRoot, file)));
+  const existsWorkspace = io.existsWorkspace ?? ((file) => fs.existsSync(path.join(workspaceRoot,
+    file)));
   const writeText = io.writeText ?? ((file, text) => fs.writeFileSync(file, text));
 
   // 1. Render first, before anything can fail, so a broken build still shows
@@ -1704,7 +1713,8 @@ export function runCapture(options, io = {}) {
 
   // 5. Threshold file. Clippy 1.97.1 gives a root .clippy.toml precedence.
   if (existsWorkspace('.clippy.toml')) {
-    throw new ConfigError('root .clippy.toml exists and takes precedence over clippy.toml; remove it');
+    throw new ConfigError(
+      'root .clippy.toml exists and takes precedence over clippy.toml; remove it');
   }
   let tomlBytes;
   try {
@@ -1779,7 +1789,8 @@ export function runCapture(options, io = {}) {
       );
     }
     const file = normaliseCapturePath(span.file_name, workspaceRoot);
-    const key = [file, span.line_start, span.line_end, span.column_start, span.column_end].join('\u0000');
+    const key = [file, span.line_start, span.line_end, span.column_start,
+      span.column_end].join('\u0000');
     if (sites.has(key)) continue;
     const selection = Array.isArray(span.text) ? span.text[0] : undefined;
     const sliceText =
@@ -1824,7 +1835,8 @@ export function runCapture(options, io = {}) {
 
   // 12. Anchor multisets, not counts: an equal-count replacement is refused.
   const baselineById = new Map(baselineDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort((a,
+    b) => (a < b ? -1 : a > b ? 1 : 0));
   const newFindings = [];
   const staleFindings = [];
   for (const id of ids) {
@@ -1909,7 +1921,8 @@ export function runCapture(options, io = {}) {
     );
     stderr(STALE_REMEDIAL);
   }
-  return newFindings.length > 0 || staleFindings.length > 0 || accepted.unusedEntries.length > 0 ? 1 : 0;
+  return newFindings.length > 0 || staleFindings.length > 0 ||
+    accepted.unusedEntries.length > 0 ? 1 : 0;
 }
 
 const STALE_ALLOWLIST_REMEDIAL =
@@ -1945,7 +1958,8 @@ function acceptFindings(newFindings, staleFindings, entries) {
   const newLeft = [];
   let reanchored = 0;
   for (const finding of newFindings) {
-    const index = staleLeft.findIndex((stale) => stale.anchor === finding.anchor && stale.id !== finding.id);
+    const index = staleLeft.findIndex((stale) => stale.anchor === finding.anchor &&
+      stale.id !== finding.id);
     if (index === -1) {
       newLeft.push(finding);
     } else {
@@ -2027,7 +2041,8 @@ function compareToolchainVersions(base, head) {
 // `git` is never resolved through PATH (javascript:S4036): the candidates are
 // the fixed, installer-owned locations the Git for Windows installer and the
 // POSIX system packages use. The first runnable candidate wins and is cached.
-const POSIX_GIT_CANDIDATES = ['/usr/bin/git', '/bin/git', '/usr/local/bin/git', '/opt/homebrew/bin/git'];
+const POSIX_GIT_CANDIDATES = ['/usr/bin/git', '/bin/git', '/usr/local/bin/git',
+  '/opt/homebrew/bin/git'];
 const WINDOWS_GIT_ROOTS = [
   ['ProgramFiles', String.raw`C:\Program Files`],
   ['ProgramW6432', String.raw`C:\Program Files`],
@@ -2363,7 +2378,8 @@ export function runBaselineDiff(options, io = {}) {
   const removals = [];
   const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
   const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort((a,
+    b) => (a < b ? -1 : a > b ? 1 : 0));
   for (const id of ids) {
     const baseEntry = baseById.get(id);
     const headEntry = headById.get(id);
@@ -2403,7 +2419,8 @@ export function runBaselineDiff(options, io = {}) {
   }
   const diffSet = new Set(diffNames);
   const rustTouched = diffNames.some((name) => name.endsWith('.rs'));
-  if (!rustTouched && compareToolchainVersions(baseDocument.toolchain, headDocument.toolchain) > 0) {
+  if (!rustTouched && compareToolchainVersions(baseDocument.toolchain,
+    headDocument.toolchain) > 0) {
     stdout(
       `TOOLCHAIN REFRESH: ${baseDocument.toolchain} -> ${headDocument.toolchain} `
         + `(${additions.length} additions, ${removals.length} removals)`,
@@ -2569,7 +2586,8 @@ export function runMerge(options, io = {}) {
         }
       }
       if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
-      merged.get(entry.id).sites[platform] = [...entry.anchors].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      merged.get(entry.id).sites[platform] = [...entry.anchors].sort((a,
+        b) => (a < b ? -1 : a > b ? 1 : 0));
     }
   }
   const entries = [...merged.values()].sort((left, right) =>
@@ -2644,7 +2662,8 @@ export function runClassifyProbe(options, io = {}) {
     if (record?.message?.level !== 'error') continue;
     const code = record.message.code;
     const key =
-      code === null || code === undefined || typeof code.code !== 'string' || RUSTC_CODE_RE.test(code.code)
+      code === null || code === undefined || typeof code.code !== 'string' ||
+        RUSTC_CODE_RE.test(code.code)
         ? RUSTC_HISTOGRAM_KEY
         : code.code;
     histogram.set(key, (histogram.get(key) ?? 0) + 1);
@@ -2854,7 +2873,8 @@ function messageRecord({
   };
 }
 
-function cognitiveRecord({ message = 'the function has a cognitive complexity of (31/25)', ...rest }) {
+function cognitiveRecord({ message = 'the function has a cognitive complexity of (31/25)',
+  ...rest }) {
   return messageRecord({ ...rest, message, code: COGNITIVE_CODE });
 }
 
@@ -3063,7 +3083,8 @@ function emissionDocument({
   return JSON.stringify({ platform, commit, rustcVersion, entries }, null, 2);
 }
 
-function mergeFixture({ files = {}, clippy = PINNED_CLIPPY_TOML, now = '2026-03-04T05:06:07Z' } = {}) {
+function mergeFixture({ files = {}, clippy = PINNED_CLIPPY_TOML,
+  now = '2026-03-04T05:06:07Z' } = {}) {
   const stdoutLines = [];
   const stderrLines = [];
   const writes = new Map();
@@ -3109,7 +3130,8 @@ function probeFixture({ capture = '' } = {}) {
   };
   return {
     state: { stdout: stdoutLines, stderr: stderrLines },
-    run: (probeExit) => main(['--classify-probe', PROBE_FILE, '--probe-exit', String(probeExit)], io),
+    run: (probeExit) => main(['--classify-probe', PROBE_FILE, '--probe-exit', String(probeExit)],
+      io),
   };
 }
 
@@ -3175,8 +3197,10 @@ mod m {
     fn c(&self) {}
 }
 `);
-      const containers = ['a(&self)', 'b(&self)', 'c(&self)'].map((needle) => containerAtNeedle(fix, needle));
-      expectEqual(containers.join(' | '), 'impl:Tr for T | trait:Tr | mod:m', 'the three containers');
+      const containers = ['a(&self)', 'b(&self)', 'c(&self)'].map((needle) => containerAtNeedle(fix,
+        needle));
+      expectEqual(containers.join(' | '), 'impl:Tr for T | trait:Tr | mod:m',
+        'the three containers');
     }],
     ['case 32: a free function id carries no container segment', () => {
       const fix = fixture('src/free.rs', 'fn free() {}\n');
@@ -3190,7 +3214,8 @@ mod m {
 }
 `);
       expectEqual(containerAtNeedle(fix, 'inner()'), 'impl:A::fn:outer', 'nested container');
-      expectEqual(idAt(fix, 'inner()', 'inner'), 'rust:src/nested.rs::impl:A::fn:outer::inner', 'nested id');
+      expectEqual(idAt(fix, 'inner()', 'inner'), 'rust:src/nested.rs::impl:A::fn:outer::inner',
+        'nested id');
     }],
     ['case 34: an impl where clause is dropped and its generics kept', () => {
       const fix = fixture('src/where.rs', `impl<T> Foo<T> where T: X {
@@ -3231,10 +3256,12 @@ mod m {
         ['not(r#clippy)', '#[cfg(not(r#clippy))]\n', 'r#clippy'],
         ['not(clippy /*x*/)', '#[cfg(not(clippy /*x*/))]\n', 'clippy'],
         ['not(clippy,)', '#[cfg(not(clippy,))]\n', 'clippy'],
-        ['nested cfg_attr(feature = "x", cfg(not(clippy)))', '#[cfg_attr(feature = "x", cfg(not(clippy)))]\n', 'clippy'],
+        ['nested cfg_attr(feature = "x", cfg(not(clippy)))',
+          '#[cfg_attr(feature = "x", cfg(not(clippy)))]\n', 'clippy'],
         ['cfg(clippy = "y")', '#[cfg(clippy = "y")]\n', 'clippy'],
         ['cfg(not(clippy = "y"))', '#[cfg(not(clippy = "y"))]\n', 'clippy'],
-        ['cfg_attr(not(clippy = "y"), ...)', '#[cfg_attr(not(clippy = "y"), allow(dead_code))]\n', 'clippy'],
+        ['cfg_attr(not(clippy = "y"), ...)', '#[cfg_attr(not(clippy = "y"), allow(dead_code))]\n',
+          'clippy'],
       ];
       for (const [label, text, expectedText] of variants) {
         const hits = runFixture(['src/variant.rs'], { 'src/variant.rs': text });
@@ -3250,14 +3277,16 @@ mod m {
     ['case 49: nested or changed clippy.toml fails S3, the pinned root one passes', () => {
       expectHit(runFixture(['src-tauri/clippy.toml']), 'S3', 'src-tauri/clippy.toml', null);
       expectHit(runFixture(['crates/x/.clippy.toml']), 'S3', 'crates/x/.clippy.toml', null);
-      expectHit(runFixture(['.clippy.toml'], { '.clippy.toml': PINNED_CLIPPY_TOML }), 'S3', '.clippy.toml', null);
+      expectHit(runFixture(['.clippy.toml'], { '.clippy.toml': PINNED_CLIPPY_TOML }), 'S3',
+        '.clippy.toml', null);
       expectNoHits(runFixture(['clippy.toml'], { 'clippy.toml': PINNED_CLIPPY_TOML }));
       const commentEdit = PINNED_CLIPPY_TOML.replace('so a future change', 'so a later change');
       expectNoHits(runFixture(['clippy.toml'], { 'clippy.toml': commentEdit }));
       const changed = [
         ['changed threshold', PINNED_CLIPPY_TOML.replace('threshold = 25', 'threshold = 30')],
         ['duplicate assignment', `${PINNED_CLIPPY_TOML}${PINNED_THRESHOLD_LINE}\n`],
-        ['extra TOML assignment', PINNED_CLIPPY_TOML.replace('cognitive-complexity-threshold = 25', 'too-many-arguments-threshold = 8\ncognitive-complexity-threshold = 25')],
+        ['extra TOML assignment', PINNED_CLIPPY_TOML.replace('cognitive-complexity-threshold = 25',
+          'too-many-arguments-threshold = 8\ncognitive-complexity-threshold = 25')],
       ];
       for (const [label, text] of changed) {
         const hits = runFixture(['clippy.toml'], { 'clippy.toml': text });
@@ -3353,7 +3382,8 @@ fn free() {
 }
 `);
       const containers = ['free()', '|x|'].map((needle) => containerAtNeedle(fix, needle));
-      expectEqual(JSON.stringify(containers), JSON.stringify(['', 'fn:free']), 'free scope and closure scope');
+      expectEqual(JSON.stringify(containers), JSON.stringify(['', 'fn:free']),
+        'free scope and closure scope');
     }],
     ['case 56: a closure under a module declaration stays under its function', () => {
       const fix = fixture('src/below.rs', `pub mod web;
@@ -3401,8 +3431,10 @@ mod b {
 }
 `);
       expectDifferent(idAt(split, 'f()', 'f', 1), idAt(split, 'f()', 'f', 2), 'module paths');
-      expectEqual(idAt(split, 'f()', 'f', 1), 'rust:src/mods.rs::mod:a::mod:inner::f', 'mod a path');
-      expectEqual(idAt(split, 'f()', 'f', 2), 'rust:src/mods.rs::mod:b::mod:inner::f', 'mod b path');
+      expectEqual(idAt(split, 'f()', 'f', 1), 'rust:src/mods.rs::mod:a::mod:inner::f',
+        'mod a path');
+      expectEqual(idAt(split, 'f()', 'f', 2), 'rust:src/mods.rs::mod:b::mod:inner::f',
+        'mod b path');
       const shared = fixture('src/shared.rs', `mod p {
     mod inner {
         fn f() {}
@@ -3412,7 +3444,8 @@ mod b {
     }
 }
 `);
-      expectEqual(idAt(shared, 'f()', 'f', 1), 'rust:src/shared.rs::mod:p::mod:inner::f', 'shared path');
+      expectEqual(idAt(shared, 'f()', 'f', 1), 'rust:src/shared.rs::mod:p::mod:inner::f',
+        'shared path');
       expectEqual(idAt(shared, 'f()', 'f', 1), idAt(shared, 'f()', 'f', 2), 'cfg-alternate pair');
     }],
     ['case 59: a three-line impl header is joined and collapsed', () => {
@@ -3430,7 +3463,8 @@ mod b {
     fn f() {}
 }
 `);
-      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T: Into<Vec<u8>>> Foo<T>', 'nested generics');
+      expectEqual(containerAtNeedle(fix, 'f()'), 'impl:<T: Into<Vec<u8>>> Foo<T>',
+        'nested generics');
     }],
     ['case 61: trailing comments, raw strings and commented mod lines open nothing', () => {
       const fix = fixture('src/lexed.rs', `impl Foo for Bar // for Baz
@@ -3481,8 +3515,10 @@ ${base.source}`);
     fn m2(&self) { let c = |x| x; }
 }
 `);
-      expectEqual(idAt(fix, '|x|', '|x|', 1), 'rust:src/same-line.rs::impl:P::fn:m1::{closure}', 'm1 closure');
-      expectEqual(idAt(fix, '|x|', '|x|', 2), 'rust:src/same-line.rs::impl:P::fn:m2::{closure}', 'm2 closure');
+      expectEqual(idAt(fix, '|x|', '|x|', 1), 'rust:src/same-line.rs::impl:P::fn:m1::{closure}',
+        'm1 closure');
+      expectEqual(idAt(fix, '|x|', '|x|', 2), 'rust:src/same-line.rs::impl:P::fn:m2::{closure}',
+        'm2 closure');
     }],
     ['case 64: headers ended by a semicolon open no scope', () => {
       const fix = fixture('src/semis.rs', `mod web;
@@ -3501,14 +3537,17 @@ trait T {
     let b = |y: u32| { y };
 }
 `);
-      expectEqual(idAt(different, '|x: u32|', '|x: u32|'), idAt(different, '|y: u32|', '|y: u32|'), 'shared closure id');
-      expectDifferent(anchorAt(different, '|x: u32|'), anchorAt(different, '|y: u32|'), 'parameter lists');
+      expectEqual(idAt(different, '|x: u32|', '|x: u32|'), idAt(different, '|y: u32|', '|y: u32|'),
+        'shared closure id');
+      expectDifferent(anchorAt(different, '|x: u32|'), anchorAt(different, '|y: u32|'),
+        'parameter lists');
       const identical = fixture('src/anchors.rs', `fn f() {
     let a = |x: u32| { x };
     let b = |x: u32| { y };
 }
 `);
-      expectEqual(anchorAt(identical, '|x: u32|', 1), anchorAt(identical, '|x: u32|', 2), 'identical closures');
+      expectEqual(anchorAt(identical, '|x: u32|', 1), anchorAt(identical, '|x: u32|', 2),
+        'identical closures');
     }],
     ['case 66: a const-generic brace ends the impl header early', () => {
       const fix = fixture('src/const-generic.rs', `impl Foo<{N + 1}> {
@@ -3532,7 +3571,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(containers[1], 'fn:g', 'fn g container');
       expectEqual(containers[2], 'impl:Tr for [u8; 4]::fn:m', 'impl method container');
       if (new Set(ids).size !== 3) throw new Error(`expected three distinct ids, got ${JSON.stringify(ids)}`);
-      if (containers.some((container) => container === '')) throw new Error('a frame was lost to the array semicolon');
+      if (containers.some((container) => container ===
+        '')) throw new Error('a frame was lost to the array semicolon');
     }],
     ['case 72: a body edit leaves the anchor, a signature edit moves it', () => {
       const before = fixture('src/edit.rs', 'fn f() { let a = 1; }\n');
@@ -3547,7 +3587,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     let b = |y: u32| { y };
 }
 `);
-      expectDifferent(anchorAt(split, '|x: u32|'), anchorAt(split, '|y: u32|'), 'closure parameters');
+      expectDifferent(anchorAt(split, '|x: u32|'), anchorAt(split, '|y: u32|'),
+        'closure parameters');
       const decoy = fixture('src/decoy-header.rs', `fn f() -> [u8; "{".len()] // {
 { 0 }
 `);
@@ -3583,11 +3624,13 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 79: #3182 a moved function with the same anchor is accepted as a re-anchor', () => {
       const workspace = { 'src/b.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
-        capture: jsonl(cognitiveRecord({ file: 'src/b.rs', line: 1, column: 1, slice: 'heavy' }), buildFinished()),
+        capture: jsonl(cognitiveRecord({ file: 'src/b.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished()),
         workspace,
       });
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/a.rs::heavy', sites: { windows: [anchorFor('src/b.rs', 1, 1, fixture.reader)] } },
+        { id: 'rust:src/a.rs::heavy', sites: { windows: [anchorFor('src/b.rs', 1, 1,
+          fixture.reader)] } },
       ]);
       expectEqual(fixture.run(), 0, 'a same-anchor move passes');
       expectEqual(fixture.state.stderr.length, 0, 'an accepted move prints no finding');
@@ -3596,7 +3639,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         'the accepted count is printed');
     }],
     ['case 80: #3182 allowlisted NEW and STALE are accepted, unlisted ones still fail', () => {
-      const workspace = { 'src/b.rs': HEAVY_SOURCE, 'src/c.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
+      const workspace = { 'src/b.rs': HEAVY_SOURCE, 'src/c.rs': HEAVY_SOURCE,
+        'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
           cognitiveRecord({ file: 'src/b.rs', line: 1, column: 1, slice: 'heavy' }),
@@ -3627,7 +3671,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 81: #3182 an allowlist entry that matches no finding fails the gate', () => {
       const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
-        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }), buildFinished()),
+        capture: jsonl(cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
+          buildFinished()),
         workspace,
       });
       const anchor = anchorFor('src/a.rs', 1, 1, fixture.reader);
@@ -3635,13 +3680,16 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         { id: 'rust:src/a.rs::heavy', sites: { windows: [anchor] } },
       ]);
       workspace[ALLOWLIST_FILE] = JSON.stringify({ version: 1, entries: [{ gate: 'cog', rule: 'new',
-        path: 'src/gone.rs', symbol: 'heavy', hash: otherAnchor(anchor), reason: 'moved', issue: 3182,
+        path: 'src/gone.rs', symbol: 'heavy', hash: otherAnchor(anchor), reason: 'moved',
+          issue: 3182,
         since: '2026-10-23' }] });
       expectEqual(fixture.run(), 1, 'a stale allowlist entry exits 1');
-      if (!fixture.state.stderr.some((line) => line.startsWith('STALE allowlist entry: rust:src/gone.rs::heavy#'))) {
+      if (!fixture.state.stderr.some((line) =>
+        line.startsWith('STALE allowlist entry: rust:src/gone.rs::heavy#'))) {
         throw new Error(`expected the stale allowlist line, got ${JSON.stringify(fixture.state.stderr)}`);
       }
-      if (!fixture.state.stderr.includes(STALE_ALLOWLIST_REMEDIAL)) throw new Error('the remedial line was not printed');
+      if (!fixture.state.stderr.includes(STALE_ALLOWLIST_REMEDIAL)) throw new Error(
+        'the remedial line was not printed');
     }],
     ['case 2: an observed id absent from the baseline is a NEW in enforcing mode', () => {
       const fixture = captureFixture({
@@ -3669,8 +3717,10 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const workspace = { 'src/two.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column, slice: 'm' }),
-          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column,
+            slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column,
+            slice: 'm' }),
           buildFinished(),
         ),
         workspace,
@@ -3716,7 +3766,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const anchor = anchorFor('src/one.rs', 1, 1, fixture.reader);
       const missing = otherAnchor(anchor);
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/one.rs::heavy', sites: { windows: [anchor, missing].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) } },
+        { id: 'rust:src/one.rs::heavy', sites: { windows: [anchor, missing].sort((a,
+          b) => (a < b ? -1 : a > b ? 1 : 0)) } },
       ]);
       expectEqual(fixture.run(), 1, 'the unobserved anchor is a STALE');
       const lines = findingLines(fixture, 'STALE');
@@ -3734,7 +3785,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
           ]),
         },
       });
-      expectEqual(fixture.run(['--platform', 'linux']), 0, 'an unobserved id with no linux array is ignored');
+      expectEqual(fixture.run(['--platform', 'linux']), 0,
+        'an unobserved id with no linux array is ignored');
       expectEqual(fixture.state.stderr.length, 0, 'ignored means no output');
     }],
     ['case 7: the same entry evaluated on windows is a STALE', () => {
@@ -3984,7 +4036,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
           `expected the rendered diagnostic first, got ${JSON.stringify(fixture.state.stderr)}`,
         );
       }
-      if (findingLines(fixture, 'NEW').length !== 0 || findingLines(fixture, 'STALE').length !== 0) {
+      if (findingLines(fixture, 'NEW').length !== 0 || findingLines(fixture,
+        'STALE').length !== 0) {
         throw new Error('the ratchet was consulted on a failed clippy run');
       }
       if (fixture.state.writes.size !== 0) throw new Error('a failed clippy run wrote an emission');
@@ -4002,7 +4055,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         ],
         ['sites not an object', baselineJson([{ id, sites: [valid] }])],
         ['empty anchor array', baselineJson([{ id, sites: { windows: [] } }])],
-        ['anchor not 12 lowercase hex', baselineJson([{ id, sites: { windows: ['A'.repeat(12)] } }])],
+        ['anchor not 12 lowercase hex', baselineJson([{ id,
+          sites: { windows: ['A'.repeat(12)] } }])],
         [
           'unsorted array',
           baselineJson([{ id, sites: { windows: ['f'.repeat(12), '0'.repeat(12)] } }]),
@@ -4013,7 +4067,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       for (const [label, text] of variants) {
         const fixture = captureFixture({
           capture: jsonl(buildFinished()),
-          workspace: { 'clippy.toml': PINNED_CLIPPY_TOML, 'cognitive-complexity.baseline.json': text },
+          workspace: { 'clippy.toml': PINNED_CLIPPY_TOML,
+            'cognitive-complexity.baseline.json': text },
         });
         expectEqual(fixture.run(), 1, `${label} is CONFIG`);
         if (!stderrText(fixture).includes('CONFIG')) {
@@ -4044,7 +4099,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
         env: { GITHUB_ACTIONS: 'true' },
       });
-      expectEqual(threshold.run(['--report', '--emit', 'never.json']), 1, 'a threshold failure fails');
+      expectEqual(threshold.run(['--report', '--emit', 'never.json']), 1,
+        'a threshold failure fails');
       if (threshold.state.writes.size !== 0) {
         throw new Error('a threshold failure wrote an emission');
       }
@@ -4105,8 +4161,10 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const second = sourceSite(TWO_SITES_SOURCE, 'm(&self, x: u32)');
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column, slice: 'm' }),
-          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column,
+            slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column,
+            slice: 'm' }),
           buildFinished(),
         ),
         workspace: { 'src/two.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
@@ -4129,7 +4187,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
             column: first.column,
             slice: '|x: u32|',
           }),
-          cognitiveRecord({ file: 'src/closures.rs', line: second.line, column: second.column, slice: '|' }),
+          cognitiveRecord({ file: 'src/closures.rs', line: second.line, column: second.column,
+            slice: '|' }),
           buildFinished(),
         ),
         workspace: { 'src/closures.rs': source, 'clippy.toml': PINNED_CLIPPY_TOML },
@@ -4150,10 +4209,14 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const closureY = sourceSite(source, '|y|');
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src/line.rs', line: alpha.line, column: alpha.column, slice: 'alpha' }),
-          cognitiveRecord({ file: 'src/line.rs', line: alpha.line, column: alpha.column, slice: 'alpha' }),
-          cognitiveRecord({ file: 'src/line.rs', line: beta.line, column: beta.column, slice: 'beta' }),
-          cognitiveRecord({ file: 'src/line.rs', line: beta.line, column: beta.column, slice: 'beta' }),
+          cognitiveRecord({ file: 'src/line.rs', line: alpha.line, column: alpha.column,
+            slice: 'alpha' }),
+          cognitiveRecord({ file: 'src/line.rs', line: alpha.line, column: alpha.column,
+            slice: 'alpha' }),
+          cognitiveRecord({ file: 'src/line.rs', line: beta.line, column: beta.column,
+            slice: 'beta' }),
+          cognitiveRecord({ file: 'src/line.rs', line: beta.line, column: beta.column,
+            slice: 'beta' }),
           cognitiveRecord({
             file: 'src/line.rs',
             line: closureX.line,
@@ -4200,8 +4263,10 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const workspace = { 'src/rc1.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src/rc1.rs', line: first.line, column: first.column, slice: 'm' }),
-          cognitiveRecord({ file: 'src/rc1.rs', line: second.line, column: second.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/rc1.rs', line: first.line, column: first.column,
+            slice: 'm' }),
+          cognitiveRecord({ file: 'src/rc1.rs', line: second.line, column: second.column,
+            slice: 'm' }),
           buildFinished(),
         ),
         workspace,
@@ -4210,7 +4275,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const replacement = anchorFor('src/rc1.rs', second.line, second.column, fixture.reader);
       const missing = otherAnchor(observed, replacement);
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/rc1.rs::impl:A::m', sites: { windows: [observed, missing].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) } },
+        { id: 'rust:src/rc1.rs::impl:A::m', sites: { windows: [observed, missing].sort((a,
+          b) => (a < b ? -1 : a > b ? 1 : 0)) } },
       ]);
       expectEqual(fixture.run(), 1, 'R-C1 is refused');
       const newLines = findingLines(fixture, 'NEW');
@@ -4227,8 +4293,10 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const first = sourceSite(source, '|x: u32|', 1);
       const second = sourceSite(source, '|x: u32|', 2);
       const captureText = jsonl(
-        cognitiveRecord({ file: 'src/dup.rs', line: first.line, column: first.column, slice: '|x: u32|' }),
-        cognitiveRecord({ file: 'src/dup.rs', line: second.line, column: second.column, slice: '|x: u32|' }),
+        cognitiveRecord({ file: 'src/dup.rs', line: first.line, column: first.column,
+          slice: '|x: u32|' }),
+        cognitiveRecord({ file: 'src/dup.rs', line: second.line, column: second.column,
+          slice: '|x: u32|' }),
         buildFinished(),
       );
       const reader = (file) => {
@@ -4259,7 +4327,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         },
       ]);
       expectEqual(changed.run(), 1, 'a changed second site is refused');
-      if (findingLines(changed, 'NEW').length !== 1 || findingLines(changed, 'STALE').length !== 1) {
+      if (findingLines(changed, 'NEW').length !== 1 || findingLines(changed,
+        'STALE').length !== 1) {
         throw new Error(`expected one NEW and one STALE, got ${JSON.stringify(changed.state.stderr)}`);
       }
     }],
@@ -4289,7 +4358,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const head = baselineJson([{ id, sites: { windows: [A12, B12] } }], { toolchain: '1.97.2' });
       const fixture = baselineDiffFixture({ base, head, diffPaths: ['docs/quality.md'] });
       expectEqual(fixture.run(), 0, 'the refresh exemption passes');
-      if (!stdoutText(fixture).includes('TOOLCHAIN REFRESH: 1.97.1 -> 1.97.2 (1 additions, 0 removals)')) {
+      if (!stdoutText(fixture).includes(
+        'TOOLCHAIN REFRESH: 1.97.1 -> 1.97.2 (1 additions, 0 removals)')) {
         throw new Error(`expected the refresh line with counts, got ${stdoutText(fixture)}`);
       }
     }],
@@ -4496,11 +4566,13 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(positive.state.stdout.filter((l) => l.startsWith('historical-cleanup#3319:'))
         .length, 3, 'three explicit historical tuples');
       const negatives = [
-        ['one platform', { base: document([{ ...entry, sites: { windows: entry.sites.windows } }]) }],
+        ['one platform', { base: document([{ ...entry,
+          sites: { windows: entry.sites.windows } }]) }],
         ['two platforms', { base: document([{ ...entry, sites: {
           windows: entry.sites.windows, linux: entry.sites.linux,
         } }]) }],
-        ['partial removal', { head: document([{ ...entry, sites: { macos: entry.sites.macos } }]) }],
+        ['partial removal', { head: document([{ ...entry,
+          sites: { macos: entry.sites.macos } }]) }],
         ['wrong id', { base: document([{ ...entry, id: entry.id + '_other' }]) }],
         ['wrong anchor', { base: document([{ ...entry, sites: { ...entry.sites,
           linux: [A12],
@@ -4551,12 +4623,14 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const id = 'rust:src/a.rs::heavy';
       const base = baselineJson([{ id, sites: { windows: [A12, B12] } }]);
       const head = baselineJson([{ id, sites: { windows: [A12] } }]);
-      const touched = baselineDiffFixture({ base, head, diffPaths: ['src/a.rs'], workingFiles: ['src/a.rs'] });
+      const touched = baselineDiffFixture({ base, head, diffPaths: ['src/a.rs'],
+        workingFiles: ['src/a.rs'] });
       expectEqual(touched.run(), 0, 'a touched-file removal passes');
       if (!stdoutText(touched).includes(`baseline removal accepted: ${id}#${B12} (windows)`)) {
         throw new Error(`expected the removal record, got ${stdoutText(touched)}`);
       }
-      const untouched = baselineDiffFixture({ base, head, diffPaths: [], workingFiles: ['src/a.rs'] });
+      const untouched = baselineDiffFixture({ base, head, diffPaths: [],
+        workingFiles: ['src/a.rs'] });
       expectEqual(untouched.run(), 1, 'an untouched-file removal fails');
       if (!stderrText(untouched).includes(`Baseline entry removed without touching its file: ${id}`)) {
         throw new Error(`expected the removal failure, got ${stderrText(untouched)}`);
@@ -4607,7 +4681,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const head = baselineJson([{ id, sites: { windows: [A12] } }]);
       const fixture = baselineDiffFixture({ base: null, head });
       expectEqual(fixture.run(), 0, 'adoption passes');
-      if (!stdoutText(fixture).includes('ADOPTION: no baseline in origin/main; this pull request introduces it')) {
+      if (!stdoutText(fixture).includes(
+        'ADOPTION: no baseline in origin/main; this pull request introduces it')) {
         throw new Error(`expected the adoption line, got ${stdoutText(fixture)}`);
       }
     }],
@@ -4684,7 +4759,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         }),
       };
       const fixture = mergeFixture({ files });
-      expectEqual(fixture.run(['windows.json', 'linux.json', 'macos.json']), 0, 'three platforms merge');
+      expectEqual(fixture.run(['windows.json', 'linux.json', 'macos.json']), 0,
+        'three platforms merge');
       const text = fixture.state.writes.get('merged.baseline.json');
       if (text === undefined) throw new Error('the merge wrote nothing');
       const document = JSON.parse(text);
@@ -4702,21 +4778,25 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         throw new Error(`expected the shared id first, got ${JSON.stringify(document.entries)}`);
       }
       const shared = document.entries[0];
-      expectEqual(JSON.stringify(shared.sites.windows), JSON.stringify([A12, B12]), 'windows anchors');
+      expectEqual(JSON.stringify(shared.sites.windows), JSON.stringify([A12, B12]),
+        'windows anchors');
       expectEqual(JSON.stringify(shared.sites.linux), JSON.stringify([B12, C12]), 'linux anchors');
       expectEqual(JSON.stringify(shared.sites.macos), JSON.stringify([A12]), 'macos anchors');
       const windowsOnly = document.entries[1];
-      expectEqual(JSON.stringify(Object.keys(windowsOnly.sites)), JSON.stringify(['windows']), 'windows-only keys');
+      expectEqual(JSON.stringify(Object.keys(windowsOnly.sites)), JSON.stringify(['windows']),
+        'windows-only keys');
     }],
     ['case 45: merge refuses duplicates, a missing platform, a short input list and version mismatches', () => {
       const windows = emissionDocument({ platform: 'windows', entries: [] });
       const linux = emissionDocument({ platform: 'linux', entries: [] });
       const macos = emissionDocument({ platform: 'macos', entries: [] });
-      const duplicate = mergeFixture({ files: { 'w1.json': windows, 'w2.json': windows, 'm.json': macos } });
+      const duplicate = mergeFixture({ files: { 'w1.json': windows, 'w2.json': windows,
+        'm.json': macos } });
       expectEqual(duplicate.run(['w1.json', 'w2.json', 'm.json']), 1, 'a duplicate platform fails');
       if (!stderrText(duplicate).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(duplicate)}`);
       const missing = mergeFixture({ files: {
-        'n.json': JSON.stringify({ commit: MERGE_COMMIT, rustcVersion: MERGE_TOOLCHAIN, entries: [] }),
+        'n.json': JSON.stringify({ commit: MERGE_COMMIT, rustcVersion: MERGE_TOOLCHAIN,
+          entries: [] }),
         'l.json': linux,
         'm.json': macos,
       } });
@@ -4737,17 +4817,22 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         'l.json': linux,
         'm.json': macos,
       } });
-      expectEqual(versionMismatch.run(['w.json', 'l.json', 'm.json']), 1, 'a rustcVersion mismatch fails');
+      expectEqual(versionMismatch.run(['w.json', 'l.json', 'm.json']), 1,
+        'a rustcVersion mismatch fails');
       if (!stderrText(versionMismatch).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(versionMismatch)}`);
     }],
     ['case 67: --merge rejects two inputs and accepts the three platforms', () => {
-      const windows = emissionDocument({ platform: 'windows', entries: [{ id: 'rust:src/w.rs::heavy', anchors: [A12] }] });
-      const linux = emissionDocument({ platform: 'linux', entries: [{ id: 'rust:src/l.rs::heavy', anchors: [B12] }] });
-      const macos = emissionDocument({ platform: 'macos', entries: [{ id: 'rust:src/m.rs::heavy', anchors: [C12] }] });
+      const windows = emissionDocument({ platform: 'windows',
+        entries: [{ id: 'rust:src/w.rs::heavy', anchors: [A12] }] });
+      const linux = emissionDocument({ platform: 'linux', entries: [{ id: 'rust:src/l.rs::heavy',
+        anchors: [B12] }] });
+      const macos = emissionDocument({ platform: 'macos', entries: [{ id: 'rust:src/m.rs::heavy',
+        anchors: [C12] }] });
       const two = mergeFixture({ files: { 'w.json': windows, 'l.json': linux } });
       expectEqual(two.run(['w.json', 'l.json']), 1, 'two inputs fail');
       if (!stderrText(two).includes('CONFIG')) throw new Error(`expected CONFIG, got ${stderrText(two)}`);
-      const three = mergeFixture({ files: { 'w.json': windows, 'l.json': linux, 'm.json': macos } });
+      const three = mergeFixture({ files: { 'w.json': windows, 'l.json': linux,
+        'm.json': macos } });
       expectEqual(three.run(['w.json', 'l.json', 'm.json']), 0, 'three platforms pass');
       const text = three.state.writes.get('merged.baseline.json');
       if (text === undefined) throw new Error('the three-platform merge wrote nothing');
@@ -4759,7 +4844,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 68: the probe classifier prints a histogram and one verdict', () => {
       const first = expectProbe({
         capture: jsonl(
-          messageRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'x', message: 'a warning', level: 'warning' }),
+          messageRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'x', message: 'a warning',
+            level: 'warning' }),
           buildFinished(true),
         ),
         probeExit: 0,
