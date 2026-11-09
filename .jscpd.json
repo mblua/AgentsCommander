@@ -6,5 +6,5 @@
   "pattern": "src/**/*.test.{ts,tsx}",
   "absolute": true,
   "gitignore": false,
-  "ignore": ["**/node_modules/**"]
+  "ignore": ["**/node_modules/**", "**/artifacts/**"]
 }
