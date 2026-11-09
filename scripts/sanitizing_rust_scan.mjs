@@ -480,9 +480,11 @@ function mask(s){let a=s.split(''),i=0;const blank=(b,e)=>{for(let j=b;j<e;j++)i
   i)){n++;i+=2;}else if(s.startsWith('*/',i)){n--;i+=2;}else i++;}blank(b,i);}else{const raw=
   /^(?:br|r)(#*)"/.exec(s.slice(i));if(raw){const end='"'+raw[1];let e=s.indexOf(end,i+raw[
   0].length);i=e<0?s.length:e+end.length;blank(b,i);}else if(s[i]=='"'){i++;while(i<s.length){if(
-  s.charCodeAt(i)==92){i+=2;continue;}if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+
+  s.charCodeAt(i)==92){i+=2;continue;}
+  if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+
   1;if(s.charCodeAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);k=close<0?
-  k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;if(s[k]=="'"){i=k+
+  k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;
+  if(s[k]=="'"){i=k+
   1;blank(b,i);}else i++;}else i++;}}return a.join('');}
 export function compatibilitySites(p,text,tokens=[]) {
 const code=mask(text),lines=text.split('\n'),starts=[0];for(let i=0;i<text.length;i++)if(text[i]=='\n')starts.push(i+1);const functions=[];for(const m of code.matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()/g)){let b=code.indexOf('{',m.index),semi=code.indexOf(';',m.index);if(b<0||semi>=0&&semi<b)continue;let d=1,e=b+1;while(e<code.length&&d){if(code[e]=='{')d++;if(code[e]=='}')d--;e++;}functions.push({name:m[1],start:m.index,end:e});}const sinks=[];const re=/\.(?:join|push|with_file_name|with_extension|open|create_new_private_file|write_all|write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|write_to)\s*\(|\b(?:Path|PathBuf)::(?:new|from)\s*\(|\b(?:fs|filesystem)::[A-Za-z_]+\s*\(|\b(?:File|OpenOptions|Connection)::[A-Za-z_]+\s*\(|\b(?:write_file_atomic|atomic_write\w*|write_json\w*|rename_with_retry|CreateFileW|MoveFileExW|ReplaceFileW|writeln|write)\s*!?\s*\(/g;for(const m of code.matchAll(re)){const f=functions.filter(f=>m.index>=f.start&&m.index<f.end).sort((a,b)=>(a.end-a.start)-(b.end-b.start))[0];const item=f?f.name:'<module>';const ordinal=sinks.filter(x=>x.item===item).length+1;let line=starts.findIndex(x=>x>m.index);if(line<0)line=starts.length;sinks.push({path:p,item,ordinal,line,offset:m.index,operation:m[0],evidence:lines[line-1].trim()});}
