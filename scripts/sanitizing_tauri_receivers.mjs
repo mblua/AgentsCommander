@@ -69,6 +69,224 @@ function closeAngle(tokens, open) {
 const simplePath = tokens => tokens.length && tokens.every((t, i) => i % 2
   ? t.text === '::' : t.kind === 'ident') && tokens.length % 2 === 1;
 
+function checkFile(scan) {
+  need(!scan.attributes.some(a => a.signals?.some(m => m.name === 'path')),
+    'path attribute route');
+  // Root-level macro invocations may generate competing items.
+  for (const t of scan.tokens) if (t.kind === 'ident' && scan.tokens[t.index + 1]?.text === '!'
+    && t.scope === scan.root && scan.tokens[t.index - 1]?.text !== '#'
+    && !scan.items.some(i => i.kind === 'fn' && i.start <= t.start && t.start < i.end)
+    && !scan.attributes.some(a => a.start <= t.start && t.start < a.end))
+    unknown('item-level macro in proof route');
+}
+
+// Exactly one trait in the closure declares `method` with a `&self`/`&mut self` receiver.
+function declaring(traits, method) {
+  const found = [];
+  for (const trait of traits.values()) {
+    const { scan, item } = trait;
+    const fns = scan.items.filter(i => i.kind === 'fn' && i.name === method &&
+      i.start > item.start && i.end <= item.end);
+    need(!scan.items.some(i => i.kind === 'type' && i.start > item.start && i.end <= item.end),
+      'associated type dispatch');
+    for (const fn of fns) found.push({ trait, fn });
+  }
+  need(found.length === 1, found.length ? 'conflicting methods' : 'method not declared');
+  const [{ trait, fn }] = found;
+  const { scan } = trait;
+  const open = scan.tokens.findIndex((t, k) => k > fn.first && t.text === '(');
+  const params = split(scan.tokens.slice(open + 1, scan.tokens[open].mate), ',');
+  const self = (params[0] ?? []).filter(t => t.kind !== 'lifetime');
+  need(self.length >= 2 && self[0].text === '&' && self.at(-1).name === 'self' &&
+    (self.length === 2 || self.length === 3 && self[1].name === 'mut'),
+    'method without &self receiver');
+  const signature = scan.tokens.filter(t => t.start >= fn.start && t.start < fn.end);
+  for (let k = 0; k < signature.length; k++) {
+    const t = signature[k];
+    if (t.kind !== 'ident' || signature[k - 1]?.text === '::') continue;
+    let end = k + 1;
+    while (signature[end]?.text === '::' && signature[end + 1]?.kind === 'ident') end += 2;
+    const r = scan.resolvePath(signature.slice(k, end), t.scope);
+    need(!/^tauri(?:::|$)/.test(r.path ?? ''), 'Tauri type in port method signature');
+    k = end - 1;
+  }
+  return { trait, fn };
+}
+
+function competingDynImpls(other, chosen, method) {
+  for (const impl of other.items.filter(i => i.kind === 'impl')) {
+    if (dynImplCompetes(other, impl, chosen, method)) {
+      unknown('inherent or trait impl method on dyn port');
+    }
+  }
+}
+function dynImplCompetes(other, impl, chosen, method) {
+  const head = other.tokens.slice(impl.first + 1,
+    other.tokens.findIndex(t => t.start === impl.bodyStart));
+  const isTraitImpl = head.some(t => t.name === 'for');
+  const target = isTraitImpl ? head.slice(head.findIndex(t => t.name === 'for') + 1) : head;
+  if (!target.some(t => t.name === 'dyn')) return false;
+  if (!target.some(t => t.name === chosen.trait.item.name)) return false;
+  return other.items.some(i => i.kind === 'fn' && i.name === method &&
+    i.start > impl.start && i.end <= impl.end);
+}
+// Length of the optional `&['a][mut]` reference prefix.
+function referenceEnd(tokens) {
+  let k = 0;
+  if (tokens[k]?.text === '&') {
+    k++;
+    if (tokens[k]?.kind === 'lifetime') k++;
+    if (tokens[k]?.name === 'mut') k++;
+  }
+  return k;
+}
+// Splits an item header (tokens after the name, before the body) into generics/rest/where.
+function header(scan, item, start) {
+  const tokens = scan.tokens.slice(start, scan.tokens.findIndex(t => t.start === item.bodyStart));
+  need(item.bodyStart !== null, 'item without body');
+  let generics = [], rest = tokens;
+  if (tokens[0]?.text === '<') {
+    const close = closeAngle(tokens, 0);
+    generics = tokens.slice(1, close);
+    rest = tokens.slice(close + 1);
+  }
+  const w = rest.findIndex(t => t.name === 'where');
+  return { generics, rest: w < 0 ? rest : rest.slice(0, w),
+    where: w < 0 ? [] : rest.slice(w + 1) };
+}
+
+function patternRanges(tokens, body) {
+  const ranges = [];
+  for (let k = body.start; k < body.end; k++) {
+    const t = tokens[k];
+    if (t.name === 'let') {
+      let e = k + 1;
+      while (e < body.end && !['=', ';'].includes(tokens[e].text)) e++;
+      ranges.push([k, e]);
+    } else if (t.name === 'for') {
+      let e = k + 1;
+      while (e < body.end && tokens[e].name !== 'in') e++;
+      ranges.push([k, e]);
+    } else if (t.text === '|' || t.text === '||') {
+      if (!closureStart(tokens, k)) continue;
+      let e = k;
+      if (t.text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
+      ranges.push([k, e]);
+    } else if (t.name === 'match') {
+      let open = k + 1;
+      while (open < body.end && tokens[open].text !== '{') {
+        if (['(', '['].includes(tokens[open].text)) open = tokens[open].mate;
+        open++;
+      }
+      need(open < body.end, 'unparsed match');
+      let arm = open + 1, inPattern = true;
+      for (let a = open + 1; a < tokens[open].mate; a++) {
+        const x = tokens[a];
+        if (inPattern && x.text === '=>') { ranges.push([arm, a]); inPattern = false; continue; }
+        if (['(', '[', '{'].includes(x.text)) {
+          const startBlock = !inPattern && tokens[a - 1]?.text === '=>' && x.text === '{';
+          a = x.mate;
+          if (startBlock) { inPattern = true; arm = a + 1; if (tokens[a + 1]?.text === ',') a++; }
+          continue;
+        }
+        if (!inPattern && x.text === ',') { inPattern = true; arm = a + 1; }
+      }
+    }
+  }
+  return ranges;
+}
+function closureStart(tokens, k) {
+  const prev = tokens[k - 1];
+  return prev && (['(', ',', '=', '{', ';', '=>', '(', '['].includes(prev.text) ||
+    ['move', 'return', 'async'].includes(prev.name));
+}
+// Closures and async blocks capturing the receiver are not proved.
+function captured(tokens, body, dot) {
+  for (let k = body.start; k < body.end; k++) {
+    const t = tokens[k];
+    if (t.name === 'async' && asyncContains(tokens, k, dot)) return true;
+    if ((t.text === '|' || t.text === '||') && closureStart(tokens, k) &&
+      closureContains(tokens, body, k, dot)) return true;
+  }
+  return false;
+}
+function asyncContains(tokens, k, dot) {
+  let b = k + 1;
+  if (tokens[b]?.name === 'move') b++;
+  return tokens[b]?.text === '{' && dot > b && dot < tokens[b].mate;
+}
+// Index of the closing pipe (`||`: the token itself); body.end when it is missing.
+function closurePipeEnd(tokens, body, k) {
+  let e = k;
+  if (tokens[k].text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
+  return e;
+}
+// Block closure: inside its braces only. Expression closure: up to the enclosing group's end.
+function closureContains(tokens, body, k, dot) {
+  const e = closurePipeEnd(tokens, body, k);
+  if (tokens[e + 1]?.text === '{') return dot > e && dot < tokens[e + 1].mate;
+  // Expression closure: conservatively extends to the enclosing group's end.
+  const close = groupsAround(tokens, k)[0] ?? body.end;
+  return dot > e && dot < close;
+}
+function groupsAround(tokens, k) {
+  const out = [];
+  for (let j = k - 1; j >= 0; j--) {
+    const t = tokens[j];
+    if (['(', '[', '{'].includes(t.text) && t.mate > k) out.push(t.mate);
+  }
+  return out;
+}
+function safeReceiver(scan, fn, body, name, paramIndex, dot) {
+  const tokens = scan.tokens;
+  const nested = scan.items.filter(i => i !== fn && i.start > tokens[body.start].start &&
+    i.end <= tokens[body.end].end);
+  const ranges = patternRanges(tokens, body);
+  for (let k = body.start + 1; k < body.end; k++) {
+    const t = tokens[k];
+    if (t.kind !== 'ident' || t.name !== name || k === paramIndex) continue;
+    if (tokens[k - 1]?.text === '.' || tokens[k - 1]?.text === '::') continue;
+    need(!nested.some(i => i.start <= t.start && t.start < i.end), 'receiver in nested item');
+    const next = tokens[k + 1]?.text;
+    // Struct-literal field labels (`host: Arc::clone(&host)`) are not bindings.
+    if (next === ':' && ['{', ','].includes(tokens[k - 1]?.text)) continue;
+    need(!ranges.some(([a, b]) => k > a && k < b), 'receiver name in a binding pattern');
+    need(!['=', '+=', '-=', '*=', '/=', '@'].includes(next) && tokens[k - 1]?.text !== '@',
+      'receiver written or rebound');
+    // A macro after the call cannot rebind the non-mut parameter before it runs.
+    need(k > dot || !inMacro(scan, k), 'receiver inside macro before the call');
+  }
+}
+function inMacro(scan, k) {
+  return scan.groups.some(g => (scan.tokens[g.start - 1]?.text === '!' ||
+    scan.tokens[g.start - 2]?.text === '!') && k > g.start && k < g.end);
+}
+
+function fnParams(scan, fn) {
+  const tokens = scan.tokens;
+  let open = fn.first + 2;
+  if (tokens[open]?.text === '<') open = fn.first + 2 + closeAngle(tokens.slice(open), 0) + 1;
+  need(tokens[open]?.text === '(', 'unparsed fn parameters');
+  return { open, parts: split(tokens.slice(open + 1, tokens[open].mate), ',') };
+}
+
+function checkFieldReceiver(tokens, parts, body, field) {
+  const self = (parts[0] ?? []).filter(t => t.kind !== 'lifetime');
+  need(self.at(-1)?.name === 'self' && self.length <= 3, 'method without self receiver');
+  for (let k = body.start + 1; k < body.end - 2; k++)
+    need(!(tokens[k].name === 'self' && tokens[k + 1].text === '.' &&
+      tokens[k + 2].name === field && ['=', '+=', '@'].includes(tokens[k + 3]?.text)),
+      'receiver field written');
+}
+
+// Field tokens after leading attributes and `pub`/`pub(...)` visibility.
+function normalizeField(p) {
+  const after = (part, k) => part.findIndex(t => t.index === part[k].mate) + 1;
+  let k = 0;
+  while (p[k]?.text === '#' && p[k + 1]?.text === '[') k = after(p, k + 1);
+  if (p[k]?.name === 'pub') { k++; if (p[k]?.text === '(') k = after(p, k); }
+  return p.slice(k);
+}
 export function createReceiverClassifier(context) {
   const tree = context?.tree, lookup = context?.scan;
   const scans = new Map();
@@ -114,17 +332,6 @@ export function createReceiverClassifier(context) {
     need(fileOf(root, segments) === path, 'file not reached through ordinary module tree');
     return { root, segments };
   }
-  function checkFile(scan) {
-    need(!scan.attributes.some(a => a.signals?.some(m => m.name === 'path')),
-      'path attribute route');
-    // Root-level macro invocations may generate competing items.
-    for (const t of scan.tokens) if (t.kind === 'ident' && scan.tokens[t.index + 1]?.text === '!'
-      && t.scope === scan.root && scan.tokens[t.index - 1]?.text !== '#'
-      && !scan.items.some(i => i.kind === 'fn' && i.start <= t.start && t.start < i.end)
-      && !scan.attributes.some(a => a.start <= t.start && t.start < a.end))
-      unknown('item-level macro in proof route');
-  }
-
   // ---- path canonicalization: crate/self/super and declared child modules only ----
   function canonical(target, module) {
     const parts = target.split('::');
@@ -233,39 +440,6 @@ export function createReceiverClassifier(context) {
     return seen;
   }
 
-  // Exactly one trait in the closure declares `method` with a `&self`/`&mut self` receiver.
-  function declaring(traits, method) {
-    const found = [];
-    for (const trait of traits.values()) {
-      const { scan, item } = trait;
-      const fns = scan.items.filter(i => i.kind === 'fn' && i.name === method &&
-        i.start > item.start && i.end <= item.end);
-      need(!scan.items.some(i => i.kind === 'type' && i.start > item.start && i.end <= item.end),
-        'associated type dispatch');
-      for (const fn of fns) found.push({ trait, fn });
-    }
-    need(found.length === 1, found.length ? 'conflicting methods' : 'method not declared');
-    const [{ trait, fn }] = found;
-    const { scan } = trait;
-    const open = scan.tokens.findIndex((t, k) => k > fn.first && t.text === '(');
-    const params = split(scan.tokens.slice(open + 1, scan.tokens[open].mate), ',');
-    const self = (params[0] ?? []).filter(t => t.kind !== 'lifetime');
-    need(self.length >= 2 && self[0].text === '&' && self.at(-1).name === 'self' &&
-      (self.length === 2 || self.length === 3 && self[1].name === 'mut'),
-      'method without &self receiver');
-    const signature = scan.tokens.filter(t => t.start >= fn.start && t.start < fn.end);
-    for (let k = 0; k < signature.length; k++) {
-      const t = signature[k];
-      if (t.kind !== 'ident' || signature[k - 1]?.text === '::') continue;
-      let end = k + 1;
-      while (signature[end]?.text === '::' && signature[end + 1]?.kind === 'ident') end += 2;
-      const r = scan.resolvePath(signature.slice(k, end), t.scope);
-      need(!/^tauri(?:::|$)/.test(r.path ?? ''), 'Tauri type in port method signature');
-      k = end - 1;
-    }
-    return { trait, fn };
-  }
-
   // In-scope traits that could also supply `method`, and inherent impls on the object type.
   function competition(scan, module, chosen, method) {
     for (const s of scan.scopes) {
@@ -309,23 +483,6 @@ export function createReceiverClassifier(context) {
     try { return traitAt(canonical(target, module)); }
     catch (e) { if (e instanceof Unknown) return null; throw e; }
   }
-  function competingDynImpls(other, chosen, method) {
-    for (const impl of other.items.filter(i => i.kind === 'impl')) {
-      if (dynImplCompetes(other, impl, chosen, method)) {
-        unknown('inherent or trait impl method on dyn port');
-      }
-    }
-  }
-  function dynImplCompetes(other, impl, chosen, method) {
-    const head = other.tokens.slice(impl.first + 1,
-      other.tokens.findIndex(t => t.start === impl.bodyStart));
-    const isTraitImpl = head.some(t => t.name === 'for');
-    const target = isTraitImpl ? head.slice(head.findIndex(t => t.name === 'for') + 1) : head;
-    if (!target.some(t => t.name === 'dyn')) return false;
-    if (!target.some(t => t.name === chosen.trait.item.name)) return false;
-    return other.items.some(i => i.kind === 'fn' && i.name === method &&
-      i.start > impl.start && i.end <= impl.end);
-  }
   // True when a trait has an impl for a generic, object, reference, Box or Arc target.
   function openImpls(trait) {
     for (const path of tree.keys()) {
@@ -359,16 +516,6 @@ export function createReceiverClassifier(context) {
     if (b.real) return b;
     need(b.traits.length === 1, 'trait object needs exactly one port trait');
     return { traits: b.traits };
-  }
-  // Length of the optional `&['a][mut]` reference prefix.
-  function referenceEnd(tokens) {
-    let k = 0;
-    if (tokens[k]?.text === '&') {
-      k++;
-      if (tokens[k]?.kind === 'lifetime') k++;
-      if (tokens[k]?.name === 'mut') k++;
-    }
-    return k;
   }
   // Non-dyn receiver: a plain Tauri path ({real}) or `Arc<dyn ...>` ({rest}: the dyn tokens).
   function objectWrapper(scan, module, rest) {
@@ -408,137 +555,7 @@ export function createReceiverClassifier(context) {
     }
     return map;
   }
-  // Splits an item header (tokens after the name, before the body) into generics/rest/where.
-  function header(scan, item, start) {
-    const tokens = scan.tokens.slice(start, scan.tokens.findIndex(t => t.start === item.bodyStart));
-    need(item.bodyStart !== null, 'item without body');
-    let generics = [], rest = tokens;
-    if (tokens[0]?.text === '<') {
-      const close = closeAngle(tokens, 0);
-      generics = tokens.slice(1, close);
-      rest = tokens.slice(close + 1);
-    }
-    const w = rest.findIndex(t => t.name === 'where');
-    return { generics, rest: w < 0 ? rest : rest.slice(0, w),
-      where: w < 0 ? [] : rest.slice(w + 1) };
-  }
-
   // ---- receiver binding safety inside the innermost fn ----
-  function patternRanges(tokens, body) {
-    const ranges = [];
-    for (let k = body.start; k < body.end; k++) {
-      const t = tokens[k];
-      if (t.name === 'let') {
-        let e = k + 1;
-        while (e < body.end && !['=', ';'].includes(tokens[e].text)) e++;
-        ranges.push([k, e]);
-      } else if (t.name === 'for') {
-        let e = k + 1;
-        while (e < body.end && tokens[e].name !== 'in') e++;
-        ranges.push([k, e]);
-      } else if (t.text === '|' || t.text === '||') {
-        if (!closureStart(tokens, k)) continue;
-        let e = k;
-        if (t.text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
-        ranges.push([k, e]);
-      } else if (t.name === 'match') {
-        let open = k + 1;
-        while (open < body.end && tokens[open].text !== '{') {
-          if (['(', '['].includes(tokens[open].text)) open = tokens[open].mate;
-          open++;
-        }
-        need(open < body.end, 'unparsed match');
-        let arm = open + 1, inPattern = true;
-        for (let a = open + 1; a < tokens[open].mate; a++) {
-          const x = tokens[a];
-          if (inPattern && x.text === '=>') { ranges.push([arm, a]); inPattern = false; continue; }
-          if (['(', '[', '{'].includes(x.text)) {
-            const startBlock = !inPattern && tokens[a - 1]?.text === '=>' && x.text === '{';
-            a = x.mate;
-            if (startBlock) { inPattern = true; arm = a + 1; if (tokens[a + 1]?.text === ',') a++; }
-            continue;
-          }
-          if (!inPattern && x.text === ',') { inPattern = true; arm = a + 1; }
-        }
-      }
-    }
-    return ranges;
-  }
-  function closureStart(tokens, k) {
-    const prev = tokens[k - 1];
-    return prev && (['(', ',', '=', '{', ';', '=>', '(', '['].includes(prev.text) ||
-      ['move', 'return', 'async'].includes(prev.name));
-  }
-  // Closures and async blocks capturing the receiver are not proved.
-  function captured(tokens, body, dot) {
-    for (let k = body.start; k < body.end; k++) {
-      const t = tokens[k];
-      if (t.name === 'async' && asyncContains(tokens, k, dot)) return true;
-      if ((t.text === '|' || t.text === '||') && closureStart(tokens, k) &&
-        closureContains(tokens, body, k, dot)) return true;
-    }
-    return false;
-  }
-  function asyncContains(tokens, k, dot) {
-    let b = k + 1;
-    if (tokens[b]?.name === 'move') b++;
-    return tokens[b]?.text === '{' && dot > b && dot < tokens[b].mate;
-  }
-  // Index of the closing pipe (`||`: the token itself); body.end when it is missing.
-  function closurePipeEnd(tokens, body, k) {
-    let e = k;
-    if (tokens[k].text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
-    return e;
-  }
-  // Block closure: inside its braces only. Expression closure: up to the enclosing group's end.
-  function closureContains(tokens, body, k, dot) {
-    const e = closurePipeEnd(tokens, body, k);
-    if (tokens[e + 1]?.text === '{') return dot > e && dot < tokens[e + 1].mate;
-    // Expression closure: conservatively extends to the enclosing group's end.
-    const close = groupsAround(tokens, k)[0] ?? body.end;
-    return dot > e && dot < close;
-  }
-  function groupsAround(tokens, k) {
-    const out = [];
-    for (let j = k - 1; j >= 0; j--) {
-      const t = tokens[j];
-      if (['(', '[', '{'].includes(t.text) && t.mate > k) out.push(t.mate);
-    }
-    return out;
-  }
-  function safeReceiver(scan, fn, body, name, paramIndex, dot) {
-    const tokens = scan.tokens;
-    const nested = scan.items.filter(i => i !== fn && i.start > tokens[body.start].start &&
-      i.end <= tokens[body.end].end);
-    const ranges = patternRanges(tokens, body);
-    for (let k = body.start + 1; k < body.end; k++) {
-      const t = tokens[k];
-      if (t.kind !== 'ident' || t.name !== name || k === paramIndex) continue;
-      if (tokens[k - 1]?.text === '.' || tokens[k - 1]?.text === '::') continue;
-      need(!nested.some(i => i.start <= t.start && t.start < i.end), 'receiver in nested item');
-      const next = tokens[k + 1]?.text;
-      // Struct-literal field labels (`host: Arc::clone(&host)`) are not bindings.
-      if (next === ':' && ['{', ','].includes(tokens[k - 1]?.text)) continue;
-      need(!ranges.some(([a, b]) => k > a && k < b), 'receiver name in a binding pattern');
-      need(!['=', '+=', '-=', '*=', '/=', '@'].includes(next) && tokens[k - 1]?.text !== '@',
-        'receiver written or rebound');
-      // A macro after the call cannot rebind the non-mut parameter before it runs.
-      need(k > dot || !inMacro(scan, k), 'receiver inside macro before the call');
-    }
-  }
-  function inMacro(scan, k) {
-    return scan.groups.some(g => (scan.tokens[g.start - 1]?.text === '!' ||
-      scan.tokens[g.start - 2]?.text === '!') && k > g.start && k < g.end);
-  }
-
-  function fnParams(scan, fn) {
-    const tokens = scan.tokens;
-    let open = fn.first + 2;
-    if (tokens[open]?.text === '<') open = fn.first + 2 + closeAngle(tokens.slice(open), 0) + 1;
-    need(tokens[open]?.text === '(', 'unparsed fn parameters');
-    return { open, parts: split(tokens.slice(open + 1, tokens[open].mate), ',') };
-  }
-
   // Shared extraction preserves emits' safety checks, order and diagnostic text.
   function receiverBinding(path, scan, dot) {
     const tokens = scan.tokens, i = dot.index;
@@ -657,15 +674,6 @@ export function createReceiverClassifier(context) {
       } };
   }
 
-  function checkFieldReceiver(tokens, parts, body, field) {
-    const self = (parts[0] ?? []).filter(t => t.kind !== 'lifetime');
-    need(self.at(-1)?.name === 'self' && self.length <= 3, 'method without self receiver');
-    for (let k = body.start + 1; k < body.end - 2; k++)
-      need(!(tokens[k].name === 'self' && tokens[k + 1].text === '.' &&
-        tokens[k + 2].name === field && ['=', '+=', '@'].includes(tokens[k + 3]?.text)),
-        'receiver field written');
-  }
-
   // self.field: unique impl, unique same-module named-field struct, consistent binders.
   function fieldType(scan, module, fn, field, policy = objectType) {
     const tokens = scan.tokens;
@@ -707,14 +715,6 @@ export function createReceiverClassifier(context) {
     }
     const o = policy(scan, module, type);
     return { ...o, declaration };
-  }
-  // Field tokens after leading attributes and `pub`/`pub(...)` visibility.
-  function normalizeField(p) {
-    const after = (part, k) => part.findIndex(t => t.index === part[k].mate) + 1;
-    let k = 0;
-    while (p[k]?.text === '#' && p[k + 1]?.text === '[') k = after(p, k + 1);
-    if (p[k]?.name === 'pub') { k++; if (p[k]?.text === '(') k = after(p, k); }
-    return p.slice(k);
   }
   // Field typed by a struct binder: struct and matching impl bounds, in that order.
   function genericFieldType(scan, module, ih, args, structGenerics, type, declaration) {
