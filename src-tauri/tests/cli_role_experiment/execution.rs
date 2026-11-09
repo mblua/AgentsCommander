@@ -429,6 +429,25 @@ fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config(
     );
     assert_eq!(json["data"]["status"], "completed");
     assert_eq!(json["data"]["execution"]["executor"], "fake");
+    // Expected artifact names from fake_run.rs at fd51a0b1, serialized identically.
+    let expected_artifacts = serde_json::json!({
+        "run": "run.json",
+        "attempts": "attempts.jsonl",
+        "reportJson": "report.json",
+        "reportMarkdown": "report.md",
+        "prompts": "prompts",
+        "outputs": "outputs",
+        "transcripts": "transcripts",
+        "attemptState": "attempt-state",
+    });
+    assert_eq!(
+        serde_json::to_vec(&json["data"]["artifacts"]).unwrap(),
+        serde_json::to_vec(&expected_artifacts).unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_vec(&json["data"]["artifacts"]["reportMarkdown"]).unwrap(),
+        serde_json::to_vec(&"report.md").unwrap(),
+    );
     let run_dir = workspace
         .join("experiments")
         .join("techlead-test")

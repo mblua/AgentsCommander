@@ -237,6 +237,31 @@
         "files": 40,
         "sites": 98
       }
+    },
+    {
+      "id": "ProjectPaths/Registrations",
+      "name": "project-paths.json",
+      "scope": "src-tauri/src/config/settings/",
+      "owner": "src-tauri/src/config/settings/project_path/migration.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "RoleExperiment/ReportMarkdown",
+      "name": "report.md",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/report.rs",
+      "literalScope": "src-tauri/src/",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
     }
   ]
 }
