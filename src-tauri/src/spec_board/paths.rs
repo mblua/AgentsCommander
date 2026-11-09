@@ -206,7 +206,7 @@ pub(crate) async fn reject_link_ancestors(root: &Path, target: &Path) -> Result<
 pub(crate) fn reject_unsupported_extension(path: &Path) -> Result<(), String> {
     let ext = path
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("mmd" | "mermaid" | "md") => Ok(()),

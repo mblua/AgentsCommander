@@ -279,7 +279,7 @@ fn canonical_lexical_member_replica(session: &Session) -> Result<PathBuf, String
     let Some(lexical_replica) = lexical_cwd.ancestors().find(|ancestor| {
         ancestor
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
         return Err("sampled CWD is not inside a lexical room member replica".to_string());
@@ -415,7 +415,7 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
     let project = match validated_project_fqn_component(
-        project_dir.file_name().and_then(|name| name.to_str()),
+        project_dir.file_name().and_then(std::ffi::OsStr::to_str),
     ) {
         Ok(project) => project,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
@@ -506,7 +506,7 @@ pub(super) fn prepare_internal_route_blocking(
     if canonical_expected.parent() != Some(fingerprint.workgroup_dir.as_path())
         || canonical_expected
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             != Some(format!("__agent_{coordinator}").as_str())
     {
         return Err("Orchestrator replica escapes the sampled room".to_string());
@@ -564,7 +564,7 @@ pub(super) fn validate_attempt_guard(
         || replica.parent() != Some(workgroup.as_path())
         || workgroup.parent() != Some(ac_root.as_path())
         || ac_root.parent() != Some(project.as_path())
-        || replica.file_name().and_then(|name| name.to_str())
+        || replica.file_name().and_then(std::ffi::OsStr::to_str)
             != Some(format!("__agent_{}", fingerprint.member).as_str())
         || parse_team_from_workgroup_name(&fingerprint.workgroup)? != fingerprint.team
     {
