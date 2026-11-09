@@ -696,7 +696,7 @@ impl<S: MailboxHost> PtyInjection<'_, S> {
             command == "clear"
                 && Path::new(shell.trim())
                     .file_stem()
-                    .and_then(|stem| stem.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .is_some_and(|stem| stem.to_lowercase().starts_with("codex"))
         });
         let observation = source.map(|_| {

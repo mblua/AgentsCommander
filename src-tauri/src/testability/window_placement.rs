@@ -51,7 +51,10 @@ fn resolve_from_cli_or_env_for_exe(
         return Ok(None);
     }
 
-    let exe_name = exe_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let exe_name = exe_path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("");
     if exe_name != TESTABLE_EXE_NAME {
         return Err(PLACEMENT_REQUIRES_TESTABLE.to_string());
     }

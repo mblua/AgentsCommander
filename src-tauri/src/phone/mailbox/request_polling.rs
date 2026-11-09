@@ -100,7 +100,7 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
             write_session_result(crate::cli::create_agent::SessionRequestResult {
                 id: path
                     .file_stem()
-                    .and_then(|value| value.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or("unknown")
                     .to_string(),
                 status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
@@ -256,7 +256,7 @@ impl MailboxPoller {
 
         let filename = path
             .file_name()
-            .and_then(|f| f.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("unknown.json");
 
         let dest = rejected_dir.join(filename);
@@ -269,7 +269,7 @@ impl MailboxPoller {
 
         let stem = Path::new(filename)
             .file_stem()
-            .and_then(|s| s.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("unknown");
         let reason_path = rejected_dir.join(format!("{stem}.reason.txt"));
         mailbox_disk::write_mailbox_document(&reason_path, reason)

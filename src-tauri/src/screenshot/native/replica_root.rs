@@ -32,12 +32,12 @@ pub(super) fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
 pub(super) fn find_replica_root(start: &Path) -> Option<PathBuf> {
     let mut current = Some(start);
     while let Some(dir) = current {
-        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+        if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
             if name.starts_with("__agent_") {
                 let parent_is_wg = dir
                     .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
+                    .and_then(std::path::Path::file_name)
+                    .and_then(std::ffi::OsStr::to_str)
                     .is_some_and(crate::config::entity_prefix::has_entity_prefix);
                 if parent_is_wg {
                     return Some(dir.to_path_buf());

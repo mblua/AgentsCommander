@@ -57,7 +57,7 @@ fn is_exact_pi_executable(value: &str) -> bool {
 pub(super) fn is_exact_muse_executable(shell: &str) -> bool {
     std::path::Path::new(shell)
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         == Some("muse")
 }
 

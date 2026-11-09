@@ -172,7 +172,7 @@ fn daemon_won_processing_files(
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|name| {
                     name.starts_with(&format!(".{}.", daemon_won.request_id))
                         && name.ends_with(".terminal-snapshot-processing")
