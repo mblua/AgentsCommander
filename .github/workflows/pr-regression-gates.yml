@@ -576,11 +576,15 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # #4166: advisory except exit 3 (an unused cog allowlist entry), which the
+      # next step turns into a blocking failure. The exact node exit is recorded.
       - name: Complexity check
+        id: cog
         continue-on-error: true
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set +e
           node scripts/check-cognitive-complexity.mjs \
             --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
             --clippy-exit "$COG_CLIPPY_EXIT" \
@@ -588,6 +592,26 @@ jobs:
             --rustc-version "$COG_RUSTC_VERSION" \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-windows.json"
+          code=$?
+          set -e
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Stale allowlist enforcement
+        if: ${{ !cancelled() && steps.cog.outcome != 'skipped' }}
+        shell: bash
+        env:
+          COG_STATUS: ${{ steps.cog.outputs.status }}
+        run: |
+          case "$COG_STATUS" in
+            3)
+              echo "::error::unused cog entry in sanitizing.allowlist.json on windows; remove it"
+              exit 1 ;;
+            0|1|2) exit 0 ;;
+            *)
+              echo "::error::Complexity check recorded no valid exit status: '${COG_STATUS}'"
+              exit 1 ;;
+          esac
 
       - name: Upload observed cognitive set
         if: always()
@@ -1415,11 +1439,15 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # #4166: advisory except exit 3 (an unused cog allowlist entry), which the
+      # next step turns into a blocking failure. The exact node exit is recorded.
       - name: Complexity check
+        id: cog
         continue-on-error: true
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set +e
           node scripts/check-cognitive-complexity.mjs \
             --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
             --clippy-exit "$COG_CLIPPY_EXIT" \
@@ -1427,6 +1455,26 @@ jobs:
             --rustc-version "$COG_RUSTC_VERSION" \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-linux.json"
+          code=$?
+          set -e
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Stale allowlist enforcement
+        if: ${{ !cancelled() && steps.cog.outcome != 'skipped' }}
+        shell: bash
+        env:
+          COG_STATUS: ${{ steps.cog.outputs.status }}
+        run: |
+          case "$COG_STATUS" in
+            3)
+              echo "::error::unused cog entry in sanitizing.allowlist.json on linux; remove it"
+              exit 1 ;;
+            0|1|2) exit 0 ;;
+            *)
+              echo "::error::Complexity check recorded no valid exit status: '${COG_STATUS}'"
+              exit 1 ;;
+          esac
 
       - name: Upload observed cognitive set
         if: always()
@@ -2780,11 +2828,15 @@ jobs:
           fi
           exit "$code"
 
+      # #4166: advisory except exit 3 (an unused cog allowlist entry), which the
+      # next step turns into a blocking failure. The exact node exit is recorded.
       - name: Complexity check
+        id: cog
         continue-on-error: true
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set +e
           node scripts/check-cognitive-complexity.mjs \
             --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
             --clippy-exit "$COG_CLIPPY_EXIT" \
@@ -2792,6 +2844,26 @@ jobs:
             --rustc-version "$COG_RUSTC_VERSION" \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-macos.json"
+          code=$?
+          set -e
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Stale allowlist enforcement
+        if: ${{ !cancelled() && steps.cog.outcome != 'skipped' }}
+        shell: bash
+        env:
+          COG_STATUS: ${{ steps.cog.outputs.status }}
+        run: |
+          case "$COG_STATUS" in
+            3)
+              echo "::error::unused cog entry in sanitizing.allowlist.json on macos; remove it"
+              exit 1 ;;
+            0|1|2) exit 0 ;;
+            *)
+              echo "::error::Complexity check recorded no valid exit status: '${COG_STATUS}'"
+              exit 1 ;;
+          esac
 
       - name: Upload observed cognitive set
         if: always()
