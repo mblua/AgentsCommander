@@ -168,7 +168,7 @@ fn write_project_refresh_request_fixture(
     changed_name: Option<&str>,
     reason: &str,
 ) {
-    let request = crate::cli::create_agent_matrix::ProjectRefreshRequest {
+    let request = crate::phone::mailbox::refresh::ProjectRefreshRequest {
         id: id.to_string(),
         project_path: project_path.to_string_lossy().to_string(),
         changed_path: changed_name.map(|_| {
