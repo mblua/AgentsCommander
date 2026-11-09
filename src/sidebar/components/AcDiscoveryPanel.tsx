@@ -456,7 +456,7 @@ const AcDiscoveryPanel: Component = () => {
                     value={newCtxPath()}
                     onInput={(e) => setNewCtxPath(e.currentTarget.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddCtxFile();
+                      if (e.key === "Enter") void handleAddCtxFile();
                     }}
                   />
                   <button

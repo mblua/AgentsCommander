@@ -2769,7 +2769,7 @@ const ProjectPanel: Component = () => {
 
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
-          projectStore.removeProject(proj.path);
+          void projectStore.removeProject(proj.path);
         };
 
         const handleArchiveProject = async () => {
