@@ -150,24 +150,15 @@ assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profi
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agents selector panel"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding Agents selector title"]'));
 assert.ok(dom.window.document.querySelector('[data-component="Coding agent selector"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Coding Agent profile modal variant switcher"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Coding Agent profile modal variant A layout"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Coding Agent profile modal variant B layout"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Coding Agent profile modal variant C layout"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Coding Agent profile selector panel"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Selected Coding Agent available profile cards"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Selected profile launch parameter summary"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Selected profile projected parameters panel"]'));
-assert.ok(dom.window.document.querySelector(
-  '[data-component="Coding Agent profile modal footer actions"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant switcher"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant A layout"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant B layout"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal variant C layout"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile selector panel"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Selected Coding Agent available profile cards"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Selected profile launch parameter summary"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Selected profile projected parameters panel"]'));
+assert.ok(dom.window.document.querySelector('[data-component="Coding Agent profile modal footer actions"]'));
 assert.match(html, /Copy component description/);
 assert.match(html, /Coding Agents/);
 assert.doesNotMatch(html, /data-component="Coding agent provider selector title"/);
@@ -806,27 +797,20 @@ const modalCloseAction =
   .find((button) => button.textContent === 'Close modal');
 assert.ok(modalCloseAction, 'modal menu should include a Close modal action');
 modalCloseAction.click();
-assert.equal(profileModal?.classList.contains('open'), false,
-  'Close modal menu action should close the profile modal');
+assert.equal(profileModal?.classList.contains('open'), false, 'Close modal menu action should close the profile modal');
 
 dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
-assert.equal(profileModal?.classList.contains('open'), true,
-  'modal should reopen for set-default coverage');
+assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for set-default coverage');
 dom.window.document.querySelector('#profileDefaultButton')?.click();
-assert.equal(profileModal?.classList.contains('open'), false,
-  'Set selected profile as default should close the profile modal');
+assert.equal(profileModal?.classList.contains('open'), false, 'Set selected profile as default should close the profile modal');
 dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
-assert.equal(profileModal?.classList.contains('open'), true,
-  'modal should reopen for instance coverage');
+assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for instance coverage');
 dom.window.document.querySelector('#profileInstanceButton')?.click();
-assert.equal(profileModal?.classList.contains('open'), false,
-  'Set just for instance should close the profile modal');
+assert.equal(profileModal?.classList.contains('open'), false, 'Set just for instance should close the profile modal');
 dom.window.openCodingAgentProfileModal(codingAgentTarget.closest('[data-component]'));
-assert.equal(profileModal?.classList.contains('open'), true,
-  'modal should reopen for Cancel coverage');
+assert.equal(profileModal?.classList.contains('open'), true, 'modal should reopen for Cancel coverage');
 dom.window.document.querySelector('#profileCancelButton')?.click();
-assert.equal(profileModal?.classList.contains('open'), false,
-  'Cancel should close the profile modal');
+assert.equal(profileModal?.classList.contains('open'), false, 'Cancel should close the profile modal');
 assertNoRuntimeErrors();
 dom.window.__componentCaptureLastResult = undefined;
 copiedText = '';

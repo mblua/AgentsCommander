@@ -3717,10 +3717,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const workspace = { 'src/two.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column,
-            slice: 'm' }),
-          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column,
-            slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: first.line, column: first.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/two.rs', line: second.line, column: second.column, slice: 'm' }),
           buildFinished(),
         ),
         workspace,
@@ -4263,10 +4261,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const workspace = { 'src/rc1.rs': TWO_SITES_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src/rc1.rs', line: first.line, column: first.column,
-            slice: 'm' }),
-          cognitiveRecord({ file: 'src/rc1.rs', line: second.line, column: second.column,
-            slice: 'm' }),
+          cognitiveRecord({ file: 'src/rc1.rs', line: first.line, column: first.column, slice: 'm' }),
+          cognitiveRecord({ file: 'src/rc1.rs', line: second.line, column: second.column, slice: 'm' }),
           buildFinished(),
         ),
         workspace,
