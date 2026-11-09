@@ -150,6 +150,18 @@ describe("sidebar context-history owner (#3532 P10)", () => {
     expect(b.state()).toEqual({ status: "error", message: "No session windows in response" });
   });
 
+  it("ignores a stale non-null windows field on a known entry", async () => {
+    const a = acq(1);
+    const b = acq(2);
+    await settle();
+    // Deliberately stale IPC reply: an old `windows` field production must not read.
+    const stale = { ...known(uuid(2)), windows: 5 } as unknown as SidebarEntry;
+    answer(0, [known(uuid(1)), stale]);
+    await settle();
+    expect(a.state().status).toBe("ready");
+    expect(b.state()).toEqual(a.state());
+  });
+
   it("maps ambiguous and unknown to neutral states with text, never zero", async () => {
     const a = acquireContextHistory({ projectPath: P, runtimeSessionId: uuid(1) });
     const u = acquireContextHistory({ projectPath: P, runtimeSessionId: uuid(2) });

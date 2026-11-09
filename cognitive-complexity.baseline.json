@@ -22,20 +22,6 @@
           "b8704b1cb37a"
         ]
       }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/wake_workers.rs::impl:MailboxPoller::poll",
-      "sites": {
-        "windows": [
-          "dff40736a7a2"
-        ],
-        "linux": [
-          "dff40736a7a2"
-        ],
-        "macos": [
-          "dff40736a7a2"
-        ]
-      }
     }
   ]
 }

@@ -344,6 +344,22 @@ jobs:
         run: |
           npm run sanitizing:line_length -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:file_size -- --base-ref "${GATE_BASE_REF:-origin/main}"
+      - name: "Check script line-length controls (#4130)"
+        shell: bash
+        timeout-minutes: 10
+        run: node --test scripts/sanitizing_script_line_length_tests.mjs
+      - name: "Check script line-length regressions (#4130)"
+        shell: bash
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: node scripts/sanitizing_script_line_length.mjs --base-ref "${GATE_BASE_REF:-origin/main}"
+
+      - name: "Check sanitizing container regressions (#4098)"
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: npm run sanitizing:containers -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
       - name: "Check sanitizing layout and boundary regressions (#3168)"
         timeout-minutes: 10
