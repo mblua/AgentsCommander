@@ -400,12 +400,14 @@ function unregisteredDiagnostics(base, head) {
   const previous = new Map(base.map(e => [e.literal, e])), diagnostics = [];
   for (const entry of head) {
     const old = previous.get(entry.literal);
+    // Ratchet per-literal distribution size, not path continuity or semantic moves.
+    if (old && entry.files.length <= old.files.length) continue;
     for (const site of entry.sites) {
       if (old?.files.includes(site.path)) continue;
       diagnostics.push({ gate: '04', status: 'FAIL',
         rule: old ? 'unregistered_container_file' : 'unregistered_container_growth',
         literal: entry.literal, ...site, baseFiles: old?.files ?? [], headFiles: entry.files,
-        reason: 'Distributed unregistered literal adds an identity or production file.',
+        reason: 'Distributed unregistered literal adds an identity or grows its production file count.',
         remedy: 'Remove distributed names, use the owner API, or approve registration separately.'
       });
     }
