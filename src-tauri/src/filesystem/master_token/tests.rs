@@ -126,6 +126,18 @@ fn bounded_regular_rejects_file_over_limit() {
 }
 
 #[test]
+fn bounded_regular_invalid_utf8_does_not_match() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), b"\xffToken").unwrap();
+    assert!(!matches_bounded_regular(
+        dir.path(),
+        "\u{FFFD}Token",
+        8 * 1024
+    ));
+    assert!(!matches_bounded_regular(dir.path(), "Token", 8 * 1024));
+}
+
+#[test]
 fn bounded_regular_trims_only_persisted_text() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(FILE_NAME), " \r\nToken\r\n ").unwrap();

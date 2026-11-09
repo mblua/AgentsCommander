@@ -1,4 +1,4 @@
-//! Physical access to `SelfClear` outbox pointers, messages, and replies.
+//! Physical access to `SelfClear` reply files.
 
 use std::io;
 use std::path::Path;
