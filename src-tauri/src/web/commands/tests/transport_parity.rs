@@ -120,7 +120,7 @@ async fn issue_1937_transport_parity_default_commands_match_inner_and_broadcast(
     let replica_text = replica.to_string_lossy().to_string();
     let matrix = replica
         .parent()
-        .and_then(|dir| dir.parent())
+        .and_then(std::path::Path::parent)
         .expect("matrix parent")
         .join("_agent_codex");
     let (state, mut rx) = ws_state_for(settings);
@@ -215,7 +215,7 @@ async fn issue_1937_transport_parity_new_commands_reject_unknown_fields() {
     let replica_bytes = std::fs::read(replica.join("config.json")).expect("read config");
     let matrix = replica
         .parent()
-        .and_then(|dir| dir.parent())
+        .and_then(std::path::Path::parent)
         .expect("matrix parent")
         .join("_agent_codex");
     let (state, mut rx) = ws_state_for(settings);
@@ -373,7 +373,7 @@ async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_wa
     let replica_text = replica.to_string_lossy().to_string();
     let matrix = replica
         .parent()
-        .and_then(|dir| dir.parent())
+        .and_then(std::path::Path::parent)
         .expect("matrix parent")
         .join("_agent_codex");
     let (state, _rx) = ws_state_for(settings);
