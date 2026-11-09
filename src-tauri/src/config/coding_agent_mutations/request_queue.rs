@@ -179,7 +179,7 @@ pub fn process_coding_agent_request(
     // stem (also the requestId it generated).
     let request_id = request_path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("unknown")
         .to_string();
 

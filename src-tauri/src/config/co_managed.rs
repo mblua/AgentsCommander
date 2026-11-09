@@ -97,7 +97,7 @@ pub fn room_root_for_path(path: &Path) -> Option<PathBuf> {
         .find(|ancestor| {
             ancestor
                 .file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(is_room_dir_name)
         })
         .map(Path::to_path_buf)

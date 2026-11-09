@@ -11,7 +11,7 @@ pub(crate) trait ArchiveGateHost {
 fn folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(path)
         .to_string()
 }
