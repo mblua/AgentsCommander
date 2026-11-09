@@ -112,7 +112,52 @@ export function listScanFiles({ git, workRoot, configPath }) {
     );
   }
   const files = String(listed.stdout ?? '').split('\0').filter(Boolean);
-  return [...new Set(files)].filter((file) => fs.existsSync(path.join(workRoot, file))).sort();
+  return [...new Set(files)]
+    .filter((file) => fs.existsSync(path.join(workRoot, file)))
+    .sort(byCodeUnit);
+}
+
+/** Locale-independent order (UTF-16 code units), the same as a bare `.sort()`. */
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
+ * The console run's argv for the git file list, or `{ error }` when the list
+ * cannot be read or the full command line passes `maxCommandLine`.
+ */
+function buildScanArgs({ git, workRoot, configPath, runner, base, flags, maxCommandLine }) {
+  let files;
+  try {
+    files = listScanFiles({ git, workRoot, configPath });
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  const args = [
+    runner,
+    '--config',
+    configPath,
+    '--reporters',
+    'console',
+    '--baseline-from-ref',
+    base,
+    ...flags,
+    ...scanPaths(files),
+  ];
+  const length = commandLineLength(process.execPath, args);
+  if (length > maxCommandLine) {
+    return {
+      error:
+        `the jscpd command line for ${files.length} files is ${length} characters, over the ` +
+        `${maxCommandLine} limit; refusing to truncate the scan. jscpd ${PINNED_VERSION} has no ` +
+        `file-list input, so the gate needs another way to pass the list (see ${DOC_PATH}).`,
+    };
+  }
+  console.log(
+    `test-code duplication scan: ${files.length} files (tracked + untracked, not ignored)`,
+  );
+  return { args };
 }
 
 /**
@@ -207,34 +252,9 @@ export async function runGate({
   }
   console.log(`test-code duplication base: ${base} (from '${requestedRef}')`);
 
-  let files;
-  try {
-    files = listScanFiles({ git, workRoot, configPath });
-  } catch (error) {
-    return fail(error instanceof Error ? error.message : String(error));
-  }
-  const args = [
-    runner,
-    '--config',
-    configPath,
-    '--reporters',
-    'console',
-    '--baseline-from-ref',
-    base,
-    ...flags,
-    ...scanPaths(files),
-  ];
-  const length = commandLineLength(process.execPath, args);
-  if (length > maxCommandLine) {
-    return fail(
-      `the jscpd command line for ${files.length} files is ${length} characters, over the ` +
-        `${maxCommandLine} limit; refusing to truncate the scan. jscpd ${PINNED_VERSION} has no ` +
-        `file-list input, so the gate needs another way to pass the list (see ${DOC_PATH}).`,
-    );
-  }
-  console.log(
-    `test-code duplication scan: ${files.length} files (tracked + untracked, not ignored)`,
-  );
+  const scan = buildScanArgs({ git, workRoot, configPath, runner, base, flags, maxCommandLine });
+  if (scan.error) return fail(scan.error);
+  const { args } = scan;
 
   const child = spawnSync(process.execPath, args, {
     cwd: workRoot,
