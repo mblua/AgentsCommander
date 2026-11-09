@@ -30,7 +30,7 @@ impl MailboxPoller {
         let parent = path.parent().ok_or("No source parent")?;
         let id = path
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .and_then(|name| name.strip_suffix(".json"))
             .ok_or("No source id")?;
         // Derive only from the scanner's basename; reject_message owns payload-id safeguards.

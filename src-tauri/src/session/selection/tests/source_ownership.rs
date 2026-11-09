@@ -116,14 +116,14 @@ fn collect_rust_sources(dir: &Path, files: &mut Vec<(String, String)>) {
         // what `production_prefix` cuts off when the tests live inline.
         let stem = path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("");
         if stem == "tests" || stem.ends_with("_tests") {
             continue;
         }
         if path.is_dir() {
             collect_rust_sources(&path, files);
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+        } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs") {
             files.push((
                 path.to_string_lossy().replace('\\', "/"),
                 std::fs::read_to_string(&path).expect("read Rust source file"),

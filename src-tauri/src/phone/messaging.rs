@@ -162,7 +162,7 @@ pub enum MessagingError {
 /// use synthetic paths.
 pub fn workgroup_root(agent_root: &Path) -> Result<PathBuf, MessagingError> {
     for ancestor in agent_root.ancestors() {
-        if let Some(name) = ancestor.file_name().and_then(|n| n.to_str()) {
+        if let Some(name) = ancestor.file_name().and_then(std::ffi::OsStr::to_str) {
             if is_wg_dir(name) {
                 return Ok(ancestor.to_path_buf());
             }

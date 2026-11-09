@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 /// Derive extended repo name as "parent/repo" from an absolute path.
 /// Always uses forward slash as separator regardless of OS.
 pub(crate) fn derive_repo_name(path: &Path) -> Option<String> {
-    let file_name = path.file_name().and_then(|n| n.to_str())?;
+    let file_name = path.file_name().and_then(std::ffi::OsStr::to_str)?;
     let name = match path
         .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
     {
         Some(parent) => format!("{parent}/{file_name}"),
         None => file_name.to_string(),
@@ -83,7 +83,7 @@ pub fn try_add_repo(
     seen_paths: &mut std::collections::HashSet<String>,
     results: &mut Vec<RepoMatch>,
 ) {
-    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+    let file_name = match path.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(n) => n,
         None => return,
     };
@@ -207,7 +207,7 @@ pub(crate) async fn is_valid_spec_repo_root(path: &Path) -> Result<bool, String>
     if crate::filesystem::repositories::spec_repo_link_state(path).await? {
         return Ok(false);
     }
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return Ok(false);
     };
     Ok(name.starts_with("repo-")

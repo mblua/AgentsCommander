@@ -38,7 +38,7 @@ fn child_directory(file: &Path) -> PathBuf {
     let parent = file.parent().unwrap_or(Path::new("."));
     let stem = file
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if stem == "lib" || stem == "main" || stem == "mod" {
         parent.to_path_buf()

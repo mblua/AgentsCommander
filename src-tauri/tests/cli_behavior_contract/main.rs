@@ -259,7 +259,7 @@ fn bak_files(wg_root: &Path) -> Vec<PathBuf> {
                 .map(|e| e.path())
                 .filter(|p| {
                     p.file_name()
-                        .and_then(|n| n.to_str())
+                        .and_then(std::ffi::OsStr::to_str)
                         .is_some_and(|n| n.starts_with("TASK.") && n.ends_with(".bak.md"))
                 })
                 .collect()
