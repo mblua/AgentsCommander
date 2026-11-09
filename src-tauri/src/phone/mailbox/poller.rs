@@ -45,7 +45,7 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
     let mut project_order: Vec<String> = Vec::new();
 
     for path in entries {
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
             continue;
         }
 

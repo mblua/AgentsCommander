@@ -24,7 +24,7 @@ fn valid_host_pty_envelope_shape(
         && payload.enter == PtyInputEnterMode::AgentSubmit
         && envelope.id == payload.injection_id
         && payload.op_id == payload.injection_id
-        && path.file_stem().and_then(|value| value.to_str()) == Some(payload.injection_id.as_str())
+        && path.file_stem().and_then(std::ffi::OsStr::to_str) == Some(payload.injection_id.as_str())
 }
 
 impl MailboxPoller {
@@ -444,7 +444,7 @@ impl MailboxPoller {
             op_id: op_id.to_string(),
         };
         let bytes = serde_json::to_vec(&marker).map_err(|_| "invalid_envelope")?;
-        if path.file_stem().and_then(|value| value.to_str()) != Some(injection_id) {
+        if path.file_stem().and_then(std::ffi::OsStr::to_str) != Some(injection_id) {
             return Err("unsafe_path");
         }
         crate::path_identity::replace_regular_file_atomic(
@@ -488,7 +488,7 @@ impl MailboxPoller {
             || marker.version != crate::phone::types::PTY_INPUT_VERSION
             || marker.injection_id != expected_injection_id
             || marker.op_id != marker.injection_id
-            || path.file_stem().and_then(|value| value.to_str())
+            || path.file_stem().and_then(std::ffi::OsStr::to_str)
                 != Some(marker.injection_id.as_str())
         {
             return Err("invalid_artifact");
@@ -510,12 +510,12 @@ impl MailboxPoller {
     ) -> Result<String, crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::PtyInputReasonCode as C;
         let outbox = path.parent().ok_or(C::UnsafePath)?;
-        if outbox.file_name().and_then(|value| value.to_str()) != Some("outbox") {
+        if outbox.file_name().and_then(std::ffi::OsStr::to_str) != Some("outbox") {
             return Err(C::UnsafePath);
         }
         let local = outbox.parent().ok_or(C::UnsafePath)?;
         let local_dir_name = crate::config::agent_local_dir_name();
-        if local.file_name().and_then(|value| value.to_str()) != Some(local_dir_name.as_str()) {
+        if local.file_name().and_then(std::ffi::OsStr::to_str) != Some(local_dir_name.as_str()) {
             return Err(C::UnsafePath);
         }
         let root = local.parent().ok_or(C::UnsafePath)?;
@@ -559,7 +559,7 @@ impl MailboxPoller {
         if marker.version != crate::phone::types::PTY_INPUT_VERSION
             || crate::phone::types::parse_canonical_uuid_v4(&marker.injection_id).is_err()
             || marker.injection_id != marker.op_id
-            || path.file_stem().and_then(|value| value.to_str())
+            || path.file_stem().and_then(std::ffi::OsStr::to_str)
                 != Some(marker.injection_id.as_str())
             || is_app_outbox
         {

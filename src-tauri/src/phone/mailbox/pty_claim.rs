@@ -425,7 +425,7 @@ pub(crate) fn write_atomic_pty_metadata(
     };
     let file_name = destination
         .file_name()
-        .and_then(|value| value.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or("unsafe_path")?;
     let temp = parent.join(format!(".{file_name}.{}.pty-input-tmp", Uuid::new_v4()));
     let result = (|| {

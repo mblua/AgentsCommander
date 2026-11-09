@@ -543,7 +543,7 @@ pub(crate) fn canonical_cwd_owned_by_replica(
     let Some(lexical_replica) = lexical.ancestors().find(|ancestor| {
         ancestor
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
         return Ok(false);
@@ -619,7 +619,7 @@ pub(crate) fn inline_body_from_file_notification(
     let parent = Path::new(notification_path)
         .parent()
         .ok_or_else(|| "file notification does not include a parent directory".to_string())?;
-    if parent.file_name().and_then(|n| n.to_str())
+    if parent.file_name().and_then(std::ffi::OsStr::to_str)
         != Some(crate::phone::messaging::MESSAGING_DIR_NAME)
     {
         return Err("file notification parent is not a messaging directory".to_string());
