@@ -773,42 +773,7 @@ fn nearest_ac_root(decisions: &Path) -> Option<&Path> {
 /// lacks. An appending write, never a rewrite, so no line another writer added
 /// can be lost.
 fn ensure_config_state_ignore_rows(ac_root: &Path) -> Result<(), String> {
-    let path = ac_root.join(".gitignore");
-    let io = |what: &str, e: std::io::Error| format!("failed to {what} {}: {e}", path.display());
-    let content = match documents::read_config_document(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io("read", e)),
-    };
-    let mut blocks = crate::config::naming_migration::missing_ignore_rows(
-        &content,
-        &crate::config::naming_migration::config_state_ignore_rows(),
-    );
-    use crate::config::instance_artifacts::{
-        CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_NAME,
-        CONFIG_IDENTITY_RESERVATION_TMP,
-    };
-    for name in [
-        CONFIG_IDENTITY_RESERVATION_NAME,
-        CONFIG_IDENTITY_RESERVATION_LOCK,
-        CONFIG_IDENTITY_RESERVATION_TMP,
-    ] {
-        let row = format!("**/{name}");
-        if !content.lines().any(|line| line == row) {
-            blocks.push_str(&format!(
-                "# AgentsCommander: private PAIR reservation state\n{row}\n"
-            ));
-        }
-    }
-    if blocks.is_empty() {
-        return Ok(());
-    }
-    let separator = if content.is_empty() || content.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
-    documents::append_config_ignore_rows(&path, separator, &blocks).map_err(|e| io("append to", e))
+    crate::config::projects::ac_root_gitignore::ensure_config_state_ignore_rows(ac_root)
 }
 
 /// #2807 (C2) 3.3 - the cleanup of the pair, and the write-side twin of

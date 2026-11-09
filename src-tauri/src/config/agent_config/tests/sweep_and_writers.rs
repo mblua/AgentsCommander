@@ -629,7 +629,11 @@ fn issue_3361_config_ports_preserve_native_results() {
             .open(&native)
             .and_then(|mut file| file.write_all(format!("{separator}{rows}").as_bytes()))
             .unwrap();
-        port::append_config_ignore_rows(&observed, separator, rows).unwrap();
+        crate::filesystem::projects::discovery::append_ac_root_gitignore(
+            &observed,
+            &format!("{separator}{rows}"),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(&observed).unwrap(),
             std::fs::read(&native).unwrap()
@@ -643,7 +647,10 @@ fn issue_3361_config_ports_preserve_native_results() {
             .and_then(|mut file| file.write_all(b"row"))
             .unwrap_err();
         assert_eq!(
-            error(port::append_config_ignore_rows(&bad, "", "row").unwrap_err()),
+            error(
+                crate::filesystem::projects::discovery::append_ac_root_gitignore(&bad, "row")
+                    .unwrap_err()
+            ),
             error(native_error)
         );
     }

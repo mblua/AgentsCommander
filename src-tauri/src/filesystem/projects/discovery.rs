@@ -22,3 +22,12 @@ pub(crate) fn read_ac_root_gitignore(path: &Path) -> io::Result<String> {
 pub(crate) fn write_ac_root_gitignore(path: &Path, content: &str) -> io::Result<()> {
     std::fs::write(path, content)
 }
+
+pub(crate) fn append_ac_root_gitignore(path: &Path, content: &str) -> io::Result<()> {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(content.as_bytes()))
+}
