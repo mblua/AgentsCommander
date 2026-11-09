@@ -45,7 +45,8 @@ export function runGate(snapshot) {
       requestedRef: snapshot.requestedRef, refOid: snapshot.refOid, baseOid: snapshot.baseOid,
       headOid: snapshot.headOid,
       diagnostics: [...diagnostics,
-        { gate: GATE, reason: e.message, remedy: 'repair inputs and rerun; no verdict available' }] };
+        { gate: GATE, reason: e.message,
+          remedy: 'repair inputs and rerun; no verdict available' }] };
   }
 }
 if (isMain(import.meta.url)) process.exitCode = await gateCli(runGate);
