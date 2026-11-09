@@ -59,10 +59,7 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
             serde_json::json!({"message": e.to_string()}),
         )
     })?;
-    let exe_name = exe_path
-        .file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or("");
+    let exe_name = exe_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if exe_name != TESTABLE_EXE_NAME {
         return Err(error_json(
             "refusing_non_testeable_binary",

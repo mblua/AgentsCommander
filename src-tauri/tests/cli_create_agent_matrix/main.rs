@@ -161,7 +161,7 @@ fn session_request_paths(config_dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(&requests_dir)
         .expect("read session-requests")
         .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("json"))
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
         .collect()
 }
 
@@ -173,7 +173,7 @@ fn project_refresh_request_paths(config_dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
         .expect("read project-refresh-requests")
         .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("json"))
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
         .collect();
     paths.sort();
     paths
