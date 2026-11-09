@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::filesystem::agency_templates::ensure_agency_directory;
 
-use crate::config::role_templates::AGENCY_TEMPLATES_DIR;
+use crate::config::instance_artifacts::AGENCY_TEMPLATES_DIR;
 
 const GIT_LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_FETCH_TIMEOUT: Duration = Duration::from_mins(10);
