@@ -25,44 +25,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/commands/session/selection_executor/tests/protected_carrier.rs::impl:ProtectedFixture::new",
-      "name": "new",
-      "anchor": "8329dfd0fe9d",
-      "sites": {
-        "linux": {
-          "lines": 130,
-          "production": false
-        },
-        "macos": {
-          "lines": 130,
-          "production": false
-        },
-        "windows": {
-          "lines": 130,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/session/selection_executor/tests/protected_carrier.rs::impl:ProtectedFixture::retire",
-      "name": "retire",
-      "anchor": "f76d5bb922e0",
-      "sites": {
-        "linux": {
-          "lines": 123,
-          "production": false
-        },
-        "macos": {
-          "lines": 123,
-          "production": false
-        },
-        "windows": {
-          "lines": 123,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/commands/session/tests/muse_spawn.rs::muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback",
       "name": "muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback",
       "anchor": "53aa0507a3a0",

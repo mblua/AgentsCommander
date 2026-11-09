@@ -218,7 +218,8 @@ function checkReconciliation(report) {
 // (A6). It counts describe blocks, not files; asserting one is what produced the
 // round-3 false red, and that decision stays closed.
 function checkSuiteCounts(report) {
-  const parts = report.numPassedTestSuites + report.numFailedTestSuites + report.numPendingTestSuites;
+  const parts = report.numPassedTestSuites + report.numFailedTestSuites +
+    report.numPendingTestSuites;
   if (report.numTotalTestSuites !== parts) {
     return (
       `numTotalTestSuites ${report.numTotalTestSuites} is not the sum of ` +
@@ -374,8 +375,10 @@ function validReport(overrides = {}) {
     numFailedTestSuites: 0,
     numPendingTestSuites: 0,
     testResults: [
-      { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed', title: 'a' }] },
-      { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'passed', title: 'b' }] },
+      { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed',
+        title: 'a' }] },
+      { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'passed',
+        title: 'b' }] },
     ],
     ...overrides,
   };
@@ -401,11 +404,13 @@ const LOG_480 = unhandledLog(1, WS_480_BLOCK);
 function selfTestClauseC() {
   assertSelf(classify(validReport(), LOG_480) === null, 'the known-good state must be tolerated');
   assertSelf(
-    classify(validReport(), unhandledLog(2, WS_480_BLOCK, 'AggregateError: unrelated runtime failure')) !== null,
+    classify(validReport(), unhandledLog(2, WS_480_BLOCK,
+      'AggregateError: unrelated runtime failure')) !== null,
     'AggregateError alongside #480 must be rejected'
   );
   assertSelf(
-    classify(validReport(), unhandledLog(2, WS_480_BLOCK, 'FooError: a dependency subclass')) !== null,
+    classify(validReport(), unhandledLog(2, WS_480_BLOCK,
+      'FooError: a dependency subclass')) !== null,
     'a custom Error subclass alongside #480 must be rejected'
   );
   assertSelf(
@@ -424,7 +429,8 @@ function selfTestClauseC() {
     classify(validReport(), unhandledLog(1, `FooError: ${WS_480_MESSAGE}`)) !== null,
     'the #480 text under another constructor must be rejected'
   );
-  assertSelf(classify(validReport(), '') !== null, 'a log with no unhandled section must be rejected');
+  assertSelf(classify(validReport(), '') !== null,
+    'a log with no unhandled section must be rejected');
   assertSelf(
     classify(validReport(), `${LOG_480}\n${'⎯'.repeat(4)} Unhandled Rejection ${'⎯'.repeat(4)}\n${WS_480_BLOCK}\n`) !== null,
     'an extra block beyond the declared count must be rejected'
@@ -465,8 +471,10 @@ function selfTestClauseB() {
         numPassedTests: 0,
         numPendingTests: 2,
         testResults: [
-          { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'skipped' }] },
-          { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'skipped' }] },
+          { name: '/repo/src/a.test.ts', status: 'passed',
+            assertionResults: [{ status: 'skipped' }] },
+          { name: '/repo/src/b.test.ts', status: 'passed',
+            assertionResults: [{ status: 'skipped' }] },
         ],
       }),
       LOG_480
@@ -483,8 +491,10 @@ function selfTestClauseB() {
         numFailedTests: 1,
         numPassedTests: 1,
         testResults: [
-          { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed' }] },
-          { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'failed' }] },
+          { name: '/repo/src/a.test.ts', status: 'passed',
+            assertionResults: [{ status: 'passed' }] },
+          { name: '/repo/src/b.test.ts', status: 'passed',
+            assertionResults: [{ status: 'failed' }] },
         ],
       }),
       LOG_480
@@ -501,8 +511,10 @@ function selfTestClauseB() {
         numPassedTests: 1,
         numPendingTests: 1,
         testResults: [
-          { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed' }] },
-          { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'skipped' }] },
+          { name: '/repo/src/a.test.ts', status: 'passed',
+            assertionResults: [{ status: 'passed' }] },
+          { name: '/repo/src/b.test.ts', status: 'passed',
+            assertionResults: [{ status: 'skipped' }] },
         ],
       }),
       LOG_480
@@ -516,7 +528,8 @@ function selfTestClauseB() {
         numPassedTests: 1,
         numTodoTests: 1,
         testResults: [
-          { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed' }] },
+          { name: '/repo/src/a.test.ts', status: 'passed',
+            assertionResults: [{ status: 'passed' }] },
           { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'todo' }] },
         ],
       }),
@@ -543,11 +556,13 @@ function selfTestClauseAShape() {
     'an empty testResults must be rejected'
   );
   assertSelf(
-    classify(validReport({ testResults: [{ status: 'passed', assertionResults: [] }] }), LOG_480) !== null,
+    classify(validReport({ testResults: [{ status: 'passed', assertionResults: [] }] }),
+      LOG_480) !== null,
     'a testResults entry with no name must be rejected'
   );
   assertSelf(
-    classify(validReport({ testResults: [{ name: '/repo/src/a.test.ts', status: 'passed' }] }), LOG_480) !== null,
+    classify(validReport({ testResults: [{ name: '/repo/src/a.test.ts', status: 'passed' }] }),
+      LOG_480) !== null,
     'a testResults entry with no assertionResults must be rejected'
   );
   assertSelf(
@@ -643,7 +658,8 @@ function selfTestReconciliation() {
   assertSelf(
     classify(
       validReport({
-        testResults: [base.testResults[0], { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [] }],
+        testResults: [base.testResults[0], { name: '/repo/src/b.test.ts', status: 'passed',
+          assertionResults: [] }],
       }),
       LOG_480
     ) !== null,
@@ -652,7 +668,8 @@ function selfTestReconciliation() {
   assertSelf(
     classify(
       validReport({
-        testResults: [base.testResults[0], { name: '/repo/src/b.test.ts', status: 'passed', assertionResults: [{ status: 'failed' }] }],
+        testResults: [base.testResults[0], { name: '/repo/src/b.test.ts', status: 'passed',
+          assertionResults: [{ status: 'failed' }] }],
       }),
       LOG_480
     ) !== null,
@@ -666,7 +683,8 @@ function selfTestReconciliation() {
         numTotalTestSuites: 1,
         numPassedTestSuites: 1,
         testResults: [
-          { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed' }, { status: 'passed' }] },
+          { name: '/repo/src/a.test.ts', status: 'passed', assertionResults: [{ status: 'passed' },
+            { status: 'passed' }] },
         ],
       }),
       LOG_480
@@ -685,7 +703,8 @@ function selfTestReconciliation() {
 
 function selfTestClauseD() {
   assertSelf(
-    classify(validReport({ success: true }), unhandledLog(2, WS_480_BLOCK, 'AggregateError: x')) !== null,
+    classify(validReport({ success: true }), unhandledLog(2, WS_480_BLOCK,
+      'AggregateError: x')) !== null,
     'success: true must not rescue a rejected run'
   );
   assertSelf(
@@ -707,7 +726,8 @@ function selfTestEndToEnd() {
     fs.writeFileSync(logPath, LOG_480);
 
     fs.writeFileSync(reportPath, JSON.stringify(validReport()));
-    assertSelf(decide(reportPath, logPath, () => {}) === null, 'the known-good state must tolerate end to end');
+    assertSelf(decide(reportPath, logPath, () => {}) === null,
+      'the known-good state must tolerate end to end');
 
     fs.writeFileSync(reportPath, '{ not json');
     assertSelf(decide(reportPath, logPath, () => {}) !== null, 'corrupt JSON must be rejected');

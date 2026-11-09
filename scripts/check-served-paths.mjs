@@ -58,12 +58,14 @@ function rustToken(source, index) {
     /\\(?:\r?\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[\s\S])/g,
     (escape) => {
       if (/^\\\r?\n/.test(escape)) return '';
-      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"', "\\'": "'" };
+      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"',
+        "\\'": "'" };
       if (escape in simple) return simple[escape];
       if (escape.startsWith('\\x')) return String.fromCharCode(parseInt(escape.slice(2), 16));
       if (escape.startsWith('\\u{')) {
         const code = parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
-        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)) return String.fromCodePoint(code);
+        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff))
+          return String.fromCodePoint(code);
       }
       valid = false;
       return escape;
@@ -197,7 +199,8 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
 }
 
 function loadTrackedFiles() {
-  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024 });
   return output.split('\0').filter((file) => file.length > 0);
 }
 
@@ -326,7 +329,8 @@ function selfTestCases() {
     }],
     ['case 5: owner and repo are compared case-insensitively', () => {
       const result = runServedPathsFixture({
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/new.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/new.md\n' },
       });
       expectError(result, 'has no row');
     }],
@@ -343,7 +347,8 @@ function selfTestCases() {
     }],
     ['case 7: a malformed inventory row', () => {
       const result = runServedPathsFixture({
-        inventoryText: selfTestInventory([...SELF_TEST_ROWS, '| docs/home-en.md | main | 0.8.43 |']),
+        inventoryText: selfTestInventory(
+          [...SELF_TEST_ROWS, '| docs/home-en.md | main | 0.8.43 |']),
       });
       expectError(result, 'malformed inventory row');
     }],
@@ -375,7 +380,8 @@ function selfTestCases() {
         sources: { 'src/main.ts': crlf(SELF_TEST_GOOD_SOURCE) },
       });
       expectNoErrors(result);
-      if (result.rows.length !== baseline.rows.length || result.literals.length !== baseline.literals.length) {
+      if (result.rows.length !== baseline.rows.length ||
+        result.literals.length !== baseline.literals.length) {
         throw new Error(`expected ${baseline.rows.length} rows and ${baseline.literals.length} literals, got ${result.rows.length} and ${result.literals.length}`);
       }
     }],
