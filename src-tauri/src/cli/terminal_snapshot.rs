@@ -468,10 +468,7 @@ fn is_persisted_static_token(token: &str) -> bool {
     if crate::config::settings::persisted_instance_token_matches(&directory, token) {
         return true;
     }
-    crate::path_identity::read_bounded_regular(&directory.join("master-token.txt"), 8 * 1024)
-        .ok()
-        .and_then(|(bytes, _)| String::from_utf8(bytes).ok())
-        .is_some_and(|persisted| persisted.trim() == token)
+    crate::filesystem::master_token::matches_bounded_regular(&directory, token, 8 * 1024)
 }
 
 fn ensure_private_child(parent: &Path, child: &Path) -> Result<(), String> {

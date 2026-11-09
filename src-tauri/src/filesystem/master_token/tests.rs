@@ -110,3 +110,26 @@ fn publish_master_token_round_trip() {
     publish(config.path(), value).unwrap();
     assert!(matches(Some(config.path()), "round-trip-token"));
 }
+
+#[test]
+fn bounded_regular_accepts_file_exactly_at_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), "12345678").unwrap();
+    assert!(matches_bounded_regular(dir.path(), "12345678", 8));
+}
+
+#[test]
+fn bounded_regular_rejects_file_over_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), "123456789").unwrap();
+    assert!(!matches_bounded_regular(dir.path(), "123456789", 8));
+}
+
+#[test]
+fn bounded_regular_trims_only_persisted_text() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), " \r\nToken\r\n ").unwrap();
+    assert!(matches_bounded_regular(dir.path(), "Token", 8 * 1024));
+    assert!(!matches_bounded_regular(dir.path(), " Token", 8 * 1024));
+    assert!(!matches_bounded_regular(dir.path(), "token", 8 * 1024));
+}
