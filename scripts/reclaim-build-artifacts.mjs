@@ -328,7 +328,8 @@ function printTextReport(apply, repoRoots, reclaimable, skipped, totalBytes) {
     // Only surface skips that are not the boring "absent" case.
     console.log(`${TAG}   skipped: ${s.path}  (${s.reason})`);
   }
-  console.log(`${TAG} reclaimable total: ${humanBytes(totalBytes)} across ${reclaimable.length} dir(s)`);
+  console.log(
+    `${TAG} reclaimable total: ${humanBytes(totalBytes)} across ${reclaimable.length} dir(s)`);
   if (!apply && reclaimable.length > 0) {
     console.log(`${TAG} re-run with --apply to delete.`);
   }
