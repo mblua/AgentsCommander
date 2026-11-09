@@ -1,4 +1,10 @@
+#[cfg(unix)]
+use super::identity::unix_child_open_error_is_absent;
+use super::identity::{verify_component_chain_with_inspector, verify_directory_with_inspector};
 use super::*;
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 mod terminal_snapshot;
 

@@ -77,12 +77,12 @@ fn record(index: u128, project_path: &str, started: i64) -> HistoryRecord {
 }
 
 #[test]
-fn missing_database_prints_an_empty_schema_2_report() {
+fn missing_database_prints_an_empty_schema_3_report() {
     let (_tmp, project) = project();
     let (code, output) = run_to_string(&args(&project, FROM, TO));
     assert_eq!(code, 0);
     let json: serde_json::Value = serde_json::from_str(&output).expect("pure json");
-    assert_eq!(json["schemaVersion"], 2);
+    assert_eq!(json["schemaVersion"], 3);
     assert_eq!(json["totalAgents"], 0);
     assert_eq!(json["agents"], serde_json::json!([]));
     assert_eq!(json["requestedPeriod"]["selection"], "session_started");
@@ -174,6 +174,7 @@ fn every_agent_page_is_streamed_into_one_document() {
         model: LaunchFilter::Any,
         effort: LaunchFilter::Any,
         cursor: None,
+        session_count: None,
     };
     let records: Vec<HistoryRecord> = (1..=230)
         .map(|index| record(index, project, NOW - 10))
@@ -189,6 +190,12 @@ fn every_agent_page_is_streamed_into_one_document() {
     let agents = json["agents"].as_array().expect("agents");
     assert_eq!(agents.len(), 230);
     assert_eq!(agents[229]["agentKey"], "agent-230");
+    assert!(
+        json["requestedPeriod"]["sessionCount"].is_null(),
+        "date mode"
+    );
+    assert!(agents.iter().all(|agent| agent["scopeWindows"].is_null()));
+    assert_eq!(agents[0]["recordsPerSession"], 1.0);
     assert!(json.get("agentsPage").is_none() && json.get("nextAgentCursor").is_none());
 }
 
@@ -461,4 +468,16 @@ fn settings_retention_overrides_any_heatmap_file_and_disabled_still_reads() {
         );
         drop(tmp);
     }
+}
+
+#[test]
+fn help_documents_schema_3_and_the_date_mode_null_fields() {
+    use clap::CommandFactory;
+    let help = TestCli::command().render_long_help().to_string();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("schemaVersion 3"), "{help}");
+    assert!(!help.contains("schemaVersion 2"));
+    assert!(help.contains("requestedPeriod.sessionCount=null"));
+    assert!(help.contains("scopeWindows=null"));
+    assert!(help.contains("recordsPerSession"));
 }

@@ -11,10 +11,10 @@ import {
   type JSX,
 } from "solid-js";
 import { contextBadgeText } from "./session-context";
-import ContextHistoryCard, { type HistoryDays } from "./ContextHistoryCard";
+import ContextHistoryCard from "./ContextHistoryCard";
 import {
   acquireContextHistory,
-  bucketForDays,
+  bucketForSessions,
   refreshContextHistoryOnHover,
   type SidebarHistoryState,
 } from "../context-history";
@@ -53,7 +53,8 @@ const ContextBadge: Component<{
   percent: number | null | undefined;
   testId?: string;
   historyScope?: ContextHistoryScope;
-  colorDays?: HistoryDays;
+  /** #4091 Saved colour session count; the returned buckets decide the fallback. */
+  colorSessions?: number;
 }> = (props) => {
   const reading = (): { value: number } | undefined => {
     const percent = props.percent;
@@ -81,11 +82,12 @@ const ContextBadge: Component<{
 
   const state = () => history()();
   const historical = () => state().status !== "unavailable";
-  const days = (): HistoryDays => props.colorDays ?? 30;
-  const toneMean = (): number | null => {
+  // One selected bucket drives both the tone and the card basis label.
+  const colorBucket = () => {
     const s = state();
-    return s.status === "ready" ? bucketForDays(s.windows, days()).mean : null;
+    return s.status === "ready" ? bucketForSessions(s.sessionWindows, props.colorSessions) : null;
   };
+  const toneMean = (): number | null => colorBucket()?.mean ?? null;
 
   const [open, setOpen] = createSignal(false);
   let trigger: HTMLSpanElement | undefined;
@@ -241,7 +243,7 @@ const ContextBadge: Component<{
           state={state()}
           percent={reading()?.value ?? null}
           projectPath={props.historyScope?.projectPath ?? ""}
-          colorDays={days()}
+          colorSessions={colorBucket()?.requestedSessions ?? null}
           warning={CONTEXT_BADGE_TOOLTIP}
           onEnter={() => {
             cardHovered = true;

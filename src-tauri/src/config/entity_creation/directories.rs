@@ -39,7 +39,7 @@ pub(crate) fn strict_teams_from_observations(
             .map_err(|e| format!("Cannot read directory entry during agent delete scan: {e}"))?;
         if path
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("_team_"))
         {
             paths.push(path);
@@ -135,7 +135,7 @@ fn workgroups_from_observations(
         .flatten()
         .filter(|path| {
             path.file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|name| parse_team_from_workgroup_name(name).is_ok())
         })
         .collect();

@@ -5,6 +5,7 @@ use crate::pty::git_watcher::GitEvents;
 use crate::pty::manager::PtyManager;
 use crate::pty::menu_guard::{MenuGuard, MenuGuardEvents};
 use crate::pty::output::{PtyOutputEmitError, PtyOutputTarget, PtyOutputTask};
+use crate::pty::remote_watcher::RemoteActivityPayload;
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionCommunication, SessionRepo};
 use std::sync::Arc;
@@ -117,6 +118,15 @@ impl MenuGuard {
             }
         });
     }
+}
+
+/// Tauri delivery for the existing remote activity callback seam.
+pub(crate) fn remote_activity_emitter(
+    app: AppHandle,
+) -> Box<dyn FnMut(&RemoteActivityPayload) + Send> {
+    Box::new(move |payload: &RemoteActivityPayload| {
+        let _ = app.emit("ac_remote_activity_updated", payload);
+    })
 }
 
 #[cfg(test)]

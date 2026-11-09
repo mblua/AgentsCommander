@@ -3,19 +3,24 @@ import {
   Show,
   createEffect,
   createMemo,
+  createSignal,
   on,
   onCleanup,
   onMount,
   type Component,
 } from "solid-js";
 import { isTauri } from "../shared/platform";
-import type {
-  AgentSummary,
-  BoundaryReason,
-  HistoryRecord,
-  LaunchFilter,
-  MetadataBucket,
-  SessionSummary,
+import { SettingsAPI } from "../shared/ipc";
+import {
+  formatRecordsPerSession,
+  sessionWindowLabel,
+  type AgentSummary,
+  type BoundaryReason,
+  type HistoryRecord,
+  type LaunchFilter,
+  type MetadataBucket,
+  type ScopeWindowCoverage,
+  type SessionSummary,
 } from "../shared/context-history";
 import {
   agentsOf,
@@ -23,7 +28,6 @@ import {
   recordsOf,
   sessionsOf,
   type HistoryFilters,
-  type PeriodDays,
 } from "./state";
 import "./styles.css";
 
@@ -48,12 +52,15 @@ export const TEXT = {
   refresh: "Actualizar",
   close: "Cerrar",
   back: "Volver a agentes",
-  periodNote: "Sesiones iniciadas en este período; métricas de la sesión entera",
+  periodNote: "Últimas sesiones de cada agente y team; métricas de la sesión entera",
   launchNote: "Modelo y esfuerzo del comando de lanzamiento. Pueden ser desconocidos.",
   coverageNote:
     "Observación cada 5 s; puede haber huecos de observación y registros " +
     "retirados por retención. Root no se lista.",
   meanLabel: "Contexto medio por registro",
+  perSession: "registros/sesión",
+  ambiguous: "Ambiguo",
+  settingsError: "No se pudo leer la configuración de ventanas de sesiones.",
   unknown: "Desconocido",
   all: "Todos",
   incomplete: "Datos conservados de sesión incompleta",
@@ -68,12 +75,6 @@ export const BOUNDARY_TEXT: Record<BoundaryReason, string> = {
   lifecycle: "Intento de reinicio de AC",
   observation_gap: "Observación interrumpida",
 };
-
-const PERIODS: { days: PeriodDays; label: string }[] = [
-  { days: 1, label: "Último día" },
-  { days: 7, label: "Últimos 7 días" },
-  { days: 30, label: "Últimos 30 días" },
-];
 
 export function formatMean(mean: number | null): string {
   return mean === null ? "—" : mean.toFixed(1);
@@ -135,6 +136,32 @@ function teamValues(agents: AgentSummary[], selected: string | null): string[] {
   return [...values].sort(byCodeUnit);
 }
 
+/** #4091 Team attribution of one count-mode scope, never a merged bucket. */
+function scopeTeams(scope: ScopeWindowCoverage): string {
+  if (scope.teamAttribution === "unknown") return TEXT.unknown;
+  if (scope.teamAttribution === "ambiguous") return TEXT.ambiguous;
+  return scope.teamIds.length > 0 ? scope.teamIds.join(", ") : TEXT.unknown;
+}
+
+const ScopeWindows = (scopes: ScopeWindowCoverage[] | null) => (
+  <Show when={scopes && scopes.length > 0}>
+    <span data-ac-testid="contextHistory.scopeWindows">
+      <For each={scopes ?? []}>
+        {(scope) => (
+          <span
+            class="ch-metric"
+            data-metric="scope-window"
+            data-team-attribution={scope.teamAttribution}
+          >
+            {scopeTeams(scope)}:{" "}
+            {sessionWindowLabel(scope.requestedSessions, scope.availableSessions)}
+          </span>
+        )}
+      </For>
+    </span>
+  </Show>
+);
+
 function meanBarWidth(mean: number | null): string {
   const value = mean === null ? 0 : Math.max(0, Math.min(100, mean));
   return `${value}%`;
@@ -146,9 +173,33 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
   let detailRef: HTMLElement | undefined;
   let listRef: HTMLElement | undefined;
 
-  // Desktop-only: outside Tauri the view never reaches the history IPC.
+  // #4091 Settings load before the first query and every manual refresh/retry;
+  // a missing or failed list shows the error and sends no history request.
+  const [settingsError, setSettingsError] = createSignal(false);
+  let loadGen = 0;
+  let disposed = false;
+  const loadAsync = async () => {
+    const gen = ++loadGen;
+    const project = props.projectPath;
+    const current = () => !disposed && gen === loadGen && project === props.projectPath;
+    let counts: number[] | undefined;
+    try {
+      counts = (await SettingsAPI.get()).contextHistorySessionWindows;
+    } catch {
+      counts = undefined;
+    }
+    if (!current()) return;
+    if (!counts || counts.length === 0) {
+      setSettingsError(true);
+      return;
+    }
+    setSettingsError(false);
+    state.setWindows(counts);
+    await state.refresh();
+  };
+  // Desktop-only: outside Tauri the view never reaches Settings or the history IPC.
   const load = () => {
-    if (isTauri) void state.refresh();
+    if (isTauri) void loadAsync();
   };
 
   onMount(() => {
@@ -173,7 +224,10 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
       { defer: true },
     ),
   );
-  onCleanup(() => state.dispose());
+  onCleanup(() => {
+    disposed = true;
+    state.dispose();
+  });
 
   const agents = createMemo(() => agentsOf(state.report()));
   const sessions = createMemo(() => sessionsOf(state.detail()));
@@ -181,7 +235,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
 
   const applyFilter = (patch: Partial<HistoryFilters>) => {
     state.setFilters(patch);
-    load();
+    if (isTauri) void state.refresh();
   };
 
   // Narrow layout hides the list while an agent is open, so focus follows
@@ -215,6 +269,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
   };
 
   const status = createMemo(() => {
+    if (settingsError()) return TEXT.settingsError;
     const report = state.report();
     if (report.loading) return TEXT.loading;
     if (report.error) return TEXT.error;
@@ -252,9 +307,13 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
         <span class="ch-metric" data-metric="count">
           {formatCount(agent.recordsCount)} registros
         </span>
+        <span class="ch-metric" data-metric="records-per-session">
+          {formatRecordsPerSession(agent.recordsPerSession)} {TEXT.perSession}
+        </span>
         <span class="ch-metric" data-metric="mean">
           {TEXT.meanLabel}: {formatMean(agent.mean)}
         </span>
+        {ScopeWindows(agent.scopeWindows)}
         <span class="ch-bar" aria-hidden="true">
           <span class="ch-bar-fill" style={{ width: meanBarWidth(agent.mean) }} />
         </span>
@@ -356,15 +415,16 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
               </select>
             </label>
             <label class="ch-filter">
-              <span>Período</span>
+              <span>Sesiones</span>
               <select
-                value={String(state.filters().days)}
+                value={String(state.filters().sessionCount ?? "")}
                 onChange={(event) =>
-                  applyFilter({ days: Number(event.currentTarget.value) as PeriodDays })
+                  applyFilter({ sessionCount: Number(event.currentTarget.value) })
                 }
+                data-ac-testid="contextHistory.sessionCount"
               >
-                <For each={PERIODS}>
-                  {(period) => <option value={String(period.days)}>{period.label}</option>}
+                <For each={state.windows() ?? []}>
+                  {(count) => <option value={String(count)}>{sessionWindowLabel(count)}</option>}
                 </For>
               </select>
             </label>
@@ -380,7 +440,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
           <p class="ch-status" role="status" aria-live="polite">
             {status()}
           </p>
-          <Show when={state.report().error}>
+          <Show when={settingsError() || state.report().error}>
             <button type="button" data-ac-testid="contextHistory.retry" onClick={load}>
               {TEXT.retry}
             </button>
@@ -425,15 +485,20 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                 </Show>
                 <Show when={state.detail().data}>
                   {(detail) => (
-                    <p>
+                    <div data-ac-testid="contextHistory.detailTotals">
                       <span data-metric="count">
                         {formatCount(detail().recordsCount)} registros
+                      </span>
+                      {" · "}
+                      <span data-metric="records-per-session">
+                        {formatRecordsPerSession(detail().recordsPerSession)} {TEXT.perSession}
                       </span>
                       {" · "}
                       <span data-metric="mean">
                         {TEXT.meanLabel}: {formatMean(detail().mean)}
                       </span>
-                    </p>
+                      {ScopeWindows(detail().scopeWindows)}
+                    </div>
                   )}
                 </Show>
                 <ul>

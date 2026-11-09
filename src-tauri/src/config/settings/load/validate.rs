@@ -8,6 +8,7 @@ use super::{
 };
 
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    settings.normalize_context_history_sessions();
     if !(RESPONSE_CLOSE_IDLE_SECONDS_MIN..=RESPONSE_CLOSE_IDLE_SECONDS_MAX)
         .contains(&settings.response_close_idle_seconds)
     {

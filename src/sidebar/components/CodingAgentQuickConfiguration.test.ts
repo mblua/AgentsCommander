@@ -672,7 +672,7 @@ describe("CodingAgentQuickConfiguration", () => {
       const dispose = renderWelcome(undefined);
       await settle();
 
-      expect(cardKeys().length).toBe(5);
+      expect(cardKeys()).toHaveLength(5);
       for (const key of ["codex", "claude", "pi", "mine", "custom"]) {
         expect(byTestId(`onboarding.agentPreset.${key}.status`)).toBeNull();
         expect(byTestId(`onboarding.agentPreset.${key}.tested`)).toBeNull();
@@ -913,7 +913,7 @@ describe("CodingAgentQuickConfiguration", () => {
       sheetRules().filter((r) => r.selectors.length === 1 && r.selectors[0] === prelude);
     const onlyRule = (prelude: string): string => {
       const hits = rulesFor(prelude);
-      expect(hits.length).toBe(1);
+      expect(hits).toHaveLength(1);
       return hits[0].body;
     };
     const hasDecl = (body: string, prop: string): boolean => {
@@ -935,10 +935,10 @@ describe("CodingAgentQuickConfiguration", () => {
       const install = onlyRule(".onboarding-card-install");
       expect(hasDecl(install, "border-top")).toBe(true);
       expect(hasDecl(install, "padding")).toBe(true);
-      expect(rulesFor(".onboarding-card-row:has(> .onboarding-card.selected)").length).toBe(1);
-      expect(rulesFor(".onboarding-card:hover").length).toBe(0);
-      expect(rulesFor("html.light-theme .onboarding-card:hover").length).toBe(0);
-      expect(rulesFor(".onboarding-card-row:hover").length).toBe(1);
+      expect(rulesFor(".onboarding-card-row:has(> .onboarding-card.selected)")).toHaveLength(1);
+      expect(rulesFor(".onboarding-card:hover")).toHaveLength(0);
+      expect(rulesFor("html.light-theme .onboarding-card:hover")).toHaveLength(0);
+      expect(rulesFor(".onboarding-card-row:hover")).toHaveLength(1);
     });
 
     it("vendor_2784_the_welcome_card_shows_by_vendor_instead_of_the_description", async () => {
@@ -1051,7 +1051,7 @@ describe("CodingAgentQuickConfiguration", () => {
       expect(state("claude")).toBe("installed");
       const missing = onlyRule('.onboarding-chip-status[data-ac-state="missing"]');
       expect(hasDecl(missing, "border-color")).toBe(true);
-      expect(rulesFor('.onboarding-chip-status[data-ac-state="installed"]').length).toBe(0);
+      expect(rulesFor('.onboarding-chip-status[data-ac-state="installed"]')).toHaveLength(0);
 
       dispose();
     });
@@ -1113,7 +1113,7 @@ describe("CodingAgentQuickConfiguration", () => {
       const levelRules = sheetRules().filter((r) =>
         r.selectors.some((s) => s.includes(".onboarding-chip-tested[")),
       );
-      expect(levelRules.length).toBe(6);
+      expect(levelRules).toHaveLength(6);
       for (const r of levelRules) expect(hasDecl(r.body, "border-color")).toBe(false);
     });
 
@@ -1326,7 +1326,7 @@ describe("CodingAgentQuickConfiguration", () => {
       const dispose = renderInstall(undefined);
       await settle();
 
-      expect(cardKeys().length).toBe(5);
+      expect(cardKeys()).toHaveLength(5);
       for (const key of ["codex", "claude", "pi", "mine", "custom"]) {
         expect(commandText(key)).toBeNull();
         expect(copyButton(key)).toBeNull();
@@ -1629,9 +1629,9 @@ describe("CodingAgentQuickConfiguration", () => {
       const cards = Array.from(
         document.querySelectorAll<HTMLElement>('[data-ac-role="agent-preset"]'),
       );
-      expect(cards.length).toBe(5);
+      expect(cards).toHaveLength(5);
       for (const el of cards) {
-        expect(el.querySelectorAll("button").length).toBe(0);
+        expect(el.querySelectorAll("button")).toHaveLength(0);
       }
       for (const key of ["codex", "mine"]) {
         expect(copyButton(key)!.closest("button")).toBe(copyButton(key));
@@ -1703,11 +1703,11 @@ describe("CodingAgentQuickConfiguration", () => {
       await settle();
 
       const wrappers = Array.from(document.querySelectorAll<HTMLElement>(".onboarding-card-row"));
-      expect(wrappers.length).toBe(5);
+      expect(wrappers).toHaveLength(5);
       for (const wrapper of wrappers) {
         expect(Array.from(wrapper.attributes).map((attr) => attr.name)).toEqual(["class"]);
         const inner = focusables().filter((el) => wrapper.contains(el));
-        expect(inner.length).toBe(1);
+        expect(inner).toHaveLength(1);
         expect(inner[0].getAttribute("data-ac-role")).toBe("agent-preset");
       }
       expect(card("codex").getAttribute("aria-label")).toBe("Select Codex");
@@ -2405,7 +2405,7 @@ describe("CodingAgentQuickConfiguration", () => {
       const install = installRow("codex")!;
       expect(install).not.toBeNull();
       expect(install.parentElement).toBe(wrapper);
-      expect(card("codex").querySelectorAll("button").length).toBe(0);
+      expect(card("codex").querySelectorAll("button")).toHaveLength(0);
       expect(install.previousElementSibling).toBe(card("codex"));
 
       dispose();

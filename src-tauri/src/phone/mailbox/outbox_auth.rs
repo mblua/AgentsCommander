@@ -340,7 +340,7 @@ impl MailboxPoller {
         if origin == OutboxOrigin::Replica {
             let outbox_dir = path.parent().unwrap_or(Path::new(""));
             // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
-            if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
+            if let Some(repo_path) = outbox_dir.parent().and_then(std::path::Path::parent) {
                 let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
                     return Ok(std::ops::ControlFlow::Break(

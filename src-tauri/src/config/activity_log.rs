@@ -625,7 +625,7 @@ fn rotate_if_needed(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
     // Descending, so each rename atomically replaces its destination and the old

@@ -1,13 +1,14 @@
-// #4049 - Settings > Context Heat Map (desktop only). Renders the three preferences;
+// #4049 - Settings > Context Heat Map (desktop only). Renders the preferences;
 // the modal owns the draft, validation and Save/Cancel. No persistence or history here.
-import { type Component, Show } from "solid-js";
-import type { ContextHistoryColorDays } from "../../../shared/types";
+import { type Component, For, Show } from "solid-js";
+import { sessionWindowLabel } from "../../../shared/context-history";
 
 export const CONTEXT_HISTORY_RETENTION_DAYS_MIN = 1;
 export const CONTEXT_HISTORY_RETENTION_DAYS_MAX = 365;
 export const CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT = 30;
-// #3532 Allowed windows for the sidebar context-average color.
-const COLOR_DAYS: readonly ContextHistoryColorDays[] = [1, 7, 30];
+// #4091 Session-window list bounds; the backend owns the default list.
+export const CONTEXT_HISTORY_SESSION_WINDOWS_MAX_LEN = 8;
+export const CONTEXT_HISTORY_SESSION_WINDOW_MAX = 10000;
 
 /** Whole days in range, or null. A blank or a fraction is invalid and never coerced. */
 export function parseContextHistoryRetentionDays(raw: string): number | null {
@@ -19,14 +20,36 @@ export function parseContextHistoryRetentionDays(raw: string): number | null {
     : null;
 }
 
+/**
+ * #4091 Comma-separated session counts: 1..8 ascending distinct whole numbers
+ * in 1..10000, or null. Never sorts, deduplicates or drops a blank token.
+ */
+export function parseContextHistorySessionWindows(raw: string): number[] | null {
+  const tokens = raw.split(",").map((token) => token.trim());
+  if (tokens.length > CONTEXT_HISTORY_SESSION_WINDOWS_MAX_LEN) return null;
+  const counts: number[] = [];
+  for (const token of tokens) {
+    if (!/^\d+$/.test(token)) return null;
+    const value = Number(token);
+    if (value < 1 || value > CONTEXT_HISTORY_SESSION_WINDOW_MAX) return null;
+    if (counts.length > 0 && value <= counts[counts.length - 1]) return null;
+    counts.push(value);
+  }
+  return counts;
+}
+
 export interface ContextHistorySettingsProps {
   enabled: boolean;
   retentionText: string;
   retentionError: string | null;
-  colorDays: ContextHistoryColorDays;
+  windowsText: string;
+  windowsError: string | null;
+  windows: readonly number[];
+  colorSessions: number | null;
   onEnabled: (enabled: boolean) => void;
   onRetentionText: (raw: string) => void;
-  onColorDays: (days: ContextHistoryColorDays) => void;
+  onWindowsText: (raw: string) => void;
+  onColorSessions: (sessions: number) => void;
 }
 
 const ContextHistorySettings: Component<ContextHistorySettingsProps> = (props) => (
@@ -67,25 +90,49 @@ const ContextHistorySettings: Component<ContextHistorySettingsProps> = (props) =
       )}
     </Show>
     <label class="settings-field">
+      <span class="settings-label">Session windows</span>
+      <input
+        class="settings-input"
+        type="text"
+        value={props.windowsText}
+        onInput={(e) => props.onWindowsText(e.currentTarget.value)}
+        data-ac-testid="settings.contextHistory.sessionWindows"
+      />
+      <div class="settings-hint" data-ac-testid="settings.contextHistory.sessionWindows.hint">
+        Comma-separated session counts: 1 to 8 ascending, distinct whole numbers from 1 to
+        10000. The heat map groups each agent's history by its latest sessions.
+      </div>
+    </label>
+    <Show when={props.windowsError}>
+      {(message) => (
+        <div
+          class="settings-hint settings-hint-error"
+          data-ac-testid="settings.contextHistory.sessionWindows.error"
+        >
+          {message()}
+        </div>
+      )}
+    </Show>
+    <label class="settings-field">
       <span class="settings-label">Período para el color de la media de contexto</span>
       <select
         class="settings-input"
-        value={String(props.colorDays)}
+        value={props.colorSessions === null ? "" : String(props.colorSessions)}
         onChange={(e) => {
           const raw = e.currentTarget.value;
-          const days = COLOR_DAYS.find((d) => String(d) === raw);
-          if (days !== undefined) props.onColorDays(days);
+          const sessions = props.windows.find((count) => String(count) === raw);
+          if (sessions !== undefined) props.onColorSessions(sessions);
         }}
-        data-ac-testid="settings.contextHistory.colorDays"
+        data-ac-testid="settings.contextHistory.colorSessions"
       >
-        <option value="1">Último día</option>
-        <option value="7">Últimos 7 días</option>
-        <option value="30">Últimos 30 días (predeterminado)</option>
+        <For each={props.windows}>
+          {(count) => <option value={String(count)}>{sessionWindowLabel(count)}</option>}
+        </For>
       </select>
-      <div class="settings-hint" data-ac-testid="settings.contextHistory.colorDays.hint">
-        Colorea la media de contexto del agente o del team, no el CTX vivo; el hover
-        muestra siempre las medias de 1, 7 y 30 días. No cambia la captura ni el
-        período del historial.
+      <div class="settings-hint" data-ac-testid="settings.contextHistory.colorSessions.hint">
+        Colorea la media de contexto del agente o del team en esa ventana de sesiones, no
+        el CTX vivo; el hover muestra todas las ventanas de sesiones. No cambia la captura
+        ni el período del historial.
       </div>
     </label>
   </div>

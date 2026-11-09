@@ -716,18 +716,12 @@ fn publish_outbox_message(
     // <root>/<local_dir>/outbox/
     let outbox_dir = if let Some(outbox_path) = outbox {
         PathBuf::from(outbox_path)
-    } else if is_root {
-        // Root/master token: use the app outbox so the MailboxPoller always finds it
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| crate::filesystem::documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if crate::filesystem::directories::cli_agent_root_is_dir(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
     } else {
-        ac_dir.join("outbox")
+        // Root/master token: use the app outbox so the MailboxPoller always finds it
+        crate::filesystem::app_outbox_pointer::directory(
+            is_root.then(crate::config::config_dir).flatten().as_deref(),
+            ac_dir,
+        )
     };
     if let Err(reason) = reject_comanaged_queue_outbox(&outbox_dir) {
         eprintln!("Error: {reason}");

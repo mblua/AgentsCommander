@@ -386,13 +386,13 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
 
   function oneChip(root: Element): HTMLElement {
     const all = originChip(root);
-    expect(all.length).toBe(1);
+    expect(all).toHaveLength(1);
     return all[0];
   }
 
   async function mountedWithOrigin(fake: FakeTransport) {
     const rendered = await mounted(fake);
-    await waitFor(() => expect(originChip(rendered.root).length).toBe(1));
+    await waitFor(() => expect(originChip(rendered.root)).toHaveLength(1));
     return rendered;
   }
 

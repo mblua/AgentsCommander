@@ -4,7 +4,8 @@ import { runMeasuredGate, metric, hit, warning, qualified } from './sanitizing_g
 
 const diskPath = /^(?:(?:std|tokio)::fs::|fs::|(?:File::(?:open|create)|OpenOptions::new)$)/;
 const bareOperation = /^(?:read|read_to_string|read_dir|write|metadata|symlink_metadata|canonicalize|copy|rename|create_dir|create_dir_all|remove_file|remove_dir|remove_dir_all|hard_link|soft_link|read_link|set_permissions|try_exists)$/;
-const receiverMethod = /^(?:exists|try_exists|metadata|symlink_metadata|canonicalize|is_file|is_dir|read_dir)$/;
+const receiverMethod =
+  /^(?:exists|try_exists|metadata|symlink_metadata|canonicalize|is_file|is_dir|read_dir)$/;
 const owner = p => /^src-tauri\/src\/(?:filesystem|path_identity|path_utils)(?:\.rs$|\/)/.test(p);
 const inUniverse = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 
@@ -68,25 +69,37 @@ function constructorReceiver(scan, T, close) {
   return false;
 }
 
-function parameterType(scan, fn, T, name) {
+// Index after the optional generic prefix; it may not be '(' (callers reject that).
+function parameterListOpen(T, fn) {
   let open = fn.first + 2;
   if (T[open]?.text === '<') {
     while (open < T.length && T[open].text !== '(') open = T[open].mate ?? open + 1;
   }
+  return open;
+}
+
+// undefined: part does not declare name; null: it does, with an unsupported type.
+function parameterPartType(scan, part, name) {
+  let n = part[0]?.name === 'mut' ? 1 : 0;
+  if (!(part[n]?.kind === 'ident' && part[n].name === name && part[n + 1]?.text === ':'))
+    return undefined;
+  n += 2;
+  if (part[n]?.text === '&') {
+    n++;
+    if (part[n]?.kind === 'lifetime') n++;
+    if (part[n]?.name === 'mut') n++;
+  }
+  return typedPath(scan, part.slice(n));
+}
+
+function parameterType(scan, fn, T, name) {
+  const open = parameterListOpen(T, fn);
   if (T[open]?.text !== '(') return null;
   let part = [];
   for (let k = open + 1; k <= T[open].mate; k++) {
     if (k === T[open].mate || T[k].text === ',') {
-      let n = part[0]?.name === 'mut' ? 1 : 0;
-      if (part[n]?.kind === 'ident' && part[n].name === name && part[n + 1]?.text === ':') {
-        n += 2;
-        if (part[n]?.text === '&') {
-          n++;
-          if (part[n]?.kind === 'lifetime') n++;
-          if (part[n]?.name === 'mut') n++;
-        }
-        return typedPath(scan, part.slice(n));
-      }
+      const type = parameterPartType(scan, part, name);
+      if (type !== undefined) return type;
       part = [];
     } else {
       part.push(T[k]);
@@ -103,20 +116,28 @@ function parameterReceiver(scan, T, at, fns) {
   const fn = fns.filter(f => f.body < at && at < T[f.body].mate)
     .sort((a, b) => b.body - a.body)[0];
   if (!fn || !parameterType(scan, fn.item, T, p.name)) return false;
-  for (let k = fn.body + 1; k < at; k++) {
+  return parameterPrefixSafe(T, fn.body, at, p.name);
+}
+
+function parameterPrefixSafe(T, body, at, name) {
+  for (let k = body + 1; k < at; k++) {
     const t = T[k];
     if (t.text === '|' || t.text === '||' || ['for', 'match'].includes(t.name) ||
       bodyItems.has(t.name)) return false;
     if (t.text === '!' && T[k - 1]?.kind === 'ident' && !notMacro.has(T[k - 1].name) &&
       ['(', '[', '{'].includes(T[k + 1]?.text)) return false;
-    if (t.name !== 'let') continue;
-    let n = k + 1;
-    if (T[n]?.name === 'ref') n++;
-    if (T[n]?.name === 'mut') n++;
-    if (T[n]?.kind !== 'ident' || ![':', '=', ';'].includes(T[n + 1]?.text)) return false;
-    if (T[n].name === p.name) return false;
+    if (t.name === 'let' && !parameterLetSafe(T, k, name)) return false;
   }
   return true;
+}
+
+// A simple let in the prefix is crossed only when it binds another name.
+function parameterLetSafe(T, k, name) {
+  let n = k + 1;
+  if (T[n]?.name === 'ref') n++;
+  if (T[n]?.name === 'mut') n++;
+  if (T[n]?.kind !== 'ident' || ![':', '=', ';'].includes(T[n + 1]?.text)) return false;
+  return T[n].name !== name;
 }
 
 // #4025: one immutable local, seeded directly by a standard constructor or parameter.
@@ -131,30 +152,38 @@ function oneArgument(T, open) {
   return true;
 }
 
+// Index after a standard constructor seed `T::f(...)` opened at open, or null.
+function constructorSeedNext(scan, T, open) {
+  const close = T[open].mate;
+  if (!constructorReceiver(scan, T, close)) return null;
+  if (T[open - 1].name !== 'new' || open + 1 !== close) {
+    if (!oneArgument(T, open)) return null;
+  }
+  return close + 1;
+}
+
+// Index of the first join after a proven parameter seed at start, or null.
+function parameterSeedNext(scan, T, start, fns) {
+  const fn = fns.filter(f => f.body < start && start < T[f.body].mate)
+    .sort((a, b) => b.body - a.body)[0];
+  if (!fn || T[start]?.kind !== 'ident' ||
+    !parameterType(scan, fn.item, T, T[start].name)) return null;
+  for (let k = fn.body + 1; k < start; k++) {
+    if (T[k].name !== 'let') continue;
+    const d = localDeclaration(T, k, T[fn.body].mate);
+    if (!d || T[d.name].name === T[start].name) return null;
+  }
+  const next = start + 1;
+  // Unlike constructors, a parameter must have at least one join suffix.
+  return T[next]?.text === '.' ? next : null;
+}
+
 function localInitializer(scan, T, start, end, fns) {
   let next = start;
   while (next < end && (T[next].kind === 'ident' || T[next].text === '::')) next++;
-  if (T[next]?.text === '(' && T[next].mate < end) {
-    const close = T[next].mate;
-    if (!constructorReceiver(scan, T, close)) return false;
-    if (T[next - 1].name !== 'new' || next + 1 !== close) {
-      if (!oneArgument(T, next)) return false;
-    }
-    next = close + 1;
-  } else {
-    const fn = fns.filter(f => f.body < start && start < T[f.body].mate)
-      .sort((a, b) => b.body - a.body)[0];
-    if (!fn || T[start]?.kind !== 'ident' ||
-      !parameterType(scan, fn.item, T, T[start].name)) return false;
-    for (let k = fn.body + 1; k < start; k++) {
-      if (T[k].name !== 'let') continue;
-      const d = localDeclaration(T, k, T[fn.body].mate);
-      if (!d || T[d.name].name === T[start].name) return false;
-    }
-    next = start + 1;
-    // Unlike constructors, a parameter must have at least one join suffix.
-    if (T[next]?.text !== '.') return false;
-  }
+  if (T[next]?.text === '(' && T[next].mate < end) next = constructorSeedNext(scan, T, next);
+  else next = parameterSeedNext(scan, T, start, fns);
+  if (next === null) return false;
   while (next < end) {
     if (T[next]?.text !== '.' || T[next + 1]?.name !== 'join' ||
       !oneArgument(T, next + 2)) return false;
@@ -182,6 +211,30 @@ function localDeclaration(T, at, limit) {
   return null;
 }
 
+// Later items also shadow earlier bindings. Only original item declarations count.
+function localBodyHasItems(scan, T, body, limit) {
+  return scan.items.some(i => i.first > body && i.first < limit) ||
+    T.slice(body + 1, limit).some((t, n) =>
+      (t.name === 'extern' || t.name === 'macro_rules') &&
+      !['.', '::'].includes(T[body + n]?.text));
+}
+
+// Lets before at, or null when a barrier, macro or non-simple let rejects the prefix.
+function localPrefixDeclarations(T, body, at, limit) {
+  const declarations = [];
+  for (let k = body + 1; k < at; k++) {
+    const t = T[k];
+    if (['|', '||'].includes(t.text) || ['for', 'match'].includes(t.name)) return null;
+    if (t.text === '!' && T[k - 1]?.kind === 'ident' && !notMacro.has(T[k - 1].name) &&
+      ['(', '[', '{'].includes(T[k + 1]?.text)) return null;
+    if (t.name !== 'let') continue;
+    const declaration = localDeclaration(T, k, limit);
+    if (!declaration) return null;
+    declarations.push(declaration);
+  }
+  return declarations;
+}
+
 function localReceiver(scan, T, at, fns) {
   const p = T[at];
   if (p?.kind !== 'ident' || ['.', '::'].includes(T[at - 1]?.text)) return false;
@@ -189,22 +242,9 @@ function localReceiver(scan, T, at, fns) {
     .sort((a, b) => b.body - a.body)[0];
   if (!fn) return false;
   const limit = T[fn.body].mate;
-  // Later items also shadow earlier bindings. Only original item declarations count.
-  if (scan.items.some(i => i.first > fn.body && i.first < limit) ||
-    T.slice(fn.body + 1, limit).some((t, n) =>
-      (t.name === 'extern' || t.name === 'macro_rules') &&
-      !['.', '::'].includes(T[fn.body + n]?.text))) return false;
-  const declarations = [];
-  for (let k = fn.body + 1; k < at; k++) {
-    const t = T[k];
-    if (['|', '||'].includes(t.text) || ['for', 'match'].includes(t.name)) return false;
-    if (t.text === '!' && T[k - 1]?.kind === 'ident' && !notMacro.has(T[k - 1].name) &&
-      ['(', '[', '{'].includes(T[k + 1]?.text)) return false;
-    if (t.name !== 'let') continue;
-    const declaration = localDeclaration(T, k, limit);
-    if (!declaration) return false;
-    declarations.push(declaration);
-  }
+  if (localBodyHasItems(scan, T, fn.body, limit)) return false;
+  const declarations = localPrefixDeclarations(T, fn.body, at, limit);
+  if (declarations === null) return false;
   const matches = declarations.filter(d => T[d.name].name === p.name);
   if (matches.length !== 1) return false;
   const d = matches[0];
@@ -215,6 +255,24 @@ function localReceiver(scan, T, at, fns) {
   let scope = p.scope;
   while (scope && scope !== T[d.at].scope) scope = scope.parent;
   return !!scope && localInitializer(scan, T, d.equal + 1, d.end, fns);
+}
+
+// Form 3: associated `std::path::Path::m(x)` with exactly one argument.
+function associatedPathReceiver(scan, T, k) {
+  let start = k - 2;
+  if (T[start]?.kind !== 'ident') return false;
+  while (T[start - 1]?.text === '::' && T[start - 2]?.kind === 'ident') start -= 2;
+  if (T[start - 1]?.text === '::') start--;
+  if (['.', '>', '::'].includes(T[start - 1]?.text)) return false;
+  return typedPath(scan, T.slice(start, k - 1)) === 'std::path::Path' && oneArgument(T, k + 1);
+}
+
+// Whether the receiver method call at k is a proven site; `::` never falls through to `.`.
+function receiverAt(scan, T, k, fns) {
+  if (T[k - 1]?.text === '::') return associatedPathReceiver(scan, T, k);
+  if (T[k - 1]?.text !== '.' || T[k + 1].mate !== k + 2) return false;
+  return constructorReceiver(scan, T, k - 2) || parameterReceiver(scan, T, k - 2, fns) ||
+    localReceiver(scan, T, k - 2, fns);
 }
 
 function receiverSites(m, scan) {
@@ -233,20 +291,7 @@ function receiverSites(m, scan) {
       T[k + 1]?.text !== '(') continue;
     if (ranges.some(r => k > r.start && k < r.end) ||
       generic.some(i => t.start >= i.start && t.start < i.end)) continue;
-    if (T[k - 1]?.text === '::') {
-      let start = k - 2;
-      if (T[start]?.kind !== 'ident') continue;
-      while (T[start - 1]?.text === '::' && T[start - 2]?.kind === 'ident') start -= 2;
-      if (T[start - 1]?.text === '::') start--;
-      if (['.', '>', '::'].includes(T[start - 1]?.text)) continue;
-      if (typedPath(scan, T.slice(start, k - 1)) === 'std::path::Path' &&
-        oneArgument(T, k + 1)) hit(m, 'receiver_disk_sites', t.line);
-      continue;
-    }
-    if (T[k - 1]?.text !== '.' || T[k + 1].mate !== k + 2) continue;
-    if (constructorReceiver(scan, T, k - 2) || parameterReceiver(scan, T, k - 2, fns) ||
-      localReceiver(scan, T, k - 2, fns))
-      hit(m, 'receiver_disk_sites', t.line);
+    if (receiverAt(scan, T, k, fns)) hit(m, 'receiver_disk_sites', t.line);
   }
 }
 

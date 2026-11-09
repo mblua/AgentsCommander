@@ -4149,7 +4149,7 @@ describe("SettingsModal automation hooks", () => {
       const savedIds = saved!.agents.map((agent) => agent.id);
       expect(savedIds).toHaveLength(4);
       // Only saveCurrentSettingsDraft's own read; no refresh, no settings event.
-      expect(vi.mocked(SettingsAPI.get).mock.calls.length).toBe(getCallsBeforeSave + 1);
+      expect(vi.mocked(SettingsAPI.get).mock.calls).toHaveLength(getCallsBeforeSave + 1);
 
       expect(document.querySelector('[data-ac-testid="settings.agents.reorderDraftReason"]')).toBeNull();
       expect(handle(0).disabled).toBe(false);

@@ -7,6 +7,8 @@ use crate::session::profile::CodingAgentKind;
 /// filename from the command via the same `CodingAgentKind::detect` the launch
 /// path uses, so a configured agent's default matches what detection would pick.
 pub fn default_instructions_filename_for_command(command: &str) -> &'static str {
+    // Shared AGENTS.md filename; Codex is one of its existing providers.
+    let agents_md_filename = ManagedContextTarget::Codex.filename();
     match normalize_legacy_agent_command(command) {
         Ok(n) => match CodingAgentKind::detect(&n.shell, &n.shell_args) {
             Some(CodingAgentKind::Claude) => "CLAUDE.md",
@@ -15,11 +17,11 @@ pub fn default_instructions_filename_for_command(command: &str) -> &'static str 
                 | CodingAgentKind::Pi
                 | CodingAgentKind::Antigravity
                 | CodingAgentKind::Muse,
-            ) => "AGENTS.md",
+            ) => agents_md_filename,
             // OpenCode, custom, and unknown commands also use AGENTS.md.
-            None => "AGENTS.md",
+            None => agents_md_filename,
         },
-        Err(_) => "AGENTS.md",
+        Err(_) => agents_md_filename,
     }
 }
 

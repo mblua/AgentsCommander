@@ -30,7 +30,7 @@ impl MailboxPoller {
         let parent = path.parent().ok_or("No source parent")?;
         let id = path
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .and_then(|name| name.strip_suffix(".json"))
             .ok_or("No source id")?;
         // Derive only from the scanner's basename; reject_message owns payload-id safeguards.
@@ -569,25 +569,7 @@ impl MailboxPoller {
             self.snapshot_scanner.finish_startup_sweep();
         }
 
-        // Snapshot ingress derives exact replica roots before checking ordinary
-        // outbox spellings, so a live session CWD below its replica cannot make
-        // the dedicated protocol invisible. Physical roots are scanned once.
-        let mut snapshot_root_objects = std::collections::HashSet::new();
-        for (_, discovered) in &snapshot_session_dirs {
-            let Some(requester_root) =
-                crate::phone::terminal_snapshot::verified_requester_root_from_discovered_path(
-                    Path::new(discovered),
-                )
-            else {
-                continue;
-            };
-            let Ok(identity) = crate::path_identity::verify_directory(&requester_root) else {
-                continue;
-            };
-            if snapshot_root_objects.insert(identity.object_id) {
-                self.snapshot_scanner.scan_root(app, &requester_root);
-            }
-        }
+        self.poll_snapshot_roots(app, &snapshot_session_dirs);
 
         // Include the instance-private app outbox
         let app_outbox = app.outbox();
@@ -612,42 +594,8 @@ impl MailboxPoller {
 
             for path in entries {
                 messages_processed += 1;
-                let standard_content = match self.classify_polled_document(&path, *origin) {
-                    Some(OutboxClassification::PrivilegedCandidate { bytes, identity }) => {
-                        self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
-                            .await;
-                        self.retry_tracker.remove(&path);
-                        continue;
-                    }
-                    Some(OutboxClassification::Standard(content)) => content,
-                    _ => continue,
-                };
-                if self
-                    .settle_prior_polled_clear(&path, &standard_content)
-                    .await
-                {
-                    continue;
-                }
-                let mut deferred: Option<ValidatedWake> = None;
-                let outcome = self
-                    .process_message_content(
-                        app,
-                        &path,
-                        *origin,
-                        &standard_content,
-                        Some(&mut deferred),
-                    )
+                self.poll_outbox_entry(app, path, *origin, is_app_outbox)
                     .await;
-                let handoff = match outcome {
-                    Ok(()) => {
-                        deferred.map(|msg| self.claim_and_spawn_validated_wake(app, &path, msg))
-                    }
-                    Err(e) => {
-                        self.record_message_outcome(path, Err(e)).await;
-                        continue;
-                    }
-                };
-                self.record_polled_handoff(path, handoff).await;
             }
         }
 
@@ -663,6 +611,70 @@ impl MailboxPoller {
         self.poll_coding_agent_requests(app).await;
 
         Ok(())
+    }
+
+    /// Snapshot ingress derives exact replica roots before checking ordinary
+    /// outbox spellings, so a live session CWD below its replica cannot make
+    /// the dedicated protocol invisible. Physical roots are scanned once.
+    fn poll_snapshot_roots<A: MailboxHost + BrowserHost>(
+        &mut self,
+        app: &A,
+        snapshot_session_dirs: &[(uuid::Uuid, String)],
+    ) {
+        let mut snapshot_root_objects = std::collections::HashSet::new();
+        for (_, discovered) in snapshot_session_dirs {
+            let Some(requester_root) =
+                crate::phone::terminal_snapshot::verified_requester_root_from_discovered_path(
+                    Path::new(discovered),
+                )
+            else {
+                continue;
+            };
+            let Ok(identity) = crate::path_identity::verify_directory(&requester_root) else {
+                continue;
+            };
+            if snapshot_root_objects.insert(identity.object_id) {
+                self.snapshot_scanner.scan_root(app, &requester_root);
+            }
+        }
+    }
+
+    /// Classify and process one polled outbox entry.
+    async fn poll_outbox_entry<A: MailboxHost + BrowserHost>(
+        &mut self,
+        app: &A,
+        path: PathBuf,
+        origin: OutboxOrigin,
+        is_app_outbox: bool,
+    ) {
+        let standard_content = match self.classify_polled_document(&path, origin) {
+            Some(OutboxClassification::PrivilegedCandidate { bytes, identity }) => {
+                self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
+                    .await;
+                self.retry_tracker.remove(&path);
+                return;
+            }
+            Some(OutboxClassification::Standard(content)) => content,
+            _ => return,
+        };
+        if self
+            .settle_prior_polled_clear(&path, &standard_content)
+            .await
+        {
+            return;
+        }
+        let mut deferred: Option<ValidatedWake> = None;
+        let outcome = self
+            .process_message_content(app, &path, origin, &standard_content, Some(&mut deferred))
+            .await;
+        let handoff = match outcome {
+            Ok(()) => deferred.map(|msg| self.claim_and_spawn_validated_wake(app, &path, msg)),
+            Err(e) => {
+                self.record_message_outcome(path, Err(e)).await;
+                return;
+            }
+        };
+        self.record_polled_handoff(path, handoff).await;
     }
 
     async fn poll_project_paths(settings: &SettingsState) -> (Vec<String>, Vec<String>) {

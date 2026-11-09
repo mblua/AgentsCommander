@@ -478,7 +478,7 @@ fn replica_shared_roots(agent_root: &str) -> Option<(std::path::PathBuf, std::pa
     // 1. the agent directory itself must be an `__agent_` replica
     if !agent_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(|name| name.starts_with("__agent_"))
         .unwrap_or(false)
     {
@@ -489,14 +489,14 @@ fn replica_shared_roots(agent_root: &str) -> Option<(std::path::PathBuf, std::pa
     //    `workgroup_root`'s ancestor walk is what rejects a nested non-replica.
     let room_root = agent_path.parent()?;
     if !crate::config::entity_prefix::has_entity_prefix(
-        room_root.file_name().and_then(|name| name.to_str())?,
+        room_root.file_name().and_then(std::ffi::OsStr::to_str)?,
     ) {
         return None;
     }
 
     // 3. the room's parent must be a Project AC Root BY NAME (`.ac`).
     let ac_root = room_root.parent()?;
-    if !super::ac_root::is_ac_root_name(ac_root.file_name().and_then(|name| name.to_str())?) {
+    if !super::ac_root::is_ac_root_name(ac_root.file_name().and_then(std::ffi::OsStr::to_str)?) {
         return None;
     }
 
@@ -923,7 +923,7 @@ fn legacy_rendered_default_context_for_generation(
 pub(crate) fn is_replica_agent_dir(cwd: &str) -> bool {
     std::path::Path::new(cwd)
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(|name| name.starts_with("__agent_"))
         .unwrap_or(false)
 }

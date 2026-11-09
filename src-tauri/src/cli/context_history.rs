@@ -3,7 +3,7 @@
 //! The report core is pure; this edge validates arguments, resolves the
 //! Project AC Root, reads the retained snapshot once (retention from the
 //! read-only CLI Settings snapshot, #4049) and streams every page of
-//! agents as one schema 2 JSON document on stdout. Errors go to stderr with
+//! agents as one schema 3 JSON document on stdout. Errors go to stderr with
 //! exit code 1 and never produce an empty successful result.
 
 use std::io::{self, Write};
@@ -39,8 +39,10 @@ PROJECT: Query with the same --project path that was used while capturing. \
 Records match the verified canonical path or the typed path; physical aliases \
 such as a subst drive against its real folder are not treated as the same \
 project unless the query uses the captured spelling.\n\n\
-OUTPUT: One JSON object, schemaVersion 2, with requestedPeriod, generatedAtUtcMs, \
-coverage, totalAgents and agents. A missing history database prints an empty \
+OUTPUT: One JSON object, schemaVersion 3, with requestedPeriod, generatedAtUtcMs, \
+coverage, totalAgents and agents. This date report always prints \
+requestedPeriod.sessionCount=null and scopeWindows=null on every agent; \
+recordsPerSession = recordsCount / sessionsCount. A missing history database prints an empty \
 report. Times are RFC3339 with an explicit timezone; the period is at most 31 days.\n\n\
 EXAMPLES:\n  \
   {bin} context-history --project C:/repos/demo --from 2026-11-01T00:00:00Z \
@@ -144,6 +146,7 @@ fn query_from_args(args: &ContextHistoryArgs) -> Result<ReportQuery, CliError> {
         model: launch_filter(args.model.as_ref(), args.unknown_model),
         effort: launch_filter(args.effort.as_ref(), args.unknown_effort),
         cursor: None,
+        session_count: None,
     };
     query.validate()?;
     Ok(query)

@@ -36,7 +36,7 @@ fn backup_files(ac_root: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.expect("workspace entry").path())
         .filter(|path| {
             path.file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|name| name.ends_with(".bak"))
         })
         .collect();

@@ -16,10 +16,11 @@ pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
 pub(crate) use naming::{migrate_instance_settings_families, SettingsNamingError};
 
 use self::context_history::{
-    deserialize_context_history_color_days, deserialize_context_history_enabled,
-    deserialize_context_history_retention_days,
+    deserialize_context_history_color_sessions, deserialize_context_history_enabled,
+    deserialize_context_history_retention_days, deserialize_context_history_session_windows,
+    effective_color_sessions,
 };
-pub use self::context_history::{ContextHistoryColorDays, ContextHistoryRetentionDays};
+pub use self::context_history::{ContextHistoryRetentionDays, ContextHistorySessionWindows};
 #[cfg(test)]
 use super::projects;
 #[cfg(test)]
@@ -874,10 +875,6 @@ pub struct AppSettings {
     /// Continuous room inactivity required before confirmation, in seconds.
     #[serde(default = "default_room_idle_confirmation_seconds")]
     pub room_idle_confirmation_seconds: u32,
-    /// #3532: days (1, 7 or 30) that colour the context-history heatmap.
-    /// Any other stored value loads as 30 in memory and is never rewritten.
-    #[serde(default, deserialize_with = "deserialize_context_history_color_days")]
-    pub context_history_color_days: ContextHistoryColorDays,
     /// #4049: app-wide Context Heat Map switch; off by default. Only a JSON
     /// boolean is accepted; any other stored value loads as false.
     #[serde(default, deserialize_with = "deserialize_context_history_enabled")]
@@ -889,6 +886,30 @@ pub struct AppSettings {
         deserialize_with = "deserialize_context_history_retention_days"
     )]
     pub context_history_retention_days: ContextHistoryRetentionDays,
+    /// #4091: session counts that bucket the heat map; default [25, 100, 300].
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context_history_session_windows"
+    )]
+    pub context_history_session_windows: ContextHistorySessionWindows,
+    /// #4091: session count that colours the heat map. `None` only before
+    /// `normalize_context_history_sessions`, which repairs it in memory.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context_history_color_sessions"
+    )]
+    pub context_history_color_sessions: Option<u32>,
+}
+
+impl AppSettings {
+    /// #4091: missing, invalid or non-member colour becomes the last effective
+    /// session window. In memory only; never marks the file for saving.
+    pub(crate) fn normalize_context_history_sessions(&mut self) {
+        self.context_history_color_sessions = Some(effective_color_sessions(
+            &self.context_history_session_windows,
+            self.context_history_color_sessions,
+        ));
+    }
 }
 
 fn default_jev_model() -> String {

@@ -2769,7 +2769,7 @@ const ProjectPanel: Component = () => {
 
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
-          projectStore.removeProject(proj.path);
+          void projectStore.removeProject(proj.path);
         };
 
         const handleArchiveProject = async () => {
@@ -3235,7 +3235,7 @@ const ProjectPanel: Component = () => {
                     <ContextBadge
                       percent={ctxPercent()}
                       historyScope={historyScope()}
-                      colorDays={settingsStore.current?.contextHistoryColorDays}
+                      colorSessions={settingsStore.current?.contextHistoryColorSessions}
                       testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
                     />
                   </Show>

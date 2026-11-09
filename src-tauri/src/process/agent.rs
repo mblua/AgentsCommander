@@ -1,5 +1,6 @@
 //! Version-probe processes; install cache and scheduling policy live in `agent_version`.
 
+mod native_proof;
 mod owner;
 pub(crate) mod update;
 

@@ -1263,6 +1263,7 @@ jobs:
               while IFS= read -r remaining_name; do
                 case "$remaining_name" in
                   *.app.tar.gz) tar_alias_names+=("$remaining_name") ;;
+                  *) : ;;
                 esac
               done < <(remaining_bundle_assets "$raw_name")
               if [ "${#tar_alias_names[@]}" -gt 0 ]; then

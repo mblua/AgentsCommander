@@ -356,7 +356,7 @@ pub(super) fn pair_target_identity(
             .ok_or(PreparedPairError::InvalidPlan("PAIR parent"))?;
         let name = path
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .ok_or(PreparedPairError::InvalidPlan("PAIR name"))?;
         let parent = local_config::canonical_local_config_parent(parent)
             .map_err(|e| PreparedPairError::Io(e.to_string()))?;

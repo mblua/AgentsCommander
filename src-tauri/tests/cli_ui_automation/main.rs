@@ -281,10 +281,10 @@ where
             .map(|dir| {
                 dir.filter_map(|entry| entry.ok().map(|entry| entry.path()))
                     .filter(|path| {
-                        path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                        path.extension().and_then(std::ffi::OsStr::to_str) == Some("json")
                             && !path
                                 .file_name()
-                                .and_then(|name| name.to_str())
+                                .and_then(std::ffi::OsStr::to_str)
                                 .is_some_and(|name| name.ends_with(".inflight.json"))
                     })
                     .collect()

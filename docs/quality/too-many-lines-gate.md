@@ -196,7 +196,7 @@ concurrency and without cancelling ordinary enforcement. Normal PR/full-tier run
 remain enforced. Each native job uses one clean main source S, Rust 1.98.1,
 Node 22/npm 11.6.2, `npm ci --ignore-scripts` then `npm run build` on every platform.
 The adoption job's earlier Windows `npm ci` mirror is no longer in that job;
-the ordinary `rust-regression-windows` job still uses plain `npm ci`.
+the ordinary `rust-regression-windows` job uses `npm ci --ignore-scripts`.
 
 Before capture, the owner verifies S descends from the coordinator-supplied actual
 #3505 merge SHA with `git merge-base --is-ancestor "$MERGE_3505" "$S"`.

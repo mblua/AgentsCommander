@@ -94,6 +94,25 @@ pub(crate) enum TargetNativeObservation {
 }
 
 #[cfg(test)]
+impl crate::process::agent::native_proof::NativeProofHooks for TargetSettlementHook {
+    fn next_observation(&mut self) -> Option<Result<bool, String>> {
+        self.native_observations
+            .pop_front()
+            .map(|observation| match observation {
+                TargetNativeObservation::Empty => Ok(true),
+                TargetNativeObservation::Active => Ok(false),
+                TargetNativeObservation::Error(detail) => Err(detail.to_string()),
+            })
+    }
+
+    fn after_query_defect(&mut self) {
+        if std::mem::take(&mut self.panic_after_native_query_defect) {
+            panic!("injected updater panic after native query defect");
+        }
+    }
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static TARGET_SETTLEMENT_HOOK: std::cell::RefCell<Option<TargetSettlementHook>>;
 }
@@ -373,55 +392,17 @@ impl TargetProcessOwner {
         &mut self,
         attempt: &mut crate::process::host::job::SettlementAttempt,
     ) {
-        let defects = &mut self.defects;
-        if let Some(job) = self.job.as_ref() {
-            let mut query_defect_recorded = false;
-            loop {
-                #[cfg(test)]
-                let proof = match self
-                    .settlement_hook
-                    .as_mut()
-                    .and_then(|hook| hook.native_observations.pop_front())
-                {
-                    Some(observation) => match observation {
-                        TargetNativeObservation::Empty => Ok(true),
-                        TargetNativeObservation::Active => Ok(false),
-                        TargetNativeObservation::Error(detail) => Err(detail.to_string()),
-                    },
-                    None => job
-                        .active_processes()
-                        .map(|active| active == 0)
-                        .map_err(|error| error.to_string()),
-                };
-                #[cfg(not(test))]
-                let proof = job
-                    .active_processes()
-                    .map(|active| active == 0)
-                    .map_err(|error| error.to_string());
-                match proof {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(error) => {
-                        if !query_defect_recorded {
-                            defects.push(format!("job accounting failed: {error}"));
-                            query_defect_recorded = true;
-                        }
-                        #[cfg(test)]
-                        if self.settlement_hook.as_mut().is_some_and(|hook| {
-                            std::mem::take(&mut hook.panic_after_native_query_defect)
-                        }) {
-                            panic!("injected updater panic after native query defect");
-                        }
-                    }
-                }
-                if attempt.expired() {
-                    record_update_attempt_expiry(defects, "job accounting proof");
-                    let _ = job.terminate_checked();
-                    attempt.restart();
-                }
-                tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
-            }
-        }
+        crate::process::agent::native_proof::settle_job(
+            self.job.as_ref(),
+            &mut self.defects,
+            attempt,
+            record_update_attempt_expiry,
+            #[cfg(test)]
+            self.settlement_hook
+                .as_mut()
+                .map(|hook| hook as &mut dyn crate::process::agent::native_proof::NativeProofHooks),
+        )
+        .await;
     }
 
     #[cfg(unix)]
@@ -429,78 +410,17 @@ impl TargetProcessOwner {
         &mut self,
         attempt: &mut crate::process::host::job::SettlementAttempt,
     ) {
-        let defects = &mut self.defects;
-        if self.pgid > 0 {
-            let mut errno_defect_recorded = false;
-            loop {
-                #[cfg(test)]
-                let proof = match self
-                    .settlement_hook
-                    .as_mut()
-                    .and_then(|hook| hook.native_observations.pop_front())
-                {
-                    Some(observation) => match observation {
-                        TargetNativeObservation::Empty => Ok(true),
-                        TargetNativeObservation::Active => Ok(false),
-                        TargetNativeObservation::Error(detail) => Err(detail.to_string()),
-                    },
-                    None => {
-                        // SAFETY: signal zero is a read-only group existence query.
-                        let result = unsafe { libc::kill(-self.pgid, 0) };
-                        if result == -1 {
-                            let error = std::io::Error::last_os_error();
-                            if error.raw_os_error() == Some(libc::ESRCH) {
-                                Ok(true)
-                            } else {
-                                Err(error.to_string())
-                            }
-                        } else {
-                            Ok(false)
-                        }
-                    }
-                };
-                #[cfg(not(test))]
-                let proof = {
-                    // SAFETY: signal zero is a read-only group existence query.
-                    let result = unsafe { libc::kill(-self.pgid, 0) };
-                    if result == -1 {
-                        let error = std::io::Error::last_os_error();
-                        if error.raw_os_error() == Some(libc::ESRCH) {
-                            Ok(true)
-                        } else {
-                            Err(error.to_string())
-                        }
-                    } else {
-                        Ok(false)
-                    }
-                };
-                match proof {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(error) => {
-                        if !errno_defect_recorded {
-                            defects.push(format!("process-group accounting failed: {error}"));
-                            errno_defect_recorded = true;
-                        }
-                        #[cfg(test)]
-                        if self.settlement_hook.as_mut().is_some_and(|hook| {
-                            std::mem::take(&mut hook.panic_after_native_query_defect)
-                        }) {
-                            panic!("injected updater panic after native query defect");
-                        }
-                    }
-                }
-                if attempt.expired() {
-                    record_update_attempt_expiry(defects, "process-group accounting proof");
-                    // SAFETY: this remains the retained group identity.
-                    unsafe {
-                        libc::kill(-self.pgid, libc::SIGKILL);
-                    }
-                    attempt.restart();
-                }
-                tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
-            }
-        }
+        crate::process::agent::native_proof::settle_process_group(
+            self.pgid,
+            &mut self.defects,
+            attempt,
+            record_update_attempt_expiry,
+            #[cfg(test)]
+            self.settlement_hook
+                .as_mut()
+                .map(|hook| hook as &mut dyn crate::process::agent::native_proof::NativeProofHooks),
+        )
+        .await;
     }
 
     pub(crate) async fn settle_observing_cancellation<F>(

@@ -395,13 +395,7 @@ async fn native_publication_readback_fault_retains_pending_then_confirms_same_ep
             .unwrap();
         let renamed = manager
             .with_current_carrier_snapshot(&permit, |_| {
-                super::super::rename_and_publish(
-                    temp.path(),
-                    &slot,
-                    expected_epoch,
-                    &mut next,
-                    &write,
-                )
+                rename_retrying_contention(temp.path(), &slot, expected_epoch, &mut next, &write)
             })
             .await;
         let super::super::RenamePublicationAttempt::Renamed { leaf, retired } = renamed else {
@@ -480,6 +474,18 @@ fn rename_after_released_contention(
     }
     // Retry only contention; every other outcome reaches the strict
     // native-failure assertion below with the original pending payload.
+    rename_retrying_contention(dir, slot, expected_epoch, next, write)
+}
+
+/// Retries only `Retry`: process-wide publication locks are shared with
+/// parallel tests (#4147). `next` stays `Some` on `Retry`, so retry is safe.
+fn rename_retrying_contention(
+    dir: &Path,
+    slot: &super::super::carrier::PublicationSlot,
+    expected_epoch: u64,
+    next: &mut Option<super::super::carrier::PublicationState>,
+    write: &super::super::store::PreparedSessionsWrite,
+) -> super::super::RenamePublicationAttempt {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let attempt = super::super::rename_and_publish(dir, slot, expected_epoch, next, write);

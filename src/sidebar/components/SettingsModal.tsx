@@ -48,6 +48,7 @@ import { GripIcon } from "./settings/GripIcon";
 import { PreflightFields } from "./settings/PreflightFields";
 import { PreflightTestPanel } from "./settings/PreflightTestPanel";
 import ContextHistorySettings, * as ctxHistory from "./settings/ContextHistorySettings";
+import { selectSessionWindow } from "../../shared/context-history";
 import {
   TIMEOUT_SAVE_ERROR, isTimeoutKeyOfAgent, parseTimeoutInput, timeoutKey,
 } from "./settings/preflightModel";
@@ -855,6 +856,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     seededSettings?.contextHistoryRetentionDays ??
       ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
   ));
+  const [ctxWindowsText, setCtxWindowsText] = createSignal(
+    (seededSettings?.contextHistorySessionWindows ?? []).join(", "),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -1629,6 +1633,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         nextSettings?.contextHistoryRetentionDays ??
           ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
       ));
+      setCtxWindowsText((nextSettings?.contextHistorySessionWindows ?? []).join(", "));
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
   });
@@ -2635,6 +2640,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       ? "Context Heat Map: keep history must be a whole number of days from 1 to 365"
       : null;
 
+  const validateContextHistorySessionWindows = (): string | null =>
+    settings.data && ctxHistory.parseContextHistorySessionWindows(ctxWindowsText()) === null
+      ? "Context Heat Map: session windows must be 1 to 8 ascending, distinct whole " +
+        "numbers from 1 to 10000"
+      : null;
+
   // #2704 - which General category holds a blocking validation error (red dot cue).
   const generalInvalid = createMemo((): Record<GeneralCategoryId, boolean> => ({
     appearance: !!(validateScreenshotHotkey() || validateSidebarCompactHotkey() || validateRoomNumberMask()),
@@ -2652,6 +2663,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateResponseCloseIdleSeconds() ??
     validateRoomIdleConfirmationSeconds() ??
     validateContextHistoryRetention() ??
+    validateContextHistorySessionWindows() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
     validateSidebarCompactHotkey() ??
@@ -5754,14 +5766,31 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 enabled={settings.data!.contextHistoryEnabled ?? false}
                 retentionText={ctxRetentionText()}
                 retentionError={validateContextHistoryRetention()}
-                colorDays={settings.data!.contextHistoryColorDays ?? 30}
+                windowsText={ctxWindowsText()}
+                windowsError={validateContextHistorySessionWindows()}
+                windows={settings.data!.contextHistorySessionWindows ?? []}
+                colorSessions={selectSessionWindow(
+                  settings.data!.contextHistorySessionWindows ?? [],
+                  settings.data!.contextHistoryColorSessions,
+                  null,
+                )?.requestedSessions ?? null}
                 onEnabled={(on) => updateField("contextHistoryEnabled", on)}
                 onRetentionText={(raw) => {
                   setCtxRetentionText(raw);
                   const days = ctxHistory.parseContextHistoryRetentionDays(raw);
                   if (days !== null) updateField("contextHistoryRetentionDays", days);
                 }}
-                onColorDays={(days) => updateField("contextHistoryColorDays", days)}
+                onWindowsText={(raw) => {
+                  setCtxWindowsText(raw);
+                  const counts = ctxHistory.parseContextHistorySessionWindows(raw);
+                  if (counts === null) return;
+                  updateField("contextHistorySessionWindows", counts);
+                  const colour = settings.data!.contextHistoryColorSessions;
+                  if (colour === undefined || !counts.includes(colour)) {
+                    updateField("contextHistoryColorSessions", counts[counts.length - 1]);
+                  }
+                }}
+                onColorSessions={(sessions) => updateField("contextHistoryColorSessions", sessions)}
               />
             </Show>
             <Show when={preflightTest()} keyed>

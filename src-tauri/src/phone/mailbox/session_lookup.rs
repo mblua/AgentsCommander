@@ -681,7 +681,7 @@ async fn write_close_session_response(
 fn write_outbox_close_session_response(path: &std::path::Path, rid: &str, json: &str) {
     let outbox_relative_responses_dir = path
         .parent()
-        .and_then(|p| p.parent())
+        .and_then(std::path::Path::parent)
         .map(|ac_dir| ac_dir.join("responses"));
     if let Some(responses_dir) = outbox_relative_responses_dir {
         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);

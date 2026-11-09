@@ -40,7 +40,7 @@ async function renderWithCwd(cwd: string, fake = new FakeTransport()): Promise<{
   );
   fake.resolve("task_get_title", null);
   const rendered = renderWithFakeTransport(() => <WorkgroupTask />, fake);
-  await waitFor(() => expect(actionButtons().length).toBe(2));
+  await waitFor(() => expect(actionButtons()).toHaveLength(2));
   return rendered;
 }
 
@@ -183,7 +183,7 @@ describe("P4 authoritative description and accessible status", () => {
     const view = await renderWithCwd(root + "/__agent_x", fake);
     const target = <T extends HTMLElement>(id: string, role: string): T => {
       const nodes = document.querySelectorAll<T>(`[data-ac-testid="workgroupTask.${id}"]`);
-      expect(nodes.length).toBe(1); expect(nodes[0].getAttribute("data-ac-role")).toBe(role);
+      expect(nodes).toHaveLength(1); expect(nodes[0].getAttribute("data-ac-role")).toBe(role);
       return nodes[0];
     };
     try {

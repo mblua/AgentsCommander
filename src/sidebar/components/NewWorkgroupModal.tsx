@@ -116,7 +116,7 @@ const NewWorkgroupModal: Component<{
     if (e.target instanceof Element && e.target.closest("button")) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      handleCreate();
+      void handleCreate();
     }
   };
 

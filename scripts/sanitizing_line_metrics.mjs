@@ -28,16 +28,20 @@ export function textGate(snapshot, gate, measure, violates) {
       metrics.push({ path, base, head });
       diagnostics.push({ gate, rule: gate === '01' ? 'long_lines' : 'file_lines', path, base, head,
         status: violation ? 'FAIL' : 'PASS',
-        ...(gate === '01' ? { lines: exceeded.map(line => ({ line, added: added.has(line) })) } : {}),
+        ...(gate === '01' ?
+          { lines: exceeded.map(line => ({ line, added: added.has(line) })) } : {}),
         reason: violation ? 'text debt increased' : 'text debt preserved or reduced',
-        remedy: gate === '01' ? 'wrap new long lines to at most 100 Unicode characters' : 'split the file or reduce it to at most 1000 lines' });
+        remedy: gate === '01' ? 'wrap new long lines to at most 100 Unicode characters' :
+          'split the file or reduce it to at most 1000 lines' });
     }
     snapshot.assertStableHead();
     return { gate, status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0,
       requestedRef: snapshot.requestedRef, refOid: snapshot.refOid, baseOid: snapshot.baseOid,
       headOid: snapshot.headOid, changedRustFiles: metrics.length, metrics, diagnostics };
   } catch (e) {
-    return { gate, status: 'ERROR', exit: e.exit ?? 3, baseOid: snapshot.baseOid, headOid: snapshot.headOid,
-      diagnostics: [...diagnostics, { gate, reason: e.message, remedy: 'repair inputs and rerun; no verdict available' }] };
+    return { gate, status: 'ERROR', exit: e.exit ?? 3,
+      baseOid: snapshot.baseOid, headOid: snapshot.headOid,
+      diagnostics: [...diagnostics, { gate, reason: e.message, remedy:
+        'repair inputs and rerun; no verdict available' }] };
   }
 }

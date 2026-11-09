@@ -442,7 +442,7 @@ fn validate_host_pty_input_envelope(
     if envelope.id != payload.injection_id
         || payload.op_id != payload.injection_id
         || injection == nonce
-        || path.file_stem().and_then(|value| value.to_str()) != Some(payload.injection_id.as_str())
+        || path.file_stem().and_then(std::ffi::OsStr::to_str) != Some(payload.injection_id.as_str())
     {
         return Err(C::InvalidId);
     }
@@ -485,7 +485,7 @@ fn extend_host_pty_project_paths(
     if let Some(replica) = Path::new(working_directory).ancestors().find(|candidate| {
         candidate
             .file_name()
-            .and_then(|value| value.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("__agent_"))
     }) {
         if let Some(project) = replica

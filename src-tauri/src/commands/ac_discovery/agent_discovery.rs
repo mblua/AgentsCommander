@@ -226,7 +226,7 @@ async fn scan_agents(
 
             let project_folder = repo_dir
                 .file_name()
-                .and_then(|n| n.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or("unknown")
                 .to_string();
 

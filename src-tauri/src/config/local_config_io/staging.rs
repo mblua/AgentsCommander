@@ -107,7 +107,7 @@ pub(super) fn next_staging_sequence(
 pub(super) fn fresh_config_stage_path(path: &Path, sequence: u64) -> PathBuf {
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(crate::config::CONFIG_FILE_NAME);
     path.with_file_name(format!(".{}.{}.{}.tmp", name, std::process::id(), sequence))
 }
