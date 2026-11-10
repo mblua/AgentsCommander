@@ -9,10 +9,10 @@ export const filterSel = '[data-ac-testid="agentPicker.agentFilter"]';
 export function acDiscoveryTransport(): FakeTransport {
   const fake = new FakeTransport();
   fake.resolve("discover_ac_agents", discovery({
-    agents: [{ name: "proj/dev", path: "C:\\Project\\.ac\\_agent_dev", roleExists: true }],
+    agents: [{ name: "proj/dev", path: String.raw`C:\Project\.ac\_agent_dev`, roleExists: true }],
     workgroups: [{
       name: "wg-1-team",
-      path: "C:\\Project\\.ac\\wg-1-team",
+      path: String.raw`C:\Project\.ac\wg-1-team`,
       task: null,
       taskTitle: null,
       agents: [{ name: "dev", path: "C:\\Project\\.ac\\wg-1-team\\__agent_dev", repoPaths: [], isCoordinator: false }],

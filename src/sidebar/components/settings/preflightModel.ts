@@ -22,7 +22,7 @@ export type TimeoutParse = { ok: true; value: number | undefined } | { ok: false
 export function parseTimeoutInput(text: string): TimeoutParse {
   const trimmed = text.trim();
   if (trimmed === "") return { ok: true, value: undefined };
-  if (!/^[0-9]+$/.test(trimmed)) return { ok: false };
+  if (!/^\d+$/.test(trimmed)) return { ok: false };
   const value = Number(trimmed);
   if (value < 1 || value > MAX_TIMEOUT_SECONDS) return { ok: false };
   return { ok: true, value };
