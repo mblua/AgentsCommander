@@ -20,6 +20,7 @@ pub(crate) mod environment;
 pub(crate) mod injected_messages;
 pub(crate) mod instance_artifacts;
 pub(crate) mod instance_gitignore;
+pub(crate) mod instructions_filename;
 pub mod local_config_io;
 pub(crate) mod local_overlay;
 pub(crate) mod loops;
