@@ -23,7 +23,7 @@ export function normalizeProjectPathForCompare(path: string): string {
     return trimmed;
   }
 
-  let normalized = path.replace(/\\/g, "/").toLowerCase();
+  let normalized = path.replaceAll("\\", "/").toLowerCase();
   if (WINDOWS_VERBATIM_UNC.test(path)) {
     // \\?\UNC\server\share → //server/share
     normalized = `//${normalized.slice("//?/unc/".length)}`;

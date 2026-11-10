@@ -132,7 +132,7 @@ function errnoOf(error) {
 // separators are normalised first, because the emitter records whatever the caller typed.
 function lastPathSegment(rootPath) {
   if (typeof rootPath !== 'string') return null;
-  let normalised = rootPath.split('\\').join('/');
+  let normalised = rootPath.replaceAll('\\', '/');
   while (normalised.endsWith('/')) normalised = normalised.slice(0, -1);
   const cut = normalised.lastIndexOf('/');
   return cut === -1 ? normalised : normalised.slice(cut + 1);

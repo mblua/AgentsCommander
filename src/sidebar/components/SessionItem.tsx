@@ -90,12 +90,12 @@ export function sessionDisplayName(
     const pathProject = extractProjectName(wd);
     if (pathProject) {
       const projectFolder = originProject() || pathProject;
-      const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+      const normalized = wd.replaceAll("\\", "/").replace(/\/+$/, "");
       const parts = normalized.split("/");
       const agentDir = parts[parts.length - 1].replace(/^__?agent_/, "");
       return `${agentDir}@${projectFolder}`;
     }
-    const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normalized = wd.replaceAll("\\", "/").replace(/\/+$/, "");
     const parts = normalized.split("/");
     if (parts.length >= 2) {
       return parts.slice(-2).join("/");
@@ -233,7 +233,7 @@ const SessionItem: Component<{
     await SessionAPI.switch(props.session.id);
     if (isTauri) {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
+      const detachedLabel = `terminal-${props.session.id.replaceAll("-", "")}`;
       const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
       if (!detachedWin) {
         await WindowAPI.ensureTerminal();
@@ -249,7 +249,7 @@ const SessionItem: Component<{
   const repoForModal = (): RepoMatch => {
     const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
     const repo = sessionsStore.repos.find((r) =>
-      r.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === np
+      r.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") === np
     );
     return repo ?? { name: props.session.name, path: props.session.workingDirectory, agents: [] };
   };
