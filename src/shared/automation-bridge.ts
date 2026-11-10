@@ -642,7 +642,7 @@ function queryAcrossOpenRoots(selector: string): HTMLElement[] {
 function cssEscape(value: string): string {
   const css = globalThis.CSS as { escape?: (value: string) => string } | undefined;
   if (css?.escape) return css.escape(value);
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return value.replaceAll("\\", "\\\\").replaceAll("\"", '\\"');
 }
 
 function snapshotTarget(element: HTMLElement): UiAutomationTarget {

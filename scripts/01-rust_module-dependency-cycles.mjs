@@ -615,7 +615,7 @@ function lineColOf(lineIndex, offset) {
  * ------------------------------------------------------------------ */
 
 function toPosix(p) {
-  return p.replace(/\\/g, '/');
+  return p.replaceAll('\\', '/');
 }
 
 function relPath(root, abs) {
@@ -820,7 +820,7 @@ function collectDependencyNames(tables) {
 }
 
 function identify(name) {
-  return String(name).replace(/-/g, '_');
+  return String(name).replaceAll('-', '_');
 }
 
 /* ------------------------------------------------------------------ *
