@@ -46,23 +46,31 @@ function transferredSites(byPath, rules) {
   const moved = new Set();
   for (const rule of rules) {
     const removed = new Map(), added = [];
-    for (const path of new Set([...byPath[0].keys(), ...byPath[1].keys()])) {
-      const available = new Map();
-      for (const site of byPath[0].get(path)?.sites[rule] ?? []) if (site.identity)
-        available.set(site.identity, (available.get(site.identity) ?? 0) + 1);
-      for (const site of byPath[1].get(path)?.sites[rule] ?? []) {
-        const n = available.get(site.identity) ?? 0;
-        if (n) available.set(site.identity, n - 1);
-        else added.push(site);
-      }
-      for (const [id,n] of available) removed.set(id, (removed.get(id) ?? 0) + n);
-    }
-    for (const site of added) {
-      const n = removed.get(site.identity) ?? 0;
-      if (n) { moved.add(site); removed.set(site.identity, n - 1); }
-    }
+    for (const path of new Set([...byPath[0].keys(), ...byPath[1].keys()]))
+      subtractRetained(byPath[0].get(path)?.sites[rule] ?? [],
+        byPath[1].get(path)?.sites[rule] ?? [], removed, added);
+    creditRemoved(added, removed, moved);
   }
   return moved;
+}
+
+function subtractRetained(oldSites, newSites, removed, added) {
+  const available = new Map();
+  for (const site of oldSites) if (site.identity)
+    available.set(site.identity, (available.get(site.identity) ?? 0) + 1);
+  for (const site of newSites) {
+    const n = available.get(site.identity) ?? 0;
+    if (n) available.set(site.identity, n - 1);
+    else added.push(site);
+  }
+  for (const [id,n] of available) removed.set(id, (removed.get(id) ?? 0) + n);
+}
+
+function creditRemoved(added, removed, moved) {
+  for (const site of added) {
+    const n = removed.get(site.identity) ?? 0;
+    if (n) { moved.add(site); removed.set(site.identity, n - 1); }
+  }
 }
 
 function tokenHash(scan, tokens) {
@@ -103,7 +111,7 @@ export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUnivers
   try {
     const trees = [snapshot.baseTree, snapshot.headTree], totals = [{}, {}], byPath = [new Map(),
       new Map()];
-    for (const [side, tree] of trees.entries()) {
+    const measureSide = (side, tree) => {
       const scan = createRustScanner(tree, snapshot.readBlob);
       for (const path of [...tree.keys()].filter(path => inUniverse(path)).sort(codeOrder)) {
         // Additive third argument: this side's tree and scan lookup, for receiver proofs.
@@ -114,23 +122,30 @@ export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUnivers
         measurements[side ? 'head' : 'base'].push({ path, counts: m.counts, sites: m.sites });
         if (side) diagnostics.push(...m.warnings.map(d => ({ gate, status: 'WARN', ...d })));
       }
-    }
+    };
+    for (const [side, tree] of trees.entries()) measureSide(side, tree);
     const violation = (rule, path, line, base, head, reason) => diagnostics.push({ gate,
       status: 'FAIL', rule, path, line,
       base, head, baseOid: snapshot.baseOid, headOid: snapshot.headOid, reason,
       remedy: 'remove the new signal or use the source-defined owner; do not raise the baseline' });
-    for (const rule of rules) if ((totals[1][rule] ?? 0) > (totals[0][rule] ?? 0)) {
-      const source = [...byPath[1]].find(([p,m]) =>
-        (m.counts[rule] ?? 0) > (byPath[0].get(p)?.counts[rule] ?? 0));
-      violation(rule, source?.[0] ?? '<universe>', source?.[1].sites[rule]?.[0]?.line ?? 1,
-        totals[0][rule] ?? 0, totals[1][rule], 'global subrule debt increased');
-    }
+    const globalDebt = () => {
+      for (const rule of rules) if ((totals[1][rule] ?? 0) > (totals[0][rule] ?? 0)) {
+        const source = [...byPath[1]].find(([p,m]) =>
+          (m.counts[rule] ?? 0) > (byPath[0].get(p)?.counts[rule] ?? 0));
+        violation(rule, source?.[0] ?? '<universe>', source?.[1].sites[rule]?.[0]?.line ?? 1,
+          totals[0][rule] ?? 0, totals[1][rule], 'global subrule debt increased');
+      }
+    };
+    globalDebt();
     const moved = recognizeMoves ? transferredSites(byPath, rules) : new Set();
-    for (const [path, m] of byPath[1]) {
-      if (!snapshot.baseTree.has(path)) for (const rule of newFileRules) if (m.sites[rule]?.some(
-        site => !moved.has(site)))
+    const newFileDebt = (path, m) => {
+      if (snapshot.baseTree.has(path)) return;
+      for (const rule of newFileRules) if (m.sites[rule]?.some(site => !moved.has(site)))
         violation(rule, path, m.sites[rule].find(site => !moved.has(site)).line, 0, m.counts[rule],
           'new file must satisfy this subrule even with compensated totals');
+    };
+    for (const [path, m] of byPath[1]) {
+      newFileDebt(path, m);
       extraChecks(path, m, byPath[0].get(path), violation, moved);
     }
     snapshot.assertStableHead();
