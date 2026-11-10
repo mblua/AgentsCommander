@@ -6,6 +6,7 @@ import { projectStore } from "../stores/project";
 import { TeamContextAlertsEditor } from "./TeamContextAlertsEditor";
 import type { ContextAlertThresholdDraft } from "./team-context-alerts";
 import { validateContextAlertThresholdDrafts } from "./team-context-alerts";
+import { portableAgentRef } from "./team-agent-reference";
 
 interface AgentEntry {
   name: string;
@@ -84,11 +85,6 @@ const NewTeamModal: Component<{
   const selectedAgentList = createMemo(() =>
     allAgents().filter((agent) => selectedAgents().has(agent.path)),
   );
-
-  const portableAgentRef = (path: string): string => {
-    const last = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
-    return last.startsWith("_agent_") ? last : `_agent_${last}`;
-  };
 
   const agentLabel = (agent: AgentEntry) => (
     <>{agent.name}<Show when={!agent.isLocal}><span class="wizard-agent-project">@{agent.projectName}</span></Show></>

@@ -14,6 +14,7 @@ import {
   hydrateContextAlertThresholdDrafts,
   validateContextAlertThresholdDrafts,
 } from "./team-context-alerts";
+import { portableAgentRef } from "./team-agent-reference";
 
 function normalizeCaughtError(error: unknown, fallback: string): string {
   if (typeof error === "string") return error;
@@ -78,11 +79,6 @@ const EditTeamModal: Component<{
   const selectedAgentList = createMemo(() =>
     allAgents().filter((agent) => selectedAgents().has(agent.path)),
   );
-
-  const portableAgentRef = (path: string): string => {
-    const last = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
-    return last.startsWith("_agent_") ? last : `_agent_${last}`;
-  };
 
   const canNext2 = createMemo(() => selectedAgents().size > 0 && coordinator() !== "");
 
