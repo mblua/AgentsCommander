@@ -147,7 +147,7 @@ export function session(overrides: Partial<Session> = {}): Session {
     shellArgs: [],
     effectiveShellArgs: [],
     createdAt: "2026-06-13T00:00:00.000Z",
-    workingDirectory: "C:\\Project\\.ac\\wg-1-dev-team\\__agent_architect",
+    workingDirectory: String.raw`C:\Project\.ac\wg-1-dev-team\__agent_architect`,
     status: "running",
     waitingForInput: false,
     communication: null,
