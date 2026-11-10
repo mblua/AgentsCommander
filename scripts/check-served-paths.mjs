@@ -449,6 +449,100 @@ function selfTestCases() {
       } });
       expectError(result, 'fetches dev/docs/new.md');
     }],
+    ['case 21: consecutive concat macros both produce literals', () => {
+      const root = 'https://raw.githubusercontent.com/mblua/AgentsCommander/';
+      const macro = 'concat!("' + root + '","main/docs/home-en.md");';
+      const result = runServedPathsFixture({
+        inventoryText: selfTestInventory([SELF_TEST_ROWS[0]]),
+        trackedFiles: ['docs/home-en.md', 'src/main.ts'],
+        sources: { 'src/main.ts': macro + ' /* trivia */ ' + macro },
+      });
+      expectNoErrors(result);
+      const lines = [1, 1];
+      const expected = [];
+      if (result.rows.length !== 1 || result.literals.length !== lines.length
+        || result.warnings.length !== expected.length
+        || result.warnings.join('\n') !== expected.join('\n')
+        || result.literals.some((literal, index) => literal.file !== 'src/main.ts'
+          || literal.line !== lines[index] || literal.ref !== 'main'
+          || literal.path !== 'docs/home-en.md')) {
+        throw new Error('expected 2 literals on line 1 and no warnings, got '
+          + JSON.stringify(result.literals) + ' ' + JSON.stringify(result.warnings));
+      }
+    }],
+    ['case 22: trailing comma concat produces no duplicate literal', () => {
+      const result = runServedPathsFixture({
+        inventoryText: selfTestInventory([SELF_TEST_ROWS[0]]),
+        trackedFiles: ['docs/home-en.md', 'src/main.ts'],
+        sources: { 'src/main.ts': 'concat!("' + HOME_LITERAL + '",);' },
+      });
+      expectNoErrors(result);
+      const lines = [1];
+      const expected = [];
+      if (result.rows.length !== 1 || result.literals.length !== lines.length
+        || result.warnings.length !== expected.length
+        || result.warnings.join('\n') !== expected.join('\n')
+        || result.literals.some((literal, index) => literal.file !== 'src/main.ts'
+          || literal.line !== lines[index] || literal.ref !== 'main'
+          || literal.path !== 'docs/home-en.md')) {
+        throw new Error('expected 1 literal on line 1 and no warnings, got '
+          + JSON.stringify(result.literals) + ' ' + JSON.stringify(result.warnings));
+      }
+    }],
+    ['case 23: nested opener warns and retains fallback literals', () => {
+      const root = 'https://raw.githubusercontent.com/mblua/AgentsCommander/';
+      const macro = 'concat!("' + root + '","main/docs/home-en.md");';
+      const nested = 'concat!(["' + HOME_LITERAL + '"]); ';
+      const result = runServedPathsFixture({
+        inventoryText: selfTestInventory([SELF_TEST_ROWS[0]]),
+        trackedFiles: ['docs/home-en.md', 'src/main.ts'],
+        sources: { 'src/main.ts': nested + macro + ' /* trivia */ ' + macro },
+      });
+      expectNoErrors(result);
+      const lines = [1, 1, 1];
+      const expected = ['src/main.ts:1'
+        + ' concat! is outside reconstructed URL scanning: only string literals are supported;'
+        + ' original literal scanning remains active'];
+      if (result.rows.length !== 1 || result.literals.length !== lines.length
+        || result.warnings.length !== expected.length
+        || result.warnings.join('\n') !== expected.join('\n')
+        || result.literals.some((literal, index) => literal.file !== 'src/main.ts'
+          || literal.line !== lines[index] || literal.ref !== 'main'
+          || literal.path !== 'docs/home-en.md')) {
+        throw new Error('expected 3 literals on line 1 and one line-1 warning, got '
+          + JSON.stringify(result.literals) + ' ' + JSON.stringify(result.warnings));
+      }
+    }],
+    ['case 24: unsupported concat warnings follow source line order', () => {
+      const root = 'https://raw.githubusercontent.com/mblua/AgentsCommander/';
+      const macro = 'concat!("' + root + '","main/docs/home-en.md");';
+      const first = 'concat!(x,"' + HOME_LITERAL + '");';
+      const second = 'concat!(y,"' + HOME_LITERAL + '");';
+      const result = runServedPathsFixture({
+        inventoryText: selfTestInventory([SELF_TEST_ROWS[0]]),
+        trackedFiles: ['docs/home-en.md', 'src/main.ts'],
+        sources: { 'src/main.ts': first + '\n' + second + '\n' + macro },
+      });
+      expectNoErrors(result);
+      const lines = [1, 2, 3];
+      const expected = [
+        'src/main.ts:1'
+          + ' concat! is outside reconstructed URL scanning: only string literals are supported;'
+          + ' original literal scanning remains active',
+        'src/main.ts:2'
+          + ' concat! is outside reconstructed URL scanning: only string literals are supported;'
+          + ' original literal scanning remains active',
+      ];
+      if (result.rows.length !== 1 || result.literals.length !== lines.length
+        || result.warnings.length !== expected.length
+        || result.warnings.join('\n') !== expected.join('\n')
+        || result.literals.some((literal, index) => literal.file !== 'src/main.ts'
+          || literal.line !== lines[index] || literal.ref !== 'main'
+          || literal.path !== 'docs/home-en.md')) {
+        throw new Error('expected literals on lines 1, 2, 3 and ordered line 1, 2 warnings, got '
+          + JSON.stringify(result.literals) + ' ' + JSON.stringify(result.warnings));
+      }
+    }],
   ];
 }
 
