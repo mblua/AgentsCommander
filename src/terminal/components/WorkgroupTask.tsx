@@ -13,7 +13,7 @@ interface ParsedTask {
 
 function unquoteTitle(after: string): string {
   if (after.startsWith("'") && after.endsWith("'") && after.length >= 2) {
-    return after.slice(1, -1).replace(/''/g, "'");
+    return after.slice(1, -1).replaceAll("''", "'");
   } else if (after.startsWith('"') && after.endsWith('"') && after.length >= 2) {
     return after.slice(1, -1);
   } else {

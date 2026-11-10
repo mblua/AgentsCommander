@@ -147,7 +147,7 @@ function advanceRowMembershipGeneration(): void {
 }
 
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+  return p.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
 }
 
 function isUnderAnyPath(path: string, roots: string[]): boolean {

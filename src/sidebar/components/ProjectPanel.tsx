@@ -121,14 +121,14 @@ function joinSearchText(...parts: Array<string | null | undefined | false>): str
 }
 
 function agentDisplayName(name: string): string {
-  const normalized = name.replace(/\\/g, "/");
+  const normalized = name.replaceAll("\\", "/");
   return normalized
     .slice(normalized.lastIndexOf("/") + 1)
     .replace(/^__?agent_/, "");
 }
 
 function teamMemberDisplayLabel(agentName: string): string {
-  const parts = agentName.replace(/\\/g, "/").split("/");
+  const parts = agentName.replaceAll("\\", "/").split("/");
   const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
   const project = parts[0];
   return project && project !== agent ? `${agent}@${project}` : agent;
@@ -453,7 +453,7 @@ function taskCleanDisabled(room: string): boolean {
   if (!snapshot || snapshot.statusRecord?.kind === "status" || !isTaskClean(snapshot.taskTitle)) return false;
   if (snapshot.status !== null) return false;
   if (snapshot.description === "") return true;
-  const description = snapshot.description.replace(/\r\n/g, "\n").replace(/\n$/, "");
+  const description = snapshot.description.replaceAll("\r\n", "\n").replace(/\n$/, "");
   return description === "Ready to start a new topic";
 }
 
@@ -774,7 +774,7 @@ const ProjectPanel: Component = () => {
       await SessionAPI.switch(existing.id);
       if (isTauri) {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-        const detachedLabel = `terminal-${existing.id.replace(/-/g, "")}`;
+        const detachedLabel = `terminal-${existing.id.replaceAll("-", "")}`;
         const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
         if (!detachedWin) {
           await WindowAPI.ensureTerminal();
@@ -5149,7 +5149,7 @@ const ProjectPanel: Component = () => {
             await SessionAPI.switch(newSession.id);
             if (isTauri) {
               const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-              const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
+              const detachedLabel = `terminal-${newSession.id.replaceAll("-", "")}`;
               const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
               if (!detachedWin) {
                 await WindowAPI.ensureTerminal();

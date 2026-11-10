@@ -12,7 +12,7 @@ export function stripRepoPrefix(name: string): string {
 }
 
 export function repoLabelFromPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
   const dirName = normalized.split("/").pop() ?? "";
   return stripRepoPrefix(dirName);
 }

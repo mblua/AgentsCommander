@@ -59,7 +59,7 @@ function fail(message) {
 }
 
 function normalize(relativePath) {
-  return relativePath.replace(/\\/g, "/");
+  return relativePath.replaceAll("\\", "/");
 }
 
 function readJson(filePath) {
