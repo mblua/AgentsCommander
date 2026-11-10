@@ -247,10 +247,7 @@ const SessionItem: Component<{
   };
 
   const repoForModal = (): RepoMatch => {
-    const np = props.session.workingDirectory
-      .replaceAll("\\", "/")
-      .toLowerCase()
-      .replace(/\/+$/, "");
+    const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
     const repo = sessionsStore.repos.find((r) =>
       r.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") === np
     );
