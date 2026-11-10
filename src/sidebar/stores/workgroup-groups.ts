@@ -225,7 +225,7 @@ export function groupMatchId(wg: AcWorkgroup): string {
 }
 
 export function escapeRegexLiteral(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return value.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
 export function exactGroupRegexForWorkgroup(wgName: string): string {

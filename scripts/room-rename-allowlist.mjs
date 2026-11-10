@@ -457,9 +457,9 @@ const WORD = "(?:[Ww]orkgroups?|WORKGROUPS?|WG|Wg|wg)";
 // The concept word as a free-standing word: not glued to identifier
 // characters, not a field access, not a path or module segment.
 const PROSE = new RegExp(
-  `(?:^|[^A-Za-z0-9_%$./])${WORD}(?![A-Za-z0-9_%$])(?!\\s*::)(?!\\.(rs|ts|tsx|md|js))`);
+  String.raw`(?:^|[^A-Za-z0-9_%$./])${WORD}(?![A-Za-z0-9_%$])(?!\s*::)(?!\.(rs|ts|tsx|md|js))`);
 // A wg- directory shape written into text (plan 5.1's last substitution row).
-const PROSE_WG_DIR = /(?:^|[^A-Za-z0-9_])wg-|<wgN>|\bwg\d/;
+const PROSE_WG_DIR = /(?:^|\W)wg-|<wgN>|\bwg\d/;
 
 const isDoc = (c) => /^\s*(\/\/\/|\/\/!)/.test(c);
 const isNonDocComment = (c) => /^\s*\/\//.test(c) && !isDoc(c);
@@ -661,7 +661,7 @@ function writeDerivedTsv(rev, subtotals, partA, pa, mv) {
     `# Part A: derived at frozen base ${rev} from the three binding sweeps,`,
     "# minus the lines this plan moves. Committed before the first",
     "# visible-text edit, so an unrenamed Rule R line comes back unlisted.",
-    "# Columns: <Rule P class>\\t<path>\\t<trimmed line content>.",
+    String.raw`# Columns: <Rule P class>\t<path>\t<trimmed line content>.`,
     "#",
     "# Per-surface subtotals at the base (AC1 point 8):",
     ...Object.entries(subtotals).map(

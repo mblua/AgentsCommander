@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 // Every extraction throws on a miss: the absence and count assertions in those
 // suites would otherwise pass vacuously on an empty or partial match.
 
-export const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 
 export interface ScannedRule {
   selectors: string[];
