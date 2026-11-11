@@ -1,6 +1,6 @@
-use super::{Path, PathBuf};
 use crate::config::instance_artifacts::{SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX};
 use crate::filesystem::settings_file;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
     let backup_path = settings_path
