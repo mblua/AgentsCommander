@@ -263,7 +263,7 @@ const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 fn custom_instructions_patterns(configured: &[String]) -> Vec<String> {
     let mut custom_patterns: Vec<String> = Vec::new();
     for name in configured {
-        if !crate::config::agent_command::is_safe_instructions_filename(name) {
+        if !crate::config::instructions_filename::is_safe_instructions_filename(name) {
             log::warn!(
                 target: "agentscommander_lib::commands::ac_discovery::gitignore",
                 "[ac-gitignore] dropping unsafe instructions filename {name:?}"
@@ -429,4 +429,93 @@ pub(crate) fn migrate_legacy_seed_manifest_gitignore(content: String) -> (String
         .map(|(line, _)| *line)
         .collect();
     (migrated, true)
+}
+
+/// Append missing agent state and private PAIR reservation rows.
+pub(crate) fn ensure_config_state_ignore_rows(ac_root: &Path) -> Result<(), String> {
+    use crate::config::instance_artifacts::{
+        CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_NAME,
+        CONFIG_IDENTITY_RESERVATION_TMP,
+    };
+    ensure_incremental_ignore_rows(
+        ac_root,
+        |content| {
+            let mut blocks = crate::config::naming_migration::missing_ignore_rows(
+                content,
+                &crate::config::naming_migration::config_state_ignore_rows(),
+            );
+            for name in [
+                CONFIG_IDENTITY_RESERVATION_NAME,
+                CONFIG_IDENTITY_RESERVATION_LOCK,
+                CONFIG_IDENTITY_RESERVATION_TMP,
+            ] {
+                let row = format!("**/{name}");
+                if !content.lines().any(|line| line == row) {
+                    blocks.push_str(&format!(
+                        "# AgentsCommander: private PAIR reservation state\n{row}\n"
+                    ));
+                }
+            }
+            blocks
+        },
+        || {},
+    )
+}
+
+pub(crate) fn ensure_project_settings_ignore_rows(
+    ac_root: &Path,
+    before_append: impl FnOnce(),
+) -> Result<(), String> {
+    ensure_incremental_ignore_rows(
+        ac_root,
+        |content| {
+            crate::config::naming_migration::missing_ignore_rows(
+                content,
+                &crate::config::naming_migration::project_settings_ignore_rows(),
+            )
+        },
+        before_append,
+    )
+}
+
+pub(crate) fn ensure_loop_state_ignore_rows(
+    ac_root: &Path,
+    before_append: impl FnOnce(),
+) -> Result<(), String> {
+    ensure_incremental_ignore_rows(
+        ac_root,
+        |content| {
+            crate::config::naming_migration::missing_ignore_rows(
+                content,
+                &crate::config::naming_migration::loop_state_ignore_rows(),
+            )
+        },
+        before_append,
+    )
+}
+
+fn ensure_incremental_ignore_rows(
+    ac_root: &Path,
+    select: impl FnOnce(&str) -> String,
+    before_append: impl FnOnce(),
+) -> Result<(), String> {
+    let path = ac_root.join(".gitignore");
+    let io = |what: &str, e: std::io::Error| format!("failed to {what} {}: {e}", path.display());
+    let content = match discovery::read_ac_root_gitignore(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io("read", e)),
+    };
+    let blocks = select(&content);
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    before_append();
+    let separator = if content.is_empty() || content.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    discovery::append_ac_root_gitignore(&path, &format!("{separator}{blocks}"))
+        .map_err(|e| io("append to", e))
 }

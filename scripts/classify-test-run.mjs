@@ -460,7 +460,7 @@ function selfTestClauseC() {
   );
   // CRLF is the same line, and must stay tolerated.
   assertSelf(
-    classify(validReport(), LOG_480.split('\n').join('\r\n')) === null,
+    classify(validReport(), LOG_480.replaceAll('\n', '\r\n')) === null,
     'a CRLF log must be tolerated'
   );
 }

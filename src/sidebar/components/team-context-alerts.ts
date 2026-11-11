@@ -53,7 +53,7 @@ function parseDraft(raw: string): ParsedDraft {
   if (trimmed.length === 0) {
     return { value: null, lexicalCode: "blank", lexicalMessage: BLANK_MESSAGE };
   }
-  if (!/^[0-9]+$/.test(trimmed)) {
+  if (!/^\d+$/.test(trimmed)) {
     return {
       value: null,
       lexicalCode: "wholeNumber",

@@ -178,30 +178,10 @@ pub(super) fn sweep_pause_hook(stage: &str, dir: &Path) {
 pub(super) fn ensure_loop_state_ignore_rows(
     ac_root: &Path,
 ) -> Result<(), naming_migration::Refusal> {
-    let path = ac_root.join(".gitignore");
-    let io = |what: &str, e: std::io::Error| {
-        naming_migration::Refusal::Io(format!("failed to {what} {}: {e}", path.display()))
-    };
-    let content = match loop_files::read_loop_document(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io("read", e)),
-    };
-    let blocks = naming_migration::missing_ignore_rows(
-        &content,
-        &naming_migration::loop_state_ignore_rows(),
-    );
-    if blocks.is_empty() {
-        return Ok(());
-    }
-    sweep_pause_hook("before_gitignore_append", ac_root);
-    let separator = if content.is_empty() || content.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
-    loop_files::append_loop_ignore_rows(&path, &format!("{separator}{blocks}"))
-        .map_err(|e| io("append to", e))
+    crate::config::projects::ac_root_gitignore::ensure_loop_state_ignore_rows(ac_root, || {
+        sweep_pause_hook("before_gitignore_append", ac_root);
+    })
+    .map_err(naming_migration::Refusal::Io)
 }
 
 /// #2682 - the create section shared by the app command and the CLI: lock,

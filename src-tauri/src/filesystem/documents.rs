@@ -411,19 +411,6 @@ pub(crate) fn canonical_config_document(path: &Path) -> io::Result<PathBuf> {
     std::fs::canonicalize(path)
 }
 
-pub(crate) fn append_config_ignore_rows(
-    path: &Path,
-    separator: &str,
-    rows: &str,
-) -> io::Result<()> {
-    use std::io::Write as _;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(format!("{separator}{rows}").as_bytes()))
-}
-
 pub(crate) fn publish_web_access_token(config_dir: &Path, token: &str) -> io::Result<()> {
     std::fs::write(config_dir.join("web-token.txt"), token)
 }

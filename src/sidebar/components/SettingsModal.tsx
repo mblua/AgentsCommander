@@ -689,7 +689,7 @@ const WatcherRow: Component<{
             step="100"
             value={props.config.dedupeWindowMs}
             onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
+              const value = Number.parseInt(e.currentTarget.value, 10);
               // The editor must not be able to write a value the Rust decoder would reject:
               // a negative or unrepresentable one reclassifies this very row as unrecognised,
               // which would take it out of the editor in the middle of being edited and leave
@@ -1081,7 +1081,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     for (const project of projectStore.projects) {
       for (const workgroup of project.workgroups) {
         for (const replica of workgroup.agents) {
-          const normalized = replica.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+          const normalized = replica.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
           if (seen.has(normalized)) continue;
           seen.add(normalized);
           options.push({
@@ -2784,7 +2784,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         | "coordinatorAutoCloseMinutes",
     ) =>
     (e: InputEvent & { currentTarget: HTMLInputElement }) => {
-      const value = parseInt(e.currentTarget.value, 10);
+      const value = Number.parseInt(e.currentTarget.value, 10);
       if (!Number.isNaN(value)) {
         updateField(field, value);
       }
@@ -4776,7 +4776,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="1"
             value={settings.data!.maxConcurrentAgentProcesses}
             onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
+              const value = Number.parseInt(e.currentTarget.value, 10);
               if (!Number.isNaN(value)) {
                 updateField("maxConcurrentAgentProcesses", value);
               }
@@ -5491,8 +5491,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 max="120"
                 value={settings.data!.voiceAutoExecuteDelay}
                 onInput={(e) => {
-                  const v = parseInt(e.currentTarget.value, 10);
-                  if (!isNaN(v)) updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
+                  const v = Number.parseInt(e.currentTarget.value, 10);
+                  if (!Number.isNaN(v)) {
+                    updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
+                  }
                 }}
               />
             </label>
@@ -5553,8 +5555,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             min="1"
             value={settings.data!.jevTimeoutSecs ?? 20}
             onInput={(e) => {
-              const v = parseInt(e.currentTarget.value, 10);
-              if (!isNaN(v)) updateField("jevTimeoutSecs", Math.max(1, v));
+              const v = Number.parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(v)) updateField("jevTimeoutSecs", Math.max(1, v));
             }}
             data-ac-testid="settings.integrations.jevTimeoutSecs"
           />
@@ -5569,8 +5571,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="0.01"
             value={settings.data!.jevThreshold ?? 0.70}
             onInput={(e) => {
-              const v = parseFloat(e.currentTarget.value);
-              if (!isNaN(v)) updateField("jevThreshold", v);
+              const v = Number.parseFloat(e.currentTarget.value);
+              if (!Number.isNaN(v)) updateField("jevThreshold", v);
             }}
             data-ac-testid="settings.integrations.jevThreshold"
           />
@@ -5585,8 +5587,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="0.01"
             value={settings.data!.jevMargin ?? 0.15}
             onInput={(e) => {
-              const v = parseFloat(e.currentTarget.value);
-              if (!isNaN(v)) updateField("jevMargin", v);
+              const v = Number.parseFloat(e.currentTarget.value);
+              if (!Number.isNaN(v)) updateField("jevMargin", v);
             }}
             data-ac-testid="settings.integrations.jevMargin"
           />

@@ -2,7 +2,7 @@ import { CANONICAL_AC_ROOT_DIR } from './constants';
 import { isNumberedEntityDirName } from './entity-prefix';
 
 function pathParts(workDir: string): string[] {
-  return workDir.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
+  return workDir.replaceAll('\\', '/').split('/').filter(s => s.length > 0);
 }
 
 function lastAcRootIndex(parts: string[]): number {

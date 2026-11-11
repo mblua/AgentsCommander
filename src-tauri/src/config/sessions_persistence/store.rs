@@ -34,7 +34,7 @@ pub fn load_sessions_raw_from_dir_for_test(dir: &Path) -> Vec<PersistedSession> 
 }
 
 pub(super) fn load_sessions_raw_from_path(path: &Path) -> Vec<PersistedSession> {
-    if !path.exists() {
+    if !crate::filesystem::session_container_exists(path) {
         return vec![];
     }
     match crate::filesystem::read_session_container_text(path) {
@@ -70,7 +70,7 @@ pub(super) fn load_sessions_from_path_with_settings(
     path: &Path,
     settings: Option<&super::super::settings::AppSettings>,
 ) -> Vec<PersistedSession> {
-    if !path.exists() {
+    if !crate::filesystem::session_container_exists(path) {
         return vec![];
     }
 
@@ -374,7 +374,7 @@ impl<'a> SnapshotStore<'a> {
         }
         let path = snapshot_path(dir);
         Ok(PreparedSessionsWrite {
-            final_existed: path.exists(),
+            final_existed: crate::filesystem::session_container_exists(&path),
             path,
             tmp_path,
             op_id,
@@ -417,8 +417,8 @@ impl<'a> SnapshotStore<'a> {
         let pid = std::process::id();
         let instance_id = crate::config::agent_local_dir_name();
         let start = std::time::Instant::now();
-        let tmp_exists_before = tmp.exists();
-        let final_exists_before = dst.exists();
+        let tmp_exists_before = crate::filesystem::session_container_exists(tmp);
+        let final_exists_before = crate::filesystem::session_container_exists(dst);
 
         let mut last_err: Option<std::io::Error> = None;
         for attempt in 0..RENAME_ATTEMPTS {

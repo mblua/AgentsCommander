@@ -38,8 +38,8 @@ function entryPath(env) {
 // argument is double-quoted with ", `, $ and \ backslash-escaped, % doubled.
 // The quoting layer is applied first, then the string-value layer.
 function quoteExecArg(arg) {
-  const quoted = '"' + arg.replace(/[\\"`$]/g, (c) => '\\' + c).replace(/%/g, '%%') + '"';
-  return quoted.replace(/\\/g, '\\\\');
+  const quoted = '"' + arg.replace(/[\\"`$]/g, (c) => '\\' + c).replaceAll('%', '%%') + '"';
+  return quoted.replaceAll('\\', '\\\\');
 }
 
 function assertSingleLine(value, label) {
@@ -56,8 +56,8 @@ function entryText(targetPath, iconPath = ICON_PATH) {
     'Name=AgentsCommander',
     'Comment=Terminal session manager for AI coding agent teams',
     `Exec=${quoteExecArg(targetPath)}`,
-    `TryExec=${targetPath.replace(/\\/g, '\\\\')}`,
-    `Icon=${iconPath.replace(/\\/g, '\\\\')}`,
+    `TryExec=${targetPath.replaceAll('\\', '\\\\')}`,
+    `Icon=${iconPath.replaceAll('\\', '\\\\')}`,
     'Terminal=false',
     'Categories=Development;Utility;',
     '',

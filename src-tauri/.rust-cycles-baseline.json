@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "9f72071f8befd53b",
+      "id": "305d22f5f7fa400b",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -146,7 +146,6 @@
         "agentscommander_lib::config::loops::storage",
         "agentscommander_lib::config::placeholders",
         "agentscommander_lib::config::projects",
-        "agentscommander_lib::config::projects::ac_root_gitignore",
         "agentscommander_lib::config::role_templates",
         "agentscommander_lib::config::root_agent",
         "agentscommander_lib::config::root_agent::context_snapshots",

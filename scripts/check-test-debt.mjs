@@ -270,7 +270,7 @@ function rustTestId(rel, modules, fnName) {
 }
 
 function hasExecutableRustBody(originalBody, strippedBody) {
-  const withoutComments = strippedBody.trim().replace(/;/g, '').trim();
+  const withoutComments = strippedBody.trim().replaceAll(';', '').trim();
   if (withoutComments.length === 0) return false;
   const compact = maskComments(originalBody).trim();
   if (/^(todo!\s*\(\s*\)|unimplemented!\s*\(\s*\)|panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\))\s*;?$/.test(compact)) {

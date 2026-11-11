@@ -1535,8 +1535,8 @@ function normaliseSegments(pathText) {
  * error when the path is absolute outside the root or climbs above it.
  */
 function normaliseCapturePath(fileName, workspaceRoot) {
-  const slashed = String(fileName).replace(/\\/g, '/');
-  const root = String(workspaceRoot).replace(/\\/g, '/').replace(/\/+$/, '');
+  const slashed = String(fileName).replaceAll('\\', '/');
+  const root = String(workspaceRoot).replaceAll('\\', '/').replace(/\/+$/, '');
   const absolute = slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed);
   let relative = slashed;
   if (absolute) {
