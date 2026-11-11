@@ -34,6 +34,10 @@ pub(crate) use target::{
     validate_profile_assignment_confirmation, validate_profile_assignment_request,
 };
 
+#[expect(
+    unused_imports,
+    reason = "preserve the ScopeFault facade after moving its consumer into wire"
+)]
 pub use wire::ScopeFault;
 
 mod fingerprint;
