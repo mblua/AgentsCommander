@@ -79,6 +79,10 @@ impl RequestGate {
         self.snapshot_pending = false;
     }
 
+    pub fn snapshot_pending(&self) -> bool {
+        self.snapshot_pending
+    }
+
     pub fn current(&self) -> Option<&str> {
         self.current.as_deref()
     }
@@ -242,6 +246,7 @@ impl Receipt {
         self.cases.push(case);
     }
 
+    #[cfg(test)]
     pub fn png_count(&self) -> usize {
         self.pngs.len()
     }

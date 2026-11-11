@@ -168,6 +168,12 @@ fn attach(shared: &Shared, label: &'static str) -> tauri::Result<()> {
                 .unwrap_or_default();
             handle_title(&on_title, label, &text);
         });
+        // Generic signal lookup: needs no webkit2gtk version feature.
+        let on_crash = Rc::clone(&shared);
+        let crash = view.connect_local("web-process-terminated", false, move |_| {
+            on_web_process_terminated(&on_crash, label);
+            None
+        });
         let Ok(mut harness) = shared.try_borrow_mut() else {
             return;
         };
@@ -181,7 +187,7 @@ fn attach(shared: &Shared, label: &'static str) -> tauri::Result<()> {
         harness.state.views.push(NativeView {
             label,
             view,
-            handlers: vec![load, title],
+            handlers: vec![load, title, crash],
         });
         if harness.state.deadline.is_none() {
             let on_deadline = Rc::clone(&shared);
@@ -484,11 +490,43 @@ fn on_timeout(shared: &Shared) {
         return;
     };
     harness.state.deadline = None;
-    let outcome = if harness.spec.off_workspace && harness.spec.probe == Probe::None {
+    let all_loaded = harness.state.loaded.len() == harness.windows.len();
+    let in_request = harness.state.gate.current().is_some();
+    let waiting = if !all_loaded || !in_request {
+        None
+    } else if harness.state.gate.snapshot_pending() {
+        Some("snapshot")
+    } else if harness.state.ready.is_none() {
+        Some("readiness")
+    } else {
+        None
+    };
+    let step = harness.step();
+    let stage = json!({
+        "loaded": harness.state.loaded,
+        "stepIndex": harness.state.index,
+        "stepLabel": step.map(|step| step.label),
+        "waiting": waiting,
+    });
+    if let Some(receipt) = harness.receipt.as_mut() {
+        receipt.set("timeoutStage", stage);
+    }
+    // The feasibility token is only for the current generation's readiness or
+    // snapshot deadline after every own load finished; anything else is INCOMPLETE.
+    let qualified = waiting.is_some() && harness.spec.off_workspace;
+    let outcome = if qualified && harness.spec.probe == Probe::None {
         Outcome::Fail("off_workspace_frame_timeout".to_owned())
     } else {
         Outcome::Incomplete("deadline_30s".to_owned())
     };
+    finish(&mut harness, &outcome);
+}
+
+fn on_web_process_terminated(shared: &Shared, label: &'static str) {
+    let Ok(mut harness) = shared.try_borrow_mut() else {
+        return;
+    };
+    let outcome = Outcome::Incomplete(format!("web_process_terminated {label}"));
     finish(&mut harness, &outcome);
 }
 

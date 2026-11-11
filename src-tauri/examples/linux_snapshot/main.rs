@@ -346,6 +346,7 @@ impl Rgba {
         })
     }
 
+    #[cfg(test)]
     fn blank(width: u32, height: u32) -> Self {
         let data = vec![0; width as usize * height as usize * 4];
         Self {
