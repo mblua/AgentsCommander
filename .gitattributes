@@ -1,3 +1,8 @@
+* text=auto eol=lf
+*.png  binary
+*.ico  binary
+*.icns binary
+*.ttf  binary
 .husky/** text eol=lf
 *.sh      text eol=lf
 *.toml    text eol=lf
@@ -8,4 +13,3 @@ crates/terminal-snapshot-renderer/tests/fixtures/*.png binary
 src-tauri/.rust-cycles-baseline.json text eol=lf
 docs/integrations/rtk/claude/hooks/*.js text eol=lf
 docs/releases/** text eol=lf
-src-tauri/src/config/root_agent_defaults/rtk-install-windows/SKILL.md -text
