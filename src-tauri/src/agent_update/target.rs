@@ -1,6 +1,15 @@
-use super::AgentUpdateCommandRef;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// #1551 - the identity of one command of this boot's pass, carried by the
+/// closure, skip, and running-set payloads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUpdateCommandRef {
+    pub command: String,
+    pub label: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TargetWork {
