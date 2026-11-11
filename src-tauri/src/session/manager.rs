@@ -292,7 +292,9 @@ impl SessionManager {
                 // annotation can never disagree with its own timestamp.
                 Some(crate::config::activity_log::build_idle(
                     id,
-                    s,
+                    &s.name,
+                    &s.working_directory,
+                    s.agent_kind,
                     crate::config::activity_log::IdleReason::MarkIdle,
                     &self.activity,
                 ))
@@ -347,7 +349,9 @@ impl SessionManager {
             if !was_working && crate::session::session::is_working(s) {
                 Some(crate::config::activity_log::build_busy(
                     id,
-                    s,
+                    &s.name,
+                    &s.working_directory,
+                    s.agent_kind,
                     crate::config::activity_log::BusyReason::MarkBusy,
                     &self.activity,
                 ))
@@ -456,7 +460,9 @@ impl SessionManager {
             // record either: no `?` and no early return remains in this block.
             let activity = crate::config::activity_log::build_busy(
                 id,
-                session,
+                &session.name,
+                &session.working_directory,
+                session.agent_kind,
                 crate::config::activity_log::BusyReason::PtyInputBoundary,
                 &self.activity,
             );
