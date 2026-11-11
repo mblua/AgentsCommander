@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "22511024153ecff7",
+      "id": "0d2876114eb2b6a2",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -17,7 +17,6 @@
         "agentscommander_lib::agent_update::install",
         "agentscommander_lib::agent_update::pass",
         "agentscommander_lib::agent_update::plan",
-        "agentscommander_lib::agent_update::target",
         "agentscommander_lib::agent_update::updater",
         "agentscommander_lib::api",
         "agentscommander_lib::api::actuation",
@@ -56,7 +55,6 @@
         "agentscommander_lib::commands::config::profile_selection::lock_removal",
         "agentscommander_lib::commands::config::profile_selection::selection_default",
         "agentscommander_lib::commands::config::profile_selection::target",
-        "agentscommander_lib::commands::config::profile_selection::wire",
         "agentscommander_lib::commands::config::settings_snapshot",
         "agentscommander_lib::commands::config::settings_update",
         "agentscommander_lib::commands::config::web_server",
@@ -321,13 +319,11 @@
         "agentscommander_lib::session::selection::authority",
         "agentscommander_lib::session::selection::coordinator_runtime",
         "agentscommander_lib::session::selection::envelope",
-        "agentscommander_lib::session::selection::payload",
         "agentscommander_lib::session::selection::replacement",
         "agentscommander_lib::session::selection::response_close",
         "agentscommander_lib::session::selection::shutdown_cleanup",
         "agentscommander_lib::session::selection::tickets",
         "agentscommander_lib::session::selection::transaction",
-        "agentscommander_lib::session::selection::turn",
         "agentscommander_lib::session::session",
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::bridge::poll",
