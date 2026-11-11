@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "acab6896c0bc789f",
+      "id": "0d2876114eb2b6a2",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -319,13 +319,11 @@
         "agentscommander_lib::session::selection::authority",
         "agentscommander_lib::session::selection::coordinator_runtime",
         "agentscommander_lib::session::selection::envelope",
-        "agentscommander_lib::session::selection::payload",
         "agentscommander_lib::session::selection::replacement",
         "agentscommander_lib::session::selection::response_close",
         "agentscommander_lib::session::selection::shutdown_cleanup",
         "agentscommander_lib::session::selection::tickets",
         "agentscommander_lib::session::selection::transaction",
-        "agentscommander_lib::session::selection::turn",
         "agentscommander_lib::session::session",
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::bridge::poll",
