@@ -8,6 +8,7 @@ use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{
     current_response_row, ResponseCandidateAttempt, ResponseRequestCandidate, ResponseWakeWork,
 };
+use super::refresh::ProjectRefreshRequest;
 #[cfg(test)]
 use super::tests::ClearObservationProbe;
 use crate::filesystem::phone_mailbox as mailbox_disk;
@@ -57,15 +58,14 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
             }
         };
 
-        let mut request: crate::cli::create_agent_matrix::ProjectRefreshRequest =
-            match serde_json::from_str(&content) {
-                Ok(r) => r,
-                Err(e) => {
-                    log::warn!("[project-refresh-requests] Failed to parse {path:?}: {e}");
-                    let _ = mailbox_disk::remove_mailbox_artifact(&path);
-                    continue;
-                }
-            };
+        let mut request: ProjectRefreshRequest = match serde_json::from_str(&content) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[project-refresh-requests] Failed to parse {path:?}: {e}");
+                let _ = mailbox_disk::remove_mailbox_artifact(&path);
+                continue;
+            }
+        };
 
         let canonical_project_path = canonical_project_refresh_path(&request.project_path);
         request.project_path = canonical_project_path.clone();
