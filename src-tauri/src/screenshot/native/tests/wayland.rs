@@ -1,10 +1,15 @@
 //! #2774 Wayland portal capture tests (no D-Bus: the pick result is injected).
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use super::super::portal::{cached_result, HostRecord};
+use futures::channel::mpsc::{unbounded, UnboundedSender};
+
+use super::super::portal::{cached_result, HostRecord, Presses};
 use super::super::wayland_shortcut::press_may_cancel;
 use super::*;
 use crate::screenshot::{
@@ -101,6 +106,11 @@ impl ScreenshotEvents for WaylandHost {
     fn capture_failed(&self, event: ScreenshotCaptureEvent) {
         self.messages.lock().unwrap().push(event.message);
         self.push("failed");
+    }
+
+    fn hotkey_status_changed(&self, status: ScreenshotHotkeyStatus) {
+        let error = status.error.unwrap_or_default();
+        self.push(&format!("status:{}:{error}", status.registered));
     }
 }
 
@@ -323,4 +333,241 @@ fn host_record_is_reused_only_for_the_same_owner() {
         Some(Err("x".to_string()))
     );
     assert_eq!(cached_result(Some(&failed), ":1.9"), None);
+}
+
+// ── #2774 P03 shortcut registration ────────────────────────────────────────
+
+#[derive(Clone, Default)]
+struct FakeBackend {
+    results: Arc<Mutex<VecDeque<Result<Presses, String>>>>,
+    binds: Arc<AtomicUsize>,
+    bind_entered: Arc<tokio::sync::Notify>,
+    bind_gate: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl FakeBackend {
+    /// Script one `Ok` bind; the returned sender feeds (or, dropped, ends) its presses.
+    fn script_ok(&self) -> UnboundedSender<()> {
+        let (tx, rx) = unbounded();
+        self.results.lock().unwrap().push_back(Ok(rx));
+        tx
+    }
+
+    fn script_err(&self, e: &str) {
+        self.results.lock().unwrap().push_back(Err(e.to_string()));
+    }
+
+    fn binds(&self) -> usize {
+        self.binds.load(Ordering::SeqCst)
+    }
+}
+
+impl WaylandBackend for FakeBackend {
+    async fn pick_region(&self) -> Result<Option<PathBuf>, String> {
+        panic!("registration test must not pick a region")
+    }
+
+    async fn bind_shortcut(&self, _ids: &ShortcutIds, _trigger: &str) -> Result<Presses, String> {
+        self.bind_entered.notify_one();
+        if let Some(gate) = &self.bind_gate {
+            let mut gate = gate.clone();
+            let _ = gate.wait_for(|open| *open).await;
+        }
+        self.binds.fetch_add(1, Ordering::SeqCst);
+        let next = self.results.lock().unwrap().pop_front();
+        next.expect("unscripted bind_shortcut")
+    }
+}
+
+fn idle_wayland_host() -> WaylandHost {
+    WaylandHost::new(wayland(), ScreenshotCaptureLifecycle::Idle)
+}
+
+async fn register(host: &WaylandHost, backend: &FakeBackend, generation: u64) {
+    let token = "1a2b3c4d".to_string();
+    let (h, b) = (host.clone(), backend.clone());
+    register_wayland(h, b, generation, token, "Ctrl+Q".into(), 'Q', false).await;
+}
+
+async fn binding(host: &WaylandHost) -> u64 {
+    let portal = host.hotkey.lock().unwrap().wayland.clone();
+    let binding = portal.lock().await.binding;
+    binding
+}
+
+fn status(host: &WaylandHost) -> ScreenshotHotkeyStatus {
+    host.hotkey.lock().unwrap().status.clone()
+}
+
+/// `ScreenshotHotkeyStatus` has no `PartialEq`; compare its fields.
+fn fields(st: ScreenshotHotkeyStatus) -> (String, bool, Option<String>) {
+    (st.configured, st.registered, st.error)
+}
+
+fn ended_entry() -> String {
+    format!("status:false:{PORTAL_SHORTCUT_ENDED}")
+}
+
+#[tokio::test]
+async fn bind_ok_sets_registered_and_emits_once() {
+    let (host, backend) = (idle_wayland_host(), FakeBackend::default());
+    let _tx = backend.script_ok();
+    let generation = begin_wayland_registration(&host);
+    register(&host, &backend, generation).await;
+    let st = status(&host);
+    assert_eq!(
+        (st.configured.as_str(), st.registered, st.error),
+        ("Ctrl+Q", true, None)
+    );
+    assert_eq!(host.log(), ["status:true:"]);
+    assert_ne!(binding(&host).await, 0);
+    assert_eq!(host.spawned.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn bind_err_reports_and_retries_next_time() {
+    let (host, backend) = (idle_wayland_host(), FakeBackend::default());
+    backend.script_err("no portal");
+    let generation = begin_wayland_registration(&host);
+    register(&host, &backend, generation).await;
+    let error = status(&host).error.expect("an error status");
+    assert!(error.starts_with(WAYLAND_UNSUPPORTED), "{error}");
+    assert!(error.contains("no portal"), "{error}");
+    assert_eq!(binding(&host).await, 0);
+    backend.script_err("no portal");
+    let generation = begin_wayland_registration(&host);
+    register(&host, &backend, generation).await;
+    assert_eq!(backend.binds(), 2);
+}
+
+#[tokio::test]
+async fn bind_happens_once() {
+    let (host, backend) = (idle_wayland_host(), FakeBackend::default());
+    let _tx = backend.script_ok();
+    for _ in 0..2 {
+        let generation = begin_wayland_registration(&host);
+        register(&host, &backend, generation).await;
+    }
+    assert_eq!(backend.binds(), 1);
+    assert_eq!(host.log(), ["status:true:", "status:true:"]);
+}
+
+#[tokio::test]
+async fn stale_request_writes_nothing() {
+    let (host, backend) = (idle_wayland_host(), FakeBackend::default());
+    let _tx = backend.script_ok();
+    let g1 = begin_wayland_registration(&host);
+    let g2 = begin_wayland_registration(&host);
+    let before = fields(status(&host));
+    register(&host, &backend, g1).await;
+    assert_eq!(backend.binds(), 0);
+    assert_eq!(fields(status(&host)), before);
+    assert!(host.log().is_empty());
+    register(&host, &backend, g2).await;
+    assert!(status(&host).registered);
+}
+
+#[tokio::test]
+async fn older_task_holding_the_lock_loses() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let host = idle_wayland_host();
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let backend = FakeBackend {
+            bind_gate: Some(gate_rx),
+            ..FakeBackend::default()
+        };
+        let _tx = backend.script_ok();
+        let _tx2 = backend.script_ok();
+        let g1 = begin_wayland_registration(&host);
+        let (h, b) = (host.clone(), backend.clone());
+        let first = tokio::spawn(async move { register(&h, &b, g1).await });
+        backend.bind_entered.notified().await;
+        let g2 = begin_wayland_registration(&host);
+        let (h, b) = (host.clone(), backend.clone());
+        let second = tokio::spawn(async move { register(&h, &b, g2).await });
+        tokio::task::yield_now().await;
+        gate_tx.send(true).unwrap();
+        first.await.unwrap();
+        second.await.unwrap();
+        assert_eq!(backend.binds(), 1);
+        assert_eq!(host.log(), ["status:true:"]);
+    })
+    .await
+    .expect("ordering test hung");
+}
+
+#[tokio::test]
+async fn stream_end_reports_and_rebinds() {
+    let (host, backend) = (idle_wayland_host(), FakeBackend::default());
+    let tx = backend.script_ok();
+    let generation = begin_wayland_registration(&host);
+    register(&host, &backend, generation).await;
+    drop(tx);
+    host.drain().await;
+    assert_eq!(status(&host).error.as_deref(), Some(PORTAL_SHORTCUT_ENDED));
+    assert_eq!(binding(&host).await, 0);
+    assert_eq!(host.log().last(), Some(&ended_entry()));
+    let _tx = backend.script_ok();
+    let generation = begin_wayland_registration(&host);
+    register(&host, &backend, generation).await;
+    assert_eq!(backend.binds(), 2);
+}
+
+#[tokio::test]
+async fn stream_end_of_old_binding_is_ignored() {
+    let host = idle_wayland_host();
+    let portal = host.hotkey.lock().unwrap().wayland.clone();
+    portal.lock().await.binding = 8;
+    let before = fields(status(&host));
+    let (tx, rx) = unbounded::<()>();
+    drop(tx);
+    forward_presses(host.clone(), portal.clone(), rx, 7, |_h: WaylandHost| {}).await;
+    assert_eq!(portal.lock().await.binding, 8);
+    assert_eq!(fields(status(&host)), before);
+    assert!(host.log().is_empty());
+}
+
+#[tokio::test]
+async fn presses_are_forwarded() {
+    let host = idle_wayland_host();
+    let portal = host.hotkey.lock().unwrap().wayland.clone();
+    portal.lock().await.binding = 3;
+    let (tx, rx) = unbounded();
+    tx.unbounded_send(()).unwrap();
+    tx.unbounded_send(()).unwrap();
+    drop(tx);
+    let on_press = |h: WaylandHost| h.push("press");
+    forward_presses(host.clone(), portal, rx, 3, on_press).await;
+    assert_eq!(
+        host.log(),
+        ["press".to_string(), "press".to_string(), ended_entry()]
+    );
+}
+
+#[test]
+fn instance_token_is_stable_and_distinct() {
+    let is_hex8 = |t: &str| t.len() == 8 && t.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+    let a = instance_token(Some(Path::new("/home/u/.agentscommander")));
+    assert!(is_hex8(&a), "{a}");
+    assert_eq!(
+        a,
+        instance_token(Some(Path::new("/home/u/.agentscommander")))
+    );
+    assert_ne!(
+        a,
+        instance_token(Some(Path::new("/home/u/.agentscommander-dev")))
+    );
+    assert!(is_hex8(&instance_token(None)));
+    assert_eq!(shortcut_ids("1a2b3c4d").shortcut_id, "screenshot-1a2b3c4d");
+}
+
+#[tokio::test]
+async fn store_ignores_a_stale_generation() {
+    let host = idle_wayland_host();
+    let generation = begin_wayland_registration(&host);
+    let _newer = begin_wayland_registration(&host);
+    let before = fields(status(&host));
+    assert!(!store_wayland_status(&host, generation, "Ctrl+Q", Ok(())));
+    assert_eq!(fields(status(&host)), before);
+    assert!(host.log().is_empty());
 }

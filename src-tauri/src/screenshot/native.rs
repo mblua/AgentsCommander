@@ -24,7 +24,9 @@ use base64::Engine as _;
 use chrono::Utc;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
+#[cfg(test)]
+use tauri_plugin_global_shortcut::Code;
+use tauri_plugin_global_shortcut::{Modifiers, Shortcut};
 use uuid::Uuid;
 
 use super::{
@@ -38,6 +40,7 @@ use crate::filesystem::screenshot_files::create_png_file;
 use crate::screenshot::{MonitorGeometry, PlacementFrame};
 
 mod confirm;
+mod key_code;
 #[cfg(target_os = "linux")]
 mod linux_display;
 #[cfg(target_os = "macos")]
@@ -59,6 +62,7 @@ use confirm::{
     build_filename, finish_capture_to_idle, prepare_screenshots_directory, save_selection,
     validate_selection,
 };
+use key_code::key_char_to_code;
 #[cfg(target_os = "linux")]
 pub use linux_display::{
     classify_display_server, display_env_snapshot, DisplayEnvSnapshot, LinuxDisplayServer,
@@ -81,7 +85,10 @@ use overlay::{build_placements, destroy_overlays_for_capture, open_overlay_windo
 use replica_root::find_replica_root;
 use replica_root::{resolve_session_replica_root, revalidate_replica_target};
 #[cfg(target_os = "linux")]
-use wayland_shortcut::{press_may_cancel, PORTAL_APP_ID};
+use wayland_shortcut::{
+    instance_token, press_may_cancel, shortcut_ids, ShortcutIds, WaylandPortalState, PORTAL_APP_ID,
+    PORTAL_SHORTCUT_ENDED,
+};
 #[cfg(target_os = "windows")]
 pub(crate) use window_capture::{
     capture_window_png, parse_window_id, WindowScreenshotCaptureError,
@@ -151,6 +158,14 @@ pub struct ScreenshotHotkeyRuntime {
     /// D-Bus connection accepts one app id, before any other portal call on it).
     #[cfg(target_os = "linux")]
     pub(crate) portal_host: std::sync::Arc<portal::HostRegistration>,
+    /// #2774 Bumped by every Wayland registration request; only the latest one may write
+    /// the status or (P04) bindings.lua.
+    #[cfg(target_os = "linux")]
+    pub wayland_generation: u64,
+    /// #2774 Serializes Wayland registrations end to end (portal bind + P04 Hyprland apply +
+    /// status write). tokio mutex: held across awaits.
+    #[cfg(target_os = "linux")]
+    pub wayland: std::sync::Arc<tokio::sync::Mutex<WaylandPortalState>>,
 }
 
 // ── Hotkey registration ────────────────────────────────────────────────────
@@ -162,21 +177,6 @@ fn parsed_to_shortcut(parsed: &ParsedHotkey) -> Result<Shortcut, String> {
     let code = key_char_to_code(parsed.key)
         .ok_or_else(|| format!("key '{}' has no global-shortcut code", parsed.key))?;
     Ok(Shortcut::new(Some(modifiers), code))
-}
-
-/// Map a normalized alphanumeric key char to a `Code` via its `PascalCase` name
-/// (`Key{A..Z}` / `Digit{0..9}`), the string form `keyboard_types::Code`
-/// round-trips through `FromStr`.
-fn key_char_to_code(c: char) -> Option<Code> {
-    let up = c.to_ascii_uppercase();
-    let name = if up.is_ascii_alphabetic() {
-        format!("Key{up}")
-    } else if up.is_ascii_digit() {
-        format!("Digit{up}")
-    } else {
-        return None;
-    };
-    name.parse::<Code>().ok()
 }
 
 /// Register the configured global hotkey, unregistering any previously-registered
@@ -191,22 +191,28 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
     configured: &str,
     hyprland_bind: bool,
 ) -> Result<(), String> {
-    let _ = hyprland_bind; // #2774 P03 reads it on Wayland
+    #[cfg(not(target_os = "linux"))]
+    let _ = hyprland_bind; // #2774 read on Wayland only
     let parsed = super::parse_screenshot_hotkey(configured)?;
     let shortcut = parsed_to_shortcut(&parsed)?;
 
     #[cfg(target_os = "linux")]
     if is_wayland(app) {
         // Must precede app.global_shortcut(): under XWayland the grab SUCCEEDS
-        // and then never fires. An honest unregistered status here is what
-        // turns a silently dead hotkey into the sticky toast that
-        // src/sidebar/listeners-screenshot.ts:47 already renders from
-        // `!registered && error`. No frontend change.
-        let state = app.hotkey_state();
-        let mut runtime = state.lock().unwrap();
-        runtime.registered_shortcut = None;
-        runtime.status = hotkey_status_after_attempt(configured, Err(WAYLAND_UNSUPPORTED));
-        return Err(WAYLAND_UNSUPPORTED.to_string());
+        // and then never fires. #2774: bind a portal shortcut instead; the final
+        // status arrives through `screenshot_hotkey_status_changed`.
+        let generation = begin_wayland_registration(app);
+        let token = instance_token(crate::config::config_dir().as_deref());
+        app.spawn_background(Box::pin(register_wayland(
+            app.clone(),
+            system_wayland(app),
+            generation,
+            token,
+            configured.to_string(),
+            parsed.key,
+            hyprland_bind,
+        )));
+        return Ok(());
     }
 
     app.with_shortcuts(|gs| {
@@ -545,6 +551,11 @@ pub(crate) trait WaylandBackend: Clone + Send + Sync + 'static {
     fn pick_region(
         &self,
     ) -> impl std::future::Future<Output = Result<Option<PathBuf>, String>> + Send;
+    fn bind_shortcut(
+        &self,
+        ids: &ShortcutIds,
+        trigger: &str,
+    ) -> impl std::future::Future<Output = Result<portal::Presses, String>> + Send;
 }
 
 #[cfg(target_os = "linux")]
@@ -558,12 +569,134 @@ impl WaylandBackend for SystemWayland {
     async fn pick_region(&self) -> Result<Option<PathBuf>, String> {
         portal::pick_region(&self.host, PORTAL_APP_ID).await
     }
+
+    async fn bind_shortcut(
+        &self,
+        ids: &ShortcutIds,
+        trigger: &str,
+    ) -> Result<portal::Presses, String> {
+        let (id, description) = (&ids.shortcut_id, &ids.description);
+        portal::bind_shortcut(&self.host, PORTAL_APP_ID, id, description, trigger).await
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn system_wayland<H: ScreenshotHost>(app: &H) -> SystemWayland {
     let host = std::sync::Arc::clone(&app.hotkey_state().lock().unwrap().portal_host);
     SystemWayland { host }
+}
+
+// ── Wayland shortcut registration (#2774) ──────────────────────────────────
+
+/// Start a Wayland registration request: it supersedes every earlier one.
+#[cfg(target_os = "linux")]
+fn begin_wayland_registration<H: ScreenshotHost>(app: &H) -> u64 {
+    let state = app.hotkey_state();
+    let mut runtime = state.lock().unwrap();
+    runtime.registered_shortcut = None;
+    runtime.wayland_generation += 1;
+    runtime.wayland_generation
+}
+
+#[cfg(target_os = "linux")]
+fn is_latest<H: ScreenshotHost>(app: &H, generation: u64) -> bool {
+    app.hotkey_state().lock().unwrap().wayland_generation == generation
+}
+
+/// Write the final status of request `generation` and emit it, unless superseded.
+#[cfg(target_os = "linux")]
+fn store_wayland_status<H: ScreenshotHost>(
+    app: &H,
+    generation: u64,
+    configured: &str,
+    result: Result<(), String>,
+) -> bool {
+    let status = {
+        let state = app.hotkey_state();
+        let mut runtime = state.lock().unwrap();
+        if runtime.wayland_generation != generation {
+            return false;
+        }
+        let outcome = result.as_ref().map(|_| ()).map_err(String::as_str);
+        runtime.status = hotkey_status_after_attempt(configured, outcome);
+        runtime.status.clone()
+    };
+    match &result {
+        Ok(()) => log::info!("[screenshot] Wayland shortcut active '{configured}'"),
+        Err(e) => log::warn!("[screenshot] Wayland shortcut not active: {e}"),
+    }
+    app.hotkey_status_changed(status);
+    true
+}
+
+/// Bind the portal shortcut once per instance and report the request's final status.
+#[cfg(target_os = "linux")]
+async fn register_wayland<H: ScreenshotHost, B: WaylandBackend>(
+    app: H,
+    backend: B,
+    generation: u64,
+    token: String,
+    configured: String,
+    key: char,
+    enabled: bool,
+) {
+    let _ = enabled; // #2774 P04 reads it
+    let portal = app.hotkey_state().lock().unwrap().wayland.clone();
+    // Taken BEFORE the portal bind and held to the end.
+    let mut st = portal.lock().await;
+    if !is_latest(&app, generation) {
+        return;
+    }
+    let ids = shortcut_ids(&token);
+    if st.binding == 0 {
+        let trigger = format!("CTRL+{}", key.to_ascii_lowercase());
+        match backend.bind_shortcut(&ids, &trigger).await {
+            Ok(presses) => {
+                st.next_binding += 1;
+                st.binding = st.next_binding;
+                app.spawn_background(Box::pin(forward_presses(
+                    app.clone(),
+                    portal.clone(),
+                    presses,
+                    st.binding,
+                    move |a: H| begin_capture_from_hotkey(a),
+                )));
+            }
+            Err(e) => {
+                let error = format!("{WAYLAND_UNSUPPORTED} Details: {e}");
+                store_wayland_status(&app, generation, &configured, Err(error));
+                return;
+            }
+        }
+    }
+    store_wayland_status(&app, generation, &configured, Ok(()));
+}
+
+/// Forward presses; when the portal ends binding `binding`, report it (if still live).
+#[cfg(target_os = "linux")]
+async fn forward_presses<H: ScreenshotHost, F: Fn(H) + Send + 'static>(
+    app: H,
+    portal: std::sync::Arc<tokio::sync::Mutex<WaylandPortalState>>,
+    mut presses: portal::Presses,
+    binding: u64,
+    on_press: F,
+) {
+    use futures::StreamExt as _;
+    while presses.next().await.is_some() {
+        on_press(app.clone());
+    }
+    let mut st = portal.lock().await;
+    if st.binding == binding {
+        st.binding = 0;
+        let status = {
+            let state = app.hotkey_state();
+            let mut runtime = state.lock().unwrap();
+            let configured = runtime.status.configured.clone();
+            runtime.status = hotkey_status_after_attempt(&configured, Err(PORTAL_SHORTCUT_ENDED));
+            runtime.status.clone()
+        };
+        app.hotkey_status_changed(status);
+    }
 }
 
 #[cfg(target_os = "linux")]
