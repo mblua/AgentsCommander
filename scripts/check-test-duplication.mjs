@@ -269,7 +269,8 @@ export async function runGate({
   }
   if (child.status === null) {
     return fail(
-      `pinned jscpd did not exit normally (signal ${child.signal ?? 'unknown'}); treating the run as failed.`,
+      `pinned jscpd did not exit normally (signal ${child.signal ?? 'unknown'}); `
+        + 'treating the run as failed.',
     );
   }
   if (child.status !== 0) {
@@ -332,7 +333,8 @@ const B = (name) => `  it('${name}', () => {
     expect(panel.log).toHaveLength(3);
   });`;
 
-const head = (name, importSymbol, importPath, blocks) => `import { describe, expect, it } from 'vitest';
+const head = (name, importSymbol, importPath, blocks) =>
+  `import { describe, expect, it } from 'vitest';
 import { ${importSymbol} } from '${importPath}';
 
 describe('${name}', () => {

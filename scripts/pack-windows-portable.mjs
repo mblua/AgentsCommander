@@ -70,7 +70,8 @@ function zipDirectory(stageDir, outPath) {
       // A missing shell is a resolution failure; anything else is a real zip
       // error and must not be masked by falling through to the next shell.
       if (err?.code !== 'ENOENT') {
-        die(`${shell} failed to create the archive: ${err?.stderr?.toString().trim() || err?.message || err}`);
+        die(`${shell} failed to create the archive: `
+          + `${err?.stderr?.toString().trim() || err?.message || err}`);
       }
     }
   }
