@@ -144,7 +144,8 @@ async function runDetector(runner, argv) {
   if (result.exit === 3) throw new GateError(
     `detector exit 3: analysis incomplete, never a pass\n${result.stderr}`);
   if (result.exit !== 0 && result.exit !== 1) {
-    throw new GateError(`detector exit ${result.exit}: unexpected exit code (only 0 and 1 are accepted)\n${result.stderr}`);
+    throw new GateError(`detector exit ${result.exit}: unexpected exit code `
+      + `(only 0 and 1 are accepted)\n${result.stderr}`);
   }
   return result;
 }
@@ -158,10 +159,12 @@ function describeCycle(cycle) {
 function blindSpotLines(report) {
   const spots = report.blindSpots || {};
   const lines = [
-    `blind spots: unresolvedInternalPaths ${spots.unresolvedInternalPaths}, ambiguousBarePaths ${spots.ambiguousBarePaths}`,
+    `blind spots: unresolvedInternalPaths ${spots.unresolvedInternalPaths}, `
+      + `ambiguousBarePaths ${spots.ambiguousBarePaths}`,
   ];
   if (spots.unresolvedInternalPaths !== 0 || spots.ambiguousBarePaths !== 0) {
-    lines.push('warning: a non-zero blind-spot counter makes the module-level verdict less reliable; read it.');
+    lines.push('warning: a non-zero blind-spot counter makes the module-level verdict '
+      + 'less reliable; read it.');
   }
   return lines;
 }
@@ -236,7 +239,8 @@ export function classifyEvents(resolved, added) {
 
 export function formatEvent(event) {
   const list = (items) => `[${items.join(', ')}]`;
-  return `${event.label}: retired ${list(event.retired)} new ${list(event.added)} left ${list(event.left)} joined ${list(event.joined)}`;
+  return `${event.label}: retired ${list(event.retired)} new ${list(event.added)} `
+    + `left ${list(event.left)} joined ${list(event.joined)}`;
 }
 
 const REMOVAL_REASON =
@@ -300,7 +304,8 @@ export async function writeCyclesBaseline({ runner = realRunner, target = TARGET
   if (result.exit !== 0) throw new GateError(
     `detector exit ${result.exit}: baseline not written\n${result.stderr}`);
   const baseline = readBaseline(baselinePath);
-  return `wrote ${baselinePath}: ${baseline.moduleCycles.length} module cycles, ${baseline.functionCycles.length} function cycles.`;
+  return `wrote ${baselinePath}: ${baseline.moduleCycles.length} module cycles, `
+    + `${baseline.functionCycles.length} function cycles.`;
 }
 
 // The single failure printer: the message, one line per cycle event, the detector's stderr,
@@ -497,7 +502,8 @@ const CASES = [
     if (seen[0].includes('--baseline') || !seen[0].includes('--write-baseline')) throw new Error(
       `argv ${JSON.stringify(seen[0])}`);
   })],
-  ['real detector through the seam: first write on a temp crate, then the gate passes and a new cycle fails', () => withTemp(async (dir) => {
+  ['real detector through the seam: first write on a temp crate, '
+    + 'then the gate passes and a new cycle fails', () => withTemp(async (dir) => {
     const target = writeFixtureCrate(dir);
     const baselinePath = path.join(dir, 'baseline.json');
     await writeCyclesBaseline({ target, baselinePath });
@@ -576,7 +582,8 @@ function loopId(letters) {
 function expectedLine([label, left, joined, retired, added]) {
   const ids = (loops) => loops.split(' ').filter(Boolean).map(loopId).sort(byAscii).join(', ');
   const names = (letters) => letters.split(',').filter(Boolean).map(fixtureId).join(', ');
-  return `${label}: retired [${ids(retired)}] new [${ids(added)}] left [${names(left)}] joined [${names(joined)}]`;
+  return `${label}: retired [${ids(retired)}] new [${ids(added)}] `
+    + `left [${names(left)}] joined [${names(joined)}]`;
 }
 
 // Asserts the exits and the full lines the gate emitted, in order.
