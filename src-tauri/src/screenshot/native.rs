@@ -1,8 +1,10 @@
-//! #714 Native screenshot runtime (Windows / Linux-X11 / macOS).
+//! #714 Native screenshot runtime (Windows / Linux / macOS).
 //!
-//! Compiled on Windows, Linux/X11 and macOS. Owns every native dependency for
-//! the feature: `xcap` desktop capture, `image` crop/encode, the clipboard
-//! plugin, the global-shortcut plugin, overlay window creation, and the capture
+//! Compiled on Windows, Linux and macOS; Linux Wayland captures through the
+//! xdg-desktop-portal Screenshot selector instead of xcap and overlays (#2774).
+//! Owns every native dependency for the feature: `xcap` desktop capture,
+//! `image` crop/encode, the clipboard plugin, the global-shortcut plugin,
+//! overlay window creation, and the capture
 //! lifecycle state machine. Only the #1285 window-capture region stays
 //! Windows-only. The every-other-target sibling (`super::unsupported`) mirrors
 //! this public surface without any native screenshot crates.
@@ -38,8 +40,14 @@ use crate::screenshot::{MonitorGeometry, PlacementFrame};
 mod confirm;
 #[cfg(target_os = "linux")]
 mod linux_display;
+#[cfg(target_os = "macos")]
+mod macos_permission;
 mod overlay;
+#[cfg(target_os = "linux")]
+mod portal;
 mod replica_root;
+#[cfg(target_os = "linux")]
+mod wayland_shortcut;
 #[cfg(target_os = "windows")]
 mod window_capture;
 
@@ -56,6 +64,12 @@ pub use linux_display::{
     classify_display_server, display_env_snapshot, DisplayEnvSnapshot, LinuxDisplayServer,
     WAYLAND_UNSUPPORTED,
 };
+#[cfg(target_os = "macos")]
+use macos_permission::ensure_macos_screen_capture_access;
+#[cfg(all(test, target_os = "macos"))]
+use macos_permission::CGPreflightScreenCaptureAccess; // native/tests.rs:807 via `super::*`
+#[cfg(target_os = "macos")]
+pub use macos_permission::MACOS_SCREEN_RECORDING_REQUIRED; // screenshot.rs:34 re-export
 pub use overlay::overlay_state;
 #[cfg(test)]
 use overlay::{
@@ -66,6 +80,8 @@ use overlay::{build_placements, destroy_overlays_for_capture, open_overlay_windo
 #[cfg(test)]
 use replica_root::find_replica_root;
 use replica_root::{resolve_session_replica_root, revalidate_replica_target};
+#[cfg(target_os = "linux")]
+use wayland_shortcut::{press_may_cancel, PORTAL_APP_ID};
 #[cfg(target_os = "windows")]
 pub(crate) use window_capture::{
     capture_window_png, parse_window_id, WindowScreenshotCaptureError,
@@ -131,37 +147,10 @@ pub struct CapturedMonitor {
 pub struct ScreenshotHotkeyRuntime {
     pub status: ScreenshotHotkeyStatus,
     pub registered_shortcut: Option<Shortcut>,
-}
-
-// ── macOS Screen Recording permission (#2079) ──────────────────────────────
-
-/// The refusal message when macOS has not granted Screen Recording.
-#[cfg(target_os = "macos")]
-pub const MACOS_SCREEN_RECORDING_REQUIRED: &str = "Screenshot capture needs the Screen \
-    Recording permission. Allow AgentsCommander in System Settings > Privacy & Security > \
-    Screen Recording, then quit and reopen AgentsCommander.";
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
-    fn CGPreflightScreenCaptureAccess() -> bool;
-    fn CGRequestScreenCaptureAccess() -> bool;
-}
-
-/// Refuse to capture when macOS has not granted Screen Recording. Without the
-/// permission xcap's `CGWindowListCreateImage` succeeds but returns
-/// wallpaper-only pixels (no other apps' windows), so capturing without this
-/// check fails silently; the grant takes effect only after the app restarts,
-/// which the refusal message tells the user to do.
-#[cfg(target_os = "macos")]
-fn ensure_macos_screen_capture_access() -> Result<(), String> {
-    // SAFETY: argument-less CoreGraphics queries (macOS 10.15+), thread-safe.
-    if unsafe { CGPreflightScreenCaptureAccess() } {
-        return Ok(());
-    }
-    // Registers the app in the Screen Recording list; prompts only the first time.
-    let _ = unsafe { CGRequestScreenCaptureAccess() };
-    Err(MACOS_SCREEN_RECORDING_REQUIRED.to_string())
+    /// #2774 Result of the one portal host registration of this process (ashpd's shared
+    /// D-Bus connection accepts one app id, before any other portal call on it).
+    #[cfg(target_os = "linux")]
+    pub(crate) portal_host: std::sync::Arc<portal::HostRegistration>,
 }
 
 // ── Hotkey registration ────────────────────────────────────────────────────
@@ -207,12 +196,7 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
     let shortcut = parsed_to_shortcut(&parsed)?;
 
     #[cfg(target_os = "linux")]
-    if classify_display_server(&app.display_snapshot()) == LinuxDisplayServer::Wayland {
-        // The snapshot is READ here and TAKEN in run() during builder assembly
-        // (§3.5.1). Do not replace this with a call to display_env_snapshot():
-        // by the time this line runs, GTK has already unsetenv()'d
-        // WAYLAND_SOCKET and a fresh read would answer X11 for a Wayland
-        // session reached by an inherited fd.
+    if is_wayland(app) {
         // Must precede app.global_shortcut(): under XWayland the grab SUCCEEDS
         // and then never fires. An honest unregistered status here is what
         // turns a silently dead hotkey into the sticky toast that
@@ -306,6 +290,9 @@ fn hotkey_status_after_attempt(
 pub enum BeginOutcome {
     Started,
     Busy(Option<Uuid>),
+    /// #2774 The portal selector was dismissed; silent.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Cancelled,
 }
 
 /// The capture a repeat press may cancel. Mirrors the `Starting`/`Active` arms
@@ -328,7 +315,10 @@ pub fn begin_capture_from_hotkey<H: ScreenshotHost>(app: H) {
     app.clone().spawn_background(Box::pin(async move {
         match begin_capture(app.clone()).await {
             Ok(BeginOutcome::Started) => {}
+            Ok(BeginOutcome::Cancelled) => log::debug!("[screenshot] portal selection cancelled"),
             Ok(BeginOutcome::Busy(cancellable)) => {
+                #[cfg(target_os = "linux")]
+                let cancellable = press_may_cancel(is_wayland(&app), cancellable);
                 // Cancelling on a repeat press is Linux- and macOS-specific:
                 // Escape reaches the overlay only if the WM granted keyboard
                 // focus, and Mutter declined `focused(true)` in 4 of 6 spike
@@ -438,6 +428,11 @@ pub async fn begin_capture<H: ScreenshotHost>(app: H) -> Result<BeginOutcome, St
         });
     }
 
+    #[cfg(target_os = "linux")]
+    if is_wayland(&app) {
+        return capture_with_portal(&app, &system_wayland(&app), capture_id).await;
+    }
+
     // 3. Capture every monitor off the async thread (xcap + PNG encode are sync).
     let monitors = match capture_all_monitors().await {
         Ok(m) if !m.is_empty() => m,
@@ -531,6 +526,102 @@ async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
     } else {
         Some(BeginOutcome::Busy(cancellable_capture_id(&guard)))
     }
+}
+
+// ── Wayland portal capture (#2774) ─────────────────────────────────────────
+
+/// The snapshot is READ here and TAKEN in run() during builder assembly
+/// (§3.5.1). Do not replace this with a call to display_env_snapshot(): by the
+/// time this runs, GTK has already unsetenv()'d WAYLAND_SOCKET and a fresh read
+/// would answer X11 for a Wayland session reached by an inherited fd.
+#[cfg(target_os = "linux")]
+fn is_wayland<H: ScreenshotHost>(app: &H) -> bool {
+    classify_display_server(&app.display_snapshot()) == LinuxDisplayServer::Wayland
+}
+
+/// Seam over the portal so tests can drive the capture glue without D-Bus.
+#[cfg(target_os = "linux")]
+pub(crate) trait WaylandBackend: Clone + Send + Sync + 'static {
+    fn pick_region(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Option<PathBuf>, String>> + Send;
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub(crate) struct SystemWayland {
+    host: std::sync::Arc<portal::HostRegistration>,
+}
+
+#[cfg(target_os = "linux")]
+impl WaylandBackend for SystemWayland {
+    async fn pick_region(&self) -> Result<Option<PathBuf>, String> {
+        portal::pick_region(&self.host, PORTAL_APP_ID).await
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_wayland<H: ScreenshotHost>(app: &H) -> SystemWayland {
+    let host = std::sync::Arc::clone(&app.hotkey_state().lock().unwrap().portal_host);
+    SystemWayland { host }
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_with_portal<H: ScreenshotHost, B: WaylandBackend>(
+    app: &H,
+    backend: &B,
+    capture_id: Uuid,
+) -> Result<BeginOutcome, String> {
+    let picked = backend.pick_region().await;
+    finish_portal_pick(
+        app,
+        capture_id,
+        picked,
+        confirm::PORTAL_SCREENSHOT_MAX_BYTES,
+    )
+    .await
+}
+
+/// Save the portal's pick for `capture_id`, unless the capture was superseded.
+#[cfg(target_os = "linux")]
+async fn finish_portal_pick<H: ScreenshotHost>(
+    app: &H,
+    capture_id: Uuid,
+    picked: Result<Option<PathBuf>, String>,
+    max_bytes: u64,
+) -> Result<BeginOutcome, String> {
+    let path = match picked {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            reset_starting_if_matches(app, capture_id).await;
+            return Ok(BeginOutcome::Cancelled);
+        }
+        Err(e) => {
+            reset_starting_if_matches(app, capture_id).await;
+            return Err(format!("Screenshot portal failed: {e}"));
+        }
+    };
+    let starting = {
+        let state = app.capture_state();
+        let mut guard = state.lock().await;
+        if !matches!(&*guard, ScreenshotCaptureLifecycle::Starting(s) if s.id == capture_id) {
+            return Ok(BeginOutcome::Busy(None));
+        }
+        let finishing = ScreenshotCaptureLifecycle::Finishing(capture_id);
+        let ScreenshotCaptureLifecycle::Starting(s) = std::mem::replace(&mut *guard, finishing)
+        else {
+            unreachable!("matched Starting above")
+        };
+        s
+    };
+    let r = confirm::save_portal_png(starting, path, max_bytes).await;
+    let failed = r.is_err();
+    // `complete_confirmation` already emits saved/failed: never surface twice.
+    let _ = confirm::complete_confirmation(app, &app.capture_state(), capture_id, r).await;
+    if failed {
+        app.focus_capture_failure();
+    }
+    Ok(BeginOutcome::Started)
 }
 
 async fn reset_starting_if_matches<H: ScreenshotHost>(app: &H, id: Uuid) {

@@ -85,6 +85,8 @@ tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 xcap = "0.9.6"
 image = "0.25.10"
+# #2774 Wayland portal; same version/features rfd already resolves
+ashpd = { version = "=0.11.1", default-features = false, features = ["async-std"] }
 
 # #2079 macOS screenshot capture. A byte copy of the Linux table above.
 [target.'cfg(target_os = "macos")'.dependencies]
