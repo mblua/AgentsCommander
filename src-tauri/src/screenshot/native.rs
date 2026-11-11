@@ -200,7 +200,9 @@ fn key_char_to_code(c: char) -> Option<Code> {
 pub fn register_configured_hotkey<H: ScreenshotHost>(
     app: &H,
     configured: &str,
+    hyprland_bind: bool,
 ) -> Result<(), String> {
+    let _ = hyprland_bind; // #2774 P03 reads it on Wayland
     let parsed = super::parse_screenshot_hotkey(configured)?;
     let shortcut = parsed_to_shortcut(&parsed)?;
 

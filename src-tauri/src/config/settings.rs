@@ -455,6 +455,10 @@ pub struct AppSettings {
     /// #714 Native global hotkey for screenshot capture, e.g. "Ctrl+Q".
     #[serde(default = "default_screenshot_capture_hotkey")]
     pub screenshot_capture_hotkey: String,
+    /// #2774 Let AC keep its own screenshot key binding block in the user's Omarchy
+    /// `~/.config/hypr/bindings.lua`. Off by default; turning it off removes the block.
+    #[serde(default)]
+    pub screenshot_hyprland_bind: bool,
     /// #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Stored
     /// byte-identical to what the user typed; an invalid value blocks the save.
     #[serde(default = "default_sidebar_compact_hotkey")]

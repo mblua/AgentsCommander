@@ -61,15 +61,19 @@ pub async fn screenshot_reload_hotkey(
     app: AppHandle,
     settings: State<'_, SettingsState>,
 ) -> Result<ScreenshotHotkeyStatus, String> {
-    let configured = settings
-        .current_read()
-        .await
-        .map_err(|error| error.to_string())?
-        .screenshot_capture_hotkey
-        .clone();
+    let (configured, hyprland_bind) = {
+        let current = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
+        (
+            current.screenshot_capture_hotkey.clone(),
+            current.screenshot_hyprland_bind,
+        )
+    };
     // Ignore the Err: an OS conflict is captured in the status below; settings
     // validation already rejected any syntactically invalid value.
-    let _ = crate::screenshot::register_configured_hotkey(&app, &configured);
+    let _ = crate::screenshot::register_configured_hotkey(&app, &configured, hyprland_bind);
     let status = app
         .state::<ScreenshotHotkeyState>()
         .lock()
