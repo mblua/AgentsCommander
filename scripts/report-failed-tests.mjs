@@ -270,7 +270,8 @@ function selfTest() {
     assertSelf(lines.length === 2, 'one annotation plus one summary expected');
     assertSelf(
       lines[0] ===
-        '::error file=src/a%2Cb%3Ac%25d.test.ts,line=12,col=5::suite > it injects, 100%25 of the time: AssertionError: expected 1 to be 2',
+        '::error file=src/a%2Cb%3Ac%25d.test.ts,line=12,col=5::suite > it injects, '
+          + '100%25 of the time: AssertionError: expected 1 to be 2',
       `property and data escaping wrong: ${lines[0]}`
     );
     // An ordinary single colon survives unescaped, in both annotation and summary.
