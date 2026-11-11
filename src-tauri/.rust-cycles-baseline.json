@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "8ded2f76f00fe964",
+      "id": "acab6896c0bc789f",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -55,7 +55,6 @@
         "agentscommander_lib::commands::config::profile_selection::lock_removal",
         "agentscommander_lib::commands::config::profile_selection::selection_default",
         "agentscommander_lib::commands::config::profile_selection::target",
-        "agentscommander_lib::commands::config::profile_selection::wire",
         "agentscommander_lib::commands::config::settings_snapshot",
         "agentscommander_lib::commands::config::settings_update",
         "agentscommander_lib::commands::config::web_server",
