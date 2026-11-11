@@ -27,13 +27,14 @@ pub(crate) use assignment::{
 };
 
 mod target;
-pub use target::ScopeFault;
 pub(crate) use target::{
     canonical_compare_key, classify_restart_failure, enumerate_profile_assignment_targets,
     normalize_profile_letter_for_assignment, prevalidate_profile_assignment_restarts,
     profile_assignment_requires_explicit_confirmation, validate_assignment_decision_scope,
     validate_profile_assignment_confirmation, validate_profile_assignment_request,
 };
+
+pub use wire::ScopeFault;
 
 mod fingerprint;
 pub(crate) use fingerprint::{
