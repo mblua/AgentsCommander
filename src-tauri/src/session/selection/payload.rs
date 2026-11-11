@@ -4,7 +4,7 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::session::session::SessionStatus;
+use crate::session::status::SessionStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

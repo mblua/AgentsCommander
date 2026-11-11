@@ -10,4 +10,5 @@ pub(crate) mod remote_alerts;
 pub mod selection;
 #[allow(clippy::module_inception)]
 pub mod session;
+pub(crate) mod status;
 pub(crate) mod warnings;

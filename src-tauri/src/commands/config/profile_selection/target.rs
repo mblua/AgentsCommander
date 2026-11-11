@@ -6,6 +6,8 @@ use crate::config::settings::AppSettings;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 
+pub use super::wire::{ScopeFault, ScopeFaultCode};
+
 use super::wire::{
     AssignmentMode, ConflictDecision, ProfileAssignmentScope, ProfileAssignmentTarget, SavedPair,
     SelectionState,
@@ -17,28 +19,6 @@ pub(crate) struct ProfileCandidate {
     pub(crate) target: ProfileAssignmentTarget,
     pub(crate) matrix_dir: PathBuf,
     pub(crate) expected: Option<crate::config::coding_agent_profiles::ReplicaSelectionExpectation>,
-}
-
-/// #2557 - one replica or folder the scope walk could not count, and why.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScopeFault {
-    pub code: ScopeFaultCode,
-    pub replica_name: String,
-    pub replica_path: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ScopeFaultCode {
-    ConfigUnreadable,
-    ConfigNotJson,
-    ConfigNotObject,
-    IdentityMissing,
-    IdentityMismatch,
-    LocationInvalid,
-    PathUnreadable,
-    FolderUnreadable,
 }
 
 impl ScopeFault {
