@@ -287,7 +287,7 @@ fn enumerate_project_dirs(project_paths: &[String]) -> Vec<(String, PathBuf)> {
 
         // Include base itself if it contains a Project AC Root.
         if has_ac_root(base) {
-            if let Some(name) = base.file_name().and_then(|n| n.to_str()) {
+            if let Some(name) = base.file_name().and_then(std::ffi::OsStr::to_str) {
                 out.push((name.to_string(), base.to_path_buf()));
             }
         }
@@ -359,7 +359,7 @@ fn enumerate_project_dirs_strict(
         if strict_project_ac_root(&base)?.is_some() {
             let name = base
                 .file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .ok_or_else(|| "unsafe_path".to_string())?;
             out.push((name.to_string(), base.clone(), ProjectOrigin::Configured));
         }

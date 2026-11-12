@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import type { Component } from "solid-js";
 import type { TeamAgentSource } from "../../shared/types";
 import { EntityAPI } from "../../shared/ipc";
+import { repoDisplayName } from "../../shared/repo-display-name";
 import { projectStore } from "../stores/project";
 import { TeamContextAlertsEditor } from "./TeamContextAlertsEditor";
 import type { ContextAlertThresholdDraft } from "./team-context-alerts";
@@ -185,11 +186,6 @@ const NewTeamModal: Component<{
         return { ...repo, agents: nextAgents };
       }),
     );
-  };
-
-  const repoDisplayName = (url: string): string => {
-    const match = url.match(/\/([^/]+?)(?:\.git)?$/);
-    return match ? match[1] : url;
   };
 
   const handleCreate = async () => {

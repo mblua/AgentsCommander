@@ -160,7 +160,7 @@ function isUnderAnyPath(path: string, roots: string[]): boolean {
 }
 
 function stringArraysEqual(a: string[] | undefined, b: string[]): boolean {
-  if (!a || a.length !== b.length) return false;
+  if (a?.length !== b.length) return false;
   return a.every((value, index) => value === b[index]);
 }
 

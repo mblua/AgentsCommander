@@ -3,7 +3,9 @@ import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
   resolveAlias as resolveGateAlias,
   qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
-const relevantPath = new RegExp("^(?:(?:std|tokio)::process::Command::new|Command::new|(?:std::)?env::(?:var|var_os|set_var|remove_var))$");
+const COMMAND_NEW = /(?:std|tokio)::process::Command::new|Command::new/.source;
+const ENV_CALL = /(?:std::)?env::(?:var|var_os|set_var|remove_var)/.source;
+const relevantPath = new RegExp(`^(?:${COMMAND_NEW}|${ENV_CALL})$`);
 function resolveAlias(scan, input, scope) {
   return resolveGateAlias(scan, input, scope, relevantPath);
 }

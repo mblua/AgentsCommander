@@ -12,7 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createSnapshot, parseArgs, parseTree, parseChanged,
-    gitRunner } from './sanitizing_baseline.mjs';
+    gitRunner, applyAllowlist, parseAllowlist,
+    formatWarning } from './sanitizing_baseline.mjs';
 import { lineLengths, fileMetrics } from './sanitizing_line_metrics.mjs';
 import { runGate as lengthGate } from './sanitizing_line_length.mjs';
 import { runGate as sizeGate } from './sanitizing_file_size.mjs';
@@ -139,7 +140,7 @@ test('Git failures/spawn/signal/timeout/maxBuffer and missing object cannot give
     assert.throws(() => f.snapshot(f.base, () => ({stdout:Buffer.from('partial'),
         stderr:Buffer.from('failed'),...failure})), e => e.exit === 3);
   }
-  assert.throws(() => f.snapshot(f.base, () => {throw Error('spawn');}), e => e.exit === 3);
+  assert.throws(() => f.snapshot(f.base, () => {throw new Error('spawn');}), e => e.exit === 3);
   const runner = (args, opts) => args[0] === 'cat-file' ? {status:1,stdout:Buffer.from('partial'),
       stderr:Buffer.from('missing object')} : gitRunner(args, opts);
   assert.equal(lengthGate(f.snapshot(f.base,runner)).exit,3);
@@ -275,7 +276,7 @@ test('one-hop path aliases, destructuring/glob/reassignment/cyclic constants ret
       'fs::write').ambiguous,true);
 });
 test('literals comments raw IDs chars/lifetimes preserve offsets and decode Rust escapes', () => {
-  const slash=String.fromCharCode(92);
+  const slash=String.fromCodePoint(92);
   const source='/* outer /* inner */ */ fn r#f<\'a>(x: &\'a str) { let a = r###"/*not comment*/"###; let b = "a'+slash+'x41'+slash+'u{1F600}"; let c = \'x\';let b = b"'+slash+'xFF"; }';
   const a=scanRust('x.rs',source);assert.ok(a.tokens.some(t=>t.kind==='lifetime'));
       assert.ok(a.tokens.some(t=>t.name==='f'));
@@ -372,7 +373,7 @@ test('ERROR dominates FAIL and exact path identity is preserved', t => {
 });
 test('opaque byte literals still validate escapes; Unicode identifiers and arbitrary raw hashes', (
   ) => {
-  const slash=String.fromCharCode(92);
+  const slash=String.fromCodePoint(92);
   assert.throws(()=>scanRust('x.rs','fn f(){let b=b"'+slash+'xFF'+slash+'q";}'),e=>e.exit===3);
   const a=scanRust('x.rs','fn 𐐀(){let s=r########"raw"########;}');
       assert.equal(a.items[0].name,'𐐀');
@@ -381,7 +382,7 @@ test('cfg_attr expression-valued metadata stays production; invalid char escape 
   const a=scanRust('x.rs','#[cfg_attr(feature="x",doc=concat!("one","two"),test)] fn f(){}');
   assert.equal(a.items[0].testOnly,false);assert.ok(a.attributes[0].signals.some(s=>
       s.name==='test'));
-  const slash=String.fromCharCode(92);assert.throws(()=>lexRust('x.rs',"fn f(){let c='"+slash+
+  const slash=String.fromCodePoint(92);assert.throws(()=>lexRust('x.rs',"fn f(){let c='"+slash+
       "q';}"),e=>e.exit===3);
 });
 
@@ -756,12 +757,12 @@ test('P02 actual Git OID mutation/reversion and ERROR precedence for every detec
     [globalsGate,'global.rs','static X: Mutex<X> = init();'],[processGate,'env.rs',
         'fn f() { env::var("x"); }']]) {
     sequence(f,gate,rustRoot+p,'',code);
-    const s=f.snapshot(); s.assertStableHead=()=>{throw Error('HEAD drift');};
+    const s=f.snapshot(); s.assertStableHead=()=>{throw new Error('HEAD drift');};
     assert.equal(gate(s).exit,3);
     const malformed=trees({}, {[rustRoot+p]:'#[cfg(test,unix)] fn f() {}'});
     assert.equal(gate(malformed).exit,3);
     const broken=trees({}, {[rustRoot+p]:''});broken.readBlob=()=>
-        {throw Error('invalid UTF8/mode/blob');};
+        {throw new Error('invalid UTF8/mode/blob');};
     assert.equal(gate(broken).exit,3);
   }
 });
@@ -827,7 +828,6 @@ test('P02 explicit aliases obey local shadowing and grouped imports', () => {
 });
 
 // #3182: sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
-import { applyAllowlist, parseAllowlist } from './sanitizing_baseline.mjs';
 const allow = (gate, rule, file) => ({ gate, rule, path: file, reason: 'moved code', issue: 3182,
     since: '2026-10-23' });
 test('allowlist: accepted, stale entry and unlisted finding', () => {
@@ -877,7 +877,6 @@ test('allowlist: schema refuses malformed and duplicate entries', () => {
 
 registerSnapshotTransferTests({trees, rustRoot, allow});
 
-import { formatWarning } from './sanitizing_baseline.mjs';
 test('05 glob ambiguity warnings are distinct from stale allowlist warnings', () => {
   const p=rustRoot+'glob.rs',result=layoutGate(trees({},
       {[p]:'use unknown::*; #[test] fn f() {}'}));

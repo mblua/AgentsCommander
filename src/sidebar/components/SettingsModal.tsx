@@ -1966,7 +1966,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       // REPLACES the whole entry and spreads siblings untouched.
       blank
         ? { ...map, [agentId]: undefined }
-        : { ...(map ?? {}), [agentId]: { kind: quotaKind(agentId), pattern } },
+        : { ...map, [agentId]: { kind: quotaKind(agentId), pattern } },
     );
   };
 
@@ -1976,7 +1976,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     pendingQuotaSeed.delete(agentId);
     setDraftDirty(true);
     setSettings("data", "quotaSources", (map) => ({
-      ...(map ?? {}),
+      ...map,
       [agentId]: { kind: source.kind, pattern: source.pattern },
     }));
   };
@@ -2027,7 +2027,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!command) return; // never write an empty-string key
     setDraftDirty(true);
     setSettings("data", "agentAutoUpdateByCommand", (map) => ({
-      ...(map ?? {}),
+      ...map,
       [command]: enabled,
     }));
   };
@@ -2095,7 +2095,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", "codingAgentProfiles", "profilesByAgent", (byAgent) => ({
       ...byAgent,
       [agentId]: {
-        ...(byAgent[agentId] ?? {}),
+        ...byAgent[agentId],
         [letter]: cell,
       },
     }));
@@ -2107,7 +2107,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", "codingAgentProfiles", "profileLabelsByAgent", (byAgent) => ({
       ...byAgent,
       [agentId]: {
-        ...(byAgent[agentId] ?? {}),
+        ...byAgent[agentId],
         [letter]: label,
       },
     }));
@@ -2389,7 +2389,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const def = codingAgentsStore
       .catalog()
       .find((d) => commandExecutableBasename(d.command).toLowerCase() === basename);
-    return def && def.configSeed?.dest ? def : null;
+    return def?.configSeed?.dest ? def : null;
   };
 
   const confirmReseed = async () => {

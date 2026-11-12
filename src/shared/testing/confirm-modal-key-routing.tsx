@@ -14,6 +14,17 @@ export interface ConfirmModalKeyRoutingSpies {
   onConfirm: Mock<() => void>;
 }
 
+function keydown(key: string, shiftKey = false): KeyboardEvent {
+  const e = new KeyboardEvent("keydown", {
+    key,
+    shiftKey,
+    cancelable: true,
+    bubbles: true,
+  });
+  document.dispatchEvent(e);
+  return e;
+}
+
 export function describeConfirmModalKeyRouting(
   name: string,
   mountModal: (spies: ConfirmModalKeyRoutingSpies) => JSX.Element
@@ -35,17 +46,6 @@ export function describeConfirmModalKeyRouting(
     cleanup = render(() => mountModal({ onCancel, onConfirm }), root);
     const buttons = Array.from(document.querySelectorAll("button"));
     return { onCancel, onConfirm, buttons };
-  }
-
-  function keydown(key: string, shiftKey = false): KeyboardEvent {
-    const e = new KeyboardEvent("keydown", {
-      key,
-      shiftKey,
-      cancelable: true,
-      bubbles: true,
-    });
-    document.dispatchEvent(e);
-    return e;
   }
 
   describe(`${name} key routing`, () => {

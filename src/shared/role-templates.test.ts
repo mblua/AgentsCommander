@@ -51,22 +51,14 @@ describe("filterRoleTemplates", () => {
     expect(filterRoleTemplates(templates, "   ")).toHaveLength(templates.length);
   });
 
-  it("query_matches_name_case_insensitively", () => {
-    const r = filterRoleTemplates(templates, "FRONTEND");
+  it.each([
+    ["query_matches_name_case_insensitively", "FRONTEND", "agency:frontend-developer"],
+    ["query_matches_description_case_insensitively", "apis", "agency:backend-engineer"],
+    ["query_matches_category_case_insensitively", "paid media", "agency:paid-media-lead"],
+  ])("%s", (_name, query, expectedId) => {
+    const r = filterRoleTemplates(templates, query);
     expect(r).toHaveLength(1);
-    expect(r[0].id).toBe("agency:frontend-developer");
-  });
-
-  it("query_matches_description_case_insensitively", () => {
-    const r = filterRoleTemplates(templates, "apis");
-    expect(r).toHaveLength(1);
-    expect(r[0].id).toBe("agency:backend-engineer");
-  });
-
-  it("query_matches_category_case_insensitively", () => {
-    const r = filterRoleTemplates(templates, "paid media");
-    expect(r).toHaveLength(1);
-    expect(r[0].id).toBe("agency:paid-media-lead");
+    expect(r[0].id).toBe(expectedId);
   });
 
   it("query_matches_source", () => {

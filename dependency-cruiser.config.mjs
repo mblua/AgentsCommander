@@ -29,14 +29,14 @@ export default {
       name: "no-terminal-helper-back-edge",
       severity: "error",
       from: {
-        path: "^(src/terminal/components|scripts/fixtures/frontend-dependency-cycle/seams)/(terminal-session-registry|terminal-output-admission)\\.ts$",
+        path: String.raw`^(src/terminal/components|scripts/fixtures/frontend-dependency-cycle/seams)/(terminal-session-registry|terminal-output-admission)\.ts$`,
       },
       to: {
         path: String.raw`([/\\]TerminalView\.tsx$` +
           "|^src/(sidebar|browser|main|resource-monitor|screenshot-overlay|spec-board|watchers)/" +
           "|^src/terminal/(components|stores)/" +
           String.raw`|^src/shared/ipc\.ts$` +
-          "|^scripts/fixtures/frontend-dependency-cycle/seams/(terminal-session-registry|terminal-output-admission|sidebar|ipc)\\.ts$" +
+          String.raw`|^scripts/fixtures/frontend-dependency-cycle/seams/(terminal-session-registry|terminal-output-admission|sidebar|ipc)\.ts$` +
           "|^node_modules/@tauri-apps/api/)",
       },
     },

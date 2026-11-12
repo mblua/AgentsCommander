@@ -169,7 +169,7 @@ export function createAgentDragReorder(options: AgentDragReorderOptions): AgentD
 
   const onPointerMove = (e: PointerEvent) => {
     const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (e.pointerId !== drag?.pointerId) return;
     drag.lastY = e.clientY;
     if (!drag.started) {
       if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
@@ -180,7 +180,7 @@ export function createAgentDragReorder(options: AgentDragReorderOptions): AgentD
 
   const onPointerUp = (e: PointerEvent) => {
     const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (e.pointerId !== drag?.pointerId) return;
     // A refetch that re-rendered mid-drag detaches drag.row: from < 0, no-op.
     const from = rows().indexOf(drag.row);
     teardownPointerDrag();
@@ -189,7 +189,7 @@ export function createAgentDragReorder(options: AgentDragReorderOptions): AgentD
   };
 
   const onPointerCancel = (e: PointerEvent) => {
-    if (pointerDrag && e.pointerId === pointerDrag.pointerId) cancelPointerDrag();
+    if (e.pointerId === pointerDrag?.pointerId) cancelPointerDrag();
   };
 
   onCleanup(teardownPointerDrag);

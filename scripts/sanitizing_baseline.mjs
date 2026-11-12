@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 export class GateError extends Error {
   constructor(message, exit = 3) { super(message); this.exit = exit; }
 }
-export const codeOrder = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+export const codeOrder = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 export function decode(bytes, context) {
   try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new GateError(`${context}: invalid UTF8; repair the Git input`); }

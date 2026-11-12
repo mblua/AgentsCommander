@@ -35,7 +35,7 @@ function isControlIntroducer(char: string): boolean {
 
 function skipCsi(data: string, bodyStart: number): number {
   for (let i = bodyStart; i < data.length; i += 1) {
-    const code = data.charCodeAt(i);
+    const code = data.codePointAt(i)!;
     if (code >= 0x40 && code <= 0x7e) {
       return i + 1;
     }
@@ -49,7 +49,7 @@ function skipStringSequence(
   belTerminates: boolean,
 ): number {
   for (let i = bodyStart; i < data.length; i += 1) {
-    const code = data.charCodeAt(i);
+    const code = data.codePointAt(i)!;
     if (code === 0x9c || (belTerminates && code === 0x07)) {
       return i + 1; // 8-bit ST, or BEL for OSC
     }

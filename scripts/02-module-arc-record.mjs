@@ -325,7 +325,10 @@ function reduceGraph(graph, file) {
 
   // Explicit comparator: a bare sort() is implementation-defined string coercion and
   // localeCompare is locale-dependent. Neither is a reproducible artifact.
-  lines.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  lines.sort((a, b) => {
+    if (a < b) return -1;
+    return a > b ? 1 : 0;
+  });
   return lines;
 }
 

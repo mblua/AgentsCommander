@@ -505,8 +505,8 @@ function terminalSuccessResponse(
   };
 }
 
-const UI_TERMINAL_UNSIGNED_VALUE = /^(?:0|[1-9][0-9]*)$/;
-const UI_TERMINAL_SIGNED_VALUE = /^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/;
+const UI_TERMINAL_UNSIGNED_VALUE = /^(?:0|[1-9]\d*)$/;
+const UI_TERMINAL_SIGNED_VALUE = /^(?:0|[1-9]\d*|-[1-9]\d*)$/;
 const UI_TERMINAL_CONTROL_CHARACTER = /\p{Cc}/u;
 
 function parseUiTerminalOperation(
@@ -642,7 +642,7 @@ function queryAcrossOpenRoots(selector: string): HTMLElement[] {
 function cssEscape(value: string): string {
   const css = globalThis.CSS as { escape?: (value: string) => string } | undefined;
   if (css?.escape) return css.escape(value);
-  return value.replaceAll("\\", "\\\\").replaceAll("\"", '\\"');
+  return value.replaceAll("\\", String.raw`\\`).replaceAll("\"", String.raw`\"`);
 }
 
 function snapshotTarget(element: HTMLElement): UiAutomationTarget {

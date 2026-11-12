@@ -175,7 +175,7 @@ jobs:
 
   # Light tier runs on every event: rust-regression-windows, rust-slow-test-windows and
   # issue-1850-release-windows (Windows, the only leg above a 2.5% failure
-  # rate), clippy-linux, plus rust-fmt and test-debt (cheap).
+  # rate), clippy-linux, rust-fmt, test-debt and frontend-regression.
   # Full tier adds every other job on every 10th run, on the run started by
   # adding the `ci:full` label, or on a manual dispatch. See #2417 for the
   # failure-rate sample.
@@ -3906,8 +3906,7 @@ jobs:
   frontend-regression:
     name: frontend-regression
     # Skip branch-deletion push events while still requiring pull request validation.
-    needs: ci-tier
-    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
+    if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

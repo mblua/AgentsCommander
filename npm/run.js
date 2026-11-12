@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-const { spawn } = require('child_process');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
 const { resolveBinPath } = require('./resolve-bin');
 
 const binDir = path.join(__dirname, 'bin');

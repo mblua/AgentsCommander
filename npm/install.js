@@ -1,9 +1,9 @@
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
-const crypto = require('crypto');
-const os = require('os');
-const { execSync } = require('child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const https = require('node:https');
+const crypto = require('node:crypto');
+const os = require('node:os');
+const { execSync } = require('node:child_process');
 const { assertExecutable } = require('./resolve-bin');
 const { createStartMenuShortcut } = require('./windows-shortcut');
 const { createLaunchpadAlias } = require('./macos-alias');
@@ -165,7 +165,7 @@ function installBinary() {
 
 function cleanupFailedInstall(shasumTmpPath) {
   if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-  if (typeof shasumTmpPath !== 'undefined' && fs.existsSync(shasumTmpPath)) fs.unlinkSync(shasumTmpPath);
+  if (shasumTmpPath !== undefined && fs.existsSync(shasumTmpPath)) fs.unlinkSync(shasumTmpPath);
 }
 
 async function main() {

@@ -702,7 +702,7 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
   });
 
   it("the codex pattern is the forty stored bytes", () => {
-    expect(CODEX_WEEKLY_QUOTA_REGEX.length).toBe(40);
+    expect(CODEX_WEEKLY_QUOTA_REGEX).toHaveLength(40);
     expect(CODEX_WEEKLY_QUOTA_REGEX.includes(String.raw`\u00b7`)).toBe(true);
   });
 

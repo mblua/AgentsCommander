@@ -33,7 +33,7 @@ use super::{
 use crate::config::local_overlay::LocalSettingsOverlay;
 use serde_json::{Map, Value};
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 mod backup;
