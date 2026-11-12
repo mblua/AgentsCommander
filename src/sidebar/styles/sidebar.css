@@ -4675,14 +4675,6 @@ html.light-theme .settings-hint-error {
 .agent-picker-modal {
   width: min(1180px, 96vw);
   max-height: min(760px, 88vh);
-  /* 1. Full-window frame with the same 3 px gaps as v2/v3. */
-  width: calc(100vw - 6px);
-  max-width: none;
-  height: calc(100vh - 6px);
-  max-height: none;
-  overflow-x: hidden;
-  overflow-y: auto; /* safety valve only: no scroll at the target sizes */
-  scrollbar-gutter: stable;
 }
 
 /* ── #2014 layout A: full-window frame, startup lines, left-only filter ──
@@ -4692,6 +4684,17 @@ html.light-theme .settings-hint-error {
    that shares `.selection-lock-*` or `.agent-comparison-*` can change.
    The 3 px edge gaps are CSS px: in Tauri zoom is native setZoom, so 100vh/100vw
    follow the real window with no prototype zoom factor. */
+
+/* 1. Full-window frame with the same 3 px gaps as v2/v3. */
+.agent-picker-modal {
+  width: calc(100vw - 6px);
+  max-width: none;
+  height: calc(100vh - 6px);
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto; /* safety valve only: no scroll at the target sizes */
+  scrollbar-gutter: stable;
+}
 
 /* 2. Every block keeps its content height; the three-panel body absorbs the
       rest, so the action bar never falls off the frame. */
