@@ -46,7 +46,7 @@ impl ScriptedBackend {
         self.push(
             id,
             Painted::Frame(
-                rows.iter().map(|r| r.to_string()).collect(),
+                rows.iter().map(ToString::to_string).collect(),
                 vec![false; rows.len()],
                 cursor_row,
             ),
@@ -338,7 +338,7 @@ pub(super) fn state_watcher(id: &str, pattern: &str) -> ResolvedWatcher {
 }
 
 pub(super) fn as_refs(rows: &[String]) -> Vec<&str> {
-    rows.iter().map(|row| row.as_str()).collect()
+    rows.iter().map(String::as_str).collect()
 }
 
 pub(super) fn occurrence_watcher(
