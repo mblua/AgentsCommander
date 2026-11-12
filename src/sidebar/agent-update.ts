@@ -296,7 +296,9 @@ export function mergeSnapshot(current: AgentUpdateState, status: AgentUpdateStat
   // #1551 round 5 - a snapshot computed BEFORE the pass started (inProgress false, nodes []) can be delivered
   // AFTER agent_updates_started on Tauri (§3.3): it carries no node information and must never shrink the store.
   // Only a snapshot computed during the pass (inProgress true) can report a skip this surface missed.
-  const mergedNodes = status.inProgress ? mergeNodes(current.nodes, incomingNodes) : (current.nodes.length > 0 ? current.nodes : incomingNodes);
+  let mergedNodes = incomingNodes;
+  if (status.inProgress) mergedNodes = mergeNodes(current.nodes, incomingNodes);
+  else if (current.nodes.length > 0) mergedNodes = current.nodes;
   // #1551 round 6 - a skip this surface already saw wins over any snapshot, even one that seeds an empty store.
   const nodes = mergedNodes.filter((node) => !current.skippedNodes.includes(node.command));
   return {

@@ -31,11 +31,9 @@ export function applySelectionToSessionList(
     selection.mode === "live" &&
     !!target &&
     typeof target.status === "string";
-  const activeId = selection.mode === "dormant"
-    ? target?.id ?? null
-    : targetCanBeLive
-      ? selection.id
-      : null;
+  let activeId: string | null = null;
+  if (selection.mode === "dormant") activeId = target?.id ?? null;
+  else if (targetCanBeLive) activeId = selection.id;
 
   return {
     activeId,
