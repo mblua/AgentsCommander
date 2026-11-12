@@ -61,9 +61,7 @@ function rustToken(source, index) {
       const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"',
         "\\'": "'" };
       if (escape in simple) return simple[escape];
-      if (escape.startsWith('\\x')) {
-        return String.fromCharCode(Number.parseInt(escape.slice(2), 16));
-      }
+      if (escape.startsWith('\\x')) return String.fromCharCode(parseInt(escape.slice(2), 16));
       if (escape.startsWith(String.raw`\u{`)) {
         const code = Number.parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
         if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff))
