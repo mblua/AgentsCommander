@@ -524,7 +524,7 @@ function ordinaryManifest(cargo, external = false, path, tree) {
       cargo = cargo.slice(arrayHeader[0].length);
       continue;
     }
-    const header = /^\[[ \t]*([^[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
+    const header = /^\[[ \t]*([^\[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
       .exec(cargo);
     if (header) {
       section = header[1].trim();
