@@ -551,7 +551,7 @@ const ProjectPanel: Component = () => {
         }),
         new Promise<never>((_, reject) => {
           timeoutTimer = window.setTimeout(
-            () => reject("Command timeout: restart_session"),
+            () => reject(new Error("Command timeout: restart_session")),
             RESTART_TIMEOUT_MS,
           );
         }),
@@ -744,7 +744,7 @@ const ProjectPanel: Component = () => {
         ),
         new Promise<never>((_, reject) => {
           timeoutTimer = window.setTimeout(
-            () => reject("Command timeout: restart_session"),
+            () => reject(new Error("Command timeout: restart_session")),
             RESTART_TIMEOUT_MS,
           );
         }),
