@@ -203,7 +203,7 @@ On Wayland the save succeeds and the result arrives a moment later. The `Screens
 
 The titlebar always shows a camera chip. When the shortcut is active, the chip also shows the key, for example `Ctrl + Q`, and its tooltip and accessible name are `Take a screenshot (<hotkey>)`. Clicking the chip captures, like the key.
 
-**A chip with only the camera means the shortcut is not active.** Its tooltip and accessible name are then `Take a screenshot`, and clicking it still captures. The most common cause is another application already owning that combination at the OS level. AgentsCommander raises an error toast reading `Screenshot hotkey <configured> is not active: <error>` once per distinct reason, not on every Settings save, so a conflict reaches you even if you never look at the titlebar. Pick a different combination in Settings and save; the key appears in the chip without a restart.
+**A chip with only the camera means the shortcut is not active.** Its tooltip and accessible name are then `Take a screenshot`, and clicking it still captures. The most common cause is another application already owning that combination at the OS level. At startup AgentsCommander raises an error toast reading `Screenshot hotkey <configured> is not active: <error>` when the configured shortcut failed to register, so a conflict reaches you even if you never look at the titlebar. On Wayland the same toast can also appear later, once per distinct reason, not on every Settings save. Pick a different combination in Settings and save; the new shortcut registers at once. On Wayland the key appears in the chip without a restart; on Windows, macOS and X11 the chip shows the new key after a restart.
 
 Registration is also written to the app log:
 
