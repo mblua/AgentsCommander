@@ -1,7 +1,19 @@
 use crate::filesystem::{directories, documents};
 
-use super::ResponseWatcherMap;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+/// Tracks active response marker watchers per session.
+/// Key: (`session_id`, `request_id`) -> accumulated output buffer.
+/// The read loop scans for `%%AC_RESPONSE::<rid>::START/END%%` markers.
+pub type ResponseWatcherMap = Arc<Mutex<HashMap<(Uuid, String), ResponseWatcher>>>;
+
+pub struct ResponseWatcher {
+    pub response_dir: std::path::PathBuf,
+    pub buffer: Option<String>,
+    pub capturing: bool,
+}
 
 /// #973 (B) - is there a cell on this screen a human could see?
 ///

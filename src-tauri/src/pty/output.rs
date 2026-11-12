@@ -15,6 +15,7 @@ pub(crate) use capture::CapturedVtScreen;
 use capture::{CaptureFailure, ScreenReplayState};
 use markers::screen_shows_visible_content;
 pub(crate) use markers::{output_has_printable_activity, scan_response_markers};
+pub use markers::{ResponseWatcher, ResponseWatcherMap};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -29,17 +30,6 @@ use std::time::Instant;
 #[cfg(test)]
 use terminal_snapshot_renderer::{TerminalActiveBuffer, TerminalCellWidth, TerminalColor};
 use uuid::Uuid;
-
-/// Tracks active response marker watchers per session.
-/// Key: (`session_id`, `request_id`) -> accumulated output buffer.
-/// The read loop scans for `%%AC_RESPONSE::<rid>::START/END%%` markers.
-pub type ResponseWatcherMap = Arc<Mutex<HashMap<(Uuid, String), ResponseWatcher>>>;
-
-pub struct ResponseWatcher {
-    pub response_dir: std::path::PathBuf,
-    pub buffer: Option<String>,
-    pub capturing: bool,
-}
 
 #[derive(Clone)]
 pub struct SessionIoFanout {
