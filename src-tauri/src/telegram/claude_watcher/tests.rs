@@ -91,7 +91,7 @@ async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
             .into_iter()
             .map(|name| {
                 let path = config.join(name);
-                let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let len = std::fs::metadata(&path).map_or(0, |m| m.len());
                 (path, len)
             })
             .collect(),
@@ -130,7 +130,7 @@ async fn a_room_only_claude_reader_truncates_no_global_log_and_still_emits() {
         "no HTTP request may be attempted without a bot demand"
     );
     for (path, len) in before {
-        let after = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let after = std::fs::metadata(&path).map_or(0, |m| m.len());
         assert_eq!(
             after,
             len,
@@ -974,7 +974,7 @@ async fn forced_read_error_preserves_session_text_and_absent_kind() {
         .expect("reader joins");
     let expected = (
         "read-error-claude".to_owned(),
-        format!("JSONL read error: {}", expected_error),
+        format!("JSONL read error: {expected_error}"),
         None,
     );
     assert!(observed

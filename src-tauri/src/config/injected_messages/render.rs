@@ -1,8 +1,8 @@
-use super::registry;
-use super::warn_once;
-use super::MessageSpec;
-use super::KNOWN_MESSAGES;
-use super::MAX_RENDERED_BYTES;
+use super::registry::registry;
+use super::registry::spec_for;
+use super::registry::warn_once;
+use super::registry::MessageWarnings;
+use super::registry::MAX_RENDERED_BYTES;
 
 // ---------------------------------------------------------------------------
 // Pure rendering engine
@@ -124,7 +124,7 @@ pub(super) fn sanitize(value: &str) -> String {
     //    two it allows. Derived, never restated.
     let mut out: String = converted
         .chars()
-        .filter(|ch| matches!(ch, '\n' | '\t') || !crate::pty::inject::is_forbidden_pty_scalar(*ch))
+        .filter(|ch| matches!(ch, '\n' | '\t') || !crate::pty_input::is_forbidden_pty_scalar(*ch))
         .collect();
     // 3. Neutralize the reply-marker prefix `pty/output.rs` scans for in PTY
     //    output, which injected text echoes into. Stays after step 2, which can
@@ -149,16 +149,13 @@ pub(super) fn sanitize(value: &str) -> String {
 pub(crate) fn render_with_template(
     template: &str,
     values: &[(&str, &str)],
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> String {
     let (expanded, unknown) = expand_tokens(template, values);
     for token in unknown {
         warn_once(
-            format!("token:{}", token),
-            &format!(
-                "[injected-messages] unknown placeholder {} left as literal text",
-                token
-            ),
+            format!("token:{token}"),
+            &format!("[injected-messages] unknown placeholder {token} left as literal text"),
             warnings,
         );
     }
@@ -180,7 +177,7 @@ pub(super) fn render_resolved(
     template: &str,
     from_registry: bool,
     values: &[(&str, &str)],
-    warnings: &crate::config::injected_messages::MessageWarnings,
+    warnings: &MessageWarnings,
 ) -> String {
     let rendered = render_with_template(template, values, warnings);
     if !rendered.is_empty() {
@@ -193,11 +190,10 @@ pub(super) fn render_resolved(
     if from_registry {
         if let Some(spec) = spec_for(id) {
             warn_once(
-                format!("empty:{}", id),
+                format!("empty:{id}"),
                 &format!(
-                    "[injected-messages] the `{}` template renders to nothing after sanitization; \
-                     the built-in default is used instead",
-                    id
+                    "[injected-messages] the `{id}` template renders to nothing after \
+                     sanitization; the built-in default is used instead"
                 ),
                 warnings,
             );
@@ -211,11 +207,7 @@ pub(super) fn render_resolved(
 /// Never fails and never blocks an alert. Returns a non-empty string for every
 /// id in `KNOWN_MESSAGES`; it returns `""` only for an id this binary does not
 /// know, which no production call site can produce.
-pub(crate) fn render(
-    id: &str,
-    values: &[(&str, &str)],
-    warnings: &crate::config::injected_messages::MessageWarnings,
-) -> String {
+pub(crate) fn render(id: &str, values: &[(&str, &str)], warnings: &MessageWarnings) -> String {
     let (template, from_registry) = match registry(warnings).get(id) {
         Some(template) => (template.clone(), true),
         None => match spec_for(id) {
@@ -225,8 +217,4 @@ pub(crate) fn render(
         },
     };
     render_resolved(id, &template, from_registry, values, warnings)
-}
-
-pub(super) fn spec_for(id: &str) -> Option<&'static MessageSpec> {
-    KNOWN_MESSAGES.iter().find(|spec| spec.id == id)
 }

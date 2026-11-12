@@ -61,7 +61,7 @@ fn run_child(name: &str, case: &str, root_absent: bool) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x0800_0000);
     }
     let mut owner = RootChild {
         process: command.spawn().unwrap(),
@@ -97,6 +97,87 @@ fn run_child(name: &str, case: &str, root_absent: bool) {
         "#3318 purge child case={case} elapsed={:?}",
         started.elapsed()
     );
+}
+
+fn assert_purge_gate_ready(
+    snapshots: &[crate::session::session::SessionInfo],
+    idle: &crate::pty::idle_detector::IdleDetector,
+    id: Uuid,
+    case: &str,
+) {
+    let selected = crate::phone::mailbox::settle::filter_sessions_by_fqn(
+        snapshots,
+        "proj-a:wg-1-dev-team/dev-rust",
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].id, id.to_string());
+    assert!(!matches!(selected[0].status, SessionStatus::Exited(_)));
+    assert_eq!(selected[0].is_root_agent, case == "flag");
+    let ready = evaluate_gate(
+        &[PurgeGatePeer {
+            fqn: "proj-a:wg-1-dev-team/dev-rust".into(),
+            all_session_ids: vec![id.to_string()],
+            live: vec![PurgeGateSession {
+                session_id: id,
+                mirror_idle: true,
+                readiness: idle.purge_readiness(&[id])[0],
+            }],
+        }],
+        Duration::from_millis(3000),
+    );
+    assert!(ready.passed, "positive control must reach the destroy loop");
+}
+
+fn assert_purge_outcome(
+    body: &serde_json::Value,
+    hooks: &MailboxTestHooks,
+    remaining: Option<crate::session::session::Session>,
+    pty: &Mutex<PtyManager>,
+    id: Uuid,
+    case: &str,
+) {
+    if case == "ordinary" {
+        // The pre-existing cfg(test) force_close_session branch removes the real manager
+        // record. This proves purge's Guard B and destroy dispatch, not its transaction.
+        assert_eq!(body["status"], "purged", "{body}");
+        assert_eq!(body["purged"], 1);
+        assert_eq!(body["failed"], 0);
+        assert_eq!(body["already_closed"], 0);
+        assert_eq!(body["peers"][0]["outcome"], "closed");
+        assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![id]);
+        assert!(hooks
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, MailboxTestEvent::Destroy(sid) if *sid == id)));
+        assert!(remaining.is_none());
+    } else {
+        assert_eq!(body["status"], "failed_root_guard", "{body}");
+        assert_eq!(body["offending_session_id"], id.to_string());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(!hooks
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, MailboxTestEvent::Destroy(sid) if *sid == id)));
+        let remaining = remaining.unwrap();
+        assert_eq!(remaining.is_root_agent, case == "flag");
+        assert!(!matches!(remaining.status, SessionStatus::Exited(_)));
+        assert!(pty.lock().unwrap().has_session(id));
+    }
+}
+
+fn record_live_mock_route(pty: &Mutex<PtyManager>, id: Uuid) {
+    let pty = pty.lock().unwrap();
+    pty.record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess);
+    pty.backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess)
+        .as_any()
+        .downcast_ref::<MailboxMockPtyBackend>()
+        .unwrap()
+        .set_live(id);
+    assert!(pty.has_session(id));
 }
 
 #[tokio::test]
@@ -157,40 +238,11 @@ async fn h2_purge_root_protection() {
         .token
         .to_string();
     let pty = app.state::<Arc<Mutex<PtyManager>>>();
-    {
-        let pty = pty.lock().unwrap();
-        pty.record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess);
-        pty.backend_for_kind(crate::pty::backend::SessionBackendKind::LocalProcess)
-            .as_any()
-            .downcast_ref::<MailboxMockPtyBackend>()
-            .unwrap()
-            .set_live(id);
-        assert!(pty.has_session(id));
-    }
+    record_live_mock_route(&pty, id);
     let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
     idle.set_pty_input_ready_for_test(id);
     let snapshots = manager.read().await.list_sessions().await;
-    let selected = crate::phone::mailbox::settle::filter_sessions_by_fqn(
-        &snapshots,
-        "proj-a:wg-1-dev-team/dev-rust",
-    );
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].id, id.to_string());
-    assert!(!matches!(selected[0].status, SessionStatus::Exited(_)));
-    assert_eq!(selected[0].is_root_agent, case == "flag");
-    let ready = evaluate_gate(
-        &[PurgeGatePeer {
-            fqn: "proj-a:wg-1-dev-team/dev-rust".into(),
-            all_session_ids: vec![id.to_string()],
-            live: vec![PurgeGateSession {
-                session_id: id,
-                mirror_idle: true,
-                readiness: idle.purge_readiness(&[id])[0],
-            }],
-        }],
-        Duration::from_millis(3000),
-    );
-    assert!(ready.passed, "positive control must reach the destroy loop");
+    assert_purge_gate_ready(&snapshots, &idle, id, &case);
     if case == "missing-cwd" {
         std::fs::remove_dir(&cwd).unwrap();
     }
@@ -218,37 +270,7 @@ async fn h2_purge_root_protection() {
     let body: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(response).unwrap()).unwrap();
     let remaining = manager.read().await.get_session(id).await;
-    if case == "ordinary" {
-        // The pre-existing cfg(test) force_close_session branch removes the real manager
-        // record. This proves purge's Guard B and destroy dispatch, not its transaction.
-        assert_eq!(body["status"], "purged", "{body}");
-        assert_eq!(body["purged"], 1);
-        assert_eq!(body["failed"], 0);
-        assert_eq!(body["already_closed"], 0);
-        assert_eq!(body["peers"][0]["outcome"], "closed");
-        assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![id]);
-        assert!(hooks
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|event| matches!(event, MailboxTestEvent::Destroy(sid) if *sid == id)));
-        assert!(remaining.is_none());
-    } else {
-        assert_eq!(body["status"], "failed_root_guard", "{body}");
-        assert_eq!(body["offending_session_id"], id.to_string());
-        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
-        assert!(!hooks
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|event| matches!(event, MailboxTestEvent::Destroy(sid) if *sid == id)));
-        let remaining = remaining.unwrap();
-        assert_eq!(remaining.is_root_agent, case == "flag");
-        assert!(!matches!(remaining.status, SessionStatus::Exited(_)));
-        assert!(pty.lock().unwrap().has_session(id));
-    }
+    assert_purge_outcome(&body, &hooks, remaining, &pty, id, &case);
     if case == "missing-root" {
         assert!(!root.exists());
     }

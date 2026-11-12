@@ -76,7 +76,7 @@ fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
             );
             assert_eq!(
                 settings.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
-                Some(vec!["claude".into(), "".into()]),
+                Some(vec!["claude".into(), String::new()]),
                 "{loader}"
             );
             assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
@@ -269,7 +269,7 @@ fn id_hash_activation_main_publisher_failure_keeps_diagnostic_and_no_success() {
     let loaded = super::super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
     let previous = std::fs::read(&path).unwrap();
     super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
-        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace))
+        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace));
     });
     let result = super::super::save_settings_to_path_preserving_project_paths(&loaded, &path);
     super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
@@ -645,7 +645,7 @@ fn b3_assert_a_failed_sidecar_write_strips_nothing(reconcile: bool) {
     let before = std::fs::read(&path).unwrap();
 
     let result = if reconcile {
-        super::super::save_settings_with_project_paths_to_path(&settings, &path).map(|_| ())
+        super::super::save_settings_with_project_paths_to_path(&settings, &path)
     } else {
         super::super::save_settings_to_path_preserving_project_paths(&settings, &path).map(|_| ())
     };

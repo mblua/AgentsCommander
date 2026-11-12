@@ -20,7 +20,7 @@ pub fn create_agent_folder_on_disk(
 ) -> Result<CreatedAgentFolder, String> {
     let parent = PathBuf::from(parent_path);
     if !crate::filesystem::directories::agent_parent_exists(&parent) {
-        return Err(format!("Parent folder does not exist: {}", parent_path));
+        return Err(format!("Parent folder does not exist: {parent_path}"));
     }
 
     let agent_name = agent_name.trim();
@@ -37,19 +37,19 @@ pub fn create_agent_folder_on_disk(
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             return Err(format!("Folder already exists: {}", agent_dir.display()));
         }
-        Err(e) => return Err(format!("Failed to create folder: {}", e)),
+        Err(e) => return Err(format!("Failed to create folder: {e}")),
     }
 
-    let parent_name = parent
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| parent_path.to_string());
-    let display_name = format!("{}/{}", parent_name, agent_name);
+    let parent_name = parent.file_name().map_or_else(
+        || parent_path.to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+    let display_name = format!("{parent_name}/{agent_name}");
 
-    let claude_md = format!("You are the agent {}", display_name);
+    let claude_md = format!("You are the agent {display_name}");
     let claude_path = agent_dir.join("CLAUDE.md");
     agent_files::write_agent_prompt(&claude_path, &claude_md)
-        .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))?;
+        .map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;
 
     // TODO: When replica creation is added (for __agent_* dirs inside workgroups),
     // write config.json with: { "context": ["$AGENTSCOMMANDER_CONTEXT"] }

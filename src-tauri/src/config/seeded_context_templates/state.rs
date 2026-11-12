@@ -163,7 +163,7 @@ impl LoadedState {
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    format!("{:x}", digest)
+    format!("{digest:x}")
 }
 
 /// #1748: the operator-owned override that replaces this template at render time.
@@ -278,10 +278,7 @@ pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, St
                 if strict {
                     return Err(message);
                 }
-                log::warn!(
-                    "[context-templates] {}; skipping state persistence",
-                    message
-                );
+                log::warn!("[context-templates] {message}; skipping state persistence");
                 return Ok(LoadedState {
                     state: SeededContextTemplateState::default(),
                     trusted: false,
@@ -307,10 +304,7 @@ pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, St
             if strict {
                 return Err(message);
             }
-            log::warn!(
-                "[context-templates] {}; skipping state persistence",
-                message
-            );
+            log::warn!("[context-templates] {message}; skipping state persistence");
             return Ok(LoadedState {
                 state: SeededContextTemplateState::default(),
                 trusted: false,
@@ -327,7 +321,11 @@ pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, St
             e
         )
     })?;
-    let state = match serde_json::from_slice::<SeededContextTemplateState>(&bytes) {
+    decode_template_state(&path, &bytes, strict)
+}
+
+fn decode_template_state(path: &Path, bytes: &[u8], strict: bool) -> Result<LoadedState, String> {
+    let state = match serde_json::from_slice::<SeededContextTemplateState>(bytes) {
         Ok(state) => state,
         Err(e) => {
             log::warn!(
@@ -353,10 +351,7 @@ pub(crate) fn load_state(ac_root: &Path, strict: bool) -> Result<LoadedState, St
         if strict {
             return Err(message);
         }
-        log::warn!(
-            "[context-templates] {}; skipping state persistence",
-            message
-        );
+        log::warn!("[context-templates] {message}; skipping state persistence");
         return Ok(LoadedState {
             state: SeededContextTemplateState::default(),
             trusted: false,
@@ -377,7 +372,7 @@ pub(crate) fn unique_state_temp_path(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
     let counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
@@ -424,7 +419,7 @@ pub(crate) fn persist_state(
     }
 
     let content = serde_json::to_vec_pretty(state)
-        .map_err(|e| format!("Failed to serialize context template state: {}", e))?;
+        .map_err(|e| format!("Failed to serialize context template state: {e}"))?;
     let temp = unique_state_temp_path(&path);
     let mut file =
         crate::filesystem::context_templates::create_template_stage(&temp).map_err(|e| {

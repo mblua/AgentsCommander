@@ -20,6 +20,7 @@ pub(crate) mod environment;
 pub(crate) mod injected_messages;
 pub(crate) mod instance_artifacts;
 pub(crate) mod instance_gitignore;
+pub(crate) mod instructions_filename;
 pub mod local_config_io;
 pub(crate) mod local_overlay;
 pub(crate) mod loops;
@@ -57,6 +58,14 @@ use std::time::Duration;
 /// `instance_base()`. `config::root_agent` re-exports it, so every existing
 /// reader of `crate::config::root_agent::ROOT_AGENT_DIR_NAME` keeps resolving.
 pub const ROOT_AGENT_DIR_NAME: &str = "ac-root-agent";
+
+/// #3980: the one spelling of the `config.json` file name.
+pub(crate) const CONFIG_FILE_NAME: &str = "config.json";
+
+/// #3980: the `config.json` path inside `dir`. Spelling only: no IO.
+pub(crate) fn config_file_path(dir: &Path) -> PathBuf {
+    dir.join(CONFIG_FILE_NAME)
+}
 
 pub(crate) const TRANSIENT_IO_WINDOWS_BACKOFFS_MS: [u64; 5] = [15, 30, 60, 120, 240];
 

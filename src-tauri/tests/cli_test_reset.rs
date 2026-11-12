@@ -15,7 +15,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 struct Tmp(PathBuf);
@@ -34,8 +34,7 @@ impl Tmp {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
         Self(path)
@@ -62,7 +61,7 @@ fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
 /// legacy `MAX_PATH` limit, and Rust's `Command` deliberately forwards long
 /// paths unchanged, so a plain long path fails to spawn with
 /// `ERROR_PATH_NOT_FOUND`. `canonicalize` yields the verbatim (`\\?\C:\...`)
-/// form, which CreateProcessW accepts; on Unix the path is already usable.
+/// form, which `CreateProcessW` accepts; on Unix the path is already usable.
 fn spawnable_binary_path(bin: &Path) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -78,7 +77,7 @@ fn spawnable_binary_path(bin: &Path) -> PathBuf {
 fn testable_reset_identity_lock() -> MutexGuard<'static, ()> {
     TESTABLE_RESET_IDENTITY_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
@@ -144,7 +143,7 @@ fn create_junction(junction: &Path, target: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn open_without_delete_share(path: &Path) -> std::fs::File {
     use std::os::windows::fs::OpenOptionsExt;
-    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
 
     std::fs::OpenOptions::new()
         .read(true)
@@ -323,8 +322,7 @@ fn long_path_target_deletes_only_allowed_directories() {
     if let Err(e) = std::fs::create_dir_all(&base) {
         println!(
             "skipping long path reset regression; see \
-                docs/testing/destructive-filesystem-regression.md#reset-long-path-check: {}",
-            e
+                docs/testing/destructive-filesystem-regression.md#reset-long-path-check: {e}"
         );
         return;
     }
@@ -485,8 +483,7 @@ fn junction_target_refuses_and_deletes_nothing() {
     if let Err(e) = create_junction(&junction, &real) {
         println!(
             "skipping junction reset regression; see \
-                docs/testing/destructive-filesystem-regression.md#reset-junction-reparse-check: {}",
-            e
+                docs/testing/destructive-filesystem-regression.md#reset-junction-reparse-check: {e}"
         );
         return;
     }

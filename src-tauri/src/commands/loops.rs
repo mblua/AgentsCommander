@@ -267,8 +267,8 @@ pub async fn get_loop_config(
     let project_dir = PathBuf::from(project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
     let dir = loop_dir(&ac_root, &id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", id));
+    if !crate::filesystem::loop_files::loop_path_is_directory(&dir) {
+        return Err(format!("Loop '{id}' not found"));
     }
     let config = read_loop_config(&dir)?;
     let state = read_loop_state(&dir).unwrap_or_default();

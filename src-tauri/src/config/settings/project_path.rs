@@ -31,19 +31,7 @@ pub(crate) use identity::{CandidateResolver, FsCandidateResolver, SideOutcome, S
 pub(crate) use resolution::resolve_registrations;
 pub(crate) use resolution::IssueKind;
 
-/// Mirrors the frontend `normalizePath` at
-/// `src/sidebar/stores/project.ts:17-19`. Comparison only — the persisted
-/// entry retains the original byte sequence.
-pub(crate) fn normalize_for_compare(s: &str) -> String {
-    let s = crate::path_utils::normalize_windows_verbatim_path(s);
-    // Slashes normalised, lowercased, trailing `/` stripped. The trailing
-    // strip closes Round-1 IR.3.2 (shell tab-completion appends `\` on dirs;
-    // without trim, `C:\foo\` and `C:\foo` would become DIFFERENT entries).
-    s.replace('\\', "/")
-        .to_lowercase()
-        .trim_end_matches('/')
-        .to_string()
-}
+pub(crate) use resolution::normalize_for_compare;
 
 mod migration;
 mod transaction;
@@ -223,7 +211,7 @@ pub(crate) fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value>
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| Value::Object(Map::new()));
-    let _ = LocalSettingsOverlay::load_and_merge_paired(
+    let _ = crate::config::settings::overlay::load_settings_overlay(
         path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,
@@ -342,8 +330,7 @@ pub(crate) fn extract_group(
             absolute: RawStringField::string(abs),
             relative: companion_list
                 .as_ref()
-                .map(|c| c[i].clone())
-                .unwrap_or_else(RawStringField::absent),
+                .map_or_else(RawStringField::absent, |c| c[i].clone()),
         })
         .collect();
 
@@ -489,8 +476,7 @@ pub(crate) fn apply_project_decode_to_value(
             state
                 .selected_head
                 .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
         );
         root.insert(
             FIELD_PROJECT_PATHS.to_string(),

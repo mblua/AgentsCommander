@@ -40,6 +40,63 @@ impl Harness {
     }
 }
 
+fn fake_read_receipt(read: &Harness, failure: &str) -> Result<Option<Vec<u8>>, String> {
+    read.event("read");
+    if failure.starts_with("armed_") && read.count("read") == 1 {
+        return Ok(None);
+    }
+    if failure == "armed_error" {
+        return Err("armed read failed".into());
+    }
+    if failure == "read" {
+        return Err("read failed".into());
+    }
+    Ok(read.receipt.lock().unwrap().clone())
+}
+
+fn fake_prepare_receipt(
+    prepare: &Harness,
+    pending: &PendingSelfClear,
+    sid: Uuid,
+    bytes: &[u8],
+    lease: &Lease,
+    failure: &str,
+) -> Result<Prepared<()>, String> {
+    prepare.event("prepare");
+    if let Some((entered, release)) = &prepare.prepare_barriers {
+        entered.wait();
+        release.wait();
+    }
+    if failure == "write" {
+        return Err("write failed".into());
+    }
+    prepare.event("write");
+    *prepare.stage.lock().unwrap() = bytes.to_vec();
+    prepare.event("read_stage");
+    if failure == "read_stage" {
+        return Err("stage read failed".into());
+    }
+    let mut verified = bytes.to_vec();
+    if failure == "corrupt" {
+        verified = b"invalid".to_vec();
+    }
+    if failure == "mismatch" {
+        let mut receipt: Receipt = serde_json::from_slice(bytes).unwrap();
+        receipt.session_id = Uuid::new_v4();
+        verified = serde_json::to_vec_pretty(&receipt).unwrap();
+    }
+    if failure == "arm" {
+        // Remove only the captured owner, then install
+        // an unrelated Legacy owner.
+        assert!(pending.release(lease));
+        pending.reserve_legacy(sid).unwrap();
+    }
+    Ok(Prepared {
+        stage: (),
+        bytes: verified,
+    })
+}
+
 async fn run(
     request: Request,
     pending: Arc<PendingSelfClear>,
@@ -62,53 +119,9 @@ async fn run(
         request,
         pending.clone(),
         Callbacks {
-            read_receipt: move |_path: &Path| {
-                read.event("read");
-                if failure.starts_with("armed_") && read.count("read") == 1 {
-                    return Ok(None);
-                }
-                if failure == "armed_error" {
-                    return Err("armed read failed".into());
-                }
-                if failure == "read" {
-                    return Err("read failed".into());
-                }
-                Ok(read.receipt.lock().unwrap().clone())
-            },
+            read_receipt: move |_path: &Path| fake_read_receipt(&read, failure),
             prepare_receipt: move |_path: &Path, bytes: &[u8], lease: &Lease| {
-                prepare.event("prepare");
-                if let Some((entered, release)) = &prepare.prepare_barriers {
-                    entered.wait();
-                    release.wait();
-                }
-                if failure == "write" {
-                    return Err("write failed".into());
-                }
-                prepare.event("write");
-                *prepare.stage.lock().unwrap() = bytes.to_vec();
-                prepare.event("read_stage");
-                if failure == "read_stage" {
-                    return Err("stage read failed".into());
-                }
-                let mut verified = bytes.to_vec();
-                if failure == "corrupt" {
-                    verified = b"invalid".to_vec();
-                }
-                if failure == "mismatch" {
-                    let mut receipt: Receipt = serde_json::from_slice(bytes).unwrap();
-                    receipt.session_id = Uuid::new_v4();
-                    verified = serde_json::to_vec_pretty(&receipt).unwrap();
-                }
-                if failure == "arm" {
-                    // Remove only the captured owner, then install
-                    // an unrelated Legacy owner.
-                    assert!(pending.release(lease));
-                    pending.reserve_legacy(sid).unwrap();
-                }
-                Ok(Prepared {
-                    stage: (),
-                    bytes: verified,
-                })
+                fake_prepare_receipt(&prepare, &pending, sid, bytes, lease, failure)
             },
             publish_prepared: move |_stage: &(), _path: &Path| {
                 assert_eq!(

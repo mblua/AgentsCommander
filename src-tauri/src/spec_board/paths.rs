@@ -30,8 +30,7 @@ pub(crate) async fn resolve_repo_root(
             return Ok(canonical);
         }
         return Err(format!(
-            "Selected path is not a valid repository root: {}",
-            requested
+            "Selected path is not a valid repository root: {requested}"
         ));
     }
     roots
@@ -69,7 +68,7 @@ pub(crate) async fn validate_user_path(
     if must_exist {
         let meta = spec_path_metadata(path)
             .await
-            .map_err(|e| format!("Spec path does not exist or is inaccessible: {}", e))?;
+            .map_err(|e| format!("Spec path does not exist or is inaccessible: {e}"))?;
         if meta.is_dir() {
             return Err("Spec path points to a directory".to_string());
         }
@@ -86,7 +85,7 @@ pub(crate) async fn validate_user_path(
     let canonical_candidate = if must_exist && spec_path_exists(path) {
         canonical_spec_path(path)
             .await
-            .map_err(|e| format!("Failed to canonicalize spec path: {}", e))?
+            .map_err(|e| format!("Failed to canonicalize spec path: {e}"))?
     } else {
         canonical_parent.join(suffix)
     };
@@ -207,8 +206,8 @@ pub(crate) async fn reject_link_ancestors(root: &Path, target: &Path) -> Result<
 pub(crate) fn reject_unsupported_extension(path: &Path) -> Result<(), String> {
     let ext = path
         .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase());
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("mmd" | "mermaid" | "md") => Ok(()),
         _ => Err("Spec board supports only .mmd, .mermaid, and .md files".to_string()),
@@ -237,7 +236,7 @@ pub(crate) fn path_is_under(path: &Path, root: &Path) -> bool {
 pub(crate) fn path_compare_key(path: &Path) -> String {
     let mut s = path.to_string_lossy().replace('/', "\\");
     if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
-        s = format!(r"\\{}", stripped);
+        s = format!(r"\\{stripped}");
     } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
         s = stripped.to_string();
     }

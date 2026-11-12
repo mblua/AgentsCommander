@@ -401,7 +401,7 @@ impl fmt::Debug for ProjectPublicationPermit<'_> {
     }
 }
 
-impl<'a> ProjectPublicationPermit<'a> {
+impl ProjectPublicationPermit<'_> {
     pub(crate) fn degraded_without_guard(reason: ManifestDegradedReason) -> Self {
         Self {
             state: ProjectPublicationPermitState::DegradedUntracked {
@@ -453,11 +453,7 @@ impl<'a> ProjectPublicationPermit<'a> {
     ) -> ManifestRecordOutcome {
         activation.authorize();
         if let Err(error) = parse_config_scope(&scope) {
-            log::warn!(
-                "[seed_manifest] rejected invalid unrecordable scope={} error={}",
-                scope,
-                error
-            );
+            log::warn!("[seed_manifest] rejected invalid unrecordable scope={scope} error={error}");
             return ManifestRecordOutcome::PublishedUnrecorded(
                 ManifestDegradedReason::InvalidCanonical,
             );
@@ -615,8 +611,6 @@ impl ProjectSeedManifestGuard {
 pub(crate) fn log_record_failure(scope: &str, error: &SeedManifestError) {
     log::warn!(
         "[seed_manifest] target or lifecycle action succeeded but manifest persistence did not \
-            scope={} error={}",
-        scope,
-        error
+            scope={scope} error={error}"
     );
 }

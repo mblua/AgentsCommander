@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::run_owned_selection_operation_timed;
 
 // ── #2475 synthetic selection-lock bench ─────────────────────────
 //
@@ -254,41 +255,19 @@ async fn bench_batch_with(
     bench_batch_locked(serial, bench, &options, deadline_at, async {}).await
 }
 
-/// The batch of 13 reads, each through its real command and the timed
-/// turn wrapper. Every read is SUBMITTED before `between` runs. The batch
-/// owns `serial` and its sinks until every submitted read has finished.
-///
-/// Cooperative budget: no WAIT of the batch path goes past `deadline_at`
-/// (the caller used the same instant for the lock) and no drain wait
-/// goes past `grace_at`. Fixture setup, the submitting polls and any
-/// future that does not yield are outside the timer.
-async fn bench_batch_locked(
-    serial: tokio::sync::MutexGuard<'static, ()>,
-    bench: &BenchFixture,
-    options: &BenchOptions,
-    deadline_at: std::time::Instant,
-    between: impl std::future::Future<Output = ()> + 'static,
-) -> Result<BenchRun, BenchError> {
-    use std::task::Poll;
-    use tauri::Manager;
-    let grace_at = deadline_at + options.grace.unwrap_or(BENCH_DRAIN_GRACE);
-    options.record(|m| {
-        m.deadline_at = Some(deadline_at);
-        m.grace_at = Some(grace_at);
-    });
-    let anchor = bench.anchor.as_path();
-    let _witness = options.witness.as_ref().map(OccupancyGuard::enter);
-    let app = tauri::test::mock_app();
-    app.manage(empty_session_manager());
-    app.manage(state_for(bench.settings.clone()));
-    let handle = app.handle().clone();
-    let done = Arc::new(std::sync::Mutex::new(
-        std::collections::BTreeSet::<u64>::new(),
-    ));
+type BenchInvocations =
+    std::collections::BTreeMap<u64, (&'static str, super::ProfileAssignmentScope)>;
+type BenchDone = Arc<std::sync::Mutex<std::collections::BTreeSet<u64>>>;
 
+/// Registers the timing sinks of every bench command on one channel.
+fn bench_sinks() -> (
+    Arc<std::sync::Mutex<std::sync::mpsc::Sender<SelectionTimingSample>>>,
+    std::sync::mpsc::Receiver<SelectionTimingSample>,
+    Vec<TimingSinkRegistration>,
+) {
     let (sample_tx, sample_rx) = std::sync::mpsc::channel::<SelectionTimingSample>();
     let sample_tx = Arc::new(std::sync::Mutex::new(sample_tx));
-    let _sinks: Vec<TimingSinkRegistration> = BENCH_COMMANDS
+    let sinks: Vec<TimingSinkRegistration> = BENCH_COMMANDS
         .iter()
         .map(|command| {
             let sample_tx = Arc::clone(&sample_tx);
@@ -300,102 +279,47 @@ async fn bench_batch_locked(
             )
         })
         .collect();
-    if options.inject_uncorrelated {
-        crate::session::selection::run_owned_selection_operation_timed(
-            "get_replica_selection_default",
-            || async { Ok::<(), String>(()) },
-        )
-        .await
-        .map_err(BenchError::Failed)?;
-    }
+    (sample_tx, sample_rx, sinks)
+}
 
-    let occupancy = Arc::new(Occupancy::default());
-    let mut by_invocation = std::collections::BTreeMap::new();
-    let mut reads: Vec<BenchRead> = Vec::new();
-    let scopes = [
-        super::ProfileAssignmentScope::Replica,
-        super::ProfileAssignmentScope::Kind,
-        super::ProfileAssignmentScope::Workgroup,
-    ];
-    for scope in &scopes {
-        for _ in 0..2 {
-            let context = BenchContext::new(&occupancy);
-            let id = context.invocation;
-            by_invocation.insert(id, ("preview_selection_lock_removal", scope.clone()));
-            let request = api_removal_preview_request(anchor, scope.clone());
-            let (handle, done) = (handle.clone(), Arc::clone(&done));
-            reads.push(Box::pin(async move {
-                let ok = crate::session::selection::BENCH_CONTEXT
-                    .scope(
-                        context,
-                        super::preview_selection_lock_removal(
-                            handle.state(),
-                            handle.state(),
-                            request,
-                        ),
-                    )
-                    .await
-                    .is_ok();
-                done.lock().expect("done").insert(id);
-                (id, ok, std::time::Instant::now())
-            }));
-        }
-    }
-    for scope in &scopes {
-        for _ in 0..2 {
-            let context = BenchContext::new(&occupancy);
-            let id = context.invocation;
-            by_invocation.insert(
-                id,
-                ("preview_coding_agent_profile_selection", scope.clone()),
-            );
-            let request =
-                api_preview_request(anchor, scope.clone(), super::AssignmentMode::Ordinary);
-            let (handle, done) = (handle.clone(), Arc::clone(&done));
-            reads.push(Box::pin(async move {
-                let ok = crate::session::selection::BENCH_CONTEXT
-                    .scope(
-                        context,
-                        super::preview_coding_agent_profile_selection(
-                            handle.state(),
-                            handle.state(),
-                            request,
-                        ),
-                    )
-                    .await
-                    .is_ok();
-                done.lock().expect("done").insert(id);
-                (id, ok, std::time::Instant::now())
-            }));
-        }
-    }
-    {
-        let context = BenchContext::new(&occupancy);
-        let id = context.invocation;
-        by_invocation.insert(
-            id,
-            (
-                "get_replica_selection_default",
-                super::ProfileAssignmentScope::Replica,
-            ),
-        );
-        let request = api_default_request(anchor);
-        let (handle, done) = (handle.clone(), Arc::clone(&done));
-        reads.push(Box::pin(async move {
-            let ok = crate::session::selection::BENCH_CONTEXT
-                .scope(
-                    context,
-                    super::get_replica_selection_default(handle.state(), request),
-                )
-                .await
-                .is_ok();
-            done.lock().expect("done").insert(id);
-            (id, ok, std::time::Instant::now())
-        }));
-    }
+/// Creates one read's context and records its invocation.
+fn bench_register(
+    occupancy: &Arc<Occupancy>,
+    by_invocation: &mut BenchInvocations,
+    command: &'static str,
+    scope: super::ProfileAssignmentScope,
+) -> (BenchContext, u64) {
+    let context = BenchContext::new(occupancy);
+    let id = context.invocation;
+    by_invocation.insert(id, (command, scope));
+    (context, id)
+}
 
-    // One poll per read runs its submission: `submitted` is stamped and
-    // the owned task is spawned before the next read is built.
+/// Wraps one command future: it runs under its bench context and marks
+/// its invocation done.
+fn bench_read<T, E>(
+    context: BenchContext,
+    id: u64,
+    done: &BenchDone,
+    command: impl std::future::Future<Output = Result<T, E>> + 'static,
+) -> BenchRead {
+    let done = Arc::clone(done);
+    Box::pin(async move {
+        let ok = crate::session::selection::BENCH_CONTEXT
+            .scope(context, command)
+            .await
+            .is_ok();
+        done.lock().expect("done").insert(id);
+        (id, ok, std::time::Instant::now())
+    })
+}
+
+/// One poll per read runs its submission: `submitted` is stamped and
+/// the owned task is spawned before the next read is built.
+async fn bench_submit(
+    reads: Vec<BenchRead>,
+) -> (Vec<(u64, bool, std::time::Instant)>, Vec<BenchRead>) {
+    use std::task::Poll;
     let mut finished = Vec::new();
     let mut pending = Vec::new();
     for mut read in reads {
@@ -404,75 +328,42 @@ async fn bench_batch_locked(
             Poll::Pending => pending.push(read),
         }
     }
-    let submitted_reads = pending.len();
-    let mut wait: BenchWait = Box::pin(async move {
-        between.await;
-        futures::future::join_all(pending).await
-    });
-    let joined =
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline_at), wait.as_mut())
-            .await
-        {
-            Ok(joined) => joined,
-            Err(_) => {
-                options.record(|m| m.expired_observed = Some(std::time::Instant::now()));
-                if let Some(notify) = &options.on_deadline {
-                    notify.notify_one();
-                }
-                // The owned reads are detached, not cancelled, when their
-                // waiters drop: keep the sinks and the serialization lock
-                // until every one of them has finished.
-                if tokio::time::timeout_at(tokio::time::Instant::from_std(grace_at), wait.as_mut())
-                    .await
-                    .is_ok()
-                {
-                    drop(serial);
-                    return Err(BenchError::Failed(format!(
-                        "bench batch timed out; {submitted_reads} submitted reads drained before \
-                    release"
-                    )));
-                }
-                // The harness lost control of reads it launched. In order:
-                // 1. keep the fixture on disk, so no orphan reads a deleted path;
-                let retained = bench
-                    .temp
-                    .lock()
-                    .expect("fixture temp")
-                    .take()
-                    .map(tempfile::TempDir::keep)
-                    .unwrap_or_else(|| bench.root.clone());
-                // 2. keep the sinks registered and 3. keep `serial` held;
-                // 4. name what is still pending and where the fixture is.
-                let finished_ids = done.lock().expect("done").clone();
-                let pending_reads: Vec<(u64, &'static str)> = by_invocation
-                    .iter()
-                    .filter(|(id, _)| !finished_ids.contains(id))
-                    .map(|(id, (command, _))| (*id, *command))
-                    .collect();
-                let diagnostic = format!(
-                "bench drain expired: pending invocations {pending_reads:?}; retained fixture {}",
-                retained.display()
-            );
-                eprintln!("{diagnostic}");
-                // 5. the terminal action.
-                match options.drain_expiry {
-                    DrainExpiryAction::Abort => std::process::abort(),
-                    DrainExpiryAction::Record => {
-                        return Err(BenchError::DrainExpired(Box::new(DrainExpired {
-                            diagnostic,
-                            pending: pending_reads,
-                            retained,
-                            wait,
-                            sinks: _sinks,
-                            serial,
-                            _app: app,
-                        })));
-                    }
-                }
-            }
-        };
-    finished.extend(joined);
+    (finished, pending)
+}
 
+/// Drain expiry, steps 1, 2 and 4: retains the fixture and names what is
+/// still pending.
+fn bench_drain_report(
+    bench: &BenchFixture,
+    done: &BenchDone,
+    by_invocation: &BenchInvocations,
+) -> (PathBuf, Vec<(u64, &'static str)>, String) {
+    // 1. keep the fixture on disk, so no orphan reads a deleted path;
+    let retained = bench
+        .temp
+        .lock()
+        .expect("fixture temp")
+        .take()
+        .map_or_else(|| bench.root.clone(), tempfile::TempDir::keep);
+    // 2. keep the sinks registered and 3. keep `serial` held;
+    // 4. name what is still pending and where the fixture is.
+    let finished_ids = done.lock().expect("done").clone();
+    let pending_reads: Vec<(u64, &'static str)> = by_invocation
+        .iter()
+        .filter(|(id, _)| !finished_ids.contains(id))
+        .map(|(id, (command, _))| (*id, *command))
+        .collect();
+    let diagnostic = format!(
+        "bench drain expired: pending invocations {pending_reads:?}; retained fixture {}",
+        retained.display()
+    );
+    eprintln!("{diagnostic}");
+    (retained, pending_reads, diagnostic)
+}
+
+fn bench_completed(
+    finished: Vec<(u64, bool, std::time::Instant)>,
+) -> Result<std::collections::BTreeMap<u64, std::time::Instant>, BenchError> {
     let mut completed = std::collections::BTreeMap::new();
     for (id, ok, at) in finished {
         if !ok {
@@ -480,9 +371,16 @@ async fn bench_batch_locked(
         }
         completed.insert(id, at);
     }
+    Ok(completed)
+}
 
-    // Every sample is recorded inside its owned task before that task
-    // completes, so all of this batch's samples are already queued.
+/// Every sample is recorded inside its owned task before that task
+/// completes, so all of this batch's samples are already queued.
+fn bench_correlated_samples(
+    sample_rx: &std::sync::mpsc::Receiver<SelectionTimingSample>,
+    by_invocation: &BenchInvocations,
+    options: &BenchOptions,
+) -> Result<Vec<SelectionTimingSample>, BenchError> {
     let mut samples = Vec::new();
     let mut uncorrelated = 0usize;
     for sample in sample_rx.try_iter() {
@@ -513,20 +411,221 @@ async fn bench_batch_locked(
             by_invocation.len()
         )));
     }
+    Ok(samples)
+}
+
+fn bench_run(
+    samples: Vec<SelectionTimingSample>,
+    by_invocation: BenchInvocations,
+    completed: std::collections::BTreeMap<u64, std::time::Instant>,
+    occupancy: &Occupancy,
+) -> BenchRun {
     let first_submit = samples
         .iter()
         .map(|sample| sample.submitted)
         .min()
         .expect("samples");
     let last_done = *completed.values().max().expect("completions");
-    Ok(BenchRun {
+    BenchRun {
         batch_wall_ms: ms(last_done.saturating_duration_since(first_submit)),
         occupancy_max: occupancy.max(),
         body_threads: samples.iter().map(|sample| sample.body_thread).collect(),
         samples,
         by_invocation,
         completed,
-    })
+    }
+}
+
+#[derive(PartialEq)]
+enum BenchWaitOutcome {
+    Joined(Vec<(u64, bool, std::time::Instant)>),
+    /// The budget expired but every read drained within the grace.
+    Drained,
+    /// The drain grace also expired.
+    Stuck,
+}
+
+/// Waits for the batch until `deadline_at`; on expiry, records it and
+/// waits for the drain until `grace_at`.
+async fn bench_wait(
+    options: &BenchOptions,
+    deadline_at: std::time::Instant,
+    grace_at: std::time::Instant,
+    wait: &mut BenchWait,
+) -> BenchWaitOutcome {
+    match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline_at), wait.as_mut()).await
+    {
+        Ok(joined) => BenchWaitOutcome::Joined(joined),
+        Err(_) => {
+            options.record(|m| m.expired_observed = Some(std::time::Instant::now()));
+            if let Some(notify) = &options.on_deadline {
+                notify.notify_one();
+            }
+            // The owned reads are detached, not cancelled, when their
+            // waiters drop: keep the sinks and the serialization lock
+            // until every one of them has finished.
+            if tokio::time::timeout_at(tokio::time::Instant::from_std(grace_at), wait.as_mut())
+                .await
+                .is_ok()
+            {
+                BenchWaitOutcome::Drained
+            } else {
+                BenchWaitOutcome::Stuck
+            }
+        }
+    }
+}
+
+/// Records the batch's budget instants and returns `grace_at`.
+fn bench_grace_at(options: &BenchOptions, deadline_at: std::time::Instant) -> std::time::Instant {
+    let grace_at = deadline_at + options.grace.unwrap_or(BENCH_DRAIN_GRACE);
+    options.record(|m| {
+        m.deadline_at = Some(deadline_at);
+        m.grace_at = Some(grace_at);
+    });
+    grace_at
+}
+
+/// The three scopes each preview command reads, in order.
+fn bench_scopes() -> [super::ProfileAssignmentScope; 3] {
+    [
+        super::ProfileAssignmentScope::Replica,
+        super::ProfileAssignmentScope::Kind,
+        super::ProfileAssignmentScope::Workgroup,
+    ]
+}
+
+/// Test-only: records one timed sample WITHOUT a run context.
+async fn bench_inject_uncorrelated(options: &BenchOptions) -> Result<(), BenchError> {
+    if options.inject_uncorrelated {
+        run_owned_selection_operation_timed("get_replica_selection_default", || async {
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(BenchError::Failed)?;
+    }
+    Ok(())
+}
+
+/// The batch of 13 reads, each through its real command and the timed
+/// turn wrapper. Every read is SUBMITTED before `between` runs. The batch
+/// owns `serial` and its sinks until every submitted read has finished.
+///
+/// Cooperative budget: no WAIT of the batch path goes past `deadline_at`
+/// (the caller used the same instant for the lock) and no drain wait
+/// goes past `grace_at`. Fixture setup, the submitting polls and any
+/// future that does not yield are outside the timer.
+async fn bench_batch_locked(
+    serial: tokio::sync::MutexGuard<'static, ()>,
+    bench: &BenchFixture,
+    options: &BenchOptions,
+    deadline_at: std::time::Instant,
+    between: impl std::future::Future<Output = ()> + 'static,
+) -> Result<BenchRun, BenchError> {
+    use tauri::Manager;
+    let grace_at = bench_grace_at(options, deadline_at);
+    let anchor = bench.anchor.as_path();
+    let _witness = options.witness.as_ref().map(OccupancyGuard::enter);
+    let app = tauri::test::mock_app();
+    app.manage(empty_session_manager());
+    app.manage(state_for(bench.settings.clone()));
+    let handle = app.handle().clone();
+    let done: BenchDone = Arc::new(std::sync::Mutex::new(
+        std::collections::BTreeSet::<u64>::new(),
+    ));
+
+    let (_sample_tx, sample_rx, _sinks) = bench_sinks();
+    bench_inject_uncorrelated(options).await?;
+
+    let occupancy = Arc::new(Occupancy::default());
+    let mut by_invocation = std::collections::BTreeMap::new();
+    let mut reads: Vec<BenchRead> = Vec::new();
+    let scopes = bench_scopes();
+    for scope in &scopes {
+        for _ in 0..2 {
+            let command = "preview_selection_lock_removal";
+            let (context, id) =
+                bench_register(&occupancy, &mut by_invocation, command, scope.clone());
+            let request = api_removal_preview_request(anchor, scope.clone());
+            let handle = handle.clone();
+            reads.push(bench_read(context, id, &done, async move {
+                super::preview_selection_lock_removal(handle.state(), handle.state(), request).await
+            }));
+        }
+    }
+    for scope in &scopes {
+        for _ in 0..2 {
+            let command = "preview_coding_agent_profile_selection";
+            let (context, id) =
+                bench_register(&occupancy, &mut by_invocation, command, scope.clone());
+            let request =
+                api_preview_request(anchor, scope.clone(), super::AssignmentMode::Ordinary);
+            let handle = handle.clone();
+            reads.push(bench_read(context, id, &done, async move {
+                super::preview_coding_agent_profile_selection(
+                    handle.state(),
+                    handle.state(),
+                    request,
+                )
+                .await
+            }));
+        }
+    }
+    {
+        let (context, id) = bench_register(
+            &occupancy,
+            &mut by_invocation,
+            "get_replica_selection_default",
+            super::ProfileAssignmentScope::Replica,
+        );
+        let request = api_default_request(anchor);
+        let handle = handle.clone();
+        reads.push(bench_read(context, id, &done, async move {
+            super::get_replica_selection_default(handle.state(), request).await
+        }));
+    }
+
+    let (mut finished, pending) = bench_submit(reads).await;
+    let submitted_reads = pending.len();
+    let mut wait: BenchWait = Box::pin(async move {
+        between.await;
+        futures::future::join_all(pending).await
+    });
+    let joined = match bench_wait(options, deadline_at, grace_at, &mut wait).await {
+        BenchWaitOutcome::Joined(joined) => joined,
+        outcome => {
+            if outcome == BenchWaitOutcome::Drained {
+                drop(serial);
+                return Err(BenchError::Failed(format!(
+                    "bench batch timed out; {submitted_reads} submitted reads drained before \
+                    release"
+                )));
+            }
+            // The harness lost control of reads it launched. In order:
+            let (retained, pending_reads, diagnostic) =
+                bench_drain_report(bench, &done, &by_invocation);
+            // 5. the terminal action.
+            match options.drain_expiry {
+                DrainExpiryAction::Abort => std::process::abort(),
+                DrainExpiryAction::Record => {
+                    return Err(BenchError::DrainExpired(Box::new(DrainExpired {
+                        diagnostic,
+                        pending: pending_reads,
+                        retained,
+                        wait,
+                        sinks: _sinks,
+                        serial,
+                        _app: app,
+                    })));
+                }
+            }
+        }
+    };
+    finished.extend(joined);
+
+    let completed = bench_completed(finished)?;
+    let samples = bench_correlated_samples(&sample_rx, &by_invocation, options)?;
+    Ok(bench_run(samples, by_invocation, completed, &occupancy))
 }
 
 fn bench_key(run: &BenchRun, sample: &SelectionTimingSample) -> String {

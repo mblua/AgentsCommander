@@ -13,6 +13,7 @@ use crate::commands::session::create::publication::register_session_samplers;
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::commands::session::resume_probe::build_title_prompt_appendage;
 use crate::config::settings::SettingsState;
+use crate::pty::container_paths::ContainerEnvWarning;
 use crate::session::manager::SessionManager;
 use crate::session::selection::SelectionCause;
 use crate::session::selection::SelectionCoordinator;
@@ -75,17 +76,7 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
 
     maybe_spawn_coordinator_title(app, cwd, id, agent_id.is_some(), is_coordinator);
 
-    let finalization_warnings = session_env_warnings
-        .iter()
-        .map(|warning| {
-            SessionWarning::new(
-                id,
-                warning.key.clone(),
-                warning.kind,
-                warning.message.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let finalization_warnings = session_env_finalization_warnings(id, &session_env_warnings);
 
     // 0.8.0: removed the "Show the terminal window when a session is created" branch.
     // Under the unified-window model the main window is created up-front and stays
@@ -143,6 +134,23 @@ pub(crate) async fn complete<'a: 'b, 'b, R: tauri::Runtime>(
     .await
 }
 
+fn session_env_finalization_warnings(
+    id: uuid::Uuid,
+    session_env_warnings: &[ContainerEnvWarning],
+) -> Vec<SessionWarning> {
+    session_env_warnings
+        .iter()
+        .map(|warning| {
+            SessionWarning::new(
+                id,
+                warning.key.clone(),
+                warning.kind,
+                warning.message.clone(),
+            )
+        })
+        .collect::<Vec<_>>()
+}
+
 async fn finalize<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
     mgr: &SessionManager,
@@ -178,7 +186,7 @@ async fn finalize<R: tauri::Runtime>(
             .ok_or_else(|| "deferred create pending record disappeared".to_string())?;
         inline_pending_for_body
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         return Ok(CreateCompletion::Deferred(DeferredCreateOutput {
             info,
@@ -216,7 +224,7 @@ async fn finalize<R: tauri::Runtime>(
     if finalized.is_ok() && inline_transaction.is_some() {
         inline_pending_for_body
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
     }
     let completion = finalized.map(CreateCompletion::Finalized);
@@ -257,10 +265,7 @@ fn maybe_spawn_coordinator_title<R: tauri::Runtime>(
     //
     // Currently the only bootstrap payload is the Coordinator auto-title prompt.
     if has_agent && !is_coordinator {
-        log::debug!(
-            "[session] No bootstrap injection for non-coordinator agent session {}",
-            id
-        );
+        log::debug!("[session] No bootstrap injection for non-coordinator agent session {id}");
     }
     if has_agent && is_coordinator {
         let auto_title_enabled = false; /*
@@ -277,24 +282,19 @@ fn maybe_spawn_coordinator_title<R: tauri::Runtime>(
             tokio::spawn(async move {
                 let prompt = match build_title_prompt_appendage(&cwd_clone) {
                     Ok(Some(prompt)) => {
-                        log::info!(
-                            "[session] Auto-title prompt built for session {}",
-                            session_id
-                        );
+                        log::info!("[session] Auto-title prompt built for session {session_id}");
                         prompt
                     }
                     Ok(None) => {
                         log::info!(
-                            "[session] Auto-title prompt skipped (gate not passed) for session {}",
-                            session_id
+                            "[session] Auto-title prompt skipped (gate not passed) for \
+                             session {session_id}"
                         );
                         return;
                     }
                     Err(e) => {
                         log::warn!(
-                            "[session] Auto-title prompt skipped for session {}: {}",
-                            session_id,
-                            e
+                            "[session] Auto-title prompt skipped for session {session_id}: {e}"
                         );
                         return;
                     }
@@ -308,16 +308,11 @@ fn maybe_spawn_coordinator_title<R: tauri::Runtime>(
                     .await
                 {
                     Ok(()) => {
-                        log::info!(
-                            "[session] Auto-title prompt injected for session {}",
-                            session_id
-                        );
+                        log::info!("[session] Auto-title prompt injected for session {session_id}");
                     }
                     Err(e) => {
                         log::warn!(
-                            "[session] Failed to inject auto-title prompt for {}: {}",
-                            session_id,
-                            e
+                            "[session] Failed to inject auto-title prompt for {session_id}: {e}"
                         );
                     }
                 }
@@ -338,8 +333,7 @@ async fn wait_for_title_prompt_ready<R: tauri::Runtime>(
         if start.elapsed() >= max_wait {
             log::warn!(
                 "[session] Timeout waiting for idle before auto-title prompt injection \
-             for session {}",
-                session_id
+             for session {session_id}"
             );
             break;
         }
@@ -353,8 +347,7 @@ async fn wait_for_title_prompt_ready<R: tauri::Runtime>(
             Some(_) => {}
             None => {
                 log::warn!(
-                    "[session] Session {} gone before auto-title prompt injection",
-                    session_id
+                    "[session] Session {session_id} gone before auto-title prompt injection"
                 );
                 return false;
             }
@@ -401,18 +394,15 @@ async fn publish_tooling<R: tauri::Runtime>(
             };
             if let Some(write) = write {
                 if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
-                    log::warn!("Failed to save lastCodingAgent: {}", e);
+                    log::warn!("Failed to save lastCodingAgent: {e}");
                 }
             }
             // #592 - persist the loaded profile content-hash so drift survives an
             // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
             if let Some(hash) = session.profile_content_hash.as_deref() {
                 log::debug!(
-                    "[profile-hash] spawn-persist: session={} agent={} hash={} cwd={:?}",
-                    id,
-                    aid,
-                    hash,
-                    cwd,
+                    "[profile-hash] spawn-persist: session={id} agent={aid} hash={hash} \
+                     cwd={cwd:?}",
                 );
                 if let Err(e) =
                     crate::config::coding_agent_profiles::set_replica_profile_content_hash(
@@ -420,7 +410,7 @@ async fn publish_tooling<R: tauri::Runtime>(
                         hash,
                     )
                 {
-                    log::warn!("Failed to persist profileContentHash: {}", e);
+                    log::warn!("Failed to persist profileContentHash: {e}");
                 }
             }
         }
@@ -454,7 +444,9 @@ pub(crate) async fn await_startup<R: tauri::Runtime>(
         }
         return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
     }
-    if !inline_transaction.is_some_and(|transaction| transaction.has_active_restore_capability()) {
+    if !inline_transaction
+        .is_some_and(crate::session::selection::SelectionTransaction::has_active_restore_capability)
+    {
         if let Some(coordinator) = app.try_state::<SelectionCoordinator>() {
             coordinator.wait_for_restore_release().await?;
         }
@@ -484,7 +476,9 @@ pub(crate) fn mirror_fresh_intent<R: tauri::Runtime>(
         {
             let fqn = crate::config::teams::agent_fqn_from_path(cwd);
             let pending = {
-                let guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                let guard = clocks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.start_fresh_at(&fqn)
             };
             if mirror_forces_fresh(skip_auto_resume, is_coordinator, pending.is_some()) {

@@ -2,9 +2,10 @@ use super::*;
 use chrono::TimeZone;
 use std::fs::OpenOptions;
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod edits;
 mod issue_2837;
@@ -30,8 +31,7 @@ impl FixtureRoot {
             prefix,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("fixture root");

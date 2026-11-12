@@ -1,5 +1,7 @@
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
-use crate::config::settings::{AppSettings, SettingsState};
+use crate::config::settings::{
+    instance_settings_target, AppSettings, SettingsFileTarget, SettingsProjectTransaction,
+    SettingsState,
+};
 use std::path::Path;
 use tauri::{Manager, State};
 
@@ -7,20 +9,16 @@ use tauri::{Manager, State};
 
 pub(crate) async fn mutate_project_paths_with_settings_path<T: Send + 'static>(
     settings: &SettingsState,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
     mutate: impl FnOnce(&mut AppSettings) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let path = match settings_path {
-        Some(path) => path.to_path_buf(),
-        None => crate::config::config_dir()
-            .ok_or("Could not determine settings directory")?
-            .join(SETTINGS_FILE_NAME),
-    };
+    let target = target
+        .or_else(instance_settings_target)
+        .ok_or("Could not determine settings directory")?;
     let settings = std::sync::Arc::clone(settings);
     crate::config::seed_manifest::run_blocking_owned(move || {
         let mut current = settings.blocking_write();
-        let mut transaction =
-            crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
+        let mut transaction = target.begin_project_paths(&current)?;
         let mut candidate = transaction.fresh_settings().clone();
         transaction.refresh_raw_projects(&mut candidate)?;
         if crate::config::settings::project_state_has_structural(&candidate) {
@@ -67,7 +65,7 @@ pub(crate) struct ProjectArchiveChanged {
 pub(crate) fn project_folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(path)
         .to_string()
 }
@@ -84,7 +82,7 @@ pub(crate) fn broadcast_project_archive_changed<R: tauri::Runtime>(
         folder_name: project_folder_name(path),
         archived,
         reason,
-        session_name: session_name.map(|name| name.to_string()),
+        session_name: session_name.map(std::string::ToString::to_string),
     });
     crate::web::commands::broadcast_all_r(app, "project_archive_changed", &payload);
 }
@@ -119,10 +117,10 @@ pub(crate) async fn open_project_inner_with_event_and_settings_path<R: tauri::Ru
     app: &tauri::AppHandle<R>,
     settings: &SettingsState,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
     let (result, archived_changed) =
-        open_project_inner_with_settings_path(settings, path, settings_path).await?;
+        open_project_inner_with_settings_path(settings, path, target).await?;
     if archived_changed {
         broadcast_project_archive_changed(
             app,
@@ -144,10 +142,7 @@ pub(crate) async fn open_project_inner_with_event_and_settings_path<R: tauri::Ru
         })
         .await
         {
-            log::warn!(
-                "[ac-discovery] catalog seed after open-project failed: {}",
-                error
-            );
+            log::warn!("[ac-discovery] catalog seed after open-project failed: {error}");
         }
     }
     Ok(result)
@@ -156,10 +151,10 @@ pub(crate) async fn open_project_inner_with_event_and_settings_path<R: tauri::Ru
 pub(crate) async fn open_project_inner_with_settings_path(
     settings: &SettingsState,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
     let mutation_path = path.to_string();
-    mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+    mutate_project_paths_with_settings_path(settings, target, move |s| {
         let path = mutation_path.as_str();
         let before = s.archived_project_paths.clone();
         let result = crate::config::projects::register_existing_project(s, path)
@@ -179,7 +174,7 @@ pub async fn open_project(
 }
 
 /// Ensure an AC project at `path` (creating `.ac/` if missing) and
-/// register it in `settings.project_paths`. Mirrors the ActionBar "New
+/// register it in `settings.project_paths`. Mirrors the `ActionBar` "New
 /// Project" flow at `src/sidebar/components/ActionBar.tsx:58-71`.
 #[tauri::command]
 pub async fn new_project(
@@ -202,10 +197,10 @@ pub(crate) async fn new_project_inner_with_event_and_settings_path<R: tauri::Run
     app: &tauri::AppHandle<R>,
     settings: &SettingsState,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
     let (result, archived_changed) =
-        new_project_inner_with_settings_path(settings, path, settings_path).await?;
+        new_project_inner_with_settings_path(settings, path, target).await?;
     if archived_changed {
         broadcast_project_archive_changed(
             app,
@@ -221,12 +216,12 @@ pub(crate) async fn new_project_inner_with_event_and_settings_path<R: tauri::Run
 pub(crate) async fn new_project_inner_with_settings_path(
     settings: &SettingsState,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
     new_project_inner_with_settings_path_and_hooks(
         settings,
         path,
-        settings_path,
+        target,
         NewProjectTransactionHooks::default(),
     )
     .await
@@ -255,7 +250,7 @@ impl NewProjectTransactionHooks {
     pub(crate) fn save_settings(
         &self,
         settings: &crate::config::settings::AppSettings,
-        transaction: &mut crate::config::settings::ProjectPathsWriteTransaction,
+        transaction: &mut SettingsProjectTransaction,
     ) -> Result<crate::config::settings::AppSettings, String> {
         #[cfg(test)]
         if self.fail_settings_save {
@@ -285,30 +280,20 @@ impl NewProjectTransactionHooks {
 pub(crate) async fn new_project_inner_with_settings_path_and_hooks(
     settings: &SettingsState,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
     hooks: NewProjectTransactionHooks,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
     let path = path.to_string();
     let settings = std::sync::Arc::clone(settings);
-    let settings_path = settings_path.map(Path::to_path_buf);
     crate::config::seed_manifest::run_blocking_owned(move || {
         let prepared = crate::config::projects::prepare_new_project(&path)
             .map_err(|error| error.to_string())?;
         let mut current = settings.blocking_write();
-        let settings_path = match settings_path {
-            Some(path) => path,
-            None => crate::config::config_dir()
-                .ok_or(
-                    "Could not determine settings \
-                directory",
-                )?
-                .join(SETTINGS_FILE_NAME),
-        };
-        let mut transaction = crate::config::settings::begin_project_paths_transaction_at_path(
-            &current,
-            &settings_path,
-        )?;
-        let before_raw = transaction.raw_project_projection()?;
+        let target = target
+            .or_else(instance_settings_target)
+            .ok_or("Could not determine settings directory")?;
+        let mut transaction = target.begin_project_paths(&current)?;
+        let checkpoint = transaction.checkpoint()?;
         let mut candidate = transaction.fresh_settings().clone();
         transaction.refresh_raw_projects(&mut candidate)?;
         if crate::config::settings::project_state_has_structural(&candidate) {
@@ -328,22 +313,20 @@ pub(crate) async fn new_project_inner_with_settings_path_and_hooks(
         };
         hooks.before_final_revalidation(prepared.ac_root());
         if let Err(error) = prepared.revalidate() {
-            return Err(
-                match transaction.restore_raw_project_projection(&before_raw) {
-                    Ok(written) => {
-                        *current = written;
-                        error.to_string()
-                    }
-                    Err(rollback_error) => {
-                        *current = transaction.fresh_settings().clone();
-                        current.project_paths_persistence_error = Some(rollback_error.clone());
-                        format!(
-                            "{error}; failed to roll back project registration settings: \
+            return Err(match transaction.restore_checkpoint(&checkpoint) {
+                Ok(written) => {
+                    *current = written;
+                    error.to_string()
+                }
+                Err(rollback_error) => {
+                    *current = transaction.fresh_settings().clone();
+                    current.project_paths_persistence_error = Some(rollback_error.clone());
+                    format!(
+                        "{error}; failed to roll back project registration settings: \
                         {rollback_error}"
-                        )
-                    }
-                },
-            );
+                    )
+                }
+            });
         }
         *current = written;
         drop(transaction);
@@ -390,10 +373,10 @@ pub(crate) async fn remove_project_inner<R: tauri::Runtime>(
 pub(crate) async fn remove_project_inner_with_settings_path(
     settings: &SettingsState,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
 ) -> Result<bool, String> {
     let mutation_path = path.to_string();
-    mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+    mutate_project_paths_with_settings_path(settings, target, move |s| {
         let path = mutation_path.as_str();
         let before = s.archived_project_paths.clone();
         crate::config::projects::remove_project_path(s, path);

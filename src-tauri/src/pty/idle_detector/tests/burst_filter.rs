@@ -34,11 +34,7 @@ impl BurstFixture {
                 ..IdleTuning::DEFAULT
             },
         );
-        detector.set_auto_close_ages_for_test(
-            id,
-            Duration::from_secs(30 * 60),
-            Duration::from_secs(31 * 60),
-        );
+        detector.set_auto_close_ages_for_test(id, Duration::from_mins(30), Duration::from_mins(31));
         detector.set_pty_input_ready_for_test(id);
         Self {
             detector,
@@ -65,7 +61,7 @@ impl BurstFixture {
         self.detector
             .burst
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&self.id)
     }
 }
@@ -80,7 +76,7 @@ fn t1_periodic_short_burst_is_ignored() {
     fx.record(31, false, fx.t0 + Duration::from_millis(296));
     assert_eq!(fx.busy(), 0, "a status-line burst must not fire on_busy");
     assert!(
-        fx.silence_age() >= Duration::from_secs(30 * 60),
+        fx.silence_age() >= Duration::from_mins(30),
         "the auto-close clock must not move"
     );
     assert!(
@@ -169,13 +165,13 @@ fn t5_burst_expires_on_gap_and_stays_ignored() {
     fx.record(95, true, fx.t0);
     fx.record(95, true, fx.t0 + Duration::from_millis(3500));
     assert_eq!(fx.busy(), 0);
-    assert!(fx.silence_age() >= Duration::from_secs(30 * 60));
+    assert!(fx.silence_age() >= Duration::from_mins(30));
 
-    let late = fx.t0 + Duration::from_secs(30 * 60);
+    let late = fx.t0 + Duration::from_mins(30);
     fx.record(95, true, late);
     fx.record(95, true, late + Duration::from_millis(296));
     assert_eq!(fx.busy(), 0, "the periodic pattern never confirms");
-    assert!(fx.silence_age() >= Duration::from_secs(30 * 60));
+    assert!(fx.silence_age() >= Duration::from_mins(30));
 }
 
 /// T6 - a short prior silence (input, delivery) counts immediately.
@@ -201,11 +197,7 @@ fn t7_disabled_filter_counts_every_chunk() {
     );
     let id = Uuid::new_v4();
     detector.register_session(id, IdleTuning::DEFAULT);
-    detector.set_auto_close_ages_for_test(
-        id,
-        Duration::from_secs(30 * 60),
-        Duration::from_secs(31 * 60),
-    );
+    detector.set_auto_close_ages_for_test(id, Duration::from_mins(30), Duration::from_mins(31));
     detector.set_pty_input_ready_for_test(id);
 
     detector.record_output_at(id, 5, true, Instant::now());

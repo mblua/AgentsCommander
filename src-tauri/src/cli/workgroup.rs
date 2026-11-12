@@ -12,8 +12,6 @@ use crate::commands::entity_creation::{
     validate_existing_name, CreationTrace, Origin, Outcome, Reason, RepoAssignment, Stage,
     StageGuard, TeamConfigResult, WgDeleteOutcome, WorkgroupDiskCreateArgs,
 };
-use crate::config::ac_root::existing_ac_root;
-use crate::config::projects::resolve_project_reference;
 
 #[cfg(test)]
 use crate::config::remote_activity_cache::{
@@ -21,13 +19,19 @@ use crate::config::remote_activity_cache::{
 };
 #[cfg(test)]
 use crate::config::sessions_persistence::PersistedSession;
+use crate::filesystem::tasks::TASK_FILE_NAME;
 
 #[cfg(test)]
 use crate::commands::entity_creation::create_workgroup_on_disk;
 
 mod activity;
+mod output;
+mod project;
 
-use activity::{activity, list_replica_activity_dirs};
+use output::print_json;
+pub(crate) use project::{resolve_cli_ac_root, resolve_cli_project};
+
+use activity::{activity, list_replica_activity_dirs, WorkgroupActivityArgs};
 #[cfg(test)]
 use activity::{
     aggregate_room_ci, canonical_activity_path_key, ci_gate, index_ci_entries, list_room_repo_dirs,
@@ -51,30 +55,6 @@ enum WorkgroupCommand {
     Add(WorkgroupAddArgs),
     /// Remove a room
     Remove(WorkgroupRemoveArgs),
-}
-
-#[derive(Args)]
-struct WorkgroupActivityArgs {
-    #[arg(long)]
-    project: String,
-    /// Keep only these room numbers (comma-separated, e.g. 5,12,17)
-    #[arg(long, allow_hyphen_values = true)]
-    rooms: Option<String>,
-    /// Keep only rooms of this team (exact name)
-    #[arg(long, allow_hyphen_values = true)]
-    team: Option<String>,
-    /// Keep only rooms whose working state is true or false
-    #[arg(long, allow_hyphen_values = true)]
-    working: Option<String>,
-    /// Keep only rooms whose ciState is running, idle or unknown
-    #[arg(long = "ci-state", allow_hyphen_values = true)]
-    ci_state: Option<String>,
-    /// Keep only rooms whose task title matches this regex (case-sensitive; (?i) for insensitive)
-    #[arg(long = "title-regex", allow_hyphen_values = true)]
-    title_regex: Option<String>,
-    /// Drop rooms whose task title is missing, blank or "clean" (any case)
-    #[arg(long = "hide-clean")]
-    hide_clean: bool,
 }
 
 #[derive(Args)]
@@ -134,26 +114,10 @@ pub fn execute(args: WorkgroupArgs) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
-}
-
-pub(crate) fn resolve_cli_project(project: &str) -> Result<PathBuf, String> {
-    let settings = crate::config::settings::load_settings_for_cli();
-    let resolved =
-        resolve_project_reference(&settings.project_paths, project).map_err(|e| e.to_string())?;
-    Ok(resolved.path)
-}
-
-pub(crate) fn resolve_cli_ac_root(project_path: &Path) -> Result<PathBuf, String> {
-    existing_ac_root(project_path).ok_or_else(|| {
-        format!(
-            "Project AC Root not found in {} (.ac)",
-            project_path.display()
-        )
-    })
 }
 
 pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str, reason: &str) {
@@ -187,7 +151,7 @@ fn write_refresh_traced(
         stage.refresh_request(uuid::Uuid::parse_str(&request.id).expect("generated UUID"));
     }
     if let Err(e) = write_project_refresh_request(&request) {
-        eprintln!("Warning: failed to request project refresh: {}", e);
+        eprintln!("Warning: failed to request project refresh: {e}");
         if let Some(stage) = &mut stage {
             stage.finish(Outcome::Error, Some(Reason::Failed));
         }
@@ -213,7 +177,7 @@ pub(crate) fn write_project_registration_refresh(project_path: &Path, reason: &s
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
     if let Err(e) = write_project_refresh_request(&request) {
-        eprintln!("Warning: failed to request project refresh: {}", e);
+        eprintln!("Warning: failed to request project refresh: {e}");
     }
 }
 
@@ -235,7 +199,7 @@ fn list(args: WorkgroupListArgs) -> Result<(), String> {
                     &path.join(crate::phone::messaging::MESSAGING_DIR_NAME),
                 ),
                 has_task: crate::filesystem::directories::cli_discovery_is_file(
-                    &path.join("TASK.md"),
+                    &path.join(TASK_FILE_NAME),
                 ),
                 replicas,
             })
@@ -260,8 +224,8 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     || !args.repos.is_empty()
                     || !args.repo_agents.is_empty()
                     || !args.repo_exclude_agents.is_empty();
-                let team_dir = ac_root.join(format!("_team_{}", safe_team));
-                let config_path = team_dir.join("config.json");
+                let team_dir = ac_root.join(format!("_team_{safe_team}"));
+                let config_path = crate::config::config_file_path(&team_dir);
                 let team_config_exists =
                     crate::filesystem::directories::cli_discovery_exists(&team_dir)
                         || crate::filesystem::directories::cli_discovery_exists(&config_path);
@@ -269,10 +233,9 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     read_team_config(&ac_root, &safe_team)?;
                     if has_legacy_team_flags {
                         return Err(format!(
-                            "Team '{}' already exists. \
+                            "Team '{safe_team}' already exists. \
                  `room add` no longer updates team configuration. \
-                 Use `team create` before `room add`, or `team add-member` for membership changes.",
-                            safe_team
+                 Use `team create` before `room add`, or `team add-member` for membership changes."
                         ));
                     }
                     None
@@ -295,12 +258,11 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
                     )?)
                 } else {
                     return Err(format!(
-                        "Team '{}' config not found. Create it first with `team create`.",
-                        safe_team
+                        "Team '{safe_team}' config not found. Create it first with `team create`."
                     ));
                 };
                 let runtime = tokio::runtime::Runtime::new()
-                    .map_err(|e| format!("Failed to create async runtime: {}", e))?;
+                    .map_err(|e| format!("Failed to create async runtime: {e}"))?;
                 let (coordinator, agents, repos) = if let Some(config) = provisioning_config {
                     (
                         Some(config.coordinator.clone()),
@@ -333,7 +295,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
             &changed_path,
             changed_path
                 .file_name()
-                .and_then(|n| n.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or("workgroup"),
             "workgroupCreated",
             Some(&mut operation),
@@ -380,13 +342,12 @@ fn remove_hooked(
         if !dirty.is_empty() {
             let list = dirty
                 .iter()
-                .map(|(repo, reason)| format!("  - {} ({})", repo, reason))
+                .map(|(repo, reason)| format!("  - {repo} ({reason})"))
                 .collect::<Vec<_>>()
                 .join("\n");
             return Err(format!(
-                "Cannot delete room: the following repos have pending work:\n{}\n\n\
-                 Commit or push changes before deleting, or pass --force-dirty.",
-                list
+                "Cannot delete room: the following repos have pending work:\n{list}\n\n\
+                 Commit or push changes before deleting, or pass --force-dirty."
             ));
         }
     }
@@ -417,10 +378,10 @@ fn remove_hooked(
                     "[workgroup-remove] dropped {} clock key(s) for {}",
                     n,
                     args.workgroup
-                )
+                );
             }
             Ok(_) => {}
-            Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {}", e),
+            Err(e) => log::warn!("[workgroup-remove] clock cleanup failed: {e}"),
         }
     }
     write_refresh(&project_path, &wg_dir, &args.workgroup, "workgroupRemoved");
@@ -447,7 +408,7 @@ pub(crate) fn cli_remove_refresh_decision(
     match outcome {
         WgDeleteOutcome::Deleted => {}
         WgDeleteOutcome::Blocked(e) => {
-            return Err(format!("Failed to delete room, file in use: {}", e));
+            return Err(format!("Failed to delete room, file in use: {e}"));
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
@@ -458,7 +419,7 @@ pub(crate) fn cli_remove_refresh_decision(
             ));
         }
         WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete room directory: {}", e));
+            return Err(format!("Failed to delete room directory: {e}"));
         }
     }
     Ok(RemoveRefreshDecision::EmitWorkgroupRemoved)
@@ -511,8 +472,7 @@ fn build_repo_assignments(
     for url in include.keys() {
         if exclude.contains_key(url) {
             return Err(format!(
-                "Repo '{}' cannot use both --repo-agents and --repo-exclude-agents",
-                url
+                "Repo '{url}' cannot use both --repo-agents and --repo-exclude-agents"
             ));
         }
         if !order.contains(url) {
@@ -551,14 +511,14 @@ fn parse_assignment_specs(
     let mut out = HashMap::new();
     for spec in specs {
         let Some((url, agents)) = spec.split_once('=') else {
-            return Err(format!("{} expects URL=agent-a,agent-b", flag));
+            return Err(format!("{flag} expects URL=agent-a,agent-b"));
         };
         let url = url.trim();
         if url.is_empty() {
-            return Err(format!("{} URL cannot be empty", flag));
+            return Err(format!("{flag} URL cannot be empty"));
         }
         if out.contains_key(url) {
-            return Err(format!("{} repeated for repo '{}'", flag, url));
+            return Err(format!("{flag} repeated for repo '{url}'"));
         }
         let agents = agents
             .split(',')
@@ -567,7 +527,7 @@ fn parse_assignment_specs(
             .map(str::to_string)
             .collect::<Vec<_>>();
         if agents.is_empty() {
-            return Err(format!("{} must list at least one agent", flag));
+            return Err(format!("{flag} must list at least one agent"));
         }
         out.insert(url.to_string(), agents);
     }
@@ -584,8 +544,7 @@ fn resolve_assignment_agents(
         let resolved = resolve_agent_ref(ac_root, agent)?;
         if !roster.contains(&resolved) {
             return Err(format!(
-                "Repo assignment references agent '{}' which is not in the final team roster",
-                agent
+                "Repo assignment references agent '{agent}' which is not in the final team roster"
             ));
         }
         push_unique(&mut out, resolved);
@@ -611,13 +570,6 @@ pub(crate) async fn clone_missing_for_config(
     repos: &[RepoAssignment],
 ) -> Vec<crate::commands::entity_creation::CloneError> {
     clone_missing_repos_for_workgroup(wg_dir, repos).await
-}
-
-fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize JSON output: {}", e))?;
-    crate::cli_println!("{}", json);
-    Ok(())
 }
 
 #[cfg(test)]

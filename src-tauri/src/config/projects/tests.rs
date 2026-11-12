@@ -23,8 +23,7 @@ impl FixtureRoot {
             prefix,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("fixture root");
@@ -53,7 +52,7 @@ fn cwd_lock() -> std::sync::MutexGuard<'static, ()> {
     CWD_MUTEX
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn create_ac_project(path: &Path) {

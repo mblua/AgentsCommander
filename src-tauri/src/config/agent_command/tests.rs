@@ -54,6 +54,7 @@ fn spawn_with_env(
         backend: AgentBackendConfig::default(),
         isolated_codex_home_to_prepare: None,
         seed: None,
+        preflight_stages: Ok(Vec::new()),
         match_tier: None,
         original_profile_letter: None,
     }
@@ -203,4 +204,5 @@ mod matching;
 mod opencode_seed;
 mod p02_schema_launch;
 mod parse_env;
+mod preflight;
 mod profile_hash;

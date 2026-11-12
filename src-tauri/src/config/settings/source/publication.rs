@@ -9,6 +9,7 @@ use super::coordination::count_source_transition_publication;
 use super::coordination::own_source_journal_path;
 use super::coordination::read_own_source_journal;
 use super::coordination::IdentityWriteLease;
+use super::coordination::SourceLocalProgress;
 use super::coordination::SourcePrivateJournal;
 use super::coordination::SourceStoredIntent;
 use super::coordination::SourceWriteContext;
@@ -21,14 +22,12 @@ use super::SourceCoordinationError;
 use super::SourceRevision;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct SourcePublicationObservation {
     pub(crate) revision: SourceRevision,
 }
 
 /// The caller retains its original authority; exact after is recognized outside
 /// the publisher and is never interpreted as a rejected, effect-free attempt.
-#[allow(dead_code)]
 pub(crate) fn publish_source_intent_with_validation(
     lease: &SourceWriteContext,
     context: &SourceReadContext,
@@ -65,30 +64,8 @@ pub(crate) fn publish_source_intent_with_validation(
         None => IdentityReferencePhysicalState::Absent,
         Some(bytes) => IdentityReferencePhysicalState::from_bytes(bytes.clone()),
     };
-    let (mut private_revision, mut journal) = read_own_source_journal(context)?;
-    if journal.intents.get(&intent.operation_id) != Some(intent) {
-        return Err(SourceCoordinationError::Invalid);
-    }
-    let inventory = journal
-        .inventories
-        .get(&intent.operation_id)
-        .ok_or(SourceCoordinationError::Invalid)?;
-    if inventory.source != intent.source
-        || inventory.editor_id != intent.editor_id
-        || inventory.context_revision != intent.context_revision
-        || inventory.authorization_revision != intent.authorization_revision
-        || inventory.physical_source_key != lease.physical_source_key
-        || inventory.mappings != intent.mappings
-    {
-        return Err(SourceCoordinationError::Invalid);
-    }
-    let progress = journal
-        .progress
-        .get(&intent.operation_id)
-        .ok_or(SourceCoordinationError::Invalid)?;
-    if !progress.packets_prepared {
-        return Err(SourceCoordinationError::Pending);
-    }
+    let (private_revision, journal) = read_own_source_journal(context)?;
+    let progress = verify_publication_journal_entry(&journal, intent, lease)?;
     let already_published = progress.source_published;
     let initial_proof = progress.source_publication.clone();
     let intent_digest = source_transition_digest(intent)?;
@@ -121,87 +98,15 @@ pub(crate) fn publish_source_intent_with_validation(
         return Err(SourceCoordinationError::Stale);
     }
     if ownership_required {
-        let mut capability = match initial_proof.as_ref() {
-            Some(proof) => crate::config::local_config_io::reopen_source_publication(
-                &lease.parent,
-                &lease.source_path,
-                &intent.serialized_after,
-                proof,
-                &guard,
-            ),
-            None => crate::config::local_config_io::prepare_source_publication(
-                &lease.parent,
-                &lease.source_path,
-                &intent.serialized_after,
-                &intent_digest,
-                &guard,
-            ),
-        }
-        .map_err(coordination_publication_error)?;
-        if initial_proof.is_none() {
-            let proof = capability.proof().clone();
-            let mut planned = journal.clone();
-            planned
-                .progress
-                .get_mut(&intent.operation_id)
-                .ok_or(SourceCoordinationError::Invalid)?
-                .source_publication = Some(proof.clone());
-            let checkpoint_guard = || capability.check();
-            let checkpoint = update_own_source_journal_for_publication(
-                lease.identity,
-                lease,
-                context,
-                &private_revision,
-                |journal| {
-                    journal
-                        .progress
-                        .get_mut(&intent.operation_id)
-                        .ok_or(SourceCoordinationError::Invalid)?
-                        .source_publication = Some(proof);
-                    Ok(())
-                },
-                &checkpoint_guard,
-                Some((&intent.operation_id, &capability)),
-            );
-            match checkpoint {
-                Ok(revision) => {
-                    capability.check().map_err(coordination_publication_error)?;
-                    let (confirmed_revision, confirmed) = read_own_source_journal(context)?;
-                    if confirmed_revision != revision || confirmed != planned {
-                        return Err(SourceCoordinationError::Stale);
-                    }
-                    private_revision = confirmed_revision;
-                    journal = confirmed;
-                }
-                Err(error) => {
-                    // Pure Err-before/Err-landed/other classification. Every
-                    // outcome retains the stage and returns the original error;
-                    // no native, unlink or second CAS follows an Err.
-                    if capability.check().is_ok() {
-                        if let Ok((revision, current)) = read_own_source_journal(context) {
-                            let _before_exact = revision == private_revision && current == journal;
-                            let _after_exact = current == planned;
-                        }
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        let checkpoint_guard = || {
-            guard()?;
-            let (revision, current) =
-                read_own_source_journal(context).map_err(|_| IdentityReferenceError::Conflict)?;
-            if revision != private_revision || current != journal {
-                return Err(IdentityReferenceError::Conflict);
-            }
-            Ok(())
-        };
-        #[cfg(test)]
-        count_source_transition_publication(2);
-        capability
-            .commit(&checkpoint_guard)
-            .map_err(coordination_publication_error)?;
-        return Ok(SourcePublicationObservation { revision: after });
+        return publish_owned_source_intent(
+            lease,
+            context,
+            intent,
+            (initial_proof.as_ref(), &intent_digest),
+            (private_revision, journal),
+            after.clone(),
+            &guard,
+        );
     }
     #[cfg(test)]
     count_source_transition_publication(2);
@@ -224,9 +129,156 @@ pub(crate) fn publish_source_intent_with_validation(
     }
 }
 
+/// Prepares or reopens the owned publication capability, checkpoints a new
+/// proof, then commits under the journal-checking guard.
+fn publish_owned_source_intent<G>(
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    intent: &SourceStoredIntent,
+    (initial_proof, intent_digest): (
+        Option<&crate::config::local_config_io::PreparedSourcePublication>,
+        &str,
+    ),
+    (mut private_revision, mut journal): (SourceRevision, SourcePrivateJournal),
+    after: SourceRevision,
+    guard: &G,
+) -> Result<SourcePublicationObservation, SourceCoordinationError>
+where
+    G: Fn() -> Result<(), IdentityReferenceError>,
+{
+    let mut capability = match initial_proof {
+        Some(proof) => crate::config::local_config_io::reopen_source_publication(
+            &lease.parent,
+            &lease.source_path,
+            &intent.serialized_after,
+            proof,
+            guard,
+        ),
+        None => crate::config::local_config_io::prepare_source_publication(
+            &lease.parent,
+            &lease.source_path,
+            &intent.serialized_after,
+            intent_digest,
+            guard,
+        ),
+    }
+    .map_err(coordination_publication_error)?;
+    if initial_proof.is_none() {
+        (private_revision, journal) = checkpoint_source_publication_proof(
+            lease,
+            context,
+            intent,
+            &capability,
+            &private_revision,
+            &journal,
+        )?;
+    }
+    let checkpoint_guard = || {
+        guard()?;
+        let (revision, current) =
+            read_own_source_journal(context).map_err(|_| IdentityReferenceError::Conflict)?;
+        if revision != private_revision || current != journal {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        Ok(())
+    };
+    #[cfg(test)]
+    count_source_transition_publication(2);
+    capability
+        .commit(&checkpoint_guard)
+        .map_err(coordination_publication_error)?;
+    Ok(SourcePublicationObservation { revision: after })
+}
+
+fn verify_publication_journal_entry<'a>(
+    journal: &'a SourcePrivateJournal,
+    intent: &SourceStoredIntent,
+    lease: &SourceWriteContext,
+) -> Result<&'a SourceLocalProgress, SourceCoordinationError> {
+    if journal.intents.get(&intent.operation_id) != Some(intent) {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    let inventory = journal
+        .inventories
+        .get(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if inventory.source != intent.source
+        || inventory.editor_id != intent.editor_id
+        || inventory.context_revision != intent.context_revision
+        || inventory.authorization_revision != intent.authorization_revision
+        || inventory.physical_source_key != lease.physical_source_key
+        || inventory.mappings != intent.mappings
+    {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    let progress = journal
+        .progress
+        .get(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if !progress.packets_prepared {
+        return Err(SourceCoordinationError::Pending);
+    }
+    Ok(progress)
+}
+
+fn checkpoint_source_publication_proof(
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    intent: &SourceStoredIntent,
+    capability: &crate::config::local_config_io::PreparedSourceCapability<'_>,
+    private_revision: &SourceRevision,
+    journal: &SourcePrivateJournal,
+) -> Result<(SourceRevision, SourcePrivateJournal), SourceCoordinationError> {
+    let proof = capability.proof().clone();
+    let mut planned = journal.clone();
+    planned
+        .progress
+        .get_mut(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?
+        .source_publication = Some(proof.clone());
+    let checkpoint_guard = || capability.check();
+    let checkpoint = update_own_source_journal_for_publication(
+        lease.identity,
+        lease,
+        context,
+        private_revision,
+        |journal| {
+            journal
+                .progress
+                .get_mut(&intent.operation_id)
+                .ok_or(SourceCoordinationError::Invalid)?
+                .source_publication = Some(proof);
+            Ok(())
+        },
+        &checkpoint_guard,
+        Some((&intent.operation_id, capability)),
+    );
+    match checkpoint {
+        Ok(revision) => {
+            capability.check().map_err(coordination_publication_error)?;
+            let (confirmed_revision, confirmed) = read_own_source_journal(context)?;
+            if confirmed_revision != revision || confirmed != planned {
+                return Err(SourceCoordinationError::Stale);
+            }
+            Ok((confirmed_revision, confirmed))
+        }
+        Err(error) => {
+            // Pure Err-before/Err-landed/other classification. Every
+            // outcome retains the stage and returns the original error;
+            // no native, unlink or second CAS follows an Err.
+            if capability.check().is_ok() {
+                if let Ok((revision, current)) = read_own_source_journal(context) {
+                    let _before_exact = revision == *private_revision && current == *journal;
+                    let _after_exact = current == planned;
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
 /// Pure record changes are redecoded before guarded CAS publication; callbacks
 /// borrow original proofs and never advance coordinator progress themselves.
-#[allow(dead_code)]
 pub(crate) fn update_own_source_journal_with_validation<F>(
     identity: &IdentityWriteLease,
     lease: &SourceWriteContext,
@@ -288,6 +340,33 @@ where
     let original = journal.clone();
     change(&mut journal)?;
     journal.validate()?;
+    verify_journal_records_retained(&original, &journal)?;
+    verify_new_source_publication_proofs(&original, &journal, identity, lease, prepared)?;
+    verify_publishing_journal_progress(&original, &journal, identity, lease, &guard)?;
+    verify_new_journal_intents_and_inventories(&original, &journal, identity, lease)?;
+    if journal == original {
+        guard().map_err(coordination_publication_error)?;
+        return Ok(revision);
+    }
+    let bytes = encode_validated_source_journal(&journal)?;
+    #[cfg(test)]
+    count_source_transition_publication(1);
+    crate::config::local_config_io::publish_source_coordination_bytes_with_validation(
+        &path,
+        &before,
+        &bytes,
+        &identity.parent,
+        &guard,
+    )
+    .result
+    .map_err(coordination_publication_error)?;
+    Ok(source_bytes_revision(&bytes))
+}
+
+fn verify_journal_records_retained(
+    original: &SourcePrivateJournal,
+    journal: &SourcePrivateJournal,
+) -> Result<(), SourceCoordinationError> {
     if original
         .intents
         .iter()
@@ -325,6 +404,19 @@ where
             return Err(SourceCoordinationError::Invalid);
         }
     }
+    Ok(())
+}
+
+fn verify_new_source_publication_proofs(
+    original: &SourcePrivateJournal,
+    journal: &SourcePrivateJournal,
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+    prepared: Option<(
+        &str,
+        &crate::config::local_config_io::PreparedSourceCapability<'_>,
+    )>,
+) -> Result<(), SourceCoordinationError> {
     for (id, next) in &journal.progress {
         if original
             .progress
@@ -351,6 +443,16 @@ where
             capability.check().map_err(coordination_publication_error)?;
         }
     }
+    Ok(())
+}
+
+fn verify_publishing_journal_progress(
+    original: &SourcePrivateJournal,
+    journal: &SourcePrivateJournal,
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+    guard: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<(), SourceCoordinationError> {
     for (id, next) in &journal.progress {
         let previous = original.progress.get(id);
         let publishing = next.source_published && previous.is_none_or(|p| !p.source_published);
@@ -382,12 +484,21 @@ where
                     &lease.source_path,
                     &intent.serialized_after,
                     proof,
-                    &guard,
+                    guard,
                 )
                 .map_err(coordination_publication_error)?;
             }
         }
     }
+    Ok(())
+}
+
+fn verify_new_journal_intents_and_inventories(
+    original: &SourcePrivateJournal,
+    journal: &SourcePrivateJournal,
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+) -> Result<(), SourceCoordinationError> {
     for (id, intent) in &journal.intents {
         if original.intents.contains_key(id) {
             continue;
@@ -438,35 +549,28 @@ where
             return Err(SourceCoordinationError::Unauthorized);
         }
     }
-    if journal == original {
-        guard().map_err(coordination_publication_error)?;
-        return Ok(revision);
-    }
+    Ok(())
+}
+
+fn encode_validated_source_journal(
+    journal: &SourcePrivateJournal,
+) -> Result<Vec<u8>, SourceCoordinationError> {
     let mut bytes =
-        serde_json::to_vec_pretty(&journal).map_err(|_| SourceCoordinationError::Invalid)?;
+        serde_json::to_vec_pretty(journal).map_err(|_| SourceCoordinationError::Invalid)?;
     bytes.push(b'\n');
     let decoded: SourcePrivateJournal =
         serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
     decoded.validate()?;
-    if decoded != journal {
+    if decoded != *journal {
         return Err(SourceCoordinationError::Invalid);
     }
-    #[cfg(test)]
-    count_source_transition_publication(1);
-    crate::config::local_config_io::publish_source_coordination_bytes_with_validation(
-        &path,
-        &before,
-        &bytes,
-        &identity.parent,
-        &guard,
-    )
-    .result
-    .map_err(coordination_publication_error)?;
-    Ok(source_bytes_revision(&bytes))
+    Ok(bytes)
 }
 
 /// Lookup is restricted to the own C path derived from backend context. Status
 /// can expose the original ID and CAS before a shared fence exists.
+// Test-only today; `#[cfg(test)]` would need edits to the re-exports in
+// `settings/source.rs` and `settings.rs`.
 #[allow(dead_code)]
 pub(crate) fn read_own_source_intent(
     context: &SourceReadContext,
@@ -476,7 +580,6 @@ pub(crate) fn read_own_source_intent(
     Ok((revision, journal.intents.get(operation_id).cloned()))
 }
 
-#[allow(dead_code)]
 pub(crate) fn source_complete_proof(
     lease: &SourceWriteContext,
     context: &SourceReadContext,

@@ -315,7 +315,10 @@ async fn move_coding_agent_overlay_owned_agents_rejects_before_saver_without_eve
 }
 
 fn abc_ids_2542() -> Vec<String> {
-    ["a", "b", "c"].iter().map(|id| id.to_string()).collect()
+    ["a", "b", "c"]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
 }
 
 fn mock_app_with_settings_listener_2542() -> (

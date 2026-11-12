@@ -523,18 +523,17 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
         "resume notes",
         "a failed prompt inject must rename the archived handoff back to the root"
     );
-    let leftover_archives = std::fs::read_dir(temp.path().join("self-clear"))
-        .map(|entries| {
+    let leftover_archives =
+        std::fs::read_dir(temp.path().join("self-clear")).map_or(0, |entries| {
             entries
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter(|e| {
                     e.file_name()
                         .to_string_lossy()
                         .ends_with("_SELF-HANDOFF.md")
                 })
                 .count()
-        })
-        .unwrap_or(0);
+        });
     assert_eq!(leftover_archives, 0, "no orphaned handoff archive remains");
     assert!(pending.is_empty());
 }
@@ -640,6 +639,29 @@ async fn self_clear_driver_without_root_handoff_prompts_root_name() {
     assert!(pending.is_empty());
 }
 
+fn seed_switch_forget_archive(root: &Path) -> Option<ForgottenSummary> {
+    std::fs::write(root.join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
+    std::fs::write(root.join("SELF-FORGET.md"), "first switch summary").unwrap();
+    let forgotten_summary = capture_self_forget_summary(root);
+    archive_root_md(root, "SELF-FORGET", "20260102_030405")
+        .unwrap()
+        .expect("archive first forget");
+    std::fs::write(root.join("SELF-FORGET.md"), "second switch summary").unwrap();
+    forgotten_summary
+}
+
+fn assert_switch_resume_prompt(prompt: &str) {
+    assert!(prompt.contains("first switch summary"));
+    assert!(!prompt.contains("second switch summary"));
+    assert!(prompt.contains("closed background"));
+    assert!(prompt.contains("active core information"));
+    assert!(!prompt.contains('\n'));
+    assert!(!prompt.contains('\u{2014}'));
+    // #749 - the prompt names the archived path.
+    assert!(prompt.contains("self-clear/"), "{prompt}");
+    assert!(prompt.contains("_SELF-HANDOFF.md"), "{prompt}");
+}
+
 #[tokio::test]
 async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
     let original_id = Uuid::new_v4();
@@ -652,13 +674,7 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
     let inject_calls = Arc::new(Mutex::new(Vec::<Uuid>::new()));
     let alias_seen_at_inject = Arc::new(Mutex::new(false));
     let temp = tempfile::TempDir::new().unwrap();
-    std::fs::write(temp.path().join("SELF-HANDOFF.md"), "switch resume notes").unwrap();
-    std::fs::write(temp.path().join("SELF-FORGET.md"), "first switch summary").unwrap();
-    let forgotten_summary = capture_self_forget_summary(temp.path());
-    archive_root_md(temp.path(), "SELF-FORGET", "20260102_030405")
-        .unwrap()
-        .expect("archive first forget");
-    std::fs::write(temp.path().join("SELF-FORGET.md"), "second switch summary").unwrap();
+    let forgotten_summary = seed_switch_forget_archive(temp.path());
 
     let state_seen = seen_states.clone();
     let session_state = move |session_id: Uuid| {
@@ -695,15 +711,7 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
         let inject_seen = inject_seen.clone();
         let alias_seen = alias_seen.clone();
         async move {
-            assert!(prompt.contains("first switch summary"));
-            assert!(!prompt.contains("second switch summary"));
-            assert!(prompt.contains("closed background"));
-            assert!(prompt.contains("active core information"));
-            assert!(!prompt.contains('\n'));
-            assert!(!prompt.contains('\u{2014}'));
-            // #749 - the prompt names the archived path.
-            assert!(prompt.contains("self-clear/"), "{prompt}");
-            assert!(prompt.contains("_SELF-HANDOFF.md"), "{prompt}");
+            assert_switch_resume_prompt(&prompt);
             inject_seen.lock().unwrap().push(session_id);
             *alias_seen.lock().unwrap() =
                 pending_for_inject.contains(original_id) && pending_for_inject.contains(session_id);

@@ -58,7 +58,7 @@ fn acquire_websocket_upgrade_guard(
 }
 
 /// Start the embedded HTTP/WebSocket server.
-/// Called from Tauri's setup(), runs on the same tokio runtime.
+/// Called from Tauri's `setup()`, runs on the same tokio runtime.
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
 #[allow(clippy::too_many_arguments)]
@@ -94,7 +94,7 @@ where
     // El turbofish es OBLIGATORIO: map_err se interpone entre parse() y el `?`,
     // asi que anotar el `let` no alcanza para inferir el target del parse y
     // rustc emite E0282 (plan 5.2.2 afirmaba lo contrario).
-    let addr = format!("{}:{}", bind, port)
+    let addr = format!("{bind}:{port}")
         .parse::<SocketAddr>()
         .map_err(|e| StartServerError::InvalidAddr {
             bind: bind.clone(),
@@ -111,8 +111,8 @@ where
                 detail: e.to_string(),
             })?;
 
-    log::info!("[web-server] Listening on http://{}", addr);
-    println!("[web-server] Listening on http://{}", addr);
+    log::info!("[web-server] Listening on http://{addr}");
+    println!("[web-server] Listening on http://{addr}");
 
     Ok(spawn_server_on_listener(
         listener,
@@ -162,7 +162,7 @@ pub(super) fn build_router(
     #[cfg(not(has_embedded_dist))]
     {
         if let Some(path) = dist_path {
-            log::info!("[web-server] Serving static files from {:?}", path);
+            log::info!("[web-server] Serving static files from {path:?}");
             app = app.fallback_service(ServeDir::new(path).append_index_html_on_directories(true));
         } else {
             log::warn!("[web-server] No dist/ directory found; static file serving disabled");
@@ -188,10 +188,10 @@ where
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 tokio::select! {
-                    _ = generation_token.cancelled() => {
+                    () = generation_token.cancelled() => {
                         log::info!("[web-server] Generation stop received, stopping listener");
                     }
-                    _ = global_token.cancelled() => {
+                    () = global_token.cancelled() => {
                         generation_for_shutdown.cancel();
                         log::info!("[web-server] Global shutdown received, stopping listener");
                     }
@@ -199,7 +199,7 @@ where
             })
             .await
         {
-            log::error!("[web-server] server error: {}", e);
+            log::error!("[web-server] server error: {e}");
         }
     }))
 }
@@ -329,7 +329,7 @@ async fn handle_ws_connection(
     let send_task = tokio::spawn(async move {
         loop {
             let msg = tokio::select! {
-                _ = send_token.cancelled() => break,
+                () = send_token.cancelled() => break,
                 msg = broadcast_rx.recv() => match msg {
                     Some(msg) => msg,
                     None => break,
@@ -342,7 +342,7 @@ async fn handle_ws_connection(
             let send = SinkExt::send(&mut ws_sender, ws_msg);
             tokio::pin!(send);
             tokio::select! {
-                _ = send_token.cancelled() => break,
+                () = send_token.cancelled() => break,
                 result = &mut send => {
                     if result.is_err() {
                         break;
@@ -358,7 +358,7 @@ async fn handle_ws_connection(
     let recv_task = tokio::spawn(async move {
         loop {
             let next = tokio::select! {
-                _ = recv_token.cancelled() => break,
+                () = recv_token.cancelled() => break,
                 next = StreamExt::next(&mut ws_receiver) => next,
             };
             let Some(Ok(msg)) = next else {
@@ -431,7 +431,10 @@ async fn handle_text_message(state: &WebSocketConnectionContext, text: &str) {
         Err(_) => return,
     };
 
-    let id = parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let id = parsed
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let cmd = match parsed.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
         None => return,
@@ -468,8 +471,8 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     // 1. Tauri resource dir (production NSIS bundle)
     if let Some(resource_dir) = resource_dir {
         let dist = resource_dir.join("dist");
-        if dist.exists() && dist.is_dir() {
-            log::info!("[web-server] Found dist via resource_dir: {:?}", dist);
+        if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
+            log::info!("[web-server] Found dist via resource_dir: {dist:?}");
             return Some(dist);
         }
     }
@@ -478,19 +481,19 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let dist = parent.join("dist");
-            if dist.exists() && dist.is_dir() {
-                log::info!("[web-server] Found dist next to exe: {:?}", dist);
+            if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
+                log::info!("[web-server] Found dist next to exe: {dist:?}");
                 return Some(dist);
             }
             // Dev mode: target/debug/exe to project root/dist.
             if let Some(grandparent) = parent.parent() {
                 let dist = grandparent.join("dist");
-                if dist.exists() && dist.is_dir() {
+                if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
                     return Some(dist);
                 }
                 if let Some(ggparent) = grandparent.parent() {
                     let dist = ggparent.join("dist");
-                    if dist.exists() && dist.is_dir() {
+                    if crate::filesystem::directories::web_dist_candidate_is_directory(&dist) {
                         return Some(dist);
                     }
                 }
@@ -501,8 +504,10 @@ fn resolve_dist_path(resource_dir: Option<std::path::PathBuf>) -> Option<std::pa
     // 3. CWD fallbacks (dev mode)
     for path in &["dist", "../dist"] {
         let p = std::path::PathBuf::from(path);
-        if p.exists() && p.is_dir() {
-            return Some(p.canonicalize().unwrap_or(p));
+        if crate::filesystem::directories::web_dist_candidate_is_directory(&p) {
+            return Some(crate::filesystem::directories::resolve_web_dist_candidate(
+                p,
+            ));
         }
     }
 

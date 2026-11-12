@@ -27,7 +27,7 @@ pub(crate) fn create_team_from_sources(
     let Some(sources) = sources else {
         return create_new_team_config_on_disk_guarded(&ac, name, &config, &guard);
     };
-    let ac = crate::config::projects::canonical_source_project(&ac).map_err(|e| e.to_string())?;
+    let ac = crate::filesystem::projects::canonical_project_path(&ac).map_err(|e| e.to_string())?;
     let mut team = OwnedCopyArtifacts {
         root: ac.join(format!("_team_{name}")),
         entries: Vec::new(),

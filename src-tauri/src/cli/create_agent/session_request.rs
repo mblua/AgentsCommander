@@ -75,13 +75,13 @@ pub(crate) fn write_session_request(request: &SessionRequest) -> Result<(), Stri
 
     let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
     crate::filesystem::directories::ensure_cli_session_requests(&requests_dir)
-        .map_err(|e| format!("Failed to create session-requests dir: {}", e))?;
+        .map_err(|e| format!("Failed to create session-requests dir: {e}"))?;
 
     let path = requests_dir.join(format!("{}.json", request.id));
     let json = serde_json::to_string_pretty(request)
-        .map_err(|e| format!("Failed to serialize session request: {}", e))?;
+        .map_err(|e| format!("Failed to serialize session request: {e}"))?;
     crate::filesystem::documents::write_cli_session_document(&path, json.as_bytes())
-        .map_err(|e| format!("Failed to write session request: {}", e))?;
+        .map_err(|e| format!("Failed to write session request: {e}"))?;
 
     Ok(())
 }
@@ -118,7 +118,7 @@ pub(crate) fn session_request_result_path(config_dir: &Path, id: &str) -> PathBu
 /// True when `path` is a result sidecar (`<id>.result.json`), never a request.
 pub(crate) fn is_session_request_result_path(path: &Path) -> bool {
     path.file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|stem| stem.ends_with(".result"))
 }
 
@@ -127,12 +127,12 @@ pub(crate) fn write_session_request_result(result: &SessionRequestResult) -> Res
     let config_dir = config::config_dir().ok_or("Cannot determine config directory")?;
     let requests_dir = config_dir.join(SESSION_REQUESTS_DIR_NAME);
     crate::filesystem::directories::ensure_cli_session_requests(&requests_dir)
-        .map_err(|e| format!("Failed to create session-requests dir: {}", e))?;
+        .map_err(|e| format!("Failed to create session-requests dir: {e}"))?;
     let path = session_request_result_path(&config_dir, &result.id);
     let json = serde_json::to_string_pretty(result)
-        .map_err(|e| format!("Failed to serialize session request result: {}", e))?;
+        .map_err(|e| format!("Failed to serialize session request result: {e}"))?;
     crate::filesystem::documents::write_cli_session_document(&path, json.as_bytes())
-        .map_err(|e| format!("Failed to write session request result: {}", e))?;
+        .map_err(|e| format!("Failed to write session request result: {e}"))?;
     Ok(())
 }
 

@@ -1,5 +1,125 @@
 use super::*;
 
+async fn seed_pi_restart_source(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    replica: &Path,
+) -> (Uuid, Arc<crate::PendingSelfClear>) {
+    {
+        let settings = app.state::<SettingsState>();
+        settings
+            .write()
+            .await
+            .agents
+            .push(wake_agent("pi", "Pi", "pi"));
+    }
+    let (source_id, _token) =
+        seed_self_switch_session(app, replica, "pi", Some("pi"), Some("A"), Some("A")).await;
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.mark_idle(source_id).await;
+    }
+    seed_self_handoff(replica);
+    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
+    pending.seed_legacy(source_id);
+    (source_id, pending)
+}
+
+async fn reseed_restarted_pi(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    replica: PathBuf,
+    source_id: Uuid,
+    (session_id, agent, profile): (Uuid, String, String),
+    restarted_id: Arc<Mutex<Option<Uuid>>>,
+) -> Result<String, String> {
+    assert_eq!(session_id, source_id);
+    assert_eq!(agent, "pi");
+    assert_eq!(profile, "A");
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.destroy_session(session_id).await.unwrap();
+    }
+    let (new_id, _token) = seed_self_switch_session(
+        &app,
+        &replica,
+        "pi",
+        Some("pi"),
+        Some(&profile),
+        Some(&profile),
+    )
+    .await;
+    {
+        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = state.read().await;
+        mgr.mark_idle(new_id).await;
+    }
+    register_mock_pty_route(&app, new_id);
+    *restarted_id.lock().unwrap() = Some(new_id);
+    Ok(new_id.to_string())
+}
+
+async fn pi_session_state(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    session_id: Uuid,
+) -> (bool, bool) {
+    let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    let mgr = state.read().await;
+    match mgr.get_session(session_id).await {
+        Some(session) => (true, session.waiting_for_input),
+        None => (false, false),
+    }
+}
+
+async fn record_and_inject(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    injected_prompts: &Mutex<Vec<(Uuid, String)>>,
+    session_id: Uuid,
+    prompt: String,
+) -> Result<(), String> {
+    injected_prompts
+        .lock()
+        .unwrap()
+        .push((session_id, prompt.clone()));
+    crate::pty::inject::inject_text_into_session(app, session_id, &prompt).await
+}
+
+fn assert_pi_restart_outcome(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    source_id: Uuid,
+    restarted_id: &Mutex<Option<Uuid>>,
+    injected_prompts: &Mutex<Vec<(Uuid, String)>>,
+    boundaries: &Mutex<Vec<(Uuid, SelfClearBoundary)>>,
+    pending: &crate::PendingSelfClear,
+) {
+    let target_id = restarted_id
+        .lock()
+        .unwrap()
+        .expect("restart seam must return the reseeded Pi session id");
+    assert_ne!(target_id, source_id);
+    let prompts = injected_prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].0, target_id);
+    assert!(
+        prompts[0].1.contains("self-handoff-and-restart"),
+        "{}",
+        prompts[0].1
+    );
+    assert_eq!(
+        mock_pty_writes_for(app, target_id),
+        vec![
+            prompts[0].1.as_bytes().to_vec(),
+            b"\r".to_vec(),
+            b"\r".to_vec()
+        ]
+    );
+    assert_eq!(
+        *boundaries.lock().unwrap(),
+        vec![(target_id, SelfClearBoundary::ContentInjected)]
+    );
+    assert!(pending.is_empty());
+}
+
 /// T25 - the app-backed restart seam, which is the one that actually has a PTY: the
 /// resume prompt reaches the restarted session's PTY followed by the two staggered `\r`
 /// bytes, and the persist recorder sees the single call the shared driver makes for BOTH
@@ -14,31 +134,7 @@ use super::*;
 async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let fixture = make_self_switch_fixture();
     let app = app_handle(&fixture.app);
-    {
-        let settings = app.state::<SettingsState>();
-        settings
-            .write()
-            .await
-            .agents
-            .push(wake_agent("pi", "Pi", "pi"));
-    }
-    let (source_id, _token) = seed_self_switch_session(
-        &app,
-        &fixture.replica,
-        "pi",
-        Some("pi"),
-        Some("A"),
-        Some("A"),
-    )
-    .await;
-    {
-        let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let mgr = state.read().await;
-        mgr.mark_idle(source_id).await;
-    }
-    seed_self_handoff(&fixture.replica);
-    let pending = app.state::<Arc<crate::PendingSelfClear>>().inner().clone();
-    pending.seed_legacy(source_id);
+    let (source_id, pending) = seed_pi_restart_source(&app, &fixture.replica).await;
 
     let persist_calls = Arc::new(Mutex::new(0usize));
     let persist_seen = persist_calls.clone();
@@ -53,14 +149,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let app_for_state = app.clone();
     let session_state = move |session_id: Uuid| {
         let app = app_for_state.clone();
-        async move {
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = state.read().await;
-            match mgr.get_session(session_id).await {
-                Some(session) => (true, session.waiting_for_input),
-                None => (false, false),
-            }
-        }
+        async move { pi_session_state(&app, session_id).await }
     };
 
     let restarted_id = Arc::new(Mutex::new(None::<Uuid>));
@@ -72,31 +161,14 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
         let replica = replica_for_restart.clone();
         let restarted_id = Arc::clone(&restarted_id_seen);
         async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!(agent, "pi");
-            assert_eq!(profile, "A");
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.destroy_session(session_id).await.unwrap();
-            }
-            let (new_id, _token) = seed_self_switch_session(
-                &app,
-                &replica,
-                "pi",
-                Some("pi"),
-                Some(&profile),
-                Some(&profile),
+            reseed_restarted_pi(
+                app,
+                replica,
+                source_id,
+                (session_id, agent, profile),
+                restarted_id,
             )
-            .await;
-            {
-                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = state.read().await;
-                mgr.mark_idle(new_id).await;
-            }
-            register_mock_pty_route(&app, new_id);
-            *restarted_id.lock().unwrap() = Some(new_id);
-            Ok(new_id.to_string())
+            .await
         }
     };
 
@@ -106,13 +178,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     let inject = move |session_id: Uuid, prompt: String| {
         let app = app_for_inject.clone();
         let injected_prompts = Arc::clone(&injected_prompts_seen);
-        async move {
-            injected_prompts
-                .lock()
-                .unwrap()
-                .push((session_id, prompt.clone()));
-            crate::pty::inject::inject_text_into_session(&app, session_id, &prompt).await
-        }
+        async move { record_and_inject(&app, &injected_prompts, session_id, prompt).await }
     };
     let boundaries = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let boundaries_seen = Arc::clone(&boundaries);
@@ -163,36 +229,18 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
         "no closure this test supplies writes the replica currentCodingAgent cell; per the \
              note above this does NOT discriminate the flavor"
     );
-    let target_id = restarted_id
-        .lock()
-        .unwrap()
-        .expect("restart seam must return the reseeded Pi session id");
-    assert_ne!(target_id, source_id);
-    let prompts = injected_prompts.lock().unwrap().clone();
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].0, target_id);
-    assert!(
-        prompts[0].1.contains("self-handoff-and-restart"),
-        "{}",
-        prompts[0].1
+    assert_pi_restart_outcome(
+        &app,
+        source_id,
+        &restarted_id,
+        &injected_prompts,
+        &boundaries,
+        &pending,
     );
-    assert_eq!(
-        mock_pty_writes_for(&app, target_id),
-        vec![
-            prompts[0].1.as_bytes().to_vec(),
-            b"\r".to_vec(),
-            b"\r".to_vec()
-        ]
-    );
-    assert_eq!(
-        *boundaries.lock().unwrap(),
-        vec![(target_id, SelfClearBoundary::ContentInjected)]
-    );
-    assert!(pending.is_empty());
 }
 
 /// #1632 - mutual exclusion over the shared, NON-msg-id-scoped names in the process-global
-/// Root Agent directory. `root_agent_dir()` is `OnceLock`-cached (config/root_agent.rs), so
+/// Root Agent directory. `root_agent_dir()` is `OnceLock`-cached (`config/root_agent.rs`), so
 /// every Root e2e in this test binary works against the SAME directory, and libtest runs them
 /// on parallel threads. A `TempDir` cannot stand in, which is why a lock is needed at all.
 ///
@@ -223,7 +271,7 @@ fn root_self_handoff_lock() -> &'static tokio::sync::Mutex<()> {
 
 /// Best-effort removal of one msg-id's outbox artifacts so the Root e2e tests are
 /// idempotent across runs. They must write under the process-global
-/// `root_agent_dir()` (a fixed path, NOT a throwaway TempDir - see the test docs
+/// `root_agent_dir()` (a fixed path, NOT a throwaway `TempDir` - see the test docs
 /// for why), so stale delivered/rejected/response files from a prior run could
 /// otherwise skew assertions. Each of the four Root e2es uses a unique msg-id, so this is
 /// safe even when they run in parallel.
@@ -245,18 +293,14 @@ fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
     let outbox = cwd
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
-    let _ = std::fs::remove_file(outbox.join(format!("{}.json", msg_id)));
-    let _ = std::fs::remove_file(outbox.join("delivered").join(format!("{}.json", msg_id)));
-    let _ = std::fs::remove_file(
-        outbox
-            .join("rejected")
-            .join(format!("{}.reason.txt", msg_id)),
-    );
-    let _ = std::fs::remove_file(outbox.join("rejected").join(format!("{}.json", msg_id)));
+    let _ = std::fs::remove_file(outbox.join(format!("{msg_id}.json")));
+    let _ = std::fs::remove_file(outbox.join("delivered").join(format!("{msg_id}.json")));
+    let _ = std::fs::remove_file(outbox.join("rejected").join(format!("{msg_id}.reason.txt")));
+    let _ = std::fs::remove_file(outbox.join("rejected").join(format!("{msg_id}.json")));
     let _ = std::fs::remove_file(
         cwd.join(crate::config::agent_local_dir_name())
             .join("responses")
-            .join(format!("{}.json", request_id)),
+            .join(format!("{request_id}.json")),
     );
     // Defensive: drop any stale <ts>_SELF-FORGET.md archive under the shared root's self-clear/
     // (none is created in the normal e2e flow since neither test seeds SELF-FORGET.md).
@@ -279,17 +323,17 @@ fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
 ///
 /// Fidelity, verified against the code (not assumed):
 /// - A real Root Agent runs `self-clear --token <session-UUID>`. That UUID is
-///   neither the root_token nor the master token, so `validate_cli_token`
-///   (cli/mod.rs) returns is_root=false and `self_clear::execute` writes to the
+///   neither the `root_token` nor the master token, so `validate_cli_token`
+///   (cli/mod.rs) returns `is_root=false` and `self_clear::execute` writes to the
 ///   Root's AGENT outbox; the poller processes agent outboxes with
 ///   `is_app_outbox=false`. So this test passes `false` and BOTH anti-spoof gates
 ///   run, exactly like production. (An earlier draft used `true`, which skips the
 ///   outbox-sender gate and is NOT the real path.)
-/// - With the Root cwd both gates derive ROOT_AGENT_SENDER (outbox-sender via
+/// - With the Root cwd both gates derive `ROOT_AGENT_SENDER` (outbox-sender via
 ///   `sender_name_for_session_cwd`, token-root via the root-flagged variant), so
 ///   the corrected sender passes both. The cwd MUST be the process-global
 ///   `root_agent_dir()` so `is_root_agent_path` returns true; `config_dir()` /
-///   `root_agent_dir()` are OnceLock-cached, so a throwaway TempDir cannot stand
+///   `root_agent_dir()` are OnceLock-cached, so a throwaway `TempDir` cannot stand
 ///   in. Under `cargo test`, `root_agent_dir()` resolves beneath the test
 ///   binary's target dir (never a real install) and the flow only ADDS files, so
 ///   it is isolated and non-destructive.
@@ -387,7 +431,7 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
 
 /// #617 HIGH-1 e2e negative (production-faithful): the EXACT buggy sender the old
 /// CLI produced - `agent_name_from_root(<Root cwd>)`, a path-derived FQN, not
-/// ROOT_AGENT_SENDER - is REJECTED on the same full `process_message` agent-outbox
+/// `ROOT_AGENT_SENDER` - is REJECTED on the same full `process_message` agent-outbox
 /// path, so nothing queues. This is why the capability was dead in production
 /// before the fix. In the agent-outbox path the outbox-sender gate is the first to
 /// fire (the buggy `from` does not match the Root-derived outbox owner); the
@@ -680,10 +724,9 @@ fn err_is_pty_session_missing_matches_actual_apperror_format() {
     let raw = AppError::SessionNotFound(id.to_string()).to_string();
     assert!(
         err_is_pty_session_missing(&raw),
-        "AppError::SessionNotFound display changed to {:?}; \
+        "AppError::SessionNotFound display changed to {raw:?}; \
              err_is_pty_session_missing substring sniff broken — \
-             update both the sniff and this test",
-        raw
+             update both the sniff and this test"
     );
 }
 
@@ -718,7 +761,7 @@ fn classify_injection_error_defers_menu_guard_and_fails_everything_else() {
 // ── Anti-spoof / canonicalization pure-logic tests (AR2-tests 22, 23 + DR2-5) ──
 
 /// §DR7 / AR2-tests #22: legacy-unqualified msg.from is accepted when its
-/// local part matches the anti-spoof expected_from (local-only fallback).
+/// local part matches the anti-spoof `expected_from` (local-only fallback).
 #[test]
 fn anti_spoof_legacy_msg_from_accepted_by_local_match() {
     // expected_from derived from repo path (canonical FQN).
@@ -745,7 +788,7 @@ fn anti_spoof_exact_fqn_match_accepted() {
 }
 
 /// §DR2-5 / AR2-tests #25: §AR2-norm step (1) upgrades a legacy-unqualified
-/// msg.from to the anti-spoof expected_from FQN. Without this upgrade,
+/// msg.from to the anti-spoof `expected_from` FQN. Without this upgrade,
 /// grinch §G5's `resolve_repo_path(&msg.from)` response-dir lookup could
 /// receive an ambiguous-local-part input.
 #[test]
@@ -769,7 +812,7 @@ fn canonicalize_noop_for_already_qualified_msg_from() {
     assert_eq!(msg_from, "proj-a:wg-1-devs/tech-lead");
 }
 
-/// No expected_from (app outbox path) → canonicalization is a no-op.
+/// No `expected_from` (app outbox path) → canonicalization is a no-op.
 #[test]
 fn canonicalize_noop_when_expected_from_absent() {
     let mut msg_from = "wg-1-devs/alice".to_string();
@@ -808,7 +851,7 @@ fn close_session_rejects_direct_outbox_write_with_unqualified_target() {
 /// same `resolve_agent_target_rejects_ambiguous` test; `process_message`
 /// calls `resolve_agent_target` on `msg.to` at §AR2-norm before mode
 /// dispatch, so ambiguous `msg.to` becomes a rejected outbox message.
-/// Full end-to-end fixture needs an AppHandle harness.
+/// Full end-to-end fixture needs an `AppHandle` harness.
 #[test]
 #[ignore = "integration: needs two-project Tauri AppHandle fixture"]
 fn deliver_wake_rejects_unqualified_to_with_cross_project_matches() {
@@ -822,7 +865,7 @@ fn deliver_wake_rejects_unqualified_to_with_cross_project_matches() {
 /// when the base dir `rp` is another project's root). Logic covered by
 /// the `project_matches` closure + `dirs_to_check` seeding in the
 /// §AR2-G3 block; a full fixture-based test needs filesystem setup
-/// under an AppHandle harness.
+/// under an `AppHandle` harness.
 #[test]
 #[ignore = "integration: needs filesystem fixture + AppHandle"]
 fn resolve_repo_path_wg_fallback_honors_target_project() {}
@@ -831,7 +874,7 @@ fn resolve_repo_path_wg_fallback_honors_target_project() {}
 /// matching multiple projects returns `None` (refuses arbitrary pick).
 /// §AR2-G4 collector pattern logic is covered by inspection — the
 /// `matches.len()` match arm returns None on `_`. Full integration test
-/// needs AppHandle + session-CWDs fixture.
+/// needs `AppHandle` + session-CWDs fixture.
 #[test]
 #[ignore = "integration: needs filesystem fixture + AppHandle"]
 fn resolve_repo_path_returns_none_on_ambiguous_unqualified() {}

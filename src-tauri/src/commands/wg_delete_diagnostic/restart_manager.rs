@@ -4,6 +4,7 @@ use super::win32_error;
 use super::BlockerProcess;
 use super::DiagnosticError;
 use super::MAX_FILES_PER_PROCESS;
+use crate::filesystem::room_diagnostics::room_lock_resource_exists as resource_exists;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -34,7 +35,7 @@ fn to_wide_nul(s: &str) -> Vec<u16> {
 /// RAII guard for an RM session — guarantees `RmEndSession` runs even on early
 /// return / panic. Leaking a session persists across the AC process lifetime
 /// and burns Restart Manager's per-process session quota (default 64).
-/// This Drop is the only path to RmEndSession; covers panic, ?, return.
+/// This Drop is the only path to `RmEndSession`; covers panic, ?, return.
 struct RmSession(u32);
 impl Drop for RmSession {
     fn drop(&mut self) {
@@ -60,7 +61,7 @@ fn rm_register(handle: u32, wide_files: &[Vec<u16>]) -> Result<(), DiagnosticErr
         return Ok(());
     }
     // The collected Vec must outlive the FFI call so the pointers stay valid.
-    let ptrs: Vec<*const u16> = wide_files.iter().map(|w| w.as_ptr()).collect();
+    let ptrs: Vec<*const u16> = wide_files.iter().map(Vec::as_ptr).collect();
     let rc = unsafe {
         RmRegisterResources(
             handle,
@@ -120,9 +121,7 @@ fn rm_get_list(handle: u32) -> Result<Vec<RM_PROCESS_INFO>, DiagnosticError> {
             // can't happen; one `min` removes the soundness hole entirely.
             debug_assert!(
                 (have as usize) <= (needed as usize),
-                "RmGetList wrote {} entries into a buffer sized for {}",
-                have,
-                needed
+                "RmGetList wrote {have} entries into a buffer sized for {needed}"
             );
             let actual = (have as usize).min(needed as usize);
             // SAFETY: actual ≤ needed = capacity. RM wrote `actual` valid
@@ -225,9 +224,9 @@ impl RmBulkResult {
 }
 
 /// Binary-search-fallback bulk register: try the whole batch in one session;
-/// on RmRegisterResources error, drop the session, split the batch in half,
+/// on `RmRegisterResources` error, drop the session, split the batch in half,
 /// and recurse. Single-bad-file isolation at `wide.len() == 1`.
-/// Bound: O(log N + bad_files) RM sessions.
+/// Bound: O(log N + `bad_files`) RM sessions.
 fn collect_blockers_tolerant(wide: &[Vec<u16>], original_paths: &[&PathBuf]) -> RmBulkResult {
     if wide.is_empty() {
         return RmBulkResult::empty();
@@ -295,7 +294,7 @@ fn blocker_processes_by_pid(bulk_list: &[RM_PROCESS_INFO]) -> HashMap<u32, Block
             if app.is_empty() {
                 let exe = pid_to_exe_basename(pid);
                 if exe.is_empty() {
-                    format!("pid {}", pid)
+                    format!("pid {pid}")
                 } else {
                     exe
                 }
@@ -317,8 +316,8 @@ fn blocker_processes_by_pid(bulk_list: &[RM_PROCESS_INFO]) -> HashMap<u32, Block
 /// Two-pass Restart Manager scan:
 ///
 /// 1. **Bulk pass** — open RM sessions for batches of probed files (binary-search
-///    fallback when RmRegisterResources rejects a batch), call `RmGetList` to learn
-///    which PIDs hold any handles. Tolerant of single bad files; ~O(log N + bad_files)
+///    fallback when `RmRegisterResources` rejects a batch), call `RmGetList` to learn
+///    which PIDs hold any handles. Tolerant of single bad files; ~O(log N + `bad_files`)
 ///    sessions.
 /// 2. **Per-file attribution pass** — RM doesn't tell us *which* file each PID
 ///    held. Iterate files; for each, open a fresh session, register only that
@@ -336,7 +335,7 @@ pub(super) fn scan_restart_manager_processes_windows(
     }
     // Defensive: drop files that vanished between collection and the FFI call.
     // `RmRegisterResources` aborts the batch on `ERROR_FILE_NOT_FOUND`.
-    let alive: Vec<&PathBuf> = files.iter().filter(|p| p.exists()).collect();
+    let alive: Vec<&PathBuf> = files.iter().filter(|p| resource_exists(p)).collect();
     if alive.is_empty() {
         return Ok(Vec::new());
     }
@@ -383,7 +382,7 @@ pub(super) fn scan_restart_manager_processes_windows(
         {
             break; // every blocker has its quota — further probing wastes RM sessions
         }
-        if !path.exists() {
+        if !resource_exists(path) {
             continue; // raced again; skip
         }
         let single = std::slice::from_ref(wide);

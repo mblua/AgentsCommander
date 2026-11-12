@@ -112,7 +112,7 @@ fn ensure_seeded_instance_leaves_a_corrupt_instance_file_untouched() {
 
 /// AC-5: a MANAGED instance base must not be imported as legacy territory
 /// by a later project; the project gets a fresh managed base instead of
-/// MIGRATION_CONFLICT. This drives the same production initialization path
+/// `MIGRATION_CONFLICT`. This drives the same production initialization path
 /// that `ensure_seeded_for_project_with_token` uses, with the instance
 /// catalog dir injected explicitly because the process-global `config_dir()`
 /// has no test seam.
@@ -273,7 +273,7 @@ fn ensure_seeded_instance_keeps_an_existing_local_with_an_absent_base() {
     let instance = seed_dir();
     write_local(
         instance.path(),
-        r##"{"schemaVersion":1,"agents":[{"key":"pi","label":"PINNED PI"}]}"##,
+        r#"{"schemaVersion":1,"agents":[{"key":"pi","label":"PINNED PI"}]}"#,
     );
     let local_before = std::fs::read(local_catalog_path(instance.path())).unwrap();
 

@@ -12,13 +12,13 @@ pub(crate) fn is_running(pid: u32) -> bool {
     if pid == process::id() {
         return true;
     }
-    let filter = format!("PID eq {}", pid);
+    let filter = format!("PID eq {pid}");
     // #992 - reachable from the GUI process (Tauri get_agency_templates_status /
     // update_agency_templates -> CacheLock::acquire -> recover_stale_lock_if_possible),
     // which owns no console: without the flag Windows pops a Windows Terminal tab for
     // tasklist.exe. Both pipes are captured, so nothing would ever be shown in it.
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut cmd = Command::new("tasklist");
     cmd.args(["/FI", &filter, "/NH", "/FO", "CSV"])
         .creation_flags(CREATE_NO_WINDOW);

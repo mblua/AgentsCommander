@@ -72,15 +72,14 @@ pub fn read_send_file_content(
 ) -> Result<SendFileContent, ApiError> {
     let abs = resolve_send_file_path(bound_root, basename)?;
     let bytes = crate::filesystem::phone_messaging::read_message_snapshot(&abs)
-        .map_err(|e| ApiError::BadRequest(format!("message file not readable: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("message file not readable: {e}")))?;
     if bytes.len() > INLINE_BODY_MAX_BYTES {
         return Err(ApiError::PayloadTooLarge(format!(
-            "message file exceeds inline cap ({} bytes)",
-            INLINE_BODY_MAX_BYTES
+            "message file exceeds inline cap ({INLINE_BODY_MAX_BYTES} bytes)"
         )));
     }
     let body = String::from_utf8(bytes)
-        .map_err(|e| ApiError::BadRequest(format!("message file is not UTF-8: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("message file is not UTF-8: {e}")))?;
     let archive_warning = (|| -> Result<(), String> {
         let room = crate::phone::messaging::workgroup_root(Path::new(bound_root))
             .map_err(|e| e.to_string())?;
@@ -108,15 +107,15 @@ fn resolve_send_file_path(
     basename: &str,
 ) -> Result<std::path::PathBuf, ApiError> {
     crate::phone::messaging::validate_filename_only(basename)
-        .map_err(|e| ApiError::BadRequest(format!("invalid filename: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("invalid filename: {e}")))?;
 
     let agent_root = Path::new(bound_root);
     let wg_root = crate::phone::messaging::workgroup_root(agent_root)
-        .map_err(|e| ApiError::BadRequest(format!("bound replica is not under a room: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("bound replica is not under a room: {e}")))?;
     let msg_dir = crate::phone::messaging::messaging_dir(&wg_root)
-        .map_err(|e| ApiError::Internal(format!("cannot resolve messaging dir: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("cannot resolve messaging dir: {e}")))?;
     let abs = crate::phone::messaging::resolve_existing_message(&msg_dir, basename)
-        .map_err(|e| ApiError::BadRequest(format!("message file not found: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("message file not found: {e}")))?;
     Ok(abs)
 }
 
@@ -140,7 +139,7 @@ pub async fn resolve_api_send_target<H: ApiSendSettings + ?Sized>(
 
     // (1) canonicalize the target (belt-and-braces; the CLI resolves too).
     let resolved_to = crate::config::teams::resolve_agent_target(to, &paths)
-        .map_err(|e| ApiError::BadRequest(format!("unresolvable target: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("unresolvable target: {e}")))?;
 
     // Re-check after resolution: a bare name could canonicalize to the root.
     reject_if_root(from, &resolved_to)?;
@@ -152,20 +151,19 @@ pub async fn resolve_api_send_target<H: ApiSendSettings + ?Sized>(
         &crate::config::teams::discover_teams(),
     ) {
         return Err(ApiError::Forbidden(format!(
-            "routing rejected: '{}' cannot reach '{}'",
-            from, resolved_to
+            "routing rejected: '{from}' cannot reach '{resolved_to}'"
         )));
     }
     Ok(resolved_to)
 }
 
 /// In-process `list-peers-lean` for the caller's bound replica, reusing the
-/// exact CLI discovery + `reachable` computation (no subprocess).
+/// shared team peer discovery + `reachable` computation (no subprocess).
 pub fn lean_peers_via_api(
     bound_root: &str,
-) -> Result<Vec<crate::cli::list_peers::LeanPeerInfo>, ApiError> {
-    crate::cli::list_peers::lean_peers(bound_root)
-        .map_err(|e| ApiError::Internal(format!("peer discovery failed: {}", e)))
+) -> Result<Vec<crate::config::teams::peer_projection::LeanPeerInfo>, ApiError> {
+    crate::config::teams::lean_peers(bound_root)
+        .map_err(|e| ApiError::Internal(format!("peer discovery failed: {e}")))
 }
 
 #[cfg(test)]

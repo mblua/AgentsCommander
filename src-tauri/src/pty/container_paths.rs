@@ -23,7 +23,7 @@ pub const HOST_PATH_TRANSLATE_ENV_KEYS: [&str; 3] = [
     OPENCODE_CONFIG_DIR_KEY,
 ];
 
-/// Contract: path-valued env rows are host-side values; AgentsCommander
+/// Contract: path-valued env rows are host-side values; `AgentsCommander`
 /// translates them for container sessions when they live under the replica mount.
 pub const WARNING_KIND_CONTAINER_PATH_IN_HOST_FIELD: &str = "container-path-in-host-field";
 pub const WARNING_KIND_OUTSIDE_MOUNT: &str = "outside-mount";
@@ -49,14 +49,12 @@ impl ContainerPathMap {
         let host_root_normalized = normalize_path_text(canonical_host_root);
         if is_unc_path(&host_root_normalized) {
             return Err(format!(
-                "container transport cannot bind-mount UNC host root '{}'",
-                canonical_host_root
+                "container transport cannot bind-mount UNC host root '{canonical_host_root}'"
             ));
         }
         if !looks_absolute_host_path(canonical_host_root) {
             return Err(format!(
-                "container transport host root '{}' is not absolute",
-                canonical_host_root
+                "container transport host root '{canonical_host_root}' is not absolute"
             ));
         }
 
@@ -116,12 +114,10 @@ impl ContainerPathMap {
     }
 
     pub fn is_container_path(&self, value: &str) -> bool {
-        normalize_container_path(value)
-            .map(|normalized| {
-                normalized == self.container_root
-                    || normalized.starts_with(&format!("{}/", self.container_root))
-            })
-            .unwrap_or(false)
+        normalize_container_path(value).is_some_and(|normalized| {
+            normalized == self.container_root
+                || normalized.starts_with(&format!("{}/", self.container_root))
+        })
     }
 
     pub fn host_root(&self) -> &str {
@@ -293,9 +289,8 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
 
     if cwd
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(crate::config::ac_root::is_ac_root_name)
-        .unwrap_or(false)
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(crate::config::ac_root::is_ac_root_name)
     {
         return Some(format!(
             "container transport refuses to bind-mount AC workspace root '{}'",
@@ -313,9 +308,8 @@ pub fn container_mount_source_rejection(cwd: &Path) -> Option<String> {
 
     let is_wg_dir = cwd
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(crate::config::entity_prefix::has_entity_prefix)
-        .unwrap_or(false);
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(crate::config::entity_prefix::has_entity_prefix);
     if is_wg_dir && crate::config::ac_root::find_ac_root_ancestor(cwd).is_some() {
         return Some(format!(
             "container transport refuses to bind-mount room root '{}'",
@@ -343,11 +337,11 @@ fn normalize_path_text(path: &str) -> String {
 
 fn strip_windows_verbatim_prefix_any(path: &str) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = path.strip_prefix(r"\\?\") {
         rest.to_string()
     } else if let Some(rest) = path.strip_prefix(r"\??\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = path.strip_prefix(r"\??\") {
         rest.to_string()
     } else {

@@ -18,19 +18,18 @@ use super::{
     repair_loaded_response_close_settings, repair_loaded_room_idle_confirmation_settings,
     report_overlay_diagnostics, report_settings_save_error, restore_codex_home_carrier,
     save_settings_value_with_startup, select_project_source_at_labeled_path_with_limit,
-    selected_registered_profile_owner, set_agents_layer_state, validate_agent_commands,
-    validate_preflight_timeouts, AgentsLayerState, AppSettings, ProjectWriteMode,
-    RegisteredProfileProblemKind, SettingsSaveError, SettingsSaveLegacyOutward, SettingsSaveReason,
-    SettingsSaveReportSurface, SettingsSaveStage, StartupAgentRows, AGENTS_INSTANCE_KEYS,
-    CONFIGURATION_COMMAND_PAIRS, FIELD_ARCHIVED, FIELD_ARCHIVED_REL, FIELD_PROJECT_PATH,
-    FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL, FIELD_PROJECT_PATH_REL,
+    selected_registered_profile_owner, set_agents_layer_state, settings_path,
+    validate_agent_commands, validate_preflight_timeouts, AgentsLayerState, AppSettings,
+    ProjectWriteMode, RegisteredProfileProblemKind, SettingsSaveError, SettingsSaveLegacyOutward,
+    SettingsSaveReason, SettingsSaveReportSurface, SettingsSaveStage, StartupAgentRows,
+    AGENTS_INSTANCE_KEYS, CONFIGURATION_COMMAND_PAIRS, FIELD_ARCHIVED, FIELD_ARCHIVED_REL,
+    FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL, FIELD_PROJECT_PATH_REL,
     OVERLAY_DERIVED_ID_CLOSURES, OVERLAY_INELIGIBLE_DISK_KEYS, OVERLAY_INELIGIBLE_LEGACY_KEYS,
     OVERLAY_KEY_MAIN_ALWAYS_ON_TOP, OVERLAY_KEY_MAIN_GEOMETRY, OVERLAY_KEY_MAIN_ZOOM,
     OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE, RESPONSE_CLOSE_IDLE_SECONDS_MAX,
     RESPONSE_CLOSE_IDLE_SECONDS_MIN, ROOM_IDLE_CONFIRMATION_SECONDS_MAX,
     ROOM_IDLE_CONFIRMATION_SECONDS_MIN, TYPING_HOLD_SECONDS_MAX, TYPING_HOLD_SECONDS_MIN,
 };
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::local_overlay::LocalSettingsOverlay;
 use serde_json::{Map, Value};
 use std::net::{IpAddr, SocketAddr};
@@ -128,7 +127,7 @@ pub(crate) fn parse_settings_with_startup(
         log::warn!("{reason}");
     }
     let value: Value = serde_json::from_str(contents)
-        .map_err(|e| format!("Failed to parse settings file: {}", e))?;
+        .map_err(|e| format!("Failed to parse settings file: {e}"))?;
     // One read of the agents file serves both the physical-group census and the
     // layer-30 merge; the merge label is the settings path, as before.
     let agents = io_path.map(|io| {
@@ -144,7 +143,7 @@ pub(crate) fn parse_settings_with_startup(
         projection,
         agents,
         |value| match io_path {
-            Some(p) => LocalSettingsOverlay::load_and_merge_paired(
+            Some(p) => crate::config::settings::overlay::load_settings_overlay(
                 p,
                 value,
                 OVERLAY_INELIGIBLE_DISK_KEYS,
@@ -193,23 +192,7 @@ pub(crate) fn compose_settings_parts(
     }
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
     let main_profile_owner = value.as_object().expect("settings object").clone();
-    let physical_sidecar = agents
-        .as_ref()
-        .and_then(|read| read.as_ref().ok())
-        .and_then(Option::as_ref)
-        .cloned();
-    let physical_groups = agents
-        .as_ref()
-        .and_then(|read| read.as_ref().ok())
-        .and_then(Option::as_ref)
-        .map(|groups| {
-            groups
-                .keys()
-                .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let (physical_sidecar, physical_groups) = physical_agents_view(agents.as_ref());
     // #2716 (B3): the agents file is layer 30, under the layer-50 overlay, so it is
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
@@ -300,12 +283,46 @@ pub(crate) fn compose_settings_parts(
     };
     settings.project_path_state = Arc::new(state);
     settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
+    finalize_composed_settings(&mut settings, source, overlay, startup);
+    Ok((settings, legacy_profiles, agents_layer))
+}
+
+/// The physical agents sidecar and its recognized group keys, from a readable
+/// agents file; `None` and empty otherwise.
+fn physical_agents_view(
+    agents: Option<&AgentsInstanceRead>,
+) -> (Option<Map<String, Value>>, Vec<String>) {
+    let sidecar = agents
+        .and_then(|read| read.as_ref().ok())
+        .and_then(Option::as_ref);
+    let groups = sidecar
+        .map(|groups| {
+            groups
+                .keys()
+                .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (sidecar.cloned(), groups)
+}
+
+/// The tail of `compose_settings_parts`: order and id hashes, overlay
+/// diagnostics and state, and the startup rows reset when the overlay owns
+/// `agents`.
+fn finalize_composed_settings(
+    settings: &mut AppSettings,
+    source: &str,
+    overlay: LocalSettingsOverlay,
+    startup: Option<&mut Option<StartupAgentRows>>,
+) {
     // #2306 P1 - in-memory finalize over the merged view. It is deliberately not
     // part of `needs_save`: a legacy file with no ordinals must load without a
     // disk write or a backup rotation.
     finalize_agent_order(&mut settings.agents);
     refresh_agent_id_hashes(&mut settings.agents);
     refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
+    settings.normalize_context_history_sessions();
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
     if settings.local_overlay_state.owns_top_level("agents") {
@@ -313,7 +330,6 @@ pub(crate) fn compose_settings_parts(
             *startup = None;
         }
     }
-    Ok((settings, legacy_profiles, agents_layer))
 }
 
 /// #2015: legacy pre-v2 codingAgentProfiles are no longer migrated. Detection only;
@@ -477,7 +493,12 @@ pub(crate) fn default_settings_with_overlay_captured(
     let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
         return AppSettings::default();
     };
-    let overlay = LocalSettingsOverlay::load_and_merge_paired(
+    // #4091: drop only the synthetic default colour, so an absent overlay key
+    // decodes as `None` and normalizes to the effective last window.
+    if let Some(defaults) = value.as_object_mut() {
+        defaults.remove("contextHistoryColorSessions");
+    }
+    let overlay = crate::config::settings::overlay::load_settings_overlay(
         settings_path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,
@@ -515,6 +536,7 @@ pub(crate) fn default_settings_with_overlay_captured(
             settings.local_overlay_state = Arc::new(overlay);
             repair_loaded_response_close_settings(&mut settings, source);
             repair_loaded_room_idle_confirmation_settings(&mut settings, source);
+            settings.normalize_context_history_sessions();
             settings
         }
         Err(e) => {
@@ -573,12 +595,8 @@ thread_local! {
         std::cell::RefCell::new(None);
 }
 
-pub(crate) fn settings_path() -> Option<PathBuf> {
-    super::super::config_dir().map(|d| d.join(SETTINGS_FILE_NAME))
-}
-
-/// Load settings from the app config directory (see config_dir()), falling back to defaults.
-/// Auto-generates a root_token if missing and persists it.
+/// Load settings from the app config directory (see `config_dir()`), falling back to defaults.
+/// Auto-generates a `root_token` if missing and persists it.
 pub fn load_settings() -> AppSettings {
     let path = match settings_path() {
         Some(p) => p,
@@ -611,24 +629,12 @@ pub(crate) fn load_settings_from_path_with_blocking_menus_publish(
     }
     apply_loaded_window_migrations(&mut settings);
 
-    // The main-file diagnostic remains separate for its original-byte backup.
-    // A sidecar-owned legacy cause must be reachable without that diagnostic.
-    let (legacy_profile_work, profile_preview_rejected) = match startup_profile_legacy_work(
+    let (legacy_profile_work, profile_preview_rejected) = startup_legacy_profile_flags(
         &settings,
         path,
         legacy_profiles_contents.as_deref(),
         legacy_profiles_detected,
-    ) {
-        Ok(Some(actionable)) => (actionable, false),
-        Ok(None) => {
-            log::warn!("[profiles] legacy action awaits unambiguous owner routing");
-            (legacy_profiles_detected, false)
-        }
-        Err(reason) => {
-            log::warn!("[profiles] legacy action preview rejected: {reason}");
-            (false, true)
-        }
-    };
+    );
 
     // #248 migration — translates legacy startOnlyCoordinators (if present).
     // Track whether the legacy field was on disk so we can fire a single save
@@ -730,6 +736,33 @@ pub(crate) fn load_settings_from_path_with_blocking_menus_publish(
     settings
 }
 
+/// The startup legacy-profile work flag and whether its preview was rejected.
+fn startup_legacy_profile_flags(
+    settings: &AppSettings,
+    path: &Path,
+    legacy_profiles_contents: Option<&str>,
+    legacy_profiles_detected: bool,
+) -> (bool, bool) {
+    // The main-file diagnostic remains separate for its original-byte backup.
+    // A sidecar-owned legacy cause must be reachable without that diagnostic.
+    match startup_profile_legacy_work(
+        settings,
+        path,
+        legacy_profiles_contents,
+        legacy_profiles_detected,
+    ) {
+        Ok(Some(actionable)) => (actionable, false),
+        Ok(None) => {
+            log::warn!("[profiles] legacy action awaits unambiguous owner routing");
+            (legacy_profiles_detected, false)
+        }
+        Err(reason) => {
+            log::warn!("[profiles] legacy action preview rejected: {reason}");
+            (false, true)
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn read_settings_for_startup(path: &Path) -> (AppSettings, bool, Option<String>) {
     read_settings_for_startup_with_capture(path, None)
@@ -809,8 +842,7 @@ pub(crate) fn persist_loaded_settings_migrations(
                 Err(e) => {
                     log::error!(
                         "Failed to persist settings v2 migration backup; leaving settings.json \
-                            untouched: {}",
-                        e
+                            untouched: {e}"
                     );
                     false
                 }

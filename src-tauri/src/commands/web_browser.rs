@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Runtime, Url, WebviewUrl,
@@ -19,10 +19,13 @@ use tauri::{
 
 mod mailbox;
 
+#[cfg(test)]
+pub(crate) use mailbox::is_web_browser_action;
 pub(crate) use mailbox::{
-    is_web_browser_action, WEB_BROWSER_NAVIGATE_ACTION, WEB_BROWSER_RELOAD_ACTION,
-    WEB_BROWSER_STATUS_ACTION,
+    WEB_BROWSER_NAVIGATE_ACTION, WEB_BROWSER_RELOAD_ACTION, WEB_BROWSER_STATUS_ACTION,
 };
+
+pub use crate::phone::mailbox::browser::snapshot::WebBrowserSnapshot;
 
 pub(crate) const WEB_BROWSER_WINDOW_LABEL: &str = "web-browser";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -44,15 +47,6 @@ pub struct PaneBounds {
     pub y: f64,
     pub width: f64,
     pub height: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebBrowserSnapshot {
-    pub url: String,
-    pub title: String,
-    pub loading: bool,
-    pub visible: bool,
 }
 
 #[derive(Default)]
@@ -85,7 +79,7 @@ impl WebBrowserState {
         let mut model = self
             .0
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut model)
     }
 }
@@ -101,7 +95,7 @@ pub(crate) fn normalize_url(input: &str) -> Result<Url, String> {
     // Before `Url::parse`, which reads `C:\x` as scheme `c`.
     let path = std::path::Path::new(input);
     if path.is_absolute() {
-        return Url::from_file_path(path).map_err(|_| format!("invalid file path: {input}"));
+        return Url::from_file_path(path).map_err(|()| format!("invalid file path: {input}"));
     }
     if let Ok(url) = Url::parse(input) {
         if matches!(url.scheme(), "http" | "https" | "file" | "about") {
@@ -227,7 +221,7 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, Str
             .focused(false)
             .visible(false)
             .on_page_load(move |_, payload| {
-                record_page_load(&load_app, payload.url(), payload.event())
+                record_page_load(&load_app, payload.url(), payload.event());
             })
             .on_document_title_changed(move |_, title| record_title(&title_app, title))
             // Links that open a new window load in place: one browser, one page.

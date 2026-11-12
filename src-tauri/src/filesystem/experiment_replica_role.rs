@@ -3,12 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{directories, documents};
-
-const ROLE_FILE_NAME: &str = "Role.md";
-
-fn role_path(replica_dir: &Path) -> PathBuf {
-    replica_dir.join(ROLE_FILE_NAME)
-}
+use crate::filesystem::projects::entities::roles::{role_path, ROLE_FILE_NAME};
 
 pub(crate) fn write(
     replica_dir: &Path,
@@ -18,7 +13,7 @@ pub(crate) fn write(
 }
 
 pub(crate) fn existing_in_room(room: &Path, variant_agent_name: &str) -> Option<PathBuf> {
-    let replica = room.join(format!("__agent_{}", variant_agent_name));
+    let replica = room.join(format!("__agent_{variant_agent_name}"));
     let role = role_path(&replica);
     if directories::experiment_path_exists(&role) {
         Some(role)

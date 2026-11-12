@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 impl ResponseCloseState {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn reserve_policy_candidate(
         &self,
         member: ResponseRouteIdentity,
@@ -76,7 +75,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn mark_request_submitted(
         &self,
         context: &ResponseDeliveryContext,
@@ -100,7 +98,6 @@ impl ResponseCloseState {
         });
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn register_request(
         &self,
         proof: ResponseDeliveryProof,
@@ -143,7 +140,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn admit_return(
         &self,
         member: &ResponseRouteIdentity,
@@ -228,7 +224,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn observe_return_success(
         &self,
         proof: ReturnDeliveryProof,
@@ -237,7 +232,6 @@ impl ResponseCloseState {
         self.settle_return(&proof.context, true, now)
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn settle_return_terminal(
         &self,
         context: &ReturnObservationContext,
@@ -246,7 +240,6 @@ impl ResponseCloseState {
         self.settle_return(context, false, now)
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) fn settle_return(
         &self,
         context: &ReturnObservationContext,
@@ -302,7 +295,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) fn safe(
         inner: &ResponseCloseInner,
         route: &ResponseCloseRoute,
@@ -354,7 +346,6 @@ impl ResponseCloseState {
             ) >= std::time::Duration::from_secs(u64::from(inner.seconds))
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn select_ticket(
         &self,
         id: Uuid,
@@ -387,7 +378,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(in crate::pty) fn try_commit_response_close(
         &self,
         ticket: &ResponseCloseTicket,
@@ -447,7 +437,6 @@ impl ResponseCloseState {
         })?
     }
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) fn finish_response_close(
         &self,
         ticket: &ResponseCloseTicket,
@@ -466,20 +455,7 @@ impl ResponseCloseState {
                 }
                 StaleOrInvalidSettlement
             })?;
-            let binding = ticket.committed_binding();
-            let current = &evidence.current_settlement;
-            if evidence.committed_binding != binding
-                || route.committed_binding.as_ref() != Some(&binding)
-                || route.closing != Some(binding.close_nonce)
-                || route.closing_target.as_deref() != Some(binding.member.target.as_str())
-                || route.generation != binding.member.generation
-                || route.manager_token != Some(binding.member.token)
-                || route.manager_version != current.current_carrier_version
-                || current.current_carrier_version < binding.member.carrier_version
-                || current.confirmed_carrier_version != current.current_carrier_version
-                || current.checkpoint_nonce != current.current_checkpoint_nonce
-                || current.publication_epoch != current.current_publication_epoch
-            {
+            if finish_settlement_group_rejected(route, ticket, &evidence) {
                 if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
                     log::debug!(
                         target: DIAG_TARGET,
@@ -533,20 +509,7 @@ impl ResponseCloseState {
                     original_manager_identity_intact: true,
                 } => {
                     let route = inner.routes.get_mut(&ticket.session_id).unwrap();
-                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
-                        log::debug!(
-                            target: DIAG_TARGET,
-                            "response_close_diag id=unknown site={} stage=finish \
-                             outcome=reopened_after_kill_failure member={}",
-                            line!(),
-                            ticket.session_id
-                        );
-                    }
-                    route.closing = None;
-                    route.closing_target = None;
-                    route.committed_binding = None;
-                    route.diagnostic_policy_loss("finish_response_close", line!());
-                    route.policy = None;
+                    reopen_after_kill_failure(route, ticket.session_id);
                 }
                 _ => {
                     if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
@@ -565,4 +528,41 @@ impl ResponseCloseState {
         })
         .map_err(|_| StaleOrInvalidSettlement)?
     }
+}
+
+fn finish_settlement_group_rejected(
+    route: &ResponseCloseRoute,
+    ticket: &ResponseCloseTicket,
+    evidence: &ResponseCloseSettlementEvidence,
+) -> bool {
+    let binding = ticket.committed_binding();
+    let current = &evidence.current_settlement;
+    evidence.committed_binding != binding
+        || route.committed_binding.as_ref() != Some(&binding)
+        || route.closing != Some(binding.close_nonce)
+        || route.closing_target.as_deref() != Some(binding.member.target.as_str())
+        || route.generation != binding.member.generation
+        || route.manager_token != Some(binding.member.token)
+        || route.manager_version != current.current_carrier_version
+        || current.current_carrier_version < binding.member.carrier_version
+        || current.confirmed_carrier_version != current.current_carrier_version
+        || current.checkpoint_nonce != current.current_checkpoint_nonce
+        || current.publication_epoch != current.current_publication_epoch
+}
+
+fn reopen_after_kill_failure(route: &mut ResponseCloseRoute, session_id: Uuid) {
+    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+        log::debug!(
+            target: DIAG_TARGET,
+            "response_close_diag id=unknown site={} stage=finish \
+             outcome=reopened_after_kill_failure member={}",
+            line!(),
+            session_id
+        );
+    }
+    route.closing = None;
+    route.closing_target = None;
+    route.committed_binding = None;
+    route.diagnostic_policy_loss("finish_response_close", line!());
+    route.policy = None;
 }

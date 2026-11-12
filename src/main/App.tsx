@@ -33,6 +33,10 @@ import { startNonStopWatchdogClient } from "../sidebar/watchdog/non-stop-watchdo
 import SidebarApp from "../sidebar/App";
 import TerminalApp from "../terminal/App";
 import ResourceMonitorApp from "../resource-monitor/App";
+import ContextHistoryApp from "../context-history/App";
+import { projectStore } from "../sidebar/stores/project";
+import { normalizeProjectPathForCompare } from "../sidebar/stores/project-refresh";
+import { workgroupGroupsStore } from "../sidebar/stores/workgroup-groups";
 import { centralViewStore } from "./stores/centralView";
 import { wireCentralViewListeners } from "./listeners-central-view";
 import { wireWebBrowserListeners } from "./listeners-web-browser";
@@ -251,6 +255,16 @@ const pulsePhase = (
   baselineObservedEpoch,
   completedObserverAck,
 });
+
+/** #3532 - the registered path of the sidebar's selected project; no fallback. */
+export function selectedHistoryProject(): string | null {
+  const key = workgroupGroupsStore.activeProjectPath();
+  if (key === null) return null;
+  const project = projectStore.projects.find(
+    (candidate) => normalizeProjectPathForCompare(candidate.path) === key,
+  );
+  return project?.path ?? null;
+}
 
 const MainApp: Component = () => {
   const releaseRoomActivityObserver = acquireRoomActivityObserver();
@@ -1631,6 +1645,22 @@ const MainApp: Component = () => {
               data-ac-role="surface"
             >
               <ResourceMonitorApp embedded />
+            </div>
+          </Show>
+          <Show when={isTauri && centralViewStore.isContextHistory}>
+            <div class="main-rm-pane" data-ac-testid="main.contextHistoryPane">
+              <Show
+                when={selectedHistoryProject()}
+                fallback={<p>Elegí un proyecto para consultar su historial.</p>}
+                keyed
+              >
+                {(projectPath) => (
+                  <ContextHistoryApp
+                    projectPath={projectPath}
+                    onClose={() => centralViewStore.showTerminal()}
+                  />
+                )}
+              </Show>
             </div>
           </Show>
           <Show when={centralViewStore.isBrowser}>

@@ -2,6 +2,7 @@ use super::handoff::{
     is_permanent_delivery_error, prune_retry_tracker, wake_claim_has_settled_receipt,
     wake_claim_origin, wake_claim_path, WakeHandoff, WakeOutcomeReport,
 };
+use super::host::{BrowserHost, MailboxHost};
 use super::notice::{
     retain_unarchived_session_dirs, OutboxOrigin, RetryState, MAX_DELIVERY_ATTEMPTS,
 };
@@ -12,11 +13,9 @@ use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::types::OutboxMessage;
 use crate::session::manager::SessionManager;
-use crate::AppOutbox;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 
 mod outboxes;
 
@@ -31,7 +30,7 @@ impl MailboxPoller {
         let parent = path.parent().ok_or("No source parent")?;
         let id = path
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .and_then(|name| name.strip_suffix(".json"))
             .ok_or("No source id")?;
         // Derive only from the scanner's basename; reject_message owns payload-id safeguards.
@@ -70,16 +69,20 @@ impl MailboxPoller {
     }
 
     /// Start the poller as a background task.
-    pub fn start(mut self, app: tauri::AppHandle, shutdown: crate::shutdown::ShutdownSignal) {
-        tauri::async_runtime::spawn(async move {
+    pub fn start<A: MailboxHost + BrowserHost>(
+        mut self,
+        app: A,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) {
+        app.clone().spawn_background(Box::pin(async move {
             // Initial poll without delay (matches original behavior)
             if let Err(e) = self.poll(&app).await {
-                log::warn!("MailboxPoller error: {}", e);
+                log::warn!("MailboxPoller error: {e}");
             }
             loop {
                 tokio::select! {
                     biased;
-                    _ = shutdown.token().cancelled() => {
+                    () = shutdown.token().cancelled() => {
                         log::info!("[MailboxPoller] Shutdown signal received, stopping");
                         // (#1399) Detach instead of cancelling: dropping a
                         // JoinSet cancels its tasks, which would cut a wake
@@ -89,14 +92,14 @@ impl MailboxPoller {
                         self.wake_workers.detach_all();
                         break;
                     }
-                    _ = tokio::time::sleep(self.poll_interval) => {
+                    () = tokio::time::sleep(self.poll_interval) => {
                         if let Err(e) = self.poll(&app).await {
-                            log::warn!("MailboxPoller error: {}", e);
+                            log::warn!("MailboxPoller error: {e}");
                         }
                     }
                 }
             }
-        });
+        }));
     }
 
     fn scrub_stale_pty_input_temps(
@@ -124,10 +127,10 @@ impl MailboxPoller {
             }
             let old_enough = mailbox_disk::mailbox_path_symlink_metadata(&path)
                 .ok()
-                .filter(|metadata| metadata.is_file())
+                .filter(std::fs::Metadata::is_file)
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(|modified| modified.elapsed().ok())
-                .is_some_and(|age| age >= std::time::Duration::from_secs(10 * 60));
+                .is_some_and(|age| age >= std::time::Duration::from_mins(10));
             if !old_enough || crate::path_identity::verify_regular_file(&path).is_err() {
                 continue;
             }
@@ -178,9 +181,7 @@ impl MailboxPoller {
                 Ok(settled) => settled,
                 Err(error) => {
                     log::warn!(
-                        "[mailbox] #1399 could not inspect receipts for unowned claim {}: {}",
-                        id,
-                        error
+                        "[mailbox] #1399 could not inspect receipts for unowned claim {id}: {error}"
                     );
                     continue;
                 }
@@ -188,7 +189,8 @@ impl MailboxPoller {
             if settled {
                 // Preserve pending if an origin remains or its observation fails.
                 // Receipt recovery has no authenticated full-return delivery proof.
-                let origin_absent = matches!(origin.try_exists(), Ok(false));
+                let origin_absent =
+                    matches!(mailbox_disk::mailbox_path_try_exists(&origin), Ok(false));
                 // (#1399 R6) Keep the Result: `remove_file` fails under exactly
                 // the locked-handle condition that is ordinary on Windows, and
                 // a log line reporting an action that did not happen costs an
@@ -199,29 +201,19 @@ impl MailboxPoller {
                             self.settle_response_source(&origin, false);
                         }
                         log::warn!(
-                            "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
-                            id
+                            "[mailbox] #1399 dropped unowned claim {id} (receipt already present)"
                         );
                     }
-                    Err(error) => log::warn!(
-                        "[mailbox] #1399 could not drop unowned claim {}: {}",
-                        id,
-                        error
-                    ),
+                    Err(error) => {
+                        log::warn!("[mailbox] #1399 could not drop unowned claim {id}: {error}");
+                    }
                 }
             } else if let Err(error) = mailbox_disk::rename_mailbox_document(claim, &origin) {
                 // Retried on the next cycle. This is the only reason a locked
                 // file cannot wedge the message.
-                log::warn!(
-                    "[mailbox] #1399 could not return unowned claim {}: {}",
-                    id,
-                    error
-                );
+                log::warn!("[mailbox] #1399 could not return unowned claim {id}: {error}");
             } else {
-                log::warn!(
-                    "[mailbox] #1399 returned unowned claim {} to the outbox",
-                    id
-                );
+                log::warn!("[mailbox] #1399 returned unowned claim {id} to the outbox");
             }
         }
     }
@@ -236,9 +228,9 @@ impl MailboxPoller {
     /// observe that window. An await inside it would let reclamation treat the
     /// claim as unowned and rename it back under a live worker.
     #[cfg(test)]
-    pub(crate) fn claim_and_spawn_wake<R: tauri::Runtime>(
+    pub(crate) fn claim_and_spawn_wake<A: MailboxHost>(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        app: &A,
         path: &Path,
         msg: OutboxMessage,
     ) -> WakeHandoff {
@@ -252,9 +244,9 @@ impl MailboxPoller {
         )
     }
 
-    pub(crate) fn claim_and_spawn_validated_wake<R: tauri::Runtime>(
+    pub(crate) fn claim_and_spawn_validated_wake<A: MailboxHost>(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        app: &A,
         path: &Path,
         validated: ValidatedWake,
     ) -> WakeHandoff {
@@ -269,7 +261,7 @@ impl MailboxPoller {
             }
             Some(Err(crate::pty::manager::ResponseCloseError::Unavailable)) | None => None,
             Some(Err(error)) => {
-                return WakeHandoff::ClaimFailed(format!("response close admission: {:?}", error))
+                return WakeHandoff::ClaimFailed(format!("response close admission: {error:?}"))
             }
             Some(Ok(reservation)) => Some(reservation),
         };
@@ -301,7 +293,7 @@ impl MailboxPoller {
             return if error.kind() == std::io::ErrorKind::NotFound {
                 WakeHandoff::LaneBusy // the file vanished; nothing to do
             } else {
-                WakeHandoff::ClaimFailed(format!("Failed to claim outbox message: {}", error))
+                WakeHandoff::ClaimFailed(format!("Failed to claim outbox message: {error}"))
             };
         }
         let worker_app = app.clone();
@@ -342,8 +334,7 @@ impl MailboxPoller {
                 // drains, and the condition must be greppable.
                 log::error!(
                     "[mailbox] #1399 wake worker task failed (a claim may be stranded until its \
-                    outcome drains): {}",
-                    error
+                    outcome drains): {error}"
                 );
             }
         }
@@ -364,12 +355,10 @@ impl MailboxPoller {
             // metadata/access failure into `false`, release the ledger, and either
             // count against an absent origin or resurrect an unreadable receipt.
             let settlement = (|| -> Result<(bool, bool, bool), String> {
-                let claim_present = claim.try_exists().map_err(|error| {
-                    format!("could not inspect owned claim {:?}: {}", claim, error)
-                })?;
-                let origin_present = path.try_exists().map_err(|error| {
-                    format!("could not inspect owned origin {:?}: {}", path, error)
-                })?;
+                let claim_present = mailbox_disk::mailbox_path_try_exists(&claim)
+                    .map_err(|error| format!("could not inspect owned claim {claim:?}: {error}"))?;
+                let origin_present = mailbox_disk::mailbox_path_try_exists(&path)
+                    .map_err(|error| format!("could not inspect owned origin {path:?}: {error}"))?;
                 let payload_receipt_present = wake_claim_has_settled_receipt(&path)?;
                 let claim_has_receipt = claim_present && payload_receipt_present;
 
@@ -386,7 +375,7 @@ impl MailboxPoller {
                         )
                     };
                     disk_result.map_err(|error| {
-                        format!("could not {} owned claim {:?}: {}", action, claim, error)
+                        format!("could not {action} owned claim {claim:?}: {error}")
                     })?;
                 }
 
@@ -397,10 +386,8 @@ impl MailboxPoller {
                 Ok(state) => state,
                 Err(error) => {
                     log::warn!(
-                        "[mailbox] #1399 could not settle owned claim {:?}: {}; outcome remains \
-                        pending",
-                        claim,
-                        error
+                        "[mailbox] #1399 could not settle owned claim {claim:?}: {error}; \
+                         outcome remains pending"
                     );
                     // The receiver snapshot is already finite, so this report is
                     // not observed again until a later drain and cannot spin here.
@@ -408,8 +395,7 @@ impl MailboxPoller {
                         // Structurally unreachable while `self` owns the receiver.
                         // Keep ledger ownership; durable disk state is the restart fallback.
                         log::error!(
-                            "[mailbox] #1399 could not requeue outcome for owned claim {:?}",
-                            claim
+                            "[mailbox] #1399 could not requeue outcome for owned claim {claim:?}"
                         );
                     }
                     continue;
@@ -426,8 +412,7 @@ impl MailboxPoller {
                 // deletion or corruption visible before preserving today's
                 // outcome-recording behavior.
                 log::error!(
-                    "[mailbox] #1399 outcome has no claim, origin, or payload receipt: {:?}",
-                    path
+                    "[mailbox] #1399 outcome has no claim, origin, or payload receipt: {path:?}"
                 );
             }
 
@@ -449,13 +434,13 @@ impl MailboxPoller {
     }
 
     /// (#1399) Deterministic replacement for "the delivery finished inside
-    /// poll()". Takes no `AppHandle`: joining and draining need none, and the
+    /// `poll()`". Takes no `AppHandle`: joining and draining need none, and the
     /// drain is the SHARED `drain_wake_outcomes` rather than a second copy.
     #[cfg(test)]
     pub(crate) async fn settle_wake_workers(&mut self) {
         while let Some(result) = self.wake_workers.join_next().await {
             if let Err(error) = result {
-                log::warn!("[mailbox] wake worker failed: {}", error);
+                log::warn!("[mailbox] wake worker failed: {error}");
             }
         }
         self.drain_wake_outcomes().await;
@@ -480,7 +465,7 @@ impl MailboxPoller {
                 retain_unarchived_session_dirs(session_dirs, &roots)
             })
             .await
-            .map_err(|e| format!("archived mailbox-session filter task failed: {}", e))?
+            .map_err(|e| format!("archived mailbox-session filter task failed: {e}"))?
         };
 
         let mut startup_project_paths = repo_paths.clone();
@@ -557,79 +542,87 @@ impl MailboxPoller {
     }
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
-    pub(crate) async fn poll<R: tauri::Runtime>(
+    pub(crate) async fn poll<A: MailboxHost + BrowserHost>(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        app: &A,
     ) -> Result<(), String> {
-        self.snapshot_scanner.begin_cycle();
-        // (#1399) The two timing lines the issue authorizes: one at the top
-        // of the cycle and one at the bottom, each reporting elapsed ms,
-        // outboxes scanned, and messages processed. Together they prove the
-        // scanner returns in milliseconds instead of holding the loop for
-        // delivery time.
-        let cycle_started = std::time::Instant::now();
+        let cycle_started = self.begin_poll_cycle().await;
         let mut messages_processed = 0usize;
-        log::info!(
-            "[mailbox] poll cycle started elapsed_ms={} outboxes=0 messages=0",
-            cycle_started.elapsed().as_millis()
-        );
-        // (#1399) Reap, then drain, before any outbox work: joined workers
-        // free cap slots, and an outcome's path can belong to any outbox, so
-        // the drain is per-cycle, not per-outbox. Draining before the scans
-        // also means a rename-back the drain rejects cannot be re-claimed in
-        // the same cycle.
-        self.reap_wake_workers();
-        self.drain_wake_outcomes().await;
-        if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
-            if let Ok(store) = &state.store {
-                let active = state.active_operations.snapshot();
-                if store
-                    .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
-                    .await
-                    .is_err()
-                {
-                    log::warn!("[pty-input] runtime recovery failed code=store_transient");
-                }
-                if store
-                    .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
-                    .await
-                    .is_err()
-                {
-                    log::warn!("[pty-input] compaction failed code=store_transient");
-                }
-            }
+        if let Some(state) = app.message_store() {
+            Self::maintain_pty_input_runtime(state).await;
         }
-        let settings = app.state::<SettingsState>();
-        let (repo_paths, archived) = {
-            let cfg = settings.read().await;
-            (
-                cfg.project_paths.clone(),
-                cfg.archived_project_paths.clone(),
-            )
-        };
+        let settings = app.pty_settings();
+        let (repo_paths, archived) = Self::poll_project_paths(settings).await;
 
         // Also scan CWDs of active sessions for repos not in settings
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let (startup_project_paths, all_paths, snapshot_session_dirs) =
-            Self::poll_session_paths(repo_paths, archived, &session_mgr).await?;
+            Self::poll_session_paths(repo_paths, archived, session_mgr).await?;
 
         // One bounded startup sweep covers canonical Root plus verified WG
         // replicas under active and archived projects. Fresh artifacts are
         // registered so the monotonic cleanup task continues after this poll.
         if self.snapshot_scanner.startup_sweep_pending() {
-            if let Some(state) =
-                app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
-            {
-                self.poll_snapshot_startup(&state, &startup_project_paths);
+            if let Some(state) = app.snapshot_state_opt() {
+                self.poll_snapshot_startup(state, &startup_project_paths);
             }
             self.snapshot_scanner.finish_startup_sweep();
         }
 
-        // Snapshot ingress derives exact replica roots before checking ordinary
-        // outbox spellings, so a live session CWD below its replica cannot make
-        // the dedicated protocol invisible. Physical roots are scanned once.
+        self.poll_snapshot_roots(app, &snapshot_session_dirs);
+
+        // Include the instance-private app outbox
+        let app_outbox = app.outbox();
+        let app_outbox_path = app_outbox.path().to_string();
+
+        let scan_dirs = outboxes::scan_dirs(&all_paths, &app_outbox_path);
+
+        for (outbox_dir, origin) in &scan_dirs {
+            if !mailbox_disk::mailbox_path_is_dir(outbox_dir) {
+                continue;
+            }
+            let is_app_outbox = *origin == OutboxOrigin::Master;
+            if let Some(state) = app.message_store() {
+                if let Ok(store) = &state.store {
+                    self.scrub_stale_pty_input_temps(outbox_dir, store);
+                }
+            }
+
+            let Some(entries) = self.poll_outbox_entries(outbox_dir) else {
+                continue;
+            };
+
+            for path in entries {
+                messages_processed += 1;
+                self.poll_outbox_entry(app, path, *origin, is_app_outbox)
+                    .await;
+            }
+        }
+
+        self.finish_poll_cycle(cycle_started, scan_dirs.len(), messages_processed);
+
+        // Poll project-refresh-requests directory from create-agent-matrix CLI.
+        self.poll_project_refresh_requests(app).await;
+
+        // Poll session-requests directory (from create-agent CLI)
+        self.poll_session_requests(app).await;
+
+        // #786: poll coding-agent-requests (from `coding-agent` CLI mutations).
+        self.poll_coding_agent_requests(app).await;
+
+        Ok(())
+    }
+
+    /// Snapshot ingress derives exact replica roots before checking ordinary
+    /// outbox spellings, so a live session CWD below its replica cannot make
+    /// the dedicated protocol invisible. Physical roots are scanned once.
+    fn poll_snapshot_roots<A: MailboxHost + BrowserHost>(
+        &mut self,
+        app: &A,
+        snapshot_session_dirs: &[(uuid::Uuid, String)],
+    ) {
         let mut snapshot_root_objects = std::collections::HashSet::new();
-        for (_, discovered) in &snapshot_session_dirs {
+        for (_, discovered) in snapshot_session_dirs {
             let Some(requester_root) =
                 crate::phone::terminal_snapshot::verified_requester_root_from_discovered_path(
                     Path::new(discovered),
@@ -644,112 +637,64 @@ impl MailboxPoller {
                 self.snapshot_scanner.scan_root(app, &requester_root);
             }
         }
+    }
 
-        // Include the instance-private app outbox
-        let app_outbox = app.state::<AppOutbox>();
-        let app_outbox_path = app_outbox.path().to_string();
-
-        let scan_dirs = outboxes::scan_dirs(&all_paths, &app_outbox_path);
-
-        for (outbox_dir, origin) in &scan_dirs {
-            if !mailbox_disk::mailbox_path_is_dir(outbox_dir) {
-                continue;
-            }
-            let is_app_outbox = *origin == OutboxOrigin::Master;
-            if let Some(state) = app.try_state::<crate::api::message_store::MessageStoreState>() {
-                if let Ok(store) = &state.store {
-                    self.scrub_stale_pty_input_temps(outbox_dir, store);
-                }
-            }
-
-            let Some(entries) = self.poll_outbox_entries(outbox_dir) else {
-                continue;
-            };
-
-            for path in entries {
-                messages_processed += 1;
-                let standard_content = match classify_outbox_document(&path) {
-                    OutboxClassification::PrivilegedCandidate { bytes, identity } => {
-                        if *origin == OutboxOrigin::CoManaged {
-                            // #2232 phase 7: the Co-managed origin may express
-                            // exactly one thing, a wake carrying a pointer. A
-                            // privileged PTY-input envelope is rejected before
-                            // any authority resolution; the queue grants no
-                            // other capability.
-                            let _ = Self::reject_raw_file(
-                                &path,
-                                "Co-managed origin may carry only a wake; privileged PTY input \
-                                    is rejected",
-                            );
-                            self.retry_tracker.remove(&path);
-                            continue;
-                        }
-                        self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
-                            .await;
-                        self.retry_tracker.remove(&path);
-                        continue;
-                    }
-                    OutboxClassification::InvalidDocument => {
-                        self.reject_malformed_pty_candidate(&path);
-                        self.retry_tracker.remove(&path);
-                        continue;
-                    }
-                    OutboxClassification::Standard(content) => content,
-                };
-                if !matches!(
-                    super::clear_attempt::probe_attempt(&standard_content),
-                    Ok(None)
-                ) {
-                    match self
-                        .reject_prior_clear_attempt(&path, &standard_content)
-                        .await
-                    {
-                        Ok(()) => {
-                            self.retry_tracker.remove(&path);
-                        }
-                        Err(error) => log::warn!(
-                            "[mailbox] prior clear attempt settlement pending {:?}: {}",
-                            path,
-                            error
-                        ),
-                    }
-                    continue;
-                }
-                let mut deferred: Option<ValidatedWake> = None;
-                let outcome = self
-                    .process_message_content(
-                        app,
-                        &path,
-                        *origin,
-                        &standard_content,
-                        Some(&mut deferred),
-                    )
+    /// Classify and process one polled outbox entry.
+    async fn poll_outbox_entry<A: MailboxHost + BrowserHost>(
+        &mut self,
+        app: &A,
+        path: PathBuf,
+        origin: OutboxOrigin,
+        is_app_outbox: bool,
+    ) {
+        let standard_content = match self.classify_polled_document(&path, origin) {
+            Some(OutboxClassification::PrivilegedCandidate { bytes, identity }) => {
+                self.process_pty_input_file(app, &path, is_app_outbox, &bytes, &identity)
                     .await;
-                match outcome {
-                    Ok(()) => match deferred {
-                        // Validated and handed off (or the lane was busy): the
-                        // retry state for `path` must survive until the worker
-                        // reports.
-                        Some(msg) => match self.claim_and_spawn_validated_wake(app, &path, msg) {
-                            WakeHandoff::Spawned => {}
-                            WakeHandoff::LaneBusy => {}
-                            WakeHandoff::ClaimFailed(e) => {
-                                self.record_message_outcome(path, Err(e)).await
-                            }
-                        },
-                        // Settled inline: delivered, rejected, or handled by an
-                        // action branch.
-                        None => self.record_message_outcome(path, Ok(())).await,
-                    },
-                    Err(e) => self.record_message_outcome(path, Err(e)).await,
-                }
+                self.retry_tracker.remove(&path);
+                return;
             }
+            Some(OutboxClassification::Standard(content)) => content,
+            _ => return,
+        };
+        if self
+            .settle_prior_polled_clear(&path, &standard_content)
+            .await
+        {
+            return;
         }
+        let mut deferred: Option<ValidatedWake> = None;
+        let outcome = self
+            .process_message_content(app, &path, origin, &standard_content, Some(&mut deferred))
+            .await;
+        let handoff = match outcome {
+            Ok(()) => deferred.map(|msg| self.claim_and_spawn_validated_wake(app, &path, msg)),
+            Err(e) => {
+                self.record_message_outcome(path, Err(e)).await;
+                return;
+            }
+        };
+        self.record_polled_handoff(path, handoff).await;
+    }
 
+    async fn poll_project_paths(settings: &SettingsState) -> (Vec<String>, Vec<String>) {
+        let cfg = settings.read().await;
+        (
+            cfg.project_paths.clone(),
+            cfg.archived_project_paths.clone(),
+        )
+    }
+
+    fn finish_poll_cycle(
+        &mut self,
+        cycle_started: std::time::Instant,
+        outboxes: usize,
+        messages_processed: usize,
+    ) {
         log::info!(
             "[mailbox] poll cycle done elapsed_ms={} outboxes={} messages={}",
             cycle_started.elapsed().as_millis(),
-            scan_dirs.len(),
+            outboxes,
             messages_processed
         );
 
@@ -764,17 +709,107 @@ impl MailboxPoller {
             #[cfg(test)]
             None,
         );
+    }
 
-        // Poll project-refresh-requests directory from create-agent-matrix CLI.
-        self.poll_project_refresh_requests(app).await;
+    fn classify_polled_document(
+        &mut self,
+        path: &Path,
+        origin: OutboxOrigin,
+    ) -> Option<OutboxClassification> {
+        match classify_outbox_document(path) {
+            OutboxClassification::PrivilegedCandidate { .. }
+                if origin == OutboxOrigin::CoManaged =>
+            {
+                // Co-managed queues grant only pointer wakes, never privileged PTY input.
+                let _ = Self::reject_raw_file(
+                    path,
+                    "Co-managed origin may carry only a wake; privileged PTY input is rejected",
+                );
+                self.retry_tracker.remove(path);
+                None
+            }
+            OutboxClassification::InvalidDocument => {
+                self.reject_malformed_pty_candidate(path);
+                self.retry_tracker.remove(path);
+                None
+            }
+            document => Some(document),
+        }
+    }
 
-        // Poll session-requests directory (from create-agent CLI)
-        self.poll_session_requests(app).await;
+    async fn begin_poll_cycle(&mut self) -> std::time::Instant {
+        self.snapshot_scanner.begin_cycle();
+        // (#1399) The two timing lines the issue authorizes: one at the top
+        // of the cycle and one at the bottom, each reporting elapsed ms,
+        // outboxes scanned, and messages processed. Together they prove the
+        // scanner returns in milliseconds instead of holding the loop for
+        // delivery time.
+        let cycle_started = std::time::Instant::now();
+        log::info!(
+            "[mailbox] poll cycle started elapsed_ms={} outboxes=0 messages=0",
+            cycle_started.elapsed().as_millis()
+        );
+        // (#1399) Reap, then drain, before any outbox work: joined workers
+        // free cap slots, and an outcome's path can belong to any outbox, so
+        // the drain is per-cycle, not per-outbox. Draining before the scans
+        // also means a rename-back the drain rejects cannot be re-claimed in
+        // the same cycle.
+        self.reap_wake_workers();
+        self.drain_wake_outcomes().await;
+        cycle_started
+    }
 
-        // #786: poll coding-agent-requests (from `coding-agent` CLI mutations).
-        self.poll_coding_agent_requests(app).await;
+    async fn maintain_pty_input_runtime(state: &crate::api::message_store::MessageStoreState) {
+        if let Ok(store) = &state.store {
+            let active = state.active_operations.snapshot();
+            if store
+                .recover_pty_input_runtime_offloaded(active, chrono::Utc::now())
+                .await
+                .is_err()
+            {
+                log::warn!("[pty-input] runtime recovery failed code=store_transient");
+            }
+            if store
+                .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
+                .await
+                .is_err()
+            {
+                log::warn!("[pty-input] compaction failed code=store_transient");
+            }
+        }
+    }
 
-        Ok(())
+    async fn settle_prior_polled_clear(&mut self, path: &Path, standard_content: &str) -> bool {
+        if !matches!(
+            super::clear_attempt::probe_attempt(standard_content),
+            Ok(None)
+        ) {
+            match self
+                .reject_prior_clear_attempt(path, standard_content)
+                .await
+            {
+                Ok(()) => {
+                    self.retry_tracker.remove(path);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[mailbox] prior clear attempt settlement pending {path:?}: {error}"
+                    );
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    async fn record_polled_handoff(&mut self, path: PathBuf, handoff: Option<WakeHandoff>) {
+        match handoff {
+            // A claimed or busy lane retains retry state until its worker reports.
+            Some(WakeHandoff::Spawned | WakeHandoff::LaneBusy) => {}
+            Some(WakeHandoff::ClaimFailed(e)) => self.record_message_outcome(path, Err(e)).await,
+            // Settled inline: delivered, rejected, or handled by an action branch.
+            None => self.record_message_outcome(path, Ok(())).await,
+        }
     }
 
     /// (#1399) The retry/reject bookkeeping for one outbox message: `Ok`
@@ -806,12 +841,7 @@ impl MailboxPoller {
                     None
                 };
                 if let Some(held_by) = held_by {
-                    log::debug!(
-                        "[mailbox] message delivery deferred by {} {:?}: {}",
-                        held_by,
-                        path,
-                        e
-                    );
+                    log::debug!("[mailbox] message delivery deferred by {held_by} {path:?}: {e}");
                     return;
                 }
                 let is_permanent = is_permanent_delivery_error(&e);
@@ -825,7 +855,14 @@ impl MailboxPoller {
                         });
                     state.attempt_count += 1;
 
-                    if !state.logged {
+                    if state.logged {
+                        log::debug!(
+                            "Retry {} for outbox message {:?}: {}",
+                            state.attempt_count,
+                            path,
+                            e
+                        );
+                    } else {
                         log::warn!(
                             "Failed to process outbox message {:?} (attempt {}): {}",
                             path,
@@ -833,13 +870,6 @@ impl MailboxPoller {
                             e
                         );
                         state.logged = true;
-                    } else {
-                        log::debug!(
-                            "Retry {} for outbox message {:?}: {}",
-                            state.attempt_count,
-                            path,
-                            e
-                        );
                     }
 
                     state.attempt_count >= MAX_DELIVERY_ATTEMPTS
@@ -849,15 +879,8 @@ impl MailboxPoller {
                     let reason = if is_permanent {
                         e.clone()
                     } else {
-                        let attempts = self
-                            .retry_tracker
-                            .get(&path)
-                            .map(|s| s.attempt_count)
-                            .unwrap_or(0);
-                        format!(
-                            "Undeliverable after {} attempts. Last error: {}",
-                            attempts, e
-                        )
+                        let attempts = self.retry_tracker.get(&path).map_or(0, |s| s.attempt_count);
+                        format!("Undeliverable after {attempts} attempts. Last error: {e}")
                     };
 
                     // §130-stuck-file: on read failure (e.g. non-UTF-8 non-BOM file),
@@ -877,7 +900,7 @@ impl MailboxPoller {
                     if rejected {
                         self.retry_tracker.remove(&path);
                     } else {
-                        log::error!("Failed to reject outbox message {:?}; will retry", path);
+                        log::error!("Failed to reject outbox message {path:?}; will retry");
                     }
                 }
             }

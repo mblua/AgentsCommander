@@ -305,36 +305,14 @@ async fn root_restore_case(
     let cwd = tempfile::tempdir().unwrap();
     let cwd_text = cwd.path().to_string_lossy().into_owned();
     let mut settings = test_settings();
-    let claude_config = cwd.path().join("claude-config");
-    if provider == Some("claude") {
-        let projects = super::super::claude_projects_dir_for_config_dir(
-            claude_config.to_str().unwrap(),
-            &cwd_text,
-        );
-        std::fs::create_dir_all(projects).unwrap();
-        settings.agents[0]
-            .envs
-            .push(crate::config::settings::CodingAgentEnv {
-                key: "CLAUDE_CONFIG_DIR".into(),
-                value: claude_config.to_string_lossy().into_owned(),
-                source: Default::default(),
-                enabled: true,
-            });
-    }
-    let spawn = if configured {
-        let mut spawn = super::super::build_configured_agent_spawn_for_cwd(
-            &settings,
-            provider.unwrap(),
-            &cwd_text,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        spawn.shell_args = args.iter().map(|arg| (*arg).into()).collect();
-        Some(spawn)
-    } else {
-        None
-    };
+    let spawn = root_restore_spawn(
+        &mut settings,
+        cwd.path(),
+        &cwd_text,
+        provider,
+        args,
+        configured,
+    );
     let mut recipe = crate::config::sessions_persistence::PersistedSession {
         name: "3431 persisted Root".into(),
         shell: provider.unwrap_or("ordinary-shell").into(),
@@ -414,6 +392,46 @@ async fn root_restore_case(
             .or(recipe.agent_label.filter(|_| provider.is_some()))
     );
     (spec, info, spawn)
+}
+
+fn root_restore_spawn(
+    settings: &mut AppSettings,
+    cwd: &std::path::Path,
+    cwd_text: &str,
+    provider: Option<&str>,
+    args: &[&str],
+    configured: bool,
+) -> Option<crate::config::agent_command::AgentSpawnCommand> {
+    let claude_config = cwd.join("claude-config");
+    if provider == Some("claude") {
+        let projects = super::super::claude_projects_dir_for_config_dir(
+            claude_config.to_str().unwrap(),
+            cwd_text,
+        );
+        std::fs::create_dir_all(projects).unwrap();
+        settings.agents[0]
+            .envs
+            .push(crate::config::settings::CodingAgentEnv {
+                key: "CLAUDE_CONFIG_DIR".into(),
+                value: claude_config.to_string_lossy().into_owned(),
+                source: Default::default(),
+                enabled: true,
+            });
+    }
+    if configured {
+        let mut spawn = super::super::build_configured_agent_spawn_for_cwd(
+            settings,
+            provider.unwrap(),
+            cwd_text,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        spawn.shell_args = args.iter().map(|arg| (*arg).into()).collect();
+        Some(spawn)
+    } else {
+        None
+    }
 }
 
 #[tokio::test]

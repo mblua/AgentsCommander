@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 /// Positive control for the factory: `production_seams` must FORWARD its
 /// argument. `None` could be a dropped default, so only the `Some` case can
@@ -69,7 +70,7 @@ async fn remote_activity_cache_producer_positive_wiring() {
     publish_branch(&repo_running, "feature-a", harness.git_state.as_ref());
     publish_branch(&repo_idle, "feature-b", harness.git_state.as_ref());
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_head_sha(&repo_running, 'a');
         git.set_head_sha(&repo_idle, 'b');
     }
@@ -78,7 +79,7 @@ async fn remote_activity_cache_producer_positive_wiring() {
     let publication = Utc::now();
     harness.set_publication_clock(publication);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         // A run on the branch, then an identity compare that says the branch
@@ -124,7 +125,7 @@ async fn remote_activity_cache_producer_positive_wiring() {
         .map(|repo| repo["path"].as_str().expect("path"))
         .collect();
     let mut sorted = raw_paths.clone();
-    sorted.sort();
+    sorted.sort_unstable();
     assert_eq!(raw_paths, sorted, "entries are sorted by raw path string");
     assert_eq!(repos[0]["path"], repo_running);
     assert_eq!(repos[0]["ciState"], "running");
@@ -185,11 +186,11 @@ async fn remote_activity_cache_producer_forced_write_failure_keeps_round_effects
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'a');
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.route(
@@ -268,7 +269,7 @@ async fn remote_activity_cache_producer_publication_time_is_not_the_round_start(
         chrono::DateTime::from_timestamp(Utc::now().timestamp(), 0).expect("whole second");
     harness.set_publication_clock(publication);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.route(
@@ -320,11 +321,11 @@ async fn remote_activity_cache_producer_missing_directory_skips_persistence_only
     harness
         .git
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .set_head_sha(&repo, 'a');
     harness.set_work(std::slice::from_ref(&repo));
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.route(

@@ -43,8 +43,8 @@ impl MessageStore {
                 ),
             ] {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT target_fqn,sender_fqn,op_id,{} FROM {} WHERE status IN ({})",
-                    digest, table, statuses
+                    "SELECT target_fqn,sender_fqn,op_id,{digest} FROM {table} \
+                     WHERE status IN ({statuses})"
                 ))?;
                 let rows = stmt.query_map([], |row| {
                     Ok((
@@ -92,7 +92,7 @@ impl MessageStore {
                 Err(ResponseCloseError::ClosingDeferred) => {
                     return Err(RESPONSE_CLOSING_DEFERRED.to_string())
                 }
-                Err(error) => return Err(format!("response close admission: {:?}", error)),
+                Err(error) => return Err(format!("response close admission: {error:?}")),
             },
         };
         Ok(MessageDeliveryReservation { _inner: inner })
@@ -199,7 +199,7 @@ impl MessageStore {
     pub(super) fn inject_actuation_commit_ambiguous(&self) {
         self.test_faults
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .actuation_commit_ambiguous = true;
     }
 

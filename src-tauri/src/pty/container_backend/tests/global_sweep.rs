@@ -282,7 +282,7 @@ fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() 
             .expect("publish blocked route-remover entry");
         release
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv()
             .expect("release blocked route remover");
         Ok(())
@@ -475,6 +475,26 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
     assert_eq!(runtime.active_reader_count(), 2);
     assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
 
+    assert_combined_with_selection_fixtures(expected, &report.retained);
+
+    retry_release
+        .send(())
+        .expect("release the deterministic in-flight retry gate");
+    wait_for_docker_owner_retained(&runtime);
+    assert_eq!(runtime.active_reader_count(), 2);
+    readers.release();
+    let retry_control = ContainerRuntimeControl::default();
+    retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
+    runtime.retry_retained_cleanups(&retry_control);
+    assert!(runtime.retained_cleanup_contexts().is_empty());
+    assert_eq!(runtime.active_reader_count(), 0);
+
+    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
+    assert!(terminal.terminal, "retained={:?}", terminal.retained);
+    assert!(terminal.retained.is_empty());
+}
+
+fn assert_combined_with_selection_fixtures(expected: &str, report_retained: &[String]) {
     let mut selection_retained = (0..300)
         .map(|index| {
             format!(
@@ -489,7 +509,7 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
         .map(|context| {
             crate::pty::container_runtime::normalize_retained_owner_diagnostic("selection", context)
         })
-        .chain(report.retained.iter().map(|context| {
+        .chain(report_retained.iter().map(|context| {
             crate::pty::container_runtime::normalize_retained_owner_diagnostic(
                 "containerShutdown",
                 context,
@@ -499,7 +519,7 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
     uncapped.sort();
     uncapped.dedup();
     let combined =
-        crate::combined_shutdown_retained_diagnostics(selection_retained, report.retained.clone());
+        crate::combined_shutdown_retained_diagnostics(selection_retained, report_retained.to_vec());
     let expected_omitted = uncapped.len() - (RETAINED_OWNER_REPORT_CAPACITY - 1);
     assert_eq!(combined.len(), RETAINED_OWNER_REPORT_CAPACITY);
     assert_eq!(
@@ -518,10 +538,9 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
                 omittedCount={expected_omitted}"
         )
     );
+}
 
-    retry_release
-        .send(())
-        .expect("release the deterministic in-flight retry gate");
+fn wait_for_docker_owner_retained(runtime: &crate::pty::docker_runtime::DockerRuntime) {
     let transition_deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let contexts = runtime.retained_cleanup_contexts();
@@ -538,25 +557,10 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
         );
         std::thread::yield_now();
     }
-    assert_eq!(runtime.active_reader_count(), 2);
-    readers.release();
-    let retry_control = ContainerRuntimeControl::default();
-    retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
-    runtime.retry_retained_cleanups(&retry_control);
-    assert!(runtime.retained_cleanup_contexts().is_empty());
-    assert_eq!(runtime.active_reader_count(), 0);
-
-    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
-    assert!(terminal.terminal, "retained={:?}", terminal.retained);
-    assert!(terminal.retained.is_empty());
 }
 
-#[test]
-fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
-    const INSTALLED_ENTRIES: usize = 180;
-    const RUNTIME_ENTRIES: usize = 180;
-
-    let runtime_contexts = (0..RUNTIME_ENTRIES)
+fn high_cardinality_runtime_contexts(runtime_entries: usize) -> Vec<RetainedContainerOwnerContext> {
+    (0..runtime_entries)
         .map(|index| {
             if index % 2 == 0 {
                 RetainedContainerOwnerContext {
@@ -582,7 +586,15 @@ fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
                 }
             }
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
+    const INSTALLED_ENTRIES: usize = 180;
+    const RUNTIME_ENTRIES: usize = 180;
+
+    let runtime_contexts = high_cardinality_runtime_contexts(RUNTIME_ENTRIES);
     let runtime = Arc::new(RetainedContextRuntime {
         contexts: runtime_contexts,
     });
@@ -677,4 +689,310 @@ fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
                 omittedCount={expected_omitted}"
         )
     );
+}
+
+type RetainedEntry = Arc<super::super::retained_cleanup::RetainedContainerCleanup>;
+
+const REAL_POISON: &str = "route removal failed: route removal lock poisoned owner=ptyManager";
+
+struct ClockedSweepFixture {
+    backend: Arc<ContainerTransportBackend>,
+    pty_manager: Arc<Mutex<PtyManager>>,
+    session_id: Uuid,
+    runtime: Arc<RecordingRuntime>,
+    entry: RetainedEntry,
+    control: ContainerRuntimeControl,
+    deadline: Instant,
+    _receiver: mpsc::Receiver<HostToBridgeFrame>,
+}
+
+impl ClockedSweepFixture {
+    /// Retains a real session that requires the installed production route remover.
+    fn new() -> Self {
+        let runtime = Arc::new(RecordingRuntime::default());
+        let (backend, pty_manager, session_id, receiver) =
+            production_route_remover_fixture(Arc::clone(&runtime));
+        let resources = backend
+            .remove_session_state(session_id)
+            .expect("installed session resources");
+        let entry = backend.retain_removed_resources(resources, "global-shutdown-sweep");
+        let remover = backend.route_remover_until(Instant::now() + Duration::from_secs(1));
+        assert!(
+            matches!(remover, Ok(Some(_))),
+            "production remover is installed"
+        );
+        entry.require_route_removal(remover);
+        let control = ContainerRuntimeControl::default();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        control.request_shutdown(deadline);
+        Self {
+            backend,
+            pty_manager,
+            session_id,
+            runtime,
+            entry,
+            control,
+            deadline,
+            _receiver: receiver,
+        }
+    }
+
+    fn attempt(&self, epoch: u64, now: &impl Fn() -> Instant) {
+        self.backend.cleanup_ownership.attempt_with_clock(
+            Arc::clone(&self.entry),
+            epoch,
+            &self.control,
+            now,
+        );
+    }
+
+    fn before_deadline(&self) -> Instant {
+        self.deadline - Duration::from_nanos(1)
+    }
+
+    /// Records the real poison through the production remover; never seeded.
+    fn record_real_poison(&self, epoch: u64) -> String {
+        let poison_manager = Arc::clone(&self.pty_manager);
+        let poison = std::thread::spawn(move || {
+            let _manager_guard = poison_manager.lock().unwrap();
+            panic!("poison the real outer PTY manager mutex");
+        });
+        assert!(
+            poison.join().is_err(),
+            "outer mutex poison fixture must panic"
+        );
+        let before = self.before_deadline();
+        self.attempt(epoch, &|| before);
+        assert_eq!(self.last_error().as_deref(), Some(REAL_POISON));
+        let context = self.context();
+        assert!(
+            context.ends_with(&format!("lastError={REAL_POISON}")),
+            "{context}"
+        );
+        context
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.entry.attempt.lock().unwrap().last_error.clone()
+    }
+
+    fn attempt_state(&self) -> (bool, Option<u64>) {
+        let attempt = self.entry.attempt.lock().unwrap();
+        (attempt.in_flight, attempt.last_epoch)
+    }
+
+    fn context(&self) -> String {
+        let contexts = self.backend.retained_cleanup_contexts_for_test();
+        assert_eq!(contexts.len(), 1, "{contexts:?}");
+        contexts[0].clone()
+    }
+
+    fn assert_retained(&self, epoch: u64) {
+        assert_eq!(self.attempt_state(), (false, Some(epoch)));
+        assert_eq!(
+            self.backend.retained_runtime_cleanup_sessions_for_test(),
+            vec![self.session_id]
+        );
+        assert!(self.entry.non_runtime.lock().unwrap().is_some());
+        assert!(self.runtime.stopped().is_empty());
+        let manager = self
+            .pty_manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            manager.backend_kind(self.session_id),
+            Some(SessionBackendKind::ContainerTransport)
+        );
+    }
+
+    fn assert_cleaned_after_retry(&self, epoch: u64) {
+        self.pty_manager.clear_poison();
+        let before = self.before_deadline();
+        self.attempt(epoch, &|| before);
+        assert_eq!(self.runtime.stopped(), vec![self.session_id]);
+        assert_eq!(self.last_error(), None);
+        assert!(self.backend.retained_cleanup_sessions_for_test().is_empty());
+        assert_eq!(
+            self.pty_manager
+                .lock()
+                .unwrap()
+                .backend_kind(self.session_id),
+            None
+        );
+    }
+
+    /// Replaces the pending remover with a fake that returns `error` and records its calls.
+    fn install_counting_remover(
+        &self,
+        error: RouteRemovalError,
+    ) -> Arc<Mutex<Vec<(Uuid, Instant)>>> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        self.entry
+            .require_route_removal(Ok(Some(Arc::new(move |session_id, deadline| {
+                recorded.lock().unwrap().push((session_id, deadline));
+                Err(error.clone())
+            }))));
+        calls
+    }
+}
+
+type ClockObservation = (bool, Option<u64>, Instant);
+
+/// Clock that records each call and the attempt state seen at that moment.
+fn observing_clock<'a>(
+    entry: &'a RetainedEntry,
+    returns: Instant,
+    observed: &'a Mutex<Vec<ClockObservation>>,
+) -> impl Fn() -> Instant + 'a {
+    move || {
+        let attempt = entry.attempt.lock().unwrap();
+        observed
+            .lock()
+            .unwrap()
+            .push((attempt.in_flight, attempt.last_epoch, returns));
+        returns
+    }
+}
+
+#[test]
+fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
+    let fixture = ClockedSweepFixture::new();
+    let context = fixture.record_real_poison(1);
+    let admission = fixture.before_deadline();
+    assert!(admission < fixture.deadline);
+    let observed = Mutex::new(Vec::new());
+    fixture.attempt(
+        2,
+        &observing_clock(&fixture.entry, fixture.deadline, &observed),
+    );
+    let observed = observed.into_inner().unwrap();
+    assert_eq!(observed, vec![(true, Some(2), fixture.deadline)]);
+    assert_eq!(
+        [admission, observed[0].2],
+        [fixture.before_deadline(), fixture.deadline]
+    );
+    assert_eq!(fixture.last_error().as_deref(), Some(REAL_POISON));
+    assert_eq!(fixture.context(), context);
+    fixture.assert_retained(2);
+
+    fixture.assert_cleaned_after_retry(3);
+}
+
+#[test]
+fn global_sweep_invoked_deadline_preserves_real_poison_error() {
+    let fixture = ClockedSweepFixture::new();
+    let context = fixture.record_real_poison(1);
+    let production = fixture
+        .backend
+        .route_remover_until(Instant::now() + Duration::from_secs(1));
+
+    let calls = fixture.install_counting_remover(RouteRemovalError::Deadline("ptyManager"));
+    let before = fixture.before_deadline();
+    fixture.attempt(2, &|| before);
+
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![(fixture.session_id, fixture.deadline)]
+    );
+    assert_eq!(fixture.last_error().as_deref(), Some(REAL_POISON));
+    assert_eq!(fixture.context(), context);
+    fixture.assert_retained(2);
+
+    fixture.entry.require_route_removal(production);
+    fixture.assert_cleaned_after_retry(3);
+}
+
+#[test]
+fn global_sweep_deadline_history_fallbacks_and_replacements() {
+    // Pre-remover expiry without history: remover never runs, deadline text is fallback.
+    let fixture = ClockedSweepFixture::new();
+    let calls = fixture.install_counting_remover(RouteRemovalError::Deadline("ptyManager"));
+    let expired = fixture.deadline;
+    fixture.attempt(1, &|| expired);
+    let pre_remover = "route removal deadline reached owner=globalSweep";
+    assert_eq!(fixture.last_error().as_deref(), Some(pre_remover));
+    assert!(calls.lock().unwrap().is_empty());
+    // A later expired attempt keeps its own deadline history too.
+    fixture.attempt(2, &|| expired);
+    assert_eq!(fixture.last_error().as_deref(), Some(pre_remover));
+    assert!(calls.lock().unwrap().is_empty());
+    fixture.assert_retained(2);
+
+    // Invoked deadline without history: wrapped remover text is fallback.
+    let fixture = ClockedSweepFixture::new();
+    let calls = fixture.install_counting_remover(RouteRemovalError::Deadline("ptyManager"));
+    let before = fixture.before_deadline();
+    fixture.attempt(1, &|| before);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        fixture.last_error().as_deref(),
+        Some("route removal failed: route removal deadline reached owner=ptyManager")
+    );
+
+    // Invoked non-deadline remover errors replace history.
+    fixture.install_counting_remover(RouteRemovalError::LockPoisoned("ptyRouteRegistry"));
+    fixture.attempt(2, &|| before);
+    assert_eq!(
+        fixture.last_error().as_deref(),
+        Some("route removal failed: route removal lock poisoned owner=ptyRouteRegistry")
+    );
+
+    // Ownership failures precede the clock and replace history.
+    let clock_calls = AtomicUsize::new(0);
+    let counted = || {
+        clock_calls.fetch_add(1, Ordering::SeqCst);
+        expired
+    };
+    fixture
+        .entry
+        .require_route_removal(Err(RouteRemovalError::LockPoisoned("routeRemoverRegistry")));
+    fixture.attempt(3, &counted);
+    assert_eq!(
+        fixture.last_error().as_deref(),
+        Some("route removal unavailable: route removal lock poisoned owner=routeRemoverRegistry")
+    );
+    assert_eq!(clock_calls.load(Ordering::SeqCst), 0);
+    fixture.assert_retained(3);
+}
+
+#[test]
+fn global_sweep_rejected_or_routeless_attempts_skip_the_clock() {
+    // Missing global-sweep deadline is a real failure reported before the clock.
+    let fixture = ClockedSweepFixture::new();
+    let clock_calls = AtomicUsize::new(0);
+    let expired = fixture.deadline;
+    let counted = || {
+        clock_calls.fetch_add(1, Ordering::SeqCst);
+        expired
+    };
+    let no_deadline = ContainerRuntimeControl::default();
+    fixture.backend.cleanup_ownership.attempt_with_clock(
+        Arc::clone(&fixture.entry),
+        1,
+        &no_deadline,
+        &counted,
+    );
+    assert_eq!(
+        fixture.last_error().as_deref(),
+        Some("route removal missing global-sweep deadline")
+    );
+
+    // Duplicate epoch and in-flight attempts are rejected before the clock.
+    fixture.attempt(1, &counted);
+    fixture.entry.attempt.lock().unwrap().in_flight = true;
+    fixture.attempt(2, &counted);
+    assert_eq!(fixture.attempt_state(), (true, Some(1)));
+    fixture.entry.attempt.lock().unwrap().in_flight = false;
+    assert_eq!(clock_calls.load(Ordering::SeqCst), 0);
+
+    // NotRequired bypasses the clock and finishes cleanup.
+    fixture.entry.require_route_removal(Ok(None));
+    fixture.attempt(3, &counted);
+    assert_eq!(clock_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.runtime.stopped(), vec![fixture.session_id]);
+    assert!(fixture
+        .backend
+        .retained_cleanup_sessions_for_test()
+        .is_empty());
 }

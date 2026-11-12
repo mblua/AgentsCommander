@@ -3,12 +3,32 @@ use super::poller::MailboxPoller;
 use super::pty_claim::MailboxTestHooks;
 use super::pty_observation::{PtyAuthorityState, PtyTargetState};
 use super::settle::{reason_code_from_name, session_has_current_pty_submission_provenance};
+use crate::phone::mailbox::host::MailboxHost;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use uuid::Uuid;
+
+fn verify_host_pty_outbox(
+    working_directory: &str,
+    path: &Path,
+) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+    use crate::phone::types::PtyInputReasonCode as C;
+    let expected_outbox = Path::new(working_directory)
+        .join(crate::config::agent_local_dir_name())
+        .join("outbox");
+    let actual_parent = path.parent().ok_or(C::UnsafePath)?;
+    let expected_identity =
+        crate::path_identity::verify_directory(&expected_outbox).map_err(|_| C::UnsafePath)?;
+    let actual_identity =
+        crate::path_identity::verify_directory(actual_parent).map_err(|_| C::UnsafePath)?;
+    if expected_identity.object_id != actual_identity.object_id {
+        return Err(C::UnsafePath);
+    }
+    Ok(())
+}
 
 impl MailboxPoller {
     pub(crate) async fn validate_and_enqueue_host_pty_input<S: PtyAuthorityState + ?Sized>(
@@ -47,7 +67,7 @@ impl MailboxPoller {
         let pty = app.pty_routes();
         if pty
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .backend_kind(session_id)
             != Some(SessionBackendKind::LocalProcess)
         {
@@ -74,17 +94,7 @@ impl MailboxPoller {
         if envelope.from != route.sender.canonical_fqn {
             return Err(C::SenderIdentityInvalid);
         }
-        let expected_outbox = Path::new(&session.working_directory)
-            .join(crate::config::agent_local_dir_name())
-            .join("outbox");
-        let actual_parent = path.parent().ok_or(C::UnsafePath)?;
-        let expected_identity =
-            crate::path_identity::verify_directory(&expected_outbox).map_err(|_| C::UnsafePath)?;
-        let actual_identity =
-            crate::path_identity::verify_directory(actual_parent).map_err(|_| C::UnsafePath)?;
-        if expected_identity.object_id != actual_identity.object_id {
-            return Err(C::UnsafePath);
-        }
+        verify_host_pty_outbox(&session.working_directory, path)?;
         let confirmation_tag =
             pty_input_confirmation_tag(&payload.injection_id, &payload.op_id, &payload.nonce);
         let nonce_sha256 = sha256_hex(payload.nonce.as_bytes());
@@ -185,7 +195,7 @@ impl MailboxPoller {
         let current_cwd =
             crate::path_identity::verify_directory(Path::new(&authority.working_directory)).ok()?;
         let pty = app.pty_routes();
-        let manager = pty.lock().unwrap_or_else(|error| error.into_inner());
+        let manager = pty.lock().unwrap_or_else(PoisonError::into_inner);
         if !manager.has_session(authority_id)
             || manager.backend_kind(authority_id) != Some(SessionBackendKind::LocalProcess)
         {
@@ -269,7 +279,7 @@ impl MailboxPoller {
             crate::path_identity::verify_directory(Path::new(&session.working_directory)).ok()?;
         let route_valid = {
             let manager = app.pty_routes();
-            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            let manager = manager.lock().unwrap_or_else(PoisonError::into_inner);
             manager.has_session(session_id)
                 && manager.backend_kind(session_id) == Some(expected_backend)
                 && manager
@@ -312,9 +322,9 @@ impl MailboxPoller {
         Some(SessionInfo::from(&session))
     }
 
-    pub(crate) async fn dispatch_pty_input_operation<R: tauri::Runtime>(
+    pub(crate) async fn dispatch_pty_input_operation<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         state: &crate::api::message_store::MessageStoreState,
         injection_id: &str,
         source_plane: crate::phone::types::PtyInputSourcePlane,
@@ -432,7 +442,7 @@ fn validate_host_pty_input_envelope(
     if envelope.id != payload.injection_id
         || payload.op_id != payload.injection_id
         || injection == nonce
-        || path.file_stem().and_then(|value| value.to_str()) != Some(payload.injection_id.as_str())
+        || path.file_stem().and_then(std::ffi::OsStr::to_str) != Some(payload.injection_id.as_str())
     {
         return Err(C::InvalidId);
     }
@@ -475,7 +485,7 @@ fn extend_host_pty_project_paths(
     if let Some(replica) = Path::new(working_directory).ancestors().find(|candidate| {
         candidate
             .file_name()
-            .and_then(|value| value.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("__agent_"))
     }) {
         if let Some(project) = replica

@@ -127,7 +127,7 @@ pub struct ResourceAgentGroupSnapshot {
     /// #516 - human-readable agent name (e.g. "dev-rust"), or `None` when the
     /// launch cwd carries no replica identity.
     pub agent: Option<String>,
-    /// #566 - project folder name (e.g. "AgentsCommander_ac"), or `None` for
+    /// #566 - project folder name (e.g. `"AgentsCommander_ac"`), or `None` for
     /// origin / ad-hoc / unparseable launches. Always serialized (no
     /// `skip_serializing_if`) for parity with `workgroup`/`agent`, so the
     /// frontend sees `null` rather than `undefined`.
@@ -195,8 +195,8 @@ pub struct ResourceKillResult {
     pub quarantined: bool,
     pub message: String,
     /// #647 D: true when the kill quarantined AND ANY failure carried the exact
-    /// ACCESS_DENIED code (`win32 error 5`), i.e. a security product is stripping
-    /// PROCESS_TERMINATE. The per-PID detail stays in `message`; this only ADDS the
+    /// `ACCESS_DENIED` code (`win32 error 5`), i.e. a security product is stripping
+    /// `PROCESS_TERMINATE`. The per-PID detail stays in `message`; this only ADDS the
     /// AV-exclusion guidance in the UI, so a non-security failure is never hidden.
     #[serde(default)]
     pub blocked_by_security: bool,
@@ -218,18 +218,6 @@ pub struct ResourceLimits {
     pub group_warn_private_bytes: u64,
     pub group_kill_private_bytes: u64,
     pub process_kill_private_bytes: u64,
-}
-
-impl From<&crate::config::settings::AppSettings> for ResourceLimits {
-    fn from(value: &crate::config::settings::AppSettings) -> Self {
-        Self {
-            monitor_enabled: value.resource_monitor_enabled,
-            max_concurrent_agent_processes: value.max_concurrent_agent_processes,
-            group_warn_private_bytes: value.agent_group_warn_private_bytes,
-            group_kill_private_bytes: value.agent_group_kill_private_bytes,
-            process_kill_private_bytes: value.agent_process_kill_private_bytes,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

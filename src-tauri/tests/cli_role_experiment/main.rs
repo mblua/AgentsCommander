@@ -21,7 +21,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -121,7 +121,7 @@ fn run(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
     let out = child.wait_with_output().expect("collect output");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));
+        .unwrap_or_else(|e| panic!("stdout json: {e}\n{stdout}"));
     (
         out.status.code().unwrap_or(-1),
         json,
@@ -131,8 +131,8 @@ fn run(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
 
 fn run_ok(bin: &Path, args: &[&str]) -> serde_json::Value {
     let (code, json, stderr) = run(bin, args);
-    assert_eq!(code, 0, "stdout: {}\nstderr: {}", json, stderr);
-    assert_eq!(json["ok"], true, "{}", json);
+    assert_eq!(code, 0, "stdout: {json}\nstderr: {stderr}");
+    assert_eq!(json["ok"], true, "{json}");
     json
 }
 
@@ -151,7 +151,7 @@ fn run_fake(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
     let out = child.wait_with_output().expect("collect output");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("stdout json: {}\n{}", e, stdout));
+        .unwrap_or_else(|e| panic!("stdout json: {e}\n{stdout}"));
     (
         out.status.code().unwrap_or(-1),
         json,
@@ -161,8 +161,8 @@ fn run_fake(bin: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
 
 fn run_fake_ok(bin: &Path, args: &[&str]) -> serde_json::Value {
     let (code, json, stderr) = run_fake(bin, args);
-    assert_eq!(code, 0, "stdout: {}\nstderr: {}", json, stderr);
-    assert_eq!(json["ok"], true, "{}", json);
+    assert_eq!(code, 0, "stdout: {json}\nstderr: {stderr}");
+    assert_eq!(json["ok"], true, "{json}");
     json
 }
 

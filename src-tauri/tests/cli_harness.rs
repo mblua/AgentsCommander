@@ -18,7 +18,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -49,8 +49,7 @@ impl Tmp {
             prefix,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
@@ -138,7 +137,7 @@ fn harness_argv_with_spaces_preserves_boundaries() {
     ];
 
     let (code, stdout, stderr) = run(&bin, &args);
-    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 }
 
 #[test]
@@ -152,8 +151,8 @@ fn harness_raw_command_chains_execute_via_shell() {
     let raw = "echo first && exit 0";
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--raw-command", raw]);
-    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
-    assert!(stdout.contains("first"), "stdout: {}", stdout);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("first"), "stdout: {stdout}");
 }
 
 #[test]
@@ -161,10 +160,10 @@ fn harness_secret_redaction_is_applied_in_logs() {
     let tmp = Tmp::new("harness-redact");
     let bin = copy_binary_into(tmp.path());
     let secret = "super-secret-token-value";
-    let raw = format!("echo _authToken={}", secret);
+    let raw = format!("echo _authToken={secret}");
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--dry-run", "--raw-command", &raw]);
-    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
     let lines = log_lines(&bin);
     let command = lines[0]["command"].as_str().unwrap();
@@ -182,7 +181,7 @@ fn harness_argv_secret_redaction_is_applied_in_logs() {
         &bin,
         &["harness", "--dry-run", "--", "echo", "--token", secret],
     );
-    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
     let lines = log_lines(&bin);
     let command = lines[0]["command"].as_str().unwrap();
@@ -197,7 +196,7 @@ fn harness_log_uses_config_dir_logs_harness_log() {
     let cfg_dir = config_dir_for(&bin);
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--explain", "--raw-command", "echo hi"]);
-    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
     assert!(
         cfg_dir.join("logs").join("harness.log").exists(),
@@ -212,7 +211,7 @@ fn harness_deny_exit_code_is_one() {
     let bin = copy_binary_into(tmp.path());
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--raw-command", "echo ok && rm -rf /"]);
-    assert_eq!(code, Some(1), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
 }
 
 #[test]
@@ -232,17 +231,11 @@ fn harness_raw_destructive_flag_variants_are_denied() {
         assert_eq!(
             code,
             Some(1),
-            "raw: {}\nstdout: {}\nstderr: {}",
-            raw,
-            stdout,
-            stderr
+            "raw: {raw}\nstdout: {stdout}\nstderr: {stderr}"
         );
         assert!(
             stderr.contains("harness: deny"),
-            "raw: {}\nstdout: {}\nstderr: {}",
-            raw,
-            stdout,
-            stderr
+            "raw: {raw}\nstdout: {stdout}\nstderr: {stderr}"
         );
     }
 }
@@ -258,7 +251,7 @@ fn harness_child_exit_code_is_propagated() {
     let raw = "exit 7";
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--raw-command", raw]);
-    assert_eq!(code, Some(7), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(7), "stdout: {stdout}\nstderr: {stderr}");
 }
 
 #[test]
@@ -273,6 +266,6 @@ fn harness_dry_run_does_not_spawn_child() {
     let raw = format!("touch '{}'", sentinel.display());
 
     let (code, stdout, stderr) = run(&bin, &["harness", "--dry-run", "--raw-command", &raw]);
-    assert_eq!(code, Some(0), "stdout: {}\nstderr: {}", stdout, stderr);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(!sentinel.exists(), "dry-run spawned child command");
 }

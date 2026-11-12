@@ -36,7 +36,11 @@ const P10: &str = r"ToolingSide::(Decisions|State)";
 
 /// P5, the whole-file census. `WS` stands for the whitespace class and is
 /// substituted at each of its six occurrences.
-const P5_TEMPLATE: &str = r"(:WS*AgentLocalConfig|from_str::WS*<WS*AgentLocalConfig|[.]WS*toolingWS*[.]WS*(?:last_coding_agent|coding_agents|last_agent_message_at))([^A-Za-z0-9_]|$)";
+const P5_TEMPLATE: &str = concat!(
+    r"(:WS*AgentLocalConfig|from_str::WS*<WS*AgentLocalConfig",
+    r"|[.]WS*toolingWS*[.]WS*(?:last_coding_agent|coding_agents|last_agent_message_at))",
+    r"([^A-Za-z0-9_]|$)",
+);
 const WS: &str = r"[ \t\n\x0b\x0c\r]";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -214,7 +218,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1546, "inventory count");
+    assert_eq!(sources.len(), 1644, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -302,12 +306,12 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "0CD4A5FFA31876156CCADE44569C38CAD2B9AC0C0AAF3F92362CEC2D7E76DAAD",
+        sha256: "ECF7362A2E1CD94D13A5966761903C6699C9FF89CFC1FF3D18C1099E17E596D9",
         per_file: &[
-            ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 1),
             ("config/agent_config/tests/loader.rs", 3),
             ("config/agent_config/tests/migration.rs", 1),
+            ("config/teams/discovery.rs", 4),
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority/target.rs", 1),
             ("phone/mailbox/self_switch.rs", 1),
@@ -322,12 +326,12 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "75A5A08E39BBC59AA23F153857962965061ECD13F293A24A9BD7547A4E42CBD8",
+        sha256: "C2EB3A0738FDED51D9345F305431279240D13D85874377443C1A0734C1C49945",
         per_file: &[
-            ("cli/list_peers/discovery.rs", 4),
             ("config/agent_config.rs", 2),
             ("config/agent_config/tests/loader.rs", 5),
             ("config/agent_config/tests/migration.rs", 1),
+            ("config/teams/discovery.rs", 4),
             ("loops/delivery.rs", 1),
             ("phone/mailbox/internal_delivery.rs", 1),
             ("phone/mailbox/pty_authority/target.rs", 2),
@@ -341,9 +345,9 @@ fn p5_is_frozen() {
 #[test]
 fn p6_is_frozen() {
     let pin = Pin {
-        total: 50,
-        distinct: 45,
-        sha256: "FFBCC12110D7DEA82BFEA97B33123DF9E7CC8D3A9B37FC196A0465471F405A11",
+        total: 49,
+        distinct: 44,
+        sha256: "901F5BBDD5C9AF5C023BD6D29649CF58E360BA3383E846E747A2CF21C71350C3",
         per_file: &[
             ("commands/ac_discovery/tests/discovery.rs", 1),
             ("commands/config/tests/selection_api/error_code.rs", 1),
@@ -377,7 +381,6 @@ fn p6_is_frozen() {
             ("config/instance_artifacts/names.rs", 1),
             ("config/instance_artifacts/tests.rs", 1),
             ("config/local_config_io/tests.rs", 2),
-            ("config/naming_migration.rs", 1),
             ("config/naming_migration/ignore_rows.rs", 4),
             ("config/replica_identity/tests.rs", 3),
             ("config/root_agent/tests/config_merge.rs", 1),
@@ -393,12 +396,10 @@ fn p6_is_frozen() {
 #[test]
 fn p7_is_frozen() {
     let pin = Pin {
-        total: 75,
-        distinct: 54,
-        sha256: "A08BD4ABA6BED268A0873F837D24DEB2ABFE341C4244B355AD91D44994F68F38",
+        total: 65,
+        distinct: 45,
+        sha256: "D239EB0C43ACAE755BE02D3C48CFE11CBB5B640FE799521EB7BF8A8F61C7CD83",
         per_file: &[
-            ("config/agent_config.rs", 6),
-            ("config/agent_config/discovery.rs", 3),
             ("config/agent_config/load_probe_harness.rs", 1),
             ("config/agent_config/tests/activity_stamp.rs", 2),
             ("config/agent_config/tests/coding_agent_entries.rs", 1),
@@ -407,7 +408,7 @@ fn p7_is_frozen() {
             ("config/agent_config/tests/pair_activity.rs", 5),
             ("config/agent_config/tests/pair_fixture.rs", 2),
             ("config/agent_config/tests/sweep_and_writers.rs", 13),
-            ("config/local_config_io/staging.rs", 2),
+            ("config/local_config_io/staging.rs", 1),
             ("config/local_config_io/tests.rs", 22),
             ("config/local_config_io/tests/pair.rs", 2),
             ("config/local_config_io/tests/pair_activity.rs", 9),
@@ -422,7 +423,7 @@ fn p8_is_frozen() {
     let pin = Pin {
         total: 215,
         distinct: 172,
-        sha256: "B7F490965F035260607C2172953F4B874283FEBE69E8628A44D77DC10B98DD2A",
+        sha256: "EF0A437F76F210286F4E67A8A6B7855582827304CE5B20A2CF5DCD4206DB76A0",
         per_file: &[
             ("config/agent_config.rs", 9),
             ("config/agent_config/load_probe_harness.rs", 2),
@@ -511,8 +512,9 @@ fn p5_covers_every_one_line_hit_of_p2_p3_p4() {
     );
 }
 
-const FENCE_SPLIT_ANNOTATION: &str = r#"// PLANT 1: typed annotation split over three lines, `=` on its own line; the
-// field read is split too, so no line-based form can see either spelling.
+const FENCE_SPLIT_ANNOTATION: &str = concat!(
+    "// PLANT 1: typed annotation split over three lines, `=` on its own line; the\n",
+    r#"// field read is split too, so no line-based form can see either spelling.
 fn plant_one(dir: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join("config.json")).ok()?;
     let cfg:
@@ -523,10 +525,12 @@ fn plant_one(dir: &std::path::Path) -> Option<String> {
         .last_coding_agent;
     last
 }
-"#;
+"#,
+);
 
-const FENCE_SPLIT_FIELD_CHAIN: &str = r#"// PLANT 2: `.tooling.<field>` chain split over lines; the type is never spelled
-// because a helper returns it and inference supplies it.
+const FENCE_SPLIT_FIELD_CHAIN: &str = concat!(
+    "// PLANT 2: `.tooling.<field>` chain split over lines; the type is never spelled\n",
+    r#"// because a helper returns it and inference supplies it.
 fn plant_two(dir: &std::path::Path) -> Option<String> {
     let cfg = read_tracked_only(dir)?;
     let last = cfg
@@ -535,7 +539,8 @@ fn plant_two(dir: &std::path::Path) -> Option<String> {
         .clone();
     last
 }
-"#;
+"#,
+);
 
 const FENCE_SPLIT_TURBOFISH: &str = r#"// PLANT 3: turbofish split over lines.
 fn plant_three(dir: &std::path::Path) -> Option<String> {

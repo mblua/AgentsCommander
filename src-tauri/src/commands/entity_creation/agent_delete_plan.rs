@@ -25,22 +25,22 @@ pub(super) fn resolve_agent_delete_identity(
     }
     let final_segment = agent_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "Agent path must end with an agent matrix directory".to_string())?;
     let agent_name = final_segment
         .strip_prefix("_agent_")
         .ok_or_else(|| "Agent path must end with _agent_<name>".to_string())?;
     validate_existing_name(agent_name, "Agent")?;
     validate_delete_root_not_link_or_reparse(agent_path)
-        .map_err(|e| format!("Selected agent path is not deletable: {}", e))?;
+        .map_err(|e| format!("Selected agent path is not deletable: {e}"))?;
 
-    let agent_ref = format!("_agent_{}", agent_name);
+    let agent_ref = format!("_agent_{agent_name}");
     let origin_dir = base.join(&agent_ref);
     if path_key_for_delete(agent_path) != path_key_for_delete(&origin_dir) {
         return Err("Agent path does not match the selected project".to_string());
     }
     validate_delete_root_not_link_or_reparse(&origin_dir)
-        .map_err(|e| format!("Agent '{}' not found or not deletable: {}", agent_name, e))?;
+        .map_err(|e| format!("Agent '{agent_name}' not found or not deletable: {e}"))?;
 
     Ok((agent_name.to_string(), agent_ref, origin_dir))
 }
@@ -70,7 +70,7 @@ pub(super) fn collect_agent_delete_plan_guarded(
     }];
 
     for wg_dir in list_workgroup_dirs(base) {
-        let replica = wg_dir.join(format!("__agent_{}", agent_name));
+        let replica = wg_dir.join(format!("__agent_{agent_name}"));
         // #1063: exact `symlink_metadata` handling instead of `Path::exists`, which
         // collapses access and other inspection errors to false. Exact `NotFound`
         // means absent and adds no target (committed-intent pruning by agent
@@ -78,7 +78,7 @@ pub(super) fn collect_agent_delete_plan_guarded(
         // error aborts preflight; an existing entry must pass the non-reparse
         // directory validation before its prefix is retained as a target.
         match directories::inspect_agent_replica(&replica) {
-            Ok(_) => {
+            Ok(()) => {
                 validate_delete_root_not_link_or_reparse(&replica).map_err(|e| {
                     format!(
                         "Agent replica '{}' is not deletable: {}",
@@ -93,7 +93,7 @@ pub(super) fn collect_agent_delete_plan_guarded(
                 targets.push(AgentDeleteTarget {
                     original_key: path_key_for_delete(&replica),
                     original_path: replica,
-                    label: format!("{}/__agent_{}", wg_name, agent_name),
+                    label: format!("{wg_name}/__agent_{agent_name}"),
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -178,8 +178,7 @@ pub(super) async fn ensure_no_live_sessions_under_target_keys(
         .collect::<Vec<_>>()
         .join("\n");
     Err(format!(
-        "Cannot delete agent '{}' while live sessions exist:\n{}",
-        agent_name, details
+        "Cannot delete agent '{agent_name}' while live sessions exist:\n{details}"
     ))
 }
 
@@ -277,8 +276,7 @@ where
                     removed_default,
                 );
                 Err(format!(
-                    "Failed to validate settings after agent delete: {}",
-                    e
+                    "Failed to validate settings after agent delete: {e}"
                 ))
             } else {
                 match save_settings_fn(&candidate) {
@@ -293,7 +291,7 @@ where
                             removed_auto,
                             removed_default,
                         );
-                        Err(format!("Failed to save settings after agent delete: {}", e))
+                        Err(format!("Failed to save settings after agent delete: {e}"))
                     }
                 }
             }
@@ -369,7 +367,7 @@ pub(super) fn restore_team_config_snapshots(
 pub(super) fn format_restore_suffix(restore: Result<(), String>) -> String {
     match restore {
         Ok(()) => String::new(),
-        Err(e) => format!("; snapshot restore failed: {}", e),
+        Err(e) => format!("; snapshot restore failed: {e}"),
     }
 }
 
@@ -390,17 +388,15 @@ pub(super) fn format_agent_delete_metadata_failure(
 ) -> String {
     match (restore_result, dir_rollback_result) {
         (Ok(()), Ok(())) => persist_error,
-        (Err(restore), Ok(())) => format!(
-            "{}. Metadata snapshot restore also failed: {}",
-            persist_error, restore
-        ),
-        (Ok(()), Err(rollback)) => format!(
-            "{}. Directory rollback also failed: {}",
-            persist_error, rollback
-        ),
+        (Err(restore), Ok(())) => {
+            format!("{persist_error}. Metadata snapshot restore also failed: {restore}")
+        }
+        (Ok(()), Err(rollback)) => {
+            format!("{persist_error}. Directory rollback also failed: {rollback}")
+        }
         (Err(restore), Err(rollback)) => format!(
-            "{}. Metadata snapshot restore also failed: {}. Directory rollback also failed: {}",
-            persist_error, restore, rollback
+            "{persist_error}. Metadata snapshot restore also failed: {restore}. Directory \
+            rollback also failed: {rollback}"
         ),
     }
 }
@@ -414,8 +410,7 @@ pub(super) fn format_agent_delete_post_stage_live_failure(
         Ok(()) => live_error,
         Err(rollback) => format!(
             "Agent delete post-stage live-session check failed and rollback also failed. \
-             Live-session error: {}. Rollback error: {}",
-            live_error, rollback
+             Live-session error: {live_error}. Rollback error: {rollback}"
         ),
     }
 }

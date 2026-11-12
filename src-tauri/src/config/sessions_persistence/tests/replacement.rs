@@ -1,7 +1,18 @@
 use super::*;
+use crate::path_identity::VerifiedPathIdentity;
+use crate::session::manager::{CarrierMutationPermit, CarrierSnapshot};
+use std::path::{Path, PathBuf};
 
-#[tokio::test]
-async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_owner() {
+struct ReplacementFixture {
+    temp: tempfile::TempDir,
+    cwd: PathBuf,
+    directory: PathBuf,
+    physical_cwd: PathBuf,
+    physical_replica: VerifiedPathIdentity,
+    replaced_object: VerifiedPathIdentity,
+}
+
+fn replacement_fixture() -> ReplacementFixture {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().join("member");
     let directory = temp.path().join("config");
@@ -14,8 +25,32 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
     // Fault control: retain the original name with another actual file id.
     // This models directory replacement without requiring a symlink.
     replaced_object.canonical_path = physical_replica.canonical_path.clone();
-    let manager = SessionManager::new();
-    let row = manager
+    ReplacementFixture {
+        temp,
+        cwd,
+        directory,
+        physical_cwd,
+        physical_replica,
+        replaced_object,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ReplacementCtx<'a> {
+    directory: &'a Path,
+    target: &'a str,
+    row: &'a crate::session::session::Session,
+    cwd: &'a Path,
+    physical_cwd: &'a Path,
+    physical_replica: &'a VerifiedPathIdentity,
+    replaced_object: &'a VerifiedPathIdentity,
+}
+
+async fn create_member_row(
+    manager: &SessionManager,
+    cwd: &Path,
+) -> crate::session::session::Session {
+    manager
         .create_session(
             "bash".into(),
             vec![],
@@ -27,28 +62,39 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
             crate::pty::backend::SessionBackendKind::LocalProcess,
         )
         .await
-        .unwrap();
-    manager.set_start_fresh_on_restore(row.id, true).await;
-    let permit = acquire_carrier_mutation_permit().await;
-    let version = manager
-        .with_current_carrier_snapshot(&permit, |current| current.versions[&row.id])
-        .await;
-    drop(permit);
-    let target = format!("replacement:{}", uuid::Uuid::new_v4());
+        .unwrap()
+}
+
+async fn persist_initial_after_restore_exclusion(
+    manager: &SessionManager,
+    ctx: ReplacementCtx<'_>,
+    temp: &Path,
+    version: u64,
+) -> (
+    Arc<std::sync::atomic::AtomicBool>,
+    super::super::PublishedCarrier,
+) {
+    let ReplacementCtx {
+        directory,
+        target,
+        row,
+        physical_cwd,
+        ..
+    } = ctx;
     let restore_exclusion = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let initial_intent = super::super::InitialCarrierIntent::new(
-        target.clone(),
+        target.to_string(),
         row.id,
         row.token,
         version,
-        physical_cwd.clone(),
+        physical_cwd.to_path_buf(),
     )
     .with_restore_exclusion(restore_exclusion.clone());
     assert!(
         super::super::persist_initial_carrier(
-            &manager,
-            directory.clone(),
-            vec![temp.path().to_string_lossy().into_owned()],
+            manager,
+            directory.to_path_buf(),
+            vec![temp.to_string_lossy().into_owned()],
             initial_intent.clone(),
         )
         .await
@@ -62,14 +108,204 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
     );
     restore_exclusion.store(false, std::sync::atomic::Ordering::Release);
     let initial = super::super::persist_initial_carrier(
-        &manager,
-        directory.clone(),
-        vec![temp.path().to_string_lossy().into_owned()],
+        manager,
+        directory.to_path_buf(),
+        vec![temp.to_string_lossy().into_owned()],
         initial_intent,
     )
     .await
     .unwrap()
     .expect("initial Confirmed key");
+    (restore_exclusion, initial)
+}
+
+fn assert_live_row_protections(
+    permit: &CarrierMutationPermit,
+    current: &CarrierSnapshot,
+    ctx: ReplacementCtx<'_>,
+    initial: &super::super::PublishedCarrier,
+) -> (
+    super::super::PublishedCarrier,
+    super::super::PublishedCarrier,
+) {
+    let ReplacementCtx {
+        directory,
+        target,
+        row,
+        physical_cwd,
+        ..
+    } = ctx;
+    assert!(
+        super::super::retained_carrier_for_replacement(permit, directory, target, row.id, current)
+            .is_none(),
+        "live row cannot become retained replacement A"
+    );
+    let manual =
+        super::super::manual_discard_carrier(permit, physical_cwd, target, row.id, current)
+            .expect("live strict ManualDiscard key");
+    assert_eq!(manual.nonce, initial.nonce);
+    assert_eq!(manual.retired_local_generation(), None);
+    let mut wrong_nonce = manual.clone();
+    wrong_nonce.nonce = uuid::Uuid::new_v4();
+    assert!(
+        !super::super::retire_manual_discard_carrier(permit, &wrong_nonce, physical_cwd, current),
+        "manual discard cannot retire another nonce"
+    );
+    assert!(
+        super::super::manual_discard_carrier(permit, physical_cwd, target, row.id, current)
+            .is_some(),
+        "failed discard leaves protection intact"
+    );
+    (manual, wrong_nonce)
+}
+
+fn assert_selected_exited_cannot_finish_dormant(
+    permit: &CarrierMutationPermit,
+    current: &CarrierSnapshot,
+    ctx: ReplacementCtx<'_>,
+    initial: &super::super::PublishedCarrier,
+) {
+    let ReplacementCtx {
+        row,
+        physical_replica,
+        ..
+    } = ctx;
+    assert_eq!(current.selection.id(), Some(row.id));
+    let physical_domain = physical_replica.clone().into();
+    assert!(
+        super::super::with_confirmed_carrier(
+            permit,
+            initial,
+            current,
+            super::super::CarrierCheckpointTransition::FinishDormant {
+                generation: 7,
+                committed_version: initial.version,
+                replica: &physical_domain,
+            },
+            |_| Some(())
+        )
+        .is_none(),
+        "selected Exited carrier cannot finish Dormant"
+    );
+}
+
+fn assert_closing_carrier_settles_dormant(
+    permit: &CarrierMutationPermit,
+    current: &CarrierSnapshot,
+    ctx: ReplacementCtx<'_>,
+    initial: &super::super::PublishedCarrier,
+) {
+    let ReplacementCtx {
+        directory,
+        target,
+        row,
+        physical_cwd,
+        physical_replica,
+        ..
+    } = ctx;
+    assert!(
+        super::super::retained_carrier_for_replacement(permit, directory, target, row.id, current)
+            .is_none(),
+        "Exited plus Confirmed without Dormant settlement is not retirement evidence"
+    );
+    assert!(
+        super::super::manual_discard_carrier(permit, physical_cwd, target, row.id, current)
+            .is_none(),
+        "Closing cannot be manually adopted"
+    );
+    let physical_domain = physical_replica.clone().into();
+    let transition = super::super::CarrierCheckpointTransition::FinishDormant {
+        generation: 7,
+        committed_version: initial.version,
+        replica: &physical_domain,
+    };
+    assert!(
+        super::super::with_confirmed_carrier(permit, initial, current, transition, |_| None::<()>)
+            .is_none(),
+        "failed settlement mints nothing"
+    );
+    assert!(super::super::retained_carrier_for_replacement(
+        permit, directory, target, row.id, current
+    )
+    .is_none());
+    assert!(
+        super::super::with_confirmed_carrier(permit, initial, current, transition, |_| Some(()))
+            .is_some()
+    );
+}
+
+fn assert_retired_replacement_preparing(
+    permit: &CarrierMutationPermit,
+    current: &CarrierSnapshot,
+    ctx: ReplacementCtx<'_>,
+    initial: &super::super::PublishedCarrier,
+    owner: uuid::Uuid,
+    binding: crate::session::manager::PendingCreateBinding,
+) {
+    let ReplacementCtx {
+        directory,
+        target,
+        row,
+        cwd,
+        physical_cwd,
+        physical_replica,
+        replaced_object,
+    } = ctx;
+    let carrier =
+        super::super::retained_carrier_for_replacement(permit, directory, target, row.id, current)
+            .expect("fresh Confirmed Exited A");
+    assert_retired_replacement_current_facts(
+        permit,
+        current,
+        &carrier,
+        initial,
+        directory,
+        target,
+        row.id,
+        physical_cwd,
+        physical_replica,
+        replaced_object,
+        owner,
+        binding,
+    );
+    assert_retired_replacement_epoch_exhaustion(
+        permit, current, &carrier, directory, target, row.id, owner, binding,
+    );
+    assert_retired_replacement_preparing_owner(
+        permit, current, &carrier, owner, binding, target, cwd, row, directory,
+    );
+}
+
+#[tokio::test]
+async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_owner() {
+    let ReplacementFixture {
+        temp,
+        cwd,
+        directory,
+        physical_cwd,
+        physical_replica,
+        replaced_object,
+    } = replacement_fixture();
+    let manager = SessionManager::new();
+    let row = create_member_row(&manager, &cwd).await;
+    manager.set_start_fresh_on_restore(row.id, true).await;
+    let permit = acquire_carrier_mutation_permit().await;
+    let version = manager
+        .with_current_carrier_snapshot(&permit, |current| current.versions[&row.id])
+        .await;
+    drop(permit);
+    let target = format!("replacement:{}", uuid::Uuid::new_v4());
+    let ctx = ReplacementCtx {
+        directory: &directory,
+        target: &target,
+        row: &row,
+        cwd: &cwd,
+        physical_cwd: &physical_cwd,
+        physical_replica: &physical_replica,
+        replaced_object: &replaced_object,
+    };
+    let (_restore_exclusion, initial) =
+        persist_initial_after_restore_exclusion(&manager, ctx, temp.path(), version).await;
     let permit = acquire_carrier_mutation_permit().await;
     assert_eq!(
         super::super::restore_carrier_scopes_are_empty(&permit),
@@ -77,45 +313,8 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
     );
     manager
         .with_current_carrier_snapshot(&permit, |current| {
-            assert!(
-                super::super::retained_carrier_for_replacement(
-                    &permit, &directory, &target, row.id, current
-                )
-                .is_none(),
-                "live row cannot become retained replacement A"
-            );
-            let manual = super::super::manual_discard_carrier(
-                &permit,
-                &physical_cwd,
-                &target,
-                row.id,
-                current,
-            )
-            .expect("live strict ManualDiscard key");
-            assert_eq!(manual.nonce, initial.nonce);
-            assert_eq!(manual.retired_local_generation(), None);
-            let mut wrong_nonce = manual.clone();
-            wrong_nonce.nonce = uuid::Uuid::new_v4();
-            assert!(
-                !super::super::retire_manual_discard_carrier(
-                    &permit,
-                    &wrong_nonce,
-                    &physical_cwd,
-                    current
-                ),
-                "manual discard cannot retire another nonce"
-            );
-            assert!(
-                super::super::manual_discard_carrier(
-                    &permit,
-                    &physical_cwd,
-                    &target,
-                    row.id,
-                    current
-                )
-                .is_some(),
-                "failed discard leaves protection intact"
-            );
+            let (_manual, _wrong_nonce) =
+                assert_live_row_protections(&permit, current, ctx, &initial);
             assert!(super::super::with_confirmed_carrier(
                 &permit,
                 &initial,
@@ -131,23 +330,7 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
     let permit = acquire_carrier_mutation_permit().await;
     manager
         .with_current_carrier_snapshot(&permit, |current| {
-            assert_eq!(current.selection.id(), Some(row.id));
-            let physical_domain = physical_replica.clone().into();
-            assert!(
-                super::super::with_confirmed_carrier(
-                    &permit,
-                    &initial,
-                    current,
-                    super::super::CarrierCheckpointTransition::FinishDormant {
-                        generation: 7,
-                        committed_version: initial.version,
-                        replica: &physical_domain,
-                    },
-                    |_| Some(())
-                )
-                .is_none(),
-                "selected Exited carrier cannot finish Dormant"
-            );
+            assert_selected_exited_cannot_finish_dormant(&permit, current, ctx, &initial);
         })
         .await;
     drop(permit);
@@ -162,53 +345,7 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
     let permit = acquire_carrier_mutation_permit().await;
     manager
         .with_current_carrier_snapshot(&permit, |current| {
-            assert!(
-                super::super::retained_carrier_for_replacement(
-                    &permit, &directory, &target, row.id, current
-                )
-                .is_none(),
-                "Exited plus Confirmed without Dormant settlement is not retirement evidence"
-            );
-            assert!(
-                super::super::manual_discard_carrier(
-                    &permit,
-                    &physical_cwd,
-                    &target,
-                    row.id,
-                    current
-                )
-                .is_none(),
-                "Closing cannot be manually adopted"
-            );
-            let physical_domain = physical_replica.clone().into();
-            let transition = super::super::CarrierCheckpointTransition::FinishDormant {
-                generation: 7,
-                committed_version: initial.version,
-                replica: &physical_domain,
-            };
-            assert!(
-                super::super::with_confirmed_carrier(
-                    &permit,
-                    &initial,
-                    current,
-                    transition,
-                    |_| None::<()>
-                )
-                .is_none(),
-                "failed settlement mints nothing"
-            );
-            assert!(super::super::retained_carrier_for_replacement(
-                &permit, &directory, &target, row.id, current
-            )
-            .is_none());
-            assert!(super::super::with_confirmed_carrier(
-                &permit,
-                &initial,
-                current,
-                transition,
-                |_| Some(())
-            )
-            .is_some());
+            assert_closing_carrier_settles_dormant(&permit, current, ctx, &initial);
         })
         .await;
     drop(permit);
@@ -219,30 +356,7 @@ async fn replacement_preparing_requires_current_confirmed_exited_key_and_exact_o
     let permit = acquire_carrier_mutation_permit().await;
     manager
         .with_current_carrier_snapshot(&permit, |current| {
-            let carrier = super::super::retained_carrier_for_replacement(
-                &permit, &directory, &target, row.id, current,
-            )
-            .expect("fresh Confirmed Exited A");
-            assert_retired_replacement_current_facts(
-                &permit,
-                current,
-                &carrier,
-                &initial,
-                &directory,
-                &target,
-                row.id,
-                &physical_cwd,
-                &physical_replica,
-                &replaced_object,
-                owner,
-                binding,
-            );
-            assert_retired_replacement_epoch_exhaustion(
-                &permit, current, &carrier, &directory, &target, row.id, owner, binding,
-            );
-            assert_retired_replacement_preparing_owner(
-                &permit, current, &carrier, owner, binding, &target, &cwd, &row, &directory,
-            );
+            assert_retired_replacement_preparing(&permit, current, ctx, &initial, owner, binding);
         })
         .await;
     drop(permit);
@@ -281,13 +395,7 @@ async fn native_publication_readback_fault_retains_pending_then_confirms_same_ep
             .unwrap();
         let renamed = manager
             .with_current_carrier_snapshot(&permit, |_| {
-                super::super::rename_and_publish(
-                    temp.path(),
-                    &slot,
-                    expected_epoch,
-                    &mut next,
-                    &write,
-                )
+                rename_retrying_contention(temp.path(), &slot, expected_epoch, &mut next, &write)
             })
             .await;
         let super::super::RenamePublicationAttempt::Renamed { leaf, retired } = renamed else {
@@ -333,6 +441,65 @@ async fn native_publication_readback_fault_retains_pending_then_confirms_same_ep
     }
 }
 
+fn rename_after_released_contention(
+    dir: &Path,
+    slot: &super::super::carrier::PublicationSlot,
+    expected_epoch: u64,
+    next: &mut Option<super::super::carrier::PublicationState>,
+    write: &super::super::store::PreparedSessionsWrite,
+    nonce: uuid::Uuid,
+    epoch: u64,
+) -> super::super::RenamePublicationAttempt {
+    // Process-wide contention prevents rename even for a private fixture.
+    {
+        let leaf = super::super::write::snapshot_store().lock_snapshot();
+        let contended = super::super::rename_and_publish(dir, slot, expected_epoch, next, write);
+        assert!(matches!(
+            contended,
+            super::super::RenamePublicationAttempt::Retry
+        ));
+        assert!(matches!(
+            super::super::settle_rename_attempt(
+                contended,
+                slot,
+                &write.path,
+                nonce,
+                epoch,
+                0,
+                None,
+            ),
+            super::super::SettledRenameAttempt::Recapture
+        ));
+        drop(leaf);
+    }
+    // Retry only contention; every other outcome reaches the strict
+    // native-failure assertion below with the original pending payload.
+    rename_retrying_contention(dir, slot, expected_epoch, next, write)
+}
+
+/// Retries only `Retry`: process-wide publication locks are shared with
+/// parallel tests (#4147). `next` stays `Some` on `Retry`, so retry is safe.
+fn rename_retrying_contention(
+    dir: &Path,
+    slot: &super::super::carrier::PublicationSlot,
+    expected_epoch: u64,
+    next: &mut Option<super::super::carrier::PublicationState>,
+    write: &super::super::store::PreparedSessionsWrite,
+) -> super::super::RenamePublicationAttempt {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let attempt = super::super::rename_and_publish(dir, slot, expected_epoch, next, write);
+        if !matches!(attempt, super::super::RenamePublicationAttempt::Retry) {
+            break attempt;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "publication locks stayed busy"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 #[tokio::test]
 async fn native_rename_failure_keeps_epoch_checkpoint_and_own_pending_payload() {
     let temp = tempfile::tempdir().unwrap();
@@ -358,54 +525,15 @@ async fn native_rename_failure_keeps_epoch_checkpoint_and_own_pending_payload() 
         .unwrap();
     let attempt = manager
         .with_current_carrier_snapshot(&permit, |_| {
-            // Process-wide contention prevents rename even for a private fixture.
-            {
-                let leaf = super::super::write::snapshot_store().lock_snapshot();
-                let contended = super::super::rename_and_publish(
-                    temp.path(),
-                    &slot,
-                    before.epoch,
-                    &mut next,
-                    &write,
-                );
-                assert!(matches!(
-                    contended,
-                    super::super::RenamePublicationAttempt::Retry
-                ));
-                assert!(matches!(
-                    super::super::settle_rename_attempt(
-                        contended,
-                        &slot,
-                        &write.path,
-                        nonce,
-                        epoch,
-                        0,
-                        None,
-                    ),
-                    super::super::SettledRenameAttempt::Recapture
-                ));
-                drop(leaf);
-            }
-            // Retry only contention; every other outcome reaches the strict
-            // native-failure assertion below with the original pending payload.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                let attempt = super::super::rename_and_publish(
-                    temp.path(),
-                    &slot,
-                    before.epoch,
-                    &mut next,
-                    &write,
-                );
-                if !matches!(attempt, super::super::RenamePublicationAttempt::Retry) {
-                    break attempt;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "publication locks stayed busy"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            rename_after_released_contention(
+                temp.path(),
+                &slot,
+                before.epoch,
+                &mut next,
+                &write,
+                nonce,
+                epoch,
+            )
         })
         .await;
     let super::super::SettledRenameAttempt::Failed(error) =

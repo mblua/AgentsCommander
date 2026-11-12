@@ -1,4 +1,4 @@
-use super::DEFAULT_TIMEOUT_MS;
+use super::protocol::DEFAULT_TIMEOUT_MS;
 use clap::Args;
 
 #[derive(Debug, Args)]

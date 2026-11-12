@@ -52,10 +52,7 @@ fn windows_atomic_replace_failure_retains_os_metadata() {
     assert_eq!(recorded_pid, std::process::id());
     assert_eq!(recorded_temp.parent(), Some(temp.path()));
     let temp_name = recorded_temp.file_name().unwrap().to_string_lossy();
-    assert!(temp_name.starts_with(&format!(
-        "settings.30.instance.no-git.json.{}.",
-        recorded_pid
-    )));
+    assert!(temp_name.starts_with(&format!("settings.30.instance.no-git.json.{recorded_pid}.")));
     assert!(temp_name.ends_with(".tmp"));
 
     let (records, _capture_guard) = capture_settings_save_diagnostics();
@@ -265,40 +262,18 @@ fn preserve_disk_gate_failures_are_typed_and_do_not_overwrite() {
             "invalid_terminal_snapshot_setting",
         ),
     ];
-
     for (contents, case) in rows {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, contents).unwrap();
         let original = std::fs::read(&path).unwrap();
-        let expected = match case {
-            "malformed" => {
-                let source = serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
-                format!(
-                    "Refusing to overwrite {}: the existing settings file is not valid JSON \
-                            ({})",
-                    path.display(),
-                    source
-                )
-            }
-            "non_object" => format!(
-                "Refusing to overwrite {}: the existing settings root is not a JSON object",
-                path.display()
-            ),
-            "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings \
-                    whose non-project fields are invalid: invalid type: string \"invalid\", \
-                    expected a boolean"
-                .to_string(),
-            _ => unreachable!(),
-        };
-
+        let expected = expected_preserve_disk_gate_outward(contents, case, &path);
         let error = super::super::save_settings_value(
             &super::super::AppSettings::default(),
             &path,
             super::super::ProjectWriteMode::Preserve,
         )
         .unwrap_err();
-
         assert_eq!(
             error.stage,
             super::super::SettingsSaveStage::PreserveDiskGate
@@ -714,7 +689,7 @@ fn terminal_snapshot_gate_defaults_true_and_strict_reader_fails_closed() {
     std::fs::write(&path, r#"{"terminalSnapshotsEnabled":true}"#).unwrap();
     let destination = super::super::project_paths_path(&path);
     for projection in [
-        r#"{}"#,
+        r"{}",
         r#"{"archivedProjectPaths":["archived"]}"#,
         r#"{"projectPaths":[]}"#,
     ] {
@@ -994,4 +969,31 @@ fn codex_home_template_keys_on_leading_token_not_list_order() {
         "ctx",
     )
     .expect("leading token valid; remainder tokens are known at shape level");
+}
+
+fn expected_preserve_disk_gate_outward(
+    contents: &str,
+    case: &str,
+    path: &std::path::Path,
+) -> String {
+    match case {
+        "malformed" => {
+            let source = serde_json::from_str::<serde_json::Value>(contents).unwrap_err();
+            format!(
+                "Refusing to overwrite {}: the existing settings file is not valid JSON \
+                        ({})",
+                path.display(),
+                source
+            )
+        }
+        "non_object" => format!(
+            "Refusing to overwrite {}: the existing settings root is not a JSON object",
+            path.display()
+        ),
+        "invalid_terminal_snapshot_setting" => "Refusing to overwrite present settings \
+                whose non-project fields are invalid: invalid type: string \"invalid\", \
+                expected a boolean"
+            .to_string(),
+        _ => unreachable!(),
+    }
 }

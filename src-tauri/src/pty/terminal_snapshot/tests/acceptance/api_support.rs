@@ -111,7 +111,7 @@ pub(super) async fn abort_direct_api_request_at(
     };
     match point {
         ApiAbortPoint::BeforeCapture => {
-            fixture.snapshot_state.install_api_before_capture_hook(hook)
+            fixture.snapshot_state.install_api_before_capture_hook(hook);
         }
         ApiAbortPoint::AfterResponseBytes => fixture
             .snapshot_state

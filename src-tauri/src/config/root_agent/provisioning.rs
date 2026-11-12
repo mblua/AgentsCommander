@@ -10,19 +10,19 @@ use super::{
 };
 use crate::config::ROOT_AGENT_DIR_NAME;
 use crate::filesystem::agent_files;
+use crate::filesystem::projects::entities::roles;
 use std::path::Path;
 
-pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r#"# Role
+pub(crate) const MINIMAL_ROOT_ROLE_MD: &str = r"# Role
 
 You are the personal Root Agent for AgentsCommander.
-"#;
+";
 
 pub fn is_root_agent_dir_name(cwd: &str) -> bool {
     Path::new(cwd)
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case(ROOT_AGENT_DIR_NAME))
-        .unwrap_or(false)
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case(ROOT_AGENT_DIR_NAME))
 }
 
 pub fn is_root_agent_path(cwd: &str) -> bool {
@@ -147,10 +147,10 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
         )
     })?;
 
-    let role_path = root_dir.join("Role.md");
+    let role_path = roles::role_path(root_dir);
     migrate_root_role(&role_path)?;
 
-    merge_root_agent_config(&root_dir.join("config.json"))?;
+    merge_root_agent_config(&crate::config::config_file_path(root_dir))?;
 
     // #979: BEST-EFFORT, never `?`. `ensure_root_agent_dir` is fatal at
     // commands/session.rs:2741 and :3276, so a retirement error here would make the
@@ -341,10 +341,10 @@ pub(crate) fn migrate_root_role(role_path: &Path) -> Result<(), String> {
         || existing_normalized == normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD)
         || existing_normalized == normalize_role_text(ROOT_ROLE_MD)
     {
-        if existing_normalized != normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
-            Some(MINIMAL_ROOT_ROLE_MD.to_string())
-        } else {
+        if existing_normalized == normalize_role_text(MINIMAL_ROOT_ROLE_MD) {
             None
+        } else {
+            Some(MINIMAL_ROOT_ROLE_MD.to_string())
         }
     } else if existing.contains(OLD_DEFERRED_MESSAGING_PARAGRAPH) {
         Some(existing.replace(

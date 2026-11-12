@@ -59,8 +59,7 @@ pub(crate) async fn accept_restart_deferred_completion<R: tauri::Runtime>(
                     finalize_failed_restart(transaction, uuid, old_selected, intent).await
                 {
                     return Err(format!(
-                        "{}; restart failure finalization failed: {}",
-                        error, finalize_error
+                        "{error}; restart failure finalization failed: {finalize_error}"
                     ));
                 }
             }
@@ -69,20 +68,19 @@ pub(crate) async fn accept_restart_deferred_completion<R: tauri::Runtime>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "Preserve restart settlement inputs for rollback, selection and prompt transfer"
-)]
+pub(crate) struct RestartFinalizeOptions {
+    pub(crate) old_lost: bool,
+    pub(crate) old_selected: bool,
+    pub(crate) activate_after: bool,
+    pub(crate) restart_start_fresh: bool,
+}
+
 pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     deferred: &DeferredCreateOutput,
     uuid: uuid::Uuid,
-    old_lost: bool,
-    old_selected: bool,
-    activate_after: bool,
     intent: TrustedRestartIntent,
-    restart_start_fresh: bool,
+    options: RestartFinalizeOptions,
 ) -> Result<
     (
         uuid::Uuid,
@@ -91,6 +89,12 @@ pub(crate) async fn finalize_restart_deferred<R: tauri::Runtime>(
     ),
     String,
 > {
+    let RestartFinalizeOptions {
+        old_lost,
+        old_selected,
+        activate_after,
+        restart_start_fresh,
+    } = options;
     let new_uuid = match Uuid::parse_str(&deferred.info.id) {
         Ok(id) => id,
         Err(error) => {
@@ -196,10 +200,10 @@ pub(crate) async fn publish_restart_before_warnings<R: tauri::Runtime>(
             .app()
             .state::<DetachedSessionsState>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&uuid);
     }
-    crate::telegram::manager::release_all_reader_demands(app, uuid).await;
+    crate::commands::telegram::release_all_reader_demands(app, uuid).await;
     raise_room_reader_demand(app, new_uuid).await;
     transaction.observe_entry_reader_demand(
         binding,
@@ -261,12 +265,12 @@ pub(crate) async fn complete_owned_replacement_retirement<R: tauri::Runtime>(
 ) {
     crate::session::selection::forget_response_close_registration(session_id);
     detach_restart_telegram(transaction, session_id).await;
-    crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     transaction
         .app()
         .state::<DetachedSessionsState>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&session_id);
 }
 
@@ -289,9 +293,7 @@ pub(crate) async fn detach_restart_telegram<R: tauri::Runtime>(
             serde_json::json!({ "sessionId": session_id.to_string() }),
         ) {
             log::warn!(
-                "[restart] telegram detach publication failed session={}: {}",
-                session_id,
-                error
+                "[restart] telegram detach publication failed session={session_id}: {error}"
             );
         }
         shutdown.spawn_wait_or_abort();
@@ -311,13 +313,13 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
             .app()
             .state::<DetachedSessionsState>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         detach_restart_telegram(transaction, session_id).await;
         // Section 5.2: the old runtime is confirmed gone, so its reader
         // demands are released before the replacement is created. A failure to
         // create the replacement therefore leaves no old reader behind.
-        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
         return Ok(true);
     }
 
@@ -331,7 +333,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
             .app()
             .state::<Arc<Mutex<PtyManager>>>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .publish_stop_witness(session_id, "session-restart");
         let monitor = Arc::clone(&resource_monitor);
         match tokio::task::spawn_blocking(move || {
@@ -355,16 +357,12 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
                     evidence_veto: true,
                 });
             }
-            Ok(Err(CleanupFailure::Ordinary(error))) => log::warn!(
-                "[restart] resource cleanup failed session={}: {}",
-                session_id,
-                error
-            ),
-            Err(error) => log::warn!(
-                "[restart] resource cleanup task failed session={}: {}",
-                session_id,
-                error
-            ),
+            Ok(Err(CleanupFailure::Ordinary(error))) => {
+                log::warn!("[restart] resource cleanup failed session={session_id}: {error}")
+            }
+            Err(error) => {
+                log::warn!("[restart] resource cleanup task failed session={session_id}: {error}")
+            }
         }
     }
 
@@ -377,14 +375,14 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
         .app()
         .state::<Arc<Mutex<PtyManager>>>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .kill(session_id);
     let old_lost = !transaction.runtime_snapshot(session_id).has_pty;
     if !old_lost {
-        let message = kill_result
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "old PTY remained live after restart teardown".to_string());
+        let message = kill_result.err().map_or_else(
+            || "old PTY remained live after restart teardown".to_string(),
+            |error| error.to_string(),
+        );
         return Err(RestartTeardownError {
             message,
             old_lost: false,
@@ -393,21 +391,19 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
     }
     if let Err(error) = kill_result {
         log::warn!(
-            "[restart] teardown reported an error after PTY loss session={}: {}",
-            session_id,
-            error
+            "[restart] teardown reported an error after PTY loss session={session_id}: {error}"
         );
     }
     transaction
         .app()
         .state::<DetachedSessionsState>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&session_id);
     detach_restart_telegram(transaction, session_id).await;
     // Section 5.2: old runtime loss is confirmed, so the old id's reader
     // demands are released before the replacement is created.
-    crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     Ok(true)
 }
 
@@ -440,7 +436,7 @@ pub(crate) async fn finalize_failed_restart<R: tauri::Runtime>(
         // Section 5.2: the old row is gone, so any old-id reader demand that
         // survived teardown (or was raised while it was in flight) is released and
         // its capture slot closed before the destroyed publication.
-        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
         transaction
             .persist(SelectionSource::Restart, Some(session_id))
             .await;
@@ -452,7 +448,7 @@ pub(crate) async fn finalize_failed_restart<R: tauri::Runtime>(
     }
     .await;
     if let Some(publication) = publication {
-        publication.complete(result.as_ref().map(|_| None).map_err(Clone::clone));
+        publication.complete(result.as_ref().map(|()| None).map_err(Clone::clone));
     }
     result
 }
@@ -470,7 +466,8 @@ pub(crate) async fn accept_restart_teardown<R: tauri::Runtime>(
             if error.old_lost && !error.evidence_veto {
                 // Section 5.2: the old PTY is already gone, so its demands must
                 // not outlive the failed restart.
-                crate::telegram::manager::release_all_reader_demands(transaction.app(), uuid).await;
+                crate::commands::telegram::release_all_reader_demands(transaction.app(), uuid)
+                    .await;
                 if let Err(finalize_error) =
                     finalize_failed_restart(transaction, uuid, old_selected, intent).await
                 {
@@ -498,11 +495,7 @@ fn publish_restart_destroyed<R: tauri::Runtime>(
     let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
     if let Some(window) = transaction.app().get_webview_window(&label) {
         if let Err(error) = window.destroy() {
-            log::warn!(
-                "[restart] detached window destroy failed session={}: {}",
-                session_id,
-                error
-            );
+            log::warn!("[restart] detached window destroy failed session={session_id}: {error}");
         }
     }
     purge_session_side_state(transaction.app(), session_id);

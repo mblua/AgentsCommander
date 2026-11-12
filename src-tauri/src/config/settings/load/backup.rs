@@ -10,10 +10,7 @@ pub(crate) fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> R
     }
     settings_file::write_settings_migration_backup(&backup_path, contents)
         .map_err(|e| format!("Failed to write {}: {}", backup_path.display(), e))?;
-    log::info!(
-        "[settings-migration] wrote pre-384 v1 settings backup to {:?}",
-        backup_path
-    );
+    log::info!("[settings-migration] wrote pre-384 v1 settings backup to {backup_path:?}");
     Ok(())
 }
 
@@ -39,7 +36,7 @@ pub(crate) fn settings_backup_path(settings_path: &Path, index: u32) -> PathBuf 
 /// temporary. Deliberate local mirror of
 /// `sessions_persistence::rotate_orphan_archive`.
 pub(crate) fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
-    rotate_settings_backups_labeled(settings_path, settings_path, previous)
+    rotate_settings_backups_labeled(settings_path, settings_path, previous);
 }
 
 pub(crate) fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path, previous: &[u8]) {

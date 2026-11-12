@@ -183,7 +183,8 @@ fn collect_fireable(map: &mut HashMap<String, Episode>, now: Instant) -> Vec<Non
         let Some(since) = ep.disparity_since else {
             continue;
         };
-        if now.duration_since(since) >= Duration::from_secs(ep.report.tolerance_seconds as u64) {
+        if now.duration_since(since) >= Duration::from_secs(u64::from(ep.report.tolerance_seconds))
+        {
             ep.fired = true;
             out.push(ep.report.clone());
         }
@@ -220,7 +221,7 @@ pub fn start<H: WatchdogHost>(app: H, state: NonStopWatchdogState, shutdown: Shu
         let mut interval = tokio::time::interval(TICK_INTERVAL);
         loop {
             tokio::select! {
-                _ = shutdown.token().cancelled() => break,
+                () = shutdown.token().cancelled() => break,
                 _ = interval.tick() => tick(&app, &state).await,
             }
         }
@@ -311,7 +312,7 @@ async fn send_telegram(app: &impl WatchdogHost, r: &NonStopReport) {
     );
     app.spawn_background(Box::pin(async move {
         if let Err(e) = crate::telegram::api::send_message(&network, &token, chat_id, &text).await {
-            log::warn!("[non-stop] telegram send via '{}' failed: {}", label, e);
+            log::warn!("[non-stop] telegram send via '{label}' failed: {e}");
         }
     }));
 }
@@ -319,7 +320,7 @@ async fn send_telegram(app: &impl WatchdogHost, r: &NonStopReport) {
 fn project_folder_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(path)
         .to_string()
 }

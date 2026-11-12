@@ -5,7 +5,7 @@ use super::*;
 /// backend call and therefore a deterministic barrier. Releasing the gate also makes
 /// the child verifiably gone, so the parked retry settles to Terminated.
 ///
-/// The barrier is announced through a Condvar rather than an AtomicBool so the test
+/// The barrier is announced through a Condvar rather than an `AtomicBool` so the test
 /// thread can wait for it with a plain `std` wait. W6 must never need the async
 /// runtime to make progress in order to report, because the defect it exists to catch
 /// is exactly the one that stops the runtime from making progress.

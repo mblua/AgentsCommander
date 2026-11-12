@@ -10,10 +10,11 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentscommander"
-version = "0.45.1"
+version = "0.46.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "cairo-rs",
  "chrono",
  "clap",
  "croner",
@@ -22,6 +23,8 @@ dependencies = [
  "futures",
  "futures-util",
  "getrandom 0.3.4",
+ "gio",
+ "glib",
  "if-addrs",
  "image",
  "libc",
@@ -34,6 +37,7 @@ dependencies = [
  "rfd 0.15.4",
  "rusqlite",
  "rust-embed",
+ "rust-source-scrub",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -54,6 +58,7 @@ dependencies = [
  "tower-http",
  "uuid",
  "vt100",
+ "webkit2gtk",
  "which",
  "windows-sys 0.59.0",
  "xcap",
@@ -5157,6 +5162,10 @@ dependencies = [
  "sha2",
  "walkdir",
 ]
+
+[[package]]
+name = "rust-source-scrub"
+version = "0.1.0"
 
 [[package]]
 name = "rustc-hash"

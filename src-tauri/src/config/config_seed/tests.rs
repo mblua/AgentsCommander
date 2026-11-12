@@ -23,8 +23,8 @@ fn ctx_with(replica: &Path, ac_root: Option<&Path>, matrix: Option<&Path>) -> Pl
     PlaceholderContext {
         replica_root: replica.to_path_buf(),
         root_kind: PlaceholderRootKind::AcReplicaOrRootAgent,
-        ac_root: ac_root.map(|p| p.to_path_buf()),
-        matrix_root: matrix.map(|p| p.to_path_buf()),
+        ac_root: ac_root.map(std::path::Path::to_path_buf),
+        matrix_root: matrix.map(std::path::Path::to_path_buf),
     }
 }
 

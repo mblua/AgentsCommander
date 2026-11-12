@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use crate::filesystem::agency_templates::ensure_agency_directory;
 
-use crate::config::role_templates::AGENCY_TEMPLATES_DIR;
+use crate::config::instance_artifacts::AGENCY_TEMPLATES_DIR;
 
 const GIT_LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
-const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const GIT_FETCH_TIMEOUT: Duration = Duration::from_mins(10);
 const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn run_git_with_timeout(
@@ -16,7 +16,7 @@ fn run_git_with_timeout(
     timeout: Duration,
 ) -> Result<Output, String> {
     crate::process::git::cache::run_agency_git(current_dir, args, timeout)
-        .map_err(|e| format!("Failed to run git {:?}: {}", args, e))
+        .map_err(|e| format!("Failed to run git {args:?}: {e}"))
 }
 
 #[cfg(test)]
@@ -39,8 +39,7 @@ pub(super) fn resolve_commit_with_git(repo: &str, reference: &str) -> Result<Str
     let output = run_git_with_timeout(None, &["ls-remote", repo, reference], GIT_LS_REMOTE_TIMEOUT)
         .map_err(|e| {
             format!(
-                "Failed to run git. Install git or use an environment where git is on PATH: {}",
-                e
+                "Failed to run git. Install git or use an environment where git is on PATH: {e}"
             )
         })?;
     if !output.status.success() {

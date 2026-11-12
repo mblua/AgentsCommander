@@ -1,10 +1,10 @@
 //! #632 - per-agent Windows Job Object for reliable process-tree teardown.
 //!
-//! Each spawned agent's ConPTY child is assigned to its own Job Object created
+//! Each spawned agent's `ConPTY` child is assigned to its own Job Object created
 //! with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Terminating the job (explicitly via
 //! `TerminateJobObject`, or implicitly when the last handle closes on a hard
 //! process exit / panic) kills the entire descendant tree atomically. This is
-//! immune to PID reuse and per-PID ACCESS_DENIED, and needs no process-snapshot
+//! immune to PID reuse and per-PID `ACCESS_DENIED`, and needs no process-snapshot
 //! walking to request a tree kill. Cancellable updater/probe owners additionally
 //! query job accounting until `ActiveProcesses == 0` before publishing a terminal
 //! outcome; `TerminateJobObject` alone is not a synchronous settlement proof.
@@ -14,45 +14,18 @@
 //! is purely the KILL mechanism layered under it.
 //!
 //! INVARIANT (do not break): the job handle is created NON-INHERITABLE
-//! (`CreateJobObjectW(null, null)` - no inheritable SECURITY_ATTRIBUTES) and is
-//! owned solely by one `PtyInstance`. portable_pty spawns ConPTY children with
+//! (`CreateJobObjectW(null, null)` - no inheritable `SECURITY_ATTRIBUTES`) and is
+//! owned solely by one `PtyInstance`. `portable_pty` spawns `ConPTY` children with
 //! handle inheritance ON, so an inheritable job handle would leak into the child
-//! and defeat KILL_ON_JOB_CLOSE (the job would not be the last handle holder).
-//! A non-inheritable, singly-owned handle makes KILL_ON_JOB_CLOSE fire exactly
+//! and defeat `KILL_ON_JOB_CLOSE` (the job would not be the last handle holder).
+//! A non-inheritable, singly-owned handle makes `KILL_ON_JOB_CLOSE` fire exactly
 //! once, when AC's only handle closes (terminate / drop / process-exit).
 //!
-//! Non-Windows builds use a zero-sized stub so PtyManager stays platform-agnostic.
+//! Non-Windows builds use a zero-sized stub so `PtyManager` stays platform-agnostic.
 
-/// One monotonic native-settlement attempt budget. Updater, probe, and rejected
-/// suspended-spawn cleanup pass this same deadline through direct-child, reader,
-/// and native tree proof work; a new deadline is created only after the current
-/// attempt has actually expired.
-pub(crate) struct SettlementAttempt {
-    window: std::time::Duration,
-    deadline: std::time::Instant,
-}
+mod settlement;
 
-impl SettlementAttempt {
-    pub(crate) fn new(window: std::time::Duration) -> Self {
-        Self {
-            window,
-            deadline: std::time::Instant::now() + window,
-        }
-    }
-
-    pub(crate) fn remaining(&self) -> std::time::Duration {
-        self.deadline
-            .saturating_duration_since(std::time::Instant::now())
-    }
-
-    pub(crate) fn expired(&self) -> bool {
-        self.remaining().is_zero()
-    }
-
-    pub(crate) fn restart(&mut self) {
-        self.deadline = std::time::Instant::now() + self.window;
-    }
-}
+pub(crate) use settlement::SettlementAttempt;
 
 #[cfg(windows)]
 pub use windows_impl::JobObject;

@@ -1,5 +1,6 @@
 //! Shared native lifecycle fixtures and forwarding observer.
 
+use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::commands::session::selection_executor::NativeLifecycleLease;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
@@ -232,7 +233,7 @@ impl NativeSchedule {
     fn trace(&self, operation: Uuid) -> crate::session::selection::SelectionPortTestTrace {
         self.traces
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(operation)
             .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
             .clone()
@@ -284,12 +285,14 @@ impl NativeReceiptObserver {
         } else {
             &self.schedule.before
         };
-        let gate = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let gate = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(gate) = gate {
             let receipt = lease
                 .downcast_ref::<NativeLifecycleLease>()
-                .map(|n| n.release_receipt.load(Ordering::Acquire))
-                .unwrap_or(255);
+                .map_or(255, |n| n.release_receipt.load(Ordering::Acquire));
             let _ = gate.reached.send((
                 t.has_accepted_lifecycle_core(),
                 self.original.has_claim(lease),
@@ -305,7 +308,7 @@ impl NativeReceiptObserver {
         let mut records = self
             .records
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(record) = records
             .iter_mut()
             .find(|record| Arc::ptr_eq(&record.receipt, &native.release_receipt))
@@ -343,14 +346,14 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
                         claimed: native
                             .authority
                             .as_ref()
-                            .is_some_and(|a| a.has_owned_claim()),
+                            .is_some_and(LifecycleEntryAuthority::has_owned_claim),
                         outcome: None,
                         trace: self.schedule.trace(operation),
                     };
                     lease.port_test_attach_trace(record.trace.clone());
                     self.records
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(record);
                 }
             }
@@ -383,7 +386,7 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
         self.schedule
             .trace(identity.0)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((
                 identity.0,
                 identity.1,
@@ -394,7 +397,7 @@ impl LifecycleExecutor<SelectionTransaction<MockRuntime>> for NativeReceiptObser
         self.schedule
             .root_outcomes
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(RootDirectoryRecord {
                 operation: identity.0,
                 nonce: identity.1,
@@ -485,6 +488,62 @@ pub(crate) struct NativeFixture {
     pub(crate) backend: Arc<PortTestBackend>,
 }
 
+/// Child-process identity and designated test configuration every native fixture requires.
+fn assert_native_fixture_environment() {
+    let marker = std::env::var("AC_P17_CARRIER_CHILD").unwrap();
+    let identity = std::env::var("AC_P17_CARRIER_IDENTITY").unwrap();
+    let (id, name) = identity.split_once('\n').unwrap();
+    assert_eq!(name, marker);
+    assert!(!Uuid::parse_str(id).unwrap().is_nil());
+    let configured = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+        .expect("native fixtures require designated test configuration");
+    assert_eq!(
+        crate::config::config_dir().unwrap(),
+        PathBuf::from(configured)
+    );
+}
+
+async fn archived_source_session(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    cwd: &tempfile::TempDir,
+) -> Uuid {
+    manager
+        .read()
+        .await
+        .create_session(
+            "shell".into(),
+            Vec::new(),
+            cwd.path().to_string_lossy().into_owned(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+fn native_message_store() -> (
+    tempfile::TempDir,
+    crate::api::message_store::PtyInputTargetGateState,
+    Arc<crate::api::message_store::MessageStore>,
+) {
+    let store_dir = tempfile::tempdir().unwrap();
+    let store_root = crate::path_utils::normalize_windows_verbatim_path_buf(
+        &std::fs::canonicalize(store_dir.path()).unwrap(),
+    );
+    let gate = crate::api::message_store::PtyInputTargetGateState::for_root(store_root.clone());
+    let store = Arc::new(
+        crate::api::message_store::MessageStore::open(
+            store_root.join(crate::api::message_store::DB_FILENAME),
+        )
+        .unwrap(),
+    );
+    (store_dir, gate, store)
+}
+
 impl NativeFixture {
     pub(crate) fn receipt_records(&self) -> Vec<NativeReceiptRecord> {
         self.records.lock().unwrap().clone()
@@ -504,39 +563,14 @@ impl NativeFixture {
         archived: bool,
         monitor: Arc<crate::resource_monitor::ResourceMonitorState>,
     ) -> Self {
-        let marker = std::env::var("AC_P17_CARRIER_CHILD").unwrap();
-        let identity = std::env::var("AC_P17_CARRIER_IDENTITY").unwrap();
-        let (id, name) = identity.split_once('\n').unwrap();
-        assert_eq!(name, marker);
-        assert!(!Uuid::parse_str(id).unwrap().is_nil());
-        let configured = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
-            .expect("native fixtures require designated test configuration");
-        assert_eq!(
-            crate::config::config_dir().unwrap(),
-            PathBuf::from(configured)
-        );
+        assert_native_fixture_environment();
         let cwd = tempfile::tempdir().unwrap();
         let owners = crate::app_state::AppOwners::new();
         let manager = Arc::new(tokio::sync::RwLock::new(
             SessionManager::with_activity_coalescer(owners.activity.clone()),
         ));
         let source = if archived {
-            manager
-                .read()
-                .await
-                .create_session(
-                    "shell".into(),
-                    Vec::new(),
-                    cwd.path().to_string_lossy().into_owned(),
-                    None,
-                    None,
-                    Vec::new(),
-                    false,
-                    crate::pty::backend::SessionBackendKind::LocalProcess,
-                )
-                .await
-                .unwrap()
-                .id
+            archived_source_session(&manager, &cwd).await
         } else {
             Uuid::nil()
         };
@@ -571,17 +605,7 @@ impl NativeFixture {
                     captures.clone(),
                 ),
             ));
-        let store_dir = tempfile::tempdir().unwrap();
-        let store_root = crate::path_utils::normalize_windows_verbatim_path_buf(
-            &std::fs::canonicalize(store_dir.path()).unwrap(),
-        );
-        let gate = crate::api::message_store::PtyInputTargetGateState::for_root(store_root.clone());
-        let store = Arc::new(
-            crate::api::message_store::MessageStore::open(
-                store_root.join(crate::api::message_store::DB_FILENAME),
-            )
-            .unwrap(),
-        );
+        let (store_dir, gate, store) = native_message_store();
         let app = tauri::test::mock_builder()
             .manage(owners)
             .manage(manager.clone())

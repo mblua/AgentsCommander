@@ -15,11 +15,11 @@ fn role_experiment_init_creates_metadata_and_variant_matrices() {
     let workspace = project.join(".ac");
     let source_role = std::fs::read(workspace.join("_agent_tech-lead").join("Role.md")).unwrap();
     for variant in ["control", "strict"] {
-        let agent = workspace.join(format!("_agent_tech-lead-{}", variant));
+        let agent = workspace.join(format!("_agent_tech-lead-{variant}"));
         assert_eq!(std::fs::read(agent.join("Role.md")).unwrap(), source_role);
         assert!(agent.join("config.json").is_file());
         for dir in ["memory", "plans", "skills", "inbox", "outbox"] {
-            assert!(agent.join(dir).is_dir(), "missing {}", dir);
+            assert!(agent.join(dir).is_dir(), "missing {dir}");
         }
         assert!(agent
             .join("skills")

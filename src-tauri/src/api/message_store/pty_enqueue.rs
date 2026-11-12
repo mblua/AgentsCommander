@@ -66,7 +66,7 @@ impl MessageStore {
         check_pty_enqueue_admission(&tx, &req, payload_bytes)?;
 
         tx.execute(
-            r#"
+            r"
             INSERT INTO pty_input_operations(
                 injection_id, sender_fqn, target_fqn, op_id, nonce_sha256,
                 request_fingerprint, confirmation_tag, version, enter_mode,
@@ -80,7 +80,7 @@ impl MessageStore {
                 ?1,?2,?3,?4,?5,?6,?7,1,'agent-submit',?8,?9,?10,?11,
                 ?12,?13,?14,?15,?16,?17,?18,'queued',0,?19,?20,?21,?19,?19
             )
-            "#,
+            ",
             params![
                 req.injection_id,
                 req.sender_fqn,
@@ -121,35 +121,8 @@ impl MessageStore {
         req: HostPtyInputRejectionRequest,
         now: DateTime<Utc>,
     ) -> Result<crate::phone::types::PtyInputResult, MessageStoreError> {
-        use crate::phone::types::{
-            parse_canonical_pty_timestamp, parse_canonical_uuid_v4,
-            pty_input_reason_allowed_for_status, PtyInputPublicStatus,
-        };
-        parse_canonical_uuid_v4(&req.injection_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        parse_canonical_uuid_v4(&req.op_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let issued = parse_canonical_pty_timestamp(&req.issued_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        let expires = parse_canonical_pty_timestamp(&req.expires_at)
-            .map_err(|_| MessageStoreError::StoreCorrupt)?;
-        if req.injection_id != req.op_id
-            || expires - issued != chrono::Duration::minutes(10)
-            || req.sender_fqn.is_empty()
-            || req.sender_fqn.chars().any(char::is_control)
-            || req.target_fqn.is_empty()
-            || req.target_fqn.chars().any(char::is_control)
-            || !is_lower_hex_64(&req.nonce_sha256)
-            || !is_lower_hex_64(&req.request_fingerprint)
-            || !is_lower_hex_64(&req.confirmation_tag)
-            || !is_lower_hex_64(&req.sender_incarnation_fingerprint)
-            || !is_lower_hex_64(&req.payload_sha256)
-            || !(1..=crate::pty::backend::PTY_INPUT_MAX_BYTES as u64).contains(&req.payload_bytes)
-            || !pty_input_reason_allowed_for_status(
-                PtyInputPublicStatus::Rejected,
-                Some(req.reason),
-            )
-        {
-            return Err(MessageStoreError::StoreCorrupt);
-        }
+        use crate::phone::types::PtyInputPublicStatus;
+        let issued = validate_host_rejection_request(&req)?;
         let Some(_operation_lock) = self.try_operation_lock(&req.injection_id)? else {
             return Err(MessageStoreError::InvalidTransition);
         };
@@ -180,13 +153,13 @@ impl MessageStore {
             return Err(MessageStoreError::IdempotencyConflict);
         }
         let collision: bool = tx.query_row(
-            r#"SELECT EXISTS(
+            r"SELECT EXISTS(
                  SELECT 1 FROM pty_input_operations
                  WHERE injection_id=?1 OR (sender_fqn=?2 AND nonce_sha256=?3)
                  UNION ALL
                  SELECT 1 FROM pty_input_tombstones
                  WHERE injection_id=?1 OR (sender_fqn=?2 AND nonce_sha256=?3)
-               )"#,
+               )",
             params![req.injection_id, req.sender_fqn, req.nonce_sha256],
             |row| row.get(0),
         )?;
@@ -194,7 +167,7 @@ impl MessageStore {
             return Err(MessageStoreError::IdempotencyConflict);
         }
         tx.execute(
-            r#"INSERT INTO pty_input_tombstones(
+            r"INSERT INTO pty_input_tombstones(
                  injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
                  request_fingerprint,confirmation_tag,sender_incarnation_fingerprint,
                  version,payload_sha256,payload_bytes,source_plane,
@@ -203,7 +176,7 @@ impl MessageStore {
                ) VALUES(
                  ?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,'host_cli',
                  NULL,NULL,?11,?12,?13,NULL,?14,'rejected',?15,?16
-               )"#,
+               )",
             params![
                 req.injection_id,
                 req.sender_fqn,
@@ -241,12 +214,12 @@ impl MessageStore {
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let now = crate::phone::types::canonical_pty_timestamp(now);
         let mut statement = conn.prepare(
-            r#"SELECT injection_id FROM pty_input_operations
+            r"SELECT injection_id FROM pty_input_operations
                WHERE source_plane=?1
                  AND ((status IN ('queued','retry') AND next_attempt_at <= ?2)
                    OR (status='preparing' AND lease_until <= ?2))
                  AND attempt < 5
-               ORDER BY next_attempt_at,queued_at,injection_id LIMIT ?3"#,
+               ORDER BY next_attempt_at,queued_at,injection_id LIMIT ?3",
         )?;
         let limit = i64::try_from(limit.min(64)).map_err(|_| MessageStoreError::StoreCorrupt)?;
         let rows = statement
@@ -275,7 +248,7 @@ impl MessageStore {
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id,target_fqn,next_attempt_at,queued_at
+                r"SELECT injection_id,target_fqn,next_attempt_at,queued_at
                    FROM pty_input_operations
                    WHERE source_plane='container_api'
                      AND ((status IN ('queued','retry') AND next_attempt_at <= ?1)
@@ -284,18 +257,18 @@ impl MessageStore {
                      AND (?2 IS NULL OR next_attempt_at > ?2
                        OR (next_attempt_at = ?2 AND queued_at > ?3)
                        OR (next_attempt_at = ?2 AND queued_at = ?3 AND injection_id > ?4))
-                   ORDER BY next_attempt_at,queued_at,injection_id LIMIT ?5"#,
+                   ORDER BY next_attempt_at,queued_at,injection_id LIMIT ?5",
             )?;
-            let (cursor_next, cursor_queued, cursor_id) = cursor
-                .as_ref()
-                .map(|(next, queued, id)| {
-                    (
-                        Some(next.as_str()),
-                        Some(queued.as_str()),
-                        Some(id.as_str()),
-                    )
-                })
-                .unwrap_or((None, None, None));
+            let (cursor_next, cursor_queued, cursor_id) =
+                cursor
+                    .as_ref()
+                    .map_or((None, None, None), |(next, queued, id)| {
+                        (
+                            Some(next.as_str()),
+                            Some(queued.as_str()),
+                            Some(id.as_str()),
+                        )
+                    });
             let limit =
                 i64::try_from(limit.min(64)).map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mapped = statement.query_map(
@@ -350,23 +323,23 @@ impl MessageStore {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let candidate = if let Some(injection_id) = exact_injection_id {
             tx.query_row(
-                r#"SELECT injection_id FROM pty_input_operations
+                r"SELECT injection_id FROM pty_input_operations
                    WHERE injection_id=?1 AND source_plane=?2 AND attempt < 5
                      AND expires_at > ?3
                      AND ((status IN ('queued','retry') AND next_attempt_at <= ?3)
-                       OR (status='preparing' AND lease_until <= ?3))"#,
+                       OR (status='preparing' AND lease_until <= ?3))",
                 params![injection_id, source, now_s],
                 |row| row.get::<_, String>(0),
             )
             .optional()?
         } else {
             tx.query_row(
-                r#"SELECT injection_id FROM pty_input_operations
+                r"SELECT injection_id FROM pty_input_operations
                    WHERE source_plane=?1 AND attempt < 5
                      AND expires_at > ?2
                      AND ((status IN ('queued','retry') AND next_attempt_at <= ?2)
                        OR (status='preparing' AND lease_until <= ?2))
-                   ORDER BY next_attempt_at, queued_at, injection_id LIMIT 1"#,
+                   ORDER BY next_attempt_at, queued_at, injection_id LIMIT 1",
                 params![source, now_s],
                 |row| row.get::<_, String>(0),
             )
@@ -377,12 +350,12 @@ impl MessageStore {
             return Ok(None);
         };
         let changed = tx.execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                SET status='preparing', attempt=attempt+1, lease_owner=?1,
                    lease_until=MIN(?2,expires_at), preparing_at=?3, updated_at=?3
                WHERE injection_id=?4 AND attempt < 5 AND expires_at > ?3
                  AND ((status IN ('queued','retry') AND next_attempt_at <= ?3)
-                   OR (status='preparing' AND lease_until <= ?3))"#,
+                   OR (status='preparing' AND lease_until <= ?3))",
             params![lease_owner, lease_until, now_s, injection_id],
         )?;
         if changed != 1 {
@@ -391,11 +364,11 @@ impl MessageStore {
         }
         insert_pty_audit(&tx, &injection_id, PTY_STATUS_PREPARING, None, &now_s)?;
         let claimed = tx.query_row(
-            r#"SELECT injection_id,sender_fqn,target_fqn,op_id,source_plane,
+            r"SELECT injection_id,sender_fqn,target_fqn,op_id,source_plane,
                       lease_owner,attempt,authority_session_id,authority_client_id,
                       authority_client_generation,sender_identity_fingerprint,
                       target_identity_fingerprint,requested_agent_id,expires_at
-               FROM pty_input_operations WHERE injection_id=?1"#,
+               FROM pty_input_operations WHERE injection_id=?1",
             [&injection_id],
             claimed_from_row,
         )?;
@@ -417,14 +390,47 @@ impl MessageStore {
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let changed = conn.execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                SET lease_until=MIN(?1,expires_at),updated_at=?2
                WHERE injection_id=?3 AND status='preparing'
-                 AND lease_owner=?4 AND lease_until > ?2 AND expires_at > ?2"#,
+                 AND lease_owner=?4 AND lease_until > ?2 AND expires_at > ?2",
             params![lease_until, now_s, injection_id, lease_owner],
         )?;
         Ok(changed == 1)
     }
+}
+
+/// Validates a host rejection request and returns its parsed `issued_at`.
+fn validate_host_rejection_request(
+    req: &HostPtyInputRejectionRequest,
+) -> Result<DateTime<Utc>, MessageStoreError> {
+    use crate::phone::types::{
+        parse_canonical_pty_timestamp, parse_canonical_uuid_v4,
+        pty_input_reason_allowed_for_status, PtyInputPublicStatus,
+    };
+    parse_canonical_uuid_v4(&req.injection_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    parse_canonical_uuid_v4(&req.op_id).map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let issued = parse_canonical_pty_timestamp(&req.issued_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    let expires = parse_canonical_pty_timestamp(&req.expires_at)
+        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+    if req.injection_id != req.op_id
+        || expires - issued != chrono::Duration::minutes(10)
+        || req.sender_fqn.is_empty()
+        || req.sender_fqn.chars().any(char::is_control)
+        || req.target_fqn.is_empty()
+        || req.target_fqn.chars().any(char::is_control)
+        || !is_lower_hex_64(&req.nonce_sha256)
+        || !is_lower_hex_64(&req.request_fingerprint)
+        || !is_lower_hex_64(&req.confirmation_tag)
+        || !is_lower_hex_64(&req.sender_incarnation_fingerprint)
+        || !is_lower_hex_64(&req.payload_sha256)
+        || !(1..=crate::pty::backend::PTY_INPUT_MAX_BYTES as u64).contains(&req.payload_bytes)
+        || !pty_input_reason_allowed_for_status(PtyInputPublicStatus::Rejected, Some(req.reason))
+    {
+        return Err(MessageStoreError::StoreCorrupt);
+    }
+    Ok(issued)
 }
 
 fn check_pty_enqueue_admission(
@@ -433,14 +439,14 @@ fn check_pty_enqueue_admission(
     payload_bytes: i64,
 ) -> Result<(), MessageStoreError> {
     let (sender_count, global_count, aggregate_bytes): (i64, i64, i64) = tx.query_row(
-        r#"
+        r"
             SELECT
                 COALESCE(SUM(CASE WHEN sender_fqn = ?1 THEN 1 ELSE 0 END), 0),
                 COUNT(*),
                 COALESCE(SUM(payload_bytes), 0)
             FROM pty_input_operations
             WHERE status IN ('queued','preparing','retry','actuating')
-            "#,
+            ",
         [&req.sender_fqn],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
@@ -452,7 +458,7 @@ fn check_pty_enqueue_admission(
     }
 
     let collision: bool = tx.query_row(
-        r#"
+        r"
             SELECT EXISTS(
                 SELECT 1 FROM pty_input_operations
                 WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
@@ -460,7 +466,7 @@ fn check_pty_enqueue_admission(
                 SELECT 1 FROM pty_input_tombstones
                 WHERE injection_id = ?1 OR (sender_fqn = ?2 AND nonce_sha256 = ?3)
             )
-            "#,
+            ",
         params![req.injection_id, req.sender_fqn, req.nonce_sha256],
         |row| row.get(0),
     )?;

@@ -3,14 +3,7 @@ use crate::config::settings::AppSettings;
 use crate::session::session::SessionCommunication;
 use crate::session::session::SessionCommunicationKind;
 
-/// Extract the basename (without extension) from a path or command token.
-pub(crate) fn executable_basename(s: &str) -> String {
-    std::path::Path::new(s)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(s)
-        .to_lowercase()
-}
+pub(crate) use crate::config::agent_command::executable_basename;
 
 pub(crate) type ResolvedRootAgentCommand = (String, Vec<String>, Option<String>, Option<String>);
 
@@ -26,13 +19,12 @@ pub(crate) fn resolve_agent_command(
             agent.label,
             agent.command
         );
-        let source = format!("selected agent '{}'", agent_id);
+        let source = format!("selected agent '{agent_id}'");
         let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
         Ok((shell, shell_args, Some(agent.label.clone())))
     } else {
         log::warn!(
-            "[session] Agent NOT found for aid={:?}. Falling back to default shell.",
-            agent_id
+            "[session] Agent NOT found for aid={agent_id:?}. Falling back to default shell."
         );
         Ok((
             settings.default_shell.clone(),
@@ -66,7 +58,7 @@ pub(crate) fn resolve_root_agent_command(
 
     if let Some(agent_id) = requested_agent_id {
         if let Some(agent) = resolve_configured(agent_id) {
-            let source = format!("requested root agent '{}'", agent_id);
+            let source = format!("requested root agent '{agent_id}'");
             let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
             return Ok((
                 shell,
@@ -76,15 +68,14 @@ pub(crate) fn resolve_root_agent_command(
             ));
         } else {
             log::warn!(
-                "[root-agent] Requested coding agent '{}' no longer exists; falling back",
-                agent_id
+                "[root-agent] Requested coding agent '{agent_id}' no longer exists; falling back"
             );
         }
     }
 
     if let Some(agent_id) = last_coding_agent {
         if let Some(agent) = resolve_configured(agent_id) {
-            let source = format!("root lastCodingAgent '{}'", agent_id);
+            let source = format!("root lastCodingAgent '{agent_id}'");
             let (shell, shell_args) = normalize_agent_command_for_source(agent, &source)?;
             return Ok((
                 shell,
@@ -93,10 +84,7 @@ pub(crate) fn resolve_root_agent_command(
                 Some(agent.label.clone()),
             ));
         } else {
-            log::warn!(
-                "[root-agent] lastCodingAgent '{}' no longer exists; falling back",
-                agent_id
-            );
+            log::warn!("[root-agent] lastCodingAgent '{agent_id}' no longer exists; falling back");
         }
     }
 
@@ -192,8 +180,7 @@ pub(crate) fn prepare_last_coding_agent_write(
         Some(l) => l.to_string(),
         None => resolve_agent_label(agent_id, settings).unwrap_or_else(|| {
             log::warn!(
-                "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
-                agent_id
+                "Could not resolve label for agent_id='{agent_id}' — defaulting to 'Unknown'"
             );
             "Unknown".to_string()
         }),
@@ -246,10 +233,8 @@ pub(crate) fn resolve_actual_agent(
                 Ok(_) => {}
                 Err(e) => {
                     log::debug!(
-                        "[session] Requested agent_id='{}' command did not normalize during \
-                         metadata resolution: {}",
-                        agent_id,
-                        e
+                        "[session] Requested agent_id='{agent_id}' command did not normalize \
+                         during metadata resolution: {e}"
                     );
                 }
             }
@@ -270,18 +255,15 @@ pub(crate) fn resolve_actual_agent(
             }
             Some(detected_id) => {
                 log::warn!(
-                    "[session] Requested agent_id='{}' did not match final shell-resolved agent \
-                     '{}'; storing resolved agent instead",
-                    agent_id,
-                    detected_id
+                    "[session] Requested agent_id='{agent_id}' did not match final \
+                     shell-resolved agent '{detected_id}'; storing resolved agent instead"
                 );
                 return detected;
             }
             None => {
                 log::warn!(
-                    "[session] Requested agent_id='{}' did not validate against final launched \
-                     shell; clearing actual agent metadata",
-                    agent_id
+                    "[session] Requested agent_id='{agent_id}' did not validate against \
+                     final launched shell; clearing actual agent metadata"
                 );
                 return (None, None);
             }
@@ -292,7 +274,7 @@ pub(crate) fn resolve_actual_agent(
 }
 
 /// Try to match the shell command against configured agents in settings.
-/// Returns (Some(agent_id), Some(label)) if a match is found, (None, None) otherwise.
+/// Returns `(Some(agent_id), Some(label))` if a match is found, `(None, None)` otherwise.
 pub(crate) fn resolve_agent_from_shell(
     shell: &str,
     shell_args: &[String],
@@ -491,10 +473,8 @@ pub(crate) fn matched_selection(
             if plain_shell_selection {
                 // Nothing else to launch: the session already is a plain shell.
                 log::warn!(
-                    "[agent-match] ignoring unresolvable currentCodingAgent '{}' in '{}'; \
-                     restarting the saved shell",
-                    reference,
-                    cwd
+                    "[agent-match] ignoring unresolvable currentCodingAgent '{reference}' in \
+                     '{cwd}'; restarting the saved shell"
                 );
                 MatchedSelection::NoAgent
             } else {

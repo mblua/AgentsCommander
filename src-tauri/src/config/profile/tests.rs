@@ -24,7 +24,7 @@ fn issue_1577_binary_suffix_parsing_preserves_first_underscore_behavior() {
     );
 }
 
-/// #1868, #1930: the HOME name is one literal, independent of BUILD_PROFILE,
+/// #1868, #1930: the HOME name is one literal, independent of `BUILD_PROFILE`,
 /// so the same assertions pass in debug and release focused runs. Only an
 /// executable without an underscore suffix routes to it; a suffixed one
 /// routes to its adjacent directory and never to HOME.

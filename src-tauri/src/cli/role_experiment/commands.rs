@@ -1,3 +1,20 @@
+use super::arguments::ExperimentArgs;
+use super::arguments::InitArgs;
+use super::arguments::ProjectArgs;
+use super::arguments::ReportArgs;
+use super::arguments::RunArgs;
+use super::arguments::ValidateArgs;
+use super::arguments::VariantDiffArgs;
+use super::arguments::VariantSetArgs;
+use super::artifacts::CliError;
+use super::artifacts::CommandOutput;
+use super::artifacts::ExperimentMetadata;
+use super::artifacts::LoadedExperiment;
+use super::artifacts::ReportArtifact;
+use super::artifacts::RunArtifact;
+use super::artifacts::RunSuiteArtifact;
+use super::artifacts::RunVariantArtifact;
+use super::artifacts::VariantMetadata;
 use super::fake_run::collect_experiment_validation;
 use super::fake_run::run_fake_execution;
 use super::prompt_suite::parse_prompt_suite;
@@ -6,7 +23,6 @@ use super::report::build_report_artifact;
 use super::report::create_explicit_run_dir;
 use super::report::create_generated_run_dir;
 use super::report::default_run_artifact_paths;
-use super::report::experiments_dir;
 use super::report::generated_seed_from_uuid;
 use super::report::render_report_markdown;
 use super::report::report_artifact_paths;
@@ -15,15 +31,18 @@ use super::report::validate_replicates;
 use super::report::validate_report_artifacts;
 use super::report::validate_run_id;
 use super::storage::create_attempts;
+use super::storage::experiments_dir;
 use super::storage::load_experiment;
 use super::storage::load_variant_metadata;
 use super::storage::read_json;
 use super::storage::resolve_ac_root;
 use super::storage::resolve_project;
+use super::storage::validate_required_artifact_file;
 use super::storage::write_json;
-use super::storage::write_json_new;
 use super::storage::write_new_file;
 use super::storage::{attempts_name, attempts_path, attempts_path_display};
+use super::storage::{create_report, create_run, run_name};
+use super::storage::{load_report, load_run, validate_report_presence, validate_run_presence};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::line_diff;
@@ -42,29 +61,13 @@ use super::validation::validate_loaded_experiment_source_metadata;
 use super::validation::validate_slug_identity;
 use super::validation::validate_variant_metadata_paths;
 use super::validation::validate_variant_name_request;
-use super::CliError;
-use super::CommandOutput;
-use super::ExperimentArgs;
-use super::ExperimentMetadata;
-use super::InitArgs;
-use super::LoadedExperiment;
-use super::ProjectArgs;
-use super::ReportArgs;
-use super::ReportArtifact;
-use super::RunArgs;
-use super::RunArtifact;
-use super::RunSuiteArtifact;
-use super::RunVariantArtifact;
-use super::ValidateArgs;
-use super::VariantDiffArgs;
-use super::VariantMetadata;
-use super::VariantSetArgs;
 use crate::cli::workgroup;
 use crate::commands::entity_creation::agent_ref_bare_name;
 use crate::commands::entity_creation::create_agent_matrix_from_role;
 use crate::commands::entity_creation::resolve_agent_ref;
 use crate::commands::entity_creation::validate_existing_name;
 use crate::commands::entity_creation::CreateAgentMatrixFromRoleArgs;
+use crate::filesystem::projects::entities::roles;
 use crate::filesystem::{directories, documents};
 use std::collections::HashSet;
 use std::path::Path;
@@ -138,8 +141,8 @@ pub(super) fn init_for_project_path(
             name: variant.clone(),
             source_agent: source_agent.clone(),
             agent_name: agent_name.clone(),
-            matrix_path: format!("../../../_agent_{}", agent_name),
-            role_path: format!("../../../_agent_{}/Role.md", agent_name),
+            matrix_path: format!("../../../_agent_{agent_name}"),
+            role_path: format!("../../../_agent_{agent_name}/{}", roles::ROLE_FILE_NAME),
             role_sha256: role_sha.clone(),
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -147,7 +150,7 @@ pub(super) fn init_for_project_path(
         write_json(
             &experiment_dir
                 .join("variants")
-                .join(format!("{}.json", variant)),
+                .join(format!("{variant}.json")),
             &metadata,
             "variant_metadata_write_failed",
             Some(variant.as_str()),
@@ -226,7 +229,7 @@ fn collect_init_variants_preflight(
         if !seen.insert(variant.clone()) {
             preflight_errors.push(err(
                 "variant_name_duplicate",
-                format!("Variant '{}' is duplicated", variant),
+                format!("Variant '{variant}' is duplicated"),
                 Some(variant.as_str()),
             ));
             continue;
@@ -365,7 +368,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
         &loaded.experiment.source_agent,
         &args.variant,
     );
-    let expected_role = expected_matrix.join("Role.md");
+    let expected_role = roles::role_path(&expected_matrix);
     reject_link_or_reparse(
         &expected_matrix,
         "variant_role_link_or_reparse",
@@ -467,18 +470,16 @@ pub(super) fn variant_diff_loaded(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let left_role = variant_matrix_path(
+    let left_role = roles::role_path(&variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.against,
-    )
-    .join("Role.md");
-    let right_role = variant_matrix_path(
+    ));
+    let right_role = roles::role_path(&variant_matrix_path(
         &loaded.ac_root,
         &loaded.experiment.source_agent,
         &args.variant,
-    )
-    .join("Role.md");
+    ));
     let left_text = map_err(
         documents::read_experiment_document(&left_role),
         "variant_role_missing",
@@ -642,6 +643,35 @@ fn execute_requires_runtime_guard(args: &RunArgs) -> Result<(), Vec<CliError>> {
     }
 }
 
+/// Writes run.json, the attempts, report.json and report.md, in that order.
+fn write_dry_run_artifacts(
+    run_dir: &Path,
+    run_artifact: &RunArtifact,
+    attempts: &[super::artifacts::AttemptArtifact],
+    report_artifact: &ReportArtifact,
+) -> Result<(), Vec<CliError>> {
+    let report_markdown = render_report_markdown(report_artifact);
+
+    create_run(run_dir, run_artifact)?;
+    create_attempts(run_dir, attempts)?;
+    create_report(run_dir, report_artifact)?;
+    write_new_file(
+        &run_dir.join(default_run_artifact_paths(String::new()).report_markdown),
+        report_markdown.as_bytes(),
+    )
+}
+
+/// Warns when the run has more than 50 attempts.
+fn push_large_run_warning(warnings: &mut Vec<super::artifacts::CliWarning>, attempt_count: usize) {
+    if attempt_count > 50 {
+        warnings.push(warn(
+            "large_run_size",
+            "Prompt count multiplied by variant count and replicates exceeds 50",
+            None,
+        ));
+    }
+}
+
 pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
     validate_run_mode(&args)?;
     execute_requires_runtime_guard(&args)?;
@@ -715,21 +745,10 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         true,
         None,
     );
-    let report_markdown = render_report_markdown(&report_artifact);
-
-    write_json_new(&run_dir.join("run.json"), &run_artifact)?;
-    create_attempts(&run_dir, &attempts)?;
-    write_json_new(&run_dir.join("report.json"), &report_artifact)?;
-    write_new_file(&run_dir.join("report.md"), report_markdown.as_bytes())?;
+    write_dry_run_artifacts(&run_dir, &run_artifact, &attempts, &report_artifact)?;
 
     let mut warnings = validation.warnings;
-    if attempts.len() > 50 {
-        warnings.push(warn(
-            "large_run_size",
-            "Prompt count multiplied by variant count and replicates exceeds 50",
-            None,
-        ));
-    }
+    push_large_run_warning(&mut warnings, attempts.len());
 
     Ok(CommandOutput {
         data: serde_json::json!({
@@ -745,7 +764,7 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
             "seed": seed,
             "seedProvided": seed_provided,
             "artifacts": {
-                "run": "run.json",
+                "run": run_name(),
                 "attempts": artifacts.attempts,
                 "reportJson": artifacts.report_json,
                 "reportMarkdown": artifacts.report_markdown,
@@ -754,6 +773,21 @@ pub(super) fn run(args: RunArgs) -> Result<CommandOutput, Vec<CliError>> {
         warnings,
         errors: Vec::new(),
     })
+}
+
+/// Presence of every report input precedes parsing; run.json parses before report.json.
+pub(super) fn load_report_command_artifacts(
+    dir: &Path,
+) -> Result<(RunArtifact, ReportArtifact), Vec<CliError>> {
+    validate_run_presence(dir)?;
+    validate_required_artifact_file(&attempts_path(dir))?;
+    validate_report_presence(dir)?;
+    validate_required_artifact_file(
+        &dir.join(default_run_artifact_paths(String::new()).report_markdown),
+    )?;
+    let run_artifact = load_run(dir)?;
+    let report_artifact = load_report(dir)?;
+    Ok((run_artifact, report_artifact))
 }
 
 pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
@@ -783,24 +817,8 @@ pub(super) fn report(args: ReportArgs) -> Result<CommandOutput, Vec<CliError>> {
             &dir,
         )]);
     }
-    let run_path = dir.join("run.json");
-    let attempts_path = attempts_path(&dir);
-    let report_path = dir.join("report.json");
-    let markdown_path = dir.join("report.md");
-    for path in [&run_path, &attempts_path, &report_path, &markdown_path] {
-        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(path) {
-            return Err(vec![err_at_path(
-                "run_artifact_missing",
-                format!("Run artifact not found: {}", path.display()),
-                path,
-            )]);
-        }
-    }
-    let run_artifact: RunArtifact = read_json(&run_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
-    let report_artifact: ReportArtifact = read_json(&report_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
+    let markdown_path = dir.join(default_run_artifact_paths(String::new()).report_markdown);
+    let (run_artifact, report_artifact) = load_report_command_artifacts(&dir)?;
     validate_report_artifacts(
         &loaded,
         &args.run_id,
@@ -859,7 +877,7 @@ fn init_source_paths(
     let source_agent = agent_ref_bare_name(&source_ref);
     validate_slug_identity(&source_agent, "Source agent", "source_agent_invalid")?;
     let source_matrix = source_matrix_path(ac_root, &source_agent);
-    let source_role = source_matrix.join("Role.md");
+    let source_role = roles::role_path(&source_matrix);
     reject_link_or_reparse(&source_matrix, "source_role_link_or_reparse", None)?;
     reject_link_or_reparse(&source_role, "source_role_link_or_reparse", None)?;
     if !directories::experiment_path_is_file(&source_role) {
@@ -931,12 +949,11 @@ fn dry_run_variant_artifact(
         name: variant.name.clone(),
         agent_name: variant.agent_name.clone(),
         role_sha256: variant.role_sha256.clone(),
-        role_path: variant_matrix_path(
+        role_path: roles::role_path(&variant_matrix_path(
             &loaded.ac_root,
             &loaded.experiment.source_agent,
             &variant.name,
-        )
-        .join("Role.md")
+        ))
         .to_string_lossy()
         .to_string(),
     }
@@ -954,8 +971,8 @@ fn init_experiment_metadata(
         name: args.name.clone(),
         project: args.project.clone(),
         source_agent: source_agent.to_string(),
-        source_matrix_path: format!("../../_agent_{}", source_agent),
-        source_role_path: format!("../../_agent_{}/Role.md", source_agent),
+        source_matrix_path: format!("../../_agent_{source_agent}"),
+        source_role_path: format!("../../_agent_{source_agent}/{}", roles::ROLE_FILE_NAME),
         source_role_sha256: role_sha.to_string(),
         created_at: now.clone(),
         updated_at: now,

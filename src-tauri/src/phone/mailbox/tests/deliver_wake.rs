@@ -23,7 +23,7 @@ async fn session_request_result_sidecar_written_on_success() {
     MailboxPoller::default().poll_session_requests(&app).await;
 
     let result = read_session_request_result_json(&request.id);
-    assert_eq!(result["status"], "created", "unexpected result: {}", result);
+    assert_eq!(result["status"], "created", "unexpected result: {result}");
     let session_id = result["sessionId"].as_str().expect("sessionId").to_string();
     assert!(!session_id.is_empty());
     assert!(
@@ -169,7 +169,7 @@ async fn stale_result_sidecars_are_swept() {
         .unwrap();
     file.set_times(
         std::fs::FileTimes::new()
-            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(6 * 60)),
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_mins(6)),
     )
     .unwrap();
 
@@ -202,8 +202,7 @@ async fn deliver_wake_terminal_pending_verdict_yields_err_after_inject() {
 
     assert!(
         result.is_err(),
-        "a terminal Pending verdict must convert to Err (drives redelivery), got {:?}",
-        result
+        "a terminal Pending verdict must convert to Err (drives redelivery), got {result:?}"
     );
     // The inject ran exactly once, against the live candidate.
     assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
@@ -237,8 +236,7 @@ async fn deliver_wake_observed_verdict_yields_ok_single_delivery() {
 
     assert!(
         result.is_ok(),
-        "Observed must convert to Ok, got {:?}",
-        result
+        "Observed must convert to Ok, got {result:?}"
     );
     assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![live_id]);
     assert_no_spawn_or_destroy_events(&hooks);
@@ -360,7 +358,7 @@ async fn deliver_wake_respawns_exited_deferred_session_preserving_telegram_inten
 
 /// (#747) A dormant coordinator restored with a raised hand (Exited(0) +
 /// visible communication, exactly what the startup defer arm produces)
-/// receives a peer wake: the RespawnExited destroy+spawn must carry the
+/// receives a peer wake: the `RespawnExited` destroy+spawn must carry the
 /// hand onto the NEW session (the wake injection is not user input) and
 /// emit one `session_communication_changed` for it. The spawn hook is told
 /// to create a coordinator record, mirroring production where
@@ -475,12 +473,10 @@ async fn deliver_wake_promotes_resume_when_all_live_candidates_race_to_dead() {
     {
         let mut results = hooks.inject_results.lock().unwrap();
         results.push_back(Err(format!(
-            "PTY write failed: Session not found: {}",
-            first_id
+            "PTY write failed: Session not found: {first_id}"
         )));
         results.push_back(Err(format!(
-            "PTY write failed: Session not found: {}",
-            second_id
+            "PTY write failed: Session not found: {second_id}"
         )));
         results.push_back(Ok(()));
     }
@@ -561,7 +557,7 @@ fn bom_tolerant_rejects_invalid_utf8_no_bom() {
     // Lone continuation byte 0x80 is invalid UTF-8 and not a recognized BOM.
     let f = write_temp(&[0x80, 0x81, 0x82]);
     let err = read_text_bom_tolerant(f.path()).expect_err("must err");
-    assert!(err.contains("Invalid UTF-8"), "unexpected error: {}", err);
+    assert!(err.contains("Invalid UTF-8"), "unexpected error: {err}");
 }
 
 #[test]
@@ -575,8 +571,7 @@ fn bom_tolerant_empty_file_returns_empty_string() {
     let parse_err = serde_json::from_str::<serde_json::Value>(&got).expect_err("must err");
     assert!(
         parse_err.is_eof(),
-        "expected EOF parse error, got: {}",
-        parse_err
+        "expected EOF parse error, got: {parse_err}"
     );
 }
 
@@ -601,8 +596,7 @@ fn reject_raw_file_moves_unreadable_outbox_file_to_rejected_dir() {
     let read_err = read_text_bom_tolerant(&stuck).expect_err("read must err");
     assert!(
         read_err.contains("Invalid UTF-8"),
-        "unexpected error: {}",
-        read_err
+        "unexpected error: {read_err}"
     );
 
     // Drive the new fallback path.
@@ -625,11 +619,7 @@ fn reject_raw_file_moves_unreadable_outbox_file_to_rejected_dir() {
     let reason_file = rejected_dir.join("stuck.reason.txt");
     assert!(reason_file.is_file(), "reason file should be in rejected/");
     let reason = std::fs::read_to_string(&reason_file).expect("read reason");
-    assert!(
-        reason.contains("Undeliverable"),
-        "reason content: {}",
-        reason
-    );
+    assert!(reason.contains("Undeliverable"), "reason content: {reason}");
 }
 
 #[test]
@@ -718,7 +708,7 @@ fn gate_rejects_when_mirror_disagrees() {
 }
 
 /// (#885 F-1) The acceptance test: a peer inside resize settlement must
-/// be rejected even if activity_age, watcher_idle, and mirror_idle all
+/// be rejected even if `activity_age`, `watcher_idle`, and `mirror_idle` all
 /// agree "idle".
 #[test]
 fn gate_rejects_peer_inside_resize_settlement() {
@@ -810,16 +800,8 @@ fn rejection_inventory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     rows.sort();
     rows
 }
-fn rejection_case(id: &str, raw: bool, failure: u8) {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let inbox = root.join("inbox");
-    let rejected = inbox.join("rejected");
-    std::fs::create_dir_all(&rejected).unwrap();
-    std::fs::write(root.join("sentinel"), b"unchanged").unwrap();
-    let ads_file = root.join("ads-file");
-    std::fs::write(&ads_file, b"regular-file").unwrap();
-    let id = match id {
+fn resolve_rejection_id(id: &str, root: &Path, ads_file: &Path) -> String {
+    match id {
         "@absolute" => root.join("absolute").to_string_lossy().into_owned(),
         "@drive-absolute" => {
             root.to_string_lossy()
@@ -830,7 +812,39 @@ fn rejection_case(id: &str, raw: bool, failure: u8) {
         "@verbatim" => root.to_string_lossy().into_owned() + r"\verbatim",
         "@ads" => ads_file.to_string_lossy().into_owned() + ":stream",
         other => other.to_owned(),
-    };
+    }
+}
+fn insert_rejection_work(
+    poller: &MailboxPoller,
+    source: &Path,
+    state: crate::pty::manager::ResponseCloseState,
+    msg: &OutboxMessage,
+) {
+    poller.response_sources.lock().unwrap().insert(
+        source.to_path_buf(),
+        ResponseWakeWork {
+            diagnostic_message_id: None,
+            state,
+            target: msg.to.clone(),
+            key: "rejection-work".into(),
+            digest: "digest".into(),
+            attempt: Arc::default(),
+            return_context: None,
+            return_routes: None,
+            delivery_context: None,
+        },
+    );
+}
+fn rejection_case(id: &str, raw: bool, failure: u8) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let inbox = root.join("inbox");
+    let rejected = inbox.join("rejected");
+    std::fs::create_dir_all(&rejected).unwrap();
+    std::fs::write(root.join("sentinel"), b"unchanged").unwrap();
+    let ads_file = root.join("ads-file");
+    std::fs::write(&ads_file, b"regular-file").unwrap();
+    let id = resolve_rejection_id(id, &root, &ads_file);
     #[cfg(windows)]
     if id.contains(":stream") {
         for suffix in [".json", ".reason.txt"] {
@@ -854,20 +868,7 @@ fn rejection_case(id: &str, raw: bool, failure: u8) {
     let mut admission = state.reserve_work(&msg.to, "rejection-work").unwrap();
     admission.accept_durable("digest").unwrap();
     drop(admission);
-    poller.response_sources.lock().unwrap().insert(
-        source.clone(),
-        ResponseWakeWork {
-            diagnostic_message_id: None,
-            state,
-            target: msg.to.clone(),
-            key: "rejection-work".into(),
-            digest: "digest".into(),
-            attempt: Arc::default(),
-            return_context: None,
-            return_routes: None,
-            delivery_context: None,
-        },
-    );
+    insert_rejection_work(&poller, &source, state, &msg);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()

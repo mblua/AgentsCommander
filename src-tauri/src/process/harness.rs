@@ -1,14 +1,14 @@
 use std::process::Command;
 
 #[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// #992 - Does this process own a console?
 ///
 /// `GetConsoleWindow()` is NOT this test. It returns NULL for a ConPTY-attached
 /// process, which does own a console. `GetConsoleCP()` fails, returning 0, only when
 /// no console is attached at all. Measured on Windows 11: 437 from a console-owning
-/// parent (ConPTY included), 0 from a GUI-subsystem parent launched without one.
+/// parent (`ConPTY` included), 0 from a GUI-subsystem parent launched without one.
 #[cfg(target_os = "windows")]
 fn process_owns_console() -> bool {
     use windows_sys::Win32::System::Console::GetConsoleCP;

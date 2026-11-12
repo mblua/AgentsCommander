@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 // ---- N1..N16 ---------------------------------------------------------
 
@@ -44,9 +45,8 @@ fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
     let dir = tempdir();
     let source = format!(
         "schema_version = 1\n\n[messages.context-alert]\n# the operator deleted the template \
-         line\n\n[messages.{}]\ntemplate = 42\n\n[messages.healthy]\ntemplate = \
-         '''\nHEALTHY\n'''\n",
-        EXTRA_MESSAGE_ID
+         line\n\n[messages.{EXTRA_MESSAGE_ID}]\ntemplate = 42\n\n[messages.healthy]\ntemplate = \
+         '''\nHEALTHY\n'''\n"
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
 
@@ -82,7 +82,8 @@ fn entry_without_template_or_with_wrong_type_degrades_only_that_entry() {
     let table_valued =
         "schema_version = 1\n\n[messages.context-alert.template]\nk = 1\n".to_string();
     std::fs::write(main_path(dir.path()), &table_valued).expect("write");
-    let report = ensure_injected_messages(dir.path(), &warnings).expect("provision");
+    let report: ProvisionReport =
+        ensure_injected_messages(dir.path(), &warnings).expect("provision");
     assert_eq!(report.writer_disabled, None);
     // The unreadable entry stays byte-identical and the four missing ids are
     // appended after it.
@@ -126,21 +127,18 @@ fn writer_emit_parse_normalize_is_identity() {
     for fixture in fixtures {
         assert!(
             is_literal_quotable(fixture),
-            "fixture not quotable: {:?}",
-            fixture
+            "fixture not quotable: {fixture:?}"
         );
         for crlf in [false, true] {
             let emitted = quote_literal(fixture, crlf);
-            let source = format!("[messages.x]\ntemplate = {}\n", emitted);
+            let source = format!("[messages.x]\ntemplate = {emitted}\n");
             let root: toml::Value = toml::from_str(&source)
-                .unwrap_or_else(|e| panic!("emit did not parse for {:?}: {}", fixture, e));
+                .unwrap_or_else(|e| panic!("emit did not parse for {fixture:?}: {e}"));
             let parsed = root["messages"]["x"]["template"].as_str().expect("string");
             assert_eq!(
                 normalize_parsed_template(parsed),
                 fixture,
-                "round trip failed for {:?} (crlf={})",
-                fixture,
-                crlf
+                "round trip failed for {fixture:?} (crlf={crlf})"
             );
         }
     }
@@ -228,7 +226,7 @@ fn bom_file_round_trips() {
     let dir = tempdir();
     ensure_injected_messages(dir.path(), &warnings).expect("seed");
     let seeded = read(&main_path(dir.path()));
-    let with_bom = format!("\u{feff}{}", seeded);
+    let with_bom = format!("\u{feff}{seeded}");
     std::fs::write(main_path(dir.path()), &with_bom).expect("write BOM");
 
     let model = analyze_source(&with_bom);
@@ -340,13 +338,11 @@ fn rendered_output_passes_validate_pty_input_text() {
     ] {
         assert!(
             !template.trim().is_empty(),
-            "fixture must survive gate 1: {:?}",
-            template
+            "fixture must survive gate 1: {template:?}"
         );
         assert!(
             render_with_template(template, &alert_values(), &warnings).is_empty(),
-            "fixture must sanitize to empty: {:?}",
-            template
+            "fixture must sanitize to empty: {template:?}"
         );
         let rendered = render_resolved(
             CONTEXT_ALERT_MESSAGE_ID,
@@ -355,11 +351,10 @@ fn rendered_output_passes_validate_pty_input_text() {
             &alert_values(),
             &warnings,
         );
-        assert!(!rendered.is_empty(), "gate 2 left it empty: {:?}", template);
+        assert!(!rendered.is_empty(), "gate 2 left it empty: {template:?}");
         assert!(
             validate_pty_input_text(&rendered).is_ok(),
-            "gate-2 fallback rejected by AC's own validator for {:?}",
-            template
+            "gate-2 fallback rejected by AC's own validator for {template:?}"
         );
     }
 }
@@ -388,7 +383,7 @@ fn setext_heading_is_not_a_conflict_marker() {
 #[test]
 fn second_provisioning_run_writes_nothing() {
     let warnings = crate::config::injected_messages::MessageWarnings::new();
-    let _serialized = COUNTING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serialized = COUNTING_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let dir = tempdir();
     ensure_injected_messages(dir.path(), &warnings).expect("seed");
 
@@ -397,8 +392,7 @@ fn second_provisioning_run_writes_nothing() {
     let writes = stop_counting(dir.path());
     assert!(
         writes.is_empty(),
-        "an unchanged second run must write nothing, wrote: {:?}",
-        writes
+        "an unchanged second run must write nothing, wrote: {writes:?}"
     );
 
     // A first run does write all three, which is what makes the assertion
@@ -410,8 +404,7 @@ fn second_provisioning_run_writes_nothing() {
     assert_eq!(
         writes.len(),
         3,
-        "expected file, sidecar and companion: {:?}",
-        writes
+        "expected file, sidecar and companion: {writes:?}"
     );
 }
 
@@ -503,7 +496,7 @@ fn template_that_sanitizes_to_empty_falls_back_to_default() {
     // It warned: the key is registered afterwards, whatever the test order.
     assert!(
         !warn_once(
-            format!("empty:{}", CONTEXT_ALERT_MESSAGE_ID),
+            format!("empty:{CONTEXT_ALERT_MESSAGE_ID}"),
             "probe, never emitted",
             &warnings
         ),
@@ -557,13 +550,8 @@ fn warn_once_fires_once_per_key() {
     assert_eq!(rendered, "%N19_ALPHA% and %N19_BETA% and %N19_ALPHA%");
     for token in ["%N19_ALPHA%", "%N19_BETA%"] {
         assert!(
-            !warn_once(
-                format!("token:{}", token),
-                "probe, never emitted",
-                &warnings
-            ),
-            "{} did not register exactly once",
-            token
+            !warn_once(format!("token:{token}"), "probe, never emitted", &warnings),
+            "{token} did not register exactly once"
         );
     }
 }
@@ -631,8 +619,7 @@ fn absent_version_keys_are_treated_as_current_and_never_written_back() {
     let warnings = crate::config::injected_messages::MessageWarnings::new();
     let dir = tempdir();
     let source = format!(
-        "[messages.context-alert]\ntemplate = '''\n{}\n'''\n",
-        DEFAULT_CONTEXT_ALERT_TEMPLATE
+        "[messages.context-alert]\ntemplate = '''\n{DEFAULT_CONTEXT_ALERT_TEMPLATE}\n'''\n"
     );
     std::fs::write(main_path(dir.path()), &source).expect("write");
 
@@ -667,7 +654,7 @@ fn known_messages_has_five_entries_with_unique_ids() {
     assert_eq!(KNOWN_MESSAGES.len(), 5);
     let ids: Vec<&str> = KNOWN_MESSAGES.iter().map(|spec| spec.id).collect();
     let unique: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
-    assert_eq!(unique.len(), ids.len(), "duplicate ids: {:?}", ids);
+    assert_eq!(unique.len(), ids.len(), "duplicate ids: {ids:?}");
     assert_eq!(
         ids,
         vec![

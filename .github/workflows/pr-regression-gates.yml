@@ -220,7 +220,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g --ignore-scripts npm@11.6.2
 
       - name: Install frontend dependencies
         # Never pass --omit=optional: jscpd's native runner arrives through
@@ -268,7 +268,7 @@ jobs:
             testedSha, ...(process.env.PR_HEAD_SHA ? { prHeadSha: process.env.PR_HEAD_SHA } : {}),
             generatedUtc: new Date().toISOString(), sha256: hash(record), bytes: record.length,
             arcCount: record.length ? record.toString('utf8').split(String.fromCharCode(10)).length - 1 : 0,
-            detectorVersion: '1.1.1', nodeVersion: process.version,
+            detectorVersion: '1.2.0', nodeVersion: process.version,
           };
           fs.writeFileSync(dir + '/receipt.json', JSON.stringify(receipt, null, 2) + String.fromCharCode(10));
           const saved = JSON.parse(fs.readFileSync(dir + '/receipt.json', 'utf8'));
@@ -288,6 +288,8 @@ jobs:
           path: |
             artifacts/module-arcs/module-arcs.txt
             artifacts/module-arcs/receipt.json
+      - name: "Detector child-path tests (#3998)"
+        run: node --test scripts/module-child-paths.test.mjs
       - name: "Check no new dependency cycles (#2447)"
         run: |
           npm run check:cycles:self
@@ -316,6 +318,22 @@ jobs:
             format('origin/{0}', github.event.pull_request.base.ref) || '' }}
         run: npm run seven:baseline -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
+      - name: Struct-excessive-bools self-test (#4143)
+        shell: bash
+        timeout-minutes: 5
+        run: node --test scripts/check-struct-excessive-bools.test.mjs
+
+      - name: Struct-excessive-bools baseline ratchet (#4143)
+        shell: bash
+        timeout-minutes: 5
+        env:
+          GATE_BASE_REF: >-
+            ${{ github.event.pull_request.base.ref &&
+            format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: >-
+          node scripts/check-struct-excessive-bools.mjs --baseline-diff
+          --base-ref "${GATE_BASE_REF:-origin/main}"
+
       - name: Length gate self-test
         shell: bash
         run: npm run tml:self
@@ -342,6 +360,22 @@ jobs:
         run: |
           npm run sanitizing:line_length -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:file_size -- --base-ref "${GATE_BASE_REF:-origin/main}"
+      - name: "Check script line-length controls (#4130)"
+        shell: bash
+        timeout-minutes: 10
+        run: node --test scripts/sanitizing_script_line_length_tests.mjs
+      - name: "Check script line-length regressions (#4130)"
+        shell: bash
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: node scripts/sanitizing_script_line_length.mjs --base-ref "${GATE_BASE_REF:-origin/main}"
+
+      - name: "Check sanitizing container regressions (#4098)"
+        timeout-minutes: 10
+        env:
+          GATE_BASE_REF: ${{ github.event.pull_request.base.ref && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+        run: npm run sanitizing:containers -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
       - name: "Check sanitizing layout and boundary regressions (#3168)"
         timeout-minutes: 10
@@ -373,7 +407,7 @@ jobs:
         run: npm install -g --ignore-scripts npm@11.6.2
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -475,6 +509,7 @@ jobs:
             --force-warn clippy::semicolon_if_nothing_returned \
             --force-warn clippy::unnested_or_patterns \
             --force-warn clippy::map_err_ignore \
+            --force-warn clippy::struct_excessive_bools \
             > "${RUNNER_TEMP}/cog-windows.jsonl" 2> "${RUNNER_TEMP}/cog-windows.stderr"
           code=$?
           printf '%s\n' "$code" > "${RUNNER_TEMP}/seven-windows.exit"
@@ -499,6 +534,16 @@ jobs:
           node scripts/check-clippy-seven.mjs \
             --check "${RUNNER_TEMP}/seven-windows.json" \
             --baseline clippy-seven.baseline.json --workspace-root "$GITHUB_WORKSPACE"
+
+      - name: Struct-excessive-bools gate (#4143)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          node scripts/check-struct-excessive-bools.mjs \
+            --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform windows \
+            --rustc-version "$COG_RUSTC_VERSION" --workspace-root "$GITHUB_WORKSPACE" \
+            --baseline struct-excessive-bools.baseline.json
 
       - name: Seven-lint evidence metadata
         if: always()
@@ -531,11 +576,15 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # #4166: advisory except exit 3 (an unused cog allowlist entry), which the
+      # next step turns into a blocking failure. The exact node exit is recorded.
       - name: Complexity check
+        id: cog
         continue-on-error: true
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set +e
           node scripts/check-cognitive-complexity.mjs \
             --capture "${RUNNER_TEMP}/cog-windows.jsonl" \
             --clippy-exit "$COG_CLIPPY_EXIT" \
@@ -543,6 +592,26 @@ jobs:
             --rustc-version "$COG_RUSTC_VERSION" \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-windows.json"
+          code=$?
+          set -e
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Stale allowlist enforcement
+        if: ${{ !cancelled() && steps.cog.outcome != 'skipped' }}
+        shell: bash
+        env:
+          COG_STATUS: ${{ steps.cog.outputs.status }}
+        run: |
+          case "$COG_STATUS" in
+            3)
+              echo "::error::unused cog entry in sanitizing.allowlist.json on windows; remove it"
+              exit 1 ;;
+            0|1|2) exit 0 ;;
+            *)
+              echo "::error::Complexity check recorded no valid exit status: '${COG_STATUS}'"
+              exit 1 ;;
+          esac
 
       - name: Upload observed cognitive set
         if: always()
@@ -1303,6 +1372,7 @@ jobs:
             --force-warn clippy::semicolon_if_nothing_returned \
             --force-warn clippy::unnested_or_patterns \
             --force-warn clippy::map_err_ignore \
+            --force-warn clippy::struct_excessive_bools \
             > "${RUNNER_TEMP}/cog-linux.jsonl" 2> "${RUNNER_TEMP}/cog-linux.stderr"
           code=$?
           printf '%s\n' "$code" > "${RUNNER_TEMP}/seven-linux.exit"
@@ -1327,6 +1397,16 @@ jobs:
           node scripts/check-clippy-seven.mjs \
             --check "${RUNNER_TEMP}/seven-linux.json" \
             --baseline clippy-seven.baseline.json --workspace-root "$GITHUB_WORKSPACE"
+
+      - name: Struct-excessive-bools gate (#4143)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          node scripts/check-struct-excessive-bools.mjs \
+            --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
+            --clippy-exit "$COG_CLIPPY_EXIT" --platform linux \
+            --rustc-version "$COG_RUSTC_VERSION" --workspace-root "$GITHUB_WORKSPACE" \
+            --baseline struct-excessive-bools.baseline.json
 
       - name: Seven-lint evidence metadata
         if: always()
@@ -1359,11 +1439,15 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # #4166: advisory except exit 3 (an unused cog allowlist entry), which the
+      # next step turns into a blocking failure. The exact node exit is recorded.
       - name: Complexity check
+        id: cog
         continue-on-error: true
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set +e
           node scripts/check-cognitive-complexity.mjs \
             --capture "${RUNNER_TEMP}/cog-linux.jsonl" \
             --clippy-exit "$COG_CLIPPY_EXIT" \
@@ -1371,6 +1455,26 @@ jobs:
             --rustc-version "$COG_RUSTC_VERSION" \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-linux.json"
+          code=$?
+          set -e
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Stale allowlist enforcement
+        if: ${{ !cancelled() && steps.cog.outcome != 'skipped' }}
+        shell: bash
+        env:
+          COG_STATUS: ${{ steps.cog.outputs.status }}
+        run: |
+          case "$COG_STATUS" in
+            3)
+              echo "::error::unused cog entry in sanitizing.allowlist.json on linux; remove it"
+              exit 1 ;;
+            0|1|2) exit 0 ;;
+            *)
+              echo "::error::Complexity check recorded no valid exit status: '${COG_STATUS}'"
+              exit 1 ;;
+          esac
 
       - name: Upload observed cognitive set
         if: always()
@@ -1749,11 +1853,11 @@ jobs:
           set -euo pipefail
           FILTER=config::agent_command::tests
           # LINUX count: the Windows leg also compiles four cfg(windows) tests
-          # and reports 101. Update in the same commit that adds or removes a
+          # and reports 114. Update in the same commit that adds or removes a
           # test in that module. Since #3176 the module also holds the former
           # sibling modules derived_agent_id_home (3 tests) and
           # p02_schema_launch (1 test).
-          EXPECTED=97
+          EXPECTED=110
           cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
           grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
             echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."
@@ -2724,11 +2828,15 @@ jobs:
           fi
           exit "$code"
 
+      # #4166: advisory except exit 3 (an unused cog allowlist entry), which the
+      # next step turns into a blocking failure. The exact node exit is recorded.
       - name: Complexity check
+        id: cog
         continue-on-error: true
         shell: bash
         run: |
           cd "${GITHUB_WORKSPACE}"
+          set +e
           node scripts/check-cognitive-complexity.mjs \
             --capture "${RUNNER_TEMP}/cog-macos.jsonl" \
             --clippy-exit "$COG_CLIPPY_EXIT" \
@@ -2736,6 +2844,26 @@ jobs:
             --rustc-version "$COG_RUSTC_VERSION" \
             --commit "${GITHUB_SHA}" \
             --emit "${RUNNER_TEMP}/cog-observed-macos.json"
+          code=$?
+          set -e
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Stale allowlist enforcement
+        if: ${{ !cancelled() && steps.cog.outcome != 'skipped' }}
+        shell: bash
+        env:
+          COG_STATUS: ${{ steps.cog.outputs.status }}
+        run: |
+          case "$COG_STATUS" in
+            3)
+              echo "::error::unused cog entry in sanitizing.allowlist.json on macos; remove it"
+              exit 1 ;;
+            0|1|2) exit 0 ;;
+            *)
+              echo "::error::Complexity check recorded no valid exit status: '${COG_STATUS}'"
+              exit 1 ;;
+          esac
 
       - name: Upload observed cognitive set
         if: always()

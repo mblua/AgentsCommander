@@ -44,7 +44,7 @@ pub(crate) fn prompt_key(
     let agent_id = agent_id.filter(|value| !value.is_empty())?;
     let effective_profile = effective_profile.filter(|value| !value.is_empty())?;
     let canonical = crate::filesystem::directories::retained_prompt_cwd(Path::new(cwd))?;
-    let mut canonical_cwd = strip_long_prefix_str(canonical.to_str()?).to_string();
+    let mut canonical_cwd = strip_long_prefix_str(canonical.to_str()?).clone();
     if cfg!(windows) {
         canonical_cwd.make_ascii_lowercase();
     }
@@ -155,7 +155,7 @@ pub(crate) async fn block_duplicate_restore_prompt_domains(
     .await;
 }
 
-/// A Windows comparison spelling has lost its canonical case, so NotFound on
+/// A Windows comparison spelling has lost its canonical case, so `NotFound` on
 /// that spelling cannot prove deletion under per-directory case sensitivity.
 pub(super) fn prompt_directory_gc_confirmed(
     windows: bool,
@@ -164,7 +164,7 @@ pub(super) fn prompt_directory_gc_confirmed(
     !windows && metadata == Err(std::io::ErrorKind::NotFound)
 }
 
-/// Called only after sessions_save_lock; always reads the current manager.
+/// Called only after `sessions_save_lock`; always reads the current manager.
 pub(super) async fn flush_retained_prompts_locked(
     mgr: &SessionManager,
     dir: &Path,

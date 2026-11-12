@@ -5,7 +5,7 @@ use crate::pty::backend::ResolvedAgentHostShell;
 fn host(program: &str, args: &[&str]) -> ResolvedAgentHostShell {
     ResolvedAgentHostShell {
         program: program.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 
@@ -120,7 +120,7 @@ fn configured_default_shell_pwsh_full_path_with_spaces_is_used_exactly() {
 fn configured_default_shell_powershell_script_carries_batch_branch_and_raw_argv() {
     let shell = host("powershell.exe", &[]);
     let args = vec![
-        "".to_string(),
+        String::new(),
         "a\"b".to_string(),
         "with space".to_string(),
         "o'clock".to_string(),
@@ -570,9 +570,9 @@ fn windows_arg_encodes_with_standard_quote_and_backslash_rules() {
 #[test]
 fn windows_raw_argv_joins_encoded_arguments_only() {
     assert_eq!(windows_raw_argv(&[]), "");
-    assert_eq!(windows_raw_argv(&["".to_string()]), "\"\"");
+    assert_eq!(windows_raw_argv(&[String::new()]), "\"\"");
     assert_eq!(
-        windows_raw_argv(&["a b".to_string(), "".to_string()]),
+        windows_raw_argv(&["a b".to_string(), String::new()]),
         "\"a b\" \"\""
     );
 }

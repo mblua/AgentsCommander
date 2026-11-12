@@ -38,7 +38,7 @@ static NAMING_MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 fn naming_migration_guard() -> std::sync::MutexGuard<'static, ()> {
     NAMING_MIGRATION_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 const INSTANCE_FAMILIES_FIXTURE: [(&str, &str); 8] = [
@@ -141,6 +141,17 @@ fn instance_families_happy_path() {
         record.status,
         crate::config::naming_migration::ScopeStatus::Complete
     );
+
+    let ordered_steps: Vec<_> = record
+        .steps
+        .iter()
+        .map(|step| (step.from.as_str(), step.to.as_str()))
+        .collect();
+    assert_eq!(ordered_steps, INSTANCE_FAMILIES_FIXTURE);
+    assert!(record.steps.iter().all(|step| {
+        step.state == crate::config::naming_migration::StepState::Renamed
+            && step.set_aside.is_none()
+    }));
 
     let before = directory_snapshot(dir);
     crate::preflight_config_startup_in(&summary_owner, dir).expect("second run is a no-op");
@@ -350,7 +361,7 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
                 nm::rename_step(&dir, rename, "instance-families", Some(&dir), &held);
             }
             nm::update_journal(Some(&dir), |journal| {
-                journal.set_status("instance-families", nm::ScopeStatus::Complete)
+                journal.set_status("instance-families", nm::ScopeStatus::Complete);
             })
             .unwrap();
             drop(held);

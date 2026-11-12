@@ -239,8 +239,7 @@ impl StartupAgentRows {
                 .expected
                 .iter()
                 .find(|agent| !ids.insert(agent.id.as_str()))
-                .map(|agent| agent.id.as_str())
-                .unwrap_or("unknown");
+                .map_or("unknown", |agent| agent.id.as_str());
             Err(format!(
                 "duplicate agent ID '{id}': unprovable row correspondence (stale startup source)"
             ))
@@ -319,16 +318,18 @@ pub(crate) fn retain_duplicate_agent_rows(
     }
     let decoded: Vec<AgentConfig> =
         serde_json::from_value(Value::Array(raw.clone())).map_err(|error| error.to_string())?;
-    let permutation = startup
-        .map(|context| context.permutation.clone())
-        .unwrap_or_else(|| agent_order_permutation(&decoded));
-    let expected = startup
-        .map(|context| context.expected.clone())
-        .unwrap_or_else(|| {
+    let permutation = startup.map_or_else(
+        || agent_order_permutation(&decoded),
+        |context| context.permutation.clone(),
+    );
+    let expected = startup.map_or_else(
+        || {
             let mut expected = decoded;
             finalize_agent_order(&mut expected);
             expected
-        });
+        },
+        |context| context.expected.clone(),
+    );
     for (id, indices) in groups.iter().filter(|(_, indices)| indices.len() > 1) {
         let rejected = || format!("duplicate agent ID '{id}': unprovable row correspondence");
         let candidates: Vec<usize> = rows
@@ -524,16 +525,12 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
         for (letter, cell) in cells {
             if !is_valid_profile_letter(letter) {
                 return Err(format!(
-                    "Coding agent profile cell '{}:{}' uses an invalid profile letter",
-                    agent_id, letter
+                    "Coding agent profile cell '{agent_id}:{letter}' uses an invalid profile letter"
                 ));
             }
             validate_env_map(
                 &cell.env,
-                &format!(
-                    "Coding agent profile '{}:{}' env settings",
-                    agent_id, letter
-                ),
+                &format!("Coding agent profile '{agent_id}:{letter}' env settings"),
             )?;
             if cell.enabled && !cell.command.trim().is_empty() {
                 // #597 - the cell holds params appended to the agent base command,
@@ -548,12 +545,11 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                     .agents
                     .iter()
                     .find(|a| a.id == *agent_id)
-                    .map(|a| a.command.as_str())
-                    .unwrap_or("");
+                    .map_or("", |a| a.command.as_str());
                 let effective =
                     crate::config::agent_command::compose_effective_command(base, &cell.command);
                 validate_agent_command_text(
-                    &format!("Coding agent profile '{}:{}'", agent_id, letter),
+                    &format!("Coding agent profile '{agent_id}:{letter}'"),
                     &effective,
                 )?;
             }
@@ -563,8 +559,7 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
     for (agent_name, letter) in &settings.coding_agent_profiles.default_profile_by_agent {
         if !is_valid_profile_letter(letter) {
             return Err(format!(
-                "Coding agent default profile for '{}' must be A through Z",
-                agent_name
+                "Coding agent default profile for '{agent_name}' must be A through Z"
             ));
         }
     }

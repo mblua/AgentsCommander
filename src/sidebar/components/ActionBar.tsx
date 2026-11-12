@@ -332,6 +332,22 @@ const ActionBar: Component = () => {
             >
               WWW
             </button>
+            {/* #3532 — context history in the central pane; desktop app only. */}
+            {/* #4049 — only while recording is on; hiding never closes an open pane. */}
+            <Show when={settingsStore.current?.contextHistoryEnabled === true}>
+              <button
+                class={`toolbar-gear-btn ${activeClass(centralViewStore.isContextHistory)}`}
+                onClick={() => centralViewStore.toggleContextHistory()}
+                title="Historial de contexto"
+                aria-label="Historial de contexto"
+                aria-pressed={centralViewStore.isContextHistory}
+                data-ac-testid="actionBar.contextHistory"
+                data-ac-role="button"
+                data-ac-state={centralViewStore.isContextHistory ? "visible" : "hidden"}
+              >
+                CTX
+              </button>
+            </Show>
           </Show>
           <button
             class={`toolbar-gear-btn coord-sort-activity-btn ${activeClass(sessionsStore.coordSortByActivity)}`}

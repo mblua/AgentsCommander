@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-/// Create an agent matrix directory inside {project_path}/.ac/_agent_{name}/
+/// Create an agent matrix directory inside {`project_path}/.ac`/_agent_{name}/
 ///
 /// `role_template_id` is the picker selection from `list_role_templates`; when
 /// `Some`, the resolved template's body is inserted as a `## Role Profile`
@@ -55,7 +55,7 @@ pub async fn create_agent_matrix(
         "[entity_creation] Created agent matrix safe name: {}",
         created.safe_name
     );
-    log::info!("[entity_creation] Created agent matrix: {}", result_path);
+    log::info!("[entity_creation] Created agent matrix: {result_path}");
     Ok(CreatedEntityResult { path: result_path })
 }
 
@@ -185,12 +185,9 @@ where
             )
             .await;
             let json = serde_json::to_string(&report).map_err(|se| {
-                format!(
-                    "Failed to serialize blocker report: {}; original error: {}",
-                    se, raw_error
-                )
+                format!("Failed to serialize blocker report: {se}; original error: {raw_error}")
             })?;
-            Err(format!("BLOCKERS:{}", json))
+            Err(format!("BLOCKERS:{json}"))
         }
         AgentDeleteTransactionOutcome::Aborted { error } => Err(error),
     }
@@ -255,8 +252,7 @@ pub(super) fn run_agent_delete_transaction(
             drop(project_gate);
             return AgentDeleteTransactionOutcome::Blocked { target, raw_error };
         }
-        Err(AgentDeleteStageError::Other(error))
-        | Err(AgentDeleteStageError::RollbackFailed(error)) => {
+        Err(AgentDeleteStageError::Other(error) | AgentDeleteStageError::RollbackFailed(error)) => {
             drop(project_gate);
             return AgentDeleteTransactionOutcome::Aborted { error };
         }
@@ -349,7 +345,7 @@ pub(super) fn still_staged_suffix(still_staged: &[StagedAgentDeleteTarget]) -> S
         .map(|target| format!("{} [{}]", target.label, target.original_key))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(" Hidden cleanup dir(s) remain: {}", labels)
+    format!(" Hidden cleanup dir(s) remain: {labels}")
 }
 
 /// Roll back staged agent-delete targets in reverse order and return the targets
@@ -382,12 +378,12 @@ pub(super) fn rollback_staged_targets_reporting(
 pub(super) fn replica_prefix_for_target(original_path: &Path) -> Option<(String, String)> {
     let agent = original_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))?;
     let workgroup = original_path
         .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())?;
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)?;
     Some((workgroup.to_string(), agent.to_string()))
 }
 
@@ -494,8 +490,7 @@ pub(super) fn persist_agent_delete_metadata_blocking_with_writer(
                     removed_default,
                 );
                 Err(format!(
-                    "Failed to validate settings after agent delete: {}",
-                    e
+                    "Failed to validate settings after agent delete: {e}"
                 ))
             } else {
                 match save_settings_fn(&candidate) {
@@ -510,7 +505,7 @@ pub(super) fn persist_agent_delete_metadata_blocking_with_writer(
                             removed_auto,
                             removed_default,
                         );
-                        Err(format!("Failed to save settings after agent delete: {}", e))
+                        Err(format!("Failed to save settings after agent delete: {e}"))
                     }
                 }
             }
@@ -602,16 +597,11 @@ pub(super) async fn stage_agent_delete_targets(
             )
             .await;
             let json = serde_json::to_string(&report).map_err(|se| {
-                format!(
-                    "Failed to serialize blocker report: {}; original error: {}",
-                    se, raw_error
-                )
+                format!("Failed to serialize blocker report: {se}; original error: {raw_error}")
             })?;
-            Err(format!("BLOCKERS:{}", json))
+            Err(format!("BLOCKERS:{json}"))
         }
-        Err(AgentDeleteStageError::Other(e)) | Err(AgentDeleteStageError::RollbackFailed(e)) => {
-            Err(e)
-        }
+        Err(AgentDeleteStageError::Other(e) | AgentDeleteStageError::RollbackFailed(e)) => Err(e),
     }
 }
 
@@ -763,8 +753,8 @@ pub(super) fn format_stage_rollback_failed(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Agent delete staging failed and rollback also failed. Hidden cleanup dirs remain: {}. \
-         Original error: {}. Rollback error: {}",
-        hidden_paths, original_error, rollback_error
+        "Agent delete staging failed and rollback also failed. \
+         Hidden cleanup dirs remain: {hidden_paths}. \
+         Original error: {original_error}. Rollback error: {rollback_error}"
     )
 }

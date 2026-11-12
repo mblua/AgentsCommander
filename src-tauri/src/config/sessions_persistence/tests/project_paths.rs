@@ -80,7 +80,7 @@ fn is_under_normalized_archived_roots_short_circuits_before_canonicalizing_path(
     ));
 
     assert_eq!(
-        NORMALIZE_CALLS.with(|calls| calls.get()),
+        NORMALIZE_CALLS.with(std::cell::Cell::get),
         0,
         "empty archived roots must not canonicalize path"
     );
@@ -91,7 +91,7 @@ fn is_under_normalized_archived_roots_short_circuits_before_canonicalizing_path(
         &["z:/somewhere".to_string()]
     ));
     assert_eq!(
-        NORMALIZE_CALLS.with(|calls| calls.get()),
+        NORMALIZE_CALLS.with(std::cell::Cell::get),
         1,
         "non-empty roots must canonicalize path exactly once"
     );
@@ -132,7 +132,7 @@ fn normalize_project_roots_drops_blank_entries_and_normalizes_each() {
     std::fs::create_dir_all(&project).expect("create project");
     let root_with_dot = project.join(".");
     let roots = normalize_project_roots(&[
-        "".to_string(),
+        String::new(),
         "  ".to_string(),
         root_with_dot.to_string_lossy().to_string(),
     ]);

@@ -163,7 +163,7 @@ pub fn execute(args: LoopArgs) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -315,9 +315,10 @@ fn resolve_busy_policy(
         }
         return Ok(BusyCoordinatorPolicy::ForceInject);
     }
-    Ok(busy
-        .map(BusyCoordinatorPolicy::from)
-        .unwrap_or(BusyCoordinatorPolicy::WaitUntilIdle))
+    Ok(busy.map_or(
+        BusyCoordinatorPolicy::WaitUntilIdle,
+        BusyCoordinatorPolicy::from,
+    ))
 }
 
 fn resolve_prompt(prompt: Option<&str>, prompt_file: Option<&Path>) -> Result<String, String> {
@@ -357,7 +358,7 @@ fn read_prompt_file(path: &Path) -> Result<String, String> {
 
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("Failed to serialize JSON output: {}", e))?;
+        .map_err(|e| format!("Failed to serialize JSON output: {e}"))?;
     crate::cli_println!("{}", json);
     Ok(())
 }

@@ -224,7 +224,7 @@ impl OwnedReplacementContinuation {
         let Some(tracker) = tracker else {
             return false;
         };
-        pty.try_lock().ok().is_some_and(|pty| {
+        pty.try_lock().is_ok_and(|pty| {
             pty.response_close_state().same_state(&tracker) && tracker.publishers_bound()
         })
     }
@@ -574,7 +574,7 @@ impl OwnedReplacementContinuation {
         else {
             return false;
         };
-        if !pty.try_lock().ok().is_some_and(|pty| {
+        if !pty.try_lock().is_ok_and(|pty| {
             pty.backend_kind(actual.session_id).is_none()
                 && tracker.generation(actual.session_id).is_none()
         }) {
@@ -737,7 +737,7 @@ impl OwnedReplacementContinuation {
         }) else {
             return false;
         };
-        pty.try_lock().ok().is_some_and(|pty| {
+        pty.try_lock().is_ok_and(|pty| {
             let Some((Some(cwd), replica, generation)) = pty.route_identities(row.id) else {
                 return false;
             };

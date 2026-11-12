@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 
 fn strip_windows_verbatim_prefix_str(path: &str) -> Option<String> {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-        Some(format!(r"\\{}", rest))
+        Some(format!(r"\\{rest}"))
     } else if let Some(rest) = path.strip_prefix(r"\\?\") {
         Some(rest.to_string())
     } else if let Some(rest) = path.strip_prefix(r"\??\UNC\") {
-        Some(format!(r"\\{}", rest))
+        Some(format!(r"\\{rest}"))
     } else {
         path.strip_prefix(r"\??\").map(str::to_string)
     }

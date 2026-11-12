@@ -66,3 +66,18 @@ describe("response close search (#2851)", () => {
     expect(entries.every((e) => e.category === "terminal")).toBe(true);
   });
 });
+
+describe("context history color moved out of General (#4049)", () => {
+  it("has no General entry or section for the color window", () => {
+    expect(GENERAL_SETTINGS_INDEX.some((e) => e.key === "contextHistoryColorDays")).toBe(false);
+    expect(GENERAL_SETTINGS_INDEX.some((e) => e.section === "Contexto en la barra lateral"))
+      .toBe(false);
+    for (const q of ["contexto media", "CTX", "período", "context history"]) {
+      expect(keys(q)).not.toContain("contextHistoryColorDays");
+    }
+    const sections = GENERAL_SETTINGS_INDEX
+      .filter((e) => e.category === "appearance")
+      .map((e) => e.section);
+    expect(sections[sections.lastIndexOf("Window") + 1]).toBe("Hotkeys");
+  });
+});

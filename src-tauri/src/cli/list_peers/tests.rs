@@ -17,7 +17,7 @@ fn cand(name: &str, status: SessionStatus, waiting: bool) -> CandidateSession {
     }
 }
 
-/// Build a minimal PersistedSession for build_session_index_from tests.
+/// Build a minimal `PersistedSession` for `build_session_index_from` tests.
 fn ps_row(
     name: &str,
     cwd: &str,
@@ -73,7 +73,7 @@ fn make_root_discovery_fixture(
     };
     std::fs::write(
         tech_lead_replica.join("config.json"),
-        format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+        format!(r#"{{"identity":"{tech_lead_identity}"}}"#),
     )
     .unwrap();
     std::fs::write(
@@ -124,12 +124,12 @@ fn make_portable_cross_wg_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         std::fs::create_dir_all(&dev_rust_replica).unwrap();
         std::fs::write(
             tech_lead_replica.join("config.json"),
-            format!(r#"{{"identity":"{}"}}"#, tech_lead_identity),
+            format!(r#"{{"identity":"{tech_lead_identity}"}}"#),
         )
         .unwrap();
         std::fs::write(
             dev_rust_replica.join("config.json"),
-            format!(r#"{{"identity":"{}"}}"#, dev_rust_identity),
+            format!(r#"{{"identity":"{dev_rust_identity}"}}"#),
         )
         .unwrap();
         if wg_name == "wg-1-dev-team" {
@@ -167,8 +167,8 @@ fn sample_peer_info(name: &str) -> PeerInfo {
 // §6.1 — command exists in clap
 
 /// Project a computed peer status onto the sample fixture so lean-JSON
-/// assertions run over the full projection path (CandidateSession →
-/// PeerStatus → PeerInfo → LeanPeerInfo).
+/// assertions run over the full projection path (`CandidateSession` →
+/// `PeerStatus` → `PeerInfo` → `LeanPeerInfo`).
 fn peer_with_status(name: &str, status: &PeerStatus) -> PeerInfo {
     let mut peer = sample_peer_info(name);
     peer.working = status.working;

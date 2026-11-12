@@ -97,7 +97,7 @@ pub async fn send_message(
     chat_id: i64,
     text: &str,
 ) -> Result<(), AppError> {
-    let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
     let _permit = acquire_api_permit(network, TelegramApiMethod::SendMessage).await?;
     let resp = network
         .telegram()
@@ -129,7 +129,7 @@ pub async fn get_updates(
     offset: i64,
     timeout: u64,
 ) -> Result<Vec<TelegramUpdate>, AppError> {
-    let url = format!("https://api.telegram.org/bot{}/getUpdates", token);
+    let url = format!("https://api.telegram.org/bot{token}/getUpdates");
     let _permit = acquire_api_permit(network, TelegramApiMethod::GetUpdates).await?;
     let resp = network
         .telegram()
@@ -159,8 +159,7 @@ pub async fn get_updates(
             let msg = u.message?;
             let from_name = msg
                 .from
-                .map(|f| f.first_name)
-                .unwrap_or_else(|| "Unknown".to_string());
+                .map_or_else(|| "Unknown".to_string(), |f| f.first_name);
             let chat_id = msg.chat.id;
             let update_id = u.update_id;
 
@@ -194,7 +193,7 @@ pub async fn get_file(
     token: &str,
     file_id: &str,
 ) -> Result<String, AppError> {
-    let url = format!("https://api.telegram.org/bot{}/getFile", token);
+    let url = format!("https://api.telegram.org/bot{token}/getFile");
     let _permit = acquire_api_permit(network, TelegramApiMethod::GetFile).await?;
     let resp = network
         .telegram()
@@ -224,7 +223,7 @@ pub async fn download_file(
     token: &str,
     file_path: &str,
 ) -> Result<Vec<u8>, AppError> {
-    let url = format!("https://api.telegram.org/file/bot{}/{}", token, file_path);
+    let url = format!("https://api.telegram.org/file/bot{token}/{file_path}");
     let _permit = acquire_api_permit(network, TelegramApiMethod::DownloadFile).await?;
     let resp = network
         .telegram()
@@ -260,7 +259,7 @@ pub async fn send_photo(
     mime: &str,
     caption: Option<&str>,
 ) -> Result<(), AppError> {
-    let url = format!("https://api.telegram.org/bot{}/sendPhoto", token);
+    let url = format!("https://api.telegram.org/bot{token}/sendPhoto");
 
     let part = reqwest::multipart::Part::bytes(bytes)
         .file_name(filename.to_string())
@@ -310,7 +309,7 @@ pub async fn send_document(
     mime: &str,
     caption: Option<&str>,
 ) -> Result<(), AppError> {
-    let url = format!("https://api.telegram.org/bot{}/sendDocument", token);
+    let url = format!("https://api.telegram.org/bot{token}/sendDocument");
 
     let part = reqwest::multipart::Part::bytes(bytes)
         .file_name(filename.to_string())

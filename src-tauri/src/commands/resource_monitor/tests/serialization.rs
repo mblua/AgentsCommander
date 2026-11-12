@@ -36,7 +36,7 @@ async fn force_kill_settles_past_concurrent_terminating() {
     // Wait until the watchdog kill has parked the group in `Terminating`.
     let mut waited_ms = 0;
     while !backend.entered.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
         waited_ms += 5;
         assert!(waited_ms < 2000, "watchdog kill never entered Terminating");
     }
@@ -102,7 +102,7 @@ async fn assert_serialized_resource_kills(watchdog_first: bool) {
         .unwrap()
         .record_route(session.id, SessionBackendKind::LocalProcess);
 
-    let order_offset = if watchdog_first { 1 } else { 0 };
+    let order_offset = u32::from(watchdog_first);
     let root = ProcessIdentity {
         pid: 5100 + order_offset,
         creation_time_100ns: 700 + u64::from(order_offset),
@@ -145,73 +145,7 @@ async fn assert_serialized_resource_kills(watchdog_first: bool) {
     let _release_guard = ReleaseOnDrop(process_backend.clone());
     process_backend.armed.store(true, Ordering::SeqCst);
 
-    if watchdog_first {
-        let watchdog = {
-            let coordinator = coordinator.clone();
-            tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
-        };
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !process_backend.entered.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("watchdog resource kill enters the backend barrier");
-        let mut user = {
-            let coordinator = coordinator.clone();
-            tokio::spawn(async move {
-                coordinator
-                    .resource_kill(session.id, TrustedResourceIntent::User)
-                    .await
-            })
-        };
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut user)
-                .await
-                .is_err(),
-            "user finalizer must queue behind the held watchdog transaction"
-        );
-        process_backend.release();
-        let watchdog_result = watchdog.await.unwrap().unwrap();
-        assert!(matches!(
-            watchdog_result,
-            WatchdogKillOutcome::Completed(ref result) if result.finalized
-        ));
-        assert!(user.await.unwrap().unwrap().finalized);
-    } else {
-        let user = {
-            let coordinator = coordinator.clone();
-            tokio::spawn(async move {
-                coordinator
-                    .resource_kill(session.id, TrustedResourceIntent::User)
-                    .await
-            })
-        };
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !process_backend.entered.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("user resource kill enters the backend barrier");
-        let mut watchdog = {
-            let coordinator = coordinator.clone();
-            tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
-        };
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut watchdog)
-                .await
-                .is_err(),
-            "watchdog finalizer must queue behind the held user transaction"
-        );
-        process_backend.release();
-        assert!(user.await.unwrap().unwrap().finalized);
-        let watchdog_result = watchdog.await.unwrap().unwrap();
-        assert!(matches!(
-            watchdog_result,
-            WatchdogKillOutcome::Completed(ref result) if result.finalized
-        ));
-    }
+    run_serialized_kill_order(watchdog_first, &coordinator, &process_backend, session.id).await;
 
     let row = manager_handle.get_session(session.id).await.unwrap();
     assert_eq!(row.status, SessionStatus::Exited(0));
@@ -306,26 +240,7 @@ async fn full_queue_watchdog_waiter_deduplicates_then_runs_one_whole_finalizer()
     let _release_guard = ReleaseOnDrop(process_backend.clone());
     process_backend.armed.store(true, Ordering::SeqCst);
 
-    let waiter = {
-        let coordinator = coordinator.clone();
-        tokio::spawn(async move { coordinator.watchdog_resource_kill(session.id).await })
-    };
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while !coordinator
-            .critical_key_registered_for_test(session.id, CriticalAdmissionKind::WatchdogKill)
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("watchdog waiter registers while logical capacity is full");
-    assert!(matches!(
-        coordinator
-            .watchdog_resource_kill(session.id)
-            .await
-            .unwrap(),
-        WatchdogKillOutcome::AlreadyInFlight
-    ));
+    let waiter = start_deduplicated_watchdog_waiter(&coordinator, session.id).await;
 
     drop(reservations.pop());
     restore.finish();
@@ -349,25 +264,14 @@ async fn full_queue_watchdog_waiter_deduplicates_then_runs_one_whole_finalizer()
     ));
     drop(reservations);
 
-    let selection = manager.read().await.selection_payload().await;
-    assert_eq!(selection.revision(), before_revision + 1);
-    assert_eq!(selection.mode(), SelectionMode::None);
-    assert!(!selection.user_initiated());
-    assert_eq!(
-        (0..3)
-            .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
-            .collect::<Vec<_>>(),
-        vec!["session_destroyed", "session_created", "session_switched"]
-    );
-    assert!(events_rx.try_recv().is_err());
-    assert!(matches!(
-        coordinator
-            .watchdog_resource_kill(session.id)
-            .await
-            .unwrap(),
-        WatchdogKillOutcome::Completed(_)
-    ));
-    assert!(events_rx.try_recv().is_err());
+    assert_full_queue_watchdog_finalization(
+        &manager,
+        before_revision,
+        &events_rx,
+        &coordinator,
+        session.id,
+    )
+    .await;
     coordinator.close_and_join().await;
 }
 
@@ -450,4 +354,134 @@ async fn full_coordinator_rejects_user_resource_kill_before_any_side_effect() {
     drop(reservations);
     guard.finish();
     coordinator.close_and_join().await;
+}
+
+async fn run_serialized_kill_order(
+    watchdog_first: bool,
+    coordinator: &SelectionCoordinator,
+    process_backend: &Arc<GatedBackend>,
+    session_id: Uuid,
+) {
+    if watchdog_first {
+        let watchdog = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.watchdog_resource_kill(session_id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !process_backend.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("watchdog resource kill enters the backend barrier");
+        let mut user = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .resource_kill(session_id, TrustedResourceIntent::User)
+                    .await
+            })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut user)
+                .await
+                .is_err(),
+            "user finalizer must queue behind the held watchdog transaction"
+        );
+        process_backend.release();
+        let watchdog_result = watchdog.await.unwrap().unwrap();
+        assert!(matches!(
+            watchdog_result,
+            WatchdogKillOutcome::Completed(ref result) if result.finalized
+        ));
+        assert!(user.await.unwrap().unwrap().finalized);
+    } else {
+        let user = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .resource_kill(session_id, TrustedResourceIntent::User)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !process_backend.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("user resource kill enters the backend barrier");
+        let mut watchdog = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.watchdog_resource_kill(session_id).await })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut watchdog)
+                .await
+                .is_err(),
+            "watchdog finalizer must queue behind the held user transaction"
+        );
+        process_backend.release();
+        assert!(user.await.unwrap().unwrap().finalized);
+        let watchdog_result = watchdog.await.unwrap().unwrap();
+        assert!(matches!(
+            watchdog_result,
+            WatchdogKillOutcome::Completed(ref result) if result.finalized
+        ));
+    }
+}
+
+async fn assert_full_queue_watchdog_finalization(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    before_revision: u64,
+    events_rx: &std::sync::mpsc::Receiver<&str>,
+    coordinator: &SelectionCoordinator,
+    session_id: Uuid,
+) {
+    let selection = manager.read().await.selection_payload().await;
+    assert_eq!(selection.revision(), before_revision + 1);
+    assert_eq!(selection.mode(), SelectionMode::None);
+    assert!(!selection.user_initiated());
+    assert_eq!(
+        (0..3)
+            .map(|_| events_rx.recv_timeout(Duration::from_secs(1)).unwrap())
+            .collect::<Vec<_>>(),
+        vec!["session_destroyed", "session_created", "session_switched"]
+    );
+    assert!(events_rx.try_recv().is_err());
+    assert!(matches!(
+        coordinator
+            .watchdog_resource_kill(session_id)
+            .await
+            .unwrap(),
+        WatchdogKillOutcome::Completed(_)
+    ));
+    assert!(events_rx.try_recv().is_err());
+}
+
+async fn start_deduplicated_watchdog_waiter(
+    coordinator: &SelectionCoordinator,
+    session_id: Uuid,
+) -> tokio::task::JoinHandle<Result<WatchdogKillOutcome, String>> {
+    let waiter = {
+        let coordinator = coordinator.clone();
+        tokio::spawn(async move { coordinator.watchdog_resource_kill(session_id).await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !coordinator
+            .critical_key_registered_for_test(session_id, CriticalAdmissionKind::WatchdogKill)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("watchdog waiter registers while logical capacity is full");
+    assert!(matches!(
+        coordinator
+            .watchdog_resource_kill(session_id)
+            .await
+            .unwrap(),
+        WatchdogKillOutcome::AlreadyInFlight
+    ));
+    waiter
 }

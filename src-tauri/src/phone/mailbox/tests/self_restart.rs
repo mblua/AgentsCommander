@@ -278,9 +278,6 @@ async fn self_restart_driver_restarts_uses_new_id_and_cleans_pending() {
 /// and no leaked pending alias.
 #[tokio::test]
 async fn issue_1937_self_switch_turn() {
-    use crate::session::selection::{
-        acquire_selection_operation_turn, run_owned_selection_operation,
-    };
     use tokio::sync::oneshot;
 
     let source_id = Uuid::new_v4();
@@ -299,16 +296,7 @@ async fn issue_1937_self_switch_turn() {
     let events_state = Arc::clone(&events);
     let session_state = move |_session_id: Uuid| {
         let events = Arc::clone(&events_state);
-        async move {
-            let guard =
-                tokio::time::timeout(Duration::from_secs(5), acquire_selection_operation_turn())
-                    .await
-                    .expect("the sustained-idle wait must not hold the selection operation turn")
-                    .expect("acquire the turn during the idle wait");
-            drop(guard);
-            events.lock().unwrap().push("idle:turn-free");
-            (true, true)
-        }
+        self_switch_idle_turn_free(events)
     };
 
     let (concurrent_acquired_tx, concurrent_acquired_rx) = oneshot::channel::<()>();
@@ -322,36 +310,13 @@ async fn issue_1937_self_switch_turn() {
         let persisted = Arc::clone(&persisted_for_persist);
         let done = Arc::clone(&done_for_concurrent);
         let acquired_tx = concurrent_for_persist.lock().unwrap().take();
-        async move {
-            events.lock().unwrap().push("persist:enter");
-            let events_for_concurrent = Arc::clone(&events);
-            let done_for_concurrent = Arc::clone(&done);
-            let concurrent = tokio::spawn(run_owned_selection_operation(move || async move {
-                events_for_concurrent
-                    .lock()
-                    .unwrap()
-                    .push("concurrent:acquired");
-                done_for_concurrent.store(true, Ordering::SeqCst);
-                if let Some(tx) = acquired_tx {
-                    let _ = tx.send(());
-                }
-                Ok::<(), String>(())
-            }));
-            for _ in 0..8 {
-                tokio::task::yield_now().await;
-            }
-            assert!(
-                !concurrent.is_finished(),
-                "a concurrent guarded operation must wait for the driver-owned turn"
-            );
-            assert!(
-                !done.load(Ordering::SeqCst),
-                "the concurrent guarded operation must not acquire during persist"
-            );
-            *persisted.lock().unwrap() = Some((agent, profile));
-            events.lock().unwrap().push("persist:exit");
-            Ok::<(), String>(())
-        }
+        let held = SelfSwitchPersistHeld {
+            events,
+            persisted,
+            done,
+            acquired_tx,
+        };
+        self_switch_persist_under_turn(held, agent, profile)
     };
 
     let events_restart = Arc::clone(&events);
@@ -359,16 +324,8 @@ async fn issue_1937_self_switch_turn() {
     let restart = move |session_id: Uuid, agent: String, profile: String| {
         let events = Arc::clone(&events_restart);
         let done = Arc::clone(&done_for_restart);
-        async move {
-            assert_eq!(session_id, source_id);
-            assert_eq!((agent.as_str(), profile.as_str()), ("codex", "B"));
-            assert!(
-                !done.load(Ordering::SeqCst),
-                "the restart must run under the driver-owned turn"
-            );
-            events.lock().unwrap().push("restart:enter");
-            Ok(new_id.to_string())
-        }
+        let ids = (session_id, source_id, new_id);
+        self_switch_restart_under_turn(events, done, ids, agent, profile)
     };
 
     let acquired_rx_slot = Arc::new(Mutex::new(Some(concurrent_acquired_rx)));
@@ -376,17 +333,7 @@ async fn issue_1937_self_switch_turn() {
     let inject = move |session_id: Uuid, _prompt: String| {
         let events = Arc::clone(&events_inject);
         let acquired = acquired_rx_slot.lock().unwrap().take();
-        async move {
-            if let Some(acquired) = acquired {
-                tokio::time::timeout(Duration::from_secs(5), acquired)
-                    .await
-                    .expect("the concurrent guarded operation must acquire the turn before phase 2")
-                    .expect("concurrent acquisition signal");
-            }
-            events.lock().unwrap().push("inject");
-            assert_eq!(session_id, new_id);
-            Ok::<(), String>(())
-        }
+        self_switch_inject_after_turn(events, acquired, session_id, new_id)
     };
     let note_boundary = |_session_id: Uuid, _boundary: SelfClearBoundary| async {};
 
@@ -409,6 +356,112 @@ async fn issue_1937_self_switch_turn() {
     )
     .await;
 
+    assert_self_switch_turn_log(&persisted_pair, &events, &pending);
+    assert_self_switch_persist_failure(&temp).await;
+    assert_self_switch_restart_failure(&temp).await;
+}
+
+type SelfSwitchEvents = Arc<Mutex<Vec<&'static str>>>;
+
+async fn self_switch_idle_turn_free(events: SelfSwitchEvents) -> (bool, bool) {
+    use crate::session::selection::acquire_selection_operation_turn;
+    let guard = tokio::time::timeout(Duration::from_secs(5), acquire_selection_operation_turn())
+        .await
+        .expect("the sustained-idle wait must not hold the selection operation turn")
+        .expect("acquire the turn during the idle wait");
+    drop(guard);
+    events.lock().unwrap().push("idle:turn-free");
+    (true, true)
+}
+
+struct SelfSwitchPersistHeld {
+    events: SelfSwitchEvents,
+    persisted: Arc<Mutex<Option<(String, String)>>>,
+    done: Arc<AtomicBool>,
+    acquired_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+async fn self_switch_persist_under_turn(
+    held: SelfSwitchPersistHeld,
+    agent: String,
+    profile: String,
+) -> Result<(), String> {
+    use crate::commands::session::selection_executor::run_owned_selection_operation;
+    let SelfSwitchPersistHeld {
+        events,
+        persisted,
+        done,
+        acquired_tx,
+    } = held;
+    events.lock().unwrap().push("persist:enter");
+    let events_for_concurrent = Arc::clone(&events);
+    let done_for_concurrent = Arc::clone(&done);
+    let concurrent = tokio::spawn(run_owned_selection_operation(move || async move {
+        events_for_concurrent
+            .lock()
+            .unwrap()
+            .push("concurrent:acquired");
+        done_for_concurrent.store(true, Ordering::SeqCst);
+        if let Some(tx) = acquired_tx {
+            let _ = tx.send(());
+        }
+        Ok::<(), String>(())
+    }));
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !concurrent.is_finished(),
+        "a concurrent guarded operation must wait for the driver-owned turn"
+    );
+    assert!(
+        !done.load(Ordering::SeqCst),
+        "the concurrent guarded operation must not acquire during persist"
+    );
+    *persisted.lock().unwrap() = Some((agent, profile));
+    events.lock().unwrap().push("persist:exit");
+    Ok::<(), String>(())
+}
+
+async fn self_switch_restart_under_turn(
+    events: SelfSwitchEvents,
+    done: Arc<AtomicBool>,
+    (session_id, source_id, new_id): (Uuid, Uuid, Uuid),
+    agent: String,
+    profile: String,
+) -> Result<String, String> {
+    assert_eq!(session_id, source_id);
+    assert_eq!((agent.as_str(), profile.as_str()), ("codex", "B"));
+    assert!(
+        !done.load(Ordering::SeqCst),
+        "the restart must run under the driver-owned turn"
+    );
+    events.lock().unwrap().push("restart:enter");
+    Ok(new_id.to_string())
+}
+
+async fn self_switch_inject_after_turn(
+    events: SelfSwitchEvents,
+    acquired: Option<tokio::sync::oneshot::Receiver<()>>,
+    session_id: Uuid,
+    new_id: Uuid,
+) -> Result<(), String> {
+    if let Some(acquired) = acquired {
+        tokio::time::timeout(Duration::from_secs(5), acquired)
+            .await
+            .expect("the concurrent guarded operation must acquire the turn before phase 2")
+            .expect("concurrent acquisition signal");
+    }
+    events.lock().unwrap().push("inject");
+    assert_eq!(session_id, new_id);
+    Ok::<(), String>(())
+}
+
+fn assert_self_switch_turn_log(
+    persisted_pair: &Mutex<Option<(String, String)>>,
+    events: &Mutex<Vec<&'static str>>,
+    pending: &crate::PendingSelfClear,
+) {
     assert_eq!(
         *persisted_pair.lock().unwrap(),
         Some(("codex".into(), "B".into()))
@@ -435,7 +488,10 @@ async fn issue_1937_self_switch_turn() {
         "the turn must be released before the phase-2 inject: {log:?}"
     );
     assert!(pending.is_empty());
+}
 
+async fn assert_self_switch_persist_failure(temp: &tempfile::TempDir) {
+    let note_boundary = |_session_id: Uuid, _boundary: SelfClearBoundary| async {};
     // Persist failure: no restart is attempted and the pending alias is cleaned.
     let source_persist_failure = Uuid::new_v4();
     let pending_persist_failure = Arc::new(crate::PendingSelfClear::default());
@@ -477,7 +533,10 @@ async fn issue_1937_self_switch_turn() {
         "a failed persist must never restart"
     );
     assert!(pending_persist_failure.is_empty());
+}
 
+async fn assert_self_switch_restart_failure(temp: &tempfile::TempDir) {
+    let note_boundary = |_session_id: Uuid, _boundary: SelfClearBoundary| async {};
     // Restart failure: the persisted pair survives and the pending alias is cleaned.
     let source_restart_failure = Uuid::new_v4();
     let pending_restart_failure = Arc::new(crate::PendingSelfClear::default());
@@ -704,17 +763,15 @@ async fn self_restart_driver_inject_failure_renames_handoff_back() {
         "restart resume notes",
         "a failed prompt inject must rename the archived handoff back to the root"
     );
-    let leftovers = std::fs::read_dir(temp.path().join("self-clear"))
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .ends_with("_SELF-HANDOFF.md")
-                })
-                .count()
-        })
-        .unwrap_or(0);
+    let leftovers = std::fs::read_dir(temp.path().join("self-clear")).map_or(0, |rd| {
+        rd.filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .ends_with("_SELF-HANDOFF.md")
+            })
+            .count()
+    });
     assert_eq!(
         leftovers, 0,
         "no archived handoff may remain under self-clear/"
@@ -786,8 +843,7 @@ async fn self_switch_driver_flavor_preserves_switch_prompt() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.file_name()
-                .map(|n| n.to_string_lossy().ends_with("_SELF-HANDOFF.md"))
-                .unwrap_or(false)
+                .is_some_and(|n| n.to_string_lossy().ends_with("_SELF-HANDOFF.md"))
         })
         .collect();
     assert_eq!(archived.len(), 1);

@@ -28,7 +28,7 @@ pub fn compose_effective_command(agent_command: &str, cell_command: &str) -> Str
 /// uppercase on every OS (#2431) so a case-only difference does not double-count.
 /// Values verbatim.
 /// Mirrors `merge_env_layers`' agent-then-profile precedence but stays raw and
-/// excludes the generated layer (CODEX_HOME isolation etc.), which is derived
+/// excludes the generated layer (`CODEX_HOME` isolation etc.), which is derived
 /// state, not user config (decision §0.2; see Notes for the accepted limitation).
 pub fn raw_merged_profile_env(
     agent: &AgentConfig,
@@ -49,11 +49,19 @@ pub fn raw_merged_profile_env(
 
 /// #2431 - the identity of one profile cell: the single definition of what a
 /// cell's digest is over. The spawn path and later producers/matchers call this.
+/// #3516 - a configured preflight chain appends its frame; an empty chain keeps
+/// the legacy `profile_content_hash` bytes.
 pub fn cell_identity(agent: &AgentConfig, cell: &ProfileCellConfig) -> String {
-    profile_content_hash(
-        &compose_effective_command(&agent.command, &cell.command),
-        &raw_merged_profile_env(agent, &cell.env),
-    )
+    let command = compose_effective_command(&agent.command, &cell.command);
+    let env = raw_merged_profile_env(agent, &cell.env);
+    match super::preflight::preflight_identity_frame(agent, cell) {
+        None => profile_content_hash(&command, &env),
+        Some(frame) => {
+            let mut buf = profile_hash_preimage(&command, &env);
+            buf.push_str(&frame);
+            hex16(&buf)
+        }
+    }
 }
 
 /// #2431 - the canonical command TEXT: executable reduced by
@@ -138,16 +146,16 @@ pub(crate) fn profile_hash_preimage(command: &str, env: &BTreeMap<String, String
             let (exe, args) = tokens.split_first().expect("tokenizer yields an exe");
             let _ = write!(buf, "exe\u{0}{}\u{0}argc\u{0}{}\u{0}", exe, args.len());
             for arg in args {
-                let _ = write!(buf, "a\u{0}{}\u{0}", arg);
+                let _ = write!(buf, "a\u{0}{arg}\u{0}");
             }
         }
         Err(raw) => {
-            let _ = write!(buf, "rawcmd\u{0}{}\u{0}", raw);
+            let _ = write!(buf, "rawcmd\u{0}{raw}\u{0}");
         }
     }
     let _ = write!(buf, "envc\u{0}{}\u{0}", normalized.len());
     for (key, value) in &normalized {
-        let _ = write!(buf, "k\u{0}{}\u{0}v\u{0}{}\u{0}", key, value);
+        let _ = write!(buf, "k\u{0}{key}\u{0}v\u{0}{value}\u{0}");
     }
     buf
 }
@@ -162,12 +170,16 @@ pub(crate) fn profile_hash_preimage(command: &str, env: &BTreeMap<String, String
 /// (SUPERSEDES the original #592 cell-only input). Env keys fold to uppercase on
 /// every OS (#2431), then are ordered via `BTreeMap`, so a case-only key edit does
 /// not false-flag and iteration order is irrelevant. SHA-256 (stable across Rust versions, unlike
-/// DefaultHasher), truncated to the first 16 hex chars (matches the existing
+/// `DefaultHasher`), truncated to the first 16 hex chars (matches the existing
 /// `profile_assignment_fingerprint` 16-hex shape).
 /// #2431 - canonicalized inside `profile_hash_preimage` (portable across OSes and
 /// path shapes); tag `v2`.
 pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> String {
-    let buf = profile_hash_preimage(command, env);
+    hex16(&profile_hash_preimage(command, env))
+}
+
+/// First 16 hex chars of SHA-256: the single digest rule for cell identities.
+fn hex16(buf: &str) -> String {
     let digest = format!("{:x}", Sha256::digest(buf.as_bytes()));
     // Hex is ASCII single-byte; slicing the first 16 chars is char-boundary safe.
     digest[..16].to_string()

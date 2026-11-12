@@ -1,11 +1,11 @@
-//! Instance-label derivation: runtime binary name > compile-time BUILD_PROFILE.
+//! Instance-label derivation: runtime binary name > compile-time `BUILD_PROFILE`.
 //!
 //! Convention: `agentscommander_<suffix>.exe` -> label = `<SUFFIX>` uppercased.
 //! - `agentscommander_stage.exe`  -> [STAGE]
 //! - `agentscommander_test-1.exe` -> [TEST-1]
 //! - `agentscommander.exe` (no underscore) -> prod (no badge)
 //!
-//! BUILD_PROFILE (set by build.rs) is the fallback for titles, badges, ports
+//! `BUILD_PROFILE` (set by build.rs) is the fallback for titles, badges, ports
 //! and the single-instance mutex when the binary name has no underscore
 //! suffix. It does NOT influence the configuration directory name (#1868): an
 //! unsuffixed executable always maps to the canonical `.agentscommander`.
@@ -31,7 +31,7 @@ pub(super) fn binary_suffix_from_path(path: &Path) -> Option<String> {
 }
 
 /// Extract the suffix from the running executable once per process.
-/// Cached via OnceLock — parsed once at first call.
+/// Cached via `OnceLock` — parsed once at first call.
 fn binary_suffix() -> Option<&'static str> {
     static SUFFIX: OnceLock<Option<String>> = OnceLock::new();
     SUFFIX
@@ -55,7 +55,7 @@ fn capitalize_suffix(suffix: &str) -> String {
 /// The configuration directory name under $HOME.
 ///
 /// #1868: an executable without an underscore suffix (or no usable executable
-/// at all) selects `$HOME/.agentscommander`, independently of BUILD_PROFILE,
+/// at all) selects `$HOME/.agentscommander`, independently of `BUILD_PROFILE`,
 /// install location and any portable marker. #1930: this is the only HOME
 /// name. A suffixed executable `agentscommander_<suffix>` never selects a
 /// HOME directory. This is internal storage, not release identity.
@@ -65,7 +65,7 @@ pub fn config_dir_name() -> &'static str {
 
 /// Application title for the sidebar window.
 /// Runtime suffix: "AC [SUFFIX]" (uppercased).
-/// No suffix: falls back to BUILD_PROFILE behaviour.
+/// No suffix: falls back to `BUILD_PROFILE` behaviour.
 /// The short "AC" prefix keeps the OS taskbar tooltip compact (issue #606);
 /// only this literal prefix changed, the suffix-derivation logic is unchanged.
 pub fn app_title() -> &'static str {
@@ -81,7 +81,7 @@ pub fn app_title() -> &'static str {
 }
 
 /// Title suffix appended to secondary windows (spec board, etc.).
-/// Delegates to app_title().
+/// Delegates to `app_title()`.
 pub fn app_title_suffix() -> &'static str {
     app_title()
 }
@@ -143,8 +143,8 @@ pub fn gui_instance_running() -> bool {
     false
 }
 
-/// Executable name — actual binary filename from current_exe().
-/// Falls back to BUILD_PROFILE mapping if current_exe() fails.
+/// Executable name — actual binary filename from `current_exe()`.
+/// Falls back to `BUILD_PROFILE` mapping if `current_exe()` fails.
 pub fn exe_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
@@ -166,9 +166,9 @@ pub fn web_server_port() -> u16 {
         Some("dev") => 9876,
         Some("stage") => 9878,
         Some(suffix) => {
-            let hash = suffix
-                .bytes()
-                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash = suffix.bytes().fold(0u32, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u32::from(b))
+            });
             9880 + (hash % 20) as u16
         }
         None => match BUILD_PROFILE {
@@ -188,9 +188,9 @@ pub fn api_server_port() -> u16 {
         Some("dev") => 9886,
         Some("stage") => 9888,
         Some(suffix) => {
-            let hash = suffix
-                .bytes()
-                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash = suffix.bytes().fold(0u32, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u32::from(b))
+            });
             9900 + (hash % 20) as u16
         }
         None => match BUILD_PROFILE {

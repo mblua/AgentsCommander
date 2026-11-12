@@ -29,7 +29,7 @@ pub(super) fn collect_team_workgroup_dirs(base: &Path, team_name: &str) -> Vec<P
     crate::config::entity_creation::directories::team_room_candidates(base, team_name)
 }
 
-/// Delete a team directory from {project_path}/.ac/_team_{name}/
+/// Delete a team directory from `{project_path}/.ac/_team_{name}/`
 #[tauri::command]
 pub async fn delete_team(
     app: AppHandle,
@@ -73,9 +73,9 @@ where
 {
     validate_existing_name(team_name, "Team")?;
     let base = selected_ac_root(Path::new(project_path))?;
-    let team_dir = base.join(format!("_team_{}", team_name));
+    let team_dir = base.join(format!("_team_{team_name}"));
     if !crate::config::entity_creation::directories::team_directory_present(&team_dir) {
-        return Err(format!("Team '{}' not found", team_name));
+        return Err(format!("Team '{team_name}' not found"));
     }
 
     // Initial owned snapshot outside both guards: the present workgroup dirs and a
@@ -85,13 +85,12 @@ where
     if !dirty_repos.is_empty() {
         let list = dirty_repos
             .iter()
-            .map(|(repo, reason)| format!("  - {} ({})", repo, reason))
+            .map(|(repo, reason)| format!("  - {repo} ({reason})"))
             .collect::<Vec<_>>()
             .join("\n");
         return Err(format!(
-            "Cannot delete team: the following repos have pending work:\n{}\n\nCommit or push \
-             changes before deleting.",
-            list
+            "Cannot delete team: the following repos have pending work:\n{list}\n\nCommit or push \
+             changes before deleting."
         ));
     }
 
@@ -117,12 +116,12 @@ where
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     drop(team_guard);
                     drop(project_gate);
-                    return Err(format!("Team '{}' not found", team));
+                    return Err(format!("Team '{team}' not found"));
                 }
                 Err(e) => {
                     drop(team_guard);
                     drop(project_gate);
-                    return Err(format!("Failed to inspect team directory: {}", e));
+                    return Err(format!("Failed to inspect team directory: {e}"));
                 }
             }
 
@@ -142,9 +141,7 @@ where
                     }
                     ReplicaRemovalOutcome::Failed(error) => {
                         log::warn!(
-                            "[entity_creation] Failed to delete workgroup {}: {}",
-                            wg_name,
-                            error
+                            "[entity_creation] Failed to delete workgroup {wg_name}: {error}"
                         );
                         failed_workgroups.push(wg_name);
                     }
@@ -191,14 +188,17 @@ fn finish_team_deletion_clocks(
     // Post-commit (guards released): drop coordinator-clock keys for removed
     // workgroups and persist once; the caller refreshes afterward.
     let mut team_clock_removed = 0usize;
-    if let Some(project_name) = Path::new(project_path).file_name().and_then(|n| n.to_str()) {
+    if let Some(project_name) = Path::new(project_path)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+    {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {
             for wg_name in &report.removed_workgroups {
                 team_clock_removed += clocks
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove_workgroup(project_name, wg_name);
             }
         }
@@ -207,9 +207,14 @@ fn finish_team_deletion_clocks(
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {
-            let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+            let snapshot = {
+                clocks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .snapshot()
+            };
             if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-                log::warn!("[delete-team] clocks save failed: {}", e);
+                log::warn!("[delete-team] clocks save failed: {e}");
             }
         }
     }

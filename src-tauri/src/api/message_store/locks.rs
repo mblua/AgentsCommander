@@ -19,7 +19,10 @@ pub struct PtyInputActiveOperations {
 
 impl PtyInputActiveOperations {
     pub fn try_register(self: &Arc<Self>, injection_id: &str) -> Option<PtyInputActiveGuard> {
-        let mut active = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let mut active = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !active.insert(injection_id.to_string()) {
             return None;
         }
@@ -32,7 +35,7 @@ impl PtyInputActiveOperations {
     pub fn snapshot(&self) -> HashSet<String> {
         self.inner
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -47,7 +50,7 @@ impl Drop for PtyInputActiveGuard {
         self.owner
             .inner
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.injection_id);
     }
 }
@@ -87,7 +90,7 @@ pub(super) fn release_target_reservation(
     let mut entries = owner
         .entries
         .lock()
-        .unwrap_or_else(|error| error.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if entries
         .get(target)
         .is_some_and(|current| Arc::ptr_eq(current, entry))
@@ -123,7 +126,7 @@ impl PtyInputTargetLocks {
             let mut entries = self
                 .entries
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let entry = entries
                 .entry(target.to_string())
                 .or_insert_with(|| {
@@ -150,7 +153,7 @@ impl PtyInputTargetLocks {
     pub(super) fn entry_count(&self) -> usize {
         self.entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 }
@@ -269,10 +272,10 @@ impl MessageStoreState {
         let store = MessageStore::at_config_dir()
             .map(Arc::new)
             .map_err(|_| "store_unavailable".to_string());
-        let target_locks = target_gate
-            .as_ref()
-            .map(|gate| Arc::clone(&gate.exact_locks))
-            .unwrap_or_else(|_| Arc::new(PtyInputTargetLocks::default()));
+        let target_locks = target_gate.as_ref().map_or_else(
+            |_| Arc::new(PtyInputTargetLocks::default()),
+            |gate| Arc::clone(&gate.exact_locks),
+        );
         Self {
             store,
             active_operations: Arc::new(PtyInputActiveOperations::default()),
@@ -297,10 +300,10 @@ impl MessageStoreState {
         store: Result<Arc<MessageStore>, String>,
         target_gate: Result<Arc<PtyInputTargetGate>, String>,
     ) -> Self {
-        let target_locks = target_gate
-            .as_ref()
-            .map(|gate| Arc::clone(&gate.exact_locks))
-            .unwrap_or_else(|_| Arc::new(PtyInputTargetLocks::default()));
+        let target_locks = target_gate.as_ref().map_or_else(
+            |_| Arc::new(PtyInputTargetLocks::default()),
+            |gate| Arc::clone(&gate.exact_locks),
+        );
         Self {
             store,
             active_operations: Arc::new(PtyInputActiveOperations::default()),
@@ -377,8 +380,8 @@ impl PreparationHeartbeatGuard {
             loop {
                 tokio::select! {
                     biased;
-                    _ = task_cancellation.cancelled() => break,
-                    _ = &mut expiry => {
+                    () = task_cancellation.cancelled() => break,
+                    () = &mut expiry => {
                         task_failed.store(true, std::sync::atomic::Ordering::SeqCst);
                         break;
                     }

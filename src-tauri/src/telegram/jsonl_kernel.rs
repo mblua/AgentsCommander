@@ -18,7 +18,7 @@ pub(crate) const ROTATION_STALE_SECS: u64 = 3;
 pub(crate) const PREAMBLE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Grace window for the §J timestamp filter. Lines with embedded timestamp
-/// ≥ attach_time - RACE_GRACE_SECS are emitted (strict lower bound — future
+/// ≥ `attach_time` - `RACE_GRACE_SECS` are emitted (strict lower bound — future
 /// timestamps from the live agent are always emitted).
 pub(crate) const RACE_GRACE_SECS: i64 = 5;
 
@@ -55,7 +55,7 @@ pub(crate) fn visit_codex_rollout_candidates(
     day: &Path,
     visit: impl FnMut(PathBuf, std::time::SystemTime),
 ) {
-    crate::filesystem::transcripts::visit_codex_rollout_candidates(day, visit)
+    crate::filesystem::transcripts::visit_codex_rollout_candidates(day, visit);
 }
 
 /// How long the Claude reader waits for the transcript AC minted to appear
@@ -104,7 +104,7 @@ pub(crate) fn read_new_lines_with_starts(
 /// `read_new_lines_with_starts` so they can attach `record_start` to each
 /// capture record (#2232 phase 1), and the kernel and extractor tests pin this
 /// signature.
-#[allow(dead_code)] // called only from test code
+#[cfg(test)]
 pub(crate) fn read_new_lines(
     path: &Path,
     offset: &mut u64,

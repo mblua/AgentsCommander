@@ -185,21 +185,11 @@ fn the_shipped_patterns_pass_the_validator() {
         .expect("the shipped patterns pass the remote validator");
 }
 
-#[test]
-fn every_rejection_names_its_check() {
-    let pattern_513 = "a".repeat(513);
-    let notification_201 = "n".repeat(201);
-    let pattern_e_acute_257 = "é".repeat(257);
-    let notification_e_acute_101 = "é".repeat(101);
-    let entries_201: Vec<Value> = (0..201)
-        .map(|i| entry(&format!("^pattern-{i}$"), "note"))
-        .collect();
-    let entries_200_enabled: Vec<Value> = (0..200)
-        .map(|i| entry(&format!("^pattern-{i}$"), "note"))
-        .collect();
-    let mut entries_200_plus_disabled = entries_200_enabled.clone();
-    entries_200_plus_disabled.push(disabled_entry("^disabled-pattern$", "note"));
-    let cases: Vec<(&str, String, &str)> = vec![
+fn structural_rejection_cases(
+    entries_201: Vec<Value>,
+    entries_200_plus_disabled: Vec<Value>,
+) -> Vec<(&'static str, String, &'static str)> {
+    vec![
         ("invalid JSON", "{".to_string(), "does not parse"),
         ("JSON array", "[]".to_string(), "is not a JSON object"),
         (
@@ -237,6 +227,15 @@ fn every_rejection_names_its_check() {
             remote_json("codex", json!([disabled_entry(".*", "note")])),
             "pattern matches the empty string",
         ),
+    ]
+}
+
+fn entry_rejection_cases() -> Vec<(&'static str, String, &'static str)> {
+    let pattern_513 = "a".repeat(513);
+    let notification_201 = "n".repeat(201);
+    let pattern_e_acute_257 = "é".repeat(257);
+    let notification_e_acute_101 = "é".repeat(101);
+    vec![
         (
             "invalid entry",
             remote_json("codex", json!([{"pattern": 5}])),
@@ -317,7 +316,21 @@ fn every_rejection_names_its_check() {
             remote_json("codex", json!([entry("Traceback", "note")])),
             "pattern matches a benign row",
         ),
-    ];
+    ]
+}
+
+#[test]
+fn every_rejection_names_its_check() {
+    let entries_201: Vec<Value> = (0..201)
+        .map(|i| entry(&format!("^pattern-{i}$"), "note"))
+        .collect();
+    let entries_200_enabled: Vec<Value> = (0..200)
+        .map(|i| entry(&format!("^pattern-{i}$"), "note"))
+        .collect();
+    let mut entries_200_plus_disabled = entries_200_enabled.clone();
+    entries_200_plus_disabled.push(disabled_entry("^disabled-pattern$", "note"));
+    let mut cases = structural_rejection_cases(entries_201, entries_200_plus_disabled);
+    cases.extend(entry_rejection_cases());
     for (label, contents, expected) in cases {
         let err = match validate_remote_blocking_menus_file(&contents) {
             Err(e) => e,

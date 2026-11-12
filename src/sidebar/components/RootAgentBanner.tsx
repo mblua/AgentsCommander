@@ -141,7 +141,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
   const focusTerminal = async (sessionId: string) => {
     if (!isTauri) return;
     const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-    const detachedLabel = `terminal-${sessionId.replace(/-/g, "")}`;
+    const detachedLabel = `terminal-${sessionId.replaceAll("-", "")}`;
     const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
     if (!detachedWin) {
       await WindowAPI.ensureTerminal();

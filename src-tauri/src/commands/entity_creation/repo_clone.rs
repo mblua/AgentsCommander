@@ -2,7 +2,7 @@ use super::creation_trace::{Outcome, Reason, Stage, StageGuard};
 use crate::process::git::mutation::{self, CloneRepositoryError, ResetCloneError};
 use std::path::{Path, PathBuf};
 
-/// Async git clone with CREATE_NO_WINDOW on Windows.
+/// Async git clone with `CREATE_NO_WINDOW` on Windows.
 pub(super) async fn git_clone_async(
     url: &str,
     target: &Path,
@@ -37,7 +37,7 @@ pub(super) async fn git_clone_async(
         } else {
             trimmed
         };
-        return Err(format!("git clone failed: {}", capped));
+        return Err(format!("git clone failed: {capped}"));
     }
 
     if let Some(stage) = &mut clone_stage {
@@ -46,8 +46,7 @@ pub(super) async fn git_clone_async(
 
     if !crate::repos::clone_index_exists(&target.join(".git").join("index")) {
         log::warn!(
-            "[entity_creation] .git/index missing after clone for {}, running fallback git reset",
-            url
+            "[entity_creation] .git/index missing after clone for {url}, running fallback git reset"
         );
         let reset_work = mutation::reset_clone_index(&git_target);
         let mut reset_stage = parent.map(|p| p.child(Stage::ResetProcess));
@@ -71,20 +70,15 @@ pub(super) async fn git_clone_async(
                 if let Some(stage) = &mut reset_stage {
                     stage.finish(Outcome::Error, Some(Reason::ResetFailed));
                 }
-                log::warn!(
-                    "[entity_creation] failed to spawn fallback git reset for {}: {}",
-                    url,
-                    e
-                );
+                log::warn!("[entity_creation] failed to spawn fallback git reset for {url}: {e}");
             }
             Err(ResetCloneError::TimedOut { seconds }) => {
                 if let Some(stage) = &mut reset_stage {
                     stage.finish(Outcome::Timeout, Some(Reason::ResetTimeout));
                 }
                 log::warn!(
-                    "[entity_creation] fallback git reset timed out after {} seconds for {}",
-                    seconds,
-                    url
+                    "[entity_creation] fallback git reset timed out after {seconds} seconds \
+                     for {url}"
                 );
             }
         }

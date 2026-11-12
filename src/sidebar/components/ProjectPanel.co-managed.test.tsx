@@ -260,7 +260,7 @@ describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
 
       const afterRead = fake.callsFor("co_managed_effective_state").length;
       item().click();
-      await waitFor(() => expect(setCalls.length).toBe(1));
+      await waitFor(() => expect(setCalls).toHaveLength(1));
       expect(setCalls[0]).toEqual({ roomRoot: workgroupPath, enabled: false });
       await waitFor(() => expect(checkOf(item())).toBe(""));
       expect(item().getAttribute("aria-pressed")).toBe("false");
@@ -272,7 +272,7 @@ describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
 
       await waitFor(() => expect(item().disabled).toBe(false));
       item().click();
-      await waitFor(() => expect(setCalls.length).toBe(2));
+      await waitFor(() => expect(setCalls).toHaveLength(2));
       expect(setCalls[1]).toEqual({ roomRoot: workgroupPath, enabled: true });
       await waitFor(() => expect(checkOf(item())).toBe("\u2713"));
       expect(fake.callsFor("co_managed_set_enabled")).toHaveLength(2);

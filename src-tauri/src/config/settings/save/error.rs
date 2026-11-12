@@ -439,16 +439,13 @@ pub(crate) fn render_diagnostic_path(path: &Path) -> String {
 pub(crate) fn render_settings_save_diagnostic(diagnostic: &SettingsSaveDiagnostic) -> String {
     let raw_os_error = diagnostic
         .raw_os_error
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
+        .map_or_else(|| "none".to_string(), |value| value.to_string());
     let json_line = diagnostic
         .json_line
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
+        .map_or_else(|| "none".to_string(), |value| value.to_string());
     let json_column = diagnostic
         .json_column
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
+        .map_or_else(|| "none".to_string(), |value| value.to_string());
     format!(
         "settings_save_failure code={} stage={} reason={} pid={} target_path={} temp_path={} \
             source_kind={} io_kind={} raw_os_error={} json_category={} json_line={} json_column={}",
@@ -493,7 +490,7 @@ pub(crate) fn report_settings_save_error(
     let payload = render_settings_save_diagnostic(&error.safe_diagnostic(surface));
     #[cfg(test)]
     capture_settings_save_diagnostic(&payload);
-    log::error!("{}", payload);
+    log::error!("{payload}");
     surface.into_outward_string(error)
 }
 

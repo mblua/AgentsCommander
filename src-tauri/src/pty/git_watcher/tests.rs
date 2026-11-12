@@ -1,5 +1,7 @@
 use super::*;
 
+mod events;
+
 /// CAS semantic guard (validation #18): a stale `expected_gen` must fail and leave state untouched.
 #[tokio::test]
 async fn set_git_repos_if_gen_rejects_stale_gen() {
@@ -181,14 +183,14 @@ fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
 
     let mut live: HashSet<String> = git_status_snapshot(&owner)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .keys()
         .cloned()
         .collect();
     live.extend(
         last_dirty_map(&owner)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned(),
     );

@@ -72,17 +72,7 @@ fn display_path_converts_verbatim_unc() {
     );
 }
 
-#[test]
-fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().join(ROOT_AGENT_DIR_NAME);
-
-    ensure_root_agent_dir_at(&root).expect("ensure root");
-
-    for sub in ["memory", "plans", "skills", "inbox", "outbox", "messaging"] {
-        assert!(root.join(sub).is_dir(), "missing {}", sub);
-    }
-    assert!(root.join("Role.md").is_file());
+fn assert_root_role_md_content() {
     assert!(ROOT_ROLE_MD.contains("You are the AgentsCommander Root Agent"));
     assert!(!ROOT_ROLE_MD.contains("verified workgroup coordinator replicas only"));
     assert!(!ROOT_ROLE_MD.contains("list-peers-lean"));
@@ -101,6 +91,9 @@ fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
     assert!(ROOT_ROLE_MD.contains("`Role.md` files"));
     assert!(ROOT_ROLE_MD.contains("skills"));
     assert!(ROOT_ROLE_MD.contains("Agent Matrix structure"));
+}
+
+fn assert_default_root_skills_seeded(root: &std::path::Path) {
     let skill_path = root
         .join(ROOT_AGENT_SKILLS_DIR)
         .join("role-skill-boundary-audit")
@@ -119,15 +112,15 @@ fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
         std::fs::read_to_string(&agency_skill_path).expect("read agency skill"),
         DEFAULT_ROOT_SKILLS[1].content
     );
-    let template_path = temp
-        .path()
-        .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
-    let global_template_path = temp
-        .path()
-        .join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-    let coordinator_template_path = temp
-        .path()
-        .join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+}
+
+fn assert_root_templates_and_config(temp: &std::path::Path, root: &std::path::Path) {
+    let template_path =
+        temp.join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+    let global_template_path =
+        temp.join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+    let coordinator_template_path =
+        temp.join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
     // #979: Root provisioning seeds ONLY the Root supplement. It never creates a
     // standalone global or coordinator template; the one editable global is
     // project-scoped and lives in `<project>/.ac`.
@@ -159,6 +152,22 @@ fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
         !config_raw.contains(crate::config::session_context::CONTEXT_TOKEN_GLOBAL),
         "the canonical Root config must carry no global sentinel"
     );
+}
+
+#[test]
+fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+
+    ensure_root_agent_dir_at(&root).expect("ensure root");
+
+    for sub in ["memory", "plans", "skills", "inbox", "outbox", "messaging"] {
+        assert!(root.join(sub).is_dir(), "missing {sub}");
+    }
+    assert!(root.join("Role.md").is_file());
+    assert_root_role_md_content();
+    assert_default_root_skills_seeded(&root);
+    assert_root_templates_and_config(temp.path(), &root);
 }
 
 #[test]
@@ -248,7 +257,7 @@ fn ensure_root_agent_dir_at_still_provisions_when_retirement_fails() {
     ensure_root_agent_dir_at(&root).expect("provisioning must still succeed");
 
     for sub in ["memory", "plans", "skills", "inbox", "outbox", "messaging"] {
-        assert!(root.join(sub).is_dir(), "missing {}", sub);
+        assert!(root.join(sub).is_dir(), "missing {sub}");
     }
     assert!(root.join("Role.md").is_file());
     assert!(root.join("config.json").is_file());
@@ -443,9 +452,9 @@ fn root_context_before_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S5 failing-first proof for ALL of: the v5 rewrite (assert_ne), the
+/// #1005 S5 failing-first proof for ALL of: the v5 rewrite (`assert_ne`), the
 /// recognizer list (E5.4 path 1), the `migrate_root_role` pristine list
-/// (E5.4 path 2), and the root_spec version bump. ONE fixture (the frozen v4
+/// (E5.4 path 2), and the `root_spec` version bump. ONE fixture (the frozen v4
 /// bytes) drives both migration paths so a missed list cannot pass silently:
 /// a pristine v4 Role.md must reduce to MINIMAL, and a pristine v4
 /// Context.root-agent.md must auto-upgrade to the current default.
@@ -541,7 +550,7 @@ fn root_context_before_reporting_scope_snapshot_is_byte_exact() {
 }
 
 /// #1370 C7 / AC-6: failing-first proof for the recognizer list, the
-/// `migrate_root_role` pristine list and the root_spec version bump. ONE
+/// `migrate_root_role` pristine list and the `root_spec` version bump. ONE
 /// fixture (the frozen v5 bytes) drives both migration paths so a list edited
 /// in only one place cannot pass silently: a pristine v5 Role.md must reduce
 /// to MINIMAL, and a pristine v5 Context.root-agent.md must auto-upgrade to

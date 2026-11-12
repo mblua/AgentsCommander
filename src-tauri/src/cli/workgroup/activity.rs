@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
+use clap::Args;
 use serde::Serialize;
 
 use crate::commands::entity_creation::{list_workgroup_dirs, parse_task_title};
@@ -11,9 +12,35 @@ use crate::config::remote_activity_cache::{
     RemoteActivitySnapshot, REMOTE_ACTIVITY_SNAPSHOT_MAX_AGE_SECS,
 };
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
+use crate::filesystem::tasks::TASK_FILE_NAME;
 use crate::session::session::persisted_is_working;
 
-use super::{print_json, resolve_cli_ac_root, resolve_cli_project, WorkgroupActivityArgs};
+use super::output::print_json;
+use super::project::{resolve_cli_ac_root, resolve_cli_project};
+
+#[derive(Args)]
+pub(super) struct WorkgroupActivityArgs {
+    #[arg(long)]
+    pub(super) project: String,
+    /// Keep only these room numbers (comma-separated, e.g. 5,12,17)
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) rooms: Option<String>,
+    /// Keep only rooms of this team (exact name)
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) team: Option<String>,
+    /// Keep only rooms whose working state is true or false
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) working: Option<String>,
+    /// Keep only rooms whose ciState is running, idle or unknown
+    #[arg(long = "ci-state", allow_hyphen_values = true)]
+    pub(super) ci_state: Option<String>,
+    /// Keep only rooms whose task title matches this regex (case-sensitive; (?i) for insensitive)
+    #[arg(long = "title-regex", allow_hyphen_values = true)]
+    pub(super) title_regex: Option<String>,
+    /// Drop rooms whose task title is missing, blank or "clean" (any case)
+    #[arg(long = "hide-clean")]
+    pub(super) hide_clean: bool,
+}
 
 /// One room's aggregate activity. `working` is a persisted observation only,
 /// never a proxy: an idle coordinator does not make its room work. `ci_state`
@@ -334,7 +361,16 @@ pub(super) fn index_ci_entries(
                 if existing.conflicting {
                     continue;
                 }
-                if existing.ci.state != ci.state {
+                if existing.ci.state == ci.state {
+                    existing.ci.run_ids.extend_from_slice(&ci.run_ids);
+                    existing
+                        .ci
+                        .pull_requests
+                        .extend_from_slice(&ci.pull_requests);
+                    if existing.ci.unknown_reason.is_none() {
+                        existing.ci.unknown_reason = ci.unknown_reason.clone();
+                    }
+                } else {
                     *existing = IndexedRepoCi {
                         ci: PersistedRepoCi {
                             state: PersistedCiState::Unknown,
@@ -344,15 +380,6 @@ pub(super) fn index_ci_entries(
                         },
                         conflicting: true,
                     };
-                } else {
-                    existing.ci.run_ids.extend_from_slice(&ci.run_ids);
-                    existing
-                        .ci
-                        .pull_requests
-                        .extend_from_slice(&ci.pull_requests);
-                    if existing.ci.unknown_reason.is_none() {
-                        existing.ci.unknown_reason = ci.unknown_reason.clone();
-                    }
                 }
             }
         }
@@ -581,7 +608,7 @@ pub(super) fn list_room_repo_dirs(wg_dir: &Path) -> Vec<PathBuf> {
 /// UTF-8 warn once for that room and still report `None`. Never locks, writes,
 /// backs up or repairs the file.
 pub(super) fn read_task_title(room_dir: &Path) -> Option<String> {
-    let path = room_dir.join("TASK.md");
+    let path = room_dir.join(TASK_FILE_NAME);
     match crate::filesystem::documents::read_cli_room_task(&path) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => parse_task_title(&text),

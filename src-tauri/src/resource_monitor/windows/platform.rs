@@ -5,9 +5,9 @@ use crate::resource_monitor::registry::{
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::{
-    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, ProcessTreeBackend,
-    ResourceError, TerminateOutcome,
+use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
+use crate::resource_monitor::types::{
+    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
@@ -141,7 +141,7 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
 /// adopt its subtree. It can fail to prove it two ways. First (#516), its
 /// creation time is readable but differs, because the original root exited and a
 /// foreign process took the recycled PID. Second (#543), its identity cannot be
-/// read at all (creation_time 0), so a foreign process occupying the recycled PID
+/// read at all (`creation_time` 0), so a foreign process occupying the recycled PID
 /// could otherwise still expose a readable child that would inherit
 /// `kill_allowed = true`. In either case we drop the whole subtree and report it
 /// exactly like a missing root, so the registry never adopts, and later
@@ -579,7 +579,7 @@ fn terminate_with_calls(
 }
 
 fn filetime_to_u64(value: FILETIME) -> u64 {
-    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
 
 fn exe_name(raw: &[u16]) -> String {

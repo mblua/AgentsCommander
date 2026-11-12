@@ -8,6 +8,7 @@ use crate::pty::manager::PtyManager;
 use crate::voice::tracker::VoiceTrackingState;
 
 mod boundary;
+mod injection;
 mod typing_hold;
 mod watcher_reach;
 
@@ -268,7 +269,9 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
     let now = chrono::Utc::now();
     let (changed, cleared_auto, cleared_fresh) = {
-        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed = guard.note_user_message(&fqn, now);
         // #552 a real user message reopens the coordinator -> clear any
         // "auto-closed" marker (idempotent; no-op if not marked).
@@ -299,9 +302,14 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         // (#756) Persist immediately: this transition must survive an app close
         // inside the 60s flush tick window (mirrors close_coordinator's
         // explicit save; the exit flush in lib.rs only covers clean exits).
-        let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        let snapshot = {
+            clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot()
+        };
         if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-            log::warn!("[coordinator-clocks] fresh-intent clear save failed: {}", e);
+            log::warn!("[coordinator-clocks] fresh-intent clear save failed: {e}");
         }
     }
 }
@@ -322,10 +330,7 @@ async fn persist_user_input_transitions(
         {
             Ok(cleared) => cleared,
             Err(e) => {
-                log::error!(
-                    "Failed to persist user-input session state transitions: {}",
-                    e
-                );
+                log::error!("Failed to persist user-input session state transitions: {e}");
                 // The in-memory clear still applied; only the snapshot failed.
                 // Suppress the clear event so the live UI does not diverge from the
                 // durable file (the next persist will reconcile disk).
@@ -392,7 +397,9 @@ fn classify_substantive<R: tauri::Runtime>(
     let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() else {
         return true;
     };
-    let mut tracker = state.lock().unwrap_or_else(|e| e.into_inner());
+    let mut tracker = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     tracker.feed(session_id, data)
 }
 
@@ -434,7 +441,7 @@ async fn ensure_session_exists<R: tauri::Runtime>(
     if manager.get_session(session_id).await.is_some() {
         Ok(())
     } else {
-        Err(format!("Session not found: {}", session_id))
+        Err(format!("Session not found: {session_id}"))
     }
 }
 
@@ -475,7 +482,9 @@ pub async fn toggle_typing_hold(
                     .map_err(|_| "response_close_deferred".to_string())?,
                 None => None,
             };
-            let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut hold = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let was_closed = hold.snapshot(session_id, window).closed;
             let snapshot = hold.toggle_manual(session_id, window);
             if let Some(publisher) = publisher {
@@ -559,8 +568,8 @@ pub fn get_screen_snapshot(
         started.elapsed().as_secs_f64() * 1000.0,
         lock_ms,
         snapshot.is_some(),
-        snapshot.as_ref().map(|s| s.data.len()).unwrap_or(0),
-        snapshot.as_ref().map(|s| s.sequence).unwrap_or(0)
+        snapshot.as_ref().map_or(0, |s| s.data.len()),
+        snapshot.as_ref().map_or(0, |s| s.sequence)
     );
 
     let Some(snapshot) = snapshot else {

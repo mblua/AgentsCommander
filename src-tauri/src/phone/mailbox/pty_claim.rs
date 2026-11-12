@@ -3,6 +3,8 @@ use super::notice::{
 };
 use super::settle::{observe_pty_spawn_scope, raw_privileged_probe, OutboxClassification};
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::pty_observation::PtyAuthorityState;
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 #[cfg(test)]
 use crate::phone::mailbox::ConsumptionVerdict;
 use crate::phone::types::OutboxMessage;
@@ -17,7 +19,6 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -43,8 +44,8 @@ pub(crate) enum WakeDelivery<'a> {
     },
 }
 
-pub(crate) async fn pty_spawn_scope_may_resume<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn pty_spawn_scope_may_resume<S: PtyAuthorityState + ?Sized>(
+    app: &S,
     target: &crate::config::teams::VerifiedPtyInputIdentity,
 ) -> bool {
     use crate::config::sessions_persistence::CreateCarrierScope;
@@ -108,8 +109,8 @@ pub(crate) enum PtyReacquireGoal {
     Published(Uuid),
 }
 
-pub(crate) async fn reacquire_pty_dispatch_target<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn reacquire_pty_dispatch_target<S: ResponseCompletionState + ?Sized>(
+    app: &S,
     source: (
         &Arc<crate::api::message_store::MessageStore>,
         &crate::phone::types::PtyInputResult,
@@ -138,9 +139,7 @@ pub(crate) async fn reacquire_pty_dispatch_target<R: tauri::Runtime>(
         {
             return Ok(None);
         }
-        if let Some(coordinator) =
-            app.try_state::<crate::session::selection::SelectionCoordinator>()
-        {
+        if let Some(coordinator) = app.response_selection() {
             coordinator
                 .wait_for_restore_release()
                 .await
@@ -253,8 +252,8 @@ where
         .map_err(|_| PtyInputPreBoundaryStop::Expired)?;
     tokio::select! {
         biased;
-        _ = shutdown.cancelled() => Err(PtyInputPreBoundaryStop::Shutdown),
-        _ = tokio::time::sleep(remaining) => Err(PtyInputPreBoundaryStop::Expired),
+        () = shutdown.cancelled() => Err(PtyInputPreBoundaryStop::Shutdown),
+        () = tokio::time::sleep(remaining) => Err(PtyInputPreBoundaryStop::Expired),
         output = future => Ok(output),
     }
 }
@@ -291,8 +290,8 @@ pub(crate) async fn reject_pty_input_before_boundary(
         }
         Err(_) => {
             log::warn!(
-                "[pty-input] rejection persistence failed id={} code=terminal_store_failed",
-                injection_id
+                "[pty-input] rejection persistence failed id={injection_id} \
+                code=terminal_store_failed"
             );
             false
         }
@@ -426,7 +425,7 @@ pub(crate) fn write_atomic_pty_metadata(
     };
     let file_name = destination
         .file_name()
-        .and_then(|value| value.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or("unsafe_path")?;
     let temp = parent.join(format!(".{file_name}.{}.pty-input-tmp", Uuid::new_v4()));
     let result = (|| {
@@ -489,7 +488,7 @@ pub(crate) fn write_atomic_pty_metadata(
     result
 }
 
-/// The MailboxPoller runs as a background tokio task. It polls outbox directories
+/// The `MailboxPoller` runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
 #[cfg(test)]
 pub(crate) type MailboxAttachCalls = Arc<Mutex<Vec<(Uuid, Option<String>)>>>;
@@ -509,7 +508,7 @@ pub(crate) struct MailboxTestHooks {
     pub(crate) consumption_results: Arc<Mutex<VecDeque<ConsumptionVerdict>>>,
     pub(crate) inject_calls: Arc<Mutex<Vec<Uuid>>>,
     pub(crate) settle_calls: Arc<Mutex<Vec<Uuid>>>,
-    /// Sessions whose hooked live-settle step removes the SessionManager
+    /// Sessions whose hooked live-settle step removes the `SessionManager`
     /// record, deterministically exercising the post-preflight race path.
     pub(crate) remove_session_on_settle: Arc<Mutex<std::collections::HashSet<Uuid>>>,
     /// (#1399 T9) Sessions whose hooked inject panics instead of returning,
@@ -696,6 +695,28 @@ fn response_pair_current_diagnostic(
     });
 }
 
+fn response_pair_verified_diagnostic(
+    current: &crate::session::manager::CarrierSnapshot,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+) {
+    response_diag_debug_only(|| {
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
+            site={} outcome=observed stage=verified_pair scope=stage_current member={} \
+            coordinator={} captured_member_version={} captured_coordinator_version={} \
+            current_member_version={:?} current_coordinator_version={:?} \
+            token_backend_role_physical_generation_checks=true",
+            line!(),
+            member.session_id,
+            coordinator.session_id,
+            member.carrier_version,
+            coordinator.carrier_version,
+            current.versions.get(&member.session_id),
+            current.versions.get(&coordinator.session_id)
+        );
+    });
+}
+
 /// Both frozen route lifecycles and the caller's current interior manager read
 /// remain live through the pure tracker transition. The coordinator keeps its
 /// actual backend; the member alone must be a local interactive process.
@@ -800,21 +821,7 @@ pub(crate) fn with_verified_response_pair<T>(
         response_diag_local!("verified_pair", "generation_mismatch", None::<Uuid>);
         return None;
     }
-    response_diag_debug_only(|| {
-        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag \
-            site={} outcome=observed stage=verified_pair scope=stage_current member={} \
-            coordinator={} captured_member_version={} captured_coordinator_version={} \
-            current_member_version={:?} current_coordinator_version={:?} \
-            token_backend_role_physical_generation_checks=true",
-            line!(),
-            member.session_id,
-            coordinator.session_id,
-            member.carrier_version,
-            coordinator.carrier_version,
-            current.versions.get(&member.session_id),
-            current.versions.get(&coordinator.session_id)
-        );
-    });
+    response_pair_verified_diagnostic(current, member, coordinator);
     response_diag_local!("verified_pair", "callback_reached", None::<Uuid>);
     Some(publish(member_row, coordinator_row))
 }
@@ -878,7 +885,7 @@ impl Drop for ResponseCandidateDisposal {
             }
             Err(_) => {
                 response_diag_local!("candidate_disposal", "candidate_lock_failure", None::<Uuid>);
-                self.0.state.fail_closed()
+                self.0.state.fail_closed();
             }
         }
     }
@@ -894,7 +901,7 @@ impl ResponseWakeWork {
         *self
             .attempt
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = Some(attempt.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(attempt.clone());
         ResponseCandidateDisposal(attempt)
     }
 }

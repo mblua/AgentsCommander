@@ -3,10 +3,29 @@ use super::pty_claim::write_atomic_pty_metadata;
 use super::pty_observation::PtyAuthorityState;
 use super::settle::{reason_code_name, CorrelatedHostPtyMetadata};
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::host::MailboxHost;
 use std::path::Path;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
+
+fn valid_host_pty_envelope_shape(
+    path: &Path,
+    envelope: &crate::phone::types::PtyInputHostEnvelope,
+) -> bool {
+    use crate::phone::types::{PtyInputEnterMode, PTY_INPUT_VERSION};
+    let payload = &envelope.pty_input;
+    envelope.action == "pty-input"
+        && envelope.body.is_empty()
+        && envelope.mode == "wake"
+        && !envelope.get_output
+        && envelope.preferred_agent.is_empty()
+        && envelope.priority == "normal"
+        && payload.version == PTY_INPUT_VERSION
+        && payload.enter == PtyInputEnterMode::AgentSubmit
+        && envelope.id == payload.injection_id
+        && payload.op_id == payload.injection_id
+        && path.file_stem().and_then(std::ffi::OsStr::to_str) == Some(payload.injection_id.as_str())
+}
 
 impl MailboxPoller {
     pub(crate) fn reject_malformed_pty_candidate(&self, path: &Path) {
@@ -35,9 +54,7 @@ impl MailboxPoller {
         };
         if let Err(code) = self.write_pty_input_artifact(path, &artifact) {
             log::warn!(
-                "[pty-input] malformed candidate artifact failed id={} code={}",
-                injection_id,
-                code
+                "[pty-input] malformed candidate artifact failed id={injection_id} code={code}"
             );
             return;
         }
@@ -51,8 +68,8 @@ impl MailboxPoller {
         if let Err(error) = phone_mailbox::remove_mailbox_artifact(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
-                    "[pty-input] malformed candidate cleanup failed id={} code=artifact_unclaimed",
-                    injection_id
+                    "[pty-input] malformed candidate cleanup failed id={injection_id} \
+                        code=artifact_unclaimed"
                 );
             }
         }
@@ -66,24 +83,12 @@ impl MailboxPoller {
     ) -> Option<CorrelatedHostPtyMetadata> {
         use crate::phone::types::{
             parse_canonical_pty_timestamp, parse_canonical_uuid_v4, pty_input_confirmation_tag,
-            pty_input_host_request_fingerprint, sha256_hex, PtyInputEnterMode,
-            PtyInputHostFingerprint, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
+            pty_input_host_request_fingerprint, sha256_hex, PtyInputHostFingerprint,
+            PTY_INPUT_TTL_SECS,
         };
 
         let payload = &envelope.pty_input;
-        let immutable_shape_valid = envelope.action == "pty-input"
-            && envelope.body.is_empty()
-            && envelope.mode == "wake"
-            && !envelope.get_output
-            && envelope.preferred_agent.is_empty()
-            && envelope.priority == "normal"
-            && payload.version == PTY_INPUT_VERSION
-            && payload.enter == PtyInputEnterMode::AgentSubmit
-            && envelope.id == payload.injection_id
-            && payload.op_id == payload.injection_id
-            && path.file_stem().and_then(|value| value.to_str())
-                == Some(payload.injection_id.as_str());
-        if !immutable_shape_valid {
+        if !valid_host_pty_envelope_shape(path, envelope) {
             return None;
         }
         let injection_id = parse_canonical_uuid_v4(&payload.injection_id).ok()?;
@@ -439,7 +444,7 @@ impl MailboxPoller {
             op_id: op_id.to_string(),
         };
         let bytes = serde_json::to_vec(&marker).map_err(|_| "invalid_envelope")?;
-        if path.file_stem().and_then(|value| value.to_str()) != Some(injection_id) {
+        if path.file_stem().and_then(std::ffi::OsStr::to_str) != Some(injection_id) {
             return Err("unsafe_path");
         }
         crate::path_identity::replace_regular_file_atomic(
@@ -483,7 +488,7 @@ impl MailboxPoller {
             || marker.version != crate::phone::types::PTY_INPUT_VERSION
             || marker.injection_id != expected_injection_id
             || marker.op_id != marker.injection_id
-            || path.file_stem().and_then(|value| value.to_str())
+            || path.file_stem().and_then(std::ffi::OsStr::to_str)
                 != Some(marker.injection_id.as_str())
         {
             return Err("invalid_artifact");
@@ -505,12 +510,12 @@ impl MailboxPoller {
     ) -> Result<String, crate::phone::types::PtyInputReasonCode> {
         use crate::phone::types::PtyInputReasonCode as C;
         let outbox = path.parent().ok_or(C::UnsafePath)?;
-        if outbox.file_name().and_then(|value| value.to_str()) != Some("outbox") {
+        if outbox.file_name().and_then(std::ffi::OsStr::to_str) != Some("outbox") {
             return Err(C::UnsafePath);
         }
         let local = outbox.parent().ok_or(C::UnsafePath)?;
         let local_dir_name = crate::config::agent_local_dir_name();
-        if local.file_name().and_then(|value| value.to_str()) != Some(local_dir_name.as_str()) {
+        if local.file_name().and_then(std::ffi::OsStr::to_str) != Some(local_dir_name.as_str()) {
             return Err(C::UnsafePath);
         }
         let root = local.parent().ok_or(C::UnsafePath)?;
@@ -554,7 +559,7 @@ impl MailboxPoller {
         if marker.version != crate::phone::types::PTY_INPUT_VERSION
             || crate::phone::types::parse_canonical_uuid_v4(&marker.injection_id).is_err()
             || marker.injection_id != marker.op_id
-            || path.file_stem().and_then(|value| value.to_str())
+            || path.file_stem().and_then(std::ffi::OsStr::to_str)
                 != Some(marker.injection_id.as_str())
             || is_app_outbox
         {
@@ -708,9 +713,24 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn process_pty_input_file<R: tauri::Runtime>(
+    async fn reject_host_pty_without_store<S: PtyAuthorityState + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
+        path: &Path,
+        source_identity: &crate::path_identity::VerifiedPathIdentity,
+        envelope: &crate::phone::types::PtyInputHostEnvelope,
+    ) {
+        if !self
+            .reject_unavailable_store_pty_candidate(app, path, source_identity, envelope)
+            .await
+        {
+            self.reject_malformed_pty_candidate(path);
+        }
+    }
+
+    pub(crate) async fn process_pty_input_file<S: MailboxHost>(
+        &self,
+        app: &S,
         path: &Path,
         is_app_outbox: bool,
         bytes: &[u8],
@@ -719,7 +739,7 @@ impl MailboxPoller {
         let Some(value) = self.parse_pty_candidate_json(path, bytes) else {
             return;
         };
-        let state = app.try_state::<crate::api::message_store::MessageStoreState>();
+        let state = app.message_store();
 
         if value.get("kind").and_then(serde_json::Value::as_str) == Some("pty-input-marker") {
             let Some(state) = state else {
@@ -741,7 +761,7 @@ impl MailboxPoller {
             };
             self.dispatch_pty_input_operation(
                 app,
-                &state,
+                state,
                 &marker.injection_id,
                 crate::phone::types::PtyInputSourcePlane::HostCli,
                 None,
@@ -771,23 +791,15 @@ impl MailboxPoller {
                 }
             };
         let Some(state) = state else {
-            if !self
-                .reject_unavailable_store_pty_candidate(app, path, source_identity, &envelope)
-                .await
-            {
-                self.reject_malformed_pty_candidate(path);
-            }
+            self.reject_host_pty_without_store(app, path, source_identity, &envelope)
+                .await;
             return;
         };
         let store = match &state.store {
             Ok(store) => Arc::clone(store),
             Err(_) => {
-                if !self
-                    .reject_unavailable_store_pty_candidate(app, path, source_identity, &envelope)
-                    .await
-                {
-                    self.reject_malformed_pty_candidate(path);
-                }
+                self.reject_host_pty_without_store(app, path, source_identity, &envelope)
+                    .await;
                 return;
             }
         };
@@ -806,7 +818,7 @@ impl MailboxPoller {
         };
         self.dispatch_pty_input_operation(
             app,
-            &state,
+            state,
             &injection_id,
             crate::phone::types::PtyInputSourcePlane::HostCli,
             None,
@@ -816,11 +828,7 @@ impl MailboxPoller {
             .materialize_host_terminal_artifact(path, &store, &injection_id)
             .await
         {
-            log::debug!(
-                "[pty-input] terminal artifact pending id={} code={}",
-                injection_id,
-                code
-            );
+            log::debug!("[pty-input] terminal artifact pending id={injection_id} code={code}");
         }
     }
 }

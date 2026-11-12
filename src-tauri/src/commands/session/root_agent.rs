@@ -352,7 +352,7 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
             .await;
         let has_pty = pty_mgr
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
             ExistingRootAction::ReuseLive => {
@@ -379,6 +379,28 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
         }
     }
 
+    create_new_root_transaction(
+        transaction,
+        request,
+        context,
+        &session_mgr,
+        &pty_mgr,
+        &settings,
+        root_agent_path,
+    )
+    .await
+}
+
+async fn create_new_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RootJobRequest,
+    context: &LifecycleExecutionContext<'_>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    settings: &SettingsState,
+    root_agent_path: String,
+) -> Result<SessionInfo, String> {
+    let app = transaction.app();
     let RootAgentLaunch {
         shell,
         shell_args,
@@ -386,7 +408,7 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
         agent_label,
         resolved_spawn,
         resolved_agent_host_shell,
-    } = resolve_root_agent_launch(&settings, &root_agent_path, &request).await?;
+    } = resolve_root_agent_launch(settings, &root_agent_path, &request).await?;
     let target_ownership = context
         .authority()
         .map(|authority| authority.target_ownership())
@@ -394,8 +416,8 @@ pub(crate) async fn execute_root_transaction_in_context<R: tauri::Runtime>(
         .flatten();
     let info = create_session_inner_impl(
         app,
-        &session_mgr,
-        &pty_mgr,
+        session_mgr,
+        pty_mgr,
         shell,
         shell_args,
         root_agent_path.clone(),

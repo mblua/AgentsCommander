@@ -6,7 +6,7 @@ use super::payload::SelectionCoordinatorError;
 use super::timing_probe;
 
 tokio::task_local! {
-    pub(super) static IN_SELECTION_WORKER: ();
+    pub(crate) static IN_SELECTION_WORKER: ();
 }
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ pub(crate) struct SelectionReadGuard {
 /// held by an operation that is itself waiting for that same worker.
 pub(crate) async fn acquire_selection_operation_turn(
 ) -> Result<SelectionOperationGuard, SelectionCoordinatorError> {
-    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+    if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission);
     }
     let turn = current_selection_turn().write_owned().await;
@@ -82,7 +82,7 @@ pub(crate) async fn acquire_selection_operation_turn(
 /// `RecursiveSubmission` rejection BEFORE waiting as the write side.
 pub(crate) async fn acquire_selection_read_turn(
 ) -> Result<SelectionReadGuard, SelectionCoordinatorError> {
-    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+    if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission);
     }
     let turn = current_selection_turn().read_owned().await;
@@ -98,8 +98,8 @@ pub(super) enum SelectionTurnMode {
 
 /// Either side of the turn, released on drop.
 pub(super) enum SelectionTurnGuard {
-    Read(#[allow(dead_code)] SelectionReadGuard),
-    Write(#[allow(dead_code)] SelectionOperationGuard),
+    Read { _guard: SelectionReadGuard },
+    Write { _guard: SelectionOperationGuard },
 }
 
 pub(super) async fn acquire_selection_turn(
@@ -108,10 +108,10 @@ pub(super) async fn acquire_selection_turn(
     match mode {
         SelectionTurnMode::Read => acquire_selection_read_turn()
             .await
-            .map(SelectionTurnGuard::Read),
+            .map(|_guard| SelectionTurnGuard::Read { _guard }),
         SelectionTurnMode::Write => acquire_selection_operation_turn()
             .await
-            .map(SelectionTurnGuard::Write),
+            .map(|_guard| SelectionTurnGuard::Write { _guard }),
     }
 }
 
@@ -126,58 +126,6 @@ pub(super) fn with_test_selection_turn<T: Send + 'static>(
         Some(turn) => Box::pin(TEST_SELECTION_TURN.scope(turn, task)),
         None => Box::pin(task),
     }
-}
-
-/// #1940 - run a persisted selection operation on its own owned task.
-///
-/// The submitting task is rejected with `RecursiveSubmission` BEFORE the spawn
-/// (task locals do not propagate into the spawned task, so checking there would
-/// be ineffective). The owned task acquires the turn, awaits the supplied
-/// operation and releases the turn only when that operation finishes; dropping
-/// the caller detaches the owned task instead of aborting it, so a restart that
-/// was already accepted still settles under the turn. A task join failure is
-/// reported as the explicit `selectionOperationTurnJoinFailed` error.
-pub(crate) async fn run_owned_selection_operation<F, Fut, T>(operation: F) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    run_owned_selection_operation_inner(SelectionTurnMode::Write, None, operation).await
-}
-
-/// #2475 - `run_owned_selection_operation` plus one timing log line that
-/// separates the wait for the turn (`queue_wait`) from the operation itself
-/// (`work`). Instrumentation only: the turn and the result are unchanged.
-/// #2475 - test-only since the three timed reads moved to
-/// `run_owned_selection_read_timed`; persisted operations are untimed.
-#[cfg(test)]
-pub(crate) async fn run_owned_selection_operation_timed<F, Fut, T>(
-    command: &'static str,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    run_owned_selection_operation_inner(SelectionTurnMode::Write, Some(command), operation).await
-}
-
-/// #2475 - a READ-ONLY operation on its own owned task, holding the read side
-/// of the turn, plus the same timing line as `run_owned_selection_operation_timed`.
-/// Only for operations proven not to write (see the #2485 read-only audit).
-/// Same rejection, owned task and join-failure error as the write path.
-pub(crate) async fn run_owned_selection_read_timed<F, Fut, T>(
-    command: &'static str,
-    operation: F,
-) -> Result<T, String>
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send,
-    T: Send + 'static,
-{
-    run_owned_selection_operation_inner(SelectionTurnMode::Read, Some(command), operation).await
 }
 
 pub(super) fn selection_timing_line(
@@ -200,24 +148,24 @@ pub(super) fn record_selection_timing(
     line: String,
     #[cfg(test)] sample: timing_probe::SelectionTimingSample,
 ) {
-    log::info!("{}", line);
+    log::info!("{line}");
     #[cfg(test)]
     timing_probe::deliver(command, &sample, &line);
     #[cfg(not(test))]
     let _ = command;
 }
 
-pub(super) async fn run_owned_selection_operation_inner<F, Fut, T>(
+fn prepare_owned_selection_task<F, Fut, T>(
     mode: SelectionTurnMode,
     command: Option<&'static str>,
     operation: F,
-) -> Result<T, String>
+) -> Result<futures::future::BoxFuture<'static, Result<T, String>>, String>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<T, String>> + Send,
     T: Send + 'static,
 {
-    if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+    if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
         return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
     }
     let submitted = std::time::Instant::now();
@@ -267,9 +215,70 @@ where
     };
     #[cfg(test)]
     let task = with_test_selection_turn(test_turn, task);
-    let handle = tauri::async_runtime::spawn(task);
-    match handle.await {
-        Ok(result) => result,
-        Err(_) => Err("selectionOperationTurnJoinFailed".to_string()),
-    }
+    Ok(Box::pin(task))
+}
+
+/// Submit an owned operation through an explicit task capability.
+pub(crate) async fn run_owned_selection_operation_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_with_tasks(tasks, SelectionTurnMode::Write, None, operation).await
+}
+
+/// Submit an owned operation through an explicit task capability.
+pub(crate) async fn run_owned_selection_read_timed_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_with_tasks(tasks, SelectionTurnMode::Read, Some(command), operation).await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_owned_selection_operation_timed_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    command: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    run_owned_selection_with_tasks(tasks, SelectionTurnMode::Write, Some(command), operation).await
+}
+
+async fn run_owned_selection_with_tasks<F, Fut, T>(
+    tasks: &dyn super::task::SelectionTasks,
+    mode: SelectionTurnMode,
+    command: Option<&'static str>,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send,
+    T: Send + 'static,
+{
+    let task = prepare_owned_selection_task(mode, command, operation)?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let handle = tasks.spawn(Box::pin(async move {
+        let _ = send.send(task.await);
+    }));
+    handle
+        .await
+        .map_err(|_join_error| "selectionOperationTurnJoinFailed".to_string())?;
+    receive
+        .await
+        .map_err(|_channel_error| "selectionOperationTurnJoinFailed".to_string())?
 }

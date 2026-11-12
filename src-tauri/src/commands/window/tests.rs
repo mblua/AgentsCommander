@@ -247,21 +247,7 @@ async fn detach_pty_loss_after_window_creation_compensates_and_reconciles_livene
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publishes_exit() {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/attach-race".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
+    let session = create_attach_race_session(&manager).await;
     let geometry = WindowGeometry {
         x: 17.25,
         y: -44.5,
@@ -279,17 +265,7 @@ async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publi
         .unwrap()
         .record_route(session.id, SessionBackendKind::LocalProcess);
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .manage(WindowDestroyAudit::default())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build attach race app");
+    let app = build_attach_race_app(&manager, &pty);
     let label = format!("terminal-{}", session.id.to_string().replace('-', ""));
     WebviewWindowBuilder::new(app.handle(), &label, WebviewUrl::App("index.html".into()))
         .build()
@@ -300,18 +276,7 @@ async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publi
         .insert(session.id);
     coordinator.start(app.handle().clone()).unwrap();
     coordinator.submit_restore_first().await.unwrap().finish();
-    let (events_tx, events_rx) = std::sync::mpsc::channel();
-    for event_name in [
-        "session_destroyed",
-        "session_created",
-        "terminal_attached",
-        "session_switched",
-    ] {
-        let events_tx = events_tx.clone();
-        app.listen_any(event_name, move |_| {
-            let _ = events_tx.send(event_name);
-        });
-    }
+    let events_rx = listen_attach_race_events(&app);
 
     let attach = {
         let coordinator = coordinator.clone();
@@ -361,6 +326,61 @@ async fn attach_post_destroy_pty_loss_clears_intent_preserves_geometry_and_publi
     );
     assert!(events_rx.try_recv().is_err());
     coordinator.close_and_join().await;
+}
+
+async fn create_attach_race_session(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+) -> crate::session::session::Session {
+    manager
+        .read()
+        .await
+        .create_session(
+            "shell".to_string(),
+            Vec::new(),
+            "C:/attach-race".to_string(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap()
+}
+
+fn build_attach_race_app(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> tauri::App<tauri::test::MockRuntime> {
+    let selection_executor =
+        crate::commands::session::selection_executor::state::<tauri::test::MockRuntime>();
+    tauri::test::mock_builder()
+        .manage(WindowDestroyAudit::default())
+        .manage(selection_executor)
+        .manage(Arc::clone(manager))
+        .manage(Arc::clone(pty))
+        .manage(DetachedSessionsState::default())
+        .manage(WsBroadcaster::new())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build attach race app")
+}
+
+fn listen_attach_race_events(
+    app: &tauri::App<tauri::test::MockRuntime>,
+) -> std::sync::mpsc::Receiver<&'static str> {
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    for event_name in [
+        "session_destroyed",
+        "session_created",
+        "terminal_attached",
+        "session_switched",
+    ] {
+        let events_tx = events_tx.clone();
+        app.listen_any(event_name, move |_| {
+            let _ = events_tx.send(event_name);
+        });
+    }
+    events_rx
 }
 
 /// An app that manages the scope state, which every `open_watchers_window` call needs.

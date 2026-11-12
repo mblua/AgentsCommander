@@ -36,7 +36,7 @@ pub fn compute_config_dir_warning(
         }
     };
 
-    let dest_seg = dest.file_name().and_then(|s| s.to_str())?;
+    let dest_seg = dest.file_name().and_then(std::ffi::OsStr::to_str)?;
 
     // CODEX_HOME already went through the full resolver (isolation/profile/agent/
     // inherited); prefer its resolved value. Others: profile over agent layer.
@@ -52,33 +52,29 @@ pub fn compute_config_dir_warning(
         Some(value) => {
             let matches = final_segment(&value)
                 .as_deref()
-                .map(|seg| segments_eq(seg, dest_seg))
-                .unwrap_or(false);
+                .is_some_and(|seg| segments_eq(seg, dest_seg));
             if matches {
                 // L1 case 2: seed overwrites the tool's ACTIVE config dir.
                 Some(format!(
-                    "config seed destination '{}' has the same final folder name as the tool's \
-                    active {}='{}'; this heuristic does not inspect filesystem identity. The \
-                    seeded folder is overwritten on every spawn, so any credentials or session \
-                    state living there are reset each launch (ensure the template is \
-                    self-sufficient)",
-                    dest_seg, key, value
+                    "config seed destination '{dest_seg}' has the same final folder name as the \
+                    tool's active {key}='{value}'; this heuristic does not inspect filesystem \
+                    identity. The seeded folder is overwritten on every spawn, so any \
+                    credentials or session state living there are reset each launch (ensure the \
+                    template is self-sufficient)"
                 ))
             } else {
                 // Case 1: dest does not match the configured config-dir env.
                 Some(format!(
-                    "config seed destination '{}' does not match the final folder name of \
-                    {}='{}'; this heuristic does not inspect filesystem identity, and the tool \
-                    may read config from that path rather than the seeded folder",
-                    dest_seg, key, value
+                    "config seed destination '{dest_seg}' does not match the final folder name of \
+                    {key}='{value}'; this heuristic does not inspect filesystem identity, and the \
+                    tool may read config from that path rather than the seeded folder"
                 ))
             }
         }
         // Case 1 (unset but expected for this tool).
         None => Some(format!(
-            "config seed destination '{}' is set but {} is not configured; the tool may ignore \
-            the seeded folder",
-            dest_seg, key
+            "config seed destination '{dest_seg}' is set but {key} is not configured; the tool may \
+            ignore the seeded folder"
         )),
     }
 }
@@ -109,8 +105,8 @@ fn final_segment(value: &str) -> Option<String> {
     let trimmed = value.trim_end_matches(['/', '\\']);
     Path::new(trimmed)
         .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
+        .and_then(std::ffi::OsStr::to_str)
+        .map(ToString::to_string)
 }
 
 fn segments_eq(a: &str, b: &str) -> bool {

@@ -145,7 +145,7 @@ async fn probe_version_nonzero_exit_fails_with_code() {
     let outcome = probe_version(Path::new(shell_program()), &args, PROBE_TIMEOUT).await;
     match outcome {
         ProbeOutcome::Failed(detail) => {
-            assert!(detail.starts_with("exit code 3"), "unexpected: {detail}")
+            assert!(detail.starts_with("exit code 3"), "unexpected: {detail}");
         }
         other @ ProbeOutcome::Version(_) => panic!("unexpected: {other:?}"),
     }
@@ -179,7 +179,7 @@ async fn probe_version_timeout_kills_tree() {
     let outcome = probe_version(Path::new(program), &args, Duration::from_millis(200)).await;
     match outcome {
         ProbeOutcome::Failed(detail) => {
-            assert!(detail.contains("timed out"), "unexpected: {detail}")
+            assert!(detail.contains("timed out"), "unexpected: {detail}");
         }
         other @ ProbeOutcome::Version(_) => panic!("unexpected: {other:?}"),
     }

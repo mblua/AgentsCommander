@@ -1,12 +1,26 @@
 mod agent;
 mod app_defaults;
+pub(crate) mod context_history;
 mod field;
+mod instance;
 mod load;
+mod naming;
+mod overlay;
 mod owner;
-pub(crate) mod project_path;
+mod project_path;
 mod save;
 mod source;
 
+#[cfg(test)]
+pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
+pub(crate) use naming::{migrate_instance_settings_families, SettingsNamingError};
+
+use self::context_history::{
+    deserialize_context_history_color_sessions, deserialize_context_history_enabled,
+    deserialize_context_history_retention_days, deserialize_context_history_session_windows,
+    effective_color_sessions,
+};
+pub use self::context_history::{ContextHistoryRetentionDays, ContextHistorySessionWindows};
 #[cfg(test)]
 use super::projects;
 #[cfg(test)]
@@ -17,6 +31,7 @@ use crate::config::instance_artifacts::{
 use crate::config::local_overlay::LocalSettingsOverlay;
 #[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
+use crate::resource_monitor::types::ResourceLimits;
 use crate::telegram::types::TelegramBotConfig;
 #[cfg(test)]
 use agent::{
@@ -31,15 +46,12 @@ pub(crate) use agent::{
     adopt_orphaned_profiles, agent_file_projection, agents_layer_unreadable_for_dir,
     agents_unreadable_cli_error, agents_unreadable_session_error, bootstrap_binding_revision,
     canonical_profile_source, command_token_basename, deserialize_present_command,
-    export_agents_to_instance_file, load_local_agent_help_file, load_remote_agent_help_file,
-    persist_agent_file_edits, physical_profile_sets, project_physical_profiles,
-    read_remote_agent_help_check_stamp, read_remote_blocking_menus_check_stamp,
-    remember_agent_file_locked, retain_configuration_commands, select_configuration_command,
-    try_with_agents_layer_publication_state, validate_agent_command_text, validate_env_rows,
-    write_remote_agent_help_cache, write_remote_agent_help_check_stamp,
-    write_remote_blocking_menus_cache, write_remote_blocking_menus_check_stamp, AgentFileReadReply,
-    AgentFileReadRequest, AgentsLayerState, CatalogSourceOperationGuard,
-    REMOTE_AGENT_HELP_MAX_BYTES, REMOTE_BLOCKING_MENUS_MAX_BYTES,
+    export_agents_to_instance_file, persist_agent_file_edits, physical_profile_sets,
+    project_physical_profiles, remember_agent_file_locked, retain_configuration_commands,
+    select_configuration_command, try_with_agents_layer_publication_state,
+    validate_agent_command_text, validate_env_rows, AgentFileReadReply, AgentFileReadRequest,
+    AgentsLayerState, CatalogSourceOperationGuard, REMOTE_AGENT_HELP_MAX_BYTES,
+    REMOTE_BLOCKING_MENUS_MAX_BYTES,
 };
 #[cfg(test)]
 pub(crate) use agent::{
@@ -47,10 +59,14 @@ pub(crate) use agent::{
     agent_help_shipped_path, agents_unreadable_startup_notice, blocking_menus_local_path,
     blocking_menus_remote_check_path, blocking_menus_remote_path, blocking_menus_shipped_path,
     bootstrap_identity_revision, export_blocking_menus_to_local_file, list_agent_files,
-    load_local_blocking_menus_file, load_remote_blocking_menus_file, parse_agent_help_file,
-    parse_blocking_menus_file, prepare_agent_file_edits, pretty_json_bytes,
-    read_agent_file_snapshot, refresh_shipped_agent_help_file, refresh_shipped_blocking_menus_file,
-    save_agent_file_locked, validate_remote_agent_help_file, validate_remote_blocking_menus_file,
+    load_local_agent_help_file, load_local_blocking_menus_file, load_remote_agent_help_file,
+    load_remote_blocking_menus_file, parse_agent_help_file, parse_blocking_menus_file,
+    prepare_agent_file_edits, pretty_json_bytes, read_agent_file_snapshot,
+    read_remote_agent_help_check_stamp, read_remote_blocking_menus_check_stamp,
+    refresh_shipped_agent_help_file, refresh_shipped_blocking_menus_file, save_agent_file_locked,
+    validate_remote_agent_help_file, validate_remote_blocking_menus_file,
+    write_remote_agent_help_cache, write_remote_agent_help_check_stamp,
+    write_remote_blocking_menus_cache, write_remote_blocking_menus_check_stamp,
     AgentsPublicationLockError, CODEX_HOOKS_REVIEW_PATTERN, REMOTE_AGENT_HELP_SOURCE_REF,
     REMOTE_BLOCKING_MENUS_SOURCE_REF,
 };
@@ -122,7 +138,18 @@ pub use field::{
     TYPING_HOLD_SECONDS_MAX, TYPING_HOLD_SECONDS_MIN,
 };
 #[cfg(test)]
+pub(crate) use instance::settings_fixture_path;
+#[cfg(not(test))]
+use instance::settings_path;
+#[cfg(test)]
+pub(crate) use instance::settings_path;
+pub(crate) use instance::{
+    instance_settings_display_path, instance_settings_target, persisted_instance_token_matches,
+    SettingsFileTarget, SettingsProjectCheckpoint, SettingsProjectTransaction,
+};
+#[cfg(test)]
 pub(crate) use load::load_settings_from_path;
+pub(crate) use load::parse_api_server_socket_addr;
 #[cfg(test)]
 use load::{
     actionable_profile_legacy_work, apply_issue_248_migration, capture_project_settings,
@@ -147,7 +174,6 @@ pub use load::{
     validate_room_number_mask, validate_screenshot_hotkey, validate_sidebar_compact_hotkey,
     validate_typing_hold_settings, CONFIG_SEED_OS_TOKENS, ROOM_NUMBER_MASK_MAX_WIDTH,
 };
-pub(crate) use load::{parse_api_server_socket_addr, settings_path};
 pub(crate) use owner::CapturedSource;
 #[cfg(test)]
 use owner::OWNER_CAPTURE_PANIC;
@@ -167,9 +193,8 @@ use project_path::{
     select_project_source_at_path, OVERLAY_PREMIGRATION_UNSAFE_KEYS,
 };
 pub(crate) use project_path::{
-    apply_project_decode_to_value, begin_project_paths_transaction_at_path, decode_project_state,
-    repair_fresh_project_paths_at_path, resync_project_state_from_runtime, ProjectPathsRepairStage,
-    ProjectPathsWriteTransaction, ProjectWriteMode, OVERLAY_DERIVED_ID_CLOSURES,
+    apply_project_decode_to_value, decode_project_state, resync_project_state_from_runtime,
+    ProjectPathsRepairStage, ProjectWriteMode, OVERLAY_DERIVED_ID_CLOSURES,
     OVERLAY_INELIGIBLE_DISK_KEYS, OVERLAY_INELIGIBLE_LEGACY_KEYS, OVERLAY_KEY_AGENTS,
     OVERLAY_KEY_MAIN_ALWAYS_ON_TOP, OVERLAY_KEY_MAIN_DISPLAY_STATE, OVERLAY_KEY_MAIN_GEOMETRY,
     OVERLAY_KEY_MAIN_ZOOM, OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE,
@@ -186,6 +211,19 @@ use project_path::{
     TerminalSnapshotGateWriteMode, FIELD_ARCHIVED, FIELD_ARCHIVED_REL, FIELD_MAIN_DISPLAY_STATE,
     FIELD_MAIN_GEOMETRY, FIELD_PROJECT_PATH, FIELD_PROJECT_PATHS, FIELD_PROJECT_PATHS_REL,
     FIELD_PROJECT_PATH_REL, FIELD_TERMINAL_SNAPSHOTS_ENABLED,
+};
+use project_path::{
+    begin_project_paths_transaction_at_path, repair_fresh_project_paths_at_path,
+    ProjectPathsWriteTransaction,
+};
+#[cfg(test)]
+pub(crate) use project_path::{
+    decode_instance_relative, encode_instance_relative, resolve_registrations, CandidateResolver,
+    DirectoryIdentity, FsCandidateResolver, RawPair, RelDecodeError, RepairKind, SideOutcome,
+};
+pub(crate) use project_path::{
+    display_canonical, normalize_for_compare, IssueKind, ProjectPathPersistenceState,
+    ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
 #[cfg(test)]
 pub(crate) use project_path::{
@@ -301,9 +339,9 @@ pub struct CodingAgentProfilesConfig {
     #[serde(default)]
     pub profiles_by_agent: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
     /// #548: per-(agent, letter) label override. Resolution is own label ->
-    /// legacy profile_slots[letter].label -> bare letter; there is no first-agent
-    /// inheritance. Always serializes (no skip_serializing_if) like
-    /// profiles_by_agent, so the key is always present on disk.
+    /// legacy `profile_slots[letter].label` -> bare letter; there is no first-agent
+    /// inheritance. Always serializes (no `skip_serializing_if`) like
+    /// `profiles_by_agent`, so the key is always present on disk.
     #[serde(default)]
     pub profile_labels_by_agent: BTreeMap<String, BTreeMap<String, String>>,
     /// #2450: agent id -> `agent_profile_identity` as of the last save. Rows for
@@ -436,7 +474,7 @@ pub struct AppSettings {
     /// Gemini model for voice transcription
     #[serde(default = "default_gemini_model")]
     pub gemini_model: String,
-    /// #2265 Co-managed: Jev (TypeSafe System One) API key. `""` means not configured.
+    /// #2265 Co-managed: Jev (`TypeSafe` System One) API key. `""` means not configured.
     #[serde(default)]
     pub jev_api_key: String,
     /// #2265 Co-managed: Jev model. Pinned to the version the 0.70/0.15
@@ -615,7 +653,7 @@ pub struct AppSettings {
     #[serde(default)]
     pub onboarding_dismissed: bool,
     /// When true, sort the Coordinator Quick-Access list by most-recent-activity descending.
-    /// Activity = busy→idle transition (IdleDetector emits session_idle).
+    /// Activity = busy→idle transition (`IdleDetector` emits `session_idle`).
     /// Per-session timestamps live in the frontend store and are NOT persisted.
     #[serde(default)]
     pub coord_sort_by_activity: bool,
@@ -648,7 +686,7 @@ pub struct AppSettings {
     pub theme_light: bool,
     /// #965 - rail project sections the user has explicitly collapsed by clicking
     /// their header. This is the RAIL's own state; it is deliberately NOT the
-    /// ProjectPanel's collapse (which stays session-only and auto-focus driven).
+    /// `ProjectPanel`'s collapse (which stays session-only and auto-focus driven).
     /// Entries are FRONTEND-NORMALIZED project paths (lowercase, forward slashes,
     /// no trailing slash: `normalizeProjectPathForCompare` in
     /// `src/sidebar/stores/project-refresh.ts`).
@@ -793,7 +831,7 @@ pub struct AppSettings {
     /// #930 - when true (default), container coding-agent sessions copy the host
     /// user's credential file for that agent into the replica config dir at spawn
     /// and delete it on teardown. When false, the user supplies credentials
-    /// themselves (e.g. a CLAUDE_CODE_OAUTH_TOKEN env row).
+    /// themselves (e.g. a `CLAUDE_CODE_OAUTH_TOKEN` env row).
     #[serde(default = "default_true")]
     pub container_credentials_from_host: bool,
     /// #1171 - root-level watcher patterns, keyed by watcher id.
@@ -837,6 +875,41 @@ pub struct AppSettings {
     /// Continuous room inactivity required before confirmation, in seconds.
     #[serde(default = "default_room_idle_confirmation_seconds")]
     pub room_idle_confirmation_seconds: u32,
+    /// #4049: app-wide Context Heat Map switch; off by default. Only a JSON
+    /// boolean is accepted; any other stored value loads as false.
+    #[serde(default, deserialize_with = "deserialize_context_history_enabled")]
+    pub context_history_enabled: bool,
+    /// #4049: days (1..=365) of stored context history to keep; default 30.
+    /// Any other stored value loads as 30 in memory and is never rewritten.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context_history_retention_days"
+    )]
+    pub context_history_retention_days: ContextHistoryRetentionDays,
+    /// #4091: session counts that bucket the heat map; default [25, 100, 300].
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context_history_session_windows"
+    )]
+    pub context_history_session_windows: ContextHistorySessionWindows,
+    /// #4091: session count that colours the heat map. `None` only before
+    /// `normalize_context_history_sessions`, which repairs it in memory.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context_history_color_sessions"
+    )]
+    pub context_history_color_sessions: Option<u32>,
+}
+
+impl AppSettings {
+    /// #4091: missing, invalid or non-member colour becomes the last effective
+    /// session window. In memory only; never marks the file for saving.
+    pub(crate) fn normalize_context_history_sessions(&mut self) {
+        self.context_history_color_sessions = Some(effective_color_sessions(
+            &self.context_history_session_windows,
+            self.context_history_color_sessions,
+        ));
+    }
 }
 
 fn default_jev_model() -> String {
@@ -878,6 +951,18 @@ pub(crate) const REMOTE_AGENT_HELP_URL: &str = concat!(
     "https://raw.githubusercontent.com/mblua/AgentsCommander/main/",
     "remote-resources/agent-help/v1/agent-help.json",
 );
+
+impl From<&AppSettings> for ResourceLimits {
+    fn from(value: &AppSettings) -> Self {
+        Self {
+            monitor_enabled: value.resource_monitor_enabled,
+            max_concurrent_agent_processes: value.max_concurrent_agent_processes,
+            group_warn_private_bytes: value.agent_group_warn_private_bytes,
+            group_kill_private_bytes: value.agent_group_kill_private_bytes,
+            process_kill_private_bytes: value.agent_process_kill_private_bytes,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

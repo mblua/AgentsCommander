@@ -103,7 +103,9 @@ fn poisoned_buffer_still_emits_without_buffering_or_panicking() {
     emit_session_warning(app.handle(), expected.clone());
 
     assert_event(&receiver, &expected);
-    let mut buffer = state.lock().unwrap_or_else(|err| err.into_inner());
+    let mut buffer = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(buffer.drain(None).is_empty());
 }
 
@@ -286,4 +288,162 @@ fn context_alert_start_on_without_ambient_tokio() {
             .expect("joined actor shutdown");
         monitor.close_and_join().await.expect("repeated close");
     });
+}
+
+#[derive(Default)]
+struct SelectionDeliveries(std::cell::RefCell<Vec<(&'static str, serde_json::Value)>>);
+
+impl crate::session::selection::SelectionEvents for SelectionDeliveries {
+    fn selection_event(&self, event: &'static str, value: serde_json::Value) {
+        self.0.borrow_mut().push((event, value));
+    }
+}
+
+struct CountedSelectionPayload<'a> {
+    calls: &'a std::cell::Cell<usize>,
+    fail: bool,
+}
+
+impl serde::Serialize for CountedSelectionPayload<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.calls.set(self.calls.get() + 1);
+        if self.fail {
+            return Err(serde::ser::Error::custom("issue3950-serialization-failure"));
+        }
+        serde_json::json!({"selection": 3950}).serialize(serializer)
+    }
+}
+
+fn serialized_once(
+    calls: usize,
+    deliveries: &[(&str, serde_json::Value)],
+) -> Result<(), &'static str> {
+    if calls != 1 {
+        return Err("selection payload must serialize exactly once");
+    }
+    if deliveries != [("issue3950-event", serde_json::json!({"selection": 3950}))] {
+        return Err("selection must deliver the same JSON exactly once");
+    }
+    Ok(())
+}
+
+#[test]
+fn issue_3950_serialize_once() {
+    let calls = std::cell::Cell::new(0);
+    let events = SelectionDeliveries::default();
+    let payload = CountedSelectionPayload {
+        calls: &calls,
+        fail: false,
+    };
+    crate::session::selection::port_test_publish_lifecycle_event(
+        &events,
+        "issue3950-event",
+        &payload,
+    );
+    assert_eq!(serialized_once(calls.get(), &events.0.borrow()), Ok(()));
+    println!("\nISSUE3950_CONTROL_OK case=issue_3950_serialize_once");
+
+    // A double that repeats the real serializer must fail the same one-pass assertion.
+    calls.set(0);
+    events.0.borrow_mut().clear();
+    for _ in 0..2 {
+        crate::session::selection::port_test_publish_lifecycle_event(
+            &events,
+            "issue3950-event",
+            &payload,
+        );
+    }
+    assert_eq!(
+        serialized_once(calls.get(), &events.0.borrow()),
+        Err("selection payload must serialize exactly once")
+    );
+    println!("\nISSUE3950_MUTANT_REJECTED case=double_serialize");
+}
+
+#[test]
+fn issue_3950_serialize_error() {
+    let calls = std::cell::Cell::new(0);
+    let events = SelectionDeliveries::default();
+    crate::session::selection::port_test_publish_lifecycle_event(
+        &events,
+        "issue3950-event",
+        &CountedSelectionPayload {
+            calls: &calls,
+            fail: true,
+        },
+    );
+    assert_eq!(calls.get(), 1, "failing payload serialized exactly once");
+    assert!(
+        events.0.borrow().is_empty(),
+        "serialization failure has zero sink calls"
+    );
+    println!("\nISSUE3950_CONTROL_OK case=issue_3950_serialize_error");
+}
+
+type SelectionDeliveryTrace = Vec<(&'static str, &'static str, serde_json::Value)>;
+
+fn ordered_selection_delivery(trace: &SelectionDeliveryTrace) -> Result<(), &'static str> {
+    let value = serde_json::json!({"selection": 3950});
+    if trace
+        != &[
+            ("native", "issue3950-event", value.clone()),
+            ("websocket", "issue3950-event", value),
+        ]
+    {
+        return Err("native must precede WebSocket with the same event and JSON");
+    }
+    Ok(())
+}
+
+fn selection_delivery_trace(fail_native: bool, short_circuit: bool) -> SelectionDeliveryTrace {
+    let trace = std::cell::RefCell::new(Vec::new());
+    let native_failed = std::cell::Cell::new(false);
+    deliver_selection_event(
+        "issue3950-event",
+        serde_json::json!({"selection": 3950}),
+        |event, value| {
+            trace.borrow_mut().push(("native", event, value));
+            native_failed.set(fail_native);
+            if fail_native {
+                Err("issue3950-native-failure".into())
+            } else {
+                Ok(())
+            }
+        },
+        |event, value| {
+            // Bad sink double models short-circuiting after native failure.
+            if !(short_circuit && native_failed.get()) {
+                trace.borrow_mut().push(("websocket", event, value.clone()));
+            }
+        },
+    );
+    trace.into_inner()
+}
+
+#[test]
+fn issue_3950_native_ws_order() {
+    assert_eq!(
+        ordered_selection_delivery(&selection_delivery_trace(false, false)),
+        Ok(())
+    );
+    println!("\nISSUE3950_CONTROL_OK case=issue_3950_native_ws_order");
+}
+
+#[test]
+fn issue_3950_native_fail_ws() {
+    assert_eq!(
+        ordered_selection_delivery(&selection_delivery_trace(true, false)),
+        Ok(())
+    );
+    println!("\nISSUE3950_CONTROL_OK case=issue_3950_native_fail_ws");
+    assert_eq!(
+        ordered_selection_delivery(&selection_delivery_trace(true, true)),
+        Err("native must precede WebSocket with the same event and JSON")
+    );
+    // The short-circuit double's successful-native opposite control still delivers both.
+    assert_eq!(
+        ordered_selection_delivery(&selection_delivery_trace(false, true)),
+        Ok(())
+    );
+    println!("\nISSUE3950_MUTANT_REJECTED case=native_short_circuit");
 }

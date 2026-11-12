@@ -10,7 +10,7 @@ fn draft(id: &str, enabled: bool, commands: Option<&[&str]>) -> WatcherDraftEntr
     WatcherDraftEntry {
         id: id.to_string(),
         enabled,
-        commands: commands.map(|list| list.iter().map(|s| s.to_string()).collect()),
+        commands: commands.map(|list| list.iter().map(std::string::ToString::to_string).collect()),
     }
 }
 
@@ -124,7 +124,7 @@ impl PtyBackend for FixedScreenBackend {
 
 fn pty_app(rows: &[&str]) -> (tauri::App<tauri::test::MockRuntime>, Uuid) {
     let backend = Arc::new(FixedScreenBackend {
-        rows: rows.iter().map(|r| r.to_string()).collect(),
+        rows: rows.iter().map(std::string::ToString::to_string).collect(),
     });
     let manager = PtyManager::new_for_test(backend);
     let id = Uuid::new_v4();

@@ -1,6 +1,7 @@
 use super::*;
+use crate::config::settings::{instance_settings_display_path, SettingsFileTarget};
 
-/// Build a pending (companion-population-eligible) SettingsState by decoding a
+/// Build a pending (companion-population-eligible) `SettingsState` by decoding a
 /// legacy `[project]` file (no companion) from `settings_path`.
 fn pending_state_from_legacy(settings_path: &Path, project: &str) -> SettingsState {
     write_settings_file(
@@ -51,7 +52,18 @@ async fn auto_reconcile_redecodes_and_preserves_intervening_cli_write() {
         },
     );
 
-    let _snap = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
+    let snap = super::settings_snapshot_helper(
+        &state,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await;
+
+    assert_eq!(snap.settings_file_path, instance_settings_display_path());
+    assert_ne!(
+        snap.settings_file_path.as_deref(),
+        Some(settings_path.to_string_lossy().as_ref()),
+        "display must use the production instance location, not the injected repair target"
+    );
 
     let disk: AppSettings =
         crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
@@ -75,7 +87,11 @@ async fn auto_reconcile_reports_stage_read_on_corrupt_disk() {
 
     // Corrupt the settings file after startup.
     std::fs::write(&settings_path, b"{ not valid json").unwrap();
-    let snap = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
+    let snap = super::settings_snapshot_helper(
+        &state,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await;
 
     let err = snap
         .project_path_resolution
@@ -107,7 +123,11 @@ async fn unavailable_snapshot_blocks_purge_even_without_cached_repair() {
     );
     let session_path = temp.path().join("sessions.json");
     let original = std::fs::read(&session_path).unwrap();
-    let snapshot = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
+    let snapshot = super::settings_snapshot_helper(
+        &state,
+        Some(SettingsFileTarget::for_test_path(&settings_path)),
+    )
+    .await;
     let error = snapshot
         .project_path_resolution
         .reconciliation_error

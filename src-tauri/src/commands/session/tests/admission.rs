@@ -191,54 +191,7 @@ async fn create_protected_owner_is_exclusive_and_failed_tracker_cannot_use_e2() 
         "second generic waiter also takes no exclusive claim"
     );
     #[cfg(target_os = "windows")]
-    let quota_waiter = {
-        let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
-        let config = crate::config::settings::AppSettings {
-            resource_monitor_enabled: true,
-            max_concurrent_agent_processes: 1,
-            ..Default::default()
-        };
-        let settings = crate::config::settings::new_settings_state(config.clone());
-        let resource = Arc::new(Mutex::new(super::super::CreateResourceAdmission {
-            monitor: monitor.clone(),
-            settings: settings.clone(),
-            permit: None,
-            needed: true,
-            in_region: false,
-            released: false,
-        }));
-        let third = create_admission_owner(tracker.clone(), &target, &cwd);
-        third.lock().unwrap().resource = Some(resource.clone());
-        let quota = monitor
-            .try_reserve_agent_slot(super::super::ResourceLimits::from(&config))
-            .unwrap()
-            .expect("Windows quota really reserves a slot");
-        let manager = manager.clone();
-        let waiter = tokio::spawn(async move {
-            let mut local = Some(quota);
-            let result = super::super::with_create_resource_region(
-                &third,
-                &mut local,
-                super::super::acquire_create_publication_region(&third, &manager),
-            )
-            .await;
-            (result.map(drop), local)
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !resource.lock().unwrap().released {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("blocked create releases its actual quota");
-        let replacement_quota = monitor
-            .try_reserve_agent_slot(super::super::ResourceLimits::from(&config))
-            .unwrap()
-            .expect("protected owner can use the released quota");
-        monitor.release_unregistered_permit(replacement_quota);
-        settings.write().await.max_concurrent_agent_processes = 0;
-        waiter
-    };
+    let quota_waiter = start_protected_quota_waiter(&tracker, &target, &cwd, &manager).await;
     tracker.fail_closed();
     assert!(
         super::super::try_acquire_create_publication_region(&first, &manager)
@@ -271,6 +224,64 @@ async fn create_protected_owner_is_exclusive_and_failed_tracker_cannot_use_e2() 
         );
     assert!(second.lock().unwrap().failed_foreign);
     drop(permit);
+}
+
+#[cfg(target_os = "windows")]
+async fn start_protected_quota_waiter(
+    tracker: &crate::pty::manager::ResponseCloseState,
+    target: &str,
+    cwd: &std::path::Path,
+    manager: &SessionManager,
+) -> tokio::task::JoinHandle<(
+    Result<(), String>,
+    Option<crate::resource_monitor::AgentLaunchPermit>,
+)> {
+    let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+    let config = crate::config::settings::AppSettings {
+        resource_monitor_enabled: true,
+        max_concurrent_agent_processes: 1,
+        ..Default::default()
+    };
+    let settings = crate::config::settings::new_settings_state(config.clone());
+    let resource = Arc::new(Mutex::new(super::super::CreateResourceAdmission {
+        monitor: monitor.clone(),
+        settings: settings.clone(),
+        permit: None,
+        needed: true,
+        in_region: false,
+        released: false,
+    }));
+    let third = create_admission_owner(tracker.clone(), target, cwd);
+    third.lock().unwrap().resource = Some(resource.clone());
+    let quota = monitor
+        .try_reserve_agent_slot(super::super::ResourceLimits::from(&config))
+        .unwrap()
+        .expect("Windows quota really reserves a slot");
+    let manager = manager.clone();
+    let waiter = tokio::spawn(async move {
+        let mut local = Some(quota);
+        let result = super::super::with_create_resource_region(
+            &third,
+            &mut local,
+            super::super::acquire_create_publication_region(&third, &manager),
+        )
+        .await;
+        (result.map(drop), local)
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !resource.lock().unwrap().released {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("blocked create releases its actual quota");
+    let replacement_quota = monitor
+        .try_reserve_agent_slot(super::super::ResourceLimits::from(&config))
+        .unwrap()
+        .expect("protected owner can use the released quota");
+    monitor.release_unregistered_permit(replacement_quota);
+    settings.write().await.max_concurrent_agent_processes = 0;
+    waiter
 }
 
 // Stage E (#1064) selection-intent mapping sentinel (plan section 10.4 item

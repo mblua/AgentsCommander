@@ -1,16 +1,14 @@
 use super::poller::{collect_project_refresh_requests, read_text_bom_tolerant, MailboxPoller};
 use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;
-use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::events::{MailboxDeliveryEvents, MailboxRequestEvents};
+use crate::phone::mailbox::host::{MailboxHost, MailboxSessionCreate};
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 use crate::phone::types::OutboxMessage;
-use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
+use crate::session::create_contracts::CreateSelectionIntent;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 
 fn archive_id_is_plain(id: &str) -> bool {
     let stem = id
@@ -52,7 +50,7 @@ fn sweep_stale_session_results(requests_dir: &Path) {
     // CLI and is removed here (worst case a few KB in an already-ephemeral,
     // ignored instance-artifact directory).
     if let Ok(rd) = mailbox_disk::mailbox_directory_paths(requests_dir) {
-        for path in rd.filter_map(|e| e.ok()) {
+        for path in rd.filter_map(std::result::Result::ok) {
             if !crate::cli::create_agent::is_session_request_result_path(&path) {
                 continue;
             }
@@ -60,7 +58,7 @@ fn sweep_stale_session_results(requests_dir: &Path) {
                 .ok()
                 .and_then(|metadata| metadata.modified().ok())
                 .and_then(|modified| modified.elapsed().ok())
-                .is_some_and(|age| age >= std::time::Duration::from_secs(5 * 60));
+                .is_some_and(|age| age >= std::time::Duration::from_mins(5));
             if stale {
                 let _ = mailbox_disk::remove_mailbox_artifact(&path);
             }
@@ -87,7 +85,7 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
     let content = match read_text_bom_tolerant(path) {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("[session-requests] Failed to read {:?}: {}", path, e);
+            log::warn!("[session-requests] Failed to read {path:?}: {e}");
             return None;
         }
     };
@@ -95,14 +93,14 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
     let request = match serde_json::from_str(&content) {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("[session-requests] Failed to parse {:?}: {}", path, e);
+            log::warn!("[session-requests] Failed to parse {path:?}: {e}");
             // #1163: answer with a rejected result so the CLI can
             // distinguish rejection from a missing app. The request
             // filename IS `<id>.json`, so the id comes from the stem.
             write_session_result(crate::cli::create_agent::SessionRequestResult {
                 id: path
                     .file_stem()
-                    .and_then(|value| value.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or("unknown")
                     .to_string(),
                 status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
@@ -151,7 +149,7 @@ fn complete_session_request(
             id: request.id.clone(),
             status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
             session_id: None,
-            error: Some(e.to_string()),
+            error: Some(e.clone()),
         },
     };
     write_session_result(result);
@@ -162,15 +160,18 @@ fn complete_session_request(
 
 impl MailboxPoller {
     /// Move an outbox message to outbox/delivered/ with token stripped.
-    pub(crate) async fn move_to_delivered<R: tauri::Runtime>(
+    pub(crate) async fn move_to_delivered<S>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
-    ) -> Result<(), String> {
+    ) -> Result<(), String>
+    where
+        S: MailboxDeliveryEvents + ResponseCompletionState + Clone + Send + Sync + 'static,
+    {
         let delivered_dir = path.parent().ok_or("No parent dir")?.join("delivered");
         mailbox_disk::ensure_mailbox_archive_directory(&delivered_dir)
-            .map_err(|e| format!("Failed to create delivered dir: {}", e))?;
+            .map_err(|e| format!("Failed to create delivered dir: {e}"))?;
 
         // Strip token before storing
         let mut stripped = msg.clone();
@@ -189,13 +190,13 @@ impl MailboxPoller {
         };
         let dest = delivered_dir.join(filename);
         let json = serde_json::to_string_pretty(&stripped)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
+            .map_err(|e| format!("Failed to serialize: {e}"))?;
         mailbox_disk::write_mailbox_document(&dest, json)
-            .map_err(|e| format!("Failed to write delivered file: {}", e))?;
+            .map_err(|e| format!("Failed to write delivered file: {e}"))?;
 
         // Remove original
         mailbox_disk::remove_mailbox_artifact(path)
-            .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+            .map_err(|e| format!("Failed to remove outbox file: {e}"))?;
         self.complete_response_delivery(app, path).await;
 
         log::info!("[mailbox] Message {} moved to delivered/", msg.id);
@@ -217,7 +218,7 @@ impl MailboxPoller {
 
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
-            .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
+            .map_err(|e| format!("Failed to create rejected dir: {e}"))?;
 
         // Write reason file FIRST — the CLI polls for this file to detect rejection
         let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
@@ -230,13 +231,13 @@ impl MailboxPoller {
 
         let dest = rejected_dir.join(format!("{}.json", msg.id));
         let json = serde_json::to_string_pretty(&stripped)
-            .map_err(|e| format!("Failed to serialize: {}", e))?;
+            .map_err(|e| format!("Failed to serialize: {e}"))?;
         mailbox_disk::write_mailbox_document(&dest, json)
-            .map_err(|e| format!("Failed to write rejected file: {}", e))?;
+            .map_err(|e| format!("Failed to write rejected file: {e}"))?;
 
         // Remove original
         mailbox_disk::remove_mailbox_artifact(path)
-            .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+            .map_err(|e| format!("Failed to remove outbox file: {e}"))?;
         self.settle_response_source(path, false);
 
         log::warn!(
@@ -247,15 +248,15 @@ impl MailboxPoller {
         Ok(())
     }
 
-    /// Reject a raw file that cannot be parsed as OutboxMessage.
+    /// Reject a raw file that cannot be parsed as `OutboxMessage`.
     pub(crate) fn reject_raw_file(path: &Path, reason: &str) -> Result<(), String> {
         let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
-            .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
+            .map_err(|e| format!("Failed to create rejected dir: {e}"))?;
 
         let filename = path
             .file_name()
-            .and_then(|f| f.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("unknown.json");
 
         let dest = rejected_dir.join(filename);
@@ -264,24 +265,24 @@ impl MailboxPoller {
                 mailbox_disk::copy_mailbox_document(path, &dest)
                     .and_then(|_| mailbox_disk::remove_mailbox_artifact(path))
             })
-            .map_err(|e| format!("Failed to move file to rejected: {}", e))?;
+            .map_err(|e| format!("Failed to move file to rejected: {e}"))?;
 
         let stem = Path::new(filename)
             .file_stem()
-            .and_then(|s| s.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("unknown");
-        let reason_path = rejected_dir.join(format!("{}.reason.txt", stem));
+        let reason_path = rejected_dir.join(format!("{stem}.reason.txt"));
         mailbox_disk::write_mailbox_document(&reason_path, reason)
             .map_err(|_| "Failed to write reason file".to_string())?;
 
-        log::warn!("Rejected raw file {:?}: {}", path, reason);
+        log::warn!("Rejected raw file {path:?}: {reason}");
         Ok(())
     }
 
     /// Poll ~/.agentscommander/project-refresh-requests/ for sidebar refresh requests.
-    pub(crate) async fn poll_project_refresh_requests<R: tauri::Runtime>(
+    pub(crate) async fn poll_project_refresh_requests<S: MailboxRequestEvents + ?Sized>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
     ) {
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
@@ -297,7 +298,7 @@ impl MailboxPoller {
                 payload.project_path,
                 payload.reason
             );
-            let _ = tauri::Emitter::emit(app, "ac_project_refresh_requested", payload);
+            let _ = app.project_refresh(payload);
         }
 
         for path in batch.processed_paths {
@@ -306,7 +307,7 @@ impl MailboxPoller {
     }
 
     /// Poll ~/.agentscommander/session-requests/ for launch requests from the CLI.
-    pub(crate) async fn poll_session_requests<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
+    pub(crate) async fn poll_session_requests<S: MailboxHost>(&self, app: &S) {
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
             None => return,
@@ -320,7 +321,7 @@ impl MailboxPoller {
 
         let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
             Ok(rd) => rd
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
                 // #1163: result sidecars (`<id>.result.json`) are ANSWERS, not
                 // requests; without this exclusion a leftover result file would
@@ -343,13 +344,13 @@ impl MailboxPoller {
                 request.agent_id
             );
 
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+            let session_mgr = app.sessions();
+            let pty_mgr = app.routes();
             let cwd = crate::path_utils::normalize_windows_verbatim_path(&request.cwd);
             let (resolved_spawn, resolved_agent_host_shell) = {
-                let settings = app.state::<SettingsState>();
+                let settings = app.pty_settings();
                 let cfg = settings.read().await;
-                match crate::commands::session::build_configured_agent_spawn_for_cwd(
+                match crate::config::agent_command::build_configured_agent_spawn_for_cwd(
                     &cfg,
                     &request.agent_id,
                     &cwd,
@@ -376,7 +377,7 @@ impl MailboxPoller {
                             id: request.id.clone(),
                             status: crate::cli::create_agent::SessionRequestResultStatus::Rejected,
                             session_id: None,
-                            error: Some(e.to_string()),
+                            error: Some(e.clone()),
                         });
                         let _ = mailbox_disk::remove_mailbox_artifact(&path);
                         continue;
@@ -393,26 +394,26 @@ impl MailboxPoller {
                 (request.shell.clone(), request.shell_args.clone(), None)
             };
 
-            let create_result = crate::commands::session::create_session_inner(
-                app,
-                session_mgr.inner(),
-                pty_mgr.inner(),
-                shell,
-                shell_args,
-                cwd,
-                Some(request.session_name.clone()),
-                Some(request.agent_id.clone()),
-                agent_label, // No agent label for legacy custom-shell fallback
-                false,       // Persist tooling
-                Vec::new(),  // git_repos
-                true,        // skip_auto_resume = true → CLI session-request is a fresh create
-                resolved_spawn,
-                resolved_agent_host_shell,
-                // #973 - headless caller: no terminal to measure, keep 120x30.
-                None,
-                crate::commands::session::CreateSelectionIntent::Background,
-            )
-            .await;
+            let create_result = app
+                .create_session_inner(MailboxSessionCreate {
+                    session_mgr,
+                    pty_mgr,
+                    shell,
+                    shell_args,
+                    cwd,
+                    session_name: Some(request.session_name.clone()),
+                    agent_id: Some(request.agent_id.clone()),
+                    agent_label, // No agent label for legacy custom-shell fallback
+                    skip_tooling_save: false, // Persist tooling
+                    git_repos: Vec::new(),
+                    skip_auto_resume: true, // CLI session-request is a fresh create
+                    resolved_spawn,
+                    resolved_agent_host_shell,
+                    // #973 - headless caller: no terminal to measure, keep 120x30.
+                    viewport: None,
+                    selection_intent: CreateSelectionIntent::Background,
+                })
+                .await;
             complete_session_request(&request, &path, create_result);
         }
     }
@@ -420,43 +421,28 @@ impl MailboxPoller {
     /// #786: poll `<config_dir>/coding-agent-requests/` for CLI mutation requests
     /// while the GUI runs. Scans bare `.json` files only (so `.processing`,
     /// `.tmp`, and the `results/` subdir are excluded). For each request, R8:
-    /// write-lock SettingsState, clone a candidate, run the pure per-request
+    /// write-lock `SettingsState`, clone a candidate, run the pure per-request
     /// handler (claim -> parse -> expiry -> apply -> write result -> delete
     /// `.processing`) against it, and on Applied swap the in-memory state and emit
     /// `coding_agent_settings_updated` AFTER the guard drops. `save_settings` is
     /// synchronous, so the write guard is never held across an await.
-    pub(crate) async fn poll_coding_agent_requests<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-    ) {
+    pub(crate) async fn poll_coding_agent_requests<S: MailboxHost>(&self, app: &S) {
         use crate::config::coding_agent_mutations as ca;
         let config_dir = match crate::config::config_dir() {
             Some(d) => d,
             None => return,
         };
-        let requests_dir = config_dir.join(ca::CODING_AGENT_REQUESTS_DIR);
-        if !mailbox_disk::mailbox_path_is_dir(&requests_dir) {
-            return;
-        }
-        let results_dir = requests_dir.join(ca::RESULTS_SUBDIR);
-
-        let entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(&requests_dir) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok())
-                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
-                .collect(),
-            Err(_) => return,
-        };
+        let (requests_dir, results_dir) = ca::coding_agent_queue_directories(&config_dir);
+        let entries = ca::pending_coding_agent_requests(&requests_dir);
         if entries.is_empty() {
             return;
         }
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as u64);
 
-        let state = app.state::<SettingsState>();
+        let state = app.pty_settings();
         for path in entries {
             let applied = {
                 let mut s = state.write().await;
@@ -492,16 +478,10 @@ impl MailboxPoller {
             }; // write guard dropped here, before the emit
 
             if let Some((op, agent_id)) = applied {
-                let _ = tauri::Emitter::emit(
-                    app,
-                    "coding_agent_settings_updated",
-                    serde_json::json!({ "op": op, "agentId": agent_id }),
+                let _ = app.coding_agent_settings_updated(
+                    &serde_json::json!({ "op": op, "agentId": agent_id }),
                 );
-                log::info!(
-                    "[coding-agent-requests] applied op={} agentId={:?}",
-                    op,
-                    agent_id
-                );
+                log::info!("[coding-agent-requests] applied op={op} agentId={agent_id:?}");
             }
         }
     }

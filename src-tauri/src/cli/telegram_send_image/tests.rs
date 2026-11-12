@@ -99,8 +99,7 @@ fn help_text_documents_telegram_send_image() {
     let help = crate::cli::Cli::command().render_help().to_string();
     assert!(
         help.contains("telegram-send-image"),
-        "help missing verb: {}",
-        help
+        "help missing verb: {help}"
     );
 }
 fn message_args(text: &str) -> TelegramSendMessageArgs {

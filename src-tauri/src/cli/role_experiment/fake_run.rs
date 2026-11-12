@@ -1,3 +1,17 @@
+use super::arguments::RunArgs;
+use super::artifacts::AttemptArtifact;
+use super::artifacts::AttemptExecutionResult;
+use super::artifacts::AttemptOwnershipArtifact;
+use super::artifacts::CliError;
+use super::artifacts::CliWarning;
+use super::artifacts::CommandOutput;
+use super::artifacts::ExecutionPlan;
+use super::artifacts::ExperimentValidation;
+use super::artifacts::LoadedExperiment;
+use super::artifacts::RunArtifact;
+use super::artifacts::RunExecutionArtifact;
+use super::artifacts::RunSuiteArtifact;
+use super::artifacts::RunVariantArtifact;
 use super::prompt_suite::parse_prompt_suite;
 use super::report::build_attempts;
 use super::report::build_report_artifact;
@@ -22,6 +36,7 @@ use super::storage::next_attempt_output_path;
 use super::storage::replace_attempts;
 use super::storage::write_attempt_prompt_file;
 use super::storage::{attempts_name, attempts_path_display};
+use super::storage::{replace_report, replace_run, report_name, run_name};
 use super::support::err;
 use super::support::err_at_path;
 use super::support::source_matrix_path;
@@ -34,20 +49,7 @@ use super::validation::validate_loaded_experiment_source_metadata;
 use super::validation::validate_slug_identity;
 use super::validation::validate_variant_files;
 use super::validation::validate_variant_metadata_paths;
-use super::AttemptArtifact;
-use super::AttemptExecutionResult;
-use super::AttemptOwnershipArtifact;
-use super::CliError;
-use super::CliWarning;
-use super::CommandOutput;
-use super::ExecutionPlan;
-use super::ExperimentValidation;
-use super::LoadedExperiment;
-use super::RunArgs;
-use super::RunArtifact;
-use super::RunExecutionArtifact;
-use super::RunSuiteArtifact;
-use super::RunVariantArtifact;
+use crate::filesystem::projects::entities::roles;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -63,7 +65,7 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
     }
     run_artifact.updated_at = completed_at.clone();
     run_artifact.status = summarize_run_status(&plan.attempts, false);
-    atomic_write_json(&plan.run_dir.join("run.json"), &run_artifact)?;
+    replace_run(&plan.run_dir, &run_artifact)?;
     replace_attempts(&plan.run_dir, &plan.attempts)?;
     let report_artifact = build_report_artifact(
         &plan.run_id,
@@ -77,9 +79,11 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
         false,
         Some(&plan.workgroup),
     );
-    atomic_write_json(&plan.run_dir.join("report.json"), &report_artifact)?;
+    replace_report(&plan.run_dir, &report_artifact)?;
     atomic_write_bytes(
-        &plan.run_dir.join("report.md"),
+        &plan
+            .run_dir
+            .join(default_run_artifact_paths(String::new()).report_markdown),
         render_report_markdown(&report_artifact).as_bytes(),
     )?;
 
@@ -100,10 +104,10 @@ pub(super) fn run_fake_execution(args: RunArgs) -> Result<CommandOutput, Vec<Cli
             "seed": run_artifact.seed,
             "seedProvided": run_artifact.seed_provided,
             "artifacts": {
-                "run": "run.json",
+                "run": run_name(),
                 "attempts": attempts_name(),
-                "reportJson": "report.json",
-                "reportMarkdown": "report.md",
+                "reportJson": report_name(),
+                "reportMarkdown": default_run_artifact_paths(String::new()).report_markdown,
                 "prompts": "prompts",
                 "outputs": "outputs",
                 "transcripts": "transcripts",
@@ -367,7 +371,7 @@ fn execute_attempts_with_fake_executor(
         replace_attempts(&plan.run_dir, &plan.attempts)?;
         run_artifact.status = "running".to_string();
         run_artifact.updated_at = started_at.clone();
-        atomic_write_json(&plan.run_dir.join("run.json"), run_artifact)?;
+        replace_run(&plan.run_dir, run_artifact)?;
 
         let result = fake_attempt_result(args, &plan.attempts[idx], &output_path);
         let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -473,7 +477,7 @@ pub(super) fn collect_experiment_validation(loaded: &LoadedExperiment) -> Experi
 
     if source_metadata_valid {
         let source_matrix = source_matrix_path(&loaded.ac_root, &loaded.experiment.source_agent);
-        let source_role = source_matrix.join("Role.md");
+        let source_role = roles::role_path(&source_matrix);
         if !source_matrix.is_dir() {
             errors.push(err(
                 "source_agent_missing",
@@ -510,7 +514,7 @@ pub(super) fn collect_experiment_validation(loaded: &LoadedExperiment) -> Experi
         if !seen.insert(variant.clone()) {
             errors.push(err(
                 "variant_name_duplicate",
-                format!("Duplicate variant '{}'", variant),
+                format!("Duplicate variant '{variant}'"),
                 Some(variant.as_str()),
             ));
         }

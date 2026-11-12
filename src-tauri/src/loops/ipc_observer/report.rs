@@ -1,7 +1,25 @@
-use super::{
-    stamp, BlackBoxRecord, FreezeMarker, TickSnapshot, Verdict, COVERAGE_LINE, LOOP_OUTLIVED_MS,
-    MAX_LOG_LINE,
-};
+use chrono::{Local, TimeZone};
+
+use super::observation::{BlackBoxRecord, FreezeMarker, TickSnapshot, Verdict, LOOP_OUTLIVED_MS};
+
+/// Longest silence-block line before the `recent:` list is wrapped.
+const MAX_LOG_LINE: usize = 512;
+
+/// Fixed text repeated on every record block. It is what stops a record with an
+/// empty `pending` list from reading as exonerating when the hung call was a
+/// `plugin:window|*` one; see `epic.md` decision 2.
+const COVERAGE_LINE: &str = "[ipc-blackbox]   coverage: app commands only. Tauri plugin IPC \
+    (plugin:window|*, plugin:webview|*, plugin:dialog|open, plugin:event|*) enters neither \
+    registry, so an empty pending list does not exonerate a hung window call.";
+
+/// `chrono::Local` `%H:%M:%S%.3f`, to line up with the surrounding `app.log`
+/// lines.
+fn stamp(ms: u64) -> String {
+    match Local.timestamp_millis_opt(ms as i64) {
+        chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f").to_string(),
+        _ => format!("+{ms}ms"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Block builders (pure)
@@ -124,7 +142,7 @@ pub(super) fn marker_only_block(marker: &FreezeMarker) -> Vec<String> {
 pub(super) fn summary_line(entries: &[(String, &'static str)]) -> String {
     let body = entries
         .iter()
-        .map(|(label, tag)| format!("{}={}", label, tag))
+        .map(|(label, tag)| format!("{label}={tag}"))
         .collect::<Vec<_>>()
         .join(" ");
     format!(

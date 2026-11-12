@@ -11,7 +11,7 @@ pub(super) fn apply(tx: &Transaction<'_>) -> Result<(), MessageStoreError> {
     Ok(())
 }
 
-const SQL: &str = r#"
+const SQL: &str = r"
                 CREATE TABLE pty_input_operations(
                     injection_id TEXT PRIMARY KEY,
                     sender_fqn TEXT NOT NULL,
@@ -410,4 +410,4 @@ const SQL: &str = r#"
                              'daemon_restart_after_actuation','runtime_actuation_orphan',
                              'terminal_store_failed')))
                 );
-                "#;
+                ";

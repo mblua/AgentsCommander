@@ -5,12 +5,12 @@ use super::settle::filter_sessions_by_fqn;
 use crate::config::settings::SettingsState;
 use crate::config::teams;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use crate::MasterToken;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
@@ -48,7 +48,7 @@ impl MailboxPoller {
         let mut matches = filter_sessions_by_fqn(&sessions, agent_name);
 
         if matches.is_empty() {
-            log::warn!("[mailbox] No session matched for '{}'", agent_name);
+            log::warn!("[mailbox] No session matched for '{agent_name}'");
             return None;
         }
 
@@ -89,7 +89,7 @@ impl MailboxPoller {
     /// Find ALL viable CWD-matched candidates for wake delivery, sorted by
     /// preference (Active/Running first, then Idle, then Exited; non-temp before
     /// temp). Filters out records whose `SessionStatus` is non-`Exited` but
-    /// whose PtyManager entry is missing — those are desync phantoms (issue
+    /// whose `PtyManager` entry is missing — those are desync phantoms (issue
     /// #223). `Exited(_)` candidates are RETAINED for the respawn path.
     ///
     /// Returns `(viable, had_any_match)`:
@@ -149,18 +149,15 @@ impl MailboxPoller {
         let mut viable = Vec::new();
         for (id, status, name) in candidates {
             let has_pty = self.has_pty_session_for_wake(app, id).await;
-            if !is_viable_wake_candidate(&status, has_pty) {
+            if is_viable_wake_candidate(&status, has_pty) {
+                viable.push((id, status));
+            } else {
                 // Phantom skip — observable in prod logs to scope the AC3
                 // follow-up. (dev-rust R1.B4.)
                 log::warn!(
-                    "[mailbox] skipping desync phantom: id={} status={:?} has_pty={} name='{}'",
-                    id,
-                    status,
-                    has_pty,
-                    name
+                    "[mailbox] skipping desync phantom: id={id} status={status:?} \
+                     has_pty={has_pty} name='{name}'"
                 );
-            } else {
-                viable.push((id, status));
             }
         }
 
@@ -308,9 +305,9 @@ impl MailboxPoller {
     /// primary write — for app-outbox messages it would land under
     /// `<config_dir>/instances/<id>/responses/`, a directory the CLI does
     /// not poll, leaking orphan JSON files with no GC.
-    pub(crate) async fn handle_close_session<R: tauri::Runtime>(
+    pub(crate) async fn handle_close_session<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -331,7 +328,7 @@ impl MailboxPoller {
                         .reject_message(
                             path,
                             msg,
-                            &format!("close-session target unresolvable: {}", e),
+                            &format!("close-session target unresolvable: {e}"),
                         )
                         .await;
                 }
@@ -340,8 +337,8 @@ impl MailboxPoller {
 
         // Re-check master token for coordinator auth bypass (independent of routing bypass above)
         let is_master = if let Some(ref token_str) = msg.token {
-            let master = app.state::<MasterToken>();
-            accepts_close_session_token(&master, token_str)
+            let master = app.master_required();
+            accepts_close_session_token(master, token_str)
         } else {
             false
         };
@@ -380,10 +377,10 @@ impl MailboxPoller {
         let mut session_ids = self.find_all_sessions(app, target).await;
         let mut restore_in_progress_result = false;
         if session_ids.is_empty() {
-            let restore_flag = app.state::<Arc<crate::RestoreInProgress>>();
+            let restore_flag = app.restore_required();
             if restore_flag.0.load(std::sync::atomic::Ordering::SeqCst) {
                 restore_in_progress_result = self
-                    .wait_for_restored_close_targets(app, target, &restore_flag, &mut session_ids)
+                    .wait_for_restored_close_targets(app, target, restore_flag, &mut session_ids)
                     .await;
             }
         }
@@ -486,8 +483,7 @@ async fn persist_unmatched_close_sessions(session_mgr: &Arc<tokio::sync::RwLock<
     if let Err(e) = crate::config::sessions_persistence::persist_current_state_result(&mgr).await {
         log::warn!(
             "[mailbox] close-session: failed to persist cleaned sessions.json after \
-            no_match: {}",
-            e
+            no_match: {e}"
         );
     }
 }
@@ -618,10 +614,7 @@ async fn write_close_session_response(
         let json = match serde_json::to_string_pretty(&response) {
             Ok(j) => j,
             Err(e) => {
-                log::warn!(
-                    "[mailbox] Failed to serialize close-session response: {}",
-                    e
-                );
+                log::warn!("[mailbox] Failed to serialize close-session response: {e}");
                 return;
             }
         };
@@ -662,12 +655,11 @@ async fn write_close_session_response(
                 .join(crate::config::agent_local_dir_name())
                 .join("responses");
             let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-            let response_path = responses_dir.join(format!("{}.json", rid));
+            let response_path = responses_dir.join(format!("{rid}.json"));
             if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                 log::warn!(
                     "[mailbox] Failed to write close-session response to resolved-sender path: \
-                    {}",
-                    e
+                    {e}"
                 );
             }
         } else if is_app_outbox {
@@ -689,24 +681,21 @@ async fn write_close_session_response(
 fn write_outbox_close_session_response(path: &std::path::Path, rid: &str, json: &str) {
     let outbox_relative_responses_dir = path
         .parent()
-        .and_then(|p| p.parent())
+        .and_then(std::path::Path::parent)
         .map(|ac_dir| ac_dir.join("responses"));
     if let Some(responses_dir) = outbox_relative_responses_dir {
         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-        let response_path = responses_dir.join(format!("{}.json", rid));
+        let response_path = responses_dir.join(format!("{rid}.json"));
         if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, json) {
             log::warn!(
                 "[mailbox] Failed to write close-session response to outbox-relative \
-                path {:?}: {}",
-                response_path,
-                e
+                path {response_path:?}: {e}"
             );
         }
     } else {
         log::warn!(
             "[mailbox] close-session: cannot derive outbox-relative responses dir from \
-            message path {:?}",
-            path
+            message path {path:?}"
         );
     }
 }

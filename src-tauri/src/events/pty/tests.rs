@@ -261,3 +261,45 @@ async fn menu_edge_resolves_current_settings_and_tolerates_missing_state() {
     assert!(guard.is_blocked(id), "unavailable settings skip cleanup");
     assert_eq!(events.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+/// #3948 - the edge adapter keeps the `session_git_repos` event name and the exact
+/// camelCase payload: one emit per call, ordered repos, null branch/dirty preserved.
+#[test]
+fn issue_3948_git_events_adapter_preserves_session_git_repos_payload() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let payloads = Arc::new(Mutex::new(Vec::new()));
+    let received = payloads.clone();
+    app.listen("session_git_repos", move |event| {
+        received
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+    });
+    let id = Uuid::new_v4();
+    let repos = vec![
+        SessionRepo {
+            label: "Zeta".into(),
+            source_path: "C:/repos/repo-Zeta".into(),
+            branch: Some("feature/x".into()),
+            dirty: Some(true),
+        },
+        SessionRepo {
+            label: "Alpha".into(),
+            source_path: "C:/repos/repo-Alpha".into(),
+            branch: None,
+            dirty: None,
+        },
+    ];
+    GitEvents::session_git_repos(app.handle(), id, repos);
+    assert_eq!(
+        *payloads.lock().unwrap(),
+        vec![serde_json::json!({ "sessionId": id.to_string(), "repos": [
+            { "label": "Zeta", "sourcePath": "C:/repos/repo-Zeta",
+              "branch": "feature/x", "dirty": true },
+            { "label": "Alpha", "sourcePath": "C:/repos/repo-Alpha",
+              "branch": null, "dirty": null },
+        ]})]
+    );
+}

@@ -13,14 +13,14 @@ impl SessionManager {
     pub async fn mark_idle(&self, id: Uuid) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.mark_idle_with_carrier_permit(&carrier_permit, id)
-            .await
+            .await;
     }
 
     /// Mirror of [`Self::mark_idle`]. See the emit-only note there.
     pub async fn mark_busy(&self, id: Uuid) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.mark_busy_with_carrier_permit(&carrier_permit, id)
-            .await
+            .await;
     }
 
     /// #1682 - record that a message write reached an arming site for `id`, NOT that a
@@ -30,7 +30,7 @@ impl SessionManager {
     pub async fn arm_agent_turn(&self, id: Uuid) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.arm_agent_turn_with_carrier_permit(&carrier_permit, id)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

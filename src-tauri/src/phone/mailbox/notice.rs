@@ -1,3 +1,5 @@
+pub(crate) use super::refresh::{ProjectRefreshEventPayload, ProjectRefreshPollBatch};
+
 use crate::config::injected_messages::render;
 use crate::config::injected_messages::BRANCH_STALE_MESSAGE_ID;
 use crate::config::injected_messages::CI_FINISHED_MESSAGE_ID;
@@ -19,16 +21,13 @@ use crate::config::injected_messages::TOKEN_THRESHOLDS;
 use crate::config::injected_messages::TOKEN_WORKGROUP;
 use crate::config::settings::AgentConfig;
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::pty_observation::PtyAuthorityState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::inject::LogicalPtyCommand;
-use crate::pty::manager::PtyManager;
-use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 pub(crate) fn sender_name_for_session_cwd_with_root_flag(
@@ -386,12 +385,12 @@ impl InternalSystemNotice {
             } => {
                 let thresholds = thresholds
                     .iter()
-                    .map(|threshold| format!("{}%", threshold))
+                    .map(|threshold| format!("{threshold}%"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 // `values` borrows, so the observed percentage needs a binding that
                 // outlives the slice.
-                let observed = format!("{}%", observed);
+                let observed = format!("{observed}%");
                 render(
                     CONTEXT_ALERT_MESSAGE_ID,
                     &[
@@ -544,7 +543,7 @@ pub(crate) fn canonical_cwd_owned_by_replica(
     let Some(lexical_replica) = lexical.ancestors().find(|ancestor| {
         ancestor
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
         return Ok(false);
@@ -588,7 +587,7 @@ pub(crate) fn canonical_cwd_owned_by_replica(
     }
     let canonical = phone_mailbox::canonical_mailbox_path(Path::new(cwd))
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
-        .map_err(|e| format!("Failed to canonicalize recipient CWD '{}': {}", cwd, e))?;
+        .map_err(|e| format!("Failed to canonicalize recipient CWD '{cwd}': {e}"))?;
     Ok(canonical == replica_dir || canonical.starts_with(replica_dir))
 }
 
@@ -620,28 +619,28 @@ pub(crate) fn inline_body_from_file_notification(
     let parent = Path::new(notification_path)
         .parent()
         .ok_or_else(|| "file notification does not include a parent directory".to_string())?;
-    if parent.file_name().and_then(|n| n.to_str())
+    if parent.file_name().and_then(std::ffi::OsStr::to_str)
         != Some(crate::phone::messaging::MESSAGING_DIR_NAME)
     {
         return Err("file notification parent is not a messaging directory".to_string());
     }
 
     let wg_root = crate::phone::messaging::workgroup_root(sender_root)
-        .map_err(|e| format!("sender room could not be resolved: {}", e))?;
+        .map_err(|e| format!("sender room could not be resolved: {e}"))?;
     let allowed_messaging_dir = crate::phone::messaging::messaging_dir(&wg_root)
-        .map_err(|e| format!("sender messaging directory could not be resolved: {}", e))?;
+        .map_err(|e| format!("sender messaging directory could not be resolved: {e}"))?;
     let canon_allowed = phone_mailbox::canonical_mailbox_path(&allowed_messaging_dir)
-        .map_err(|e| format!("sender messaging directory not readable: {}", e))?;
+        .map_err(|e| format!("sender messaging directory not readable: {e}"))?;
     let canon_parent = phone_mailbox::canonical_mailbox_path(parent)
-        .map_err(|e| format!("file notification parent not readable: {}", e))?;
+        .map_err(|e| format!("file notification parent not readable: {e}"))?;
     if canon_parent != canon_allowed {
         return Err("file notification parent is outside sender messaging directory".to_string());
     }
 
     let abs = crate::phone::messaging::resolve_existing_message(&allowed_messaging_dir, filename)
-        .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
+        .map_err(|e| format!("message file not readable for container delivery: {e}"))?;
     let bytes = phone_mailbox::read_mailbox_message(&abs)
-        .map_err(|e| format!("message file not readable for container delivery: {}", e))?;
+        .map_err(|e| format!("message file not readable for container delivery: {e}"))?;
     if bytes.len() > crate::api::message_store::INLINE_BODY_MAX_BYTES {
         return Err(format!(
             "message file exceeds inline cap ({} bytes)",
@@ -649,35 +648,19 @@ pub(crate) fn inline_body_from_file_notification(
         ));
     }
     let body = String::from_utf8(bytes)
-        .map_err(|e| format!("message file is not UTF-8 for container delivery: {}", e))?;
+        .map_err(|e| format!("message file is not UTF-8 for container delivery: {e}"))?;
     Ok(Some(body))
 }
 
-pub(crate) fn is_container_backend_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn is_container_backend_session<S: PtyAuthorityState + ?Sized>(
+    app: &S,
     session_id: Uuid,
 ) -> Result<bool, String> {
-    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let pty_mgr = app.pty_routes();
     let mgr = pty_mgr
         .lock()
-        .map_err(|e| format!("PTY lock failed: {}", e))?;
+        .map_err(|e| format!("PTY lock failed: {e}"))?;
     Ok(mgr.backend_kind(session_id) == Some(SessionBackendKind::ContainerTransport))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProjectRefreshEventPayload {
-    pub(crate) id: String,
-    pub(crate) project_path: String,
-    pub(crate) changed_path: Option<String>,
-    pub(crate) changed_name: Option<String>,
-    pub(crate) reason: String,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ProjectRefreshPollBatch {
-    pub(crate) payloads: Vec<ProjectRefreshEventPayload>,
-    pub(crate) processed_paths: Vec<PathBuf>,
 }
 
 pub(crate) fn canonical_project_refresh_path(path: &str) -> String {
@@ -688,11 +671,7 @@ pub(crate) fn canonical_project_refresh_path(path: &str) -> String {
 }
 
 pub(crate) fn project_refresh_priority(reason: &str) -> u8 {
-    if reason == "projectRegistered" {
-        0
-    } else {
-        1
-    }
+    u8::from(reason != "projectRegistered")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -751,16 +730,12 @@ pub(crate) fn resolve_wake_agent_command_from_sources(
 ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
     if preferred_agent != "auto" {
         if let Some(agent) = agents.iter().find(|a| a.id == preferred_agent) {
-            return normalize_agent_for_wake(
-                agent,
-                format!("preferredAgent '{}'", preferred_agent),
-            )
-            .map(Some);
+            return normalize_agent_for_wake(agent, format!("preferredAgent '{preferred_agent}'"))
+                .map(Some);
         }
         log::warn!(
-            "[mailbox] wake: preferredAgent '{}' did not match a configured agent id; falling back \
-            to auto resolution",
-            preferred_agent
+            "[mailbox] wake: preferredAgent '{preferred_agent}' did not match a configured agent \
+             id; falling back to auto resolution"
         );
     }
 
@@ -771,13 +746,12 @@ pub(crate) fn resolve_wake_agent_command_from_sources(
     // lastCodingAgent, and so a new selection overrides a stale launch history.
     if let Some(agent_id) = destination_current_agent {
         if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
-            return normalize_agent_for_wake(agent, format!("currentCodingAgent '{}'", agent_id))
+            return normalize_agent_for_wake(agent, format!("currentCodingAgent '{agent_id}'"))
                 .map(Some);
         }
         log::debug!(
-            "[mailbox] wake: currentCodingAgent '{}' did not match a configured agent id; falling \
-            back",
-            agent_id
+            "[mailbox] wake: currentCodingAgent '{agent_id}' did not match a configured agent \
+             id; falling back"
         );
     }
 
@@ -785,25 +759,23 @@ pub(crate) fn resolve_wake_agent_command_from_sources(
         if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
             let source = match destination_config_path {
                 Some(path) => format!("lastCodingAgent '{}' from {}", agent_id, path.display()),
-                None => format!("lastCodingAgent '{}'", agent_id),
+                None => format!("lastCodingAgent '{agent_id}'"),
             };
             return normalize_agent_for_wake(agent, source).map(Some);
         }
         log::debug!(
-            "[mailbox] wake: lastCodingAgent '{}' did not match a configured agent id; falling \
-            back",
-            agent_id
+            "[mailbox] wake: lastCodingAgent '{agent_id}' did not match a configured agent \
+             id; falling back"
         );
     }
 
     if let Some(agent_id) = sender_agent {
         if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
-            return normalize_agent_for_wake(agent, format!("senderAgent '{}'", agent_id))
-                .map(Some);
+            return normalize_agent_for_wake(agent, format!("senderAgent '{agent_id}'")).map(Some);
         }
         log::debug!(
-            "[mailbox] wake: senderAgent '{}' did not match a configured agent id; falling back",
-            agent_id
+            "[mailbox] wake: senderAgent '{agent_id}' did not match a configured agent id; \
+             falling back"
         );
     }
 
@@ -864,16 +836,16 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
     let filename = crate::phone::messaging::notification_filename(notification_path)
         .ok_or_else(|| "Root Agent file notification must point to a Markdown file".to_string())?;
     crate::phone::messaging::validate_root_notification_filename(filename)
-        .map_err(|e| format!("Root Agent file notification is invalid: {}", e))?;
+        .map_err(|e| format!("Root Agent file notification is invalid: {e}"))?;
 
     let notification_path = Path::new(notification_path);
     if !notification_path.is_absolute() {
         return Err("Root Agent file notification must use an absolute path".into());
     }
     let canon_file = phone_mailbox::canonical_mailbox_path(notification_path)
-        .map_err(|e| format!("Root Agent file notification target is not readable: {}", e))?;
+        .map_err(|e| format!("Root Agent file notification target is not readable: {e}"))?;
     if !phone_mailbox::mailbox_path_metadata(&canon_file)
-        .map_err(|e| format!("Root Agent file notification target is not readable: {}", e))?
+        .map_err(|e| format!("Root Agent file notification target is not readable: {e}"))?
         .is_file()
     {
         return Err("Root Agent file notification target is not a regular file".into());
@@ -901,7 +873,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 /// `<project_dir>/<workspace>/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
 /// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
 ///
-/// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
+/// Mirrors the WG-replica walk-up in `cli::send::project::derive_root_project_dir` so
 /// the mailbox can resolve qualified WG-peer FQNs against the same root-walk-up
 /// source the sending CLI used (and the same source `list_peers::detect_wg_replica`
 /// uses to report siblings as `reachable: true`). In-memory only — settings.json
@@ -916,7 +888,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 /// `list_peers::detect_wg_replica`. The shared
 /// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
 /// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
-/// `cli::send::derive_root_project_dir` and `list_peers::detect_wg_replica`,
+/// `cli::send::project::derive_root_project_dir` and `list_peers::detect_wg_replica`,
 /// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
 /// prefix to reach the `__agent_*` dir stays here.
 pub(crate) fn derive_project_from_outbox_path(
@@ -939,7 +911,10 @@ pub(crate) fn derive_project_from_outbox_path(
         return Ok(None);
     };
     match crate::config::ac_root::wg_replica_layout_from_agent_dir(agent_dir)? {
-        Some(layout) => Ok(layout.project_dir.to_str().map(|path| path.to_string())),
+        Some(layout) => Ok(layout
+            .project_dir
+            .to_str()
+            .map(std::string::ToString::to_string)),
         None => Ok(None),
     }
 }
@@ -982,8 +957,8 @@ pub(crate) fn logical_command_wire_value(command: LogicalPtyCommand) -> &'static
 pub(crate) fn parse_remote_pty_command(wire_value: &str) -> Result<LogicalPtyCommand, String> {
     LogicalPtyCommand::from_wire_value(wire_value).ok_or_else(|| {
         format!(
-            "{} '{}'. Allowed values: clear, compact",
-            ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND, wire_value
+            "{ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND} '{wire_value}'. \
+             Allowed values: clear, compact"
         )
     })
 }

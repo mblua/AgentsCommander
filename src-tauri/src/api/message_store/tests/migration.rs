@@ -1,9 +1,6 @@
 use super::*;
 
-fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open(path).unwrap();
-    conn.execute_batch(
-        r#"
+const V2_MESSAGES_SQL: &str = r"
         CREATE TABLE IF NOT EXISTS api_message_schema(
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL
@@ -44,7 +41,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         INSERT INTO api_message_schema(version, applied_at)
 
         VALUES(1, '2026-08-30T00:00:00.000Z');
+";
 
+const V2_PTY_INPUT_OPERATIONS_SQL: &str = r"
         CREATE TABLE pty_input_operations(
             injection_id TEXT PRIMARY KEY,
             sender_fqn TEXT NOT NULL,
@@ -259,6 +258,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         );
         CREATE INDEX idx_pty_input_due
             ON pty_input_operations(source_plane, status, next_attempt_at, lease_until);
+";
+
+const V2_PTY_INPUT_AUDIT_SQL: &str = r"
         CREATE TABLE pty_input_audit(
             event_id TEXT PRIMARY KEY,
             injection_id TEXT NOT NULL,
@@ -289,6 +291,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
                 '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' ||
                     '[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')
         );
+";
+
+const V2_PTY_INPUT_TOMBSTONES_SQL: &str = r"
         CREATE TABLE pty_input_tombstones(
             injection_id TEXT PRIMARY KEY,
             sender_fqn TEXT NOT NULL,
@@ -414,35 +419,9 @@ fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
         INSERT INTO api_message_schema(version, applied_at)
 
         VALUES(2, '2026-08-30T00:00:01.000Z');
-        "#,
-    )
-    .unwrap();
-    conn
-}
+        ";
 
-fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
-    let sql = format!("SELECT * FROM {table} ORDER BY injection_id");
-    let mut statement = conn.prepare(&sql).unwrap();
-    let column_count = statement.column_count();
-    let rows = statement
-        .query_map([], |row| {
-            (0..column_count)
-                .map(|index| row.get(index))
-                .collect::<rusqlite::Result<Vec<_>>>()
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    rows
-}
-
-#[test]
-fn test_schema_v3_migration_rebuilds_check_constraints() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join(DB_FILENAME);
-    let conn = setup_v2_database(&path);
-    conn.execute_batch(
-        r#"
+const V2_SEED_ROWS_SQL: &str = r"
         INSERT INTO pty_input_operations(
             injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
             request_fingerprint,confirmation_tag,version,enter_mode,
@@ -523,85 +502,34 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
             '2099-08-30T00:00:05.000Z','rejected','invalid_text',
             'The payload text contains prohibited control characters.'
         );
-        "#,
-    )
-    .unwrap();
+        ";
 
-    let version: i64 = conn
-        .query_row("SELECT MAX(version) FROM api_message_schema", [], |row| {
-            row.get(0)
+fn setup_v2_database(path: &std::path::Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(V2_MESSAGES_SQL).unwrap();
+    conn.execute_batch(V2_PTY_INPUT_OPERATIONS_SQL).unwrap();
+    conn.execute_batch(V2_PTY_INPUT_AUDIT_SQL).unwrap();
+    conn.execute_batch(V2_PTY_INPUT_TOMBSTONES_SQL).unwrap();
+    conn
+}
+
+fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let sql = format!("SELECT * FROM {table} ORDER BY injection_id");
+    let mut statement = conn.prepare(&sql).unwrap();
+    let column_count = statement.column_count();
+    let rows = statement
+        .query_map([], |row| {
+            (0..column_count)
+                .map(|index| row.get(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
         })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    assert_eq!(version, 2);
-    let v2_schema: String = conn
-        .query_row(
-            r#"SELECT group_concat(sql, char(10)) FROM sqlite_schema
-               WHERE type='table'
-                 AND name IN ('pty_input_operations','pty_input_tombstones')"#,
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(!v2_schema.contains("menu_guard_blocked"));
-    assert!(conn
-        .execute(
-            r#"UPDATE pty_input_operations
-               SET reason_code='menu_guard_blocked', reason_detail='blocked'
-               WHERE injection_id='00000000-0000-4000-8000-000000000003'"#,
-            [],
-        )
-        .is_err());
+    rows
+}
 
-    let expected_operations = snapshot_table(&conn, "pty_input_operations");
-    let expected_tombstones = snapshot_table(&conn, "pty_input_tombstones");
-    assert_eq!(expected_operations.len(), 3);
-    assert_eq!(expected_tombstones.len(), 2);
-    drop(conn);
-
-    // Startup recovery would legitimately rewrite a preparing operation. Hold its
-    // operation stripe so this test isolates the v2 -> v3 table-copy migration.
-    let preparing_guard = try_stripe_lock_at(
-        path.parent().unwrap(),
-        "00000000-0000-4000-8000-000000000002",
-        true,
-    )
-    .unwrap()
-    .unwrap();
-    let store = MessageStore::open(path).unwrap();
-    drop(preparing_guard);
-
-    let conn = store.conn.lock().unwrap();
-    let version: i64 = conn
-        .query_row("SELECT MAX(version) FROM api_message_schema", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(version, 3);
-    let due_index: (String, String, String) = conn
-        .query_row(
-            r#"SELECT name,tbl_name,sql FROM sqlite_schema
-               WHERE type='index' AND name='idx_pty_input_due'"#,
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(due_index.0, "idx_pty_input_due");
-    assert_eq!(due_index.1, "pty_input_operations");
-    assert_eq!(
-        due_index.2.split_whitespace().collect::<Vec<_>>().join(" "),
-        "CREATE INDEX idx_pty_input_due ON \
-         pty_input_operations(source_plane, status, next_attempt_at, lease_until)"
-    );
-    assert_eq!(
-        snapshot_table(&conn, "pty_input_operations"),
-        expected_operations
-    );
-    assert_eq!(
-        snapshot_table(&conn, "pty_input_tombstones"),
-        expected_tombstones
-    );
-    drop(conn);
-
+fn assert_menu_guard_blocked_round_trip(store: &MessageStore) {
     let id = Uuid::new_v4().to_string();
     let enqueued = store.enqueue_pty_input(pty_request(&id, "hello")).unwrap();
     assert_eq!(
@@ -655,4 +583,89 @@ fn test_schema_v3_migration_rebuilds_check_constraints() {
         )
         .unwrap();
     assert_eq!(tombstone, ("rejected".into(), "menu_guard_blocked".into()));
+}
+
+#[test]
+fn test_schema_v3_migration_rebuilds_check_constraints() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let conn = setup_v2_database(&path);
+    conn.execute_batch(V2_SEED_ROWS_SQL).unwrap();
+
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM api_message_schema", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 2);
+    let v2_schema: String = conn
+        .query_row(
+            r"SELECT group_concat(sql, char(10)) FROM sqlite_schema
+               WHERE type='table'
+                 AND name IN ('pty_input_operations','pty_input_tombstones')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!v2_schema.contains("menu_guard_blocked"));
+    assert!(conn
+        .execute(
+            r"UPDATE pty_input_operations
+               SET reason_code='menu_guard_blocked', reason_detail='blocked'
+               WHERE injection_id='00000000-0000-4000-8000-000000000003'",
+            [],
+        )
+        .is_err());
+
+    let expected_operations = snapshot_table(&conn, "pty_input_operations");
+    let expected_tombstones = snapshot_table(&conn, "pty_input_tombstones");
+    assert_eq!(expected_operations.len(), 3);
+    assert_eq!(expected_tombstones.len(), 2);
+    drop(conn);
+
+    // Startup recovery would legitimately rewrite a preparing operation. Hold its
+    // operation stripe so this test isolates the v2 -> v3 table-copy migration.
+    let preparing_guard = try_stripe_lock_at(
+        path.parent().unwrap(),
+        "00000000-0000-4000-8000-000000000002",
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    let store = MessageStore::open(path).unwrap();
+    drop(preparing_guard);
+
+    let conn = store.conn.lock().unwrap();
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM api_message_schema", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 3);
+    let due_index: (String, String, String) = conn
+        .query_row(
+            r"SELECT name,tbl_name,sql FROM sqlite_schema
+               WHERE type='index' AND name='idx_pty_input_due'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(due_index.0, "idx_pty_input_due");
+    assert_eq!(due_index.1, "pty_input_operations");
+    assert_eq!(
+        due_index.2.split_whitespace().collect::<Vec<_>>().join(" "),
+        "CREATE INDEX idx_pty_input_due ON \
+         pty_input_operations(source_plane, status, next_attempt_at, lease_until)"
+    );
+    assert_eq!(
+        snapshot_table(&conn, "pty_input_operations"),
+        expected_operations
+    );
+    assert_eq!(
+        snapshot_table(&conn, "pty_input_tombstones"),
+        expected_tombstones
+    );
+    drop(conn);
+
+    assert_menu_guard_blocked_round_trip(&store);
 }

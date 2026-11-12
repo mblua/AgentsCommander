@@ -175,7 +175,7 @@ fn parsed_to_shortcut(parsed: &ParsedHotkey) -> Result<Shortcut, String> {
     Ok(Shortcut::new(Some(modifiers), code))
 }
 
-/// Map a normalized alphanumeric key char to a `Code` via its PascalCase name
+/// Map a normalized alphanumeric key char to a `Code` via its `PascalCase` name
 /// (`Key{A..Z}` / `Digit{0..9}`), the string form `keyboard_types::Code`
 /// round-trips through `FromStr`.
 fn key_char_to_code(c: char) -> Option<Code> {
@@ -253,7 +253,7 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
                 // configured shortcut as NOT registered so the UI surfaces the
                 // conflict (Grinch #714 LOW): `status.registered` describes the
                 // configured shortcut, not the internal fallback.
-                let msg = e.to_string();
+                let msg = e.clone();
                 runtime.status = hotkey_status_after_attempt(configured, Err(msg.as_str()));
                 Err(msg)
             }
@@ -519,7 +519,7 @@ fn resolve_live_capture_session(
 /// `begin_capture`; otherwise a second hotkey press during an in-flight capture
 /// whose active session has since been cleared/deleted or switched to an
 /// unresolvable CWD would return a visible `Err` from that resolution and raise
-/// AgentsCommander forward mid-capture instead of being a silent `Busy` no-op.
+/// `AgentsCommander` forward mid-capture instead of being a silent `Busy` no-op.
 /// Taking only `&ScreenshotCaptureState` (no `AppHandle`/`SessionManager`) keeps
 /// the before-resolution ordering structurally unit-testable.
 async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
@@ -554,7 +554,7 @@ async fn capture_all_monitors() -> Result<Vec<CapturedMonitor>, String> {
                 .map_err(|e| format!("monitor {idx} capture failed: {e}"))?;
             let x = monitor.x().map_err(|e| e.to_string())?;
             let y = monitor.y().map_err(|e| e.to_string())?;
-            let scale_factor = monitor.scale_factor().map_err(|e| e.to_string())? as f64;
+            let scale_factor = f64::from(monitor.scale_factor().map_err(|e| e.to_string())?);
             let name = monitor.name().unwrap_or_else(|_| format!("monitor-{idx}"));
             // The captured bitmap is the authoritative size for crop math; do not
             // trust monitor.width()/height() for it (plan §B, dev-rust §B).

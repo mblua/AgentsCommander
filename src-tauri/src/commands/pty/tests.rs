@@ -9,112 +9,104 @@ use crate::session::session::SessionRepo;
 mod typing_hold;
 mod watcher_preview;
 
-#[tokio::test]
-async fn e2992_p42_invalid_defers_hold() {
-    use crate::config::settings::{
-        SettingsAvailability, SettingsOwner, SettingsOwnerError, SettingsPublisher, SettingsState,
-    };
+// Establishes real close eligibility through existing APIs for the p42 test.
+fn p42_eligible_state() -> (crate::pty::manager::ResponseCloseState, Uuid) {
     use crate::pty::manager::{
-        ResponseCloseError, ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
-        ResponseRouteIdentity, ReturnDeliveryProof,
+        ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof, ResponseRouteIdentity,
+        ReturnDeliveryProof,
     };
     use std::time::Instant;
 
-    // Local fixture establishes real close eligibility through existing APIs.
-    let eligible_app = |settings: SettingsState| {
-        let state = ResponseCloseState::default();
-        let baseline = Instant::now()
-            .checked_sub(Duration::from_secs(120))
-            .unwrap();
-        for publisher in [
-            ResponseClosePublisher::Manager,
-            ResponseClosePublisher::Pty,
-            ResponseClosePublisher::RawOutput,
-            ResponseClosePublisher::Detector,
-            ResponseClosePublisher::Menu,
-            ResponseClosePublisher::Hold,
-        ] {
-            state.bind_publisher(publisher);
-        }
-        state.mark_work_bootstrapped();
-        state.try_enable_readiness().unwrap();
-        state.apply_settings(true, 30, baseline);
-        let member = ResponseRouteIdentity {
-            target: "p42:room/member".into(),
-            session_id: Uuid::new_v4(),
-            token: Uuid::new_v4(),
-            generation: 1,
-            carrier_version: 1,
-            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-        };
-        let coordinator = ResponseRouteIdentity {
-            target: "p42:room/coordinator".into(),
-            session_id: Uuid::new_v4(),
-            token: Uuid::new_v4(),
-            generation: 2,
-            carrier_version: 1,
-            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-        };
-        for (identity, eligible) in [(&member, true), (&coordinator, false)] {
-            state.register_route(identity.session_id, identity.generation, baseline);
-            state.publish_manager_row(
-                identity.session_id,
-                identity.token,
-                identity.generation,
-                identity.carrier_version,
-                eligible,
-                false,
-                baseline,
-            );
-            state.publish_manager_facts(identity.clone(), eligible, false, baseline);
-        }
-        let id = member.session_id;
-        state.observe_detector(id, false, baseline);
-        state.publish_menu(id, Some(false), baseline);
-        state.publish_hold(id, None, true, baseline);
-        let mut work = state.reserve_work(&member.target, "request").unwrap();
-        work.accept_durable("request").unwrap();
-        drop(work);
-        let writer = state.reserve_writer(id, member.generation).unwrap();
-        let context = state
-            .reserve_policy_candidate(
-                member.clone(),
-                coordinator.clone(),
-                "request".into(),
-                "request".into(),
-                baseline,
-            )
-            .unwrap();
-        drop(writer);
-        state.mark_request_submitted(&context, true);
-        state
-            .register_request(
-                ResponseDeliveryProof {
-                    context,
-                    member: member.clone(),
-                    coordinator: coordinator.clone(),
-                    published_carrier_version: member.carrier_version,
-                },
-                baseline,
-            )
-            .unwrap();
-        let context = state
-            .admit_return(&member, &coordinator, "ack".into(), "ack".into(), baseline)
-            .unwrap();
-        state
-            .observe_return_success(ReturnDeliveryProof { context }, baseline)
-            .unwrap();
-        assert!(state
-            .select_ticket(id, Instant::now() + Duration::from_secs(60))
-            .is_ok());
-        let app = tauri::test::mock_builder()
-            .manage(settings)
-            .manage(state.clone())
-            .manage(crate::pty::input_activity::new_typing_hold_state())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        (app, state, id)
+    let state = ResponseCloseState::default();
+    let baseline = Instant::now()
+        .checked_sub(Duration::from_secs(120))
+        .unwrap();
+    for publisher in [
+        ResponseClosePublisher::Manager,
+        ResponseClosePublisher::Pty,
+        ResponseClosePublisher::RawOutput,
+        ResponseClosePublisher::Detector,
+        ResponseClosePublisher::Menu,
+        ResponseClosePublisher::Hold,
+    ] {
+        state.bind_publisher(publisher);
+    }
+    state.mark_work_bootstrapped();
+    state.try_enable_readiness().unwrap();
+    state.apply_settings(true, 30, baseline);
+    let member = ResponseRouteIdentity {
+        target: "p42:room/member".into(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 1,
+        carrier_version: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
     };
+    let coordinator = ResponseRouteIdentity {
+        target: "p42:room/coordinator".into(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 2,
+        carrier_version: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+    };
+    for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+        state.register_route(identity.session_id, identity.generation, baseline);
+        state.publish_manager_row(
+            identity.session_id,
+            identity.token,
+            identity.generation,
+            identity.carrier_version,
+            eligible,
+            false,
+            baseline,
+        );
+        state.publish_manager_facts(identity.clone(), eligible, false, baseline);
+    }
+    let id = member.session_id;
+    state.observe_detector(id, false, baseline);
+    state.publish_menu(id, Some(false), baseline);
+    state.publish_hold(id, None, true, baseline);
+    let mut work = state.reserve_work(&member.target, "request").unwrap();
+    work.accept_durable("request").unwrap();
+    drop(work);
+    let writer = state.reserve_writer(id, member.generation).unwrap();
+    let context = state
+        .reserve_policy_candidate(
+            member.clone(),
+            coordinator.clone(),
+            "request".into(),
+            "request".into(),
+            baseline,
+        )
+        .unwrap();
+    drop(writer);
+    state.mark_request_submitted(&context, true);
+    state
+        .register_request(
+            ResponseDeliveryProof {
+                context,
+                member: member.clone(),
+                coordinator: coordinator.clone(),
+                published_carrier_version: member.carrier_version,
+            },
+            baseline,
+        )
+        .unwrap();
+    let context = state
+        .admit_return(&member, &coordinator, "ack".into(), "ack".into(), baseline)
+        .unwrap();
+    state
+        .observe_return_success(ReturnDeliveryProof { context }, baseline)
+        .unwrap();
+    assert!(state
+        .select_ticket(id, Instant::now() + Duration::from_secs(60))
+        .is_ok());
+    (state, id)
+}
+
+fn p42_active_owner() -> (tempfile::TempDir, crate::config::settings::SettingsState) {
+    use crate::config::settings::SettingsOwner;
 
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
@@ -124,6 +116,50 @@ async fn e2992_p42_invalid_defers_hold() {
     };
     std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
     let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+    (temp, owner)
+}
+
+async fn p42_publish_invalid(owner: &crate::config::settings::SettingsState) {
+    use crate::config::settings::{SettingsAvailability, SettingsPublisher};
+
+    let report = owner
+        .with_operation("p42-invalid", |_, guard| {
+            guard.publish(SettingsPublisher::SettingsSave, |path| {
+                std::fs::write(path, b"{").map_err(|error| error.to_string())
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.availability, SettingsAvailability::Invalid);
+    assert!(owner.current_snapshot().await.is_err());
+}
+
+fn p42_staged_settings() -> crate::config::settings::SettingsState {
+    crate::config::settings::new_settings_state(crate::config::settings::AppSettings {
+        typing_hold_seconds: 17,
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn e2992_p42_invalid_defers_hold() {
+    use crate::config::settings::{SettingsOwnerError, SettingsState};
+    use crate::pty::manager::ResponseCloseError;
+    use std::time::Instant;
+
+    // Local fixture establishes real close eligibility through existing APIs.
+    let eligible_app = |settings: SettingsState| {
+        let (state, id) = p42_eligible_state();
+        let app = tauri::test::mock_builder()
+            .manage(settings)
+            .manage(state.clone())
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        (app, state, id)
+    };
+
+    let (_temp, owner) = p42_active_owner();
     let (app, publisher, id) = eligible_app(Arc::clone(&owner));
     assert_eq!(
         typing_hold_window(app.handle()).await.unwrap(),
@@ -146,16 +182,7 @@ async fn e2992_p42_invalid_defers_hold() {
         .select_ticket(id, after_key + Duration::from_secs(60))
         .is_ok());
 
-    let report = owner
-        .with_operation("p42-invalid", |_, guard| {
-            guard.publish(SettingsPublisher::SettingsSave, |path| {
-                std::fs::write(path, b"{").map_err(|error| error.to_string())
-            })
-        })
-        .await
-        .unwrap();
-    assert_eq!(report.availability, SettingsAvailability::Invalid);
-    assert!(owner.current_snapshot().await.is_err());
+    p42_publish_invalid(&owner).await;
     assert!(typing_hold_window(app.handle()).await.is_err());
     assert!(typing_hold_defers_injection(app.handle(), id).await);
     // The old hold is expired at this query; only the key's unknown signal
@@ -189,11 +216,7 @@ async fn e2992_p42_invalid_defers_hold() {
     owner.drain_blocking(Duration::ZERO);
 
     // Legacy write forwarding is valid only on this separate Staged owner.
-    let settings =
-        crate::config::settings::new_settings_state(crate::config::settings::AppSettings {
-            typing_hold_seconds: 17,
-            ..Default::default()
-        });
+    let settings = p42_staged_settings();
     let (busy_app, busy_publisher, busy_id) = eligible_app(Arc::clone(&settings));
     let write = settings.write().await;
     assert_eq!(
@@ -285,7 +308,9 @@ async fn fresh_intent_fixture() -> FreshIntentFixture {
         mgr.set_start_fresh_on_restore(session.id, true).await;
     }
     {
-        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(guard.mark_start_fresh(&fqn, chrono::Utc::now()));
     }
 
@@ -309,7 +334,7 @@ async fn record_fresh(f: &FreshIntentFixture) -> bool {
 fn mirror_fresh(f: &FreshIntentFixture) -> bool {
     f.clocks
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .start_fresh_at(&f.fqn)
         .is_some()
 }
@@ -465,7 +490,10 @@ async fn a_substantive_terminal_prompt_arms() {
 async fn typed_input_clears_auto_closed_marker() {
     let f = fresh_intent_fixture().await;
     {
-        let mut guard = f.clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = f
+            .clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(guard.mark_auto_closed(&f.fqn, chrono::Utc::now()));
     }
     let handle = f.app.handle().clone();
@@ -473,7 +501,7 @@ async fn typed_input_clears_auto_closed_marker() {
     assert_eq!(
         f.clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .auto_closed_at(&f.fqn),
         None
     );

@@ -7,17 +7,14 @@ pub(crate) fn notify_replica_context_failure<R: tauri::Runtime>(
     owned_replacement: Option<&OwnedReplacementContinuation>,
     e: &str,
 ) {
-    log::error!("Replica context validation failed: {}", e);
+    log::error!("Replica context validation failed: {e}");
     use tauri_plugin_dialog::DialogExt;
     // #537 facet (b) - the old copy blamed "context files missing",
     // but the real cause is usually a transient config.json lock
     // during replica identity repair. State what actually failed;
     // the interpolated error carries the precise, retry-suggesting
     // detail from format_publish_error.
-    let dialog_msg = format!(
-        "Cannot launch session - failed to update replica config:\n\n{}",
-        e
-    );
+    let dialog_msg = format!("Cannot launch session - failed to update replica config:\n\n{e}");
     let dialog_title = "Session Launch Error";
     #[cfg(test)]
     let notification_observed = owned_replacement.is_some_and(|owned| {

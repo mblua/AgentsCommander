@@ -364,7 +364,7 @@ pub(super) enum PendingCleanupEvidence<'a> {
     ObservedSourceStoppedOrReturnedFailure,
 }
 
-/// A transient handle to the same data-only owner retained by CoordinatorInner.
+/// A transient handle to the same data-only owner retained by `CoordinatorInner`.
 /// No app, backend, guard, task or future returns from that root.
 #[derive(Clone)]
 pub(crate) struct OwnedReplacementContinuation {
@@ -676,8 +676,11 @@ impl ReplacementState {
                 matches!(
                     (&terminal.disposition, &terminal.actual_result),
                     (EntryTerminalDisposition::Success, Ok(_))
-                        | (EntryTerminalDisposition::Failure, Err(_))
-                        | (EntryTerminalDisposition::RolledBack, Err(_))
+                        | (
+                            EntryTerminalDisposition::Failure
+                                | EntryTerminalDisposition::RolledBack,
+                            Err(_)
+                        )
                 ) && terminal.release_receipt.operation == operation
                     && self.prerequisite_attempt().ok()
                         == Some(terminal.release_receipt.prerequisite_attempt)
@@ -797,7 +800,7 @@ pub(super) struct OwnedLifecycleEntry {
 impl OwnedLifecycleEntry {
     pub(super) async fn release_lease<T>(&mut self, executor: &dyn super::LifecycleExecutor<T>) {
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let current = self.owner.state.lock().ok().is_some_and(|state| {
+        let current = self.owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == self.executor_nonce && state.stage == ReplacementStage::Returned
         });
         let authority = self.authority.take();
@@ -839,7 +842,7 @@ impl OwnedLifecycleEntry {
 impl Drop for OwnedLifecycleEntry {
     fn drop(&mut self) {
         // Release real target guards and tracker claim BEFORE observing release.
-        let released = self.authority.take().map(|authority| authority.release());
+        let released = self.authority.take().map(super::LifecycleLease::release);
         if let Ok(mut state) = self.owner.state.lock() {
             if state.executor_nonce == self.executor_nonce
                 && state.stage == ReplacementStage::Returned

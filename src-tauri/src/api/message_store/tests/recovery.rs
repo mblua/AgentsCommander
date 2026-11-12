@@ -63,10 +63,10 @@ fn startup_recovery_marks_expired_actuating_indeterminate() {
         .lock()
         .unwrap()
         .execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                SET issued_at=?1,expires_at=?2,queued_at=?3,preparing_at=?4,
                    actuating_at=?5,next_attempt_at=?3,updated_at=?5
-               WHERE injection_id=?6"#,
+               WHERE injection_id=?6",
             params![issued, expires, queued, preparing, actuating, id],
         )
         .unwrap();
@@ -87,49 +87,13 @@ fn startup_recovery_marks_expired_actuating_indeterminate() {
 fn ambiguous_actuation_commit_returns_no_payload_and_preserves_no_replay_state() {
     let store = store();
     // ACTUATING is nonterminal: this tests pending/no replay, not a failure latch.
-    let tracker = ResponseCloseState::default();
-    store.bind_response_close(tracker.clone());
-    for publisher in [
-        crate::pty::manager::ResponseClosePublisher::Manager,
-        crate::pty::manager::ResponseClosePublisher::Pty,
-        crate::pty::manager::ResponseClosePublisher::RawOutput,
-        crate::pty::manager::ResponseClosePublisher::Detector,
-        crate::pty::manager::ResponseClosePublisher::Menu,
-        crate::pty::manager::ResponseClosePublisher::Hold,
-    ] {
-        tracker.bind_publisher(publisher);
-    }
-    tracker.try_enable_readiness().unwrap();
-    let policy_now = std::time::Instant::now();
-    tracker.apply_settings(true, 30, policy_now);
-    let member = crate::pty::manager::ResponseRouteIdentity {
-        target: "proj:wg-1-team/dev".into(),
-        session_id: Uuid::new_v4(),
-        token: Uuid::new_v4(),
-        generation: 1,
-        carrier_version: 1,
-        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-    };
-    let coordinator = crate::pty::manager::ResponseRouteIdentity {
-        target: "proj:wg-1-team/lead".into(),
-        session_id: Uuid::new_v4(),
-        token: Uuid::new_v4(),
-        generation: 2,
-        ..member.clone()
-    };
-    for (identity, eligible) in [(&member, true), (&coordinator, false)] {
-        tracker.register_route(identity.session_id, identity.generation, policy_now);
-        tracker.publish_manager_row(
-            identity.session_id,
-            identity.token,
-            identity.generation,
-            1,
-            eligible,
-            false,
-            policy_now,
-        );
-        tracker.publish_manager_facts(identity.clone(), eligible, false, policy_now);
-    }
+    let (tracker, policy_now) = ready_response_close_tracker(&store);
+    let (member, coordinator) = policy_route_identities();
+    register_policy_routes(
+        &tracker,
+        [(&member, true), (&coordinator, false)],
+        policy_now,
+    );
     let id = Uuid::new_v4().to_string();
     let request = pty_request(&id, "secret text");
     let key = response_work_key("pty", &request.sender_fqn, &request.op_id);
@@ -204,6 +168,67 @@ fn ambiguous_actuation_commit_returns_no_payload_and_preserves_no_replay_state()
         ),
         Err(MessageStoreError::InvalidTransition)
     ));
+}
+
+fn ready_response_close_tracker(store: &MessageStore) -> (ResponseCloseState, std::time::Instant) {
+    let tracker = ResponseCloseState::default();
+    store.bind_response_close(tracker.clone());
+    for publisher in [
+        crate::pty::manager::ResponseClosePublisher::Manager,
+        crate::pty::manager::ResponseClosePublisher::Pty,
+        crate::pty::manager::ResponseClosePublisher::RawOutput,
+        crate::pty::manager::ResponseClosePublisher::Detector,
+        crate::pty::manager::ResponseClosePublisher::Menu,
+        crate::pty::manager::ResponseClosePublisher::Hold,
+    ] {
+        tracker.bind_publisher(publisher);
+    }
+    tracker.try_enable_readiness().unwrap();
+    let policy_now = std::time::Instant::now();
+    tracker.apply_settings(true, 30, policy_now);
+    (tracker, policy_now)
+}
+
+fn policy_route_identities() -> (
+    crate::pty::manager::ResponseRouteIdentity,
+    crate::pty::manager::ResponseRouteIdentity,
+) {
+    let member = crate::pty::manager::ResponseRouteIdentity {
+        target: "proj:wg-1-team/dev".into(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 1,
+        carrier_version: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+    };
+    let coordinator = crate::pty::manager::ResponseRouteIdentity {
+        target: "proj:wg-1-team/lead".into(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 2,
+        ..member.clone()
+    };
+    (member, coordinator)
+}
+
+fn register_policy_routes(
+    tracker: &ResponseCloseState,
+    routes: [(&crate::pty::manager::ResponseRouteIdentity, bool); 2],
+    policy_now: std::time::Instant,
+) {
+    for (identity, eligible) in routes {
+        tracker.register_route(identity.session_id, identity.generation, policy_now);
+        tracker.publish_manager_row(
+            identity.session_id,
+            identity.token,
+            identity.generation,
+            1,
+            eligible,
+            false,
+            policy_now,
+        );
+        tracker.publish_manager_facts(identity.clone(), eligible, false, policy_now);
+    }
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 
 #[test]
 fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes() {
@@ -52,87 +53,23 @@ fn assert_p03_gitignore_partial_retry_mode(mode: usize) {
     write_p05_custom_settings(&fixture);
     stage_p03_source(&fixture, mode);
     let ac = fixture.project.join(".ac");
-    let list = || {
-        let rooms = run_json(
-            &fixture.bin,
-            &["workgroup", "list", "--project", "RegisteredRemote"],
-        )
-        .0;
-        rooms
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|room| PathBuf::from(room["path"].as_str().unwrap()))
-            .collect::<std::collections::BTreeSet<_>>()
-    };
+    let list = || p03_list_rooms(&fixture);
     let baseline = list(); // naming preflight before all snapshots
     assert_eq!(baseline.len(), 1);
-    // Inline, bounded capture of these fixture-owned layouts; lock artifacts
-    // have separate authority and are intentionally not counted.
-    let capture = |root: &Path| {
-        let mut pending = vec![root.to_path_buf()];
-        let mut snapshot = std::collections::BTreeMap::new();
-        while let Some(path) = pending.pop() {
-            assert!(snapshot.len() < 128, "fixture layout exceeded bound");
-            let relative = path.strip_prefix(root).unwrap().to_path_buf();
-            assert!(relative.components().count() <= 4);
-            let metadata = std::fs::symlink_metadata(&path).unwrap();
-            assert!(!metadata.file_type().is_symlink());
-            if path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(".lock"))
-            {
-                continue;
-            }
-            if metadata.is_dir() {
-                snapshot.insert(relative, None);
-                pending.extend(
-                    std::fs::read_dir(&path)
-                        .unwrap()
-                        .map(|entry| entry.unwrap().path()),
-                );
-            } else {
-                assert!(metadata.is_file() && metadata.len() <= 1024 * 1024);
-                snapshot.insert(relative, Some(std::fs::read(&path).unwrap()));
-            }
-        }
-        snapshot
-    };
+    let capture = p03_capture_layout;
     let baseline_files = capture(baseline.first().unwrap());
     let config_paths = [
         ac.join("_team_devs/config.json"),
         ac.join("_agent_coord/config.json"),
         ac.join("_agent_peer/config.json"),
     ];
-    let config_bytes: Vec<_> = config_paths
-        .iter()
-        .map(|path| std::fs::read(path).unwrap())
-        .collect();
-    let refresh_before: std::collections::BTreeMap<_, _> =
-        project_refresh_request_paths(&fixture.config)
-            .into_iter()
-            .map(|path| {
-                let bytes = std::fs::read(&path).unwrap();
-                (path, bytes)
-            })
-            .collect();
+    let config_bytes = p03_read_all(&config_paths);
+    let refresh_before = p03_refresh_bytes(&fixture.config);
     let before = fixture.managed_bytes();
     let ignore = ac.join(".gitignore");
     assert!(!ignore.exists(), "unexpected fixture gitignore");
     std::fs::create_dir(&ignore).unwrap();
-    let output = run_failure(
-        &fixture.bin,
-        &[
-            "workgroup",
-            "add",
-            "--project",
-            "RegisteredRemote",
-            "--team",
-            "devs",
-            "--title",
-            "P03 helper failure",
-        ],
-    );
+    let output = run_failure(&fixture.bin, &p03_workgroup_add_args("P03 helper failure"));
     assert_eq!(output.status.code(), Some(1));
     assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
     let after_failure = list();
@@ -162,38 +99,12 @@ fn assert_p03_gitignore_partial_retry_mode(mode: usize) {
     assert!(ignore.is_dir() && std::fs::read_dir(&ignore).unwrap().next().is_none());
     assert_eq!(fixture.managed_bytes(), before);
     assert_eq!(capture(baseline.first().unwrap()), baseline_files);
-    assert_eq!(
-        config_paths
-            .iter()
-            .map(|path| std::fs::read(path).unwrap())
-            .collect::<Vec<_>>(),
-        config_bytes
-    );
-    let refresh_failed: std::collections::BTreeMap<_, _> =
-        project_refresh_request_paths(&fixture.config)
-            .into_iter()
-            .map(|path| {
-                let bytes = std::fs::read(&path).unwrap();
-                (path, bytes)
-            })
-            .collect();
+    assert_eq!(p03_read_all(&config_paths), config_bytes);
+    let refresh_failed = p03_refresh_bytes(&fixture.config);
     assert_eq!(refresh_failed, refresh_before);
 
     std::fs::remove_dir(&ignore).unwrap(); // only the known empty fixture directory
-    let result = run_json(
-        &fixture.bin,
-        &[
-            "workgroup",
-            "add",
-            "--project",
-            "RegisteredRemote",
-            "--team",
-            "devs",
-            "--title",
-            "P03 helper retry",
-        ],
-    )
-    .0;
+    let result = run_json(&fixture.bin, &p03_workgroup_add_args("P03 helper retry")).0;
     let healthy = PathBuf::from(result["path"].as_str().unwrap());
     assert_p03_healthy_room_layout(&healthy, &ac, &after_failure);
     let mut expected = after_failure.clone();
@@ -204,15 +115,85 @@ fn assert_p03_gitignore_partial_retry_mode(mode: usize) {
     assert!(!replica.join("config.json").exists());
     assert!(!replica.join("config.state.no-git.json").exists());
     assert_eq!(capture(baseline.first().unwrap()), baseline_files);
-    assert_eq!(
-        config_paths
-            .iter()
-            .map(|path| std::fs::read(path).unwrap())
-            .collect::<Vec<_>>(),
-        config_bytes
-    );
+    assert_eq!(p03_read_all(&config_paths), config_bytes);
     assert_eq!(fixture.managed_bytes(), before);
     assert_p03_retry_refresh(&fixture.config, &refresh_before, &healthy);
+}
+
+fn p03_workgroup_add_args(title: &'static str) -> [&'static str; 8] {
+    [
+        "workgroup",
+        "add",
+        "--project",
+        "RegisteredRemote",
+        "--team",
+        "devs",
+        "--title",
+        title,
+    ]
+}
+
+fn p03_list_rooms(fixture: &ReadonlyFixture) -> std::collections::BTreeSet<PathBuf> {
+    let rooms = run_json(
+        &fixture.bin,
+        &["workgroup", "list", "--project", "RegisteredRemote"],
+    )
+    .0;
+    rooms
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|room| PathBuf::from(room["path"].as_str().unwrap()))
+        .collect::<std::collections::BTreeSet<_>>()
+}
+
+/// Inline, bounded capture of these fixture-owned layouts; lock artifacts
+/// have separate authority and are intentionally not counted.
+fn p03_capture_layout(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut snapshot = std::collections::BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        assert!(snapshot.len() < 128, "fixture layout exceeded bound");
+        let relative = path.strip_prefix(root).unwrap().to_path_buf();
+        assert!(relative.components().count() <= 4);
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with(".lock"))
+        {
+            continue;
+        }
+        if metadata.is_dir() {
+            snapshot.insert(relative, None);
+            pending.extend(
+                std::fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else {
+            assert!(metadata.is_file() && metadata.len() <= 1024 * 1024);
+            snapshot.insert(relative, Some(std::fs::read(&path).unwrap()));
+        }
+    }
+    snapshot
+}
+
+fn p03_read_all(paths: &[PathBuf]) -> Vec<Vec<u8>> {
+    paths
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect::<Vec<_>>()
+}
+
+fn p03_refresh_bytes(config: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    project_refresh_request_paths(config)
+        .into_iter()
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect()
 }
 
 fn assert_p03_partial_room_layout(partial: &Path, ac: &Path) -> PathBuf {
@@ -348,7 +329,7 @@ fn p03_production_new_project_migrates_once_and_preserves_other_sources() {
         )
         .unwrap();
         assert!(
-            settings.get("rootToken").is_none_or(|v| v.is_null()),
+            settings.get("rootToken").is_none_or(Value::is_null),
             "incidental loader generated root privilege: {settings}"
         );
         assert_eq!(settings["defaultShell"], "powershell.exe");
@@ -532,55 +513,7 @@ fn p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes() 
         }
         let held = P03SettingsLock::acquire(&fixture.config);
         let before = fixture.managed_bytes();
-        let commands = vec![
-            vec![
-                "list-peers",
-                "--token",
-                P05_TOKEN,
-                "--root",
-                remote_root.to_str().unwrap(),
-            ],
-            vec![
-                "list-peers-lean",
-                "--token",
-                P05_TOKEN,
-                "--root",
-                remote_root.to_str().unwrap(),
-            ],
-            vec![
-                "send",
-                "--token",
-                P05_TOKEN,
-                "--root",
-                remote_root.to_str().unwrap(),
-                "--to",
-                "RegisteredRemote:room-01-devs/coord",
-                "--send",
-                P05_ROOT_MESSAGE,
-                "--mode",
-                "wake",
-                "--confirm-timeout",
-                "0",
-            ],
-            vec![
-                "close-session",
-                "--token",
-                P05_TOKEN,
-                "--root",
-                &fixture.peer,
-                "--target",
-                "RegisteredRemote:room-01-devs/coord",
-            ],
-            vec![
-                "create-agent-matrix",
-                "--project",
-                "RegisteredRemote",
-                "--name",
-                "P03Matrix",
-                "--description",
-                "P03",
-            ],
-        ];
+        let commands = p03_reader_commands(remote_root.to_str().unwrap(), &fixture.peer);
         for args in &commands {
             let start = std::time::Instant::now();
             let output = run_failure(&fixture.bin, args);
@@ -765,4 +698,50 @@ fn p03_workgroup_initial_resolution_lock_refusal_has_no_outputs_then_retry_succe
     let ignore = std::fs::read_to_string(fixture.project.join(".ac/.gitignore")).unwrap();
     assert!(ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"));
     assert_eq!(fixture.managed_bytes(), before);
+}
+
+fn p03_reader_commands<'a>(remote_root: &'a str, peer: &'a str) -> Vec<Vec<&'a str>> {
+    vec![
+        vec!["list-peers", "--token", P05_TOKEN, "--root", remote_root],
+        vec![
+            "list-peers-lean",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            remote_root,
+        ],
+        vec![
+            "send",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            remote_root,
+            "--to",
+            "RegisteredRemote:room-01-devs/coord",
+            "--send",
+            P05_ROOT_MESSAGE,
+            "--mode",
+            "wake",
+            "--confirm-timeout",
+            "0",
+        ],
+        vec![
+            "close-session",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            peer,
+            "--target",
+            "RegisteredRemote:room-01-devs/coord",
+        ],
+        vec![
+            "create-agent-matrix",
+            "--project",
+            "RegisteredRemote",
+            "--name",
+            "P03Matrix",
+            "--description",
+            "P03",
+        ],
+    ]
 }

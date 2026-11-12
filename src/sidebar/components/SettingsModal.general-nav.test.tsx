@@ -278,6 +278,11 @@ describe("SettingsModal General categories + search (#2704)", () => {
     try {
       await waitFor(() => expect($(tid("settings.general.apiServerEnabled"))).toBeTruthy());
       const indexKeys = GENERAL_SETTINGS_INDEX.map((e) => e.key);
+      // #4049 the color window left General for the Context Heat Map section.
+      expect(indexKeys).not.toContain("contextHistoryColorDays");
+      expect($(tid("settings.contextHistory.colorDays"))).toBeNull();
+      // JSDOM runs as the browser, which never lists the desktop-only section.
+      expect($(tid("settings.tab.context-history"))).toBeNull();
       const domKeys = Array.from(rendered.root.querySelectorAll("[data-ac-setting]")).map(
         (el) => el.getAttribute("data-ac-setting")!,
       );

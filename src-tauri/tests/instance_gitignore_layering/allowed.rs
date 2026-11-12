@@ -1,8 +1,8 @@
 /// Every `(file, child)` reference the guarded module is allowed to make under
 /// `crate::`, sorted.
 ///
-/// #3327 permits only instance_gitignore -> filesystem for physical ignore IO.
-/// The instance_ignore leaf uses std/OS bindings with no app path back.
+/// #3327 permits only `instance_gitignore` -> filesystem for physical ignore IO.
+/// The `instance_ignore` leaf uses std/OS bindings with no app path back.
 /// Equality still rejects every other crate reference.
 pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 1] =
     [("src/config/instance_gitignore.rs", "filesystem")];
@@ -515,16 +515,6 @@ pub(crate) const CONSTANT_HOME: &str = "src/config.rs";
 /// through `super::`, because `children_under` normalizes the path before it
 /// reads it.
 pub(crate) const GLOB_CHILD: &str = "*";
-
-/// Whether literal bodies survive `scrub`.
-///
-/// They must survive when the text is about to be read for `path = "..."`,
-/// and must not when it is about to be read for dependencies or for structure.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Literals {
-    Keep,
-    Drop,
-}
 
 /// Whether a module's submodules are read with it.
 ///

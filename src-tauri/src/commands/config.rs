@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use crate::config::settings::SettingsFileTarget;
 use std::time::Duration;
 use tauri::State;
 
@@ -16,11 +16,7 @@ pub use diagnostics::{
 
 mod settings_snapshot;
 pub(crate) use settings_snapshot::settings_snapshot_helper;
-pub use settings_snapshot::{
-    __cmd__get_settings, __tauri_command_name_get_settings, get_settings, IssueSource,
-    ProjectPathIssue, ProjectPathReconciliationError, ProjectPathResolution, RawJsonFieldState,
-    RawStringFieldState, ReconciliationStage, SettingsSnapshot,
-};
+pub use settings_snapshot::{__cmd__get_settings, __tauri_command_name_get_settings, get_settings};
 
 mod coding_agent_catalog;
 pub use coding_agent_catalog::{
@@ -82,13 +78,8 @@ pub use profile_selection::{
     preview_coding_agent_profile_selection, preview_selection_lock_removal,
     set_replica_selection_default, ApplyCodingAgentProfileSelectionRequest,
     ApplyCodingAgentProfileSelectionResult, ApplySelectionLockRemovalRequest,
-    ApplySelectionLockRemovalResult, AssignmentMode, ConflictDecision,
     GetReplicaSelectionDefaultRequest, PreviewCodingAgentProfileSelectionRequest,
-    PreviewCodingAgentProfileSelectionResult, PreviewSelectionLockRemovalRequest,
-    PreviewSelectionLockRemovalResult, ProfileAssignmentError, ProfileAssignmentScope,
-    ProfileAssignmentTarget, ReplicaSelectionDefaultResult, SavedPair, ScopeFault, ScopeFaultCode,
-    SelectionDecisionProjection, SelectionDecisions, SelectionDefault, SelectionState,
-    SetReplicaSelectionDefaultRequest,
+    PreviewSelectionLockRemovalRequest, SetReplicaSelectionDefaultRequest,
 };
 pub(crate) use profile_selection::{
     apply_coding_agent_profile_selection_inner, apply_selection_lock_removal_inner,
@@ -109,8 +100,7 @@ pub use self::web_server::{
     __tauri_command_name_start_web_server, __tauri_command_name_stop_api_server,
     __tauri_command_name_stop_web_server, api_server_status, get_web_server_owned_status,
     get_web_server_status, list_web_server_interfaces, mint_api_client, open_web_remote,
-    start_api_server, start_web_server, stop_api_server, stop_web_server, MintApiClientResponse,
-    WebServerBindFailure, WebServerInterfaceInfo, WebServerOwnedStatus, WebServerOwnershipState,
+    start_api_server, start_web_server, stop_api_server, stop_web_server,
 };
 
 mod preferences;
@@ -151,10 +141,9 @@ use self::web_server::{
     ensure_web_remote_open_allowed, is_tcp_listening, is_tcp_socket_listening,
     map_web_server_interfaces, mint_api_client_with_path, resolve_web_server_owned_status,
     select_current_bind_failure, stop_web_server_handle, web_remote_url, web_server_probe_addr,
-    MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS, MINT_API_CLIENT_NOTE,
+    WebServerOwnershipState, MINT_API_CLIENT_DEFAULT_TTL_HOURS, MINT_API_CLIENT_MAX_TTL_DAYS,
+    MINT_API_CLIENT_NOTE,
 };
-#[cfg(test)]
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 #[cfg(test)]
 use crate::web::broadcast::WsBroadcaster;
 #[cfg(test)]
@@ -196,16 +185,25 @@ use profile_selection::build_profile_assignment_target;
 #[cfg(all(test, windows))]
 pub(crate) use profile_selection::canonical_compare_key;
 #[cfg(test)]
+pub(crate) use profile_selection::ProfileAssignmentScope;
+#[cfg(test)]
 use profile_selection::{
     assignment_fingerprint, canonical_real_dir, classify_restart_failure,
     collect_kind_replica_dirs, collect_replica_dirs_in_workgroup,
     enumerate_profile_assignment_targets, profile_assignment_requires_explicit_confirmation,
     selection_default_fingerprint, selection_error_code, source_selection_fingerprint, target_pair,
-    validate_profile_assignment_confirmation, CandidateDirs, ProfileCandidate,
-    ProfileTargetEnumeration,
+    validate_profile_assignment_confirmation, ApplySelectionLockRemovalResult, AssignmentMode,
+    CandidateDirs, ConflictDecision, PreviewCodingAgentProfileSelectionResult,
+    PreviewSelectionLockRemovalResult, ProfileAssignmentTarget, ProfileCandidate,
+    ProfileTargetEnumeration, ReplicaSelectionDefaultResult, SavedPair, ScopeFaultCode,
+    SelectionDefault, SelectionState,
 };
 #[cfg(test)]
 pub(crate) use settings_snapshot::settings_snapshot_from;
+#[cfg(test)]
+use settings_snapshot::{
+    ProjectPathIssue, ProjectPathResolution, ReconciliationStage, SettingsSnapshot,
+};
 #[cfg(test)]
 pub(crate) use settings_update::{
     persist_protected_settings_update, persist_settings_draft_update,
@@ -240,23 +238,22 @@ pub struct AgentHelpOverlayPayload {
     pub local_error: Option<String>,
 }
 
-/// #2133 - the path-injectable overlay reader. Tests inject `settings_path`;
+/// #2133 - the target-injectable overlay reader. Tests inject a target;
 /// production resolves it. Mirrors `settings_snapshot_helper`'s seam.
 pub(crate) fn agent_help_overlay_payload(
-    settings_path: Option<PathBuf>,
+    target: Option<SettingsFileTarget>,
 ) -> AgentHelpOverlayPayload {
-    let Some(path) = settings_path.or_else(crate::config::settings::settings_path) else {
+    let Some(target) = target.or_else(crate::config::settings::instance_settings_target) else {
         return AgentHelpOverlayPayload {
             local: None,
             remote: None,
             local_error: None,
         };
     };
-    let (file, local_error) = crate::config::settings::load_local_agent_help_file(&path);
+    let (file, local_error, remote) = target.read_agent_help_layers();
     let has_content =
         file.general.is_some() || !file.by_command.is_empty() || !file.by_agent.is_empty();
     // #2133 (P6) - the downloaded layer, served under the same non-empty rule as `local`.
-    let remote = crate::config::settings::load_remote_agent_help_file(&path);
     let remote_has_content =
         remote.general.is_some() || !remote.by_command.is_empty() || !remote.by_agent.is_empty();
     AgentHelpOverlayPayload {
@@ -312,7 +309,7 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
     )
     .await
     .map_err(|_| "Network error: request timed out".to_string())?
-    .map_err(|e| format!("Network error: {}", e))?;
+    .map_err(|e| format!("Network error: {e}"))?;
 
     if !resp.status().is_success() {
         return Err(format!("Server returned status {}", resp.status().as_u16()));
@@ -322,7 +319,7 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if bytes.is_empty() {
         return Err("Server returned empty response".to_string());

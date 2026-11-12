@@ -8,8 +8,7 @@ fn git_in(dir: &Path, args: &[&str]) -> bool {
         .args(args)
         .current_dir(dir)
         .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|out| out.status.success())
 }
 
 const ORIGIN: &str = "https://github.com/mblua/AgentsCommander.git";

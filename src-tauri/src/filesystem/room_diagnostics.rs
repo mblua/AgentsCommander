@@ -8,7 +8,7 @@ pub(crate) fn collect_room_lock_resources(wg_dir: &Path, max_files: usize) -> Ve
     use std::collections::VecDeque;
 
     /// Files commonly held by long-running processes inside an AC workgroup:
-    /// any `*.lock` (git index.lock, ORIG_HEAD.lock, packfile locks), plus the
+    /// any `*.lock` (git index.lock, `ORIG_HEAD.lock`, packfile locks), plus the
     /// lock-prone metadata files inside any `.git/` subtree.
     fn is_hot_lock_candidate(p: &Path) -> bool {
         let name = match p.file_name().and_then(|n| n.to_str()) {
@@ -96,4 +96,9 @@ pub(crate) fn collect_room_lock_resources(wg_dir: &Path, max_files: usize) -> Ve
     let remaining = max_files.saturating_sub(out.len());
     out.extend(cold.into_iter().take(remaining));
     out
+}
+
+#[cfg(windows)]
+pub(crate) fn room_lock_resource_exists(path: &Path) -> bool {
+    path.exists()
 }

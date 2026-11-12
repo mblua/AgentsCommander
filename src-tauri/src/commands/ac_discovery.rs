@@ -12,7 +12,7 @@ mod replica_read;
 mod task_snapshot;
 
 #[cfg(test)]
-use crate::config::settings::SettingsState;
+use crate::config::settings::{SettingsFileTarget, SettingsState};
 #[cfg(test)]
 use crate::pty::manager::{PendingSpawn, PtyManager};
 #[cfg(test)]

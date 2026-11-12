@@ -12,13 +12,14 @@ use uuid::Uuid;
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     acquire_loop_lock_for_dir, baseline_loop_state, details_from_parts, latest_due_between,
-    loop_delivery_config_matches, loop_dir, read_loop_config_if_present, LoopAuditEntry,
-    LoopAuditKind, LoopConfigDetails, LoopConfigToml, LoopState, LOOP_LOCK_TIMEOUT,
+    loop_delivery_config_matches, loop_dir, read_loop_config, read_loop_config_if_present,
+    resolve_loop_target, LoopAuditEntry, LoopAuditKind, LoopConfigDetails, LoopConfigToml,
+    LoopState, LOOP_LOCK_TIMEOUT,
 };
 use crate::config::projects::ProjectResolution;
 use crate::config::settings::SettingsState;
 use crate::loops::delivery::{deliver_loop_prompt, LoopDeliveryHost, LoopDeliveryReport};
-use crate::loops::events::LoopEvents;
+use crate::loops::events::{emit_loop_change, LoopEvents};
 use crate::shutdown::ShutdownSignal;
 
 mod record;
@@ -26,7 +27,7 @@ mod state;
 
 use state::{
     active_project_candidates_for_owner, generation_key, loop_dirs, loop_is_current_for_delivery,
-    read_state_snapshot, unresolved_targets_in_project,
+    read_state_snapshot,
 };
 
 pub(crate) trait SchedulerHost: LoopDeliveryHost + LoopEvents + Send + Sync {
@@ -209,9 +210,9 @@ impl LoopScheduler {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tokio::select! {
-                    _ = shutdown.token().cancelled() => break,
+                    () = shutdown.token().cancelled() => break,
                     _ = interval.tick() => self.scan_once(&context, false, false).await,
-                    _ = self.notify.notified() => self.scan_once(&context, false, false).await,
+                    () = self.notify.notified() => self.scan_once(&context, false, false).await,
                 }
             }
         }));
@@ -240,23 +241,23 @@ impl LoopScheduler {
         let (config, state, s0_raw, s0_generation) = {
             let _io = self.io_lock.lock().await;
             let _loop_lock = acquire_loop_lock_for_dir(&dir, LOOP_LOCK_TIMEOUT)?;
-            if !dir.is_dir() {
-                return Err(format!("Loop '{}' not found", loop_id));
+            if !crate::filesystem::loop_files::loop_path_is_directory(&dir) {
+                return Err(format!("Loop '{loop_id}' not found"));
             }
             let Some(config) = read_loop_config_if_present(&dir)? else {
-                return Err(format!("Loop '{}' not found", loop_id));
+                return Err(format!("Loop '{loop_id}' not found"));
             };
             let (state, raw) = read_state_snapshot(&dir)?;
             (config, state, raw, self.loop_generation(&dir))
         };
         if !config.loop_def.enabled {
-            return Err(format!("Loop '{}' is disabled", loop_id));
+            return Err(format!("Loop '{loop_id}' is disabled"));
         }
         let run_id = Uuid::new_v4();
         let due_at = Utc::now();
         let started_at = Utc::now();
         if !loop_is_current_for_delivery(&dir, &config)? {
-            return Err(format!("Loop '{}' changed before delivery", loop_id));
+            return Err(format!("Loop '{loop_id}' changed before delivery"));
         }
         let report = self
             .deliver(&context, &project_dir, &config, run_id, due_at)
@@ -422,7 +423,7 @@ impl LoopScheduler {
         // S0: a Loop that is gone at entry is a quiet skip.
         let _io = self.io_lock.lock().await;
         let _loop_lock = acquire_loop_lock_for_dir(dir, LOOP_LOCK_TIMEOUT)?;
-        if !dir.is_dir() {
+        if !crate::filesystem::loop_files::loop_path_is_directory(dir) {
             return Ok(None);
         }
         let Some(config) = read_loop_config_if_present(dir)? else {
@@ -490,6 +491,24 @@ impl LoopScheduler {
         Ok(false)
     }
 
+    async fn ready_scan_snapshot(
+        &self,
+        context: &SchedulerContext,
+        project_dir: &Path,
+        dir: &Path,
+    ) -> Result<Option<LoopScanSnapshot>, String> {
+        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+            return Ok(None);
+        };
+        if self
+            .finish_scan_entry(context, project_dir, dir, &snapshot)
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(Some(snapshot))
+    }
+
     async fn scan_loop(
         &self,
         context: &SchedulerContext,
@@ -498,15 +517,9 @@ impl LoopScheduler {
         startup: bool,
         pending_only: bool,
     ) -> Result<(), String> {
-        let Some(snapshot) = self.scan_snapshot(dir).await? else {
+        let Some(snapshot) = self.ready_scan_snapshot(context, project_dir, dir).await? else {
             return Ok(());
         };
-        if self
-            .finish_scan_entry(context, project_dir, dir, &snapshot)
-            .await?
-        {
-            return Ok(());
-        }
         let LoopScanSnapshot {
             config,
             mut state,
@@ -624,6 +637,84 @@ fn due_scan_run(
 
 async fn active_project_candidates(owner: &SettingsState) -> Vec<ProjectResolution> {
     active_project_candidates_for_owner(owner).await
+}
+
+fn unresolved_targets_in_project(project_dir: &Path) -> Vec<UnresolvedLoopTarget> {
+    let mut alerts = Vec::new();
+    let Some(ac_root) = existing_ac_root(project_dir) else {
+        return alerts;
+    };
+    let dirs = match loop_dirs(&ac_root) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            log::warn!(
+                "[loops] Failed to list Loops for project {}: {}",
+                project_dir.display(),
+                e
+            );
+            return alerts;
+        }
+    };
+    for dir in dirs {
+        let config = match read_loop_config(&dir) {
+            Ok(config) => config,
+            Err(e) => {
+                log::warn!(
+                    "[loops] Failed to read Loop config {}: {}",
+                    dir.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        if !config.loop_def.enabled {
+            continue;
+        }
+        if let Err(e) = resolve_loop_target(project_dir, &config) {
+            alerts.push(UnresolvedLoopTarget {
+                project_path: project_dir.to_string_lossy().into(),
+                loop_id: config.loop_def.id.clone(),
+                loop_name: config.loop_def.name.clone(),
+                workgroup: config.target.workgroup.clone(),
+                error: e,
+            });
+        }
+    }
+    alerts
+}
+
+fn emit_transition(
+    context: &SchedulerContext,
+    project_dir: &Path,
+    dir: &Path,
+    config: &LoopConfigToml,
+    state: &LoopState,
+    kind: &str,
+    message: Option<String>,
+) {
+    let details = details_from_parts(dir, config, state);
+    match context {
+        SchedulerContext::Native(app) => emit_loop_change(
+            app.as_ref(),
+            project_dir,
+            dir,
+            &config.loop_def.id,
+            kind,
+            Some(details.summary),
+            message,
+        ),
+        #[cfg(test)]
+        SchedulerContext::Headless { transitions, .. } => {
+            transitions.lock().expect("scheduler transitions").push((
+                project_dir.to_path_buf(),
+                dir.to_path_buf(),
+                config.loop_def.id.clone(),
+                kind.to_owned(),
+                Some(details.summary),
+                message,
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::source_text::{normalized, scrub, Literals};
+use rust_source_scrub::{scrub, Literals};
+
+use super::source_text::normalized;
 
 // ---------------------------------------------------------------------------
 // Resolving what the compiler compiles
@@ -36,7 +38,7 @@ fn child_directory(file: &Path) -> PathBuf {
     let parent = file.parent().unwrap_or(Path::new("."));
     let stem = file
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if stem == "lib" || stem == "main" || stem == "mod" {
         parent.to_path_buf()
@@ -151,8 +153,7 @@ fn find_declarations(body: &str, segment: &str) -> Vec<usize> {
 fn attributes_before(body: &str, declaration_at: usize) -> &str {
     let start = body[..declaration_at]
         .rfind([';', '}', '{'])
-        .map(|index| index + 1)
-        .unwrap_or(0);
+        .map_or(0, |index| index + 1);
     &body[start..declaration_at]
 }
 

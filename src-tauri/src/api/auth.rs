@@ -215,11 +215,9 @@ fn load_registry(path: &Path) -> RegistrySnapshot {
                 problem: None,
             },
             Err(e) => {
-                let message = format!("{} is malformed: {}", REGISTRY_FILENAME, e);
+                let message = format!("{REGISTRY_FILENAME} is malformed: {e}");
                 log::error!(
-                    "[api-auth] {} is malformed ({}); treating as empty registry",
-                    REGISTRY_FILENAME,
-                    e
+                    "[api-auth] {REGISTRY_FILENAME} is malformed ({e}); treating as empty registry"
                 );
                 RegistrySnapshot {
                     registry: ApiClientRegistry::default(),
@@ -235,11 +233,9 @@ fn load_registry(path: &Path) -> RegistrySnapshot {
             problem: None,
         },
         Err(e) => {
-            let message = format!("{} is unreadable: {}", REGISTRY_FILENAME, e);
+            let message = format!("{REGISTRY_FILENAME} is unreadable: {e}");
             log::error!(
-                "[api-auth] {} is unreadable ({}); treating as empty registry",
-                REGISTRY_FILENAME,
-                e
+                "[api-auth] {REGISTRY_FILENAME} is unreadable ({e}); treating as empty registry"
             );
             RegistrySnapshot {
                 registry: ApiClientRegistry::default(),

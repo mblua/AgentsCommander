@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
-/// Delete a single workgroup directory from {project_path}/.ac/{wg_name}/
+/// Delete a single workgroup directory from `{project_path}/.ac/{wg_name}/`
 /// Returns dirty repo list as an Err if any repos have uncommitted/unpushed work.
 /// Project-only gated workgroup-delete primitive (#1063, plan sections 5.4/6.3).
 ///
@@ -62,14 +62,13 @@ pub async fn delete_workgroup(
         if !dirty_repos.is_empty() {
             let list = dirty_repos
                 .iter()
-                .map(|(repo, reason)| format!("  - {} ({})", repo, reason))
+                .map(|(repo, reason)| format!("  - {repo} ({reason})"))
                 .collect::<Vec<_>>()
                 .join("\n");
             // DIRTY_REPOS: prefix is a sentinel the frontend uses to detect this error type
             return Err(format!(
                 "DIRTY_REPOS:Cannot delete room: the following repos have pending \
-                 work:\n{}\n\nCommit or push changes before deleting.",
-                list
+                 work:\n{list}\n\nCommit or push changes before deleting."
             ));
         }
     }
@@ -112,7 +111,7 @@ pub async fn delete_workgroup(
     // and persist immediately (this command is not on the auto-close flush tick).
     if let Some(project_name) = Path::new(&project_path)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
     {
         if let Some(clocks) =
             app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
@@ -165,9 +164,8 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
         WgDeleteOutcome::Blocked(e) => {
             let raw = e.to_string();
             log::info!(
-                "[entity_creation] delete_workgroup: file-in-use detected for '{}' on rename \
-                 probe, running blocker diagnostic on intact tree",
-                workgroup_name
+                "[entity_creation] delete_workgroup: file-in-use detected for \
+                 '{workgroup_name}' on rename probe, running blocker diagnostic on intact tree"
             );
             let report = crate::commands::wg_delete_diagnostic::diagnose_blockers(
                 wg_dir,
@@ -177,12 +175,9 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
             )
             .await;
             let json = serde_json::to_string(&report).map_err(|se| {
-                format!(
-                    "Failed to serialize blocker report: {}; original error: {}",
-                    se, raw
-                )
+                format!("Failed to serialize blocker report: {se}; original error: {raw}")
             })?;
-            return Err(format!("BLOCKERS:{}", json));
+            return Err(format!("BLOCKERS:{json}"));
         }
         WgDeleteOutcome::Partial { orphan_path, error } => {
             return Err(format!(
@@ -193,14 +188,14 @@ pub(crate) async fn delete_workgroup_dir_backend_with_outcome(
             ));
         }
         WgDeleteOutcome::Other(e) => {
-            return Err(format!("Failed to delete room directory: {}", e));
+            return Err(format!("Failed to delete room directory: {e}"));
         }
     }
     Ok(())
 }
 
 /// Check all repo-* dirs inside the given workgroup dirs for dirty git state.
-/// Returns a list of (repo_display_name, reason) for repos with pending work.
+/// Returns a list of `(repo_display_name, reason)` for repos with pending work.
 pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
     let mut dirty: Vec<(String, String)> = Vec::new();
 
@@ -221,7 +216,7 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
                 return;
             }
 
-            let display = format!("{}/{}", wg_name, dir_name_str);
+            let display = format!("{wg_name}/{dir_name_str}");
             let mut reasons: Vec<&str> = Vec::new();
 
             // Check for uncommitted changes (staged + unstaged + untracked)

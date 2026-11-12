@@ -1,25 +1,22 @@
+use super::artifacts::AttemptArtifact;
+use super::artifacts::CliError;
+use super::artifacts::LoadedExperiment;
+use super::artifacts::PromptCase;
+use super::artifacts::ReportArtifact;
+use super::artifacts::ReportArtifactPaths;
+use super::artifacts::ReportPromptArtifact;
+use super::artifacts::ReportSummaryArtifact;
+use super::artifacts::ReportVariantArtifact;
+use super::artifacts::RunArtifact;
+use super::artifacts::RunArtifactPaths;
+use super::artifacts::RunWorkgroupArtifact;
+use super::artifacts::VariantMetadata;
+use super::storage::{report_name, report_path_display, run_path_display};
 use super::support::{err, err_at_path};
 use super::validation::reject_link_or_reparse;
-use super::AttemptArtifact;
-use super::CliError;
-use super::LoadedExperiment;
-use super::PromptCase;
-use super::ReportArtifact;
-use super::ReportArtifactPaths;
-use super::ReportPromptArtifact;
-use super::ReportSummaryArtifact;
-use super::ReportVariantArtifact;
-use super::RunArtifact;
-use super::RunArtifactPaths;
-use super::RunWorkgroupArtifact;
-use super::VariantMetadata;
 use crate::filesystem::directories;
 use std::path::Path;
 use std::path::PathBuf;
-
-pub(super) fn experiments_dir(ac_root: &Path) -> PathBuf {
-    ac_root.join("experiments")
-}
 
 pub(super) fn runs_dir(loaded: &LoadedExperiment) -> PathBuf {
     loaded.experiment_dir.join("runs")
@@ -39,7 +36,7 @@ pub(super) fn create_generated_run_dir(
         let run_id = if idx == 1 {
             base.clone()
         } else {
-            format!("{}-{:02}", base, idx)
+            format!("{base}-{idx:02}")
         };
         let dir = run_dir(loaded, &run_id);
         match directories::create_experiment_directory(&dir) {
@@ -72,7 +69,7 @@ pub(super) fn create_explicit_run_dir(
         Ok(()) => Ok(dir),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(vec![err_at_path(
             "run_id_exists",
-            format!("Run id already exists: {}", run_id),
+            format!("Run id already exists: {run_id}"),
             &dir,
         )]),
         Err(e) => Err(vec![err_at_path(
@@ -151,7 +148,7 @@ pub(super) fn generated_seed_from_uuid(uuid: uuid::Uuid) -> u64 {
 pub(super) fn default_run_artifact_paths(attempts: String) -> RunArtifactPaths {
     RunArtifactPaths {
         attempts,
-        report_json: "report.json".to_string(),
+        report_json: report_name(),
         report_markdown: "report.md".to_string(),
         prompts: "prompts".to_string(),
         outputs: "outputs".to_string(),
@@ -162,9 +159,9 @@ pub(super) fn default_run_artifact_paths(attempts: String) -> RunArtifactPaths {
 
 pub(super) fn report_artifact_paths(run_dir: &Path, attempts: String) -> ReportArtifactPaths {
     ReportArtifactPaths {
-        run: run_dir.join("run.json").to_string_lossy().to_string(),
+        run: run_path_display(run_dir),
         attempts,
-        report_json: run_dir.join("report.json").to_string_lossy().to_string(),
+        report_json: report_path_display(run_dir),
         report_markdown: run_dir.join("report.md").to_string_lossy().to_string(),
     }
 }
@@ -390,7 +387,7 @@ pub(super) fn render_report_markdown(report: &ReportArtifact) -> String {
         ("inconclusive", report.summary.inconclusive_attempt_count),
         ("cancelled", report.summary.cancelled_attempt_count),
     ] {
-        markdown.push_str(&format!("| {} | {} |\n", status, count));
+        markdown.push_str(&format!("| {status} | {count} |\n"));
     }
     markdown.push('\n');
     markdown.push_str("## Variants\n\n");
@@ -433,7 +430,7 @@ pub(super) fn render_report_markdown(report: &ReportArtifact) -> String {
     }
     markdown.push_str("\n## Notes\n\n");
     for note in &report.notes {
-        markdown.push_str(&format!("- {}\n", note));
+        markdown.push_str(&format!("- {note}\n"));
     }
     markdown
 }

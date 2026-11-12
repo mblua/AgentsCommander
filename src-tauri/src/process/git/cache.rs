@@ -38,13 +38,13 @@ fn run_process(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("spawn failed for {} {:?}: {}", program, args, e))?;
+        .map_err(|e| format!("spawn failed for {program} {args:?}: {e}"))?;
 
     let mut stdout = child
         .stdout
@@ -70,7 +70,7 @@ fn run_process(
     let status = loop {
         if let Some(status) = child
             .try_wait()
-            .map_err(|e| format!("wait failed for {} {:?}: {}", program, args, e))?
+            .map_err(|e| format!("wait failed for {program} {args:?}: {e}"))?
         {
             break status;
         }

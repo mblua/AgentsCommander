@@ -33,7 +33,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -65,8 +65,7 @@ impl Tmp {
             prefix,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
             h.finish()
         ));
         std::fs::create_dir_all(&path).expect("create tmp dir");
@@ -112,7 +111,7 @@ fn backup_paths(task_path: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.expect("entry").path())
         .filter(|path| {
             path.file_name()
-                .and_then(|name| name.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|name| name.starts_with("TASK.") && name.ends_with(".bak.md"))
         })
         .collect();
@@ -209,8 +208,7 @@ fn task_set_title_audit_line_reaches_file_sink() {
     let task_contents = std::fs::read_to_string(&task_path).expect("read TASK.md");
     assert!(
         task_contents.contains("title: 'cli-logger smoke title'"),
-        "unexpected TASK.md contents:\n{}",
-        task_contents
+        "unexpected TASK.md contents:\n{task_contents}"
     );
     assert!(task_contents.contains("# Old title\n\nOriginal body"));
     assert_eq!(
@@ -273,13 +271,11 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
     let task_contents = std::fs::read_to_string(&task_path).expect("read TASK.md");
     assert!(
         task_contents.starts_with("# Existing title\n\nOriginal body"),
-        "unexpected TASK.md prefix:\n{}",
-        task_contents
+        "unexpected TASK.md prefix:\n{task_contents}"
     );
     assert!(
         task_contents.contains("Appended body from subprocess"),
-        "TASK.md did not contain appended body:\n{}",
-        task_contents
+        "TASK.md did not contain appended body:\n{task_contents}"
     );
     assert_eq!(
         std::fs::read_to_string(&outside_sentinel).expect("read outside sentinel"),

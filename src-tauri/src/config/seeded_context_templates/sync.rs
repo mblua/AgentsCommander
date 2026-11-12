@@ -237,9 +237,10 @@ pub(crate) fn sync_one_template(
                 && (spec.id != "rootAgent" || snapshot.bytes == current_default.as_bytes())
             {
                 loaded.mark_seeded(spec, &current_default_sha256);
-                let target_outcome = carried_publication
-                    .map(TemplatePublication::Published)
-                    .unwrap_or(TemplatePublication::AlreadyCurrent);
+                let target_outcome = carried_publication.map_or(
+                    TemplatePublication::AlreadyCurrent,
+                    TemplatePublication::Published,
+                );
                 return ContextTemplateExecution::from_parts(
                     Ok(TemplateSyncOutcome {
                         pending_update: None,
@@ -253,11 +254,10 @@ pub(crate) fn sync_one_template(
     }
 
     let Some(snapshot) = snapshot else {
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::Skipped(
-                ContextTemplateSkipReason::MissingAfterCreate,
-            ));
+        let target_outcome = carried_publication.map_or(
+            TemplatePublication::Skipped(ContextTemplateSkipReason::MissingAfterCreate),
+            TemplatePublication::Published,
+        );
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
@@ -272,9 +272,10 @@ pub(crate) fn sync_one_template(
         && (spec.id != "rootAgent" || snapshot.bytes == current_default.as_bytes())
     {
         loaded.mark_seeded(spec, &current_default_sha256);
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::AlreadyCurrent);
+        let target_outcome = carried_publication.map_or(
+            TemplatePublication::AlreadyCurrent,
+            TemplatePublication::Published,
+        );
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
@@ -331,11 +332,10 @@ fn repair_distribution_template(
     if !repair {
         // D2: no reporting channel on this path, so the repair is deferred to
         // the scan rather than replacing operator bytes with no notification.
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::Skipped(
-                ContextTemplateSkipReason::DistributionRepairDeferred,
-            ));
+        let target_outcome = carried_publication.map_or(
+            TemplatePublication::Skipped(ContextTemplateSkipReason::DistributionRepairDeferred),
+            TemplatePublication::Published,
+        );
         return ContextTemplateExecution::from_parts(
             Ok(TemplateSyncOutcome {
                 pending_update: None,
@@ -504,18 +504,9 @@ fn sync_customized_template(
             "[context-templates] preserving ambiguous global context template {} without prompting",
             path.display()
         );
-        let target_outcome = carried_publication
-            .map(TemplatePublication::Published)
-            .unwrap_or(TemplatePublication::Skipped(
-                ContextTemplateSkipReason::AmbiguousWithoutState,
-            ));
-        return ContextTemplateExecution::from_parts(
-            Ok(TemplateSyncOutcome {
-                pending_update: None,
-                replacement: None,
-                target_outcome,
-            }),
+        return skipped_customized_template(
             carried_publication,
+            ContextTemplateSkipReason::AmbiguousWithoutState,
         );
     }
 
@@ -523,23 +514,32 @@ fn sync_customized_template(
         if entry.ignored_observed_sha256.as_deref() == Some(snapshot.sha256.as_str())
             && entry.ignored_default_sha256.as_deref() == Some(current_default_sha256.as_str())
         {
-            let target_outcome = carried_publication
-                .map(TemplatePublication::Published)
-                .unwrap_or(TemplatePublication::Skipped(
-                    ContextTemplateSkipReason::IgnoredByUser,
-                ));
-            return ContextTemplateExecution::from_parts(
-                Ok(TemplateSyncOutcome {
-                    pending_update: None,
-                    replacement: None,
-                    target_outcome,
-                }),
+            return skipped_customized_template(
                 carried_publication,
+                ContextTemplateSkipReason::IgnoredByUser,
             );
         }
     }
 
     observe_customized_template(context, return_pending)
+}
+
+fn skipped_customized_template(
+    carried_publication: Option<ContextPublication>,
+    reason: ContextTemplateSkipReason,
+) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let target_outcome = carried_publication.map_or(
+        TemplatePublication::Skipped(reason),
+        TemplatePublication::Published,
+    );
+    ContextTemplateExecution::from_parts(
+        Ok(TemplateSyncOutcome {
+            pending_update: None,
+            replacement: None,
+            target_outcome,
+        }),
+        carried_publication,
+    )
 }
 
 fn observe_customized_template(
@@ -586,9 +586,10 @@ fn observe_customized_template(
         );
         None
     };
-    let target_outcome = carried_publication
-        .map(TemplatePublication::Published)
-        .unwrap_or(TemplatePublication::Observed);
+    let target_outcome = carried_publication.map_or(
+        TemplatePublication::Observed,
+        TemplatePublication::Published,
+    );
     ContextTemplateExecution::from_parts(
         Ok(TemplateSyncOutcome {
             pending_update,
@@ -651,7 +652,7 @@ pub(crate) fn compute_pending_update(
 
 pub(crate) fn validate_project_ac_root(ac_root: &Path) -> Result<PathBuf, String> {
     validate_existing_dir(ac_root, "Project AC Root")?;
-    let name = ac_root.file_name().and_then(|name| name.to_str());
+    let name = ac_root.file_name().and_then(std::ffi::OsStr::to_str);
     if name != Some(crate::config::ac_root::canonical_ac_root_label()) {
         return Err(format!(
             "{} is not a Project AC Root directory",

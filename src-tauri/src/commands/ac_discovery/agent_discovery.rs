@@ -15,6 +15,7 @@ use crate::config::settings::SettingsState;
 use crate::filesystem::ac_discovery::{
     discovery_directory_entries, discovery_path_is_dir, discovery_role_exists,
 };
+use crate::filesystem::projects::entities::roles;
 use crate::session::manager::SessionManager;
 use std::collections::HashMap;
 use std::path::Path;
@@ -97,7 +98,7 @@ pub async fn discover_ac_agents(
         crate::config::coordinator_clocks::ClockEntry,
     > = coordinator_clocks
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot();
     // Discovery-wide team snapshot — used per-replica for is_coordinator
     // and at the end for refresh_coordinator_flags. Computed once so a
@@ -225,7 +226,7 @@ async fn scan_agents(
 
             let project_folder = repo_dir
                 .file_name()
-                .and_then(|n| n.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or("unknown")
                 .to_string();
 
@@ -305,15 +306,11 @@ fn discover_agent_matrix(
     cfg: &crate::config::settings::AppSettings,
 ) -> AcAgentMatrix {
     let display_name = agent_display_name(project_folder, dir_name);
-    let role_exists = discovery_role_exists(&path.join("Role.md"));
+    let role_exists = discovery_role_exists(&roles::role_path(path));
 
     let preferred_agent_id = read_preferred_agent_id(path, cfg);
 
-    log::info!(
-        "[ac-discovery] agent: dir={:?}, preferred_agent_id={:?}",
-        dir_name,
-        preferred_agent_id
-    );
+    log::info!("[ac-discovery] agent: dir={dir_name:?}, preferred_agent_id={preferred_agent_id:?}");
 
     AcAgentMatrix {
         name: display_name,

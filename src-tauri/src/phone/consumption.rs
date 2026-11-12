@@ -13,6 +13,7 @@
 //! is not the home for a pure, timer-free, PTY-free decision the harness and A
 //! (PR3) both import unchanged.
 
+#[cfg(test)]
 use std::time::Duration;
 
 /// The verdict of the consumption oracle for one observation tick.
@@ -24,10 +25,14 @@ use std::time::Duration;
 pub(crate) enum ConsumptionVerdict {
     /// Idle at inject AND the chosen consumed-signal was observed within the
     /// window: consumption confirmed.
+    // Built only by the `cfg(test)` `consumption_verdict` until A (PR3) wires it.
+    #[cfg_attr(not(test), allow(dead_code))]
     Observed,
     /// Idle at inject, no consumed-signal yet. Returned every tick the session
     /// stays idle-without-signal; the driver converts a `Pending` that survives
     /// to `elapsed >= window` into the not-consumed result.
+    // Built only by the `cfg(test)` `consumption_verdict` until A (PR3) wires it.
+    #[cfg_attr(not(test), allow(dead_code))]
     Pending,
     /// Not idle at inject (busy / mid-turn). Consumption cannot be attributed to
     /// this wake, so the write-receipt (bias-to-deliver) semantics are preserved
@@ -48,9 +53,9 @@ pub(crate) enum ConsumptionVerdict {
 /// [`verdict_to_result`]. Keeping the clock in the driver, not here, is what
 /// keeps the table signal-agnostic and trivially testable.
 // PR1 lands this generic table and its enum ahead of the sole production
-// caller (the A/PR3 oracle driver). It is exercised now by the unit tests
-// below and by the `#[ignore]` measurement harness. Remove when A wires it.
-#[allow(dead_code)]
+// caller (the A/PR3 oracle driver). It is exercised now only by the unit tests
+// and the `#[ignore]` measurement harness. Drop `cfg(test)` when A wires it.
+#[cfg(test)]
 pub(crate) fn consumption_verdict(
     idle_at_inject: bool,
     consumed_signal: bool,

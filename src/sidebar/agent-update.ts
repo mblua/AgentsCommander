@@ -451,30 +451,21 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
         installAfter: {},
         summary: "none",
       });
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdatePrompt((prompt) => {
       setAgentUpdateState("prompt", prompt);
-    })
-  );
-
-  // F4: the prompt stopped being pending (answered on any surface, or timed out).
-  // #1551 P7: a closure clears THIS surface's prompt only when it names the shown
-  // prompt, so a delayed closure of A never erases a newer prompt B; the command is
-  // always recorded so an older snapshot cannot resurrect it. An older backend's
-  // null payload still clears unconditionally (it emits closures only from the
-  // loop, before any next prompt).
-  unlisteners.push(
+    }),
+    // F4: the prompt stopped being pending (answered on any surface, or timed out).
+    // #1551 P7: a closure clears THIS surface's prompt only when it names the shown
+    // prompt, so a delayed closure of A never erases a newer prompt B; the command is
+    // always recorded so an older snapshot cannot resurrect it. An older backend's
+    // null payload still clears unconditionally (it emits closures only from the
+    // loop, before any next prompt).
     await onAgentUpdatePromptClosed((closed) => {
       const shown = state.prompt;
       if (!closed || shown?.command === closed.command) setAgentUpdateState("prompt", null);
       if (closed) setAgentUpdateState("closedPrompts", (list) => addUnique(list, closed.command));
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdateCommandStarted((node) => {
       // #1691 - a start is ignored for a terminal row (first winner) and for a verifying
       // row (which already moved past running), so neither can be pulled backwards.
@@ -489,10 +480,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
       // Records installBefore; appends a node only when the store never received it
       // (lost `started` payload or older backend).
       setAgentUpdateState("nodes", (list) => upsertNode(list, node));
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdateCommandVerifying((ref) => {
       // #1691 - ignored for a terminal row; moves a nonterminal row out of running; and
       // never touches `cancelRequested`, so an already-observed request is never cleared.
@@ -501,10 +489,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
         running: withoutRunning(state.running, ref.command),
         verifying: unionRunning(state.verifying, [ref]),
       });
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdateCancellationChanged((payload) => {
       // #1691 - the payload is a FULL snapshot, but the fold is a union filtered of terminal
       // rows: a delayed snapshot can neither resurrect a terminal row nor drop a request this
@@ -516,10 +501,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
         ),
         cancelAllRequested: state.cancelAllRequested || payload.cancelAllRequested,
       });
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdateCommandSkipped((ref) => {
       // #1551 round 5/6 - the node leaves the timeline and the command is recorded
       // whether or not the node existed, so every later snapshot filters it.
@@ -527,10 +509,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
         nodes: withoutNode(state.nodes, ref.command),
         skippedNodes: addUnique(state.skippedNodes, ref.command),
       });
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentInstallStateChanged(({ command, install }) => {
       // #1551 round 5/6 (FE N2) - accepted for any pass node, before or after its
       // result (after `started` no install event for a pass node can be pre-pass);
@@ -543,10 +522,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
       // would MERGE into an existing entry and keep keys the new state omits (a `missing`
       // after an `installed` would retain its stale `version`/`path`); the spread replaces it.
       setAgentUpdateState("installAfter", (map) => ({ ...map, [command]: install }));
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdateCommandFinished((result) => {
       // #1691 - terminal FIRST WINNER: a second result for the same command is dropped,
       // and the row leaves every in-progress collection and both response latches.
@@ -559,10 +535,7 @@ export async function wireAgentUpdateListeners(): Promise<UnlistenFn[]> {
         cancelResponses: state.cancelResponses.filter((command) => command !== result.command),
         results: upsertResult(state.results, normalized),
       });
-    })
-  );
-
-  unlisteners.push(
+    }),
     await onAgentUpdatesFinished(({ results }) => {
       // Authoritative. #1551 round 5 - a surface that showed the pass with at least
       // one result enters the persistent summary and defers its failure toasts to

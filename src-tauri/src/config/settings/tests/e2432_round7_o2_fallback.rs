@@ -10,7 +10,7 @@ fn e2432_round7_sidecar_success_main_failure_restarts_canonical_first() {
     let owner =
         super::super::SettingsOwner::open_active(&path, std::time::Duration::from_secs(2)).unwrap();
     super::super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
-        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace))
+        *slot.borrow_mut() = Some((path.clone(), super::super::SettingsSaveStage::AtomicReplace));
     });
     let report = owner
         .with_operation_blocking("e2432-round7-transfer", |current, guard| {
@@ -450,10 +450,7 @@ pub(super) fn assert_selected_project_decode_fallback_case(startup: bool, unread
         super::super::agents_layer_unreadable_for_dir(temp.path()),
         unreadable
     );
-    assert_eq!(
-        super::super::try_with_agents_layer_publication_state(temp.path(), |flag| flag).unwrap(),
-        unreadable
-    );
+    assert_eq!(publication_state_with_retry(temp.path()), unreadable);
     assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
     assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
     let sidecar = super::super::project_paths_path(&path);
@@ -531,11 +528,7 @@ fn unavailable_project_fallback_retains_agents_publication_mark() {
                 settings.agents_layer.unreadable_path().is_some(),
                 unreadable
             );
-            assert_eq!(
-                super::super::try_with_agents_layer_publication_state(temp.path(), |flag| flag)
-                    .unwrap(),
-                unreadable
-            );
+            assert_eq!(publication_state_with_retry(temp.path()), unreadable);
             assert_eq!(std::fs::read(&path).unwrap(), source);
             assert_eq!(
                 std::fs::read(super::super::project_paths_path(&path)).unwrap(),
@@ -546,6 +539,24 @@ fn unavailable_project_fallback_retains_agents_publication_mark() {
                 agents
             );
             assert!(settings.root_token.is_none());
+        }
+    }
+}
+
+/// #4146 - the publication registry is a process-wide mutex that parallel
+/// tests hold briefly, so one `try_lock` can return `WouldBlock`. Retry the
+/// real call for a bounded time; poison or timeout still fail the test.
+fn publication_state_with_retry(dir: &std::path::Path) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match super::super::try_with_agents_layer_publication_state(dir, |flag| flag) {
+            Ok(flag) => return flag,
+            Err(super::super::AgentsPublicationLockError::WouldBlock)
+                if std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => panic!("agents publication registry not available in 5 s: {error:?}"),
         }
     }
 }

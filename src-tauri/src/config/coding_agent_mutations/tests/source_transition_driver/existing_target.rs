@@ -133,11 +133,10 @@ fn single_editor_existing_after_divergent_refusal() {
                 std::fs::create_dir(&path).unwrap();
             }
         }
-        let source = std::fs::read(&path)
-            .map(|bytes| source_transition_digest_bytes(&bytes))
-            .unwrap_or_else(|_| {
-                source_transition_digest_bytes(&before.intents[&operation].serialized_after)
-            });
+        let source = std::fs::read(&path).map_or_else(
+            |_| source_transition_digest_bytes(&before.intents[&operation].serialized_after),
+            |bytes| source_transition_digest_bytes(&bytes),
+        );
         let expected = SourceResumeExpectation {
             source,
             journal: read_own_source_journal(&context).unwrap().0,
@@ -315,21 +314,21 @@ fn single_editor_original_local_journal_immutable_and_missing_inventory_refusal(
                             .progress
                             .get_mut(&operation)
                             .unwrap()
-                            .packets_prepared = false
+                            .packets_prepared = false;
                     }
                     "published" => {
                         journal
                             .progress
                             .get_mut(&operation)
                             .unwrap()
-                            .source_published = false
+                            .source_published = false;
                     }
                     _ => {
                         journal.progress.get_mut(&operation).unwrap().receipt =
                             Some(SourceReceipt {
                                 operation_id: operation.clone(),
                                 source_revision: revision.clone(),
-                            })
+                            });
                     }
                 }
                 Ok(())
@@ -360,19 +359,9 @@ fn single_editor_original_local_journal_immutable_and_missing_inventory_refusal(
         source: source_transition_digest_bytes(&original.intents[&operation].serialized_after),
         journal: source_transition_digest_bytes(&bytes),
     };
-    let decision = std::fs::read(target.join("config.json")).unwrap();
-    assert!(resume_identity_transition_internal(
-        &fixture.settings,
-        &fixture.context,
-        &fixture.source,
-        &operation,
-        &expected,
-        &|| Ok(()),
-        &fixture.controls,
-    )
-    .is_err());
-    assert_eq!(std::fs::read(private).unwrap(), bytes);
-    assert_eq!(std::fs::read(target.join("config.json")).unwrap(), decision);
+    assert_missing_inventory_resume_refused(
+        &fixture, &operation, &expected, &target, &private, &bytes,
+    );
 }
 #[test]
 fn single_editor_original_inventory_topology_and_local_fence() {
@@ -550,4 +539,27 @@ fn single_editor_pending_physical_source_isolation() {
         .values()
         .any(|intent| intent.source == fixture.source));
     assert!(after.intents.values().any(|intent| intent.source == other));
+}
+
+fn assert_missing_inventory_resume_refused(
+    fixture: &DriverFixture,
+    operation: &str,
+    expected: &SourceResumeExpectation,
+    target: &std::path::Path,
+    private: &std::path::Path,
+    bytes: &[u8],
+) {
+    let decision = std::fs::read(target.join("config.json")).unwrap();
+    assert!(resume_identity_transition_internal(
+        &fixture.settings,
+        &fixture.context,
+        &fixture.source,
+        operation,
+        expected,
+        &|| Ok(()),
+        &fixture.controls,
+    )
+    .is_err());
+    assert_eq!(std::fs::read(private).unwrap(), bytes);
+    assert_eq!(std::fs::read(target.join("config.json")).unwrap(), decision);
 }

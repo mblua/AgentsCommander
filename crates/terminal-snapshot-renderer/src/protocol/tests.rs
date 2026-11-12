@@ -361,6 +361,33 @@ fn terminal_payload_model_render_and_wire_debug_is_structural_only() {
         format!("{api_error:?}"),
         format!("{api_request:?}"),
     ];
+    push_payload_diagnostics(
+        &mut diagnostics,
+        &document,
+        metadata,
+        [PNG_CANARY, AUTH_CANARY, TRANSPORT_CANARY],
+    );
+
+    let diagnostics = diagnostics.join("\n");
+    assert_structural_only(
+        &diagnostics,
+        [
+            CELL_CANARY,
+            OSC_CANARY,
+            PNG_CANARY,
+            AUTH_CANARY,
+            PATH_CANARY,
+            TRANSPORT_CANARY,
+        ],
+    );
+}
+
+fn push_payload_diagnostics(
+    diagnostics: &mut Vec<String>,
+    document: &TerminalSnapshotDocument,
+    metadata: TerminalSnapshotPngMetadata,
+    [png_canary, auth_canary, transport_canary]: [&str; 3],
+) {
     diagnostics.push(format!(
         "{:?}",
         TerminalSnapshotPayload::Json {
@@ -371,13 +398,13 @@ fn terminal_payload_model_render_and_wire_debug_is_structural_only() {
         "{:?}",
         TerminalSnapshotPayload::Png {
             metadata: metadata.clone(),
-            png: PNG_CANARY.as_bytes().to_vec(),
+            png: png_canary.as_bytes().to_vec(),
         }
     ));
     diagnostics.push(format!(
         "{:?}",
         TerminalSnapshotApiSuccess {
-            api_version: TRANSPORT_CANARY.to_string(),
+            api_version: transport_canary.to_string(),
             result: TerminalSnapshotPayload::Json {
                 snapshot: document.clone(),
             },
@@ -386,28 +413,22 @@ fn terminal_payload_model_render_and_wire_debug_is_structural_only() {
     diagnostics.push(format!(
         "{:?}",
         TerminalSnapshotHostResponse {
-            api_version: TRANSPORT_CANARY.to_string(),
-            request_id: AUTH_CANARY.to_string(),
-            confirmation_tag: AUTH_CANARY.to_string(),
-            expires_at: AUTH_CANARY.to_string(),
+            api_version: transport_canary.to_string(),
+            request_id: auth_canary.to_string(),
+            confirmation_tag: auth_canary.to_string(),
+            expires_at: auth_canary.to_string(),
             result: Some(TerminalSnapshotPayload::Png {
                 metadata,
-                png: PNG_CANARY.as_bytes().to_vec(),
+                png: png_canary.as_bytes().to_vec(),
             }),
             error: None,
-            detail: Some(TRANSPORT_CANARY.to_string()),
+            detail: Some(transport_canary.to_string()),
         }
     ));
+}
 
-    let diagnostics = diagnostics.join("\n");
-    for forbidden in [
-        CELL_CANARY,
-        OSC_CANARY,
-        PNG_CANARY,
-        AUTH_CANARY,
-        PATH_CANARY,
-        TRANSPORT_CANARY,
-    ] {
+fn assert_structural_only(diagnostics: &str, forbidden_canaries: [&str; 6]) {
+    for forbidden in forbidden_canaries {
         assert!(!diagnostics.contains(forbidden));
     }
     for structural in [

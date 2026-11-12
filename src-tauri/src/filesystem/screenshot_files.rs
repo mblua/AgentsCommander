@@ -77,10 +77,7 @@ pub(crate) fn validate_saved_screenshot(
     }
     let canonical =
         std::fs::canonicalize(path).map_err(|e| format!("canonicalize saved file failed: {e}"))?;
-    let parent_ok = canonical
-        .parent()
-        .map(|p| p == canonical_child)
-        .unwrap_or(false);
+    let parent_ok = canonical.parent().is_some_and(|p| p == canonical_child);
     if !parent_ok {
         return Err("saved file escaped the screenshots directory".to_string());
     }

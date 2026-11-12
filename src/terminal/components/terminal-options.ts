@@ -1,8 +1,9 @@
 import type { ITerminalOptions } from "@xterm/xterm";
 import { requestExternalLinkConfirmation } from "../../shared/external-links";
+import { resolveTerminalFontFamily, canvasTextWidth } from "./terminal-font";
 
 export const createTerminalOptions = (useExternalLinkConfirmation: boolean): ITerminalOptions => ({
-  fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace",
+  fontFamily: resolveTerminalFontFamily(canvasTextWidth()),
   fontSize: 14,
   lineHeight: 1.2,
   cursorBlink: true,

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ac4248:loading</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #202020;
+        overflow: hidden;
+      }
+      #stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1024px;
+        height: 768px;
+        background: #202020;
+      }
+      #canvas {
+        position: absolute;
+        left: 40px;
+        top: 40px;
+        width: 240px;
+        height: 160px;
+        display: block;
+        border: 0;
+        padding: 0;
+      }
+      #overlay {
+        position: absolute;
+        left: 40px;
+        top: 40px;
+        width: 60px;
+        height: 40px;
+        background: #0000ff;
+        color: #ffffff;
+        font: 8px/8px monospace;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      #label {
+        position: absolute;
+        left: 40px;
+        top: 240px;
+        color: #ffffff;
+        font: 16px/20px monospace;
+      }
+      #terminal {
+        position: absolute;
+        left: 360px;
+        top: 40px;
+        width: 400px;
+        height: 240px;
+        padding: 0;
+        overflow: hidden;
+      }
+      #terminal .xterm {
+        padding: 0;
+      }
+      #control {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 100vw;
+        height: 100vh;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="canvas" width="240" height="160"></canvas>
+      <div id="overlay">OVERLAY</div>
+      <div id="label"></div>
+      <div id="terminal"></div>
+    </div>
+    <canvas id="control"></canvas>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

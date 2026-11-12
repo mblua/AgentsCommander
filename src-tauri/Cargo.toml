@@ -1,6 +1,6 @@
 [package]
 name = "agentscommander"
-version = "0.45.1"
+version = "0.46.0"
 edition = "2021"
 authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
@@ -101,7 +101,16 @@ image = "0.25.10"
 [target.'cfg(windows)'.dev-dependencies]
 tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
 
+# #4248 examples/linux_snapshot native WebView snapshot experiment. Exact versions
+# already locked through tauri/wry, so this adds dev edges only, no new package.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+webkit2gtk = "=2.0.2"
+gio = "=0.18.4"
+glib = "=0.18.5"
+cairo-rs = { version = "=0.18.5", features = ["png"] }
+
 [dev-dependencies]
+rust-source-scrub = { path = "../crates/rust-source-scrub" }
 syn = { version = "=2.0.117", features = ["full", "visit"] }
 tempfile = "3"
 tauri = { version = "2.12.1", features = ["image-png", "test"] }

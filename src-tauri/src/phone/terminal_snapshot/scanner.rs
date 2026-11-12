@@ -1,5 +1,6 @@
 use super::failure::record_host_ingress_failure;
 use super::process::process_claimed;
+use super::process::TerminalSnapshotHost;
 use super::publish::cleanup_tracked_artifact;
 use super::publish::protocol_cleanup_name;
 use super::publish::protocol_request_name;
@@ -8,6 +9,7 @@ use super::publish::sweep_directory;
 use super::shutdown::ScannerTaskCleanup;
 use super::shutdown::ScannerTaskOwnership;
 use super::shutdown::SnapshotScannerShutdownOwner;
+use super::task::SnapshotTaskHost;
 use super::CURSOR_CAP;
 use super::MAX_DIRECTORY_ENTRIES;
 use super::MAX_PER_POLL;
@@ -19,7 +21,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
 use uuid::Uuid;
 
@@ -29,8 +30,6 @@ pub(crate) struct SnapshotMailboxScanner {
     cursors: HashMap<crate::path_identity::FileObjectId, String>,
     observed: std::collections::HashSet<crate::path_identity::FileObjectId>,
     startup_sweep_complete: bool,
-    #[cfg(test)]
-    pending_tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
 }
 
 pub(crate) fn verified_requester_root_from_discovered_path(path: &Path) -> Option<PathBuf> {
@@ -128,8 +127,6 @@ impl SnapshotMailboxScanner {
             cursors: HashMap::new(),
             observed: std::collections::HashSet::new(),
             startup_sweep_complete: false,
-            #[cfg(test)]
-            pending_tasks: Vec::new(),
         }
     }
 
@@ -231,9 +228,6 @@ impl SnapshotMailboxScanner {
     #[cfg(test)]
     pub(crate) async fn join_pending_tasks_for_test(&mut self) {
         self.shutdown_owner.join_all_for_test().await;
-        for task in std::mem::take(&mut self.pending_tasks) {
-            task.await.expect("terminal snapshot mailbox task");
-        }
     }
 
     fn select_requests(
@@ -287,9 +281,20 @@ impl SnapshotMailboxScanner {
         Some(selected)
     }
 
-    pub(crate) fn scan_root<R: tauri::Runtime>(
+    fn observe_request_directory(
         &mut self,
-        app: &tauri::AppHandle<R>,
+        request_object: crate::path_identity::FileObjectId,
+    ) -> bool {
+        if self.cursors.len() >= CURSOR_CAP && !self.cursors.contains_key(&request_object) {
+            return false;
+        }
+        self.observed.insert(request_object);
+        true
+    }
+
+    pub(crate) fn scan_root<H: TerminalSnapshotHost + SnapshotTaskHost>(
+        &mut self,
+        host: &H,
         requester_root: &Path,
     ) {
         let Some(ScanDirectories {
@@ -302,14 +307,9 @@ impl SnapshotMailboxScanner {
         else {
             return;
         };
-        if self.cursors.len() >= CURSOR_CAP
-            && !self
-                .cursors
-                .contains_key(&request_directory_identity.object_id)
-        {
+        if !self.observe_request_directory(request_directory_identity.object_id) {
             return;
         }
-        self.observed.insert(request_directory_identity.object_id);
         sweep_directory(&request_directory, &request_directory_identity, false);
         sweep_directory(&response_directory, &response_directory_identity, true);
         let Some(selected) =
@@ -318,9 +318,7 @@ impl SnapshotMailboxScanner {
             return;
         };
 
-        let Some(snapshot_state) =
-            app.try_state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()
-        else {
+        let Some(snapshot_state) = host.snapshot_state_opt() else {
             return;
         };
         for name in selected {
@@ -333,7 +331,7 @@ impl SnapshotMailboxScanner {
                 processing,
                 claimed,
             } = match claim_request(
-                snapshot_state.inner(),
+                snapshot_state,
                 &request_directory,
                 &request_directory_identity,
                 &name,
@@ -342,24 +340,15 @@ impl SnapshotMailboxScanner {
                 Err(ClaimFailure::Skip) => continue,
                 Err(ClaimFailure::Stop) => break,
             };
-            let snapshot_state = snapshot_state.inner().clone();
-            let cleanup_state = Arc::clone(&snapshot_state);
-            let cleanup_processing = processing.clone();
-            let cleanup_claimed = claimed.clone();
-            let cleanup_request_directory = request_directory.clone();
-            let cleanup_request_identity = request_directory_identity.clone();
-            let cleanup_response_directory = response_directory.clone();
-            let cleanup_response_identity = response_directory_identity.clone();
-            let cleanup: ScannerTaskCleanup = std::sync::Arc::new(move || {
-                cleanup_tracked_artifact(&cleanup_state, &cleanup_processing, &cleanup_claimed);
-                sweep_directory(&cleanup_request_directory, &cleanup_request_identity, false);
-                sweep_directory(
-                    &cleanup_response_directory,
-                    &cleanup_response_identity,
-                    true,
-                );
-            });
-            let app = app.clone();
+            let snapshot_state = snapshot_state.clone();
+            let cleanup = request_task_cleanup(
+                &snapshot_state,
+                &processing,
+                &claimed,
+                (&request_directory, &request_directory_identity),
+                (&response_directory, &response_directory_identity),
+            );
+            let task_host = host.clone();
             let response_directory = response_directory.clone();
             let expected_root = root_identity.clone();
             let ownership = ScannerTaskOwnership::new();
@@ -374,7 +363,7 @@ impl SnapshotMailboxScanner {
                 }
                 let processed = crate::logging::catch_payload_future(process_claimed(
                     ownership,
-                    &app,
+                    &task_host,
                     snapshot_state,
                     processing,
                     response_directory,
@@ -389,6 +378,7 @@ impl SnapshotMailboxScanner {
                 }
             };
             if !self.shutdown_owner.spawn_tracked(
+                host,
                 Some(audit_request_id.clone()),
                 phase,
                 cleanup.clone(),
@@ -405,6 +395,31 @@ impl SnapshotMailboxScanner {
             }
         }
     }
+}
+
+fn request_task_cleanup(
+    snapshot_state: &Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>,
+    processing: &Path,
+    claimed: &crate::path_identity::VerifiedPathIdentity,
+    request_directory: (&Path, &crate::path_identity::VerifiedPathIdentity),
+    response_directory: (&Path, &crate::path_identity::VerifiedPathIdentity),
+) -> ScannerTaskCleanup {
+    let cleanup_state = Arc::clone(snapshot_state);
+    let cleanup_processing = processing.to_path_buf();
+    let cleanup_claimed = claimed.clone();
+    let cleanup_request_directory = request_directory.0.to_path_buf();
+    let cleanup_request_identity = request_directory.1.clone();
+    let cleanup_response_directory = response_directory.0.to_path_buf();
+    let cleanup_response_identity = response_directory.1.clone();
+    std::sync::Arc::new(move || {
+        cleanup_tracked_artifact(&cleanup_state, &cleanup_processing, &cleanup_claimed);
+        sweep_directory(&cleanup_request_directory, &cleanup_request_identity, false);
+        sweep_directory(
+            &cleanup_response_directory,
+            &cleanup_response_identity,
+            true,
+        );
+    })
 }
 
 struct ClaimedRequest {

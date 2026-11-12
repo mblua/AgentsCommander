@@ -42,13 +42,7 @@ fn temp_leftovers(project: &Path) -> usize {
     std::fs::read_dir(&dir)
         .expect("read .ac")
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .map(is_exact_temp_name)
-                .unwrap_or(false)
-        })
+        .filter(|entry| entry.file_name().to_str().is_some_and(is_exact_temp_name))
         .count()
 }
 

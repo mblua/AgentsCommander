@@ -13,8 +13,8 @@ use crate::resource_monitor::types::{
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::{CommitDecision, LifecycleMutations};
 use crate::session::selection::{
-    SelectionCause, SelectionCoordinator, SelectionSource, SelectionTransaction,
-    TrustedResourceIntent,
+    LifecycleFuture, SelectionCause, SelectionCoordinator, SelectionResourceEffects,
+    SelectionSource, SelectionTransaction, TrustedResourceIntent,
 };
 
 #[tauri::command]
@@ -68,6 +68,17 @@ pub async fn kill_resource_group<R: tauri::Runtime>(
         .await
 }
 
+impl<R: tauri::Runtime> SelectionResourceEffects<R> for AppHandle<R> {
+    fn resource_kill<'a>(
+        &'a self,
+        transaction: &'a SelectionTransaction<R>,
+        id: Uuid,
+        intent: TrustedResourceIntent,
+    ) -> LifecycleFuture<'a, Result<ResourceKillResult, String>> {
+        Box::pin(execute_resource_kill_transaction(transaction, id, intent))
+    }
+}
+
 pub(crate) async fn execute_resource_kill_transaction<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     session_id: Uuid,
@@ -112,15 +123,11 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
     let job_fired = {
         pty_mgr
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .terminate_job_for_session(session_id)
     };
 
-    log::info!(
-        "[resource-monitor] job-fire session={} job_present={}",
-        session_id,
-        job_fired
-    );
+    log::info!("[resource-monitor] job-fire session={session_id} job_present={job_fired}");
 
     // Verify + account, settling past a concurrent kill's transient `Terminating`.
     let mut result = match verify_kill_settled_diagnostic(
@@ -149,7 +156,7 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
             let kill_result = {
                 let guard = pty_mgr
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let r = guard.kill(session_id);
                 drop(guard);
                 r
@@ -162,9 +169,7 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
                 if transaction.runtime_snapshot(session_id).has_pty {
                     log::warn!(
                         "[resource-monitor] PTY teardown failed after verified kill and PTY still \
-                        live session={}: {}; retrying bounded deferred teardown",
-                        session_id,
-                        error
+                        live session={session_id}: {error}; retrying bounded deferred teardown"
                     );
                     finalize_dead_pty_route_bounded(
                         transaction,
@@ -179,9 +184,8 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
                     return Ok(result);
                 }
                 log::warn!(
-                    "[resource-monitor] PTY teardown failed after verified kill session={}: {}",
-                    session_id,
-                    error
+                    "[resource-monitor] PTY teardown failed after verified kill \
+                    session={session_id}: {error}"
                 );
             }
         }
@@ -219,7 +223,7 @@ fn unsupported_kill_result(session_id: Uuid) -> ResourceKillResult {
 }
 
 /// Upper bound on how long `verify_kill_settled` waits for a concurrent kill to leave
-/// `Terminating`. After the job fire the concurrent reaper sees an AlreadyGone tree, so
+/// `Terminating`. After the job fire the concurrent reaper sees an `AlreadyGone` tree, so
 /// the common case settles in one or two ~75ms polls. The budget sits ABOVE the
 /// worst-case single `kill_group` latency (a ~2s `WaitForSingleObject` in
 /// `terminate_verified`), so a genuinely in-flight kill is awaited to completion rather
@@ -233,7 +237,7 @@ const SETTLE_POLL: Duration = Duration::from_millis(75);
 /// budget elapses. `kill_group` is idempotent under concurrency: while another call
 /// owns `Terminating` it early-returns that state with no side effects; once the owner
 /// settles to `Terminated` it early-returns `Terminated`; a settled `Quarantined`
-/// re-runs the reaper (now seeing the job-killed tree as AlreadyGone -> `Terminated`).
+/// re-runs the reaper (now seeing the job-killed tree as `AlreadyGone` -> `Terminated`).
 /// So a single Force-kill click reliably reaches a verified outcome instead of bailing
 /// on the transient `Terminating` and silently leaving a dead tree with a Running tile.
 #[cfg(test)]
@@ -307,15 +311,13 @@ async fn finalize_verified_dead_session<R: tauri::Runtime>(
         .app()
         .state::<crate::DetachedSessionsState>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&session_id);
     let window_label = format!("terminal-{}", session_id.to_string().replace('-', ""));
     if let Some(window) = transaction.app().get_webview_window(&window_label) {
         if let Err(error) = window.destroy() {
             log::warn!(
-                "[resource-monitor] detached window close failed session={}: {}",
-                session_id,
-                error
+                "[resource-monitor] detached window close failed session={session_id}: {error}"
             );
         }
     }
@@ -367,7 +369,9 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
     for attempt in 1..=PTY_ROUTE_RETRY_ATTEMPTS {
         tokio::time::sleep(PTY_ROUTE_RETRY_DELAY).await;
         let route_gone = {
-            let guard = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
+            let guard = pty_mgr
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let kill_ok = guard.kill(session_id).is_ok();
             let live = guard.has_session(session_id);
             drop(guard);
@@ -375,29 +379,27 @@ async fn finalize_dead_pty_route_bounded<R: tauri::Runtime>(
         };
         if route_gone {
             log::info!(
-                "[resource-monitor] bounded deferred PTY teardown succeeded session={} attempt={}",
-                session_id,
-                attempt
+                "[resource-monitor] bounded deferred PTY teardown succeeded session={session_id} \
+                attempt={attempt}"
             );
             return finalize_verified_dead_session(transaction, session_id, intent).await;
         }
         log::warn!(
-            "[resource-monitor] bounded deferred PTY teardown attempt {}/{} still live session={}",
-            attempt,
-            PTY_ROUTE_RETRY_ATTEMPTS,
-            session_id
+            "[resource-monitor] bounded deferred PTY teardown attempt \
+            {attempt}/{PTY_ROUTE_RETRY_ATTEMPTS} still live session={session_id}"
         );
         #[cfg(test)]
         retry_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     log::error!(
-        "[resource-monitor] bounded deferred PTY teardown exhausted {} attempts session={}; \
-        escalating to best-effort force-close",
-        PTY_ROUTE_RETRY_ATTEMPTS,
-        session_id
+        "[resource-monitor] bounded deferred PTY teardown exhausted {PTY_ROUTE_RETRY_ATTEMPTS} \
+        attempts session={session_id}; \
+        escalating to best-effort force-close"
     );
     {
-        let guard = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
+        let guard = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(kind) = guard.backend_kind(session_id) {
             let _ = guard.try_remove_route_if_kind(session_id, kind);
         }

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::discovery::detect_wg_replica;
-use super::LeanPeerInfo;
+use crate::config::teams::detect_wg_replica;
+use crate::config::teams::peer_projection::LeanPeerInfo;
 
 pub(super) fn snapshot_target_projection(
     target: crate::config::teams::TerminalSnapshotTargetIdentity,

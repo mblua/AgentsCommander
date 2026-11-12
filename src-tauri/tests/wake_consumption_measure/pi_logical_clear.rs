@@ -131,6 +131,24 @@ pub(crate) fn prepare_pi_logical_clear_mode(
         }
     }
 
+    let version_text = probe_pi_version(cfg)?;
+
+    std::fs::create_dir(&config_dir).map_err(|error| {
+        format!(
+            "failed to create harness-owned PI_CODING_AGENT_DIR '{}': {error}",
+            config_dir.display()
+        )
+    })?;
+    Ok((
+        PiConfigDirGuard {
+            path: config_dir,
+            owned: true,
+        },
+        version_text,
+    ))
+}
+
+fn probe_pi_version(cfg: &HarnessConfig) -> Result<String, String> {
     let version_output = std::process::Command::new("cmd.exe")
         .args(["/D", "/S", "/C", cfg.shell.as_str(), "--version"])
         .output()
@@ -159,20 +177,7 @@ pub(crate) fn prepare_pi_logical_clear_mode(
         ));
     }
     println!("Pi version: {version_text}");
-
-    std::fs::create_dir(&config_dir).map_err(|error| {
-        format!(
-            "failed to create harness-owned PI_CODING_AGENT_DIR '{}': {error}",
-            config_dir.display()
-        )
-    })?;
-    Ok((
-        PiConfigDirGuard {
-            path: config_dir,
-            owned: true,
-        },
-        version_text,
-    ))
+    Ok(version_text)
 }
 
 struct CaptureEpoch {
@@ -213,7 +218,7 @@ fn start_capture_epoch(ctx: &HarnessCtx, session_id: Uuid) -> Result<CaptureEpoc
             }
             let mut retained = bytes_for_collector
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if retained.len().saturating_add(chunk.len()) > PI_CAPTURE_MAX_BYTES {
                 overflow_for_collector.store(true, Ordering::SeqCst);
                 continue;
@@ -232,7 +237,10 @@ fn start_capture_epoch(ctx: &HarnessCtx, session_id: Uuid) -> Result<CaptureEpoc
 
 impl CaptureEpoch {
     fn contains(&self, marker: &str) -> bool {
-        let bytes = self.bytes.lock().unwrap_or_else(|error| error.into_inner());
+        let bytes = self
+            .bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         String::from_utf8_lossy(&bytes).contains(marker)
     }
 
@@ -253,7 +261,7 @@ impl CaptureEpoch {
         let bytes = self
             .bytes
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Ok(CaptureSnapshot {
             bytes,
@@ -279,8 +287,7 @@ async fn wait_for_capture_marker(
     while Instant::now() < deadline {
         if capture.overflowed.load(Ordering::SeqCst) {
             return Err(format!(
-                "capture exceeded the {} byte cap",
-                PI_CAPTURE_MAX_BYTES
+                "capture exceeded the {PI_CAPTURE_MAX_BYTES} byte cap"
             ));
         }
         if capture.contains(forbidden) {
@@ -384,7 +391,15 @@ async fn run_pi_trial_body(
             new_capture.overflowed
         ));
     }
+    run_pi_hotkeys_phase(cfg, ctx, session_id, capture).await
+}
 
+async fn run_pi_hotkeys_phase(
+    cfg: &HarnessConfig,
+    ctx: &HarnessCtx,
+    session_id: Uuid,
+    capture: &mut Option<CaptureEpoch>,
+) -> Result<(), String> {
     *capture = Some(start_capture_epoch(ctx, session_id)?);
     let (hotkeys_baseline_sequence, hotkeys_baseline) =
         stable_screen_snapshot(&ctx.app, session_id)?;
@@ -483,8 +498,7 @@ async fn cleanup_pi_trial(
     let pty_live = ctx
         .pty_mgr
         .lock()
-        .map(|manager| manager.has_session(session_id))
-        .unwrap_or(true);
+        .map_or(true, |manager| manager.has_session(session_id));
     if pty_live {
         errors.push("PTY route remained live after cleanup".to_string());
     }

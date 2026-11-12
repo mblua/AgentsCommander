@@ -4,6 +4,7 @@ use super::*;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::PoisonError;
 
 use crate::config::settings::AppSettings;
 
@@ -19,7 +20,7 @@ mod snapshot_producer_2374;
 
 /// Round-driving tests share the process-global snapshot and the discovery
 /// maps, so they MUST NOT run concurrently with each other or with the
-/// ac_discovery test that pushes the room map: a peer test's GC or discovery
+/// `ac_discovery` test that pushes the room map: a peer test's GC or discovery
 /// write would clear another test's entries. The lock lives beside the maps.
 ///
 /// Async-aware on purpose: a std guard held across the round's awaits is the
@@ -268,7 +269,7 @@ impl Harness {
             Box::new(move |payload| {
                 emitted
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(PoisonError::into_inner)
                     .push(payload.clone());
             })
         };
@@ -278,7 +279,11 @@ impl Harness {
             let gh = Arc::clone(&gh);
             Arc::new(move |spec| {
                 let gh = Arc::clone(&gh);
-                Box::pin(async move { gh.lock().unwrap_or_else(|e| e.into_inner()).next(&spec) })
+                Box::pin(async move {
+                    gh.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .next(&spec)
+                })
             })
         };
         let git = Arc::new(Mutex::new(LocalGitScripts::default()));
@@ -288,7 +293,7 @@ impl Harness {
                 let git = Arc::clone(&git);
                 Box::pin(async move {
                     git.lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(PoisonError::into_inner)
                         .next(&path, args)
                 })
             })
@@ -299,12 +304,16 @@ impl Harness {
         let jitter_value = Arc::new(Mutex::new(0.0f64));
         let jitter: JitterSource = {
             let jitter_value = Arc::clone(&jitter_value);
-            Arc::new(move || *jitter_value.lock().unwrap_or_else(|e| e.into_inner()))
+            Arc::new(move || *jitter_value.lock().unwrap_or_else(PoisonError::into_inner))
         };
         let publication_value = Arc::new(Mutex::new(Utc::now()));
         let publication_clock: PublicationClock = {
             let publication_value = Arc::clone(&publication_value);
-            Arc::new(move || *publication_value.lock().unwrap_or_else(|e| e.into_inner()))
+            Arc::new(move || {
+                *publication_value
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+            })
         };
 
         let settings: SettingsState = crate::config::settings::new_settings_state(settings);
@@ -360,14 +369,14 @@ impl Harness {
     }
 
     fn set_jitter(&self, value: f64) {
-        *self.jitter.lock().unwrap_or_else(|e| e.into_inner()) = value;
+        *self.jitter.lock().unwrap_or_else(PoisonError::into_inner) = value;
     }
 
     fn set_publication_clock(&self, value: DateTime<Utc>) {
         *self
             .publication_clock
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = value;
+            .unwrap_or_else(PoisonError::into_inner) = value;
     }
 
     /// Pins the bucket AND clears the refill mark, so the next round refills
@@ -381,7 +390,7 @@ impl Harness {
     fn gh_call_count(&self) -> usize {
         self.gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .calls
             .len()
     }
@@ -402,7 +411,10 @@ impl Harness {
     }
 
     fn emitted_count(&self) -> usize {
-        self.emitted.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.emitted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     fn snapshot(&self) -> HashMap<String, RemoteActivity> {
@@ -414,7 +426,7 @@ impl Harness {
         while let Ok(transition) = self
             .transitions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .try_recv()
         {
             transitions.push(transition);
@@ -425,7 +437,7 @@ impl Harness {
     fn try_recv_transition(&self) -> Option<RemoteTransition> {
         self.transitions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .try_recv()
             .ok()
     }
@@ -433,7 +445,7 @@ impl Harness {
     fn close_transitions(&self) {
         self.transitions
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .close();
     }
 }
@@ -455,7 +467,7 @@ fn ci_count(harness: &Harness) -> usize {
     harness
         .gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .count("/actions/runs?")
 }
 
@@ -463,7 +475,7 @@ fn compare_count(harness: &Harness, nwo: &str) -> usize {
     harness
         .gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .calls
         .iter()
         .filter(|args| {
@@ -497,7 +509,7 @@ fn ci_count_for(harness: &Harness, nwo: &str) -> usize {
     harness
         .gh
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .count(&format!("{nwo}/actions/runs"))
 }
 
@@ -525,7 +537,7 @@ fn two_repos(harness: &Harness) -> (String, String) {
     let second = harness.repo("b");
     harness.set_work(&[first.clone(), second.clone()]);
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_origin(&first, "git@github.com:mblua/repo-a.git");
         git.set_origin(&second, "git@github.com:mblua/repo-b.git");
     }
@@ -559,13 +571,13 @@ fn budget_fixture() -> (Harness, Vec<String>) {
         harness
             .git
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .set_origin(&path, &format!("git@github.com:mblua/{name}.git"));
         paths.push(path);
     }
     harness.set_work(&paths);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         for _ in 0..(BUDGET_FIXTURE_REPOS * 40) {
             gh.repo_info.push_back(Ok(ok_output(
                 &serde_json::json!({ "default_branch": "main" }).to_string(),
@@ -670,7 +682,7 @@ fn ci_jobs_body(run_id: u64, sha40: &str, branch: &str, attempt: u64, statuses: 
 
 fn queue_endpoint(h: &Harness, endpoint: &str, result: Result<GhCallOutput, FailureKind>) {
     h.gh.lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .route(endpoint, result);
 }
 
@@ -765,7 +777,7 @@ fn i2768_assert_running(h: &Harness, repo: &str) {
 }
 
 fn i2768_assert_consumed(h: &Harness) {
-    let gh = h.gh.lock().unwrap_or_else(|e| e.into_inner());
+    let gh = h.gh.lock().unwrap_or_else(PoisonError::into_inner);
     for (endpoint, queue) in &gh.routes {
         assert!(
             queue.is_empty(),
@@ -778,7 +790,7 @@ fn i2768_assert_consumed(h: &Harness) {
 
 fn i2768_calls(h: &Harness) -> Vec<String> {
     h.gh.lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .calls
         .iter()
         .map(|args| args[1].clone())

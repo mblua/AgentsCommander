@@ -41,7 +41,7 @@ impl WsBroadcaster {
     }
 
     /// Broadcast a JSON event to all connected WS clients.
-    /// Dead senders are automatically cleaned up via retain().
+    /// Dead senders are automatically cleaned up via `retain()`.
     pub fn broadcast_event(&self, event: &str, payload: &serde_json::Value) {
         let msg = serde_json::json!({ "event": event, "payload": payload });
         let text = msg.to_string();

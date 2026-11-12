@@ -28,7 +28,7 @@ control characters (except tab) are rejected. An orchestrator --title also canno
 start with the reserved USER: prefix; that marker is reserved for human-set \
 titles applied through the in-app title editor.")]
 pub struct TaskSetTitleArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
     /// See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
@@ -55,7 +55,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -132,7 +132,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }

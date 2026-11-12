@@ -60,7 +60,7 @@ pub(super) fn acquire_loop_lock_in(
             e
         )
     })?;
-    let lock_path = canonical_root.join(format!(".{}{}.lock", LOOP_DIR_PREFIX, loop_id));
+    let lock_path = canonical_root.join(format!(".{LOOP_DIR_PREFIX}{loop_id}.lock"));
     let guard =
         acquire_sidecar_write_lock(&lock_path, timeout, "loopLockTimeout", "Loop write lock")?;
     migrate_loop_state_name(&canonical_root, loop_id, journal_dir);
@@ -155,7 +155,7 @@ pub(super) fn migrate_loop_state_name(
         return warn("the state rename was refused", refusal);
     }
     if let Err(refusal) = naming_migration::update_journal(journal_dir, |j| {
-        j.set_status(&key, naming_migration::ScopeStatus::Complete)
+        j.set_status(&key, naming_migration::ScopeStatus::Complete);
     }) {
         warn("the scope completion was not recorded", refusal);
     }
@@ -178,30 +178,10 @@ pub(super) fn sweep_pause_hook(stage: &str, dir: &Path) {
 pub(super) fn ensure_loop_state_ignore_rows(
     ac_root: &Path,
 ) -> Result<(), naming_migration::Refusal> {
-    let path = ac_root.join(".gitignore");
-    let io = |what: &str, e: std::io::Error| {
-        naming_migration::Refusal::Io(format!("failed to {what} {}: {e}", path.display()))
-    };
-    let content = match loop_files::read_loop_document(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io("read", e)),
-    };
-    let blocks = naming_migration::missing_ignore_rows(
-        &content,
-        &naming_migration::loop_state_ignore_rows(),
-    );
-    if blocks.is_empty() {
-        return Ok(());
-    }
-    sweep_pause_hook("before_gitignore_append", ac_root);
-    let separator = if content.is_empty() || content.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
-    loop_files::append_loop_ignore_rows(&path, &format!("{separator}{blocks}"))
-        .map_err(|e| io("append to", e))
+    crate::config::projects::ac_root_gitignore::ensure_loop_state_ignore_rows(ac_root, || {
+        sweep_pause_hook("before_gitignore_append", ac_root);
+    })
+    .map_err(naming_migration::Refusal::Io)
 }
 
 /// #2682 - the create section shared by the app command and the CLI: lock,
@@ -234,7 +214,7 @@ pub fn update_loop_files(
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
     let dir = loop_dir(ac_root, loop_id);
     if !loop_files::loop_path_is_directory(&dir) {
-        return Err(format!("Loop '{}' not found", loop_id));
+        return Err(format!("Loop '{loop_id}' not found"));
     }
     let mut config = read_loop_config(&dir)?;
     let reset_schedule = apply_loop_update_patch(&mut config, patch)?;
@@ -258,10 +238,10 @@ pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, Strin
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
     let dir = loop_dir(ac_root, loop_id);
     if !loop_files::loop_path_is_directory(&dir) {
-        return Err(format!("Loop '{}' not found", loop_id));
+        return Err(format!("Loop '{loop_id}' not found"));
     }
     loop_files::remove_loop_directory(&dir)
-        .map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+        .map_err(|e| format!("Failed to remove Loop directory: {e}"))?;
     Ok(dir)
 }
 

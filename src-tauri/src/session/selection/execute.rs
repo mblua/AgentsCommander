@@ -4,7 +4,6 @@ use super::replacement::OwnedReplacementContinuation;
 
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, Runtime};
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
@@ -13,7 +12,6 @@ use crate::session::manager::{
 };
 use crate::session::session::{SessionInfo, SessionStatus};
 use crate::session::warnings::emit_session_warning;
-use crate::DetachedSessionsState;
 
 use super::payload::{
     DormantRuntimeWitness, LiveRuntimeWitness, SelectionCause, SelectionCoordinatorError,
@@ -25,131 +23,29 @@ use super::replacement::{
 };
 use super::shutdown_cleanup::{execute_rollback_create_parts, retained_entry_owns_binding};
 use super::transaction::SelectionTransaction;
-use super::{DormantRestoreRequest, FinalizeCreateRequest, SelectionRequest};
+use super::{
+    DormantRestoreRequest, FinalizeCreateRequest, SelectionContext, SelectionHost, SelectionRequest,
+};
 
 #[cfg(test)]
 use super::replacement_fixture::{ReplacementFixtureAction, ReplacementFixtureCut};
 
-pub(super) async fn execute_transition<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_transition<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: SelectionRequest,
 ) -> Result<Option<SessionSelection>, String> {
     match request {
         SelectionRequest::UserSwitch { session_id } => {
-            let aggregate = transaction.aggregate_snapshot().await;
-            let target = aggregate
-                .sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .cloned()
-                .ok_or_else(|| format!("Session not found: {session_id}"))?;
-            let runtime = transaction.runtime_snapshot(session_id);
-            if runtime.detached {
-                let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
-                if let Some(window) = transaction.app().get_webview_window(&label) {
-                    if let Err(error) = window.set_focus() {
-                        log::warn!(
-                            "[selection] failed to focus detached target session={} \
-                                source=userSwitch: {}",
-                            session_id,
-                            error
-                        );
-                    }
-                }
-                return Ok(None);
-            }
-
-            let decision = match target.status {
-                SessionStatus::Exited(_) => CommitDecision::Dormant(
-                    DormantRuntimeWitness::from_snapshot(runtime)
-                        .ok_or_else(|| "Session is detached".to_string())?,
-                ),
-                _ if runtime.has_pty => CommitDecision::Live(
-                    LiveRuntimeWitness::from_snapshot(runtime)
-                        .ok_or_else(|| "Session has no live PTY".to_string())?,
-                ),
-                _ => {
-                    if aggregate.selection.id() == Some(session_id) {
-                        let repair = transaction
-                            .commit(
-                                CommitDecision::Clear,
-                                SelectionCause::LivenessReconcile,
-                                LifecycleMutations::default(),
-                            )
-                            .await?;
-                        if let Some(payload) = repair.selection.as_ref() {
-                            transaction
-                                .persist(SelectionSource::LivenessReconcile, Some(session_id))
-                                .await;
-                            transaction.publish_selection(payload);
-                        }
-                    }
-                    return Err("Session has no live PTY".to_string());
-                }
-            };
-            let committed = transaction
-                .commit(
-                    decision,
-                    SelectionCause::UserSwitch,
-                    LifecycleMutations::default(),
-                )
-                .await?;
-            transaction.publish_view_requested(session_id);
-            if let Some(payload) = committed.selection.as_ref() {
-                transaction
-                    .persist(SelectionSource::UserSwitch, Some(session_id))
-                    .await;
-                transaction.publish_selection(payload);
-            }
-            Ok(committed.selection)
+            transaction.execute_user_switch(session_id).await
         }
         SelectionRequest::Restore { persisted_target } => {
-            let aggregate = transaction.aggregate_snapshot().await;
-            let exact = persisted_target.and_then(|target_id| {
-                let record = aggregate
-                    .sessions
-                    .iter()
-                    .find(|record| record.id == target_id)?;
-                let runtime = transaction.runtime_snapshot(target_id);
-                if runtime.detached {
-                    return None;
-                }
-                match record.status {
-                    SessionStatus::Exited(_) => transaction.dormant_decision(target_id),
-                    _ if runtime.has_pty => transaction.live_decision(target_id),
-                    _ => None,
-                }
-            });
-            let decision = exact
-                .or_else(|| {
-                    aggregate.sessions.iter().find_map(|record| {
-                        if matches!(record.status, SessionStatus::Exited(_)) {
-                            return None;
-                        }
-                        transaction.live_decision(record.id)
-                    })
-                })
-                .unwrap_or(CommitDecision::Clear);
-            let committed = transaction
-                .commit(
-                    decision,
-                    SelectionCause::Restore,
-                    LifecycleMutations::default(),
-                )
-                .await?;
-            if let Some(payload) = committed.selection.as_ref() {
-                transaction
-                    .persist(SelectionSource::Restore, payload.id())
-                    .await;
-                transaction.publish_selection(payload);
-            }
-            Ok(committed.selection)
+            transaction.execute_restore(persisted_target).await
         }
     }
 }
 
-pub(super) async fn execute_owned_finalize_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_owned_finalize_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: FinalizeCreateRequest,
 ) -> Option<Result<SessionInfo, String>> {
     let continuation = request.owned_replacement?;
@@ -213,14 +109,14 @@ pub(super) async fn execute_owned_finalize_create<R: Runtime>(
     transaction.publish_destroyed(previous);
     transaction.publish_selection(&selection);
     for warning in warnings {
-        emit_session_warning(transaction.app(), warning);
+        emit_session_warning(transaction.host(), warning);
     }
     publication.complete(Ok(Some(info.id.clone())));
     Some(Ok(info))
 }
 
-pub(super) async fn execute_finalize_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_finalize_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: FinalizeCreateRequest,
 ) -> Result<SessionInfo, String> {
     let session_id = request.binding.session_id();
@@ -268,9 +164,7 @@ pub(super) async fn execute_finalize_create<R: Runtime>(
         Ok(committed) => committed,
         Err(error) => {
             log::warn!(
-                "[selection] create finalization commit rejected session={}: {}",
-                session_id,
-                error
+                "[selection] create finalization commit rejected session={session_id}: {error}"
             );
             execute_rollback_create(transaction, request.binding).await;
             return Err(error);
@@ -294,7 +188,7 @@ pub(super) async fn execute_finalize_create<R: Runtime>(
         transaction.publish_selection(payload);
     }
     for warning in request.warnings {
-        emit_session_warning(transaction.app(), warning);
+        emit_session_warning(transaction.host(), warning);
     }
     if let Some(publication) = publication {
         publication.complete(Ok(Some(info.id.clone())));
@@ -302,8 +196,8 @@ pub(super) async fn execute_finalize_create<R: Runtime>(
     Ok(info)
 }
 
-pub(super) async fn execute_restore_dormant<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_restore_dormant<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     request: DormantRestoreRequest,
 ) -> Result<SessionInfo, String> {
     let id = Uuid::new_v4();
@@ -438,15 +332,12 @@ fn restored_dormant_session(
     }
 }
 
-pub(super) async fn execute_rollback_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_rollback_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     binding: PendingCreateBinding,
 ) {
     let manager = transaction.manager().await;
-    let pty = transaction
-        .app()
-        .try_state::<Arc<Mutex<PtyManager>>>()
-        .map(|state| state.inner().clone());
+    let pty = transaction.host().pty_optional().cloned();
     if transaction.has_lifecycle_entry() {
         execute_entry_rollback_create(transaction, manager, pty, binding).await;
     } else {
@@ -463,8 +354,8 @@ pub(super) async fn execute_rollback_create<R: Runtime>(
 
 /// An entry's own stopped setup body calls this on its real error exit. Neither
 /// a missing pending row nor an Err grants authority to kill a finalized B.
-pub(super) async fn execute_entry_rollback_create<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_entry_rollback_create<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     manager: SessionManager,
     pty: Option<Arc<Mutex<PtyManager>>>,
     binding: PendingCreateBinding,
@@ -475,7 +366,7 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     let pending = manager.get_pending_session(binding).await;
     let cleanup_nonce = Uuid::new_v4();
-    let claimed = owner.state.lock().ok().is_some_and(|mut state| {
+    let claimed = owner.state.lock().is_ok_and(|mut state| {
         if state.executor_nonce != *executor
             || state.stage != ReplacementStage::Executing
             || state.effects.iter().any(|effect| {
@@ -525,7 +416,7 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
         return;
     }
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    let still_claimed = owner.state.lock().ok().is_some_and(|state| {
+    let still_claimed = owner.state.lock().is_ok_and(|state| {
         state.executor_nonce == *executor
             && state.entry_create.as_ref().is_some_and(|create| {
                 create.binding == binding
@@ -555,12 +446,12 @@ pub(super) async fn execute_entry_rollback_create<R: Runtime>(
             state.retained_reason = Some("entry pending manager rollback failed".into());
         }
     }
-    effect.complete(result.map(|_| None));
+    effect.complete(result.map(|()| None));
     drop(permit);
 }
 
-pub(super) async fn execute_route_loss<R: Runtime>(
-    transaction: &SelectionTransaction<R>,
+pub(super) async fn execute_route_loss<C: SelectionContext>(
+    transaction: &SelectionTransaction<C>,
     session_id: Uuid,
     exit_code: i32,
 ) -> Result<(), String> {
@@ -581,20 +472,17 @@ pub(super) async fn execute_route_loss<R: Runtime>(
     let mut runtime = transaction.runtime_snapshot(session_id);
     if runtime.detached {
         transaction
-            .app()
-            .state::<DetachedSessionsState>()
+            .host()
+            .detached_required()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
-        if let Some(window) = transaction.app().get_webview_window(&label) {
-            if let Err(error) = window.destroy() {
-                log::warn!(
-                    "[selection] route-loss detached window close failed session={}: {}",
-                    session_id,
-                    error
-                );
-            }
+        if let Some(Err(error)) = transaction.host().destroy_window(&label) {
+            log::warn!(
+                "[selection] route-loss detached window close failed \
+                        session={session_id}: {error}"
+            );
         }
         runtime = transaction.runtime_snapshot(session_id);
     }
@@ -630,7 +518,117 @@ pub(super) async fn execute_route_loss<R: Runtime>(
     Ok(())
 }
 
-impl<R: Runtime> SelectionTransaction<R> {
+impl<C: SelectionContext> SelectionTransaction<C> {
+    async fn execute_user_switch(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<SessionSelection>, String> {
+        let aggregate = self.aggregate_snapshot().await;
+        let target = aggregate
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .cloned()
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        let runtime = self.runtime_snapshot(session_id);
+        if runtime.detached {
+            let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
+            if let Some(Err(error)) = self.host().focus_window(&label) {
+                log::warn!(
+                    "[selection] failed to focus detached target session={session_id} \
+                            source=userSwitch: {error}"
+                );
+            }
+            return Ok(None);
+        }
+
+        let decision = match target.status {
+            SessionStatus::Exited(_) => CommitDecision::Dormant(
+                DormantRuntimeWitness::from_snapshot(runtime)
+                    .ok_or_else(|| "Session is detached".to_string())?,
+            ),
+            _ if runtime.has_pty => CommitDecision::Live(
+                LiveRuntimeWitness::from_snapshot(runtime)
+                    .ok_or_else(|| "Session has no live PTY".to_string())?,
+            ),
+            _ => {
+                if aggregate.selection.id() == Some(session_id) {
+                    let repair = self
+                        .commit(
+                            CommitDecision::Clear,
+                            SelectionCause::LivenessReconcile,
+                            LifecycleMutations::default(),
+                        )
+                        .await?;
+                    if let Some(payload) = repair.selection.as_ref() {
+                        self.persist(SelectionSource::LivenessReconcile, Some(session_id))
+                            .await;
+                        self.publish_selection(payload);
+                    }
+                }
+                return Err("Session has no live PTY".to_string());
+            }
+        };
+        let committed = self
+            .commit(
+                decision,
+                SelectionCause::UserSwitch,
+                LifecycleMutations::default(),
+            )
+            .await?;
+        self.publish_view_requested(session_id);
+        if let Some(payload) = committed.selection.as_ref() {
+            self.persist(SelectionSource::UserSwitch, Some(session_id))
+                .await;
+            self.publish_selection(payload);
+        }
+        Ok(committed.selection)
+    }
+
+    async fn execute_restore(
+        &self,
+        persisted_target: Option<Uuid>,
+    ) -> Result<Option<SessionSelection>, String> {
+        let aggregate = self.aggregate_snapshot().await;
+        let exact = persisted_target.and_then(|target_id| {
+            let record = aggregate
+                .sessions
+                .iter()
+                .find(|record| record.id == target_id)?;
+            let runtime = self.runtime_snapshot(target_id);
+            if runtime.detached {
+                return None;
+            }
+            match record.status {
+                SessionStatus::Exited(_) => self.dormant_decision(target_id),
+                _ if runtime.has_pty => self.live_decision(target_id),
+                _ => None,
+            }
+        });
+        let decision = exact
+            .or_else(|| {
+                aggregate.sessions.iter().find_map(|record| {
+                    if matches!(record.status, SessionStatus::Exited(_)) {
+                        return None;
+                    }
+                    self.live_decision(record.id)
+                })
+            })
+            .unwrap_or(CommitDecision::Clear);
+        let committed = self
+            .commit(
+                decision,
+                SelectionCause::Restore,
+                LifecycleMutations::default(),
+            )
+            .await?;
+        if let Some(payload) = committed.selection.as_ref() {
+            self.persist(SelectionSource::Restore, payload.id()).await;
+            self.publish_selection(payload);
+        }
+        Ok(committed.selection)
+    }
+
     pub(crate) async fn finalize_inline_create(
         &self,
         binding: PendingCreateBinding,

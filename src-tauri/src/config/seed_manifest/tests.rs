@@ -149,47 +149,13 @@ fn windows_get_dacl(path: &Path) -> Vec<u8> {
 #[cfg(windows)]
 fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
     use windows_sys::Win32::Security::{
-        AddAccessAllowedAceEx, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-        InitializeAcl, InitializeSecurityDescriptor, SetFileSecurityW, SetSecurityDescriptorDacl,
-        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, InitializeSecurityDescriptor,
+        SetFileSecurityW, SetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
         PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
     };
-    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
-    let world_sid = [1_u8, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
-    let acl_length = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
-        - std::mem::size_of::<u32>()
-        + world_sid.len();
-    let mut acl = vec![0_u8; acl_length];
+    let mut acl = windows_world_access_acl();
     let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
-    let initialized = unsafe {
-        InitializeAcl(
-            acl_ptr,
-            u32::try_from(acl.len()).expect("ACL size"),
-            ACL_REVISION,
-        )
-    };
-    assert_ne!(
-        initialized,
-        0,
-        "InitializeAcl: {}",
-        io::Error::last_os_error()
-    );
-    let added = unsafe {
-        AddAccessAllowedAceEx(
-            acl_ptr,
-            ACL_REVISION,
-            0,
-            FILE_ALL_ACCESS,
-            world_sid.as_ptr().cast_mut().cast(),
-        )
-    };
-    assert_ne!(
-        added,
-        0,
-        "AddAccessAllowedAceEx: {}",
-        io::Error::last_os_error()
-    );
 
     let mut descriptor = std::mem::MaybeUninit::<SECURITY_DESCRIPTOR>::zeroed();
     let initialized = unsafe { InitializeSecurityDescriptor(descriptor.as_mut_ptr().cast(), 1) };
@@ -349,4 +315,49 @@ fn populated_state() -> ManifestState {
     let _ = state.upsert(catalog);
     let _ = state.upsert(context);
     state
+}
+
+#[cfg(windows)]
+fn windows_world_access_acl() -> Vec<u8> {
+    use windows_sys::Win32::Security::{
+        AddAccessAllowedAceEx, InitializeAcl, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    let world_sid = [1_u8, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+    let acl_length = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+        - std::mem::size_of::<u32>()
+        + world_sid.len();
+    let mut acl = vec![0_u8; acl_length];
+    let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+    let initialized = unsafe {
+        InitializeAcl(
+            acl_ptr,
+            u32::try_from(acl.len()).expect("ACL size"),
+            ACL_REVISION,
+        )
+    };
+    assert_ne!(
+        initialized,
+        0,
+        "InitializeAcl: {}",
+        io::Error::last_os_error()
+    );
+    let added = unsafe {
+        AddAccessAllowedAceEx(
+            acl_ptr,
+            ACL_REVISION,
+            0,
+            FILE_ALL_ACCESS,
+            world_sid.as_ptr().cast_mut().cast(),
+        )
+    };
+    assert_ne!(
+        added,
+        0,
+        "AddAccessAllowedAceEx: {}",
+        io::Error::last_os_error()
+    );
+
+    acl
 }

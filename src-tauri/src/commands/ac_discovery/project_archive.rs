@@ -1,7 +1,7 @@
 use super::project_registry::{
     broadcast_project_archive_changed, mutate_project_paths_with_settings_path, ArchiveChangeReason,
 };
-use crate::config::settings::SettingsState;
+use crate::config::settings::{SettingsFileTarget, SettingsState};
 use crate::pty::manager::{PendingSpawn, PtyManager};
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionInfo, SessionStatus};
@@ -30,7 +30,9 @@ pub(crate) async fn snapshot_archive_state(
         .collect::<Vec<_>>();
     let ids = session_ids.iter().flatten().copied().collect::<Vec<_>>();
     let (pending, live) = {
-        let pty = pty_mgr.lock().unwrap_or_else(|e| e.into_inner());
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         pty.archive_liveness(&ids)
     };
     let live_by_id = ids.into_iter().zip(live).collect::<HashMap<_, _>>();
@@ -137,7 +139,7 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
     path: &str,
-    settings_path: Option<&Path>,
+    target: Option<SettingsFileTarget>,
 ) -> Result<(), String> {
     let path = crate::config::projects::absolutise(path)
         .map_err(|e| e.to_string())?
@@ -149,8 +151,8 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
         return Err(archive_blocked_message(&blockers));
     }
 
-    let mutation_path = path.to_string();
-    mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+    let mutation_path = path.clone();
+    mutate_project_paths_with_settings_path(settings, target.clone(), move |s| {
         let path = mutation_path.as_str();
         crate::config::projects::archive_project_path(s, path);
         Ok(())
@@ -166,7 +168,7 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
 
     let mutation_path = path.clone();
     let restored: Result<bool, String> =
-        mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+        mutate_project_paths_with_settings_path(settings, target, move |s| {
             let path = mutation_path.as_str();
             let key = crate::config::projects::normalize_for_compare(path);
             let still_archived = s
@@ -200,10 +202,7 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
             })
             .await
             {
-                log::warn!(
-                    "[ac-discovery] catalog seed after archive rollback failed: {}",
-                    error
-                );
+                log::warn!("[ac-discovery] catalog seed after archive rollback failed: {error}");
             }
             Err(archive_blocked_message(&late))
         }
@@ -270,10 +269,7 @@ pub(crate) async fn unarchive_project_inner<R: tauri::Runtime>(
         })
         .await
         {
-            log::warn!(
-                "[ac-discovery] catalog seed after unarchive failed: {}",
-                error
-            );
+            log::warn!("[ac-discovery] catalog seed after unarchive failed: {error}");
         }
     }
     Ok(result)
@@ -299,7 +295,7 @@ pub(crate) async fn list_archived_projects_inner(
         crate::config::projects::archived_projects_from_paths(&paths)
     })
     .await
-    .map_err(|e| format!("archived project stat task failed: {}", e))
+    .map_err(|e| format!("archived project stat task failed: {e}"))
 }
 
 #[tauri::command]

@@ -252,7 +252,7 @@ fn issue_1577_cleanup_interrupted_then_success_discards_transient_error() {
         Path::new("candidate/probe.tmp"),
         |_| Ok(()),
         |_| Ok(()),
-        |_| Err(Error::new(ErrorKind::PermissionDenied, "write denied")),
+        |()| Err(Error::new(ErrorKind::PermissionDenied, "write denied")),
         |_| {
             removals += 1;
             if removals == 1 {
@@ -282,7 +282,7 @@ fn issue_1577_cleanup_windows_sharing_violation_then_success() {
         Path::new("candidate/probe.tmp"),
         |_| Ok(()),
         |_| Ok(()),
-        |_| Err(Error::new(ErrorKind::PermissionDenied, "write denied")),
+        |()| Err(Error::new(ErrorKind::PermissionDenied, "write denied")),
         |_| {
             removals += 1;
             if removals == 1 {
@@ -310,7 +310,7 @@ fn issue_1577_persistent_required_delete_retains_debris_diagnostic() {
         Path::new("candidate/probe.tmp"),
         |_| Ok(()),
         |_| Ok(()),
-        |_| Ok(()),
+        |()| Ok(()),
         |_| Err(Error::new(ErrorKind::PermissionDenied, "delete denied")),
         |_| {},
     );
@@ -333,7 +333,7 @@ fn issue_1577_unknown_cleanup_upgrades_conclusive_primary_to_indeterminate() {
         Path::new("candidate/probe.tmp"),
         |_| Ok(()),
         |_| Ok(()),
-        |_| Err(Error::new(ErrorKind::PermissionDenied, "write denied")),
+        |()| Err(Error::new(ErrorKind::PermissionDenied, "write denied")),
         |_| Err(Error::other("cleanup unknown")),
         |_| {},
     );

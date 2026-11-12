@@ -41,10 +41,7 @@ impl SelfHandoffFailure {
         } else {
             "before-reset"
         };
-        let current = self
-            .current
-            .map(|id| id.to_string())
-            .unwrap_or("unknown".into());
+        let current = self.current.map_or("unknown".into(), |id| id.to_string());
         let mut message = format!(
             "{} failed: original {}, current {}, attempt {}, observed UTC {}, stage {}: {}. ",
             self.action, self.original, current, self.attempt, observed, stage, self.reason

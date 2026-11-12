@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ impl QuitGate {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, QuitGateInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Builds the abort effects for a terminal outcome of `round`.
@@ -793,9 +793,9 @@ pub async fn quit_gate_run(
         let deadline = gate.deadline_for(new_epoch);
         let has_receivers = !receivers.is_empty();
         tokio::select! {
-            _ = &mut notified => {}
+            () = &mut notified => {}
             Some(_) = futures_util::StreamExt::next(&mut receivers), if has_receivers => {}
-            _ = async {
+            () = async {
                 match deadline {
                     Some(deadline) => gate.clock.sleep_until(deadline).await,
                     None => std::future::pending::<()>().await,

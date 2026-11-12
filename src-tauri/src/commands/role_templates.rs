@@ -14,7 +14,7 @@ pub use crate::config::role_templates::{
 /// templates plus local templates from the resolved path.
 ///
 /// Returns `Ok` even when the explicit `agentTemplatesPath` is invalid — that
-/// failure is logged via `log::error!` (→ ErrorModal) and cached Agency
+/// failure is logged via `log::error!` (→ `ErrorModal`) and cached Agency
 /// templates are still returned. A missing config dir returns an empty list.
 #[tauri::command]
 pub async fn list_role_templates(
@@ -39,7 +39,7 @@ pub async fn list_role_templates(
 pub async fn get_agency_templates_status() -> Result<AgencyTemplatesStatus, String> {
     tauri::async_runtime::spawn_blocking(crate::config::agency_cache::status_cache)
         .await
-        .map_err(|e| format!("Agency template status task failed: {}", e))?
+        .map_err(|e| format!("Agency template status task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -51,5 +51,5 @@ pub async fn update_agency_templates() -> Result<crate::config::agency_cache::Up
         )
     })
     .await
-    .map_err(|e| format!("Agency template update task failed: {}", e))?
+    .map_err(|e| format!("Agency template update task failed: {e}"))?
 }

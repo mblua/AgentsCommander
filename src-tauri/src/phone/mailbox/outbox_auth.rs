@@ -12,17 +12,17 @@ use super::pty_observation::{PtyAuthorityState, PtyReadinessState};
 use super::settle::session_has_current_pty_submission_provenance;
 use crate::config::teams;
 use crate::filesystem::phone_mailbox;
+use crate::phone::mailbox::browser::is_web_browser_action;
 #[cfg(test)]
 use crate::phone::mailbox::classify_outbox_document;
+use crate::phone::mailbox::host::{BrowserHost, MailboxHost};
 #[cfg(test)]
 use crate::phone::mailbox::OutboxClassification;
 use crate::phone::types::OutboxMessage;
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
-use crate::MasterToken;
 use std::path::Path;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 impl MailboxPoller {
@@ -35,7 +35,9 @@ impl MailboxPoller {
         use crate::phone::types::PtyInputReasonCode as C;
         let route_valid = {
             let manager = app.pty_routes();
-            let manager = manager.lock().unwrap_or_else(|error| error.into_inner());
+            let manager = manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             manager.has_session(session_id)
                 && manager.backend_kind(session_id) == Some(session.backend_kind)
                 && manager
@@ -186,9 +188,9 @@ impl MailboxPoller {
     /// `origin`: the directory the file was found in (#2232 phase 7). The
     /// master/root-token origin is `OutboxOrigin::Master`.
     #[cfg(test)]
-    pub(crate) async fn process_message<R: tauri::Runtime>(
+    pub(crate) async fn process_message<S: BrowserHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         origin: OutboxOrigin,
     ) -> Result<(), String> {
@@ -226,9 +228,9 @@ impl MailboxPoller {
     /// `slot` and `Ok(())` is returned WITHOUT delivering. `None` runs the tail
     /// inline (the `#[cfg(test)]` `process_message` entry point). Every earlier
     /// rejection return is unaffected because the success type stays `()`.
-    pub(crate) async fn process_message_content<R: tauri::Runtime>(
+    pub(crate) async fn process_message_content<S: BrowserHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         origin: OutboxOrigin,
         content: &str,
@@ -297,7 +299,7 @@ impl MailboxPoller {
         // (routing, action dispatch, injection, archival) reads the canonical
         // form without re-mutation.
         let mut msg: OutboxMessage = serde_json::from_str(content)
-            .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
+            .map_err(|e| format!("Failed to parse outbox message: {e}"))?;
 
         if let Some(raw) = msg.request_id.as_deref() {
             let parsed = Uuid::parse_str(raw).map_err(|_| "invalid_request_id".to_string())?;
@@ -338,7 +340,7 @@ impl MailboxPoller {
         if origin == OutboxOrigin::Replica {
             let outbox_dir = path.parent().unwrap_or(Path::new(""));
             // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
-            if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
+            if let Some(repo_path) = outbox_dir.parent().and_then(std::path::Path::parent) {
                 let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
                     return Ok(std::ops::ControlFlow::Break(
@@ -439,7 +441,7 @@ impl MailboxPoller {
                 }
                 Err(e) => {
                     return Ok(std::ops::ControlFlow::Break(
-                        self.reject_message(path, msg, &format!("Unresolvable target: {}", e))
+                        self.reject_message(path, msg, &format!("Unresolvable target: {e}"))
                             .await,
                     ));
                 }
@@ -546,16 +548,16 @@ impl MailboxPoller {
         )))
     }
 
-    async fn authenticate_outbox<R: tauri::Runtime>(
+    async fn authenticate_outbox<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
     ) -> OutboxStage<OutboxAuthenticationFacts> {
         // Check if token is the master token or root token (bypasses anti-spoofing + team
         // validation)
         let is_master = if let Some(ref token_str) = msg.token {
-            let master = app.state::<MasterToken>();
+            let master = app.master_required();
             if master.matches(token_str) {
                 true
             } else {
@@ -596,9 +598,9 @@ impl MailboxPoller {
         )))
     }
 
-    async fn dispatch_outbox_self_operation<R: tauri::Runtime>(
+    async fn dispatch_outbox_self_operation<S: BrowserHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         origin: OutboxOrigin,
@@ -665,7 +667,7 @@ impl MailboxPoller {
         }
         // (#3367) Same pre-routing block: the embedded web browser belongs to the
         // app, so the token-owning caller is authorized by role, not team reach.
-        if crate::commands::web_browser::is_web_browser_action(msg.action.as_deref()) {
+        if is_web_browser_action(msg.action.as_deref()) {
             return Ok(std::ops::ControlFlow::Break(
                 self.handle_web_browser(app, path, msg, is_app_outbox).await,
             ));
@@ -714,8 +716,8 @@ impl MailboxPoller {
         // directory; include it so a qualified coordinator FQN resolves even
         // when the project is not in settings (session-derived rooms).
         if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
-            .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
-            .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
+            .and_then(|room_root| room_root.parent().map(std::path::Path::to_path_buf))
+            .and_then(|ac_root| ac_root.parent().map(std::path::Path::to_path_buf))
         {
             let canon_project = phone_mailbox::canonical_mailbox_path(&project_dir).ok();
             let already_present = paths.iter().any(|p| match &canon_project {

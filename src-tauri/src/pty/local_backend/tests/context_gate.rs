@@ -13,11 +13,11 @@ use uuid::Uuid;
 /// The statusline the agent painted, and the one that stays on the grid after it dies.
 const ROW: &str = "  Context \u{2591}\u{2591}\u{2588} 42%";
 
-/// A real ConPTY with a REAL CHILD on the far end, plus the real fanout.
+/// A real `ConPTY` with a REAL CHILD on the far end, plus the real fanout.
 ///
 /// The child is the entire point. This gate's whole job is to answer a question the grid
 /// cannot - is the child alive? - so a fake child cannot be asked it wrongly, which means
-/// it cannot be asked at all. `startup_gate_tests::conpty` already opens the real ConPTY
+/// it cannot be asked at all. `startup_gate_tests::conpty` already opens the real `ConPTY`
 /// and builds the real `PtyInstance`; this fills in its `child: None`.
 fn conpty_with_child(cols: u16, rows: u16) -> (Mutex<HashMap<Uuid, PtyInstance>>, Uuid) {
     let pair = native_pty_system()
@@ -76,7 +76,7 @@ fn paint(fanout: &SessionIoFanout, id: Uuid) {
 /// `TerminateProcess` is asynchronous, and `wait()` short-circuits on `try_wait()` ->
 /// `is_complete()` -> `GetExitCodeProcess`. The exit code is readable ~14 ms (measured
 /// here) BEFORE the kernel signals the process object, so `wait()` returns `Ok(1)` while
-/// `WaitForSingleObject(h, 0)` still answers WAIT_TIMEOUT. That is #942 arriving from the
+/// `WaitForSingleObject(h, 0)` still answers `WAIT_TIMEOUT`. That is #942 arriving from the
 /// other side: `is_complete` is exactly the accessor AC's oracle refuses to trust, and
 /// the oracle asks the stronger question on purpose. Production never notices the gap -
 /// 14 ms against a 5 s tick - but a test that kills and reads in the same breath lands

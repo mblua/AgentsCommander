@@ -130,14 +130,14 @@ pub fn resolve_wg_coordinator_replica(
     let team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
         .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
 
-    let team_dir = ac_root.join(format!("_team_{}", team));
+    let team_dir = ac_root.join(format!("_team_{team}"));
     let team_config: serde_json::Value =
-        ac_discovery::read_team_discovery_config(&team_dir.join("config.json"))
+        ac_discovery::read_team_discovery_config(&crate::config::config_file_path(&team_dir))
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())?;
     let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
     let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
-    if !ac_discovery::discovery_path_is_dir(&ac_root.join(format!("_agent_{}", coordinator_name))) {
+    if !ac_discovery::discovery_path_is_dir(&ac_root.join(format!("_agent_{coordinator_name}"))) {
         return None;
     }
 
@@ -462,7 +462,7 @@ pub(super) fn team_members(
 > {
     let team_dir = ac_root.join(format!("_team_{team}"));
     crate::path_identity::verify_directory(&team_dir)?;
-    let (value, config_identity) = read_identity_json(&team_dir.join("config.json"))?;
+    let (value, config_identity) = read_identity_json(&crate::config::config_file_path(&team_dir))?;
     let coordinator = value
         .get("coordinator")
         .and_then(serde_json::Value::as_str)
@@ -513,7 +513,7 @@ pub(super) fn verify_replica(
 ) -> Result<VerifiedPtyInputIdentity, String> {
     let actual_project = project_dir
         .file_name()
-        .and_then(|value| value.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "invalid_target".to_string())?;
     if actual_project != parsed.project {
         return Err("invalid_target".to_string());
@@ -540,7 +540,7 @@ pub(super) fn verify_replica(
         return Err("invalid_target".to_string());
     }
     let (replica_config, replica_config_identity) =
-        read_identity_json(&replica_root.join("config.json"))?;
+        read_identity_json(&crate::config::config_file_path(&replica_root))?;
     // Use the repository's read-only identity reader, now bounded and
     // duplicate-aware, and require it to describe the retained security snapshot.
     let (read_only_config, resolved) =

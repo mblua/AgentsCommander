@@ -94,7 +94,7 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
         ]
     );
     for (path, hash) in before {
-        assert_eq!(after.get(&path), Some(&hash), "changed {}", path);
+        assert_eq!(after.get(&path), Some(&hash), "changed {path}");
     }
     assert!(!run_dir.join("transcripts").exists());
 
@@ -109,32 +109,31 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
     assert!(report_artifact.get("artifacts").is_none());
     assert_eq!(
         report_artifact["artifactPaths"]["run"],
-        std::fs::canonicalize(run_dir.join("run.json"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("run.json"))
     );
     assert_eq!(
         report_artifact["artifactPaths"]["attempts"],
-        std::fs::canonicalize(run_dir.join("attempts.jsonl"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("attempts.jsonl"))
     );
     assert_eq!(
         report_artifact["artifactPaths"]["reportJson"],
-        std::fs::canonicalize(run_dir.join("report.json"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("report.json"))
     );
     assert_eq!(
         report_artifact["artifactPaths"]["reportMarkdown"],
-        std::fs::canonicalize(run_dir.join("report.md"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+        dry_run_canonical_string(&run_dir.join("report.md"))
     );
+    assert_dry_run_planned_attempts(&run_dir);
+}
+
+fn dry_run_canonical_string(path: &std::path::Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap()
+        .to_string_lossy()
+        .to_string()
+}
+
+fn assert_dry_run_planned_attempts(run_dir: &std::path::Path) {
     let attempts: Vec<serde_json::Value> = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
         .unwrap()
         .lines()
@@ -430,6 +429,25 @@ fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config(
     );
     assert_eq!(json["data"]["status"], "completed");
     assert_eq!(json["data"]["execution"]["executor"], "fake");
+    // Expected artifact names from fake_run.rs at fd51a0b1, serialized identically.
+    let expected_artifacts = serde_json::json!({
+        "run": "run.json",
+        "attempts": "attempts.jsonl",
+        "reportJson": "report.json",
+        "reportMarkdown": "report.md",
+        "prompts": "prompts",
+        "outputs": "outputs",
+        "transcripts": "transcripts",
+        "attemptState": "attempt-state",
+    });
+    assert_eq!(
+        serde_json::to_vec(&json["data"]["artifacts"]).unwrap(),
+        serde_json::to_vec(&expected_artifacts).unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_vec(&json["data"]["artifacts"]["reportMarkdown"]).unwrap(),
+        serde_json::to_vec(&"report.md").unwrap(),
+    );
     let run_dir = workspace
         .join("experiments")
         .join("techlead-test")

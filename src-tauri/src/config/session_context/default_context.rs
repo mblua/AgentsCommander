@@ -102,7 +102,7 @@ When delegated work completes or blocks, explicitly reply to its assigner with a
 /// Item-3 grant: the FULL registered project folder (one level above `.ac`),
 /// its git repo, and its `.ac` tree. Ends with "\n\n" to mirror
 /// `matrix_section`'s trailing blank line before the messaging exception /
-/// summary. A root agent has no origin matrix (matrix_root == None), so this
+/// summary. A root agent has no origin matrix (`matrix_root` == None), so this
 /// never collides with the matrix "3.". (#1005 S3: the old Allowed-bullet
 /// companion const is gone; the numbered entries are the single grant source.)
 pub(crate) const ROOT_PROJECT_SCOPE_ENTRY: &str =
@@ -212,7 +212,7 @@ pub(crate) const SELF_MAINTENANCE_AUTO_SECTION: &str = "\n\n## Self-Maintenance 
 /// (already on disk in an existing workgroup) still carries the old block.
 /// Strips from a line beginning `## Self-Maintenance` up to (not including) the
 /// next line beginning `## ` or a `---` separator, or EOF. Runs UNCONDITIONALLY
-/// (even when auto_self_clear is false) so that turning the setting OFF for a
+/// (even when `auto_self_clear` is false) so that turning the setting OFF for a
 /// coordinator actually removes the old always-on block.
 pub(crate) fn strip_legacy_self_maintenance(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
@@ -303,8 +303,8 @@ Nothing else under the `.ac` root becomes readable or writable.
 /// #1795 entry 6. `TASK.md` is a READ grant only; the four protections its CLI
 /// verbs enforce are named so an agent does not try a direct write and bypass all
 /// of them at once. `TASK.md` is deliberately NOT a constant in
-/// `config::shared_locations`: it is owned by `cli::task_ops`, and importing that
-/// name into `config` would add a `config -> cli` layering inversion.
+/// `config::shared_locations`: its name is owned by
+/// `crate::filesystem::tasks::TASK_FILE_NAME`, which this entry uses directly.
 pub(crate) fn render_room_shared_entry(room_root: &std::path::Path) -> String {
     format!(
         concat!(
@@ -362,7 +362,7 @@ Direct filesystem access (reads/writes/deletes/renames) is forbidden for TASK-st
 "#
         ),
         shared = display_path(&room_root.join(crate::config::shared_locations::ROOM_SHARED_DIR)),
-        task = display_path(&room_root.join("TASK.md")),
+        task = display_path(&room_root.join(crate::filesystem::tasks::TASK_FILE_NAME)),
         status = display_path(&room_root.join("TASK-status.jsonl")),
     )
 }
@@ -602,23 +602,22 @@ pub(crate) fn render_host_platform_rules_block(
         Ok(Some(content)) if !content.trim().is_empty() => content,
         Ok(Some(_)) => {
             log::warn!(
-                "[session_context] platform rules file {} is empty; using the embedded default",
-                filename
+                "[session_context] platform rules file {filename} is empty; \
+                    using the embedded default"
             );
             fallback.to_string()
         }
         Ok(None) => {
             log::warn!(
-                "[session_context] platform rules file {} is missing; using the embedded default",
-                filename
+                "[session_context] platform rules file {filename} is missing; \
+                    using the embedded default"
             );
             fallback.to_string()
         }
         Err(error) => {
             log::warn!(
-                "[session_context] platform rules file {} is not readable ({error}); using the \
-                    embedded default",
-                filename
+                "[session_context] platform rules file {filename} is not readable \
+                    ({error}); using the embedded default"
             );
             fallback.to_string()
         }

@@ -2652,6 +2652,111 @@ html.light-theme .settings-api-client-warning {
   color: var(--status-exited);
 }
 
+/* #3516 - the collapsed Preflight block (agent card and profile cell) and the
+   shared test panel. Colors come only from theme variables. */
+.settings-preflight {
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.settings-preflight > * + * {
+  margin-top: 4px;
+}
+
+.settings-preflight summary {
+  cursor: pointer;
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+}
+
+.settings-preflight[open] {
+  padding-bottom: 8px;
+}
+
+.settings-preflight-command {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+.settings-preflight-timeout {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.settings-preflight-test {
+  align-self: flex-start;
+}
+
+.settings-preflight-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-surface);
+  color: var(--sidebar-fg);
+  font-size: var(--font-size-sm);
+}
+
+.settings-preflight-panel:focus-visible {
+  outline: 1px solid var(--sidebar-accent);
+}
+
+.settings-preflight-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-preflight-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.settings-preflight-status {
+  color: var(--sidebar-fg-dim);
+}
+
+.settings-preflight-stage-label {
+  font-weight: 600;
+}
+
+.settings-preflight-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px;
+  border-left: 2px solid var(--status-pending);
+  overflow-wrap: anywhere;
+}
+
+.settings-preflight-stage.passed {
+  border-left-color: var(--status-active);
+}
+
+.settings-preflight-stage.failed {
+  border-left-color: var(--status-exited);
+}
+
+.settings-preflight-panel .stale {
+  opacity: 0.6;
+}
+
+.settings-preflight-output pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
+}
+
 /* #2057 (D5) - "Clear in this agent": per-agent clear reinstated after #538
    removed the per-cell delete. It wears .settings-profile-cell-btn for its
    visual weight; this hook keeps the per-agent role addressable. */

@@ -1,18 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use super::{SchedulerContext, UnresolvedLoopTarget};
-use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
-    details_from_parts, read_loop_config, read_loop_config_if_present, read_loop_state_with_raw,
-    resolve_loop_target, revalidate_loop_current, write_loop_state_atomic,
-    write_loop_state_if_unchanged, LoopAuditKind, LoopConfigRevalidation, LoopConfigToml,
-    LoopState, LoopStateWrite, LOOP_DIR_PREFIX,
+    read_loop_config_if_present, read_loop_state_with_raw, revalidate_loop_current,
+    write_loop_state_atomic, write_loop_state_if_unchanged, LoopAuditKind, LoopConfigRevalidation,
+    LoopConfigToml, LoopState, LoopStateWrite, LOOP_DIR_PREFIX,
 };
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
 use crate::config::settings::SettingsState;
 use crate::filesystem::loop_files;
-use crate::loops::events::emit_loop_change;
 
 /// Every scan-side state write: a Loop whose `config.toml` is gone is `Stale`
 /// with nothing written, else a compare-and-swap against `s0_raw`.
@@ -44,8 +40,7 @@ pub(super) fn guarded_state_write(
 pub(super) fn generation_key(dir: &Path) -> String {
     let path = match (dir.parent(), dir.file_name()) {
         (Some(parent), Some(name)) => loop_files::canonical_loop_root(parent)
-            .map(|parent| parent.join(name))
-            .unwrap_or_else(|_| dir.to_path_buf()),
+            .map_or_else(|_| dir.to_path_buf(), |parent| parent.join(name)),
         _ => dir.to_path_buf(),
     };
     let key = path.to_string_lossy().into_owned();
@@ -100,53 +95,9 @@ pub(super) async fn active_project_candidates_for_owner(
     retain_unarchived_candidates(projects, &archived_roots)
 }
 
-pub(super) fn unresolved_targets_in_project(project_dir: &Path) -> Vec<UnresolvedLoopTarget> {
-    let mut alerts = Vec::new();
-    let Some(ac_root) = existing_ac_root(project_dir) else {
-        return alerts;
-    };
-    let dirs = match loop_dirs(&ac_root) {
-        Ok(dirs) => dirs,
-        Err(e) => {
-            log::warn!(
-                "[loops] Failed to list Loops for project {}: {}",
-                project_dir.display(),
-                e
-            );
-            return alerts;
-        }
-    };
-    for dir in dirs {
-        let config = match read_loop_config(&dir) {
-            Ok(config) => config,
-            Err(e) => {
-                log::warn!(
-                    "[loops] Failed to read Loop config {}: {}",
-                    dir.display(),
-                    e
-                );
-                continue;
-            }
-        };
-        if !config.loop_def.enabled {
-            continue;
-        }
-        if let Err(e) = resolve_loop_target(project_dir, &config) {
-            alerts.push(UnresolvedLoopTarget {
-                project_path: project_dir.to_string_lossy().into(),
-                loop_id: config.loop_def.id.clone(),
-                loop_name: config.loop_def.name.clone(),
-                workgroup: config.target.workgroup.clone(),
-                error: e,
-            });
-        }
-    }
-    alerts
-}
-
 pub(super) fn loop_dirs(ac_root: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = loop_files::loop_discovery_entries(ac_root)
-        .map_err(|e| format!("Failed to read Project AC Root: {}", e))?;
+        .map_err(|e| format!("Failed to read Project AC Root: {e}"))?;
     let mut dirs = Vec::new();
     for path in entries {
         if !loop_files::loop_path_is_directory(&path) {
@@ -212,40 +163,6 @@ pub(super) fn retain_unarchived_candidates(
             )
         })
         .collect()
-}
-
-pub(super) fn emit_transition(
-    context: &SchedulerContext,
-    project_dir: &Path,
-    dir: &Path,
-    config: &LoopConfigToml,
-    state: &LoopState,
-    kind: &str,
-    message: Option<String>,
-) {
-    let details = details_from_parts(dir, config, state);
-    match context {
-        SchedulerContext::Native(app) => emit_loop_change(
-            app.as_ref(),
-            project_dir,
-            dir,
-            &config.loop_def.id,
-            kind,
-            Some(details.summary),
-            message,
-        ),
-        #[cfg(test)]
-        SchedulerContext::Headless { transitions, .. } => {
-            transitions.lock().expect("scheduler transitions").push((
-                project_dir.to_path_buf(),
-                dir.to_path_buf(),
-                config.loop_def.id.clone(),
-                kind.to_owned(),
-                Some(details.summary),
-                message,
-            ));
-        }
-    }
 }
 
 pub(super) fn audit_kind_name(kind: &LoopAuditKind) -> &'static str {

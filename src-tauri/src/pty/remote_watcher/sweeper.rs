@@ -4,7 +4,7 @@ use round::RoundReservations;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
@@ -198,8 +198,8 @@ impl RemoteSweeper {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => break,
-                        _ = tokio::time::sleep(ROUND_INTERVAL) => {}
+                        () = shutdown.token().cancelled() => break,
+                        () = tokio::time::sleep(ROUND_INTERVAL) => {}
                     }
                     sweeper
                         .run_round(std::time::Instant::now(), chrono::Local::now())
@@ -211,7 +211,7 @@ impl RemoteSweeper {
     }
 
     pub(crate) fn lock_state(&self) -> std::sync::MutexGuard<'_, SweeperState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The work list, built exactly as `GitSweeper` builds it: union of discovery
@@ -347,14 +347,28 @@ impl RemoteSweeper {
             staleness_dial,
         };
         for (key, outcome) in outcomes {
-            let indices = groups.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+            let indices = groups.get(&key).map_or(&[][..], Vec::as_slice);
             let staleness = outcome.staleness;
             self.apply_ci(&key, outcome, indices, &ctx);
             self.apply_staleness(&key, staleness, indices, &ctx);
         }
 
-        // One gate per round, never shortened: a limit is an account-wide
-        // signal, so every key waits, not just the ones that discovered it.
+        self.gate_round_backoff(now, secondary_limited, primary_limited);
+
+        self.publish_round(&paths, &facts, now).await;
+
+        log::log!(
+            ROUND_LOG_LEVEL,
+            "[RemoteSweeper] round: {} path(s), {} key(s){}",
+            paths.len(),
+            groups.len(),
+            if throttled { ", throttled" } else { "" }
+        );
+    }
+
+    /// One gate per round, never shortened: a limit is an account-wide
+    /// signal, so every key waits, not just the ones that discovered it.
+    fn gate_round_backoff(&self, now: Instant, secondary_limited: bool, primary_limited: bool) {
         if secondary_limited || primary_limited {
             let base = if primary_limited {
                 BACKOFF_CAP
@@ -368,16 +382,6 @@ impl RemoteSweeper {
                 _ => candidate,
             });
         }
-
-        self.publish_round(&paths, &facts, now).await;
-
-        log::log!(
-            ROUND_LOG_LEVEL,
-            "[RemoteSweeper] round: {} path(s), {} key(s){}",
-            paths.len(),
-            groups.len(),
-            if throttled { ", throttled" } else { "" }
-        );
     }
 
     async fn read_round_facts(
@@ -456,7 +460,7 @@ impl RemoteSweeper {
     pub(crate) async fn local_git(&self, path: &str, args: &[&str]) -> Result<String, String> {
         (self.local_git_runner)(
             path.to_string(),
-            args.iter().map(|arg| arg.to_string()).collect(),
+            args.iter().map(ToString::to_string).collect(),
         )
         .await
     }

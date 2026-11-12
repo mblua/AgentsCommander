@@ -585,8 +585,8 @@ fn the_published_2292_entry_blocks_the_captured_notice_and_ignores_its_neighbour
         "the captured row must match"
     );
     for gutter in [
-        format!("\u{25CF} {}", CAPTURED_2292_NOTICE),
-        format!("\u{2502} {}", CAPTURED_2292_NOTICE),
+        format!("\u{25CF} {CAPTURED_2292_NOTICE}"),
+        format!("\u{2502} {CAPTURED_2292_NOTICE}"),
     ] {
         assert!(
             regex.is_match(&gutter),
@@ -786,78 +786,120 @@ fn scan_frame(text: &str, sequence: u64) -> ScreenRowsSince {
     })
 }
 
+async fn run_isolated_scan_child(child: &str) {
+    let temp = tempfile::tempdir().unwrap();
+    let status = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            concat!(
+                "pty::menu_guard::tests::",
+                "scan_transitions_preserve_frames_publication_and_disabled_cleanup"
+            ),
+            "--nocapture",
+        ])
+        .env(child, temp.path())
+        .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
+        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success(), "isolated scan test: {status}");
+}
+
+struct ScanFixture {
+    id: Uuid,
+    backend: Arc<ScanBackend>,
+    pty: Arc<Mutex<PtyManager>>,
+    events: ScanEvents,
+    managers: Arc<tokio::sync::RwLock<SessionManager>>,
+    response: crate::pty::manager::ResponseCloseState,
+    guard: MenuGuard,
+}
+
+impl ScanFixture {
+    async fn new(dir: &std::path::Path) -> Self {
+        let manager = SessionManager::new();
+        let session = manager
+            .create_session(
+                "pi".into(),
+                vec![],
+                dir.to_string_lossy().into_owned(),
+                Some("pi-scan".into()),
+                None,
+                vec![],
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let id = session.id;
+        let backend = Arc::new(ScanBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess);
+        let events = ScanEvents {
+            manager: manager.clone(),
+            pty: pty.clone(),
+            published: Mutex::new(Vec::new()),
+        };
+        let managers = Arc::new(tokio::sync::RwLock::new(manager));
+        let response = crate::pty::manager::ResponseCloseState::default();
+        response.register_route(id, 1, std::time::Instant::now());
+        let guard =
+            MenuGuard::with_response_close(BlockingMenusStore::shipped_only(), response.clone());
+        Self {
+            id,
+            backend,
+            pty,
+            events,
+            managers,
+            response,
+            guard,
+        }
+    }
+
+    async fn tick(&self, settings: &AppSettings, with_pty: bool) {
+        let pty = with_pty.then_some(&self.pty);
+        self.guard
+            .scan_tick_with(settings, &self.managers, pty, &self.events)
+            .await;
+    }
+
+    async fn tick_next(&self, settings: &AppSettings, next: ScreenRowsSince) {
+        *self.backend.next.lock().unwrap() = Some(next);
+        self.tick(settings, true).await;
+    }
+
+    fn published_len(&self) -> usize {
+        self.events.published.lock().unwrap().len()
+    }
+}
+
 #[tokio::test]
 async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
     const CHILD: &str = "AC_3469_MENU_SCAN_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        let temp = tempfile::tempdir().unwrap();
-        let status = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                concat!(
-                    "pty::menu_guard::tests::",
-                    "scan_transitions_preserve_frames_publication_and_disabled_cleanup"
-                ),
-                "--nocapture",
-            ])
-            .env(CHILD, temp.path())
-            .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
-            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
-            .status()
-            .await
-            .unwrap();
-        assert!(status.success(), "isolated scan test: {status}");
+        run_isolated_scan_child(CHILD).await;
         return;
     }
     let dir = std::path::PathBuf::from(std::env::var_os(CHILD).unwrap());
     assert_eq!(crate::config::config_dir().unwrap(), dir);
-    let manager = SessionManager::new();
-    let session = manager
-        .create_session(
-            "pi".into(),
-            vec![],
-            dir.to_string_lossy().into_owned(),
-            Some("pi-scan".into()),
-            None,
-            vec![],
-            false,
-            crate::pty::backend::SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    let id = session.id;
-    let backend = Arc::new(ScanBackend::default());
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    pty.lock()
-        .unwrap()
-        .record_route(id, crate::pty::backend::SessionBackendKind::LocalProcess);
-    let events = ScanEvents {
-        manager: manager.clone(),
-        pty: pty.clone(),
-        published: Mutex::new(Vec::new()),
-    };
-    let managers = Arc::new(tokio::sync::RwLock::new(manager));
-    let response = crate::pty::manager::ResponseCloseState::default();
-    response.register_route(id, 1, std::time::Instant::now());
-    let guard =
-        MenuGuard::with_response_close(BlockingMenusStore::shipped_only(), response.clone());
+    let f = ScanFixture::new(&dir).await;
+    let (id, guard, events) = (f.id, &f.guard, &f.events);
     let mut settings = AppSettings {
         menu_guard_enabled: true,
         agents: vec![agent("pi-scan", "pi", None)],
         ..AppSettings::default()
     };
 
-    guard
-        .scan_tick_with(&settings, &managers, None, &events)
-        .await;
-    assert!(backend.seen.lock().unwrap().is_empty());
+    f.tick(&settings, false).await;
+    assert!(f.backend.seen.lock().unwrap().is_empty());
     assert!(events.published.lock().unwrap().is_empty());
-    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 1));
-    guard
-        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+    f.tick_next(&settings, scan_frame("Trust project folder?", 1))
         .await;
     assert!(guard.is_blocked(id));
-    assert_eq!(events.published.lock().unwrap().len(), 1);
+    assert_eq!(f.published_len(), 1);
     assert!(
         events.published.lock().unwrap()[0]
             .1
@@ -880,66 +922,47 @@ async fn scan_transitions_preserve_frames_publication_and_disabled_cleanup() {
         ScreenRowsSince::Missing,
         scan_frame("Trust project folder?", 2),
     ] {
-        *backend.next.lock().unwrap() = Some(next);
-        guard
-            .scan_tick_with(&settings, &managers, Some(&pty), &events)
-            .await;
+        f.tick_next(&settings, next).await;
         assert!(guard.is_blocked(id));
         assert_eq!(guard.sessions.lock().unwrap()[&id].episode_id, episode);
-        assert_eq!(events.published.lock().unwrap().len(), 1);
+        assert_eq!(f.published_len(), 1);
     }
-    assert_eq!(backend.seen.lock().unwrap()[1], stamp);
+    assert_eq!(f.backend.seen.lock().unwrap()[1], stamp);
     assert!(guard.resolve_current_episode(id));
-    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 3));
-    guard
-        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+    f.tick_next(&settings, scan_frame("Trust project folder?", 3))
         .await;
     assert!(!guard.is_blocked(id));
-    assert_eq!(events.published.lock().unwrap().len(), 1);
-    *backend.next.lock().unwrap() = Some(scan_frame("normal output", 4));
-    guard
-        .scan_tick_with(&settings, &managers, Some(&pty), &events)
-        .await;
+    assert_eq!(f.published_len(), 1);
+    f.tick_next(&settings, scan_frame("normal output", 4)).await;
     assert_eq!(events.published.lock().unwrap().as_slice()[1], (id, None));
-    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 5));
-    guard
-        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+    f.tick_next(&settings, scan_frame("Trust project folder?", 5))
         .await;
     assert!(guard.is_blocked(id));
     assert_ne!(guard.sessions.lock().unwrap()[&id].episode_id, episode);
-    assert_eq!(events.published.lock().unwrap().len(), 3);
+    assert_eq!(f.published_len(), 3);
     settings.menu_guard_enabled = false;
-    guard
-        .scan_tick_with(&settings, &managers, None, &events)
-        .await;
-    guard
-        .scan_tick_with(&settings, &managers, None, &events)
-        .await;
+    f.tick(&settings, false).await;
+    f.tick(&settings, false).await;
     assert!(!guard.is_blocked(id));
     assert_eq!(events.published.lock().unwrap().as_slice()[3], (id, None));
-    assert_eq!(events.published.lock().unwrap().len(), 4);
+    assert_eq!(f.published_len(), 4);
     assert_eq!(
-        response.inner.lock().unwrap().routes[&id].menu_blocked,
+        f.response.inner.lock().unwrap().routes[&id].menu_blocked,
         Some(false)
     );
     settings.menu_guard_enabled = true;
-    *backend.next.lock().unwrap() = Some(scan_frame("Trust project folder?", 6));
-    guard
-        .scan_tick_with(&settings, &managers, Some(&pty), &events)
+    f.tick_next(&settings, scan_frame("Trust project folder?", 6))
         .await;
     let communication = events.published.lock().unwrap()[4].1.clone();
-    *backend.next.lock().unwrap() = Some(ScreenRowsSince::Gone);
-    guard
-        .scan_tick_with(&settings, &managers, Some(&pty), &events)
-        .await;
+    f.tick_next(&settings, ScreenRowsSince::Gone).await;
     assert!(!guard.sessions.lock().unwrap().contains_key(&id));
     assert_eq!(
-        response.inner.lock().unwrap().routes[&id].menu_blocked,
+        f.response.inner.lock().unwrap().routes[&id].menu_blocked,
         None
     );
-    assert_eq!(events.published.lock().unwrap().len(), 5);
+    assert_eq!(f.published_len(), 5);
     assert_eq!(
-        managers.read().await.list_sessions().await[0].communication,
+        f.managers.read().await.list_sessions().await[0].communication,
         communication
     );
 }

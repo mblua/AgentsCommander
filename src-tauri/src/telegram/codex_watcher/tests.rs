@@ -27,7 +27,7 @@ fn write_rollout(dir: &Path, name: &str, cwd: &str, ts: &str) -> PathBuf {
         .replace("{cwd}", cwd)
         .replace("{id}", "test-uuid");
     let mut f = fs::File::create(&path).unwrap();
-    writeln!(f, "{}", line).unwrap();
+    writeln!(f, "{line}").unwrap();
     path
 }
 
@@ -62,7 +62,7 @@ fn room_only_fixture(cwd: &str) -> (tempfile::TempDir, PathBuf) {
     let fresh_ts = (now - chrono::Duration::seconds(1)).to_rfc3339();
     let fresh = REAL_CURRENT_CODEX_FINAL.replace("2026-09-13T18:28:25.938Z", &fresh_ts);
     let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
-    writeln!(f, "{}", fresh).unwrap();
+    writeln!(f, "{fresh}").unwrap();
     f.sync_all().unwrap();
     (tmp, path)
 }
@@ -79,7 +79,7 @@ fn global_log_sizes() -> Vec<(PathBuf, u64)> {
         .into_iter()
         .map(|name| {
             let path = dir.join(name);
-            let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let len = fs::metadata(&path).map_or(0, |m| m.len());
             (path, len)
         })
         .collect()
@@ -136,7 +136,7 @@ async fn a_room_only_codex_reader_emits_records_with_no_bot_anywhere() {
         "no HTTP request may be attempted without a bot target"
     );
     for (path, len) in before {
-        let now = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let now = fs::metadata(&path).map_or(0, |m| m.len());
         assert_eq!(
             now,
             len,
@@ -297,7 +297,7 @@ async fn forced_read_error_preserves_session_text_and_absent_kind() {
         .expect("reader joins");
     let expected = (
         "read-error-codex".to_owned(),
-        format!("Codex JSONL read error: {}", expected_error),
+        format!("Codex JSONL read error: {expected_error}"),
         None,
     );
     assert!(observed

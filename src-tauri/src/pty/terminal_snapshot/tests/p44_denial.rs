@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::settings::read_terminal_snapshot_security_settings_strict_offloaded;
 
 const P44_CANARY: &str = "P44_SCREEN_CANARY";
@@ -109,6 +110,36 @@ struct P44Fixture {
     _temporary: tempfile::TempDir,
 }
 
+/// Writes the P44 team, its two agent matrices and their room replicas under
+/// `temporary`; returns the project collection and the replica roots.
+fn write_p44_project(temporary: &std::path::Path) -> (PathBuf, Vec<PathBuf>) {
+    let collection = temporary.join("projects");
+    let ac = collection.join("p44-project/.ac");
+    std::fs::create_dir_all(ac.join("_team_p44-team")).unwrap();
+    std::fs::write(
+        ac.join("_team_p44-team/config.json"),
+        concat!(
+            r#"{"agents":["../_agent_worker","../_agent_coordinator"],"#,
+            r#""coordinator":"../_agent_coordinator"}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let mut roots = Vec::new();
+    for name in ["coordinator", "worker"] {
+        std::fs::create_dir_all(ac.join(format!("_agent_{name}"))).unwrap();
+        let replica = ac.join(format!("room-01-p44-team/__agent_{name}"));
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::write(
+            replica.join("config.json"),
+            format!(r#"{{"identity":"../../_agent_{name}"}}"#),
+        )
+        .unwrap();
+        roots.push(replica);
+    }
+    (collection, roots)
+}
+
 impl P44Fixture {
     async fn new() -> Self {
         let config = PathBuf::from(std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap());
@@ -116,31 +147,8 @@ impl P44Fixture {
             .prefix("fixture-")
             .tempdir_in(&config)
             .unwrap();
-        let collection = temporary.path().join("projects");
-        let ac = collection.join("p44-project/.ac");
-        std::fs::create_dir_all(ac.join("_team_p44-team")).unwrap();
-        std::fs::write(
-            ac.join("_team_p44-team/config.json"),
-            concat!(
-                r#"{"agents":["../_agent_worker","../_agent_coordinator"],"#,
-                r#""coordinator":"../_agent_coordinator"}"#
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-        let mut roots = Vec::new();
-        for name in ["coordinator", "worker"] {
-            std::fs::create_dir_all(ac.join(format!("_agent_{name}"))).unwrap();
-            let replica = ac.join(format!("room-01-p44-team/__agent_{name}"));
-            std::fs::create_dir_all(&replica).unwrap();
-            std::fs::write(
-                replica.join("config.json"),
-                format!(r#"{{"identity":"../../_agent_{name}"}}"#),
-            )
-            .unwrap();
-            roots.push(replica);
-        }
-        let settings_path = config.join("settings.30.instance.no-git.json");
+        let (collection, mut roots) = write_p44_project(temporary.path());
+        let settings_path = config.join(SETTINGS_FILE_NAME);
         let settings = AppSettings {
             terminal_snapshots_enabled: true,
             project_paths: vec![collection.to_string_lossy().into_owned()],

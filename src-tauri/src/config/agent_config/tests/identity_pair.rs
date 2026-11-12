@@ -33,36 +33,12 @@ fn prepared_identity_pair_serializer_cleanup_and_split_parity() {
                 std::fs::create_dir(&new_dir).unwrap();
                 let old = old_dir.join("config.json");
                 let new = new_dir.join("config.json");
-                for dir in [&old_dir, &new_dir] {
-                    if let Some(bytes) = decisions_seed {
-                        std::fs::write(dir.join("config.json"), bytes).unwrap();
-                    }
-                    if let Some(bytes) = state_seed {
-                        std::fs::write(state_file_path(dir), bytes).unwrap();
-                    }
-                }
+                write_identity_pair_seeds(&old_dir, &new_dir, decisions_seed, state_seed);
                 let before = [
                     read_config_pair_physical(&new).unwrap(),
                     read_config_pair_physical(&state_file_path(&new_dir)).unwrap(),
                 ];
-                let mutate = |d: &mut JsonMap, s: &mut JsonMap| {
-                    if changed {
-                        d.entry("tooling")
-                            .or_insert_with(|| serde_json::json!({}))
-                            .as_object_mut()
-                            .unwrap()
-                            .insert(
-                                "configurationRef".into(),
-                                serde_json::json!({"version":1,"owned":"new"}),
-                            );
-                        s.entry("tooling")
-                            .or_insert_with(|| serde_json::json!({}))
-                            .as_object_mut()
-                            .unwrap()
-                            .insert("lastCodingAgent".into(), serde_json::json!("new"));
-                    }
-                    Ok(())
-                };
+                let mutate = |d: &mut JsonMap, s: &mut JsonMap| mutate_identity_pair(changed, d, s);
                 let plan = prepare_identity_reference_pair(before.clone(), mutate).unwrap();
                 assert_eq!(
                     [
@@ -127,10 +103,7 @@ fn prepared_identity_pair_serializer_cleanup_and_split_parity() {
 #[test]
 fn prepared_identity_malformed_tooling_zero_write() {
     use crate::config::local_config_io::PhysicalState;
-    for (d, s) in [
-        (r#"{"tooling":null}"#, r#"{}"#),
-        (r#"{}"#, r#"{"tooling":[]}"#),
-    ] {
+    for (d, s) in [(r#"{"tooling":null}"#, r"{}"), (r"{}", r#"{"tooling":[]}"#)] {
         assert!(prepare_identity_reference_pair(
             [
                 PhysicalState::from_bytes(d.as_bytes().to_vec()),
@@ -139,5 +112,40 @@ fn prepared_identity_malformed_tooling_zero_write() {
             |_, _| panic!("cleanup must reject before caller")
         )
         .is_err());
+    }
+}
+
+fn mutate_identity_pair(changed: bool, d: &mut JsonMap, s: &mut JsonMap) -> Result<(), String> {
+    if changed {
+        d.entry("tooling")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "configurationRef".into(),
+                serde_json::json!({"version":1,"owned":"new"}),
+            );
+        s.entry("tooling")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .unwrap()
+            .insert("lastCodingAgent".into(), serde_json::json!("new"));
+    }
+    Ok(())
+}
+
+fn write_identity_pair_seeds(
+    old_dir: &std::path::Path,
+    new_dir: &std::path::Path,
+    decisions_seed: Option<&str>,
+    state_seed: Option<&str>,
+) {
+    for dir in [old_dir, new_dir] {
+        if let Some(bytes) = decisions_seed {
+            std::fs::write(dir.join("config.json"), bytes).unwrap();
+        }
+        if let Some(bytes) = state_seed {
+            std::fs::write(state_file_path(dir), bytes).unwrap();
+        }
     }
 }

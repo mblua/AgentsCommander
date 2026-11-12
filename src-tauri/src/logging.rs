@@ -118,13 +118,13 @@ pub(crate) fn collapse_payload_task<T>(
 
 /// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
 /// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
-/// no-RUST_LOG path (see `init_logger_inner`); the RUST_LOG dev-override path
-/// keeps env_logger frozen and leaves this unset.
+/// no-RUST_LOG path (see `init_logger_inner`); the `RUST_LOG` dev-override path
+/// keeps `env_logger` frozen and leaves this unset.
 static RUNTIME_LEVEL: OnceLock<Arc<AtomicU8>> = OnceLock::new();
 
 /// #612 fixed inner filter for the gated path: third-party crates pinned at
 /// `warn`; our own targets opened to `trace` so the runtime atomic (not
-/// env_logger) is the sole gate for `agentscommander*`.
+/// `env_logger`) is the sole gate for `agentscommander*`.
 const GATE_INNER_FILTER: &str = "warn,agentscommander=trace";
 
 /// #612 lenient string -> Level for the runtime gate. None / legacy full-filter
@@ -235,14 +235,17 @@ fn test_tee_push(record: &log::Record) {
     let line = format!("{} {} {}", record.level(), record.target(), record.args());
     TEST_TEE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(line);
 }
 
 /// #2455 clone of every line the tee has seen so far; never drains.
 #[cfg(test)]
 pub(crate) fn test_tee_snapshot() -> Vec<String> {
-    TEST_TEE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    TEST_TEE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// #2455 make sure SOME logger is installed (a second `set_boxed_logger` is a
@@ -255,7 +258,7 @@ pub(crate) fn test_install_logger() {
 }
 
 /// #612 update runtime verbosity for `agentscommander*`. Returns false (no-op)
-/// when the gate is not installed (RUST_LOG override active, or called before
+/// when the gate is not installed (`RUST_LOG` override active, or called before
 /// `init_logger`), so callers can tell whether the backend stayed frozen.
 pub fn set_runtime_log_level(level: &str) -> bool {
     let lvl = level_from_str(level);
@@ -332,7 +335,7 @@ fn rotate(state: &AppLogFile) {
             return;
         }
     };
-    let stem = match base.file_name().and_then(|n| n.to_str()) {
+    let stem = match base.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(s) => s,
         None => {
             if !machine_output_enabled() {
@@ -468,7 +471,7 @@ pub fn init_logger() {
 /// #612 apply the shared format closure (timestamp + universal secret scrub +
 /// #264 error-sink tee + 50MB rotation) to `builder`. The body is the EXACT
 /// closure that was inline in `init_logger_inner`; only the captured `log_state`
-/// moves to this parameter, so both the RUST_LOG path and the runtime-gated
+/// moves to this parameter, so both the `RUST_LOG` path and the runtime-gated
 /// path build on one definition. Do NOT reorder: the #264 capture stays BEFORE
 /// the buf/file writes (M1) so a failing write cannot skip error capture.
 fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<AppLogFile>>>) {
@@ -611,7 +614,7 @@ pub struct ErrorLogEntry {
     pub timestamp: String,
     /// Level string — always "ERROR" today; kept for forward-compat + copy text.
     pub level: String,
-    /// Log target (module path), e.g. "agentscommander_lib::commands::entity_creation".
+    /// Log target (module path), e.g. "`agentscommander_lib::commands::entity_creation`".
     pub target: String,
     /// Full message; may contain embedded newlines (multi-line git errors etc.).
     pub message: String,
@@ -655,7 +658,7 @@ impl ErrorLogEntry {
 }
 
 /// Whether a log record should be teed into the error-modal sink: ERROR level
-/// AND a target owned by one of AgentsCommander's own crates
+/// AND a target owned by one of `AgentsCommander`'s own crates
 /// (`agentscommander_lib::…` or `agentscommander`). The target-prefix guard
 /// keeps third-party crates' ERROR logs (`hyper`, `reqwest`, …) out of the modal
 /// even if `RUST_LOG` is widened. Factored out of the format closure so the
@@ -706,7 +709,9 @@ impl ErrorEventSink {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ErrorSinkState> {
         // into_inner() recovers a poisoned lock so one panic while holding
         // the mutex cannot permanently disable error capture.
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Buffer an ERROR entry and wake the emit task. Runs inside the

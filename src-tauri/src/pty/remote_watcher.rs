@@ -86,7 +86,7 @@ const INTERVAL_CEILING_SECS: u64 = 3600;
 /// Bound on one `gh` call and one local git call. Hanging is not an answer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ceiling on a failing key's interval. 15 minutes.
-const BACKOFF_CAP: Duration = Duration::from_secs(900);
+const BACKOFF_CAP: Duration = Duration::from_mins(15);
 /// These are calls to one host; more parallelism buys 429s, not freshness.
 const QUERY_CONCURRENCY: usize = 2;
 /// Matches `CONTEXT_SAMPLE_QUEUE_CAPACITY`: a stuck consumer must never slow a round.
@@ -129,9 +129,6 @@ pub(crate) fn base_branch_display(branch: &str, base_label: &str) -> String {
         format!("{base_label} on GitHub")
     }
 }
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// The per-round line is a `debug!`, deliberately diverging from `GitSweeper`'s
 /// `info!` round line: at this cadence an `info!` is about 2880 lines a day for
@@ -206,7 +203,6 @@ pub(crate) enum TransitionKind {
 /// `dead_code` is allowed on the fields past the drop log: they are the Phase B
 /// contract, and nothing in Phase A reads them (the in-file tests do).
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct RemoteTransition {
     pub repo_path: String,
     pub room_dir: String,
@@ -251,7 +247,7 @@ impl RemoteActivityState {
             .snapshot
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         read(&snapshot)
     }
 
@@ -264,7 +260,7 @@ impl RemoteActivityState {
             .snapshot
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (path, activity) in entries {
             snapshot.insert(path.clone(), activity.clone());
         }

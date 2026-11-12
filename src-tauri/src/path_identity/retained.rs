@@ -1,29 +1,29 @@
-use super::handle_identity;
-use super::is_link_or_reparse;
+use super::identity::handle_identity;
+use super::identity::is_link_or_reparse;
+use super::identity::same_object;
+#[cfg(unix)]
+use super::identity::snapshot;
+#[cfg(all(unix, test))]
+use super::identity::unix_child_open_error_is_absent;
+use super::identity::verify_directory;
+#[cfg(not(unix))]
+use super::identity::verify_opened_regular_file;
+#[cfg(not(unix))]
+use super::identity::verify_regular_file;
+use super::identity::RetainedDirectory;
+#[cfg(unix)]
+use super::identity::RetainedUnixFileWitness;
+#[cfg(unix)]
+use super::identity::UnixFileWitnessState;
+#[cfg(unix)]
+use super::identity::UnixTrackedCleanupOutcome;
+#[cfg(unix)]
+use super::identity::UnixTrackedCleanupStage;
+use super::identity::VerifiedPathIdentity;
 #[cfg(windows)]
 use super::regular::publish_new_file_atomic;
 #[cfg(windows)]
 use super::regular::remove_windows_regular_file_by_handle;
-use super::regular::same_object;
-#[cfg(unix)]
-use super::snapshot;
-#[cfg(all(unix, test))]
-use super::unix_child_open_error_is_absent;
-use super::verify_directory;
-#[cfg(not(unix))]
-use super::verify_opened_regular_file;
-#[cfg(not(unix))]
-use super::verify_regular_file;
-use super::RetainedDirectory;
-#[cfg(unix)]
-use super::RetainedUnixFileWitness;
-#[cfg(unix)]
-use super::UnixFileWitnessState;
-#[cfg(unix)]
-use super::UnixTrackedCleanupOutcome;
-#[cfg(unix)]
-use super::UnixTrackedCleanupStage;
-use super::VerifiedPathIdentity;
 use std::fs::File;
 #[cfg(not(unix))]
 use std::fs::OpenOptions;

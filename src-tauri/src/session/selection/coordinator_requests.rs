@@ -252,7 +252,7 @@ impl SelectionCoordinator {
             eprintln!("restore bootstrap busy: cause={reason}");
             SelectionCoordinatorError::Busy.to_string()
         }
-        if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
         self.inner
@@ -359,7 +359,7 @@ impl SelectionCoordinator {
             permit = Arc::clone(&self.inner.admission).acquire_owned() => {
                 permit.map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
             }
-            _ = self.inner.shutdown.cancelled() => {
+            () = self.inner.shutdown.cancelled() => {
                 return Err(SelectionCoordinatorError::Unavailable.to_string());
             }
         };
@@ -367,7 +367,7 @@ impl SelectionCoordinator {
             permit = self.inner.sender.clone().reserve_owned() => {
                 permit.map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
             }
-            _ = self.inner.shutdown.cancelled() => {
+            () = self.inner.shutdown.cancelled() => {
                 return Err(SelectionCoordinatorError::Unavailable.to_string());
             }
         };
@@ -383,7 +383,7 @@ impl SelectionCoordinator {
         session_id: Uuid,
         exit_code: i32,
     ) -> Result<CriticalAdmissionOutcome<()>, String> {
-        if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
         match CoordinatorPhase::from_u8(self.inner.phase.load(Ordering::Acquire)) {
@@ -432,7 +432,7 @@ impl SelectionCoordinator {
         &self,
         session_id: Uuid,
     ) -> Result<WatchdogKillOutcome, String> {
-        if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
         match CoordinatorPhase::from_u8(self.inner.phase.load(Ordering::Acquire)) {
@@ -481,7 +481,7 @@ impl SelectionCoordinator {
         &self,
         session_id: Uuid,
     ) -> Result<CriticalAdmissionOutcome<super::DestroyOutcome>, String> {
-        if IN_SELECTION_WORKER.try_with(|_| ()).is_ok() {
+        if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
         match CoordinatorPhase::from_u8(self.inner.phase.load(Ordering::Acquire)) {
@@ -550,7 +550,7 @@ impl SelectionCoordinator {
         self.inner
             .critical_keys
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&CriticalAdmissionKey { session_id, kind })
     }
 
@@ -659,10 +659,8 @@ impl SelectionCoordinator {
                         .unwrap_or_default();
                     log::error!(
                         "[selection] coordinator worker phase exhausted before shared deadline \
-                            budget={:?} finalizationReserve={:?} outstandingCriticalKeys={}",
-                        budget,
-                        finalization_reserve,
-                        critical_count
+                            budget={budget:?} finalizationReserve={finalization_reserve:?} \
+                            outstandingCriticalKeys={critical_count}"
                     );
                     handle.abort();
                     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -681,7 +679,7 @@ impl SelectionCoordinator {
                             self.inner
                                 .retained_workers
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner())
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .push(handle);
                         }
                     }

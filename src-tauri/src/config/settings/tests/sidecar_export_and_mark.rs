@@ -108,7 +108,7 @@ fn an_unparseable_sidecar_blocks_the_direct_save_in_both_modes() {
         let settings = super::super::load_settings_for_cli_from_path(&path);
 
         let result = if reconcile {
-            super::super::save_settings_with_project_paths_to_path(&settings, &path).map(|_| ())
+            super::super::save_settings_with_project_paths_to_path(&settings, &path)
         } else {
             super::super::save_settings_to_path_preserving_project_paths(&settings, &path)
                 .map(|_| ())
@@ -207,7 +207,7 @@ fn b3_marked(settings: &super::super::AppSettings) -> Option<std::path::PathBuf>
     settings
         .agents_layer
         .unreadable_path()
-        .map(|p| p.to_path_buf())
+        .map(std::path::Path::to_path_buf)
 }
 
 #[test]

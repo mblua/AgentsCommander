@@ -2,6 +2,7 @@ pub(crate) mod agency_templates;
 mod api_client;
 mod close_session;
 mod coding_agent;
+mod context_history;
 pub(crate) mod create_agent;
 pub(crate) mod create_agent_matrix;
 mod harness;
@@ -21,6 +22,7 @@ mod self_restart;
 mod self_switch;
 pub(crate) mod send;
 mod session_safety;
+pub(crate) mod stdout;
 mod task_append_body;
 pub(crate) mod task_ops;
 mod task_set_title;
@@ -34,10 +36,12 @@ mod window_list;
 mod window_screenshot;
 mod workgroup;
 
+pub use stdout::print_stdout;
+
 use crate::filesystem::{directories, documents};
 use clap::{Parser, Subcommand};
 
-/// Print to stdout with BrokenPipe tolerance. If the underlying write fails
+/// Print to stdout with `BrokenPipe` tolerance. If the underlying write fails
 /// SPECIFICALLY with `io::ErrorKind::BrokenPipe` (typically because the
 /// consumer closed stdout early — `head`, captured pipe in PS without
 /// `Out-String`, etc.), exit the process cleanly with code 0 instead of
@@ -53,30 +57,10 @@ use clap::{Parser, Subcommand};
 #[macro_export]
 macro_rules! cli_println {
     () => {{
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let mut h = stdout.lock();
-        if let Err(e) = writeln!(h) {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                #[expect(clippy::exit, reason = "BrokenPipe exits successfully")]
-                std::process::exit(0);
-            } else {
-                panic!("failed printing to stdout: {}", e);
-            }
-        }
+        $crate::cli::print_stdout(::std::format_args!(""));
     }};
     ($($arg:tt)*) => {{
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let mut h = stdout.lock();
-        if let Err(e) = writeln!(h, $($arg)*) {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                #[expect(clippy::exit, reason = "BrokenPipe exits successfully")]
-                std::process::exit(0);
-            } else {
-                panic!("failed printing to stdout: {}", e);
-            }
-        }
+        $crate::cli::print_stdout(::std::format_args!($($arg)*));
     }};
 }
 
@@ -167,6 +151,8 @@ pub enum Commands {
     ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
+    /// Report context usage of sessions started in a period (returns JSON)
+    ContextHistory(context_history::ContextHistoryArgs),
     /// Manage downloaded Agency Agents role templates
     AgencyTemplates(agency_templates::AgencyTemplatesArgs),
     /// Create a new Agent Matrix in a registered project
@@ -221,28 +207,28 @@ pub enum Commands {
     /// Delete only the disposable testable app state
     #[command(hide = true)]
     TestReset(crate::testability::reset::TestResetArgs),
-    /// Inspect running AgentsCommander GUI windows for this binary identity
+    /// Inspect running `AgentsCommander` GUI windows for this binary identity
     #[command(hide = true)]
     WindowInfo(crate::testability::window_info::WindowInfoArgs),
-    /// Query a WebView automation target by data-ac-testid
+    /// Query a `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiQuery(crate::testability::ui_automation::UiQueryArgs),
     /// Query or scroll a visible xterm through the test-only automation bridge
     #[command(hide = true)]
     UiTerminal(crate::testability::ui_automation::UiTerminalArgs),
-    /// Dispatch a WebView pointer button/move operation on an automation target by data-ac-testid
+    /// Dispatch a `WebView` pointer button/move operation on an automation target by data-ac-testid
     #[command(hide = true)]
     UiPointer(crate::testability::ui_automation::UiPointerArgs),
-    /// Dispatch a WebView key press on an automation target by data-ac-testid
+    /// Dispatch a `WebView` key press on an automation target by data-ac-testid
     #[command(hide = true)]
     UiKey(crate::testability::ui_automation::UiKeyArgs),
-    /// Click a WebView automation target by data-ac-testid
+    /// Click a `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiClick(crate::testability::ui_automation::UiClickArgs),
-    /// Dispatch a WebView contextmenu event on an automation target by data-ac-testid
+    /// Dispatch a `WebView` contextmenu event on an automation target by data-ac-testid
     #[command(hide = true)]
     UiContextClick(crate::testability::ui_automation::UiContextClickArgs),
-    /// Dispatch a WebView pointer hover transition on an automation target by data-ac-testid
+    /// Dispatch a `WebView` pointer hover transition on an automation target by data-ac-testid
     #[command(hide = true)]
     UiHover(crate::testability::ui_automation::UiHoverArgs),
     /// List live native windows as decimal id and title (Windows only)
@@ -251,16 +237,16 @@ pub enum Commands {
     /// Capture a live native window to a PNG file (Windows only)
     #[cfg(target_os = "windows")]
     WindowScreenshot(window_screenshot::WindowScreenshotArgs),
-    /// Set an input/select WebView automation target by data-ac-testid
+    /// Set an input/select `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiSet(crate::testability::ui_automation::UiSetArgs),
-    /// Type text into a WebView automation target by data-ac-testid
+    /// Type text into a `WebView` automation target by data-ac-testid
     #[command(hide = true)]
     UiType(crate::testability::ui_automation::UiTypeArgs),
     /// Execute a Rust-handled automation hook
     #[command(hide = true)]
     UiBackend(crate::testability::ui_automation::UiBackendArgs),
-    /// Wait until a WebView automation target is available by data-ac-testid
+    /// Wait until a `WebView` automation target is available by data-ac-testid
     #[command(hide = true)]
     UiWait(crate::testability::ui_automation::UiWaitArgs),
 }
@@ -270,8 +256,8 @@ pub enum Commands {
 /// inherited console handles, or file redirects from the parent), `AttachConsole`
 /// would REBIND the std handles to a fresh console buffer — breaking those
 /// inherited channels. That rebinding is the root cause of issue #129: PS
-/// -NonInteractive `&` direct calls inherit pipe handles to the GUI-subsystem
-/// child, and AttachConsole's rebind sends subsequent writes to a console buffer
+/// -`NonInteractive` `&` direct calls inherit pipe handles to the GUI-subsystem
+/// child, and `AttachConsole`'s rebind sends subsequent writes to a console buffer
 /// that PS does not surface, dropping all output.
 ///
 /// The condition uses `GetFileType` on the std handles. `FILE_TYPE_UNKNOWN`
@@ -419,12 +405,8 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
     }
 
     // Accept master token from persisted file
-    if let Some(master_path) = crate::config::config_dir().map(|d| d.join("master-token.txt")) {
-        if let Ok(master) = documents::read_cli_outbox_text(&master_path) {
-            if master.trim() == token {
-                return Ok((token, true));
-            }
-        }
+    if crate::filesystem::master_token::matches(crate::config::config_dir().as_deref(), &token) {
+        return Ok((token, true));
     }
 
     // Otherwise must be a valid UUID (all session tokens are UUIDs)
@@ -461,6 +443,7 @@ pub fn handle_cli(
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
+        Commands::ContextHistory(args) => context_history::execute(args),
         Commands::AgencyTemplates(args) => agency_templates::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
         Commands::CreateAgentMatrix(args) => create_agent_matrix::execute(args),
@@ -522,33 +505,22 @@ pub fn flush_outputs() {
     let _ = std::io::stderr().flush();
 }
 
-fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
-    use std::path::PathBuf;
-    use uuid::Uuid;
-    let Some(root) = args.root else {
-        eprintln!("Error: --root is required.");
-        return 1;
-    };
-    let is_root = match validate_cli_token(&args.token) {
-        Ok((_, privileged)) => privileged,
-        Err(error) => {
-            eprintln!("{error}");
-            return 1;
-        }
-    };
-    let sender = self_clear::resolve_self_clear_sender(&root);
-    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
-    let msg_id = Uuid::new_v4().to_string();
-    let request_id = Uuid::new_v4().to_string();
-    let message = crate::phone::types::OutboxMessage {
-        id: msg_id.clone(),
-        token: args.token,
-        from: sender.clone(),
+/// Builds the outbox request for a plain self-clear.
+fn plain_clear_message(
+    token: Option<String>,
+    sender: &str,
+    msg_id: &str,
+    request_id: &str,
+) -> crate::phone::types::OutboxMessage {
+    crate::phone::types::OutboxMessage {
+        id: msg_id.to_string(),
+        token,
+        from: sender.to_string(),
         to: String::new(),
         body: String::new(),
         mode: String::new(),
         get_output: false,
-        request_id: Some(request_id.clone()),
+        request_id: Some(request_id.to_string()),
         sender_agent: None,
         preferred_agent: String::new(),
         requested_profile: None,
@@ -568,17 +540,37 @@ fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
         dry_run: None,
         quiet_period_ms: None,
         pty_input: None,
+    }
+}
+
+/// Picks the outbox: the app-published path for root tokens, else the agent's own.
+fn plain_clear_outbox_dir(is_root: bool, ac_dir: &std::path::Path) -> std::path::PathBuf {
+    crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        ac_dir,
+    )
+}
+
+fn execute_plain_clear(args: plain_clear::PlainClearArgs) -> i32 {
+    use std::path::PathBuf;
+    use uuid::Uuid;
+    let Some(root) = args.root else {
+        eprintln!("Error: --root is required.");
+        return 1;
     };
-    let outbox_dir = if is_root {
-        crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()))
-            .filter(|p| directories::cli_discovery_is_dir(p))
-            .unwrap_or_else(|| ac_dir.join("outbox"))
-    } else {
-        ac_dir.join("outbox")
+    let is_root = match validate_cli_token(&args.token) {
+        Ok((_, privileged)) => privileged,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
     };
+    let sender = self_clear::resolve_self_clear_sender(&root);
+    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
+    let msg_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4().to_string();
+    let message = plain_clear_message(args.token, &sender, &msg_id, &request_id);
+    let outbox_dir = plain_clear_outbox_dir(is_root, &ac_dir);
     let request_path = outbox_dir.join(format!("{msg_id}.json"));
     let ack_path = ac_dir.join("responses").join(format!("{request_id}.json"));
     let rejection_path = outbox_dir

@@ -89,8 +89,8 @@ pub(super) fn configured_shell_kind(program: &str) -> WindowsHostShellKind {
     }
 }
 
-/// #1498 - Windows-only: `git-bash.exe` (the Git for Windows MinTTY launcher)
-/// and `mintty.exe` detach from the console, so a ConPTY host would acquire
+/// #1498 - Windows-only: `git-bash.exe` (the Git for Windows `MinTTY` launcher)
+/// and `mintty.exe` detach from the console, so a `ConPTY` host would acquire
 /// resources for a child that never attaches to them (blank PTY / detached
 /// window). Rejected before any resource acquisition, naming the program and
 /// the working alternative. Deliberately does NOT reuse `adapter_error`'s
@@ -104,9 +104,8 @@ pub(super) fn reject_detached_launcher(program: &str) -> Result<(), AppError> {
         .to_ascii_lowercase();
     if basename == "git-bash.exe" || basename == "mintty.exe" {
         return Err(AppError::Other(format!(
-            "'{}' is a detached launcher and cannot host a ConPTY terminal; \
-             use Git for Windows bin\\bash.exe or a direct console shell",
-            program
+            "'{program}' is a detached launcher and cannot host a ConPTY terminal; \
+             use Git for Windows bin\\bash.exe or a direct console shell"
         )));
     }
     Ok(())
@@ -117,9 +116,9 @@ pub(super) fn reject_detached_launcher(program: &str) -> Result<(), AppError> {
 /// adapter owns command execution (Section 4.3.1 item 6).
 pub(super) fn adapter_error(host_program: &str, token: &str, category: &str) -> AppError {
     AppError::Other(format!(
-        "Configured default shell '{}' cannot host a resolved agent: token '{}' is {}; \
-         the agent adapter owns command execution for this session",
-        host_program, token, category
+        "Configured default shell '{host_program}' cannot host a resolved agent: \
+         token '{token}' is {category}; \
+         the agent adapter owns command execution for this session"
     ))
 }
 
@@ -268,34 +267,7 @@ pub(super) fn validate_powershell_arguments(
             mark_seen(&mut seen, &option, host_program, token)?;
             continue;
         }
-        if token == "--" || token == "--%" {
-            return Err(adapter_error(
-                host_program,
-                token,
-                "a conflicting/terminal configured option",
-            ));
-        }
-        if !token.starts_with('-') && !token.starts_with('/') {
-            return Err(adapter_error(
-                host_program,
-                token,
-                "an unknown or ambiguous token",
-            ));
-        }
-        let body = &token[1..];
-        // Conflicting/terminal spellings are matched against the FULL body before
-        // any operand split: `-E:O` is not the `-e` spelling, so an attached
-        // operand can never turn an unknown token into a terminal one.
-        if POWERSHELL_CONFLICTING_OPTIONS
-            .iter()
-            .any(|option| option.eq_ignore_ascii_case(body))
-        {
-            return Err(adapter_error(
-                host_program,
-                token,
-                "a conflicting/terminal configured option",
-            ));
-        }
+        let body = powershell_option_body(host_program, token)?;
         let (name, attached) = match body.find([':', '=']) {
             Some(idx) => (&body[..idx], Some(&body[idx + 1..])),
             None => (body, None),
@@ -353,6 +325,40 @@ pub(super) fn validate_powershell_arguments(
         ));
     }
     validate_powershell_pending_operand(host_program, pending_operand)
+}
+
+/// Rejects terminal and non-option tokens, returning the option body after its
+/// leading `-` or `/`.
+fn powershell_option_body<'t>(host_program: &str, token: &'t str) -> Result<&'t str, AppError> {
+    if token == "--" || token == "--%" {
+        return Err(adapter_error(
+            host_program,
+            token,
+            "a conflicting/terminal configured option",
+        ));
+    }
+    if !token.starts_with('-') && !token.starts_with('/') {
+        return Err(adapter_error(
+            host_program,
+            token,
+            "an unknown or ambiguous token",
+        ));
+    }
+    let body = &token[1..];
+    // Conflicting/terminal spellings are matched against the FULL body before
+    // any operand split: `-E:O` is not the `-e` spelling, so an attached
+    // operand can never turn an unknown token into a terminal one.
+    if POWERSHELL_CONFLICTING_OPTIONS
+        .iter()
+        .any(|option| option.eq_ignore_ascii_case(body))
+    {
+        return Err(adapter_error(
+            host_program,
+            token,
+            "a conflicting/terminal configured option",
+        ));
+    }
+    Ok(body)
 }
 
 // --- Section 4.3.3 - cmd(.exe) ---------------------------------------------
@@ -455,7 +461,7 @@ pub(super) fn validate_cmd_payload(
             "an unsupported cmd payload character (program token starts with '@')",
         ));
     }
-    for token in std::iter::once(command).chain(args.iter().map(|s| s.as_str())) {
+    for token in std::iter::once(command).chain(args.iter().map(String::as_str)) {
         if token.is_empty() {
             return Err(adapter_error(
                 host_program,
@@ -470,7 +476,7 @@ pub(super) fn validate_cmd_payload(
                 "an unsupported cmd payload character ('%' expands in cmd)",
             ));
         }
-        if token.chars().any(|c| c.is_whitespace()) {
+        if token.chars().any(char::is_whitespace) {
             return Err(adapter_error(
                 host_program,
                 token,

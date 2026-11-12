@@ -183,6 +183,36 @@ fn filter_args() -> WorkgroupActivityArgs {
     }
 }
 
+fn bad_rooms_and_team_filter_cases() -> Vec<(WorkgroupActivityArgs, String)> {
+    let rooms = |v: &str| {
+        format!(
+            "Invalid --rooms '{v}': expected comma-separated positive room numbers, e.g. 5,12,17"
+        )
+    };
+    let bad_rooms = ["5,,7", "0", "-1", "abc", "", "5,", "4294967296"];
+    let mut cases: Vec<(WorkgroupActivityArgs, String)> = bad_rooms
+        .iter()
+        .map(|v| {
+            let args = WorkgroupActivityArgs {
+                rooms: Some((*v).to_string()),
+                ..filter_args()
+            };
+            (args, rooms(v))
+        })
+        .collect();
+    for team in [" ", ""] {
+        let args = WorkgroupActivityArgs {
+            team: Some(team.to_string()),
+            ..filter_args()
+        };
+        cases.push((
+            args,
+            format!("Invalid --team '{team}': expected a team name"),
+        ));
+    }
+    cases
+}
+
 #[test]
 fn u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message() {
     let rooms = |v: &str| {
@@ -193,70 +223,8 @@ fn u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message() {
     let regex_error = regex::Regex::new(&String::from("("))
         .expect_err("bad regex")
         .to_string();
-    let cases: Vec<(WorkgroupActivityArgs, String)> = vec![
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("5,,7".into()),
-                ..filter_args()
-            },
-            rooms("5,,7"),
-        ),
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("0".into()),
-                ..filter_args()
-            },
-            rooms("0"),
-        ),
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("-1".into()),
-                ..filter_args()
-            },
-            rooms("-1"),
-        ),
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("abc".into()),
-                ..filter_args()
-            },
-            rooms("abc"),
-        ),
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("".into()),
-                ..filter_args()
-            },
-            rooms(""),
-        ),
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("5,".into()),
-                ..filter_args()
-            },
-            rooms("5,"),
-        ),
-        (
-            WorkgroupActivityArgs {
-                rooms: Some("4294967296".into()),
-                ..filter_args()
-            },
-            rooms("4294967296"),
-        ),
-        (
-            WorkgroupActivityArgs {
-                team: Some(" ".into()),
-                ..filter_args()
-            },
-            "Invalid --team ' ': expected a team name".to_string(),
-        ),
-        (
-            WorkgroupActivityArgs {
-                team: Some("".into()),
-                ..filter_args()
-            },
-            "Invalid --team '': expected a team name".to_string(),
-        ),
+    let mut cases = bad_rooms_and_team_filter_cases();
+    cases.extend(vec![
         (
             WorkgroupActivityArgs {
                 working: Some("TRUE".into()),
@@ -310,7 +278,7 @@ fn u1_parse_activity_filter_rejects_each_bad_value_with_the_exact_message() {
             },
             "Invalid --working 'no': expected true or false".to_string(),
         ),
-    ];
+    ]);
     assert!(cases.len() >= 12);
     for (args, expected) in cases {
         assert_eq!(parse_activity_filter(&args).err(), Some(expected));
@@ -478,7 +446,7 @@ fn u4_aggregation_reports_every_reason_and_unions_runs() {
         ),
     ]);
     let reason = |keys: &[&str], gate: Option<&'static str>| {
-        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        let keys: Vec<String> = keys.iter().map(std::string::ToString::to_string).collect();
         aggregate_room_ci(&keys, &entries, gate)
     };
     let running = reason(&["run1", "run2", "unk", "idle"], None);

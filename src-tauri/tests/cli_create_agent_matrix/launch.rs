@@ -24,11 +24,11 @@ fn watch_and_answer_session_request(
             panic!("watcher timed out waiting for a session request");
         }
         let request_path = std::fs::read_dir(&requests_dir).ok().and_then(|rd| {
-            rd.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
-                p.extension().and_then(|s| s.to_str()) == Some("json")
+            rd.filter_map(Result::ok).map(|e| e.path()).find(|p| {
+                p.extension().and_then(std::ffi::OsStr::to_str) == Some("json")
                     && !p
                         .file_stem()
-                        .and_then(|s| s.to_str())
+                        .and_then(std::ffi::OsStr::to_str)
                         .is_some_and(|s| s.ends_with(".result"))
             })
         });
@@ -38,7 +38,7 @@ fn watch_and_answer_session_request(
         };
         let id = request_path
             .file_stem()
-            .and_then(|s| s.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .expect("request id")
             .to_string();
         let result = serde_json::json!({

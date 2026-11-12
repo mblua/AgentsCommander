@@ -14,8 +14,7 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
+mod kind;
 mod pi_command;
 mod pty_submission;
 
@@ -32,24 +31,7 @@ pub use pty_submission::detect_pty_submission_agent;
 use pty_submission::detect_pty_submission_agent_with_provenance;
 pub use pty_submission::PtySubmissionAgent;
 
-/// Identity of a coding agent. `Option<CodingAgentKind>` on a session: `None`
-/// means "not a recognised coding agent" (a plain shell).
-///
-/// Mutual exclusion is **structural** — a session is exactly one kind or none.
-/// This enum is what let #260 delete the `debug_assert!` that guarded the old
-/// three-bool representation in `derive_reader`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodingAgentKind {
-    Claude,
-    Codex,
-    Antigravity,
-    Pi,
-    /// #1873 - Muse Code. Detected only as a direct shell whose exact stem is
-    /// `muse` (bare or absolute path); prefix names and argument-only identity
-    /// inside `env`/shell/PowerShell/`cmd`/compound wrappers are never Muse.
-    Muse,
-}
+pub use kind::CodingAgentKind;
 
 impl CodingAgentKind {
     /// Detect the coding agent from a spawn command (`shell` + `args`).
@@ -92,7 +74,7 @@ impl CodingAgentKind {
         fn basename(token: &str) -> String {
             std::path::Path::new(token)
                 .file_stem()
-                .and_then(|s| s.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or(token)
                 .to_lowercase()
         }
@@ -216,7 +198,7 @@ impl IdleTuning {
     };
 
     /// #2156 - tuning for a recognised coding agent: `DEFAULT` plus the #2124
-    /// burst filter ON by default. Values mirror the IDLE_BURST_DEFAULT_*
+    /// burst filter ON by default. Values mirror the `IDLE_BURST_DEFAULT_*`
     /// constants (a test pins the two in sync).
     pub const AGENT_DEFAULT: IdleTuning = IdleTuning {
         burst_max_bytes: IDLE_BURST_DEFAULT_MAX_BYTES, // 1024
@@ -234,7 +216,7 @@ pub struct ContainerCredentialSource {
     /// Default host config dir, relative to the user's home dir, e.g. ".claude".
     pub host_dir: &'static str,
     /// Optional env var whose value (an absolute path) overrides `host_dir` on
-    /// the host, e.g. "CLAUDE_CONFIG_DIR" for Claude. Only the AgentsCommander
+    /// the host, e.g. `CLAUDE_CONFIG_DIR` for Claude. Only the `AgentsCommander`
     /// process environment is consulted (NOT wrapper-script parsing).
     pub host_dir_env: Option<&'static str>,
     /// Credential filename within the config dir, e.g. ".credentials.json".

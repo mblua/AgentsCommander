@@ -1,19 +1,44 @@
 use super::*;
+use crate::pty::backend::SessionBackendKind;
+use crate::pty::container_backend::ContainerShutdownReport;
+use crate::pty::container_runtime::ContainerRuntimeHandle;
+use crate::pty::container_tokens::ContainerApiTokenManager;
+use crate::session::manager::ManagerAggregateSnapshot;
+use crate::session::session::Session;
+use tokio::task::{JoinError, JoinHandle};
+use tokio::time::error::Elapsed;
 
-// Proves retained pending-handle ownership and exactly-once cleanup after close.
-// Immediate stop does not cover near-deadline success, blocked stops, or physical joins.
-pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
-    use crate::pty::backend::SessionBackendKind;
-    use crate::pty::container_backend::ContainerTransportBackend;
-    use crate::pty::container_runtime::ContainerRuntimeHandle;
+type Joined<T> = Result<Result<T, JoinError>, Elapsed>;
 
-    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+pub(super) fn build_selection_test_app(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: &Arc<Mutex<PtyManager>>,
+    label: &str,
+) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::commands::session::selection_executor::state::<
+            tauri::test::MockRuntime,
+        >())
+        .manage(Arc::clone(manager))
+        .manage(Arc::clone(pty))
+        .manage(DetachedSessionsState::default())
+        .manage(WsBroadcaster::new())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect(label)
+}
+
+pub(super) fn gated_stop_container_backend(
+    stop_hold: Duration,
+) -> (
+    Arc<GatedStopRuntime>,
+    oneshot::Receiver<()>,
+    Arc<ContainerTransportBackend>,
+) {
     let (stop_started, stop_started_rx) = oneshot::channel();
-    let close_budget = Duration::from_millis(200);
     let runtime = Arc::new(GatedStopRuntime {
         stop_started: Mutex::new(Some(stop_started)),
         stop_calls: AtomicUsize::new(0),
-        stop_hold: Duration::ZERO,
+        stop_hold,
         active_stops: AtomicUsize::new(0),
         deadline_seen: AtomicBool::new(false),
     });
@@ -27,28 +52,62 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
         runtime.clone(),
         None,
     ));
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
+    (runtime, stop_started_rx, container_backend)
+}
+
+pub(super) fn container_pty(
+    container_backend: &Arc<ContainerTransportBackend>,
+) -> Arc<Mutex<PtyManager>> {
+    Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
         Arc::new(LifecycleTestBackend::default()),
         container_backend.clone(),
-    )));
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build pending-container shutdown app");
-    let mut restore_guard = None;
-    let manager_handle = manager.read().await.clone();
+    )))
+}
+
+pub(super) async fn await_pending_rows_rolled_back(manager_handle: &SessionManager, label: &str) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if manager_handle
+                .aggregate_snapshot()
+                .await
+                .pending_ids
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect(label);
+}
+
+fn spawn_coordinator_close(
+    coordinator: &SelectionCoordinator,
+    capped: bool,
+    close_budget: Duration,
+) -> JoinHandle<SelectionShutdownReport> {
+    let coordinator = coordinator.clone();
+    tokio::spawn(async move {
+        if capped {
+            coordinator.close_and_join_with_budget(close_budget).await
+        } else {
+            coordinator.close_and_join().await
+        }
+    })
+}
+
+async fn setup_pending_container(
+    coordinator: &SelectionCoordinator,
+    app: &tauri::App<tauri::test::MockRuntime>,
+    manager_handle: &SessionManager,
+    restore_guard: &mut Option<RestoreBarrierGuard>,
+) -> (CreateFinalizationTicket, Session) {
     let setup = async {
         coordinator
             .start(app.handle().clone())
             .map_err(|error| error.to_string())?;
-        restore_guard = Some(coordinator.submit_restore_first().await?);
+        *restore_guard = Some(coordinator.submit_restore_first().await?);
         let mut ticket = coordinator
             .reserve_create(TrustedCreateIntent::Background)
             .await
@@ -69,7 +128,7 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
         Ok::<_, String>((ticket, pending))
     }
     .await;
-    let (ticket, pending) = match setup {
+    match setup {
         Ok(ready) => ready,
         Err(error) => {
             if let Some(guard) = restore_guard.take() {
@@ -82,28 +141,30 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
                  a cleanup timeout leaves worker ownership unresolved"
             );
         }
-    };
-    let _transport_receiver =
-        container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-            session_id: pending.id,
-            container_id: format!("container-{}", pending.id),
-        });
-    pty.lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .record_route(pending.id, SessionBackendKind::ContainerTransport);
+    }
+}
 
+struct PendingCloseOutcome {
+    shutdown_signal: Result<(), Elapsed>,
+    close_result: Joined<SelectionShutdownReport>,
+    close_elapsed: Duration,
+    close_bound: Duration,
+    close_cleanup: Option<Joined<SelectionShutdownReport>>,
+    finalizer_result: Joined<Result<SessionInfo, String>>,
+    close: JoinHandle<SelectionShutdownReport>,
+    finalizer: JoinHandle<Result<SessionInfo, String>>,
+}
+
+async fn run_pending_container_close(
+    coordinator: &SelectionCoordinator,
+    ticket: CreateFinalizationTicket,
+    restore_guard: &mut Option<RestoreBarrierGuard>,
+    capped: bool,
+    close_budget: Duration,
+) -> PendingCloseOutcome {
     let mut finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
     let close_started = Instant::now();
-    let mut close = {
-        let coordinator = coordinator.clone();
-        tokio::spawn(async move {
-            if capped {
-                coordinator.close_and_join_with_budget(close_budget).await
-            } else {
-                coordinator.close_and_join().await
-            }
-        })
-    };
+    let mut close = spawn_coordinator_close(coordinator, capped, close_budget);
     let shutdown_signal = tokio::time::timeout(Duration::from_secs(1), async {
         while !coordinator.inner.shutdown.is_cancelled() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -147,24 +208,86 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
         let aborted = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
         eprintln!("finalizer cleanup exceeded five seconds; abort join={aborted:?}");
     }
+    PendingCloseOutcome {
+        shutdown_signal,
+        close_result,
+        close_elapsed,
+        close_bound,
+        close_cleanup,
+        finalizer_result,
+        close,
+        finalizer,
+    }
+}
+
+struct PendingSweepObservation {
+    pre_stop_calls: usize,
+    pre_active_stops: usize,
+    pre_transport: bool,
+    pre_detached: usize,
+    pre_retained: Vec<Uuid>,
+    pre_contexts: Vec<String>,
+    aggregate: ManagerAggregateSnapshot,
+    pre_route: bool,
+    global_report: ContainerShutdownReport,
+    stopped_signal: Result<Result<(), oneshot::error::RecvError>, Elapsed>,
+    stop_calls: usize,
+    active_stops: usize,
+    worker_count: usize,
+    deadline_seen: bool,
+    retained: Vec<Uuid>,
+}
+
+async fn observe_pending_container_sweep(
+    runtime: &GatedStopRuntime,
+    container_backend: &ContainerTransportBackend,
+    manager_handle: &SessionManager,
+    pty: &Mutex<PtyManager>,
+    pending_id: Uuid,
+    stop_started_rx: oneshot::Receiver<()>,
+) -> PendingSweepObservation {
     let pre_stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
     let pre_active_stops = runtime.active_stops.load(Ordering::SeqCst);
-    let pre_transport = container_backend.contains_transport_state_for_test(pending.id);
+    let pre_transport = container_backend.contains_transport_state_for_test(pending_id);
     let pre_detached = container_backend.detached_cleanup_count_for_test();
     let pre_retained = container_backend.retained_runtime_cleanup_sessions_for_test();
     let pre_contexts = container_backend.retained_cleanup_contexts_for_test();
     let aggregate = manager_handle.aggregate_snapshot().await;
     let pre_route = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .has_session(pending.id);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .has_session(pending_id);
 
     // Collect both snapshots and finish the single authorized sweep before assertions.
     let global_report = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stop_all_started_containers_blocking(Duration::from_secs(1));
     let stopped_signal = tokio::time::timeout(Duration::from_secs(1), stop_started_rx).await;
+    await_retained_stop_sweep(runtime, container_backend).await;
+    PendingSweepObservation {
+        pre_stop_calls,
+        pre_active_stops,
+        pre_transport,
+        pre_detached,
+        pre_retained,
+        pre_contexts,
+        aggregate,
+        pre_route,
+        global_report,
+        stopped_signal,
+        stop_calls: runtime.stop_calls.load(Ordering::SeqCst),
+        active_stops: runtime.active_stops.load(Ordering::SeqCst),
+        worker_count: container_backend.shutdown_worker_count_for_test(),
+        deadline_seen: runtime.deadline_seen.load(Ordering::SeqCst),
+        retained: container_backend.retained_cleanup_sessions_for_test(),
+    }
+}
+
+async fn await_retained_stop_sweep(
+    runtime: &GatedStopRuntime,
+    container_backend: &ContainerTransportBackend,
+) {
     await_state_eq(
         "global sweep stops the retained handle exactly once",
         Duration::from_secs(1),
@@ -209,11 +332,41 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
         String::new,
     )
     .await;
-    let stop_calls = runtime.stop_calls.load(Ordering::SeqCst);
-    let active_stops = runtime.active_stops.load(Ordering::SeqCst);
-    let worker_count = container_backend.shutdown_worker_count_for_test();
-    let deadline_seen = runtime.deadline_seen.load(Ordering::SeqCst);
-    let retained = container_backend.retained_cleanup_sessions_for_test();
+}
+
+fn assert_pending_container_outcome(
+    capped: bool,
+    pending: &Session,
+    outcome: PendingCloseOutcome,
+    sweep: PendingSweepObservation,
+) {
+    let PendingCloseOutcome {
+        shutdown_signal,
+        close_result,
+        close_elapsed,
+        close_bound,
+        close_cleanup,
+        finalizer_result,
+        close: _close,
+        finalizer: _finalizer,
+    } = outcome;
+    let PendingSweepObservation {
+        pre_stop_calls,
+        pre_active_stops,
+        pre_transport,
+        pre_detached,
+        pre_retained,
+        pre_contexts,
+        aggregate,
+        pre_route,
+        global_report,
+        stopped_signal,
+        stop_calls,
+        active_stops,
+        worker_count,
+        deadline_seen,
+        retained,
+    } = sweep;
     eprintln!(
         "pending-container capped={capped} close={close_result:?} \
          close_cleanup={close_cleanup:?} terminal={} stops={stop_calls} \
@@ -242,8 +395,8 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     assert_eq!(
         pre_retained,
         vec![pending.id],
-        "post-seal pending cleanup must remain owned for the authorized global sweep: {:?}",
-        pre_contexts
+        "post-seal pending cleanup must remain owned for the authorized global sweep: \
+         {pre_contexts:?}"
     );
     assert!(aggregate.pending_ids.is_empty());
     assert!(aggregate.sessions.is_empty());
@@ -267,21 +420,62 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     assert!(retained.is_empty());
 }
 
-pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
+// Proves retained pending-handle ownership and exactly-once cleanup after close.
+// Immediate stop does not cover near-deadline success, blocked stops, or physical joins.
+pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let close_budget = Duration::from_millis(200);
+    let (runtime, stop_started_rx, container_backend) =
+        gated_stop_container_backend(Duration::ZERO);
+    let pty = container_pty(&container_backend);
+    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+    let app = build_selection_test_app(&manager, &pty, "build pending-container shutdown app");
+    let mut restore_guard = None;
+    let manager_handle = manager.read().await.clone();
+    let (ticket, pending) =
+        setup_pending_container(&coordinator, &app, &manager_handle, &mut restore_guard).await;
+    let _transport_receiver =
+        container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+            session_id: pending.id,
+            container_id: format!("container-{}", pending.id),
+        });
+    pty.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record_route(pending.id, SessionBackendKind::ContainerTransport);
+
+    let outcome = run_pending_container_close(
+        &coordinator,
+        ticket,
+        &mut restore_guard,
+        capped,
+        close_budget,
+    )
+    .await;
+    let sweep = observe_pending_container_sweep(
+        &runtime,
+        &container_backend,
+        &manager_handle,
+        &pty,
+        pending.id,
+        stop_started_rx,
+    )
+    .await;
+    assert_pending_container_outcome(capped, &pending, outcome, sweep);
+}
+
+fn real_container_backend(
     capped: bool,
     fail_worker_spawn: bool,
     first_stop_outcome: CanceledStartStopOutcome,
+) -> (
+    Arc<GatedStartStopRuntime>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    tempfile::TempDir,
+    Arc<ContainerTransportBackend>,
 ) {
-    use crate::pty::backend::SessionBackendKind;
-    use crate::pty::container_backend::ContainerTransportBackend;
-    use crate::pty::container_tokens::ContainerApiTokenManager;
-
-    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let root_dir = tempfile::TempDir::new().expect("create container root directory");
-    let root = root_dir.path().to_string_lossy().into_owned();
     let (start_started, start_started_rx) = oneshot::channel();
     let (stop_started, stop_started_rx) = oneshot::channel();
-    let close_budget = Duration::from_millis(200);
     let runtime = Arc::new(GatedStartStopRuntime {
         start_started: Mutex::new(Some(start_started)),
         stop_started: Mutex::new(Some(stop_started)),
@@ -324,31 +518,20 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         container_backend.inject_shutdown_worker_spawn_failure_for_test();
     }
     let container_backend = Arc::new(container_backend);
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
-        Arc::new(LifecycleTestBackend::default()),
-        container_backend.clone(),
-    )));
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build real pending-container shutdown app");
-    coordinator
-        .start(app.handle().clone())
-        .expect("start real pending-container shutdown coordinator");
-    let mut restore_guard = Some(
-        coordinator
-            .submit_restore_first()
-            .await
-            .expect("hold restore barrier"),
-    );
-    let manager_handle = manager.read().await.clone();
+    (
+        runtime,
+        start_started_rx,
+        stop_started_rx,
+        token_dir,
+        container_backend,
+    )
+}
+
+async fn reserve_real_pending_container(
+    coordinator: &SelectionCoordinator,
+    manager_handle: &SessionManager,
+    root: &str,
+) -> (CreateFinalizationTicket, Session) {
     let mut ticket = coordinator
         .reserve_create(TrustedCreateIntent::Background)
         .await
@@ -358,7 +541,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
             &mut ticket,
             "container".to_string(),
             Vec::new(),
-            root.clone(),
+            root.to_string(),
             None,
             None,
             Vec::new(),
@@ -367,11 +550,20 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         )
         .await
         .expect("create real pending-container manager row");
-    let pending_id = pending.id;
+    (ticket, pending)
+}
+
+fn spawn_real_container_create(
+    coordinator: &SelectionCoordinator,
+    pty: &Arc<Mutex<PtyManager>>,
+    root: &str,
+    ticket: CreateFinalizationTicket,
+    pending_id: Uuid,
+) -> JoinHandle<Result<(), String>> {
     let create_shutdown = coordinator.inner.shutdown.clone();
-    let create_pty = Arc::clone(&pty);
-    let create_root = root.clone();
-    let mut create = tokio::task::spawn_blocking(move || {
+    let create_pty = Arc::clone(pty);
+    let create_root = root.to_string();
+    tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -380,11 +572,11 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
             let _ticket = ticket;
             let _spawn_mark = create_pty
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .mark_spawning(&create_root, "container");
             tokio::select! {
                 biased;
-                _ = create_shutdown.cancelled() => {
+                () = create_shutdown.cancelled() => {
                     Err(SelectionCoordinatorError::Unavailable.to_string())
                 }
                 result = PtyManager::spawn(
@@ -394,10 +586,20 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
                 ) => result.map_err(|error| error.to_string()),
             }
         })
-    });
+    })
+}
 
+async fn assert_real_create_reached_start(
+    create: &mut JoinHandle<Result<(), String>>,
+    start_started_rx: oneshot::Receiver<()>,
+    runtime: &GatedStartStopRuntime,
+    container_backend: &ContainerTransportBackend,
+    manager_handle: &SessionManager,
+    pty: &Mutex<PtyManager>,
+    pending_id: Uuid,
+) {
     tokio::select! {
-        result = &mut create => {
+        result = &mut *create => {
             panic!("real container create ended before runtime start: {result:?}");
         }
         started = tokio::time::timeout(Duration::from_secs(5), start_started_rx) => {
@@ -413,7 +615,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     assert!(aggregate.sessions.is_empty());
     let (pending_spawns, live_routes) = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .archive_liveness(&[pending_id]);
     assert_eq!(pending_spawns.len(), 1);
     assert_eq!(live_routes, vec![false]);
@@ -422,27 +624,13 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         (false, 1, 1),
         "the producer and blocking start must be shutdown-owned before runtime.start"
     );
+}
 
-    let close_started = Instant::now();
-    let close = {
-        let coordinator = coordinator.clone();
-        tokio::spawn(async move {
-            if capped {
-                coordinator.close_and_join_with_budget(close_budget).await
-            } else {
-                coordinator.close_and_join().await
-            }
-        })
-    };
-    await_state_eq(
-        "real pending-container shutdown signal becomes visible",
-        Duration::from_secs(1),
-        || coordinator.inner.shutdown.is_cancelled(),
-        true,
-        String::new,
-    )
-    .await;
-    let create_error = (&mut create)
+async fn assert_real_create_canceled(
+    create: &mut JoinHandle<Result<(), String>>,
+    fail_worker_spawn: bool,
+) {
+    let create_error = (&mut *create)
         .await
         .expect("join canceled real container create")
         .expect_err("shutdown cancels the real container create");
@@ -458,32 +646,51 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
             SelectionCoordinatorError::Unavailable.to_string()
         );
     }
-    if !capped {
-        restore_guard
-            .take()
-            .expect("normal-drain restore guard")
-            .finish();
+}
+
+fn assert_capped_close_abandonment(
+    close_elapsed: Duration,
+    close_budget: Duration,
+    work_state_at_close: (bool, usize, usize),
+    close_report: &SelectionShutdownReport,
+) {
+    // Only the abandoned side is asserted. A capped close may retain work
+    // without ever reaching its absolute deadline: the
+    // `container-shutdown-signal` and `coordinator-worker-handle` reasons are
+    // raised immediately on a `try_lock` failure, `critical-key-clear` is not
+    // deadline-driven at all, and `blocking-seed-transaction-await` is raised
+    // at the worker deadline, one finalization reserve before the absolute
+    // one. A close that returns under budget is therefore free to retain, so
+    // asserting an empty retained set there would fail runs the production
+    // contract permits.
+    if close_elapsed >= close_budget && work_state_at_close != (true, 0, 0) {
+        // The registry only drains, never refills, so work outstanding
+        // here was outstanding at the close's deadline too. The predicate
+        // couples the report to something observed independently of it, so
+        // it does not restate `persistence_safe == retained.is_empty()`.
+        assert!(
+            !close_report.persistence_safe,
+            "a capped close that gave up on {work_state_at_close:?} \
+             must report abandoned ownership: {close_report:?}"
+        );
+        assert!(
+            !close_report.retained.is_empty(),
+            "a capped close that gave up on {work_state_at_close:?} \
+             must name what it abandoned: {close_report:?}"
+        );
     }
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if manager_handle
-                .aggregate_snapshot()
-                .await
-                .pending_ids
-                .is_empty()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("pending manager row is rolled back during shutdown");
-    tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
-        .await
-        .expect("late runtime handle stop starts")
-        .expect("late runtime handle stop witness is delivered");
-    assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+    // The remaining cases, a close that returned under budget and a close
+    // that reached its deadline against a registry that then drained before
+    // this sample, are undecidable from outside and are left unasserted.
+}
+
+async fn join_real_container_close(
+    close: JoinHandle<SelectionShutdownReport>,
+    close_started: Instant,
+    capped: bool,
+    close_budget: Duration,
+    container_backend: &ContainerTransportBackend,
+) -> SelectionShutdownReport {
     let close_report = tokio::time::timeout(Duration::from_secs(2), close)
         .await
         .expect("real pending-container close obeys the shared deadline")
@@ -502,39 +709,17 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         "real container close elapsed {close_elapsed:?}, bound {close_bound:?}"
     );
     if capped {
-        // Only the abandoned side is asserted. A capped close may retain work
-        // without ever reaching its absolute deadline: the
-        // `container-shutdown-signal` and `coordinator-worker-handle` reasons are
-        // raised immediately on a `try_lock` failure, `critical-key-clear` is not
-        // deadline-driven at all, and `blocking-seed-transaction-await` is raised
-        // at the worker deadline, one finalization reserve before the absolute
-        // one. A close that returns under budget is therefore free to retain, so
-        // asserting an empty retained set there would fail runs the production
-        // contract permits.
-        if close_elapsed >= close_budget && work_state_at_close != (true, 0, 0) {
-            // The registry only drains, never refills, so work outstanding
-            // here was outstanding at the close's deadline too. The predicate
-            // couples the report to something observed independently of it, so
-            // it does not restate `persistence_safe == retained.is_empty()`.
-            assert!(
-                !close_report.persistence_safe,
-                "a capped close that gave up on {work_state_at_close:?} \
-                 must report abandoned ownership: {close_report:?}"
-            );
-            assert!(
-                !close_report.retained.is_empty(),
-                "a capped close that gave up on {work_state_at_close:?} \
-                 must name what it abandoned: {close_report:?}"
-            );
-        }
-        // The remaining cases, a close that returned under budget and a close
-        // that reached its deadline against a registry that then drained before
-        // this sample, are undecidable from outside and are left unasserted.
+        assert_capped_close_abandonment(
+            close_elapsed,
+            close_budget,
+            work_state_at_close,
+            &close_report,
+        );
     }
-    if let Some(guard) = restore_guard.take() {
-        guard.finish();
-    }
+    close_report
+}
 
+async fn await_real_runtime_settled(runtime: &GatedStartStopRuntime) {
     await_state_eq(
         "runtime start was called exactly once",
         Duration::from_secs(1),
@@ -575,6 +760,17 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         String::new,
     )
     .await;
+}
+
+async fn assert_real_container_cleanup(
+    runtime: &GatedStartStopRuntime,
+    container_backend: &ContainerTransportBackend,
+    manager_handle: &SessionManager,
+    pty: &Mutex<PtyManager>,
+    pending_id: Uuid,
+    first_stop_outcome: CanceledStartStopOutcome,
+    fail_worker_spawn: bool,
+) {
     assert_eq!(runtime.start_calls.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.active_starts.load(Ordering::SeqCst), 0);
@@ -590,8 +786,8 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
         } else {
             Vec::new()
         },
-        "the deterministic canceled-start handle must remain owned after a nonterminal stop: {:?}",
-        retained_contexts
+        "the deterministic canceled-start handle must remain owned after a nonterminal stop: \
+         {retained_contexts:?}"
     );
     assert!(
         retained_contexts.iter().all(|context| {
@@ -626,13 +822,13 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     assert!(aggregate.sessions.is_empty());
     let (pending_spawns, live_routes) = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .archive_liveness(&[pending_id]);
     assert!(pending_spawns.is_empty());
     assert_eq!(live_routes, vec![false]);
     assert!(pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .backend_kind(pending_id)
         .is_none());
 
@@ -641,7 +837,7 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     }
     let global_report = pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stop_all_started_containers_blocking(Duration::from_secs(1));
     assert!(
         global_report.terminal,
@@ -656,4 +852,96 @@ pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
     assert!(container_backend
         .retained_cleanup_sessions_for_test()
         .is_empty());
+}
+
+pub(super) async fn assert_real_pending_container_start_shutdown_waits_for_stop(
+    capped: bool,
+    fail_worker_spawn: bool,
+    first_stop_outcome: CanceledStartStopOutcome,
+) {
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let root_dir = tempfile::TempDir::new().expect("create container root directory");
+    let root = root_dir.path().to_string_lossy().into_owned();
+    let close_budget = Duration::from_millis(200);
+    let (runtime, start_started_rx, stop_started_rx, _token_dir, container_backend) =
+        real_container_backend(capped, fail_worker_spawn, first_stop_outcome);
+    let pty = container_pty(&container_backend);
+    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+    let app = build_selection_test_app(&manager, &pty, "build real pending-container shutdown app");
+    coordinator
+        .start(app.handle().clone())
+        .expect("start real pending-container shutdown coordinator");
+    let mut restore_guard = Some(
+        coordinator
+            .submit_restore_first()
+            .await
+            .expect("hold restore barrier"),
+    );
+    let manager_handle = manager.read().await.clone();
+    let (ticket, pending) =
+        reserve_real_pending_container(&coordinator, &manager_handle, &root).await;
+    let pending_id = pending.id;
+    let mut create = spawn_real_container_create(&coordinator, &pty, &root, ticket, pending_id);
+
+    assert_real_create_reached_start(
+        &mut create,
+        start_started_rx,
+        &runtime,
+        &container_backend,
+        &manager_handle,
+        &pty,
+        pending_id,
+    )
+    .await;
+
+    let close_started = Instant::now();
+    let close = spawn_coordinator_close(&coordinator, capped, close_budget);
+    await_state_eq(
+        "real pending-container shutdown signal becomes visible",
+        Duration::from_secs(1),
+        || coordinator.inner.shutdown.is_cancelled(),
+        true,
+        String::new,
+    )
+    .await;
+    assert_real_create_canceled(&mut create, fail_worker_spawn).await;
+    if !capped {
+        restore_guard
+            .take()
+            .expect("normal-drain restore guard")
+            .finish();
+    }
+    await_pending_rows_rolled_back(
+        &manager_handle,
+        "pending manager row is rolled back during shutdown",
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(1), stop_started_rx)
+        .await
+        .expect("late runtime handle stop starts")
+        .expect("late runtime handle stop witness is delivered");
+    assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
+    let _close_report = join_real_container_close(
+        close,
+        close_started,
+        capped,
+        close_budget,
+        &container_backend,
+    )
+    .await;
+    if let Some(guard) = restore_guard.take() {
+        guard.finish();
+    }
+
+    await_real_runtime_settled(&runtime).await;
+    assert_real_container_cleanup(
+        &runtime,
+        &container_backend,
+        &manager_handle,
+        &pty,
+        pending_id,
+        first_stop_outcome,
+        fail_worker_spawn,
+    )
+    .await;
 }

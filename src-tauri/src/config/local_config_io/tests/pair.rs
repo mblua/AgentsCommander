@@ -532,9 +532,9 @@ fn prepared_external_bytes_disappearance_and_mid_stage_drift_no_clobber() {
         assert_eq!(read_config_pair_physical(&d).unwrap(), plan.stages[0][0]);
         assert_eq!(
             read_config_pair_physical(&s).unwrap(),
-            external
-                .map(|b| PhysicalState::from_bytes(b.to_vec()))
-                .unwrap_or(PhysicalState::Absent)
+            external.map_or(PhysicalState::Absent, |b| PhysicalState::from_bytes(
+                b.to_vec()
+            ))
         );
     }
     let plan = prepared_fixture_plan();

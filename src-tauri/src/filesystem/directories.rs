@@ -203,8 +203,7 @@ pub(crate) fn inspect_experiment_path_chain(path: &Path) -> Result<(), Experimen
 
 pub(crate) fn experiment_path_is_link(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
-        .map(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
-        .unwrap_or(false)
+        .is_ok_and(|metadata| crate::path_identity::is_link_or_reparse(&metadata))
 }
 
 pub(crate) fn ensure_cli_outbox(path: &Path) -> io::Result<()> {
@@ -326,3 +325,26 @@ pub(crate) fn retained_prompt_directory_metadata(
 ) -> std::io::Result<std::fs::Metadata> {
     std::fs::metadata(path)
 }
+
+pub(crate) fn web_dist_candidate_is_directory(path: &Path) -> bool {
+    path.exists() && path.is_dir()
+}
+
+pub(crate) fn resolve_web_dist_candidate(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+pub(crate) fn cleanup_stale_instance_directories(instances_dir: &Path) -> io::Result<()> {
+    let entries = std::fs::read_dir(instances_dir)?;
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+    Ok(())
+}
+
+pub(crate) fn api_bound_root_exists(path: &Path) -> bool {
+    path.exists()
+}
+
+#[cfg(test)]
+mod tests;

@@ -550,10 +550,8 @@ fn ensure_root_agent_dir_at_replaces_old_deferred_paragraph_in_custom_role() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().join(ROOT_AGENT_DIR_NAME);
     std::fs::create_dir_all(&root).expect("create root");
-    let custom = format!(
-        "# Custom Root\n\n{}\n\nKeep this custom tail.",
-        OLD_DEFERRED_MESSAGING_PARAGRAPH
-    );
+    let custom =
+        format!("# Custom Root\n\n{OLD_DEFERRED_MESSAGING_PARAGRAPH}\n\nKeep this custom tail.");
     std::fs::write(root.join("Role.md"), custom).expect("write custom role");
 
     ensure_root_agent_dir_at(&root).expect("ensure root");

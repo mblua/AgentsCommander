@@ -1,6 +1,26 @@
 use std::hash::Hash;
 
-use super::ScopeFault;
+/// #2557 - one replica or folder the scope walk could not count, and why.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeFault {
+    pub code: ScopeFaultCode,
+    pub replica_name: String,
+    pub replica_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScopeFaultCode {
+    ConfigUnreadable,
+    ConfigNotJson,
+    ConfigNotObject,
+    IdentityMissing,
+    IdentityMismatch,
+    LocationInvalid,
+    PathUnreadable,
+    FolderUnreadable,
+}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +154,11 @@ pub struct ApplyCodingAgentProfileSelectionRequest {
     pub scope: ProfileAssignmentScope,
     pub restart_sessions: bool,
     pub confirmed_target_fingerprint: Option<String>,
+    // Legacy typedConfirmation stays accepted and ignored for compatibility.
+    #[expect(
+        dead_code,
+        reason = "legacy wire input intentionally accepted and ignored"
+    )]
     pub typed_confirmation: Option<String>,
     /// #1941 - absent keeps the legacy ordinary semantics.
     #[serde(default)]

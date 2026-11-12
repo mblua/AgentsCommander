@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::PoisonError;
 
 #[test]
 fn p1_parse_ci_response_collects_ids_and_prs_only_from_running_kept_rows() {
@@ -48,15 +49,45 @@ fn p1_parse_ci_response_collects_ids_and_prs_only_from_running_kept_rows() {
     );
 }
 
+fn p2_key() -> QueryKey {
+    QueryKey {
+        nwo: "mblua/AgentsCommander".to_string(),
+        sha40: sha_of('a'),
+        branch: "feature".to_string(),
+    }
+}
+
+fn p2_direct_completion(key: &QueryKey) -> CiCompletionState {
+    let rows = vec![
+        run_row(1, &key.sha40, &key.branch, "in_progress", &[7]),
+        run_row(2, &key.sha40, &key.branch, "queued", &[]),
+    ];
+    let answer = parse_ci_response(&runs_body(rows), &key.branch, &key.sha40).unwrap();
+    let mut ledger = CiCompletionState::default();
+    merge_ci_observations(&mut ledger, &answer.observations, true).unwrap();
+    ledger
+}
+
+fn p2_outcome(
+    key: &QueryKey,
+    ci: Option<Result<CiState, FailureKind>>,
+    ci_suppressed: bool,
+) -> KeyOutcome {
+    KeyOutcome {
+        ci,
+        ci_suppressed,
+        ci_runs: (vec![1, 2], vec![7]),
+        ci_completion: Some(p2_direct_completion(key)),
+        ci_decision: Some(CiCompletionDecision::Accepted),
+        ..KeyOutcome::default()
+    }
+}
+
 #[tokio::test]
 async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_plain_err() {
     let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
-    let key = QueryKey {
-        nwo: "mblua/AgentsCommander".to_string(),
-        sha40: sha_of('a'),
-        branch: "feature".to_string(),
-    };
+    let key = p2_key();
     let now = Instant::now();
     let ctx = RoundCtx {
         facts: &[],
@@ -64,17 +95,6 @@ async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_
         wall: Local::now(),
         ci_dial: Duration::from_secs(60),
         staleness_dial: Duration::from_secs(60),
-    };
-    let runs = || (vec![1, 2], vec![7]);
-    let direct_completion = || {
-        let rows = vec![
-            run_row(1, &key.sha40, &key.branch, "in_progress", &[7]),
-            run_row(2, &key.sha40, &key.branch, "queued", &[]),
-        ];
-        let answer = parse_ci_response(&runs_body(rows), &key.branch, &key.sha40).unwrap();
-        let mut ledger = CiCompletionState::default();
-        merge_ci_observations(&mut ledger, &answer.observations, true).unwrap();
-        ledger
     };
     let read = |harness: &Harness| {
         let state = harness.sweeper.lock_state();
@@ -90,14 +110,7 @@ async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_
 
     s.apply_ci(
         &key,
-        KeyOutcome {
-            ci: Some(Ok(CiState::Running)),
-            ci_suppressed: false,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
+        p2_outcome(&key, Some(Ok(CiState::Running)), false),
         &[],
         &ctx,
     );
@@ -108,14 +121,7 @@ async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_
 
     s.apply_ci(
         &key,
-        KeyOutcome {
-            ci: Some(Ok(CiState::Idle)),
-            ci_suppressed: true,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
+        p2_outcome(&key, Some(Ok(CiState::Idle)), true),
         &[],
         &ctx,
     );
@@ -124,59 +130,23 @@ async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_
 
     s.apply_ci(
         &key,
-        KeyOutcome {
-            ci: Some(Ok(CiState::Running)),
-            ci_suppressed: false,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
+        p2_outcome(&key, Some(Ok(CiState::Running)), false),
         &[],
         &ctx,
     );
-    s.apply_ci(
-        &key,
-        KeyOutcome {
-            ci: Some(Err(FailureKind::Timeout)),
-            ci_suppressed: true,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
-        &[],
-        &ctx,
-    );
+    let timeout = p2_outcome(&key, Some(Err(FailureKind::Timeout)), true);
+    s.apply_ci(&key, timeout, &[], &ctx);
     assert_eq!(read(&harness), (CiState::Idle, vec![], vec![], None));
     assert!(s.lock_state().keys[&key].ci.completion.known.is_empty());
 
     s.apply_ci(
         &key,
-        KeyOutcome {
-            ci: Some(Ok(CiState::Running)),
-            ci_suppressed: false,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
+        p2_outcome(&key, Some(Ok(CiState::Running)), false),
         &[],
         &ctx,
     );
-    s.apply_ci(
-        &key,
-        KeyOutcome {
-            ci: Some(Err(FailureKind::Incomplete)),
-            ci_suppressed: false,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
-        &[],
-        &ctx,
-    );
+    let incomplete = p2_outcome(&key, Some(Err(FailureKind::Incomplete)), false);
+    s.apply_ci(&key, incomplete, &[], &ctx);
     assert_eq!(
         read(&harness),
         (
@@ -190,33 +160,14 @@ async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_
     assert_eq!(s.lock_state().keys[&key].ci.completion.known.len(), 2);
     s.apply_ci(
         &key,
-        KeyOutcome {
-            ci: Some(Ok(CiState::Idle)),
-            ci_suppressed: false,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
+        p2_outcome(&key, Some(Ok(CiState::Idle)), false),
         &[],
         &ctx,
     );
     assert_eq!(read(&harness), (CiState::Idle, vec![], vec![], None));
     assert_eq!(s.lock_state().keys[&key].ci.completion.known.len(), 2);
 
-    s.apply_ci(
-        &key,
-        KeyOutcome {
-            ci: None,
-            ci_suppressed: false,
-            ci_runs: runs(),
-            ci_completion: Some(direct_completion()),
-            ci_decision: Some(CiCompletionDecision::Accepted),
-            ..KeyOutcome::default()
-        },
-        &[],
-        &ctx,
-    );
+    s.apply_ci(&key, p2_outcome(&key, None, false), &[], &ctx);
     assert_eq!(
         read(&harness),
         (CiState::Idle, vec![], vec![], None),
@@ -252,25 +203,48 @@ fn persisted_failure_reason_maps_every_kind() {
     );
 }
 
+fn p3_setup(dir: &std::path::Path) -> (Harness, String) {
+    let settings = AppSettings {
+        branch_staleness_enabled: false,
+        ..AppSettings::default()
+    };
+    let harness = Harness::with_snapshot_dir(settings, Some(dir.to_path_buf()));
+    let repo = harness.repo("repo-a");
+    publish_branch(&repo, "feature-a", harness.git_state.as_ref());
+    harness
+        .git
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .set_head_sha(&repo, 'a');
+    harness.set_work(std::slice::from_ref(&repo));
+    (harness, repo)
+}
+
+fn p3_feature_a_run(id: u64, status: &str, prs: &[u64]) -> Result<GhCallOutput, FailureKind> {
+    Ok(ok_output(&runs_body(vec![run_row(
+        id,
+        &sha_of('a'),
+        "feature-a",
+        status,
+        prs,
+    )])))
+}
+
+fn p3_gh_count(harness: &Harness, needle: &str) -> usize {
+    harness
+        .gh
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .count(needle)
+}
+
 /// P3 a, c, d, f: no resolved default branch, so arm `Ok(answer)` answers
 /// without any identity compare.
 #[tokio::test]
 async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
     let _guard = round_test_lock().await;
     let dir = tempfile::tempdir().expect("snapshot dir");
-    let settings = AppSettings {
-        branch_staleness_enabled: false,
-        ..AppSettings::default()
-    };
-    let harness = Harness::with_snapshot_dir(settings, Some(dir.path().to_path_buf()));
-    let repo = harness.repo("repo-a");
-    publish_branch(&repo, "feature-a", harness.git_state.as_ref());
-    harness
-        .git
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_head_sha(&repo, 'a');
-    harness.set_work(std::slice::from_ref(&repo));
+    let (harness, repo) = p3_setup(dir.path());
     let marker = format!(
         "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",
         sha_of('a')
@@ -279,7 +253,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
         harness
             .gh
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .route(&marker, result);
     };
 
@@ -298,11 +272,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
         expected_ci(PersistedCiState::Running, &[501, 502], &[40, 41], None)
     );
     assert_eq!(
-        harness
-            .gh
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .count("/compare/"),
+        p3_gh_count(&harness, "/compare/"),
         0,
         "no identity compare without a resolved default branch"
     );
@@ -312,11 +282,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
     let calls = harness.gh_call_count();
     harness.round(now, wall).await;
     assert_eq!(
-        harness
-            .gh
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .count("/actions/runs?"),
+        p3_gh_count(&harness, "/actions/runs?"),
         1,
         "the CI axis was not due (calls before: {calls})"
     );
@@ -327,13 +293,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
 
     // All remembered runs need proof, followed by a distinct closing list.
     for id in [400, 501, 502] {
-        script(Ok(ok_output(&runs_body(vec![run_row(
-            502,
-            &sha_of('a'),
-            "feature-a",
-            "completed",
-            &[40],
-        )]))));
+        script(p3_feature_a_run(502, "completed", &[40]));
         queue_completion(
             &harness,
             "mblua/AgentsCommander",
@@ -347,13 +307,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
         );
         assert!(harness.drain_transitions().is_empty());
     }
-    script(Ok(ok_output(&runs_body(vec![run_row(
-        502,
-        &sha_of('a'),
-        "feature-a",
-        "completed",
-        &[40],
-    )]))));
+    script(p3_feature_a_run(502, "completed", &[40]));
     tick(&mut now, &mut wall, 10);
     harness.round(now, wall).await;
     assert_eq!(
@@ -364,13 +318,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].observed_at, wall);
     // d. Running, then a timeout -> Unknown with the reason, then recovery.
-    script(Ok(ok_output(&runs_body(vec![run_row(
-        700,
-        &sha_of('a'),
-        "feature-a",
-        "in_progress",
-        &[50],
-    )]))));
+    script(p3_feature_a_run(700, "in_progress", &[50]));
     tick(&mut now, &mut wall, 3600);
     harness.round(now, wall).await;
     assert_eq!(
@@ -389,13 +337,7 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
             Some("ci-query-timeout")
         )
     );
-    script(Ok(ok_output(&runs_body(vec![run_row(
-        800,
-        &sha_of('a'),
-        "feature-a",
-        "in_progress",
-        &[51],
-    )]))));
+    script(p3_feature_a_run(800, "in_progress", &[51]));
     tick(&mut now, &mut wall, 3600);
     harness.round(now, wall).await;
     assert_eq!(
@@ -420,13 +362,13 @@ async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_
     let default = harness.repo("repo-b");
     publish_branch(&feature, "feature-a", harness.git_state.as_ref());
     {
-        let mut git = harness.git.lock().unwrap_or_else(|e| e.into_inner());
+        let mut git = harness.git.lock().unwrap_or_else(PoisonError::into_inner);
         git.set_head_sha(&feature, 'a');
         git.set_head_sha(&default, 'b');
     }
     harness.set_work(&[feature.clone(), default.clone()]);
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.repo_info
             .push_back(Ok(ok_output(r#"{"default_branch":"main"}"#)));
         gh.route(
@@ -472,7 +414,7 @@ async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_
 
     // e. identical to the default branch: suppressed, detail cleared.
     {
-        let mut gh = harness.gh.lock().unwrap_or_else(|e| e.into_inner());
+        let mut gh = harness.gh.lock().unwrap_or_else(PoisonError::into_inner);
         gh.route(
             &format!(
                 "repos/mblua/AgentsCommander/actions/runs?head_sha={}&per_page=100",

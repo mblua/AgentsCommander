@@ -59,7 +59,7 @@ pub(super) async fn poll_task(
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             result = api::get_updates(&network, &token, offset, 5) => {
                 match result {
                     Ok(updates) => {
@@ -174,7 +174,7 @@ async fn skip_old_messages(
                         let suffix = if suppressed_since_last_emit == 0 {
                             String::new()
                         } else {
-                            format!(" suppressed_repeats={}", suppressed_since_last_emit)
+                            format!(" suppressed_repeats={suppressed_since_last_emit}")
                         };
                         log::log!(
                             level,
@@ -245,18 +245,15 @@ fn log_poll_recovery(
                 "POLL_RECOVERY",
                 session_id_str,
                 &format!(
-                    "outage_seconds={} suppressed_total={} sustained={}",
-                    outage_seconds, suppressed_total, sustained
+                    "outage_seconds={outage_seconds} \
+                     suppressed_total={suppressed_total} sustained={sustained}"
                 ),
             );
             log::log!(
                 level,
-                "[bridge] Telegram poll recovered session_id={} \
-                outage_seconds={} suppressed_total={} sustained={}",
-                session_id_str,
-                outage_seconds,
-                suppressed_total,
-                sustained
+                "[bridge] Telegram poll recovered session_id={session_id_str} \
+                outage_seconds={outage_seconds} suppressed_total={suppressed_total} \
+                sustained={sustained}"
             );
         }
         PollNetworkLogAction::None => {}
@@ -285,7 +282,7 @@ fn log_poll_network_failure(
             let suffix = if suppressed_since_last_emit == 0 {
                 String::new()
             } else {
-                format!(" suppressed_repeats={}", suppressed_since_last_emit)
+                format!(" suppressed_repeats={suppressed_since_last_emit}")
             };
             log::log!(
                 level,
@@ -391,14 +388,10 @@ async fn sleep_backoff_or_cancel(
     let delay = backoff.next_delay();
     let sleep_ms = delay.as_millis();
     logger.log("POLL_BACKOFF", session_id, &format!("sleep_ms={sleep_ms}"));
-    log::debug!(
-        "[bridge] POLL_BACKOFF session_id={} sleep_ms={}",
-        session_id,
-        sleep_ms
-    );
+    log::debug!("[bridge] POLL_BACKOFF session_id={session_id} sleep_ms={sleep_ms}");
     tokio::select! {
-        _ = cancel.cancelled() => false,
-        _ = tokio::time::sleep(delay) => true,
+        () = cancel.cancelled() => false,
+        () = tokio::time::sleep(delay) => true,
     }
 }
 
@@ -421,14 +414,14 @@ async fn deliver_text(
     logger: &mut BridgeLogger,
 ) {
     if let Err(e) = runtime.inject_text(session_id, text).await {
-        logger.log("PTY_ERR", session_id_str, &e.to_string());
-        log::error!("Failed to write Telegram input to PTY: {}", e);
+        logger.log("PTY_ERR", session_id_str, &e.clone());
+        log::error!("Failed to write Telegram input to PTY: {e}");
     }
 
     // Text and transcribed voice both reset the real-user badge clock (#552).
     runtime.note_user_message(session_id).await;
     event_port.incoming(session_id_str, text, from);
-    let tg_prompt = format!("[TG] {}", text);
+    let tg_prompt = format!("[TG] {text}");
     runtime.set_last_prompt(session_id_str, &tg_prompt).await;
     event_port.last_prompt(session_id_str, &tg_prompt);
 }
@@ -449,7 +442,7 @@ async fn transcribe_voice_update(
     logger.log(
         "RECV_TG_VOICE",
         session_id_str,
-        &format!("from={} file_id={}", from_name, file_id),
+        &format!("from={from_name} file_id={file_id}"),
     );
 
     let (api_key, model_raw) = runtime.voice_settings().await;
@@ -478,13 +471,13 @@ async fn transcribe_voice_update(
             logger.log(
                 "VOICE_ERR",
                 session_id_str,
-                &format!("get_file failed: {}", e),
+                &format!("get_file failed: {e}"),
             );
             let _ = api::send_message(
                 network,
                 token,
                 chat_id,
-                &format!("Failed to get voice file: {}", e),
+                &format!("Failed to get voice file: {e}"),
             )
             .await;
             return None;
@@ -497,13 +490,13 @@ async fn transcribe_voice_update(
             logger.log(
                 "VOICE_ERR",
                 session_id_str,
-                &format!("download failed: {}", e),
+                &format!("download failed: {e}"),
             );
             let _ = api::send_message(
                 network,
                 token,
                 chat_id,
-                &format!("Failed to download voice: {}", e),
+                &format!("Failed to download voice: {e}"),
             )
             .await;
             return None;
@@ -521,20 +514,20 @@ async fn transcribe_voice_update(
                 &format!("transcribed {} chars", text.len()),
             );
             let _ =
-                api::send_message(network, token, chat_id, &format!("Transcribed: {}", text)).await;
+                api::send_message(network, token, chat_id, &format!("Transcribed: {text}")).await;
             Some(text)
         }
         Err(e) => {
             logger.log(
                 "VOICE_ERR",
                 session_id_str,
-                &format!("transcription failed: {}", e),
+                &format!("transcription failed: {e}"),
             );
             let _ = api::send_message(
                 network,
                 token,
                 chat_id,
-                &format!("Transcription failed: {}", e),
+                &format!("Transcription failed: {e}"),
             )
             .await;
             None

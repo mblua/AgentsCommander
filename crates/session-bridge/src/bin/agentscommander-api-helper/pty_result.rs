@@ -401,6 +401,42 @@ pub(crate) fn parse_result(
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
         && result.source_plane.as_deref() == Some("container_api");
+    let timestamps_valid = timestamps_valid(&result);
+    let selected_valid = result.selected_session_id.is_some() == result.selected_backend.is_some()
+        && result
+            .selected_session_id
+            .as_deref()
+            .is_none_or(canonical_uuid_v4)
+        && result
+            .selected_backend
+            .as_deref()
+            .is_none_or(|backend| matches!(backend, "localProcess" | "containerTransport"));
+    let reason_valid = result
+        .reason
+        .as_ref()
+        .is_none_or(|reason| safe_reason_detail(&reason.code) == Some(reason.detail.as_str()));
+    let state_valid = result.terminal == terminal
+        && result.terminal_at.is_some() == terminal
+        && status_state_valid(&result);
+    let expected_valid = expected.is_none_or(|expected| {
+        result.target.as_deref() == Some(expected.target)
+            && result.payload_bytes == Some(expected.payload_bytes)
+            && result.payload_sha256.as_deref() == Some(expected.payload_sha256)
+    });
+    if !identifiers_valid
+        || !payload_valid
+        || !timestamps_valid
+        || !selected_valid
+        || !reason_valid
+        || !state_valid
+        || !expected_valid
+    {
+        return Err("invalid_server_response".to_string());
+    }
+    Ok(result)
+}
+
+fn timestamps_valid(result: &PtyResult) -> bool {
     let issued_millis = result
         .issued_at
         .as_deref()
@@ -421,7 +457,7 @@ pub(crate) fn parse_result(
         None => Some(None),
         Some(value) => canonical_timestamp_millis(value).map(Some),
     };
-    let timestamps_valid = matches!(
+    matches!(
         (
             issued_millis,
             expires_millis,
@@ -442,101 +478,73 @@ pub(crate) fn parse_result(
             && terminal.is_none_or(|value| {
                 value >= queued && actuating.is_none_or(|at| value >= at)
             })
-    );
-    let selected_valid = result.selected_session_id.is_some() == result.selected_backend.is_some()
-        && result
-            .selected_session_id
-            .as_deref()
-            .is_none_or(canonical_uuid_v4)
-        && result
-            .selected_backend
-            .as_deref()
-            .is_none_or(|backend| matches!(backend, "localProcess" | "containerTransport"));
-    let reason_valid = result
-        .reason
-        .as_ref()
-        .is_none_or(|reason| safe_reason_detail(&reason.code) == Some(reason.detail.as_str()));
-    let state_valid = result.terminal == terminal
-        && result.terminal_at.is_some() == terminal
-        && match result.status {
-            PtyStatus::Queued => {
-                result.actuating_at.is_none()
-                    && result.selected_session_id.is_none()
-                    && result.reason.as_ref().is_none_or(|reason| {
-                        matches!(
-                            reason.code.as_str(),
-                            "restore_in_progress"
-                                | "purge_in_progress"
-                                | "session_race"
-                                | "lease_lost"
-                                | "spawn_failed_safe"
-                                | "store_transient"
-                        )
-                    })
-            }
-            PtyStatus::Actuating => {
-                result.actuating_at.is_some()
-                    && result.selected_session_id.is_some()
-                    && result.reason.is_none()
-            }
-            PtyStatus::Injected => {
-                result.actuating_at.is_some()
-                    && result.selected_session_id.is_some()
-                    && result.reason.as_ref().is_none_or(|reason| {
-                        matches!(
-                            reason.code.as_str(),
-                            "redundant_enter_failed" | "boundary_metadata_failed"
-                        )
-                    })
-            }
-            PtyStatus::Rejected => {
-                result.actuating_at.is_none()
-                    && result.selected_session_id.is_none()
-                    && result.reason.as_ref().is_some_and(|reason| {
-                        !matches!(
-                            reason.code.as_str(),
-                            "final_revalidation_failed"
-                                | "text_write_failed"
-                                | "required_enter_failed"
-                                | "daemon_restart_after_actuation"
-                                | "runtime_actuation_orphan"
-                                | "terminal_store_failed"
-                                | "redundant_enter_failed"
-                                | "boundary_metadata_failed"
-                                | "artifact_unclaimed"
-                        )
-                    })
-            }
-            PtyStatus::Indeterminate => {
-                result.actuating_at.is_some()
-                    && result.selected_session_id.is_some()
-                    && result.reason.as_ref().is_some_and(|reason| {
-                        matches!(
-                            reason.code.as_str(),
-                            "final_revalidation_failed"
-                                | "text_write_failed"
-                                | "required_enter_failed"
-                                | "daemon_restart_after_actuation"
-                                | "runtime_actuation_orphan"
-                                | "terminal_store_failed"
-                        )
-                    })
-            }
-        };
-    let expected_valid = expected.is_none_or(|expected| {
-        result.target.as_deref() == Some(expected.target)
-            && result.payload_bytes == Some(expected.payload_bytes)
-            && result.payload_sha256.as_deref() == Some(expected.payload_sha256)
-    });
-    if !identifiers_valid
-        || !payload_valid
-        || !timestamps_valid
-        || !selected_valid
-        || !reason_valid
-        || !state_valid
-        || !expected_valid
-    {
-        return Err("invalid_server_response".to_string());
+    )
+}
+
+fn status_state_valid(result: &PtyResult) -> bool {
+    match result.status {
+        PtyStatus::Queued => {
+            result.actuating_at.is_none()
+                && result.selected_session_id.is_none()
+                && result.reason.as_ref().is_none_or(|reason| {
+                    matches!(
+                        reason.code.as_str(),
+                        "restore_in_progress"
+                            | "purge_in_progress"
+                            | "session_race"
+                            | "lease_lost"
+                            | "spawn_failed_safe"
+                            | "store_transient"
+                    )
+                })
+        }
+        PtyStatus::Actuating => {
+            result.actuating_at.is_some()
+                && result.selected_session_id.is_some()
+                && result.reason.is_none()
+        }
+        PtyStatus::Injected => {
+            result.actuating_at.is_some()
+                && result.selected_session_id.is_some()
+                && result.reason.as_ref().is_none_or(|reason| {
+                    matches!(
+                        reason.code.as_str(),
+                        "redundant_enter_failed" | "boundary_metadata_failed"
+                    )
+                })
+        }
+        PtyStatus::Rejected => {
+            result.actuating_at.is_none()
+                && result.selected_session_id.is_none()
+                && result.reason.as_ref().is_some_and(|reason| {
+                    !matches!(
+                        reason.code.as_str(),
+                        "final_revalidation_failed"
+                            | "text_write_failed"
+                            | "required_enter_failed"
+                            | "daemon_restart_after_actuation"
+                            | "runtime_actuation_orphan"
+                            | "terminal_store_failed"
+                            | "redundant_enter_failed"
+                            | "boundary_metadata_failed"
+                            | "artifact_unclaimed"
+                    )
+                })
+        }
+        PtyStatus::Indeterminate => {
+            result.actuating_at.is_some()
+                && result.selected_session_id.is_some()
+                && result.reason.as_ref().is_some_and(|reason| {
+                    matches!(
+                        reason.code.as_str(),
+                        "final_revalidation_failed"
+                            | "text_write_failed"
+                            | "required_enter_failed"
+                            | "daemon_restart_after_actuation"
+                            | "runtime_actuation_orphan"
+                            | "terminal_store_failed"
+                    )
+                })
+        }
     }
-    Ok(result)
 }

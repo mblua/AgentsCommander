@@ -396,7 +396,7 @@ fn rooms(capture: &CaptureState) -> MutexGuard<'_, Rooms> {
         .rooms
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn room_key(room_root: &Path) -> PathBuf {

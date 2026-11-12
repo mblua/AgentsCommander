@@ -138,8 +138,8 @@ fn remove_session_clears_tuning() {
     assert!(!detector.activity.lock().unwrap().contains_key(&id));
 }
 
-/// #552: touch_silence updates only the `silence` map; it must NOT insert
-/// into `activity`/`idle_set` or fire on_busy, or it would couple the
+/// #552: `touch_silence` updates only the `silence` map; it must NOT insert
+/// into `activity`/`idle_set` or fire `on_busy`, or it would couple the
 /// auto-close clock to the #260 idle dot.
 #[test]
 fn touch_silence_is_decoupled_from_idle_dot() {
@@ -175,7 +175,7 @@ fn touch_silence_is_decoupled_from_idle_dot() {
     );
 }
 
-/// #552: silence_age grows over time and is None for an untracked id.
+/// #552: `silence_age` grows over time and is None for an untracked id.
 #[test]
 fn silence_age_increases_and_is_none_when_untracked() {
     let detector = IdleDetector::new(|_| {}, |_| {});
@@ -196,7 +196,7 @@ fn silence_age_increases_and_is_none_when_untracked() {
     );
 }
 
-/// #552: the silence seed in register_session is UNCONDITIONAL, unlike the
+/// #552: the silence seed in `register_session` is UNCONDITIONAL, unlike the
 /// activity seed which is gated on `seed_initial_activity`. A live member
 /// with no silence baseline would be treated as a spawn race and protected,
 /// so the seed must fire even when the profile opts out of the activity seed.
@@ -225,7 +225,7 @@ fn register_session_seeds_silence_even_when_activity_seed_disabled() {
     );
 }
 
-/// #552: remove_session must clear the silence entry (no leak on destroy).
+/// #552: `remove_session` must clear the silence entry (no leak on destroy).
 #[test]
 fn remove_session_clears_silence() {
     let detector = IdleDetector::new(|_| {}, |_| {});
@@ -239,8 +239,8 @@ fn remove_session_clears_silence() {
     );
 }
 
-/// (#580): register_session seeds registered_at; alive_age is Some after
-/// register and None after remove_session (the WAKE_GRACE clock lifecycle).
+/// (#580): `register_session` seeds `registered_at`; `alive_age` is Some after
+/// register and None after `remove_session` (the `WAKE_GRACE` clock lifecycle).
 #[test]
 fn register_session_seeds_registered_at_and_alive_age() {
     let detector = IdleDetector::new(|_| {}, |_| {});
@@ -272,7 +272,7 @@ fn register_session_seeds_registered_at_and_alive_age() {
     );
 }
 
-/// (#580): alive_age grows monotonically (non-decreasing).
+/// (#580): `alive_age` grows monotonically (non-decreasing).
 #[test]
 fn alive_age_is_monotonic() {
     let detector = IdleDetector::new(|_| {}, |_| {});

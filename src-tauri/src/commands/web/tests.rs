@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 struct TestBackend {
     log: Arc<Mutex<Vec<String>>>,
     fail: AtomicBool,
+    preflight: Mutex<Vec<crate::pty::backend::PreflightLaunchRequest>>,
 }
 
 struct TestOperations {
@@ -24,6 +25,7 @@ struct TestOperations {
     restore: Option<Arc<crate::app_state::RestoreInProgress>>,
     purge: Option<Arc<crate::session::purge_guard::PurgeGuard>>,
     create_fails: AtomicBool,
+    preflight: Option<Arc<crate::commands::session::PreflightState>>,
 }
 
 impl AgentUpdateOperations for TestOperations {
@@ -99,6 +101,10 @@ impl WebOperations for TestOperations {
 
     fn detached(&self) -> &crate::app_state::DetachedSessionsState {
         panic!("unexpected detached")
+    }
+
+    fn preflight_state(&self) -> Option<Arc<crate::commands::session::PreflightState>> {
+        self.preflight.clone()
     }
 
     fn restore(&self) -> Option<&Arc<crate::app_state::RestoreInProgress>> {
@@ -325,6 +331,21 @@ impl PtyBackend for TestBackend {
     fn kill_all_jobs(&self) -> (usize, usize) {
         (0, 0)
     }
+
+    /// #3832 - local preparation as `RecordingBackend` does; the trait default refuses.
+    fn prepare_preflight_launch(
+        &self,
+        request: crate::pty::backend::PreflightLaunchRequest,
+    ) -> Result<crate::pty::backend::PreflightLaunch, AppError> {
+        self.preflight.lock().unwrap().push(request.clone());
+        Ok(crate::pty::backend::PreflightLaunch {
+            program: request.program,
+            args: request.args,
+            windows_raw_args: None,
+            cwd: request.cwd,
+            env: std::env::vars().collect(),
+        })
+    }
 }
 
 fn fixture(
@@ -335,6 +356,7 @@ fn fixture(
     let backend = Arc::new(TestBackend {
         log: log.clone(),
         fail: AtomicBool::new(false),
+        preflight: Mutex::default(),
     });
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let id = Uuid::new_v4();
@@ -349,6 +371,7 @@ fn fixture(
             .map(|active| Arc::new(crate::app_state::RestoreInProgress(AtomicBool::new(active)))),
         purge,
         create_fails: AtomicBool::new(false),
+        preflight: None,
     });
     let state = WsState {
         session_mgr: Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
@@ -604,7 +627,7 @@ async fn publication_order_child() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let callbacks = observed.clone();
     let settings = state.settings.clone();
-    let file = path.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+    let file = crate::config::settings::settings_fixture_path(&path);
     app.listen_any("room_idle_confirmation_updated", move |_| {
         let published = settings
             .try_read()
@@ -617,4 +640,289 @@ async fn publication_order_child() {
     let reply = dispatch(&state, 51, "update_settings", &json!({"newSettings": next})).await;
     assert_eq!(reply, json!({"id": 51, "result": null}));
     assert_eq!(*observed.lock().unwrap(), [expected]);
+}
+
+#[tokio::test]
+async fn ws_and_inner_describe_match() {
+    let (plain, host, backend, _) = fixture(None, None);
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().to_string_lossy().to_string();
+    let args = json!({"agentId": "claude", "replicaPath": path});
+    let unavailable = dispatch(&plain, 1, "describe_preflight_target", &args).await;
+    let expected = json!({"id": 1, "error": "Preflight tests are unavailable."});
+    assert_eq!(unavailable, expected);
+
+    let preflight = Arc::new(crate::commands::session::PreflightState::default());
+    let operations = Arc::new(TestOperations {
+        log: host.log.clone(),
+        pty: host.pty.clone(),
+        restore: None,
+        purge: None,
+        create_fails: AtomicBool::new(false),
+        preflight: Some(preflight.clone()),
+    });
+    let state = WsState {
+        operations: operations.clone(),
+        desktop_events: operations,
+        ..plain
+    };
+    let deps = crate::commands::session::PreflightTestDeps {
+        settings: state.settings.clone(),
+        session_mgr: state.session_mgr.clone(),
+        pty_mgr: state.pty_mgr.clone(),
+        state: preflight.clone(),
+    };
+    let inner = crate::commands::session::describe_preflight_target_inner(
+        &deps,
+        "claude".to_string(),
+        None,
+        path.clone(),
+        None,
+    )
+    .await
+    .expect("describe");
+    let ws = dispatch(&state, 2, "describe_preflight_target", &args).await;
+    assert_eq!(
+        ws,
+        json!({"id": 2, "result": serde_json::to_value(inner).unwrap()})
+    );
+
+    let replica = replica_fixture(folder.path());
+    let agent: crate::config::settings::AgentConfig = serde_json::from_value(json!({
+        "id": "claude", "label": "Fake", "command": "fake-cli", "color": "#000000"
+    }))
+    .expect("agent row");
+    let cfg = AppSettings {
+        agents: vec![agent],
+        ..AppSettings::default()
+    };
+    let state = WsState {
+        settings: new_settings_state(cfg),
+        ..state
+    };
+    let deps = crate::commands::session::PreflightTestDeps {
+        settings: state.settings.clone(),
+        ..deps
+    };
+    let lettered = json!({"agentId": "claude", "replicaPath": replica, "profileLetter": "Z"});
+    let inner = crate::commands::session::describe_preflight_target_inner(
+        &deps,
+        "claude".to_string(),
+        Some("Z".to_string()),
+        replica.clone(),
+        None,
+    )
+    .await
+    .expect("describe");
+    let reason = inner.unavailable_reason.clone().expect("letter mismatch");
+    assert!(reason.ends_with("not Profile Z."), "{reason}");
+    let ws = dispatch(&state, 4, "describe_preflight_target", &lettered).await;
+    assert_eq!(
+        ws,
+        json!({"id": 4, "result": serde_json::to_value(inner).unwrap()})
+    );
+
+    ws_preflight_draft_parity(&state, &deps, &backend, &replica, &path).await;
+    assert!(take_log(&host)
+        .iter()
+        .all(|entry| !entry.starts_with("event:")));
+    assert!(state
+        .session_mgr
+        .read()
+        .await
+        .list_sessions()
+        .await
+        .is_empty());
+
+    let unknown = crate::commands::session::get_preflight_test_inner(&preflight, "nope");
+    let ws = dispatch(&state, 3, "get_preflight_test", &json!({"runId": "nope"})).await;
+    assert_eq!(ws, json!({"id": 3, "error": unknown.unwrap_err()}));
+}
+
+/// A temp project whose `wg-1-team/__agent_dev-one` replica passes the agent-folder check.
+fn replica_fixture(root: &std::path::Path) -> String {
+    let ac = root.join("project").join(".ac");
+    let replica = ac.join("wg-1-team").join("__agent_dev-one");
+    for dir in [
+        ac.join("_team_team"),
+        ac.join("_agent_dev-one"),
+        replica.clone(),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let team = r#"{"agents":["../_agent_dev-one"],"coordinator":"../_agent_dev-one"}"#;
+    std::fs::write(ac.join("_team_team").join("config.json"), team).unwrap();
+    let identity = r#"{"identity":"../../_agent_dev-one"}"#;
+    std::fs::write(replica.join("config.json"), identity).unwrap();
+    replica.to_string_lossy().into_owned()
+}
+
+/// #3832 - finished run snapshot without its generated id and timings.
+async fn finished_run(deps: &crate::commands::session::PreflightTestDeps, run_id: &str) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let snapshot = crate::commands::session::get_preflight_test_inner(&deps.state, run_id);
+        let mut value = serde_json::to_value(snapshot.expect("known run")).unwrap();
+        if value["phase"] == "finished" {
+            value.as_object_mut().unwrap().remove("runId");
+            for report in value["stages"].as_array_mut().unwrap() {
+                report.as_object_mut().unwrap().remove("durationMs");
+            }
+            return value;
+        }
+        assert!(std::time::Instant::now() < deadline, "{value}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// #3832 - list, draft describe and a real draft run match the shared core over WS.
+async fn ws_preflight_draft_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    backend: &TestBackend,
+    replica: &str,
+    path: &str,
+) {
+    use crate::commands::session::PreflightTestDraft;
+    ws_preflight_list_parity(state, deps, replica, path).await;
+
+    let script = if cfg!(windows) {
+        "cmd.exe /D /C \"exit 0\""
+    } else {
+        "sh -c \"exit 0\""
+    };
+    let stage = json!({"command": script, "timeoutSeconds": 5});
+    let draft = json!({"codingAgent": stage, "profiles": {}});
+    let typed: PreflightTestDraft = serde_json::from_value(draft.clone()).unwrap();
+    let drafted = json!({"agentId": "claude", "replicaPath": replica, "draft": draft});
+    let revision = ws_preflight_describe_parity(state, deps, replica, &drafted, &typed).await;
+
+    let mut start = drafted.clone();
+    start["settingsRevision"] = revision.clone().into();
+    ws_preflight_run_parity(state, deps, backend, replica, &start, revision, typed).await;
+    ws_preflight_malformed_drafts_rejected(state, &start, &stage).await;
+    assert_eq!(backend.preflight.lock().unwrap().len(), 2);
+}
+
+/// #3832 - target listing over WS matches the shared core.
+async fn ws_preflight_list_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    replica: &str,
+    path: &str,
+) {
+    use crate::commands::session::list_preflight_test_targets_inner;
+    let candidates = vec![replica.to_string(), replica.to_string(), path.to_string()];
+    let list_args = json!({"agentId": "claude", "replicaPaths": candidates});
+    let claude = "claude".to_string();
+    let inner = list_preflight_test_targets_inner(deps, claude, candidates.clone()).await;
+    let inner = inner.expect("list");
+    assert_eq!(inner.len(), 1);
+    let ws = dispatch(state, 5, "list_preflight_test_targets", &list_args).await;
+    assert_eq!(
+        ws,
+        json!({"id": 5, "result": serde_json::to_value(inner).unwrap()})
+    );
+}
+
+/// #3832 - saved and draft describe over WS match the shared core; returns the
+/// draft's settings revision.
+async fn ws_preflight_describe_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    replica: &str,
+    drafted: &Value,
+    typed: &crate::commands::session::PreflightTestDraft,
+) -> String {
+    use crate::commands::session::describe_preflight_target_inner;
+    let claude = || "claude".to_string();
+    let replica = replica.to_string();
+    let inner = describe_preflight_target_inner(deps, claude(), None, replica.clone(), None);
+    let saved = serde_json::to_value(inner.await.expect("describe")).unwrap();
+    let mut null_draft = drafted.clone();
+    null_draft["draft"] = Value::Null;
+    let ws = dispatch(state, 6, "describe_preflight_target", &null_draft).await;
+    assert_eq!(ws, json!({"id": 6, "result": saved}));
+    let typed_draft = Some(typed.clone());
+    let inner = describe_preflight_target_inner(deps, claude(), None, replica, typed_draft);
+    let inner = inner.await.expect("describe");
+    assert_eq!(inner.stages.len(), 1);
+    let ws = dispatch(state, 7, "describe_preflight_target", drafted).await;
+    assert_eq!(
+        ws,
+        json!({"id": 7, "result": serde_json::to_value(&inner).unwrap()})
+    );
+    inner.settings_revision
+}
+
+/// #3832 - a real draft run over WS finishes like the same run started in the core.
+async fn ws_preflight_run_parity(
+    state: &WsState,
+    deps: &crate::commands::session::PreflightTestDeps,
+    backend: &TestBackend,
+    replica: &str,
+    start: &Value,
+    revision: String,
+    typed: crate::commands::session::PreflightTestDraft,
+) {
+    use crate::commands::session::{start_preflight_test_inner, PreflightTestDeps};
+    let ws = dispatch(state, 8, "start_preflight_test", start).await;
+    let run_id = ws["result"].as_str().expect("run id").to_string();
+    let via_ws = finished_run(deps, &run_id).await;
+    assert_eq!(via_ws["outcome"], "passed", "{via_ws}");
+    let deps_again = PreflightTestDeps {
+        settings: deps.settings.clone(),
+        session_mgr: deps.session_mgr.clone(),
+        pty_mgr: deps.pty_mgr.clone(),
+        state: deps.state.clone(),
+    };
+    let claude = "claude".to_string();
+    let replica = replica.to_string();
+    let started =
+        start_preflight_test_inner(deps_again, claude, None, replica, revision, Some(typed));
+    let run_id = started.await.expect("inner start");
+    assert_eq!(finished_run(deps, &run_id).await, via_ws);
+    let requests = backend.preflight.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|r| r.args.join(" ").contains("exit 0")));
+}
+
+/// #3832 - malformed drafts and target lists are rejected over WS.
+async fn ws_preflight_malformed_drafts_rejected(state: &WsState, start: &Value, stage: &Value) {
+    let malformed = [
+        (
+            "describe_preflight_target",
+            json!({"codingAgent": stage, "profiles": {}, "x": 1}),
+        ),
+        (
+            "describe_preflight_target",
+            json!({"codingAgent": {"command": null}, "profiles": {}}),
+        ),
+        ("start_preflight_test", json!("draft")),
+        (
+            "start_preflight_test",
+            json!({"codingAgent": stage, "profiles": {"a": stage}}),
+        ),
+    ];
+    for (index, (cmd, bad)) in malformed.into_iter().enumerate() {
+        let mut args = start.clone();
+        args["draft"] = bad;
+        let reply = dispatch(state, 9, cmd, &args).await;
+        assert!(reply["error"].is_string(), "draft {index}: {reply}");
+        let error = reply["error"].as_str().unwrap_or_default();
+        assert!(
+            index != 2 || error.starts_with("Invalid field draft"),
+            "{reply}"
+        );
+    }
+    for bad in [
+        json!({"agentId": "claude"}),
+        json!({"agentId": "claude", "replicaPaths": "x"}),
+    ] {
+        let reply = dispatch(state, 10, "list_preflight_test_targets", &bad).await;
+        assert!(reply["error"].is_string(), "{reply}");
+    }
+    let numbers = json!({"agentId": "claude", "replicaPaths": [1]});
+    let reply = dispatch(state, 11, "list_preflight_test_targets", &numbers).await;
+    assert!(reply["error"].is_string(), "{reply}");
 }

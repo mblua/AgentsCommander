@@ -1,16 +1,26 @@
 mod clear_watch;
+pub(crate) mod host;
 mod preflight;
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use tauri::Manager;
 use uuid::Uuid;
+
+pub(crate) use self::host::InjectionHost;
 
 use crate::pty::backend::PTY_INPUT_MAX_BYTES;
 use crate::pty::manager::{PtyInputPermit, PtyManager, PtyRouteWriteGuard};
+use crate::pty_input::is_forbidden_pty_scalar;
 use crate::session::manager::{CarrierSnapshot, SessionManager};
 use crate::session::session::{Session, SessionStatus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryMetadataOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+}
 
 // Internal mailbox suspension, consumed only after the writer/lifecycle guards
 // have returned. It is never a delivered outcome or public status.
@@ -49,32 +59,6 @@ impl fmt::Display for PtyInputTextError {
 }
 
 impl std::error::Error for PtyInputTextError {}
-
-/// #1157 - the forbidden-scalar set of [`validate_pty_input_text`], extracted so
-/// the injected-message sanitizer (`config::injected_messages::sanitize`) strips
-/// exactly what this validator rejects. Deriving both from one predicate is what
-/// keeps the two from drifting; there must be no second copy of this list.
-///
-/// Covers C0 except `\t` and `\n`, DEL and C1, and the whole bidi and separator
-/// class (U+061C, U+200E, U+200F, U+2028, U+2029, U+202A-U+202E, U+2066-U+2069).
-pub(crate) fn is_forbidden_pty_scalar(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{0000}'..='\u{0008}'
-            | '\u{000b}'
-            | '\u{000c}'
-            | '\u{000d}'
-            | '\u{000e}'..='\u{001f}'
-            | '\u{007f}'..='\u{009f}'
-            | '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-    )
-}
 
 /// The single authoritative in-process exact-text validator.
 ///
@@ -129,7 +113,7 @@ enum PtyInjectionProfile {
 fn shell_file_stem(shell: &str) -> String {
     std::path::Path::new(shell.trim())
         .file_stem()
-        .and_then(|value| value.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(shell.trim())
         .to_lowercase()
 }
@@ -355,7 +339,7 @@ fn observe_submit_seam(
     };
     let observation =
         format_submit_seam_observation(instant, settle, rows.as_deref(), written_payload);
-    log::info!("{} session={}", observation, session_id);
+    log::info!("{observation} session={session_id}");
     #[cfg(test)]
     tests::record_seam_observation(session_id, observation);
     Ok(())
@@ -396,16 +380,16 @@ pub async fn submit_exact_agent_input_with_permit(
 /// Inject a text block into a session's PTY stdin.
 ///
 /// Direct Claude, Codex, Antigravity, Cursor agent, and the exact-stem Pi,
-/// Hermes, OpenCode, and Grok Build shells receive `\r` twice, at 1500 ms and
+/// Hermes, `OpenCode`, and Grok Build shells receive `\r` twice, at 1500 ms and
 /// 2000 ms after the text write, as a reliability measure against Enter not
 /// registering on the first attempt. Plain shells do not receive an added
 /// Enter.
 ///
 /// This is the ONLY function that should be used for text-block injection.
-/// Direct keystrokes from xterm.js bypass this and call PtyManager::write()
-/// directly via the pty_write Tauri command.
-pub async fn inject_text_into_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+/// Direct keystrokes from xterm.js bypass this and call `PtyManager::write()`
+/// directly via the `pty_write` Tauri command.
+pub async fn inject_text_into_session<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: Uuid,
     text: &str,
 ) -> Result<(), String> {
@@ -425,8 +409,8 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
         reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
     )
 )]
-pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_peer_wake_text_into_session<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     message_id: &str,
@@ -452,8 +436,8 @@ pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
         reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
     )
 )]
-pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     message_id: &str,
@@ -461,7 +445,7 @@ pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<R, F
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session) -> Result<(), String>,
 {
     inject_peer_wake_with_current_facts(
@@ -478,8 +462,8 @@ where
 
 /// Internal extension of the same peer boundary: upper policy admission sees
 /// the interior snapshot already held by the injector, without manager reentry.
-pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_peer_wake_with_current_facts<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     message_id: &str,
@@ -488,7 +472,7 @@ pub(crate) async fn inject_peer_wake_with_current_facts<R, F>(
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session, &crate::session::manager::CarrierSnapshot) -> Result<(), String>,
 {
     let observe_codex_clear = codex_clear_observation.is_some();
@@ -500,7 +484,7 @@ where
         settle,
         codex_clear_observation,
         |session, current| {
-            let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            let session = session.ok_or_else(|| format!("Session not found: {session_id}"))?;
             let current = current.expect("peer boundary supplies current facts");
             if observe_codex_clear
                 && (!shell_file_stem(&session.shell).starts_with("codex")
@@ -518,19 +502,19 @@ where
     if result.is_ok() {
         // The message left the deferred set the moment its text was written; a
         // repeated clear is a no-op.
-        crate::commands::pty::clear_held_wake(app, session_id, message_id);
+        app.clear_held_wake(session_id, message_id);
     }
     result
 }
 
-pub(crate) async fn inject_text_into_session_with_pre_write_check<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_text_into_session_with_pre_write_check<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce() -> Result<(), String>,
 {
     inject_text_into_session_impl(
@@ -541,7 +525,7 @@ where
         SettleReadiness::Unknown,
         None,
         move |session, _| {
-            session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            session.ok_or_else(|| format!("Session not found: {session_id}"))?;
             pre_write_check()
         },
     )
@@ -554,17 +538,15 @@ where
 fn validate_supported_agent_session(session: &Session, session_id: Uuid) -> Result<(), String> {
     if session.is_root_agent {
         return Err(format!(
-            "Session {} is a root session, not a supported orchestrator agent",
-            session_id
+            "Session {session_id} is a root session, not a supported orchestrator agent"
         ));
     }
     if matches!(session.status, SessionStatus::Exited(_)) {
-        return Err(format!("Session {} exited before injection", session_id));
+        return Err(format!("Session {session_id} exited before injection"));
     }
     if session.agent_id.is_none() {
         return Err(format!(
-            "Session {} has no configured coding-agent identity",
-            session_id
+            "Session {session_id} has no configured coding-agent identity"
         ));
     }
     if !needs_explicit_enter(&session.shell) {
@@ -576,14 +558,14 @@ fn validate_supported_agent_session(session: &Session, session_id: Uuid) -> Resu
     Ok(())
 }
 
-pub(crate) async fn inject_text_into_supported_agent_session_with_pre_write_check<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_text_into_supported_agent_session_with_pre_write_check<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session) -> Result<(), String>,
 {
     inject_text_into_session_impl(
@@ -595,10 +577,7 @@ where
         None,
         move |session, _| {
             let session = session.ok_or_else(|| {
-                format!(
-                    "Session {} is missing before supported-agent injection",
-                    session_id
-                )
+                format!("Session {session_id} is missing before supported-agent injection")
             })?;
             validate_supported_agent_session(session, session_id)?;
             pre_write_check(session)
@@ -614,11 +593,11 @@ enum HoldPolicy<'a> {
 }
 
 /// Read-only preflight; the injector repeats this under the writer permit.
-pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn internal_notice_block_reason<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: Uuid,
 ) -> Option<String> {
-    if let Some(menu) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+    if let Some(menu) = app.menu() {
         if menu.is_blocked(session_id) {
             return Some(format!(
                 "{}: session {} is blocked by interactive menu",
@@ -627,7 +606,7 @@ pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
             ));
         }
     }
-    if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
+    if app.typing_hold_defers_injection(session_id).await {
         return Some(format!(
             "{}: session {} is holding internal notice injection while the user is typing",
             crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
@@ -637,14 +616,14 @@ pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
     None
 }
 
-pub(crate) async fn inject_internal_notice_into_supported_agent_session<R, F>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn inject_internal_notice_into_supported_agent_session<S, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     pre_write_check: F,
 ) -> Result<(), String>
 where
-    R: tauri::Runtime,
+    S: InjectionHost + ?Sized,
     F: FnOnce(&Session) -> Result<(), String>,
 {
     inject_text_into_session_impl(
@@ -656,10 +635,7 @@ where
         None,
         move |session, _| {
             let session = session.ok_or_else(|| {
-                format!(
-                    "Session {} is missing before supported-agent injection",
-                    session_id
-                )
+                format!("Session {session_id} is missing before supported-agent injection")
             })?;
             validate_supported_agent_session(session, session_id)?;
             pre_write_check(session)
@@ -702,26 +678,26 @@ where
                     None => PtyManager::lock_route_for_write(permit),
                 };
                 let route_guard =
-                    route_guard.map_err(|error| format!("PTY write failed: {}", error))?;
+                    route_guard.map_err(|error| format!("PTY write failed: {error}"))?;
                 let session = current.rows.iter().find(|session| session.id == session_id);
                 check(session, Some(current))?;
                 route_guard
                     .write(text.as_bytes())
-                    .map_err(|error| format!("PTY write failed: {}", error))
+                    .map_err(|error| format!("PTY write failed: {error}"))
             })
             .await
     } else {
         PtyManager::write_with_permit(permit, text.as_bytes())
-            .map_err(|error| format!("PTY write failed: {}", error))
+            .map_err(|error| format!("PTY write failed: {error}"))
     }
 }
 
-async fn check_injection_hold<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn check_injection_hold<S: InjectionHost + ?Sized>(
+    app: &S,
     session_id: uuid::Uuid,
     hold_policy: &HoldPolicy<'_>,
 ) -> Result<(), String> {
-    if let Some(menu_guard) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+    if let Some(menu_guard) = app.menu() {
         if menu_guard.is_blocked(session_id) {
             return Err(format!(
                 "{}: session {} is blocked by interactive menu",
@@ -736,8 +712,8 @@ async fn check_injection_hold<R: tauri::Runtime>(
     // Peer wakes record their IDs; internal notices defer without registering
     // an ID. Plain, restart-resume and logical follow-up writes remain exempt.
     if let HoldPolicy::PeerWake(message_id) = hold_policy {
-        if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
-            crate::commands::pty::note_held_wake(app, session_id, message_id);
+        if app.typing_hold_defers_injection(session_id).await {
+            app.note_held_wake(session_id, message_id);
             return Err(format!(
                 "{}: session {} is holding peer wake injection while the user is typing",
                 crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
@@ -754,8 +730,8 @@ async fn check_injection_hold<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn inject_text_into_session_impl<R: tauri::Runtime, F>(
-    app: &tauri::AppHandle<R>,
+async fn inject_text_into_session_impl<S: InjectionHost + ?Sized, F>(
+    app: &S,
     session_id: Uuid,
     text: &str,
     hold_policy: HoldPolicy<'_>,
@@ -768,7 +744,7 @@ where
 {
     // Resolve one public snapshot without retaining a manager guard across an await.
     let manager = {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let manager = session_mgr.read().await.clone();
         manager
     };
@@ -779,7 +755,7 @@ where
     // serialized write boundary (plan 7.5). The permit is held across the whole
     // text-then-Enter seam, which gives legacy/logical injection writer
     // serialization (invariant 3) without changing its public byte sequence.
-    let pty_manager = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let pty_manager = app.routes().clone();
     let permit = PtyManager::acquire_input_writer(&pty_manager, session_id)
         .await
         .map_err(|error| error.to_string())?;
@@ -819,7 +795,8 @@ where
     )
     .await;
     finish_injected_text_write(written, session_id, text.len())?;
-    crate::commands::pty::mark_successful_pty_write_busy(app, session_id, text.len()).await;
+    app.mark_successful_pty_write_busy(session_id, text.len())
+        .await;
 
     // Supported interactive agent CLIs receive two staggered Enters. The
     // second is nonfatal because the first may already have submitted the text.
@@ -836,14 +813,14 @@ where
     // `mark_successful_pty_write_busy` call above so an early `Err` return
     // leaves the session unarmed. NOT "an undelivered message never arms": R8.
     {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let manager = session_mgr.read().await.clone();
         manager.arm_agent_turn(session_id).await;
         // #1682 - the text write above marked this session through
         // `mark_successful_pty_write_busy` (`:388`); this clear cancels that mark.
         // It keys on ARMING, not on proven delivery: R8 arms and clears with
         // nothing submitted. Self-cancelling here, so no caller needs its own site.
-        crate::commands::pty::clear_control_write_mark(app, session_id);
+        app.clear_control_write_mark(session_id);
     }
 
     drop(permit);
@@ -861,13 +838,8 @@ async fn session_injection_mode(
 ) -> (Option<Session>, bool) {
     let session = manager.get_session(session_id).await;
     let shell = session.as_ref().map(|session| session.shell.clone());
-    let send_enter = shell.as_deref().map(needs_explicit_enter).unwrap_or(false);
-    log::info!(
-        "[inject] session={} shell={:?} send_enter={}",
-        session_id,
-        shell,
-        send_enter
-    );
+    let send_enter = shell.as_deref().is_some_and(needs_explicit_enter);
+    log::info!("[inject] session={session_id} shell={shell:?} send_enter={send_enter}");
 
     (session, send_enter)
 }
@@ -881,18 +853,10 @@ fn finish_injected_text_write(
         if error == OWNED_WORK_SCOPE_WAIT {
             return error;
         }
-        log::error!(
-            "[inject] PTY write FAILED session={}: {}",
-            session_id,
-            error
-        );
+        log::error!("[inject] PTY write FAILED session={session_id}: {error}");
         error
     })?;
-    log::info!(
-        "[inject] PTY write OK session={} bytes={}",
-        session_id,
-        text_bytes
-    );
+    log::info!("[inject] PTY write OK session={session_id} bytes={text_bytes}");
     Ok(())
 }
 
@@ -906,22 +870,18 @@ async fn submit_injected_enters(
 ) -> Result<(), String> {
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     observe_submit_seam(pty_manager, session_id, "T0", settle, text, watch)?;
-    log::info!("[inject] sending Enter (1/2) for session {}", session_id);
+    log::info!("[inject] sending Enter (1/2) for session {session_id}");
     PtyManager::write_with_permit(permit, b"\r")
-        .map_err(|error| format!("PTY Enter (1/2) write failed: {}", error))?;
+        .map_err(|error| format!("PTY Enter (1/2) write failed: {error}"))?;
 
     if let Some(watch) = watch {
         watch.submitted();
     }
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     observe_submit_seam(pty_manager, session_id, "T1", settle, text, watch)?;
-    log::info!("[inject] sending Enter (2/2) for session {}", session_id);
+    log::info!("[inject] sending Enter (2/2) for session {session_id}");
     if let Err(error) = PtyManager::write_with_permit(permit, b"\r") {
-        log::warn!(
-            "[inject] Enter (2/2) failed for session {} (non-fatal): {}",
-            session_id,
-            error
-        );
+        log::warn!("[inject] Enter (2/2) failed for session {session_id} (non-fatal): {error}");
     }
 
     // #2586 D2 - T2: one added wait after the second Enter, observation only.

@@ -1,13 +1,13 @@
 use super::*;
 use crate::config::settings::{
-    configuration_identity, pair_identity, AgentFileEdits, AgentFileSourceMenu, SettingsOwner,
-    SourceKind,
+    configuration_identity, pair_identity, AgentFileEdits, AgentFileSourceMenu, AgentFileSources,
+    SelectedAgentFileSnapshot, SettingsOwner, SourceKind, SourceRef,
 };
 use serde_json::{json, Value};
 
 fn fixture() -> (tempfile::TempDir, SettingsState) {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(temp.path());
     let settings = AppSettings {
         root_token: Some("P02-TEST-SECRET".into()),
         ..AppSettings::default()
@@ -27,6 +27,22 @@ fn fixture() -> (tempfile::TempDir, SettingsState) {
     .unwrap();
     let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
     (temp, owner)
+}
+
+fn source_of_kind(list: &AgentFileSources, kind: SourceKind) -> SourceRef {
+    list.sources
+        .iter()
+        .find(|s| s.source.kind == kind)
+        .unwrap()
+        .source
+        .clone()
+}
+
+async fn read_source_of_kind(owner: &SettingsState, kind: SourceKind) -> SelectedAgentFileSnapshot {
+    let list = list_agent_file_sources_inner(owner).await.unwrap();
+    read_agent_file_source_inner(owner, source_of_kind(&list, kind))
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -75,7 +91,7 @@ async fn e2432_source_fingerprints_bind_ref_marker_source_and_context() {
             }
             _ => {
                 changed.configuration_ref.profile_calculated_id =
-                    Some(format!("cid1:{}", "a".repeat(64)))
+                    Some(format!("cid1:{}", "a".repeat(64)));
             }
         }
         assert_ne!(
@@ -89,17 +105,7 @@ async fn e2432_source_fingerprints_bind_ref_marker_source_and_context() {
 async fn e2432_p02_contextless_default_ticket_and_source_decoys() {
     use crate::config::coding_agent_profiles::{resolve_profile, ProfileResolutionRequest};
     let (_temp, owner) = fixture();
-    let list = list_agent_file_sources_inner(&owner).await.unwrap();
-    let registered_ref = list
-        .sources
-        .iter()
-        .find(|s| s.source.kind == SourceKind::RegisteredInstance)
-        .unwrap()
-        .source
-        .clone();
-    let registered = read_agent_file_source_inner(&owner, registered_ref)
-        .await
-        .unwrap();
+    let registered = read_source_of_kind(&owner, SourceKind::RegisteredInstance).await;
     let null = &registered.tickets["same"]["default"];
     assert!(null.configuration_ref.requested_profile.is_none());
     assert_eq!(
@@ -149,7 +155,7 @@ async fn e2432_p02_contextless_default_ticket_and_source_decoys() {
     // Same stable key AND BASE in another physical file cannot donate B or slots.
     let catalog_source = crate::config::settings::list_agent_files(
         &owner.current_snapshot().await.unwrap(),
-        &_temp.path().join(SETTINGS_FILE_NAME),
+        &crate::config::settings::settings_fixture_path(_temp.path()),
     )
     .unwrap()
     .sources[0]
@@ -169,17 +175,7 @@ async fn e2432_p02_contextless_default_ticket_and_source_decoys() {
         "codingAgentProfiles":{"same":{"C":{"additionalArguments":"--catalog"}}}
     });
     std::fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
-    let listed = list_agent_file_sources_inner(&owner).await.unwrap();
-    let catalog_ref = listed
-        .sources
-        .iter()
-        .find(|s| s.source.kind == SourceKind::CatalogPersonal)
-        .unwrap()
-        .source
-        .clone();
-    let catalog = read_agent_file_source_inner(&owner, catalog_ref)
-        .await
-        .unwrap();
+    let catalog = read_source_of_kind(&owner, SourceKind::CatalogPersonal).await;
     assert!(!catalog.tickets["same"].contains_key("B"));
     assert!(catalog.tickets["same"].contains_key("C"));
     assert!(!registered.profile_slots.contains_key("C"));
@@ -264,7 +260,7 @@ async fn e2432_p02_project_personal_actual_save_and_primary_drift() {
     for dir in [&instance, &project, &second] {
         std::fs::create_dir(dir).unwrap();
     }
-    let path = instance.join(SETTINGS_FILE_NAME);
+    let path = crate::config::settings::settings_fixture_path(&instance);
     let mut settings = AppSettings {
         project_paths: vec![project.to_string_lossy().into_owned()],
         ..AppSettings::default()
@@ -382,13 +378,13 @@ async fn e2432_p02_preference_endpoint_rejects_value_after_actual_failed_adoptio
     assert!(error.contains("partialOrUnknown"));
 }
 
-#[tokio::test]
-async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
-    use crate::config::settings::{AgentFileSaveOutcome, SourceScope};
-    use tauri::{Listener, Manager};
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(SETTINGS_FILE_NAME);
-    let project = temp.path().join("project");
+/// Writes the settings, registered sidecar and project catalog used by the
+/// native catalog-events test; returns `(settings path, catalog path)`.
+fn write_catalog_events_fixture(
+    root: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let path = crate::config::settings::settings_fixture_path(root);
+    let project = root.join("project");
     std::fs::create_dir(&project).unwrap();
     let initial = AppSettings {
         project_paths: vec![project.to_string_lossy().into_owned()],
@@ -396,8 +392,7 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
     };
     std::fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
     std::fs::write(
-        temp.path()
-            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+        root.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
         concat!(
             r#"{"agents":[{"id":"registered","label":"Registered","color":"red","#,
             r#""baseCommand":"tool"}]}"#,
@@ -418,14 +413,11 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
         ),
     )
     .unwrap();
-    let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
-    let broadcaster = WsBroadcaster::new();
-    let mut ws = broadcaster.subscribe();
-    let app = crate::test_support::test_builder()
-        .manage(owner.clone())
-        .manage(broadcaster)
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    (path, catalog)
+}
+
+fn listen_settings_events(app: &tauri::App) -> std::sync::mpsc::Receiver<&'static str> {
+    use tauri::Listener;
     let (tx, events) = std::sync::mpsc::channel();
     for event in [
         "coding_agent_settings_updated",
@@ -436,6 +428,104 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
             tx.send(event).unwrap();
         });
     }
+    events
+}
+
+fn upsert_edits(entry_hint: &str, label: &str) -> AgentFileEdits {
+    serde_json::from_value(json!({
+        "rows":[{"entryHint":entry_hint,"action":"upsert","patch":{"label":label}}],
+        "profileSets":[]
+    }))
+    .unwrap()
+}
+
+type WsReceiver = tokio::sync::mpsc::Receiver<crate::web::broadcast::WsOutMsg>;
+
+fn assert_no_settings_events(events: &std::sync::mpsc::Receiver<&str>, ws: &mut WsReceiver) {
+    assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
+    assert!(matches!(
+        ws.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[cfg(windows)]
+async fn assert_held_catalog_save_is_uncertain(
+    app: &tauri::App,
+    source: SourceRef,
+    fresh: SelectedAgentFileSnapshot,
+    catalog: &std::path::Path,
+    events: &std::sync::mpsc::Receiver<&str>,
+    ws: &mut WsReceiver,
+) {
+    use crate::config::settings::AgentFileSaveOutcome;
+    use std::os::windows::fs::OpenOptionsExt;
+    use tauri::Manager;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    let bytes = std::fs::read(catalog).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(catalog)
+        .unwrap();
+    let edits = upsert_edits("own", "Uncertain");
+    let uncertain = save_agent_file_source(
+        app.handle().clone(),
+        app.state(),
+        source,
+        fresh.revision.clone(),
+        fresh.context_revision,
+        edits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(uncertain.outcome, AgentFileSaveOutcome::PartialOrUnknown);
+    assert_eq!(uncertain.snapshot.unwrap().revision, fresh.revision);
+    assert_eq!(std::fs::read(catalog).unwrap(), bytes);
+    assert_no_settings_events(events, ws);
+    drop(held);
+}
+
+fn assert_settings_events_live(events: &std::sync::mpsc::Receiver<&str>, ws: &mut WsReceiver) {
+    for expected in [
+        "coding_agent_settings_updated",
+        "coding_agent_profiles_updated",
+    ] {
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(1)).unwrap(),
+            expected
+        );
+        let message = ws.try_recv().expect("managed WS sink must be live");
+        match message {
+            crate::web::broadcast::WsOutMsg::Text(text) => assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap()["event"],
+                json!(expected)
+            ),
+            m @ crate::web::broadcast::WsOutMsg::Binary(_) => panic!("unexpected WS message {m:?}"),
+        }
+    }
+    assert!(events.try_recv().is_err());
+    assert!(matches!(
+        ws.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
+    use crate::config::settings::{AgentFileSaveOutcome, SourceScope};
+    use tauri::Manager;
+    let temp = tempfile::tempdir().unwrap();
+    let (path, catalog) = write_catalog_events_fixture(temp.path());
+    let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
+    let broadcaster = WsBroadcaster::new();
+    let mut ws = broadcaster.subscribe();
+    let app = crate::test_support::test_builder()
+        .manage(owner.clone())
+        .manage(broadcaster)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let events = listen_settings_events(&app);
     let list = list_agent_file_sources_inner(&owner).await.unwrap();
     let source = list
         .sources
@@ -451,11 +541,7 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
         .unwrap();
     let epoch = owner.identity().epoch;
     let ram = serde_json::to_value(owner.current_snapshot().await.unwrap()).unwrap();
-    let edits = serde_json::from_value(json!({
-        "rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],
-        "profileSets":[]
-    }))
-    .unwrap();
+    let edits = upsert_edits("own", "Edited");
     let reply = save_agent_file_source(
         app.handle().clone(),
         app.state(),
@@ -486,11 +572,7 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
         .unwrap();
     assert_ne!(fresh.revision, before.revision);
     assert_eq!(fresh.revision, reply.snapshot.unwrap().revision);
-    assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-    assert!(matches!(
-        ws.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
+    assert_no_settings_events(&events, &mut ws);
     let stale = save_agent_file_source(
         app.handle().clone(),
         app.state(),
@@ -502,66 +584,19 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
     .await
     .unwrap();
     assert_eq!(stale.outcome, AgentFileSaveOutcome::Rejected);
-    assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-    assert!(matches!(
-        ws.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
+    assert_no_settings_events(&events, &mut ws);
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
-        let bytes = std::fs::read(&catalog).unwrap();
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .open(&catalog)
-            .unwrap();
-        let edits = serde_json::from_value(json!({
-            "rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Uncertain"}}],
-            "profileSets":[]
-        }))
-        .unwrap();
-        let uncertain = save_agent_file_source(
-            app.handle().clone(),
-            app.state(),
-            source,
-            fresh.revision.clone(),
-            fresh.context_revision,
-            edits,
-        )
-        .await
-        .unwrap();
-        assert_eq!(uncertain.outcome, AgentFileSaveOutcome::PartialOrUnknown);
-        assert_eq!(uncertain.snapshot.unwrap().revision, fresh.revision);
-        assert_eq!(std::fs::read(&catalog).unwrap(), bytes);
-        assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-        assert!(matches!(
-            ws.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        drop(held);
-    }
+    assert_held_catalog_save_is_uncertain(&app, source, fresh, &catalog, &events, &mut ws).await;
     assert_eq!(owner.identity().epoch, epoch);
     assert_eq!(
         serde_json::to_value(owner.current_snapshot().await.unwrap()).unwrap(),
         ram
     );
-    let registered = list
-        .sources
-        .iter()
-        .find(|s| s.source.kind == SourceKind::RegisteredInstance)
-        .unwrap()
-        .source
-        .clone();
+    let registered = source_of_kind(&list, SourceKind::RegisteredInstance);
     let snapshot = read_agent_file_source_inner(&owner, registered.clone())
         .await
         .unwrap();
-    let edits = serde_json::from_value(json!({
-        "rows":[{"entryHint":"registered","action":"upsert","patch":{"label":"Adopted"}}],
-        "profileSets":[]
-    }))
-    .unwrap();
+    let edits = upsert_edits("registered", "Adopted");
     let reply = save_agent_file_source(
         app.handle().clone(),
         app.state(),
@@ -574,26 +609,5 @@ async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
     .unwrap();
     assert_eq!(reply.outcome, AgentFileSaveOutcome::Committed);
     assert!(owner.identity().epoch > epoch);
-    for expected in [
-        "coding_agent_settings_updated",
-        "coding_agent_profiles_updated",
-    ] {
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(1)).unwrap(),
-            expected
-        );
-        let message = ws.try_recv().expect("managed WS sink must be live");
-        match message {
-            crate::web::broadcast::WsOutMsg::Text(text) => assert_eq!(
-                serde_json::from_str::<Value>(&text).unwrap()["event"],
-                json!(expected)
-            ),
-            m @ crate::web::broadcast::WsOutMsg::Binary(_) => panic!("unexpected WS message {m:?}"),
-        }
-    }
-    assert!(events.try_recv().is_err());
-    assert!(matches!(
-        ws.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    ));
+    assert_settings_events_live(&events, &mut ws);
 }

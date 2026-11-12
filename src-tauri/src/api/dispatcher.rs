@@ -19,11 +19,11 @@ pub(crate) trait DispatcherDelivery: Clone + Send + Sync + 'static {
     fn purging(&self) -> bool;
     fn message_store_state(&self) -> Option<MessageStoreState>;
     fn restoring(&self) -> bool;
-    fn deliver_wake<'a>(
-        &'a self,
+    fn deliver_wake(
+        &self,
         msg: OutboxMessage,
         messages: Arc<MessageWarnings>,
-    ) -> BoxFuture<'a, Result<(), String>>;
+    ) -> BoxFuture<'_, Result<(), String>>;
     fn dispatch_pty<'a>(
         &'a self,
         state: &'a MessageStoreState,
@@ -77,7 +77,7 @@ impl PtyWorkerTargets {
         let mut active = self
             .active
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.len() >= limit || !active.insert(target.to_string()) {
             return None;
         }
@@ -90,7 +90,7 @@ impl PtyWorkerTargets {
     fn contains(&self, target: &str) -> bool {
         self.active
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(target)
     }
 
@@ -98,7 +98,7 @@ impl PtyWorkerTargets {
     fn len(&self) -> usize {
         self.active
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 }
@@ -108,7 +108,7 @@ impl Drop for PtyWorkerTargetReservation {
         self.owner
             .active
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.target);
     }
 }
@@ -142,8 +142,8 @@ where
         let _reservation = reservation;
         tokio::select! {
             biased;
-            _ = worker_shutdown.cancelled() => {}
-            _ = worker => {}
+            () = worker_shutdown.cancelled() => {}
+            () = worker => {}
         }
     });
     true
@@ -178,7 +178,7 @@ pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
     let pty_targets = Arc::new(PtyWorkerTargets::default());
     loop {
         tokio::select! {
-            _ = shutdown.cancelled() => {
+            () = shutdown.cancelled() => {
                 log::info!("[api-dispatcher] shutdown signal received, stopping");
                 stop_pty_workers(&mut pty_workers, PTY_WORKER_SHUTDOWN_GRACE).await;
                 break;
@@ -204,7 +204,7 @@ pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
                     )
                     .await
                     {
-                        log::warn!("[api-dispatcher] dispatch tick failed: {}", e);
+                        log::warn!("[api-dispatcher] dispatch tick failed: {e}");
                     }
                 }
                 if let Some(state) = app.message_store_state() {
@@ -272,7 +272,7 @@ pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
 async fn maintain_terminal_messages(store: &MessageStore, retention: chrono::Duration) {
     let cutoff = chrono::Utc::now() - retention;
     if let Err(e) = store.reap_terminal_before_offloaded(cutoff).await {
-        log::warn!("[api-dispatcher] reaper failed: {}", e);
+        log::warn!("[api-dispatcher] reaper failed: {e}");
     }
     if store
         .compact_pty_terminal_maintenance_offloaded(chrono::Utc::now(), 64)
@@ -314,7 +314,7 @@ where
         };
 
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 store
                     .mark_delivered_offloaded(row.message_id.clone(), chrono::Utc::now())
                     .await?;

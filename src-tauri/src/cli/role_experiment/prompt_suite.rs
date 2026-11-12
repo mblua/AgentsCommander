@@ -1,10 +1,10 @@
+use super::artifacts::CliError;
+use super::artifacts::ParsedPromptSuite;
+use super::artifacts::PromptCase;
 use super::support::err_at_line;
 use super::support::err_at_path;
 use super::support::sha256_hex;
 use super::validation::reject_link_or_reparse;
-use super::CliError;
-use super::ParsedPromptSuite;
-use super::PromptCase;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -22,7 +22,7 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
     let bytes = documents::read_prompt_suite(path).map_err(|e| {
         vec![err_at_path(
             "prompt_suite_missing",
-            format!("Failed to read prompt suite: {}", e),
+            format!("Failed to read prompt suite: {e}"),
             path,
         )]
     })?;
@@ -30,7 +30,7 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
     let content = String::from_utf8(bytes).map_err(|e| {
         vec![err_at_path(
             "prompt_suite_unparseable",
-            format!("Prompt suite is not valid UTF-8: {}", e),
+            format!("Prompt suite is not valid UTF-8: {e}"),
             path,
         )]
     })?;
@@ -42,70 +42,9 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
         if line.trim().is_empty() {
             continue;
         }
-        let Some(parsed) = parse_prompt_json(line, physical_line, &mut errors) else {
-            continue;
-        };
-        let Some(object) = parsed.as_object() else {
-            errors.push(err_at_line(
-                "prompt_suite_unparseable",
-                format!("Prompt suite line {} must be a JSON object", physical_line),
-                physical_line,
-                None,
-            ));
-            continue;
-        };
-        let Some(id) = required_prompt_string(object, "id", physical_line, &mut errors) else {
-            continue;
-        };
-        if !is_safe_prompt_id(&id) {
-            errors.push(err_at_line(
-                "prompt_suite_unparseable",
-                format!(
-                    "Prompt suite line {} has invalid id '{}'; \
-                     use lowercase ASCII letters, digits, hyphen, or underscore",
-                    physical_line, id
-                ),
-                physical_line,
-                Some("id"),
-            ));
-            continue;
+        if let Some(case) = parse_prompt_case(line, physical_line, &mut ids, &mut errors) {
+            prompts.push(case);
         }
-        let Some(title) = required_prompt_string(object, "title", physical_line, &mut errors)
-        else {
-            continue;
-        };
-        let Some(prompt) = required_prompt_string(object, "prompt", physical_line, &mut errors)
-        else {
-            continue;
-        };
-        let Some(tags) = optional_string_array(object, "tags", physical_line, &mut errors) else {
-            continue;
-        };
-        let Some(expected_behaviors) =
-            optional_string_array(object, "expectedBehaviors", physical_line, &mut errors)
-        else {
-            continue;
-        };
-        if let Some(first_line) = ids.insert(id.clone(), physical_line) {
-            errors.push(err_at_line(
-                "prompt_suite_duplicate_id",
-                format!(
-                    "Prompt suite duplicate id '{}' at line {}; first seen at line {}",
-                    id, physical_line, first_line
-                ),
-                physical_line,
-                Some("id"),
-            ));
-            continue;
-        }
-        prompts.push(PromptCase {
-            id,
-            title,
-            prompt,
-            tags,
-            expected_behaviors,
-            line: physical_line,
-        });
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -124,6 +63,63 @@ pub(super) fn parse_prompt_suite(path: &Path) -> Result<ParsedPromptSuite, Vec<C
     })
 }
 
+/// Parses one non-blank suite line; records errors and returns `None` when invalid.
+fn parse_prompt_case(
+    line: &str,
+    physical_line: usize,
+    ids: &mut BTreeMap<String, usize>,
+    errors: &mut Vec<CliError>,
+) -> Option<PromptCase> {
+    let parsed = parse_prompt_json(line, physical_line, errors)?;
+    let Some(object) = parsed.as_object() else {
+        errors.push(err_at_line(
+            "prompt_suite_unparseable",
+            format!("Prompt suite line {physical_line} must be a JSON object"),
+            physical_line,
+            None,
+        ));
+        return None;
+    };
+    let id = required_prompt_string(object, "id", physical_line, errors)?;
+    if !is_safe_prompt_id(&id) {
+        errors.push(err_at_line(
+            "prompt_suite_unparseable",
+            format!(
+                "Prompt suite line {physical_line} has invalid id '{id}'; \
+                 use lowercase ASCII letters, digits, hyphen, or underscore"
+            ),
+            physical_line,
+            Some("id"),
+        ));
+        return None;
+    }
+    let title = required_prompt_string(object, "title", physical_line, errors)?;
+    let prompt = required_prompt_string(object, "prompt", physical_line, errors)?;
+    let tags = optional_string_array(object, "tags", physical_line, errors)?;
+    let expected_behaviors =
+        optional_string_array(object, "expectedBehaviors", physical_line, errors)?;
+    if let Some(first_line) = ids.insert(id.clone(), physical_line) {
+        errors.push(err_at_line(
+            "prompt_suite_duplicate_id",
+            format!(
+                "Prompt suite duplicate id '{id}' at line {physical_line}; \
+                 first seen at line {first_line}"
+            ),
+            physical_line,
+            Some("id"),
+        ));
+        return None;
+    }
+    Some(PromptCase {
+        id,
+        title,
+        prompt,
+        tags,
+        expected_behaviors,
+        line: physical_line,
+    })
+}
+
 fn parse_prompt_json(
     line: &str,
     physical_line: usize,
@@ -134,7 +130,7 @@ fn parse_prompt_json(
         Err(e) => {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!("Prompt suite line {} is invalid JSON: {}", physical_line, e),
+                format!("Prompt suite line {physical_line} is invalid JSON: {e}"),
                 physical_line,
                 None,
             ));
@@ -155,10 +151,7 @@ fn required_prompt_string(
         _ => {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!(
-                    "Prompt suite line {} is missing required string field {}",
-                    line, field
-                ),
+                format!("Prompt suite line {line} is missing required string field {field}"),
                 line,
                 Some(field),
             ));
@@ -179,10 +172,7 @@ fn optional_string_array(
     let Some(items) = value.as_array() else {
         errors.push(err_at_line(
             "prompt_suite_unparseable",
-            format!(
-                "Prompt suite line {} field {} must be an array of strings",
-                line, field
-            ),
+            format!("Prompt suite line {line} field {field} must be an array of strings"),
             line,
             Some(field),
         ));
@@ -193,10 +183,7 @@ fn optional_string_array(
         let Some(item) = item.as_str() else {
             errors.push(err_at_line(
                 "prompt_suite_unparseable",
-                format!(
-                    "Prompt suite line {} field {} must contain only strings",
-                    line, field
-                ),
+                format!("Prompt suite line {line} field {field} must contain only strings"),
                 line,
                 Some(field),
             ));

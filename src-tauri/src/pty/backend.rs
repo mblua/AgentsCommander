@@ -60,7 +60,7 @@ impl std::fmt::Debug for TerminalScreenRead {
 
 /// #973 - the terminal size a session's PTY is opened at.
 ///
-/// AC used to open every ConPTY at a hardcoded 120x30 and let the frontend correct it a few
+/// AC used to open every `ConPTY` at a hardcoded 120x30 and let the frontend correct it a few
 /// hundred milliseconds later. That correction lands in the middle of a coding agent's TUI
 /// startup, and a resize there makes Codex redraw its still-empty viewport and lose the
 /// wakeup for the content that becomes ready right after: the terminal stays blank, alive,
@@ -88,9 +88,9 @@ impl PtyViewport {
     /// The smallest viewport that could plausibly be a terminal a human is looking at.
     ///
     /// A `> 0` check is not enough. xterm does not hand back a zero for a degenerate box - it
-    /// clamps to its own MINIMUM_COLS = 2 / MINIMUM_ROWS = 1 (`@xterm/addon-fit`) - so a
+    /// clamps to its own `MINIMUM_COLS` = 2 / `MINIMUM_ROWS` = 1 (`@xterm/addon-fit`) - so a
     /// container that is laid out but collapsed yields a perfectly well-formed **2x1**, which
-    /// sails straight through a zero check and opens the ConPTY at 2x1. That is not a wedge: it
+    /// sails straight through a zero check and opens the `ConPTY` at 2x1. That is not a wedge: it
     /// drifts, the view corrects it, and the drift is now warned about. But it is not a size any
     /// real view asked for, and a TUI that comes up believing it has two columns lays itself out
     /// around that before anyone can tell it otherwise.
@@ -136,6 +136,28 @@ impl PtyViewport {
 pub struct ResolvedAgentHostShell {
     pub program: String,
     pub args: Vec<String>,
+}
+
+/// #3516 - one stage argv plus the CLI env inputs, turned into a preflight launch.
+#[derive(Debug, Clone)]
+pub struct PreflightLaunchRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub configured_env: Vec<(String, String)>,
+    pub env_remove_keys: Vec<String>,
+    pub extra_env: Vec<(String, String)>,
+    pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+}
+
+/// #3516 - the exact program, args, Windows command line, cwd and full env the CLI gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightLaunch {
+    pub program: String,
+    pub args: Vec<String>,
+    pub windows_raw_args: Option<String>,
+    pub cwd: String,
+    pub env: Vec<(String, String)>,
 }
 
 pub(crate) struct BackendSpawnSpec {
@@ -314,6 +336,16 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     fn shutdown_terminal_output(&self) {}
 
     fn kill_all_jobs(&self) -> (usize, usize);
+
+    /// #3516 - preflights run only on the local backend; every other backend refuses.
+    fn prepare_preflight_launch(
+        &self,
+        _request: PreflightLaunchRequest,
+    ) -> Result<PreflightLaunch, AppError> {
+        Err(AppError::Other(
+            "Preflights run only for local agents.".to_string(),
+        ))
+    }
 }
 struct BackendRawWriter {
     backend: Arc<dyn PtyBackend>,

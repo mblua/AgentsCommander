@@ -1,8 +1,64 @@
 use super::container_shutdown::{
     assert_pending_container_shutdown_waits_for_stop,
-    assert_real_pending_container_start_shutdown_waits_for_stop,
+    assert_real_pending_container_start_shutdown_waits_for_stop, await_pending_rows_rolled_back,
+    build_selection_test_app, container_pty, gated_stop_container_backend,
 };
 use super::*;
+
+async fn create_live_local_pending(
+    coordinator: &SelectionCoordinator,
+    manager_handle: &SessionManager,
+    backend: &LifecycleTestBackend,
+    pty: &Mutex<PtyManager>,
+    working_directory: &str,
+) -> (CreateFinalizationTicket, crate::session::session::Session) {
+    use crate::pty::backend::SessionBackendKind;
+
+    let mut ticket = coordinator
+        .reserve_create(TrustedCreateIntent::Background)
+        .await
+        .unwrap();
+    let session = manager_handle
+        .create_pending_session(
+            &mut ticket,
+            "shell".to_string(),
+            Vec::new(),
+            working_directory.to_string(),
+            None,
+            None,
+            Vec::new(),
+            false,
+            SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap();
+    backend.set_live(session.id, true);
+    pty.lock()
+        .unwrap()
+        .record_route(session.id, SessionBackendKind::LocalProcess);
+    (ticket, session)
+}
+
+async fn wait_for_create_rollback(
+    manager_handle: &SessionManager,
+    pty: &Mutex<PtyManager>,
+    session_id: Uuid,
+    label: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let aggregate = manager_handle.aggregate_snapshot().await;
+            if !aggregate.pending_ids.contains(&session_id)
+                && !pty.lock().unwrap().has_session(session_id)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect(label);
+}
 
 #[tokio::test]
 async fn shutdown_drain_runs_common_resource_rollback_for_finalize_and_drop_jobs() {
@@ -126,23 +182,13 @@ async fn normal_shutdown_drain_joins_real_pending_container_start_and_stop_exact
 
 #[tokio::test]
 async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_events() {
-    use crate::pty::backend::SessionBackendKind;
     use tauri::Listener;
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(LifecycleTestBackend::default());
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build cancellation rollback app");
+    let app = build_selection_test_app(&manager, &pty, "build cancellation rollback app");
     coordinator.start(app.handle().clone()).unwrap();
     coordinator.submit_restore_first().await.unwrap().finish();
     let manager_handle = manager.read().await.clone();
@@ -154,28 +200,14 @@ async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_event
         });
     }
 
-    let mut cancelled_ticket = coordinator
-        .reserve_create(TrustedCreateIntent::Background)
-        .await
-        .unwrap();
-    let cancelled_session = manager_handle
-        .create_pending_session(
-            &mut cancelled_ticket,
-            "shell".to_string(),
-            Vec::new(),
-            "C:/cancelled-create".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    backend.set_live(cancelled_session.id, true);
-    pty.lock()
-        .unwrap()
-        .record_route(cancelled_session.id, SessionBackendKind::LocalProcess);
+    let (cancelled_ticket, cancelled_session) = create_live_local_pending(
+        &coordinator,
+        &manager_handle,
+        &backend,
+        &pty,
+        "C:/cancelled-create",
+    )
+    .await;
     let (cancel_started, cancel_started_rx) = oneshot::channel();
     let cancelled_task = tokio::spawn(async move {
         let ticket = cancelled_ticket;
@@ -187,62 +219,36 @@ async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_event
     cancelled_task.abort();
     assert!(cancelled_task.await.unwrap_err().is_cancelled());
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            let aggregate = manager_handle.aggregate_snapshot().await;
-            if !aggregate.pending_ids.contains(&cancelled_session.id)
-                && !pty.lock().unwrap().has_session(cancelled_session.id)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("cancelled create rollback completes");
+    wait_for_create_rollback(
+        &manager_handle,
+        &pty,
+        cancelled_session.id,
+        "cancelled create rollback completes",
+    )
+    .await;
     assert_eq!(backend.kill_count(cancelled_session.id), 1);
 
-    let mut panicked_ticket = coordinator
-        .reserve_create(TrustedCreateIntent::Background)
-        .await
-        .unwrap();
-    let panicked_session = manager_handle
-        .create_pending_session(
-            &mut panicked_ticket,
-            "shell".to_string(),
-            Vec::new(),
-            "C:/panicked-create".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    backend.set_live(panicked_session.id, true);
-    pty.lock()
-        .unwrap()
-        .record_route(panicked_session.id, SessionBackendKind::LocalProcess);
+    let (panicked_ticket, panicked_session) = create_live_local_pending(
+        &coordinator,
+        &manager_handle,
+        &backend,
+        &pty,
+        "C:/panicked-create",
+    )
+    .await;
     let panicked_task = tokio::spawn(async move {
         let _ticket = panicked_ticket;
         panic!("synthetic create task panic");
     });
     assert!(panicked_task.await.unwrap_err().is_panic());
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            let aggregate = manager_handle.aggregate_snapshot().await;
-            if !aggregate.pending_ids.contains(&panicked_session.id)
-                && !pty.lock().unwrap().has_session(panicked_session.id)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("panicked create rollback completes");
+    wait_for_create_rollback(
+        &manager_handle,
+        &pty,
+        panicked_session.id,
+        "panicked create rollback completes",
+    )
+    .await;
     assert_eq!(backend.kill_count(panicked_session.id), 1);
     assert!(manager_handle
         .aggregate_snapshot()
@@ -263,48 +269,25 @@ async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_event
 
 #[tokio::test]
 async fn capped_shutdown_aborts_a_held_worker_then_cleans_pending_resources_and_keys() {
-    use crate::pty::backend::{PtyBackend, SessionBackendKind};
+    use crate::pty::backend::PtyBackend;
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(LifecycleTestBackend::default());
     let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build capped shutdown app");
+    let app = build_selection_test_app(&manager, &pty, "build capped shutdown app");
     coordinator.start(app.handle().clone()).unwrap();
     let guard = coordinator.submit_restore_first().await.unwrap();
     let manager_handle = manager.read().await.clone();
 
-    let mut ticket = coordinator
-        .reserve_create(TrustedCreateIntent::Background)
-        .await
-        .unwrap();
-    let pending = manager_handle
-        .create_pending_session(
-            &mut ticket,
-            "shell".to_string(),
-            Vec::new(),
-            "C:/aborted-shutdown".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    backend.set_live(pending.id, true);
-    pty.lock()
-        .unwrap()
-        .record_route(pending.id, SessionBackendKind::LocalProcess);
+    let (ticket, pending) = create_live_local_pending(
+        &coordinator,
+        &manager_handle,
+        &backend,
+        &pty,
+        "C:/aborted-shutdown",
+    )
+    .await;
     let finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
     let route_waiter = {
         let sender = coordinator.container_lifecycle_sender();
@@ -354,21 +337,11 @@ async fn capped_shutdown_aborts_a_held_worker_then_cleans_pending_resources_and_
     assert_eq!(backend.kill_count(pending.id), 1);
     assert!(!backend.has_session(pending.id));
     assert!(!pty.lock().unwrap().has_session(pending.id));
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if manager_handle
-                .aggregate_snapshot()
-                .await
-                .pending_ids
-                .is_empty()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("retained pending-create rollback reaches terminal manager state");
+    await_pending_rows_rolled_back(
+        &manager_handle,
+        "retained pending-create rollback reaches terminal manager state",
+    )
+    .await;
     let aggregate = manager_handle.aggregate_snapshot().await;
     assert!(aggregate.pending_ids.is_empty());
     assert!(aggregate.sessions.is_empty());
@@ -426,33 +399,13 @@ async fn canceled_real_start_stop_panic_retains_and_retries_the_deterministic_ha
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic() {
     use crate::pty::backend::SessionBackendKind;
-    use crate::pty::container_backend::ContainerTransportBackend;
     use crate::pty::container_runtime::ContainerRuntimeHandle;
 
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let (stop_started, stop_started_rx) = oneshot::channel();
-    let runtime = Arc::new(GatedStopRuntime {
-        stop_started: Mutex::new(Some(stop_started)),
-        stop_calls: AtomicUsize::new(0),
-        stop_hold: Duration::from_secs(30),
-        active_stops: AtomicUsize::new(0),
-        deadline_seen: AtomicBool::new(false),
-    });
-    let output_senders = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
-    let container_backend = Arc::new(ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime.clone(),
-        None,
-    ));
+    let (runtime, stop_started_rx, container_backend) =
+        gated_stop_container_backend(Duration::from_secs(30));
     container_backend.inject_shutdown_worker_spawn_failure_for_test();
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
-        Arc::new(LifecycleTestBackend::default()),
-        container_backend.clone(),
-    )));
+    let pty = container_pty(&container_backend);
     let session_id = Uuid::new_v4();
     let _transport_receiver =
         container_backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
@@ -460,20 +413,15 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
             container_id: format!("container-{session_id}"),
         });
     pty.lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_route(session_id, SessionBackendKind::ContainerTransport);
 
     let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build installed-handle admission-failure app");
+    let app = build_selection_test_app(
+        &manager,
+        &pty,
+        "build installed-handle admission-failure app",
+    );
     coordinator
         .start(app.handle().clone())
         .expect("start installed-handle admission-failure coordinator");
@@ -488,7 +436,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
         match catch_unwind(AssertUnwindSafe(|| {
             kill_pty
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .kill(session_id)
         })) {
             Ok(result) => result.map_err(|error| error.to_string()),
@@ -521,6 +469,23 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
         .expect("join installed-handle fallback kill")
         .expect("cleanup admission failure must not panic or lose the stop");
 
+    assert_installed_handle_cleanup_drained(
+        &manager,
+        &runtime,
+        &container_backend,
+        &pty,
+        session_id,
+    )
+    .await;
+}
+
+async fn assert_installed_handle_cleanup_drained(
+    manager: &tokio::sync::RwLock<SessionManager>,
+    runtime: &GatedStopRuntime,
+    container_backend: &crate::pty::container_backend::ContainerTransportBackend,
+    pty: &Mutex<PtyManager>,
+    session_id: Uuid,
+) {
     let manager_handle = manager.read().await.clone();
     let aggregate = manager_handle.aggregate_snapshot().await;
     assert!(aggregate.sessions.is_empty());
@@ -531,7 +496,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
     assert!(!container_backend.contains_transport_state_for_test(session_id));
     assert!(!pty
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .has_session(session_id));
     await_state_eq(
         "installed-handle cleanup drains shutdown work",
@@ -547,7 +512,7 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
     );
     assert_eq!(container_backend.shutdown_worker_count_for_test(), 0);
     pty.lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .stop_all_started_containers_blocking(Duration::from_secs(1));
     assert_eq!(
         runtime.stop_calls.load(Ordering::SeqCst),
@@ -556,46 +521,47 @@ async fn installed_handle_cleanup_worker_spawn_failure_falls_back_without_panic(
     );
 }
 
-#[tokio::test]
-async fn joined_worker_retains_no_coordinator_or_extra_pty_owner() {
-    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let backend = Arc::new(LifecycleTestBackend::default());
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let weak_inner = Arc::downgrade(&coordinator.inner);
-    let app = tauri::test::mock_builder()
+fn build_retention_app(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
         >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
+        .manage(Arc::clone(manager))
+        .manage(Arc::clone(pty))
         .manage(crate::config::settings::new_settings_state(
             crate::config::settings::AppSettings::default(),
         ))
         .manage(DetachedSessionsState::default())
         .manage(WsBroadcaster::new())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build retention test app");
-    coordinator.start(app.handle().clone()).unwrap();
-    coordinator.submit_restore_first().await.unwrap().finish();
+        .expect("build retention test app")
+}
+
+fn background_restart_request() -> crate::commands::session::RestartJobRequest {
+    crate::commands::session::RestartJobRequest {
+        session_id: Uuid::new_v4(),
+        agent_id: None,
+        requested_profile: None,
+        skip_auto_resume: None,
+        activate_after: false,
+        intent: TrustedRestartIntent::Background,
+        communication_override: None,
+        enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+    }
+}
+
+async fn assert_rejected_restarts_reclaim_admission(
+    coordinator: &SelectionCoordinator,
+    app: &tauri::App<tauri::test::MockRuntime>,
+) {
     // Real entry admission, worker return, source lease release and result
     // publication must reclaim capacity before the next accepted entry.
     for _ in 0..(COORDINATOR_ADMISSION_CAPACITY + 1) {
         let error = coordinator
-            .restart_lifecycle(
-                app.handle().clone(),
-                crate::commands::session::RestartJobRequest {
-                    session_id: Uuid::new_v4(),
-                    agent_id: None,
-                    requested_profile: None,
-                    skip_auto_resume: None,
-                    activate_after: false,
-                    intent: TrustedRestartIntent::Background,
-                    communication_override: None,
-                    enforcement:
-                        crate::config::sessions_persistence::default_creation_gate_enforcement(),
-                },
-            )
+            .restart_lifecycle(app.handle().clone(), background_restart_request())
             .await
             .unwrap_err();
         assert_eq!(error, "Session not found");
@@ -607,18 +573,27 @@ async fn joined_worker_retains_no_coordinator_or_extra_pty_owner() {
             .entries
             .is_empty());
     }
+}
+
+#[tokio::test]
+async fn joined_worker_retains_no_coordinator_or_extra_pty_owner() {
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(LifecycleTestBackend::default());
+    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+    let weak_inner = Arc::downgrade(&coordinator.inner);
+    let app = build_retention_app(&manager, &pty);
+    coordinator.start(app.handle().clone()).unwrap();
+    coordinator.submit_restore_first().await.unwrap().finish();
+    assert_rejected_restarts_reclaim_admission(&coordinator, &app).await;
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     let pending = {
         let coordinator = coordinator.clone();
         let app = app.handle().clone();
         tokio::spawn(async move {
-            coordinator.restart_lifecycle(app, crate::commands::session::RestartJobRequest {
-                session_id: Uuid::new_v4(), agent_id: None, requested_profile: None,
-                skip_auto_resume: None, activate_after: false,
-                intent: TrustedRestartIntent::Background, communication_override: None,
-                enforcement:
-                    crate::config::sessions_persistence::default_creation_gate_enforcement(),
-            }).await
+            coordinator
+                .restart_lifecycle(app, background_restart_request())
+                .await
         })
     };
     let owner = tokio::time::timeout(Duration::from_secs(2), async {

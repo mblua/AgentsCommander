@@ -165,29 +165,10 @@ fn sweep_pause_hook(stage: &str, dir: &Path) {
 /// writer added can be lost; retirement of the old row stays with the writer
 /// at registration.
 fn ensure_project_settings_ignore_rows(ac_root: &Path) -> Result<(), naming_migration::Refusal> {
-    let path = ac_root.join(".gitignore");
-    let io = |what: &str, e: std::io::Error| {
-        naming_migration::Refusal::Io(format!("failed to {what} {}: {e}", path.display()))
-    };
-    let content = match documents::read_config_document(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io("read", e)),
-    };
-    let blocks = naming_migration::missing_ignore_rows(
-        &content,
-        &naming_migration::project_settings_ignore_rows(),
-    );
-    if blocks.is_empty() {
-        return Ok(());
-    }
-    sweep_pause_hook("before_gitignore_append", ac_root);
-    let separator = if content.is_empty() || content.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
-    documents::append_config_ignore_rows(&path, separator, &blocks).map_err(|e| io("append to", e))
+    crate::config::projects::ac_root_gitignore::ensure_project_settings_ignore_rows(ac_root, || {
+        sweep_pause_hook("before_gitignore_append", ac_root);
+    })
+    .map_err(naming_migration::Refusal::Io)
 }
 
 fn project_settings_scope_key(ac_root: &Path) -> String {
@@ -395,7 +376,7 @@ fn save_workgroup_groups_in(
     // filesystem error is acceptable and the caller keeps its prior state.
     crate::config::local_config_io::update_config_json_object(&path, true, |obj| {
         let groups = serde_json::to_value(&config.groups)
-            .map_err(|e| format!("Failed to serialize project groups: {}", e))?;
+            .map_err(|e| format!("Failed to serialize project groups: {e}"))?;
         obj.insert("groups".to_string(), groups);
         obj.insert("showAll".to_string(), Value::Bool(config.show_all));
         obj.insert(

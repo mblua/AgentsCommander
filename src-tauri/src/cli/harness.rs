@@ -75,7 +75,7 @@ pub fn execute(args: HarnessArgs) -> i32 {
     let mode = match parse_mode(&args) {
         Ok(mode) => mode,
         Err(err) => {
-            eprintln!("Error: {}", err);
+            eprintln!("Error: {err}");
             return 1;
         }
     };
@@ -97,7 +97,7 @@ pub fn execute(args: HarnessArgs) -> i32 {
     print_decision(&decision, &input, args.explain || args.dry_run);
 
     if let Err(err) = write_audit_log(&input, &decision, "planned", None) {
-        eprintln!("Error: failed to write harness audit log: {}", err);
+        eprintln!("Error: failed to write harness audit log: {err}");
         return 1;
     }
 
@@ -117,14 +117,14 @@ pub fn execute(args: HarnessArgs) -> i32 {
         Ok(status) => status,
         Err(err) => {
             let _ = write_audit_log(&input, &decision, "spawn_failed", Some(1));
-            eprintln!("Error: failed to execute harness command: {}", err);
+            eprintln!("Error: failed to execute harness command: {err}");
             return 1;
         }
     };
 
     let code = status.code().unwrap_or(1);
     if let Err(err) = write_audit_log(&input, &decision, "completed", Some(code)) {
-        eprintln!("Error: failed to write harness completion log: {}", err);
+        eprintln!("Error: failed to write harness completion log: {err}");
         return 1;
     }
     code
@@ -215,12 +215,15 @@ fn evaluate_raw_policy(input: &PolicyInput, warnings: &mut Vec<String>, denials:
     let raw = normalize_token(&input.raw_display);
     for shell in ["bash", "sh", "powershell", "pwsh", "cmd"] {
         if contains_command_word(&raw, shell) {
-            warnings.push(format!("nested shell invocation detected: {}", shell));
+            warnings.push(format!("nested shell invocation detected: {shell}"));
         }
     }
 
     if raw.contains("git checkout -b") || raw.contains("git branch") {
-        let words: Vec<String> = raw.split_whitespace().map(|s| s.to_string()).collect();
+        let words: Vec<String> = raw
+            .split_whitespace()
+            .map(std::string::ToString::to_string)
+            .collect();
         warn_branch_name(&words, warnings);
     }
 
@@ -244,7 +247,7 @@ fn evaluate_raw_policy(input: &PolicyInput, warnings: &mut Vec<String>, denials:
 
 fn warn_nested_shell(cmd: &str, warnings: &mut Vec<String>) {
     if ["bash", "sh", "powershell", "pwsh", "cmd", "cmd.exe"].contains(&cmd) {
-        warnings.push(format!("nested shell invocation detected: {}", cmd));
+        warnings.push(format!("nested shell invocation detected: {cmd}"));
     }
 }
 
@@ -263,7 +266,7 @@ fn warn_branch_name(tokens: &[String], warnings: &mut Vec<String>) {
 
     if let Some(branch) = branch {
         if !is_reasonable_branch_name(branch) {
-            warnings.push(format!("branch name may violate conventions: {}", branch));
+            warnings.push(format!("branch name may violate conventions: {branch}"));
         }
     }
 }
@@ -290,7 +293,7 @@ fn is_reasonable_branch_name(branch: &str) -> bool {
 
 fn contains_command_word(raw: &str, needle: &str) -> bool {
     raw.split(|c: char| c.is_whitespace() || [';', '&', '|', '(', ')'].contains(&c))
-        .any(|word| word == needle || word == format!("{}.exe", needle))
+        .any(|word| word == needle || word == format!("{needle}.exe"))
 }
 
 fn has_token(tokens: &[String], needle: &str) -> bool {
@@ -385,13 +388,13 @@ fn print_decision(decision: &PolicyDecision, input: &PolicyInput, verbose: bool)
         PolicyDecision::Warn(reasons) => {
             println!("harness: warn");
             for reason in reasons {
-                eprintln!("warning: {}", reason);
+                eprintln!("warning: {reason}");
             }
         }
         PolicyDecision::Deny(reasons) => {
             eprintln!("harness: deny");
             for reason in reasons {
-                eprintln!("denied: {}", reason);
+                eprintln!("denied: {reason}");
             }
         }
     }
@@ -465,7 +468,7 @@ fn derive_identity() -> String {
 
     std::path::Path::new(&root)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(|s| s.trim_start_matches("__agent_").to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unidentified_agent".to_string())
@@ -476,7 +479,7 @@ fn cap_logged_command(command: &str) -> (String, bool) {
         return (command.to_string(), false);
     }
     let capped: String = command.chars().take(MAX_LOGGED_COMMAND_LEN).collect();
-    (format!("{}...[truncated]", capped), true)
+    (format!("{capped}...[truncated]"), true)
 }
 
 pub(crate) fn redact_secrets(command: &str) -> String {
@@ -565,7 +568,7 @@ fn is_secret_flag(lower: &str) -> bool {
 
 fn redact_assignment(token: &str) -> String {
     if let Some((key, _)) = token.split_once('=') {
-        format!("{}=[REDACTED]", key)
+        format!("{key}=[REDACTED]")
     } else {
         "[REDACTED]".to_string()
     }

@@ -10,18 +10,71 @@ use super::poller::{
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{ResponseWakeWork, WakeDelivery};
-use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::MasterToken;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
+
+fn owned_replacement_work(
+    msg: &OutboxMessage,
+) -> Result<crate::session::selection::OwnedReplacementWork, String> {
+    let payload = serde_json::to_value(msg).map_err(|error| error.to_string())?;
+    let work = crate::session::selection::OwnedReplacementWork::OrdinaryOwned {
+        message_id: msg.id.clone(),
+        body: msg.body.clone(),
+        payload: payload.clone(),
+        recipient: msg.to.clone(),
+        request: payload,
+    };
+    Ok(work)
+}
+
+fn owned_replacement_directories(
+    request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
+) -> Result<
+    (
+        crate::path_identity::VerifiedPathIdentity,
+        crate::path_identity::VerifiedPathIdentity,
+    ),
+    String,
+> {
+    let physical = crate::path_identity::verify_directory(Path::new(&request.cwd))
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let replica = teams::strict_wg_replica_anchor_from_cwd(Path::new(&request.cwd))
+        .ok()
+        .flatten()
+        .and_then(|root| crate::path_identity::verify_directory(&root).ok())
+        .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+    Ok((physical, replica))
+}
+
+fn owned_replacement_request(
+    plan: super::notice::ResolvedWakeSpawnPlan,
+    skip_tooling_save: bool,
+) -> (
+    crate::session::create_contracts::OwnedReplacementCreateRequest,
+    super::notice::ResolvedWakeAgentCommand,
+) {
+    let request = crate::session::create_contracts::OwnedReplacementCreateRequest {
+        shell: plan.spawn_shell,
+        shell_args: plan.spawn_args,
+        cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
+        name: Some(plan.session_name),
+        agent_id: plan.resolved_command.agent_id.clone(),
+        agent_label: plan.spawn_label,
+        skip_tooling_save,
+        git_repos: Vec::new(),
+        resolved_spawn: plan.configured_spawn,
+        host_shell: plan.resolved_agent_host_shell,
+    };
+    (request, plan.resolved_command)
+}
 
 async fn owned_snapshot(
     manager: &SessionManager,
@@ -98,9 +151,9 @@ async fn owned_peer_completion(
 }
 
 impl MailboxPoller {
-    pub(crate) async fn validate_outbox_action_and_mode<R: tauri::Runtime>(
+    pub(crate) async fn validate_outbox_action_and_mode<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -122,7 +175,7 @@ impl MailboxPoller {
                 }
                 _ => {
                     return Ok(std::ops::ControlFlow::Break(
-                        self.reject_message(path, msg, &format!("Unknown action '{}'", action))
+                        self.reject_message(path, msg, &format!("Unknown action '{action}'"))
                             .await,
                     ));
                 }
@@ -142,7 +195,7 @@ impl MailboxPoller {
                 self.reject_message(
                     path,
                     msg,
-                    &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
+                    &format!("Unsupported delivery mode '{mode}'. Valid: wake"),
                 )
                 .await,
             ));
@@ -150,9 +203,9 @@ impl MailboxPoller {
         Ok(std::ops::ControlFlow::Continue(()))
     }
 
-    pub(crate) async fn deliver_outbox_tail<R: tauri::Runtime>(
+    pub(crate) async fn deliver_outbox_tail<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &Path,
         msg: OutboxMessage,
         content: &str,
@@ -227,18 +280,18 @@ impl MailboxPoller {
     // throwaway `MailboxPoller::new()` (delivery-stateless: this method and its
     // whole `&self` callee chain read only `app.state::<...>()`, never the
     // poller's `poll_interval` / `retry_tracker` fields). See plan #791 §0.5 HIGH-1.
-    pub(crate) async fn deliver_wake<R: tauri::Runtime>(
+    pub(crate) async fn deliver_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
     ) -> Result<OutboxMessage, String> {
         self.deliver_wake_with_origin(app, msg, WakeDeliveryOrigin::FilesystemPoller)
             .await
     }
 
-    pub(crate) async fn deliver_wake_with_origin<R: tauri::Runtime>(
+    pub(crate) async fn deliver_wake_with_origin<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
     ) -> Result<OutboxMessage, String> {
@@ -257,9 +310,9 @@ impl MailboxPoller {
     /// #2232 phase 7: deliver a wake whose origin is the Co-managed provenance
     /// queue. `comanaged` is display-only and never part of routing; the
     /// existing entry points stay attribution-free.
-    async fn deliver_wake_with_attribution<R: tauri::Runtime>(
+    async fn deliver_wake_with_attribution<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
@@ -282,9 +335,9 @@ impl MailboxPoller {
     /// notice, cancellation, and guard capability are required for `InternalSystem`.
     /// Returns the annotated `OutboxMessage` for the `Delivered:` receipt; the
     /// internal-system arm builds its own envelope (it holds no serialized message).
-    pub(crate) async fn deliver_validated_wake<R: tauri::Runtime>(
+    pub(crate) async fn deliver_validated_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         validated: &ValidatedWake,
         comanaged: bool,
     ) -> Result<OutboxMessage, String> {
@@ -301,30 +354,36 @@ impl MailboxPoller {
         .await
     }
 
-    pub(crate) async fn deliver_wake_engine<R: tauri::Runtime>(
+    pub(crate) async fn deliver_wake_engine<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         delivery: WakeDelivery<'_>,
     ) -> Result<OutboxMessage, String> {
         let target_fqn = match &delivery {
             WakeDelivery::Peer { message, .. } => message.to.as_str(),
             WakeDelivery::InternalSystem { target, .. } => target.fqn(),
         };
-        let _response_delivery =
-            match app.try_state::<crate::api::message_store::MessageStoreState>() {
-                Some(state) => match &state.store {
-                    Ok(store) => Some(store.begin_response_delivery(target_fqn)?),
-                    Err(_) => None,
-                },
-                None => None,
-            };
+        let _response_delivery = match app.message_store() {
+            Some(state) => match &state.store {
+                Ok(store) => Some(store.begin_response_delivery(target_fqn)?),
+                Err(_) => None,
+            },
+            None => None,
+        };
         match delivery {
             WakeDelivery::Peer {
                 message,
                 origin,
                 comanaged,
                 response,
-            } => Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response)).await,
+            } => {
+                let delivery: std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = Result<OutboxMessage, String>> + Send + '_,
+                    >,
+                > = Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response));
+                delivery.await
+            }
             WakeDelivery::InternalSystem {
                 target,
                 notice,
@@ -344,9 +403,9 @@ impl MailboxPoller {
         }
     }
 
-    async fn deliver_peer_wake<R: tauri::Runtime>(
+    async fn deliver_peer_wake<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
@@ -389,8 +448,7 @@ impl MailboxPoller {
         //   The inline API send that used to map this to a rejected outcome no
         //   longer exists (#1177), so the DB dispatcher is now the only other
         //   caller, and it is exactly the one F-5 must keep out of this window.
-        if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>()
-        {
+        if let Some(g) = app.pty_purge() {
             if g.blocks_agent(&msg.to) {
                 return Err(format!(
                     "purge-room in progress for '{}'; wake deferred",
@@ -451,17 +509,13 @@ impl MailboxPoller {
         }
     }
 
-    async fn peer_wake_needs_owned_replacement<R: tauri::Runtime>(
+    async fn peer_wake_needs_owned_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         previous: Uuid,
     ) -> bool {
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
+        let manager = app.pty_sessions().read().await.clone();
         let Some(row) = manager.get_session(previous).await else {
             return false;
         };
@@ -481,22 +535,22 @@ impl MailboxPoller {
         )
     }
 
-    async fn owned_peer_source_is_current<R: tauri::Runtime>(
+    async fn owned_peer_source_is_current<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
-        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
         physical: &crate::path_identity::VerifiedPathIdentity,
     ) -> bool {
         if app
-            .try_state::<Arc<crate::session::purge_guard::PurgeGuard>>()
+            .pty_purge()
             .is_some_and(|purge| purge.blocks_agent(&msg.to))
         {
             return false;
         }
-        let settings = app.state::<SettingsState>().read().await.clone();
+        let settings = app.pty_settings().read().await.clone();
         let master = msg.token.as_deref().is_some_and(|token| {
-            app.try_state::<MasterToken>()
+            app.master_token()
                 .is_some_and(|master| master.matches(token))
                 || settings.root_token.as_deref() == Some(token)
         });
@@ -505,11 +559,7 @@ impl MailboxPoller {
                 let Ok(token) = Uuid::parse_str(token) else {
                     return false;
                 };
-                let manager = app
-                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-                    .read()
-                    .await
-                    .clone();
+                let manager = app.pty_sessions().read().await.clone();
                 let Some(sender) = manager.find_by_token(token).await else {
                     return false;
                 };
@@ -579,11 +629,11 @@ impl MailboxPoller {
         }
     }
 
-    async fn admit_owned_peer_replacement<R: tauri::Runtime>(
+    async fn admit_owned_peer_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
-        request: &crate::commands::session::OwnedReplacementCreateRequest,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
         previous_id: Uuid,
     ) -> Result<Option<OwnedPeerTarget>, String> {
         #[cfg(test)]
@@ -596,37 +646,18 @@ impl MailboxPoller {
                 return Ok(None);
             }
         }
-        use crate::session::selection::{
-            OwnedReplacementWork, ReplacementAdmissionStep, ResolvedReplacement,
-        };
-        let coordinator = app.state::<crate::session::selection::SelectionCoordinator>();
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        use crate::session::selection::{ReplacementAdmissionStep, ResolvedReplacement};
+        let coordinator = app.selection();
+        let manager = app.pty_sessions().read().await.clone();
+        let pty = app.pty_routes().clone();
         let gate = app
-            .try_state::<crate::api::message_store::MessageStoreState>()
+            .message_store()
             .and_then(|state| state.target_gate.as_ref().ok().cloned())
             .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
         let directory =
             crate::config::config_dir().ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-        let physical = crate::path_identity::verify_directory(Path::new(&request.cwd))
-            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-        let replica = teams::strict_wg_replica_anchor_from_cwd(Path::new(&request.cwd))
-            .ok()
-            .flatten()
-            .and_then(|root| crate::path_identity::verify_directory(&root).ok())
-            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-        let payload = serde_json::to_value(msg).map_err(|error| error.to_string())?;
-        let work = OwnedReplacementWork::OrdinaryOwned {
-            message_id: msg.id.clone(),
-            body: msg.body.clone(),
-            payload: payload.clone(),
-            recipient: msg.to.clone(),
-            request: payload,
-        };
+        let (physical, replica) = owned_replacement_directories(request)?;
+        let work = owned_replacement_work(msg)?;
         let mut prepared = None;
         loop {
             coordinator.wait_for_restore_release().await?;
@@ -700,9 +731,9 @@ impl MailboxPoller {
         }
     }
 
-    async fn deliver_owned_peer_replacement<R: tauri::Runtime>(
+    async fn deliver_owned_peer_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         delivery: (WakeDeliveryOrigin, bool),
         response: Option<&ResponseWakeWork>,
@@ -718,18 +749,7 @@ impl MailboxPoller {
         }) {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        let request = crate::commands::session::OwnedReplacementCreateRequest {
-            shell: plan.spawn_shell,
-            shell_args: plan.spawn_args,
-            cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
-            name: Some(plan.session_name),
-            agent_id: plan.resolved_command.agent_id.clone(),
-            agent_label: plan.spawn_label,
-            skip_tooling_save: dispatch.1,
-            git_repos: Vec::new(),
-            resolved_spawn: plan.configured_spawn,
-            host_shell: plan.resolved_agent_host_shell,
-        };
+        let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
         let Some(target) = self
             .admit_owned_peer_replacement(app, msg, &request, previous)
             .await?
@@ -777,19 +797,15 @@ impl MailboxPoller {
             response: response.cloned(),
             flags_present: dispatch.1,
             request,
-            resolved_command: plan.resolved_command,
+            resolved_command,
             continuation,
             gate: target.gate,
             exact: Some(target.exact),
             stripe: Some(target.stripe),
         };
         let completion = execution.continuation.clone();
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let manager = app.pty_sessions().read().await.clone();
+        let pty = app.pty_routes().clone();
         let app = app.clone();
         let delivery = self.delivery_poller();
         #[cfg(test)]
@@ -798,18 +814,19 @@ impl MailboxPoller {
         }
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
-        let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
-            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
-            if !source.bind(&execution.continuation) {
-                return Ok(OwnedPeerWakeStep::Retained);
-            }
-            let result = delivery
-                .execute_owned_peer_replacement(&app, &mut execution)
-                .await;
-            source.returned(result.is_err());
-            result
-        })
-        .await;
+        let (result, pty) =
+            crate::config::sessions_persistence::run_owned_persist_core(async move {
+                let mut source = crate::session::selection::SourceExecutorGuard::unbound();
+                if !source.bind(&execution.continuation) {
+                    return (Ok(OwnedPeerWakeStep::Retained), pty);
+                }
+                let result = delivery
+                    .execute_owned_peer_replacement(&app, &pty, &mut execution)
+                    .await;
+                source.returned(result.is_err());
+                (result, pty)
+            })
+            .await;
         owned_peer_completion(result, &completion, &manager, &pty).await
     }
 }

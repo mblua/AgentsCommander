@@ -15,6 +15,11 @@ use crate::commands::ac_discovery::AcDiscoveryResult;
 use crate::commands::config::{
     ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult,
 };
+use crate::commands::session::{
+    cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
+    list_preflight_test_targets_inner, start_preflight_test_inner, PreflightState,
+    PreflightTestDeps, PreflightTestDraft, PreflightTestSnapshot,
+};
 use crate::config::projects::ProjectRegistration;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
@@ -97,6 +102,10 @@ pub(crate) trait WebOperations: AgentUpdateOperations + Send + Sync {
     fn response_close(&self) -> Option<&crate::pty::manager::ResponseCloseState>;
     fn detached(&self) -> &crate::app_state::DetachedSessionsState;
     fn restore(&self) -> Option<&Arc<crate::app_state::RestoreInProgress>>;
+    /// #3516 - the preflight-test state; `None` when this host has none.
+    fn preflight_state(&self) -> Option<Arc<crate::commands::session::PreflightState>> {
+        None
+    }
     fn emit_agent_file_save_events(&self, reply: &crate::config::settings::AgentFileSaveReply);
     fn create_session<'a>(
         &'a self,
@@ -190,7 +199,7 @@ impl super::command_port::WebCommandDispatcher for WebCommandsDispatcher {
 }
 
 /// Dispatch a WebSocket JSON command and return the result as JSON.
-/// Format: { "id": N, "cmd": "command_name", "args": { ... } }
+/// Format: { "id": N, "cmd": "`command_name`", "args": { ... } }
 /// Returns: { "id": N, "result": ... } or { "id": N, "error": "..." }
 pub async fn dispatch(state: &WsState, id: u64, cmd: &str, args: &Value) -> Value {
     match dispatch_inner(state, cmd, args).await {
@@ -270,7 +279,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         "list_detached_sessions" => {
             let detached = operations.detached();
             let set = detached.lock().unwrap();
-            Ok(json!(set.iter().map(|u| u.to_string()).collect::<Vec<_>>()))
+            Ok(json!(set.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()))
         }
 
         // --- Window commands (no-ops for web clients) ---
@@ -312,7 +321,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             Ok(json!(null))
         }
 
-        _ => Err(format!("Unknown command: {}", cmd)),
+        _ => Err(format!("Unknown command: {cmd}")),
     }
 }
 
@@ -358,8 +367,84 @@ async fn dispatch_configuration_command(
             Some(coding_agent_dispatch::dispatch_coding_agent_command(state, cmd, args).await)
         }
 
+        "list_preflight_test_targets" => Some(list_preflight_targets(state, args).await),
+        "describe_preflight_target" => Some(describe_preflight(state, args).await),
+        "start_preflight_test" => Some(start_preflight(state, args).await),
+        "get_preflight_test" => Some(preflight_run(state, args, get_preflight_test_inner)),
+        "cancel_preflight_test" => Some(preflight_run(state, args, cancel_preflight_test_inner)),
+
         _ => None,
     }
+}
+
+fn preflight_deps(state: &WsState) -> Result<PreflightTestDeps, String> {
+    Ok(PreflightTestDeps {
+        settings: state.settings.clone(),
+        session_mgr: state.session_mgr.clone(),
+        pty_mgr: state.pty_mgr.clone(),
+        state: state
+            .operations
+            .preflight_state()
+            .ok_or_else(|| "Preflight tests are unavailable.".to_string())?,
+    })
+}
+
+fn profile_letter(args: &Value) -> Option<String> {
+    args.get("profileLetter")
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
+/// #3832 - omitted or null means the saved chain; any other shape must decode exactly.
+fn preflight_draft(args: &Value) -> Result<Option<PreflightTestDraft>, String> {
+    match args.get("draft") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => require_json(args, "draft").map(Some),
+    }
+}
+
+async fn list_preflight_targets(state: &WsState, args: &Value) -> Result<Value, String> {
+    let deps = preflight_deps(state)?;
+    let agent_id = require_str(args, "agentId")?;
+    let replica_paths: Vec<String> = require_json(args, "replicaPaths")?;
+    let targets = list_preflight_test_targets_inner(&deps, agent_id, replica_paths).await?;
+    serde_json::to_value(targets).map_err(|e| e.to_string())
+}
+
+async fn describe_preflight(state: &WsState, args: &Value) -> Result<Value, String> {
+    let deps = preflight_deps(state)?;
+    let (agent_id, replica_path) = (
+        require_str(args, "agentId")?,
+        require_str(args, "replicaPath")?,
+    );
+    let draft = preflight_draft(args)?;
+    let letter = profile_letter(args);
+    let description =
+        describe_preflight_target_inner(&deps, agent_id, letter, replica_path, draft).await?;
+    serde_json::to_value(description).map_err(|e| e.to_string())
+}
+
+async fn start_preflight(state: &WsState, args: &Value) -> Result<Value, String> {
+    let deps = preflight_deps(state)?;
+    let (agent_id, replica_path) = (
+        require_str(args, "agentId")?,
+        require_str(args, "replicaPath")?,
+    );
+    let revision = require_str(args, "settingsRevision")?;
+    let (draft, letter) = (preflight_draft(args)?, profile_letter(args));
+    let run_id =
+        start_preflight_test_inner(deps, agent_id, letter, replica_path, revision, draft).await?;
+    serde_json::to_value(run_id).map_err(|e| e.to_string())
+}
+
+fn preflight_run(
+    state: &WsState,
+    args: &Value,
+    read: fn(&PreflightState, &str) -> Result<PreflightTestSnapshot, String>,
+) -> Result<Value, String> {
+    let preflight = preflight_deps(state)?.state;
+    let snapshot = read(&preflight, &require_str(args, "runId")?)?;
+    serde_json::to_value(snapshot).map_err(|e| e.to_string())
 }
 
 async fn pty_write_command(state: &WsState, args: &Value) -> Result<Value, String> {
@@ -558,11 +643,7 @@ pub(crate) fn binary_pty_write_succeeded(
     match result {
         Ok(()) => true,
         Err(err) => {
-            log::warn!(
-                "[web-server] PTY binary write failed for session {}: {}",
-                uuid,
-                err
-            );
+            log::warn!("[web-server] PTY binary write failed for session {uuid}: {err}");
             false
         }
     }

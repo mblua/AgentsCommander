@@ -19,21 +19,17 @@ use super::ac_root::{ac_root_for_project, existing_ac_root, has_ac_root};
 use super::settings::AppSettings;
 
 #[cfg(test)]
-pub(crate) use super::settings::project_path::{
+pub(crate) use super::settings::{
     decode_instance_relative, encode_instance_relative, resolve_registrations, CandidateResolver,
     DirectoryIdentity, FsCandidateResolver, RawPair, RelDecodeError, RepairKind, SideOutcome,
 };
-pub(crate) use super::settings::project_path::{
+pub(crate) use super::settings::{
     display_canonical, normalize_for_compare, IssueKind, ProjectPathPersistenceState,
     ProjectSource, RawJsonField, RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
 
 pub(crate) fn configured_project_is_dir(path: &Path) -> bool {
     project_fs::project_path_is_dir(path)
-}
-
-pub(crate) fn canonical_source_project(path: &Path) -> std::io::Result<PathBuf> {
-    project_fs::canonical_project_path(path)
 }
 
 pub(crate) fn canonical_repo_source(path: &Path) -> std::io::Result<PathBuf> {
@@ -195,21 +191,24 @@ impl NewProjectSettingsStore {
     fn begin(
         &self,
         settings: &AppSettings,
-    ) -> Result<Option<crate::config::settings::ProjectPathsWriteTransaction>, ProjectError> {
-        let path = match self {
+    ) -> Result<Option<crate::config::settings::SettingsProjectTransaction>, ProjectError> {
+        let target: crate::config::settings::SettingsFileTarget = match self {
             #[cfg(test)]
             Self::CallerOwned => return Ok(None),
             #[cfg(test)]
-            Self::Path(path) => path.clone(),
+            Self::Path(path) => crate::config::settings::SettingsFileTarget::for_test_path(path),
             #[cfg(not(test))]
-            Self::Production => crate::config::settings::settings_path().ok_or_else(|| {
-                ProjectError::ProjectSettingsFailed {
-                    operation: "refresh",
-                    error: "Could not determine settings directory".to_string(),
-                }
-            })?,
+            Self::Production => {
+                crate::config::settings::instance_settings_target().ok_or_else(|| {
+                    ProjectError::ProjectSettingsFailed {
+                        operation: "refresh",
+                        error: "Could not determine settings directory".to_string(),
+                    }
+                })?
+            }
         };
-        crate::config::settings::begin_project_paths_transaction_at_path(settings, &path)
+        target
+            .begin_project_paths(settings)
             .map(Some)
             .map_err(|error| ProjectError::ProjectSettingsFailed {
                 operation: "refresh",
@@ -231,9 +230,9 @@ fn register_new_project_with_store(
         )
     })?;
     let mut transaction = store.begin(settings)?;
-    let before_raw = transaction
+    let checkpoint: Option<crate::config::settings::SettingsProjectCheckpoint> = transaction
         .as_ref()
-        .map(|token| token.raw_project_projection())
+        .map(crate::config::settings::SettingsProjectTransaction::checkpoint)
         .transpose()
         .map_err(|error| ProjectError::ProjectSettingsFailed {
             operation: "refresh",
@@ -273,8 +272,8 @@ fn register_new_project_with_store(
     }
     if let Err(error) = prepared.revalidate() {
         if saved {
-            if let (Some(token), Some(raw)) = (&mut transaction, &before_raw) {
-                match token.restore_raw_project_projection(raw) {
+            if let (Some(token), Some(checkpoint)) = (&mut transaction, &checkpoint) {
+                match token.restore_checkpoint(checkpoint) {
                     Ok(written) => *settings = written,
                     Err(rollback_error) => {
                         *settings = token.fresh_settings().clone();
@@ -641,7 +640,7 @@ pub fn archived_projects_from_paths(archived_project_paths: &[String]) -> Vec<Ar
                 path: raw.clone(),
                 folder_name: path
                     .file_name()
-                    .and_then(|n| n.to_str())
+                    .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or(raw)
                     .to_string(),
                 exists: is_real_directory(path),
@@ -670,7 +669,7 @@ pub fn enumerate_registered_project_candidates(project_paths: &[String]) -> Vec<
             if !is_real_directory(&path) {
                 return ControlFlow::Continue(());
             }
-            let name = match path.file_name().and_then(|n| n.to_str()) {
+            let name = match path.file_name().and_then(std::ffi::OsStr::to_str) {
                 Some(name) => name,
                 None => return ControlFlow::Continue(()),
             };
@@ -702,7 +701,7 @@ fn push_project_candidate(
     }
     let Some(folder_name) = path
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map(str::to_string)
     else {
         return;
@@ -740,7 +739,7 @@ fn canonical_key(path: &Path) -> Option<String> {
 
 fn path_compare_key(s: &str) -> String {
     let without_extended = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else {
         s.strip_prefix(r"\\?\").unwrap_or(s).to_string()
     };

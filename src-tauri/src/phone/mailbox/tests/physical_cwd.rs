@@ -55,7 +55,7 @@ fn physical_cwd_child_or_parent(wrapper: &str) -> bool {
         .env("TEMP", &temporary)
         .env("TMP", &temporary)
         .env("TMPDIR", &temporary)
-        .creation_flags(0x08000000)
+        .creation_flags(0x0800_0000)
         .spawn()
         .expect("spawn exact physical cwd child");
     let mut owner = RetainedSourceChild {
@@ -92,7 +92,6 @@ async fn response_request_physical_cwd_boundary() {
     ) {
         return;
     }
-    use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
     let configured = PathBuf::from(
         std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
     );
@@ -116,54 +115,8 @@ async fn response_request_physical_cwd_boundary() {
         assert_eq!(crate::config::config_dir().unwrap(), configured);
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle();
-        let tracker = crate::pty::manager::ResponseCloseState::default();
-        let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        *managers.write().await = SessionManager::with_response_close(
-            tracker.clone(),
-            app.state::<crate::app_state::AppOwners>().activity.clone(),
-        );
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-        pty.lock().unwrap().bind_response_close(tracker.clone());
-        app.manage(tracker.clone());
-        let (route, sender, member_id) =
-            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
-        let manager = managers.read().await.clone();
-        manager.set_is_coordinator(sender, true).await;
-        manager
-            .set_agent_kind(
-                member_id,
-                Some(crate::session::profile::CodingAgentKind::Codex),
-            )
-            .await;
-        let roots = {
-            let state = app.state::<SettingsState>();
-            let mut settings = state.write().await;
-            settings.response_close_enabled = true;
-            settings.response_close_idle_seconds = 30;
-            settings.project_paths.clone()
-        };
-        let member_physical = crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
-        let coordinator_physical =
-            crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
-        let ordinary_member =
-            crate::path_utils::normalize_windows_verbatim_path_buf(&member_physical.canonical_path);
-        let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
-            &coordinator_physical.canonical_path,
-        );
-        assert_ne!(ordinary_member, member_physical.canonical_path);
-        assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
-        assert_eq!(
-            crate::path_identity::verify_directory(&ordinary_member)
-                .unwrap()
-                .object_id,
-            member_physical.object_id
-        );
-        assert_eq!(
-            crate::path_identity::verify_directory(&ordinary_coordinator)
-                .unwrap()
-                .object_id,
-            coordinator_physical.object_id
-        );
+        let session = bind_physical_cwd_session(&fixture).await;
+        let paths = physical_cwd_paths(&fixture);
         let other = fixture._temp.path().join("different-directory");
         std::fs::create_dir(&other).unwrap();
         let file = fixture._temp.path().join("regular-file");
@@ -175,143 +128,27 @@ async fn response_request_physical_cwd_boundary() {
             other.join("..").join("different-directory"),
         ];
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        for publisher in [
-            P::Manager,
-            P::Pty,
-            P::RawOutput,
-            P::Detector,
-            P::Menu,
-            P::Hold,
-        ] {
-            tracker.bind_publisher(publisher);
-        }
-        tracker.mark_work_bootstrapped();
-        tracker.try_enable_readiness().unwrap();
-        let key = "physical-cwd-request".to_string();
-        let digest = "physical-cwd-body".to_string();
-        let mut admission = tracker
-            .reserve_work(&route.target.canonical_fqn, &key)
-            .unwrap();
-        admission.accept_durable(&digest).unwrap();
-        drop(admission);
-        let work = ResponseWakeWork {
-            diagnostic_message_id: None,
-            state: tracker.clone(),
-            target: route.target.canonical_fqn.clone(),
-            key,
-            digest,
-            attempt: Arc::new(Mutex::new(None)),
-            return_context: None,
-            return_routes: None,
-            delivery_context: None,
-        };
-        manager
+        bind_physical_cwd_publishers(&session.tracker);
+        let work = reserve_physical_cwd_work(&session);
+        session
+            .manager
             .with_current_carrier_snapshot(&permit, |current| {
-                let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
-                let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
-                let member = ResponseRouteIdentity {
-                    target: route.target.canonical_fqn.clone(),
-                    session_id: member_id,
-                    token: member_row.token,
-                    generation: tracker.generation(member_id).unwrap(),
-                    carrier_version: current.versions[&member_id],
-                    backend: member_row.backend_kind,
-                };
-                let coordinator = ResponseRouteIdentity {
-                    target: route.sender.canonical_fqn.clone(),
-                    session_id: sender,
-                    token: coordinator_row.token,
-                    generation: tracker.generation(sender).unwrap(),
-                    carrier_version: current.versions[&sender],
-                    backend: coordinator_row.backend_kind,
-                };
-                let mut positive = current.clone();
-                positive
-                    .rows
-                    .iter_mut()
-                    .find(|row| row.id == member_id)
-                    .unwrap()
-                    .working_directory = if canonical_member {
-                    &member_physical.canonical_path
-                } else {
-                    &ordinary_member
-                }
-                .to_string_lossy()
-                .into_owned();
-                positive
-                    .rows
-                    .iter_mut()
-                    .find(|row| row.id == sender)
-                    .unwrap()
-                    .working_directory = if canonical_coordinator {
-                    &coordinator_physical.canonical_path
-                } else {
-                    &ordinary_coordinator
-                }
-                .to_string_lossy()
-                .into_owned();
-                for role in [member_id, sender] {
-                    // The first case reaches the real write boundary; each later case changes one
-                    // fact.
-                    for failure in 0..7 {
-                        let mut snapshot = positive.clone();
-                        let mut prepared = PreparedResponseRequest {
-                            member: member.clone(),
-                            coordinator: coordinator.clone(),
-                            roots: roots.clone(),
-                        };
-                        if (1..=4).contains(&failure) {
-                            snapshot
-                                .rows
-                                .iter_mut()
-                                .find(|row| row.id == role)
-                                .unwrap()
-                                .working_directory =
-                                invalid_paths[failure - 1].to_string_lossy().into_owned();
-                        }
-                        if failure == 5 {
-                            if role == member_id {
-                                prepared.member.generation += 1;
-                            } else {
-                                prepared.coordinator.generation += 1;
-                            }
-                        }
-                        if failure == 6 {
-                            snapshot
-                                .rows
-                                .iter_mut()
-                                .find(|row| row.id == role)
-                                .unwrap()
-                                .backend_kind = SessionBackendKind::ContainerTransport;
-                            if role == member_id {
-                                prepared.member.backend = SessionBackendKind::ContainerTransport;
-                            } else {
-                                prepared.coordinator.backend =
-                                    SessionBackendKind::ContainerTransport;
-                            }
-                        }
-                        let disposal = work.candidate_disposal();
-                        let session = snapshot
-                            .rows
-                            .iter()
-                            .find(|row| row.id == member_id)
-                            .unwrap();
-                        reserve_response_request_at_write(
-                            app,
-                            &snapshot,
-                            session,
-                            &prepared,
-                            &work,
-                            &disposal.0,
-                        );
-                        assert_eq!(
-                            disposal.0.candidate.lock().unwrap().is_some(),
-                            failure == 0,
-                            "role={role} case={failure}"
-                        );
-                        drop(disposal);
-                    }
-                }
+                let (member, coordinator, positive) = physical_cwd_positive(
+                    current,
+                    &session,
+                    &paths,
+                    canonical_member,
+                    canonical_coordinator,
+                );
+                check_request_physical_cwd_cases(
+                    app,
+                    &session,
+                    &positive,
+                    &member,
+                    &coordinator,
+                    &work,
+                    &invalid_paths,
+                );
             })
             .await;
         drop(permit);
@@ -322,6 +159,293 @@ async fn response_request_physical_cwd_boundary() {
 }
 
 #[cfg(windows)]
+fn reserve_physical_cwd_work(session: &PhysicalCwdSession) -> ResponseWakeWork {
+    let tracker = &session.tracker;
+    let route = &session.route;
+    let key = "physical-cwd-request".to_string();
+    let digest = "physical-cwd-body".to_string();
+    let mut admission = tracker
+        .reserve_work(&route.target.canonical_fqn, &key)
+        .unwrap();
+    admission.accept_durable(&digest).unwrap();
+    drop(admission);
+    ResponseWakeWork {
+        diagnostic_message_id: None,
+        state: tracker.clone(),
+        target: route.target.canonical_fqn.clone(),
+        key,
+        digest,
+        attempt: Arc::new(Mutex::new(None)),
+        return_context: None,
+        return_routes: None,
+        delivery_context: None,
+    }
+}
+
+#[cfg(windows)]
+fn check_request_physical_cwd_cases<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session: &PhysicalCwdSession,
+    positive: &crate::session::manager::CarrierSnapshot,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+    work: &ResponseWakeWork,
+    invalid_paths: &[PathBuf; 4],
+) {
+    let (member_id, sender) = (session.member_id, session.sender);
+    for role in [member_id, sender] {
+        // The first case reaches the real write boundary; each later case changes one
+        // fact.
+        for failure in 0..7 {
+            let mut snapshot = positive.clone();
+            let mut prepared = PreparedResponseRequest {
+                member: member.clone(),
+                coordinator: coordinator.clone(),
+                roots: session.roots.clone(),
+            };
+            apply_physical_cwd_failure(
+                &mut snapshot,
+                session,
+                role,
+                failure,
+                invalid_paths,
+                &mut prepared.member,
+                &mut prepared.coordinator,
+            );
+            let disposal = work.candidate_disposal();
+            let session = snapshot
+                .rows
+                .iter()
+                .find(|row| row.id == member_id)
+                .unwrap();
+            reserve_response_request_at_write(
+                app,
+                &snapshot,
+                session,
+                &prepared,
+                work,
+                &disposal.0,
+            );
+            assert_eq!(
+                disposal.0.candidate.lock().unwrap().is_some(),
+                failure == 0,
+                "role={role} case={failure}"
+            );
+            drop(disposal);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct PhysicalCwdSession {
+    tracker: crate::pty::manager::ResponseCloseState,
+    pty: Arc<Mutex<PtyManager>>,
+    route: crate::config::teams::VerifiedPtyInputRoute,
+    sender: Uuid,
+    member_id: Uuid,
+    manager: SessionManager,
+    roots: Vec<String>,
+}
+
+#[cfg(windows)]
+async fn bind_physical_cwd_session(fixture: &MailboxFixture) -> PhysicalCwdSession {
+    let app = fixture.app.handle();
+    let tracker = crate::pty::manager::ResponseCloseState::default();
+    let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+    *managers.write().await = SessionManager::with_response_close(
+        tracker.clone(),
+        app.state::<crate::app_state::AppOwners>().activity.clone(),
+    );
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    pty.lock().unwrap().bind_response_close(tracker.clone());
+    app.manage(tracker.clone());
+    let (route, sender, member_id) =
+        seed_shared_pty_engine_sessions(fixture, SessionStatus::Idle).await;
+    let manager = managers.read().await.clone();
+    manager.set_is_coordinator(sender, true).await;
+    manager
+        .set_agent_kind(
+            member_id,
+            Some(crate::session::profile::CodingAgentKind::Codex),
+        )
+        .await;
+    let roots = {
+        let state = app.state::<SettingsState>();
+        let mut settings = state.write().await;
+        settings.response_close_enabled = true;
+        settings.response_close_idle_seconds = 30;
+        settings.project_paths.clone()
+    };
+    PhysicalCwdSession {
+        tracker,
+        pty,
+        route,
+        sender,
+        member_id,
+        manager,
+        roots,
+    }
+}
+
+#[cfg(windows)]
+struct PhysicalCwdPaths {
+    member_physical: crate::path_identity::VerifiedPathIdentity,
+    coordinator_physical: crate::path_identity::VerifiedPathIdentity,
+    ordinary_member: PathBuf,
+    ordinary_coordinator: PathBuf,
+}
+
+#[cfg(windows)]
+fn physical_cwd_paths(fixture: &MailboxFixture) -> PhysicalCwdPaths {
+    let member_physical = crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+    let coordinator_physical = crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+    let ordinary_member =
+        crate::path_utils::normalize_windows_verbatim_path_buf(&member_physical.canonical_path);
+    let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+        &coordinator_physical.canonical_path,
+    );
+    assert_ne!(ordinary_member, member_physical.canonical_path);
+    assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+    assert_eq!(
+        crate::path_identity::verify_directory(&ordinary_member)
+            .unwrap()
+            .object_id,
+        member_physical.object_id
+    );
+    assert_eq!(
+        crate::path_identity::verify_directory(&ordinary_coordinator)
+            .unwrap()
+            .object_id,
+        coordinator_physical.object_id
+    );
+    PhysicalCwdPaths {
+        member_physical,
+        coordinator_physical,
+        ordinary_member,
+        ordinary_coordinator,
+    }
+}
+
+#[cfg(windows)]
+fn bind_physical_cwd_publishers(tracker: &crate::pty::manager::ResponseCloseState) {
+    use crate::pty::manager::ResponseClosePublisher as P;
+    for publisher in [
+        P::Manager,
+        P::Pty,
+        P::RawOutput,
+        P::Detector,
+        P::Menu,
+        P::Hold,
+    ] {
+        tracker.bind_publisher(publisher);
+    }
+    tracker.mark_work_bootstrapped();
+    tracker.try_enable_readiness().unwrap();
+}
+
+#[cfg(windows)]
+fn physical_cwd_positive(
+    current: &crate::session::manager::CarrierSnapshot,
+    session: &PhysicalCwdSession,
+    paths: &PhysicalCwdPaths,
+    canonical_member: bool,
+    canonical_coordinator: bool,
+) -> (
+    crate::pty::manager::ResponseRouteIdentity,
+    crate::pty::manager::ResponseRouteIdentity,
+    crate::session::manager::CarrierSnapshot,
+) {
+    use crate::pty::manager::ResponseRouteIdentity;
+    let (route, tracker) = (&session.route, &session.tracker);
+    let (member_id, sender) = (session.member_id, session.sender);
+    let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
+    let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
+    let member = ResponseRouteIdentity {
+        target: route.target.canonical_fqn.clone(),
+        session_id: member_id,
+        token: member_row.token,
+        generation: tracker.generation(member_id).unwrap(),
+        carrier_version: current.versions[&member_id],
+        backend: member_row.backend_kind,
+    };
+    let coordinator = ResponseRouteIdentity {
+        target: route.sender.canonical_fqn.clone(),
+        session_id: sender,
+        token: coordinator_row.token,
+        generation: tracker.generation(sender).unwrap(),
+        carrier_version: current.versions[&sender],
+        backend: coordinator_row.backend_kind,
+    };
+    let mut positive = current.clone();
+    positive
+        .rows
+        .iter_mut()
+        .find(|row| row.id == member_id)
+        .unwrap()
+        .working_directory = if canonical_member {
+        &paths.member_physical.canonical_path
+    } else {
+        &paths.ordinary_member
+    }
+    .to_string_lossy()
+    .into_owned();
+    positive
+        .rows
+        .iter_mut()
+        .find(|row| row.id == sender)
+        .unwrap()
+        .working_directory = if canonical_coordinator {
+        &paths.coordinator_physical.canonical_path
+    } else {
+        &paths.ordinary_coordinator
+    }
+    .to_string_lossy()
+    .into_owned();
+    (member, coordinator, positive)
+}
+
+#[cfg(windows)]
+fn apply_physical_cwd_failure(
+    snapshot: &mut crate::session::manager::CarrierSnapshot,
+    session: &PhysicalCwdSession,
+    role: Uuid,
+    failure: usize,
+    invalid_paths: &[PathBuf; 4],
+    member: &mut crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &mut crate::pty::manager::ResponseRouteIdentity,
+) {
+    let member_id = session.member_id;
+    if (1..=4).contains(&failure) {
+        snapshot
+            .rows
+            .iter_mut()
+            .find(|row| row.id == role)
+            .unwrap()
+            .working_directory = invalid_paths[failure - 1].to_string_lossy().into_owned();
+    }
+    if failure == 5 {
+        if role == member_id {
+            member.generation += 1;
+        } else {
+            coordinator.generation += 1;
+        }
+    }
+    if failure == 6 {
+        snapshot
+            .rows
+            .iter_mut()
+            .find(|row| row.id == role)
+            .unwrap()
+            .backend_kind = SessionBackendKind::ContainerTransport;
+        if role == member_id {
+            member.backend = SessionBackendKind::ContainerTransport;
+        } else {
+            coordinator.backend = SessionBackendKind::ContainerTransport;
+        }
+    }
+}
+
+#[cfg(windows)]
 #[tokio::test]
 async fn response_pair_physical_cwd_boundary() {
     if physical_cwd_child_or_parent(
@@ -329,7 +453,6 @@ async fn response_pair_physical_cwd_boundary() {
     ) {
         return;
     }
-    use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
     let configured = PathBuf::from(
         std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
     );
@@ -353,54 +476,8 @@ async fn response_pair_physical_cwd_boundary() {
         assert_eq!(crate::config::config_dir().unwrap(), configured);
         let fixture = make_mailbox_fixture();
         let app = fixture.app.handle();
-        let tracker = crate::pty::manager::ResponseCloseState::default();
-        let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        *managers.write().await = SessionManager::with_response_close(
-            tracker.clone(),
-            app.state::<crate::app_state::AppOwners>().activity.clone(),
-        );
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-        pty.lock().unwrap().bind_response_close(tracker.clone());
-        app.manage(tracker.clone());
-        let (route, sender, member_id) =
-            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
-        let manager = managers.read().await.clone();
-        manager.set_is_coordinator(sender, true).await;
-        manager
-            .set_agent_kind(
-                member_id,
-                Some(crate::session::profile::CodingAgentKind::Codex),
-            )
-            .await;
-        let roots = {
-            let state = app.state::<SettingsState>();
-            let mut settings = state.write().await;
-            settings.response_close_enabled = true;
-            settings.response_close_idle_seconds = 30;
-            settings.project_paths.clone()
-        };
-        let member_physical = crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
-        let coordinator_physical =
-            crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
-        let ordinary_member =
-            crate::path_utils::normalize_windows_verbatim_path_buf(&member_physical.canonical_path);
-        let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
-            &coordinator_physical.canonical_path,
-        );
-        assert_ne!(ordinary_member, member_physical.canonical_path);
-        assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
-        assert_eq!(
-            crate::path_identity::verify_directory(&ordinary_member)
-                .unwrap()
-                .object_id,
-            member_physical.object_id
-        );
-        assert_eq!(
-            crate::path_identity::verify_directory(&ordinary_coordinator)
-                .unwrap()
-                .object_id,
-            coordinator_physical.object_id
-        );
+        let session = bind_physical_cwd_session(&fixture).await;
+        let paths = physical_cwd_paths(&fixture);
         let other = fixture._temp.path().join("different-directory");
         std::fs::create_dir(&other).unwrap();
         let file = fixture._temp.path().join("regular-file");
@@ -412,121 +489,28 @@ async fn response_pair_physical_cwd_boundary() {
             other.join("..").join("different-directory"),
         ];
         assert_eq!(
-            roots,
+            session.roots,
             app.state::<SettingsState>().read().await.project_paths
         );
-        for publisher in [
-            P::Manager,
-            P::Pty,
-            P::RawOutput,
-            P::Detector,
-            P::Menu,
-            P::Hold,
-        ] {
-            tracker.bind_publisher(publisher);
-        }
-        tracker.mark_work_bootstrapped();
-        tracker.try_enable_readiness().unwrap();
+        bind_physical_cwd_publishers(&session.tracker);
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        manager
+        session
+            .manager
             .with_current_carrier_snapshot(&permit, |current| {
-                let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
-                let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
-                let member = ResponseRouteIdentity {
-                    target: route.target.canonical_fqn.clone(),
-                    session_id: member_id,
-                    token: member_row.token,
-                    generation: tracker.generation(member_id).unwrap(),
-                    carrier_version: current.versions[&member_id],
-                    backend: member_row.backend_kind,
-                };
-                let coordinator = ResponseRouteIdentity {
-                    target: route.sender.canonical_fqn.clone(),
-                    session_id: sender,
-                    token: coordinator_row.token,
-                    generation: tracker.generation(sender).unwrap(),
-                    carrier_version: current.versions[&sender],
-                    backend: coordinator_row.backend_kind,
-                };
-                let mut positive = current.clone();
-                positive
-                    .rows
-                    .iter_mut()
-                    .find(|row| row.id == member_id)
-                    .unwrap()
-                    .working_directory = if canonical_member {
-                    &member_physical.canonical_path
-                } else {
-                    &ordinary_member
-                }
-                .to_string_lossy()
-                .into_owned();
-                positive
-                    .rows
-                    .iter_mut()
-                    .find(|row| row.id == sender)
-                    .unwrap()
-                    .working_directory = if canonical_coordinator {
-                    &coordinator_physical.canonical_path
-                } else {
-                    &ordinary_coordinator
-                }
-                .to_string_lossy()
-                .into_owned();
-                for role in [member_id, sender] {
-                    for failure in 0..7 {
-                        let mut snapshot = positive.clone();
-                        let mut captured_member = member.clone();
-                        let mut captured_coordinator = coordinator.clone();
-                        if (1..=4).contains(&failure) {
-                            snapshot
-                                .rows
-                                .iter_mut()
-                                .find(|row| row.id == role)
-                                .unwrap()
-                                .working_directory =
-                                invalid_paths[failure - 1].to_string_lossy().into_owned();
-                        }
-                        if failure == 5 {
-                            if role == member_id {
-                                captured_member.generation += 1;
-                            } else {
-                                captured_coordinator.generation += 1;
-                            }
-                        }
-                        if failure == 6 {
-                            snapshot
-                                .rows
-                                .iter_mut()
-                                .find(|row| row.id == role)
-                                .unwrap()
-                                .backend_kind = SessionBackendKind::ContainerTransport;
-                            if role == member_id {
-                                captured_member.backend = SessionBackendKind::ContainerTransport;
-                            } else {
-                                captured_coordinator.backend =
-                                    SessionBackendKind::ContainerTransport;
-                            }
-                        }
-                        let mut calls = 0;
-                        let result = with_verified_response_pair(
-                            &snapshot,
-                            &pty,
-                            &tracker,
-                            &captured_member,
-                            &captured_coordinator,
-                            |_, _| {
-                                calls += 1;
-                            },
-                        );
-                        assert_eq!(
-                            calls,
-                            usize::from(failure == 0),
-                            "role={role} case={failure}"
-                        );
-                        assert_eq!(result.is_some(), failure == 0);
-                    }
-                }
+                let (member, coordinator, positive) = physical_cwd_positive(
+                    current,
+                    &session,
+                    &paths,
+                    canonical_member,
+                    canonical_coordinator,
+                );
+                check_pair_physical_cwd_cases(
+                    &session,
+                    &positive,
+                    &member,
+                    &coordinator,
+                    &invalid_paths,
+                );
             })
             .await;
         drop(permit);
@@ -534,6 +518,49 @@ async fn response_pair_physical_cwd_boundary() {
     complete_physical_cwd_child(
         "phone::mailbox::tests::physical_cwd::response_pair_physical_cwd_boundary",
     );
+}
+
+#[cfg(windows)]
+fn check_pair_physical_cwd_cases(
+    session: &PhysicalCwdSession,
+    positive: &crate::session::manager::CarrierSnapshot,
+    member: &crate::pty::manager::ResponseRouteIdentity,
+    coordinator: &crate::pty::manager::ResponseRouteIdentity,
+    invalid_paths: &[PathBuf; 4],
+) {
+    for role in [session.member_id, session.sender] {
+        for failure in 0..7 {
+            let mut snapshot = positive.clone();
+            let mut captured_member = member.clone();
+            let mut captured_coordinator = coordinator.clone();
+            apply_physical_cwd_failure(
+                &mut snapshot,
+                session,
+                role,
+                failure,
+                invalid_paths,
+                &mut captured_member,
+                &mut captured_coordinator,
+            );
+            let mut calls = 0;
+            let result = with_verified_response_pair(
+                &snapshot,
+                &session.pty,
+                &session.tracker,
+                &captured_member,
+                &captured_coordinator,
+                |_, _| {
+                    calls += 1;
+                },
+            );
+            assert_eq!(
+                calls,
+                usize::from(failure == 0),
+                "role={role} case={failure}"
+            );
+            assert_eq!(result.is_some(), failure == 0);
+        }
+    }
 }
 
 #[cfg(windows)]

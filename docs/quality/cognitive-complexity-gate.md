@@ -65,6 +65,29 @@ without anyone touching the complexity. There is no re-anchoring path for that; 
 again to reduce the function to 25 or below, so there is no debt left to re-anchor, and remove the
 entry in the same pull request. Section 4 lists the edits that bounce this way.
 
+### STALE allowlist entry: an exemption that matches nothing (#4166)
+
+A `cog` entry of `sanitizing.allowlist.json` that accepts no NEW or STALE finding prints
+`STALE allowlist entry: ... matches no finding on <platform>`. Remove the entry in the same pull
+request. This is the one complexity result that **blocks** a pull request: the Complexity check
+step itself stays `continue-on-error`, so NEW and STALE baseline findings remain advisory, and the
+`Stale allowlist enforcement` step after it fails the leg only on this case. The other gates'
+stale allowlist entries still only warn.
+
+The checker's exit codes are a contract with that step and with `npm run ci:local`:
+
+| Exit | Meaning | CI and `ci:local` |
+|---:|---|---|
+| 0 | no finding, or `--report` mode | pass |
+| 1 | NEW or STALE baseline finding, or a capture/config failure | advisory (WARN) |
+| 2 | usage error | advisory (WARN) |
+| 3 | at least one unused `cog` allowlist entry, even alongside other findings | **fail** |
+
+If the Complexity check ran but recorded no valid exit code, the enforcement step fails with a
+transport diagnostic instead of assuming the allowlist is clean. A skipped or cancelled Complexity
+check is not enforced. macOS runs only on the full tier, so its allowlist state is enforced only
+when that leg runs.
+
 To reproduce a failure locally:
 
 ```bash
@@ -148,7 +171,10 @@ allows a bounded shrink.
   `The baseline may only shrink. Regenerating it does not legitimise new debt.`
 - **A shrink must be earned.** Removing an entry is accepted only when the pull request touched
   the entry's `.rs` file (it appears in `git diff --name-only <base>...HEAD`) or the file is gone
-  from the working tree. Otherwise the step prints
+  from the working tree. The id names the file that declares the module, so when its `mod:x`
+  segments resolve to out-of-line module files (`mod x;` loading `x.rs`, `x/mod.rs` or a
+  `#[path]` file), touching the resolved file or any module file it loads, recursively, also
+  counts (#3965). Otherwise the step prints
   `Baseline entry removed without touching its file: <id>#<anchor> (<platform>)` followed by
   `A shrink is only credible where the pull request changed the code. Include that file, or explain the removal in a toolchain-refresh pull request.`
 - **The single growth exemption is a toolchain refresh.** If the diff contains **no `.rs` path** and the

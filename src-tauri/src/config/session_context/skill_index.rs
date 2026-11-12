@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Filename for the agent role definition, auto-injected from the identity matrix.
-pub(crate) const ROLE_MD_FILENAME: &str = "Role.md";
+pub(crate) use crate::filesystem::projects::entities::roles::ROLE_FILE_NAME as ROLE_MD_FILENAME;
 pub(crate) const SKILLS_DIR_NAME: &str = "skills";
 pub(crate) const SKILL_MD_FILENAME: &str = "SKILL.md";
 pub(crate) const SKILL_FRONTMATTER_MAX_BYTES: usize = 16 * 1024;
@@ -28,7 +28,7 @@ pub(crate) const GENERATED_SKILLS_SECTION_REPLICA_LINE: &str =
 /// #1614: `render_skills_section`'s replica line exactly as it shipped
 /// through base commit d7008b34, frozen so a legacy rendered default context
 /// whose embedded skills section carries THIS line keeps classifying
-/// StaleGenerated and self-heals (#664) after the Room rename; consumed by
+/// `StaleGenerated` and self-heals (#664) after the Room rename; consumed by
 /// `is_provably_generated_legacy_skills_section`. Never edit.
 /// Provenance: the d7008b34 blob line 831, decoded; 131 bytes, sha256
 /// A5C74FD6...7EC9 (plan section 3.12 Table B); pinned by
@@ -40,7 +40,7 @@ pub(crate) const GENERATED_SKILLS_SECTION_REPLICA_LINE_BEFORE_ROOM_RENAME: &str 
 
 /// #1005 S1: `GENERATED_SKILLS_SECTION_INTRO` exactly as it shipped through
 /// base commit 08897ef, frozen so a legacy rendered default context (whose
-/// embedded skills section carries THIS intro) keeps classifying StaleGenerated
+/// embedded skills section carries THIS intro) keeps classifying `StaleGenerated`
 /// and self-heals (#664) after the intro rewrite; consumed by
 /// `is_provably_generated_legacy_skills_section`. Never edit.
 /// Provenance: one-off run of the shipped const at 08897ef printed len 560,
@@ -117,28 +117,17 @@ pub(crate) fn is_frontmatter_delimiter(line: &[u8], allow_bom: bool) -> bool {
     if allow_bom && trimmed.starts_with(&[0xEF, 0xBB, 0xBF]) {
         trimmed = &trimmed[3..];
     }
-    while trimmed
-        .first()
-        .map(|byte| byte.is_ascii_whitespace())
-        .unwrap_or(false)
-    {
+    while trimmed.first().is_some_and(u8::is_ascii_whitespace) {
         trimmed = &trimmed[1..];
     }
-    while trimmed
-        .last()
-        .map(|byte| byte.is_ascii_whitespace())
-        .unwrap_or(false)
-    {
+    while trimmed.last().is_some_and(u8::is_ascii_whitespace) {
         trimmed = &trimmed[..trimmed.len() - 1];
     }
     trimmed == b"---"
 }
 
 pub(crate) fn frontmatter_limit_error() -> String {
-    format!(
-        "frontmatter exceeds {} byte limit",
-        SKILL_FRONTMATTER_MAX_BYTES
-    )
+    format!("frontmatter exceeds {SKILL_FRONTMATTER_MAX_BYTES} byte limit")
 }
 
 pub(crate) fn append_frontmatter_line(
@@ -153,12 +142,12 @@ pub(crate) fn append_frontmatter_line(
 }
 
 pub(crate) fn frontmatter_utf8(bytes: Vec<u8>) -> Result<String, String> {
-    String::from_utf8(bytes).map_err(|e| format!("frontmatter is not valid UTF-8: {}", e))
+    String::from_utf8(bytes).map_err(|e| format!("frontmatter is not valid UTF-8: {e}"))
 }
 
 pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
     let mut file = crate::filesystem::context_skills::open_skill_frontmatter(path)
-        .map_err(|e| format!("failed to open SKILL.md frontmatter: {}", e))?;
+        .map_err(|e| format!("failed to open SKILL.md frontmatter: {e}"))?;
     let mut read_buffer = [0_u8; 1024];
     let mut current_line: Vec<u8> = Vec::new();
     let mut frontmatter: Vec<u8> = Vec::new();
@@ -167,7 +156,7 @@ pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
     loop {
         let read = file
             .read(&mut read_buffer)
-            .map_err(|e| format!("failed to read SKILL.md frontmatter: {}", e))?;
+            .map_err(|e| format!("failed to read SKILL.md frontmatter: {e}"))?;
         if read == 0 {
             break;
         }
@@ -175,15 +164,13 @@ pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
         for byte in &read_buffer[..read] {
             current_line.push(*byte);
 
-            if !saw_opening {
-                if current_line.len() > 1024 {
-                    return Err("missing opening frontmatter delimiter".to_string());
-                }
-            } else {
+            if saw_opening {
                 let remaining = SKILL_FRONTMATTER_MAX_BYTES.saturating_sub(frontmatter.len());
                 if current_line.len() > remaining.saturating_add(8) {
                     return Err(frontmatter_limit_error());
                 }
+            } else if current_line.len() > 1024 {
+                return Err("missing opening frontmatter delimiter".to_string());
             }
 
             if *byte != b'\n' {
@@ -230,17 +217,17 @@ pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
 
 pub(crate) fn find_exact_skill_entrypoint(skill_dir: &Path) -> Result<PathBuf, String> {
     let entries = crate::filesystem::context_skills::skill_source_entries(skill_dir)
-        .map_err(|e| format!("unable to read skill directory: {}", e))?;
+        .map_err(|e| format!("unable to read skill directory: {e}"))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| format!("unable to read skill directory entry: {}", e))?;
+        let entry = entry.map_err(|e| format!("unable to read skill directory entry: {e}"))?;
         if entry.file_name() != OsStr::new(SKILL_MD_FILENAME) {
             continue;
         }
 
         let file_type = entry
             .file_type()
-            .map_err(|e| format!("could not inspect exact SKILL.md entrypoint: {}", e))?;
+            .map_err(|e| format!("could not inspect exact SKILL.md entrypoint: {e}"))?;
         if file_type.is_symlink() {
             return Err("exact SKILL.md entrypoint is linked/reparse-point".to_string());
         }
@@ -296,7 +283,7 @@ pub(crate) fn yaml_field_string(
                 Ok(Some(trimmed.to_string()))
             }
         }
-        Some(_) => Err(format!("{} must be a string", key)),
+        Some(_) => Err(format!("{key} must be a string")),
     }
 }
 
@@ -351,9 +338,10 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
     let matrix_root_display = display_path(&canonical_matrix);
     let skills_path = matrix_path.join(directory);
     let skills_root_display =
-        crate::filesystem::context_skills::canonical_skill_source(&skills_path)
-            .map(|p| display_path(&p))
-            .unwrap_or_else(|_| display_path(&canonical_matrix.join(directory)));
+        crate::filesystem::context_skills::canonical_skill_source(&skills_path).map_or_else(
+            |_| display_path(&canonical_matrix.join(directory)),
+            |p| display_path(&p),
+        );
     let mut index = SkillIndex {
         matrix_root: Some(sanitize_skill_metadata_for_context(&matrix_root_display)),
         skills_root: Some(sanitize_skill_metadata_for_context(&skills_root_display)),
@@ -432,8 +420,8 @@ pub(crate) fn collect_skill_index(matrix_root: Option<&str>, directory: &str) ->
     }
 
     candidates.sort_by(|(left_name, _), (right_name, _)| {
-        (left_name.to_ascii_lowercase(), left_name.to_string())
-            .cmp(&(right_name.to_ascii_lowercase(), right_name.to_string()))
+        (left_name.to_ascii_lowercase(), left_name.clone())
+            .cmp(&(right_name.to_ascii_lowercase(), right_name.clone()))
     });
 
     append_skill_metadata(&mut index, candidates);
@@ -483,8 +471,7 @@ fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBu
 
         let Some(mapping) = parsed.as_mapping() else {
             index.warnings.push(format!(
-                "Skipped skill `{}`: frontmatter must be a YAML mapping",
-                display_folder
+                "Skipped skill `{display_folder}`: frontmatter must be a YAML mapping"
             ));
             continue;
         };
@@ -546,7 +533,7 @@ fn build_skill_metadata(
             None
         }
         Err(e) => {
-            metadata_warnings.push(format!("{}; inspect SKILL.md before use.", e));
+            metadata_warnings.push(format!("{e}; inspect SKILL.md before use."));
             None
         }
     };
@@ -554,14 +541,13 @@ fn build_skill_metadata(
         Ok(Some(when_to_use)) => Some(sanitize_skill_metadata_for_context(&when_to_use)),
         Ok(None) => None,
         Err(e) => {
-            metadata_warnings.push(format!("{}; omitted when_to_use metadata.", e));
+            metadata_warnings.push(format!("{e}; omitted when_to_use metadata."));
             None
         }
     };
 
     let entrypoint_display = crate::filesystem::context_skills::canonical_skill_source(entrypoint)
-        .map(|p| display_path(&p))
-        .unwrap_or_else(|_| display_path(entrypoint));
+        .map_or_else(|_| display_path(entrypoint), |p| display_path(&p));
 
     SkillMetadata {
         folder_name: display_folder,

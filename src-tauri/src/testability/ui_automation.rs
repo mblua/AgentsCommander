@@ -7,12 +7,19 @@ mod protocol;
 
 #[cfg(test)]
 use self::protocol::UiTerminalOperation;
+#[cfg(test)]
+use self::protocol::DEFAULT_TIMEOUT_MS;
+use self::protocol::POLL_MS;
 use self::protocol::{
     parse_terminal_operation, valid_key_chord, valid_pointer_operation, valid_terminal_session_id,
     CliRequest,
 };
 pub use self::protocol::{
     UiAutomationAction, UiAutomationRequest, UiAutomationResponse, UiAutomationSession,
+};
+pub use self::protocol::{
+    BACKEND_AUTOMATION_WINDOW, ENV_ENABLE, REQUESTS_DIR, RESOURCE_WATCHDOG_BACKEND_SELECTOR,
+    RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
 };
 use crate::shutdown::ShutdownSignal;
 pub use args::{
@@ -32,16 +39,16 @@ use cli_run::{
     request_expired, run_cli_request,
 };
 #[cfg(test)]
+use files::read_session_file_with_retry;
+#[cfg(test)]
 use files::SessionReadHookGuard;
 use files::{
-    cleanup_stale_automation_files, read_session_file_with_retry, retry_remove_file, retry_rename,
-    write_json_atomic_new, write_json_atomic_replace,
+    cleanup_stale_automation_files, retry_remove_file, retry_rename, write_json_atomic_new,
+    write_json_atomic_replace,
 };
 use futures::future::BoxFuture;
 pub use liveness::pid_is_alive;
-#[cfg(target_os = "windows")]
-use liveness::process_path;
-use liveness::{current_exe_path_string, now_unix_ms, paths_equal_for_compare, sorted_labels};
+use liveness::{current_exe_path_string, now_unix_ms, sorted_labels};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
@@ -52,23 +59,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-
-pub const UI_AUTOMATION_DIR: &str = crate::config::instance_artifacts::UI_AUTOMATION_DIR_NAME;
-pub const SESSION_FILE: &str = "session.json";
-pub const REQUESTS_DIR: &str = "requests";
-pub const RESPONSES_DIR: &str = "responses";
-pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
-pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
-pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
-
-const DEFAULT_TIMEOUT_MS: u64 = 5_000;
-const POLL_MS: u64 = 50;
-const FS_RETRY_COUNT: usize = 8;
-const FS_RETRY_DELAY_MS: u64 = 25;
-const SESSION_READ_RETRY_COUNT: usize = 8;
-const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
-const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
-const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
 
 pub trait UiAutomationEvents {
     fn automation_request(&self, window: &str, request: &UiAutomationRequest)
@@ -151,7 +141,7 @@ impl UiAutomationState {
 
         if let Err(e) = self.initialize_files() {
             self.mark_unavailable();
-            log::error!("[ui-automation] failed to initialize files: {}", e);
+            log::error!("[ui-automation] failed to initialize files: {e}");
             return;
         }
         self.inner.available.store(true, Ordering::SeqCst);
@@ -162,7 +152,7 @@ impl UiAutomationState {
             let mut interval = tokio::time::interval(Duration::from_millis(POLL_MS));
             loop {
                 tokio::select! {
-                    _ = shutdown.cancelled() => break,
+                    () = shutdown.cancelled() => break,
                     _ = interval.tick() => state.poll_once(&app),
                 }
             }
@@ -203,7 +193,7 @@ impl UiAutomationState {
                 .inner
                 .window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             labels.insert(caller_label.to_string());
         }
         {
@@ -211,7 +201,7 @@ impl UiAutomationState {
                 .inner
                 .ready_window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ready.insert(caller_label.to_string());
         }
         self.write_session_snapshot().map_err(|e| e.to_string())
@@ -223,7 +213,11 @@ impl UiAutomationState {
         }
 
         let pending = {
-            let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             pending.remove(&result.request_id)
         };
         let Some(pending) = pending else {
@@ -266,14 +260,14 @@ impl UiAutomationState {
                 .inner
                 .window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         let ready_window_labels = sorted_labels(
             &self
                 .inner
                 .ready_window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         let session = UiAutomationSession {
             pid: std::process::id(),
@@ -289,7 +283,7 @@ impl UiAutomationState {
 
     fn poll_once<H: UiAutomationHost>(&self, app: &H) {
         if let Err(e) = self.poll_once_inner(app) {
-            log::warn!("[ui-automation] poll failed: {}", e);
+            log::warn!("[ui-automation] poll failed: {e}");
         }
     }
 
@@ -324,7 +318,7 @@ impl UiAutomationState {
                 .inner
                 .window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *labels != live_labels {
                 *labels = live_labels.clone();
                 changed = true;
@@ -336,7 +330,7 @@ impl UiAutomationState {
                 .inner
                 .ready_window_labels
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let before_len = ready.len();
             ready.retain(|label| live_labels.contains(label));
             if ready.len() != before_len {
@@ -353,7 +347,11 @@ impl UiAutomationState {
     fn expire_pending_requests(&self) {
         let now = now_unix_ms();
         let expired = {
-            let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending_map = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let expired_ids: Vec<String> = pending_map
                 .iter()
                 .filter(|(_, pending)| request_expired(&pending.request, now))
@@ -367,7 +365,7 @@ impl UiAutomationState {
 
         for pending in expired {
             let response = expired_response_for_request(&pending.request);
-            if !pending.response_path.exists() {
+            if !crate::filesystem::directories::ui_automation_path_exists(&pending.response_path) {
                 let _ = write_json_atomic_new(&pending.response_path, &response);
             }
             let _ = retry_remove_file(&pending.inflight_path);
@@ -493,13 +491,21 @@ impl UiAutomationState {
             inflight_path,
         };
         {
-            let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending_map = self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             pending_map.insert(request.request_id.clone(), pending);
         }
 
         if let Err(e) = app.automation_request(&request.window, &request) {
             let pending = {
-                let mut pending_map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+                let mut pending_map = self
+                    .inner
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 pending_map.remove(&request.request_id)
             };
             if let Some(pending) = pending {
@@ -509,7 +515,7 @@ impl UiAutomationState {
                     "Failed to emit automation request to the requested WebView.",
                 );
                 response.available_windows = Some(app.available_windows());
-                response.diagnostics = Some(json!({ "message": e.to_string() }));
+                response.diagnostics = Some(json!({ "message": e.clone() }));
                 let _ = write_json_atomic_new(&pending.response_path, &response);
                 let _ = retry_remove_file(&pending.inflight_path);
             }
@@ -544,7 +550,7 @@ impl UiAutomationState {
         self.inner
             .pending
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(request.request_id.clone(), pending);
 
         let state = self.clone();
@@ -556,7 +562,7 @@ impl UiAutomationState {
                 .inner
                 .pending
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&request.request_id);
             let Some(pending) = pending else {
                 return;
@@ -576,7 +582,7 @@ impl UiAutomationState {
         self.inner
             .pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(request_id)
     }
 
@@ -584,7 +590,7 @@ impl UiAutomationState {
         self.inner
             .ready_window_labels
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(window)
     }
 
@@ -863,8 +869,7 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
     loop {
         let remaining_ms = deadline
             .checked_duration_since(Instant::now())
-            .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64);
         if remaining_ms == 0 {
             let timeout = last_response.unwrap_or_else(|| {
                 UiAutomationResponse::minimal_error(

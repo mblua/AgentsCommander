@@ -84,12 +84,12 @@ pub(crate) fn reset_substantive_input<R: tauri::Runtime>(app: &AppHandle<R>, ses
     if let Some(activity) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
         activity
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .reset(session_id);
     }
     if let Some(hold) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
         hold.lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .reset(session_id);
     }
 }
@@ -101,11 +101,7 @@ pub(crate) async fn rollback_pre_created_session<R: tauri::Runtime>(
     id: Uuid,
     reason: &str,
 ) {
-    log::warn!(
-        "[session] Rolling back pre-created session {} after setup failure: {}",
-        id,
-        reason
-    );
+    log::warn!("[session] Rolling back pre-created session {id} after setup failure: {reason}");
     // The reserved create ticket or inline transaction owns the one common
     // backend-kind-aware rollback after this setup body returns. Killing here
     // would race that finalizer and perform the same teardown twice.
@@ -228,17 +224,14 @@ pub(crate) async fn finish_create_core_result<R: tauri::Runtime>(
             t.failed();
         } else if matches!(
             &result,
-            Ok(CreateCompletion::Finalized(_)) | Ok(CreateCompletion::Deferred(_))
+            Ok(CreateCompletion::Finalized(_) | CreateCompletion::Deferred(_))
         ) {
             t.succeeded();
         }
     }
     if let (Err(error), Some(continuation)) = (&result, owned_replacement) {
         let waiting = continuation.source_stop().is_none()
-            && create_owner
-                .lock()
-                .ok()
-                .is_some_and(|owner| owner.blocked_bound);
+            && create_owner.lock().is_ok_and(|owner| owner.blocked_bound);
         if !waiting {
             let manager = session_mgr.read().await.clone();
             continuation
@@ -251,27 +244,18 @@ pub(crate) async fn finish_create_core_result<R: tauri::Runtime>(
             // Validation failure is not a setup Err or whole-source stopped
             // proof. Retain the real pending owner and its work.
             result = Ok(CreateCompletion::Retained);
-        } else if create_owner
-            .lock()
-            .ok()
-            .is_some_and(|owner| owner.blocked_bound)
-        {
+        } else if create_owner.lock().is_ok_and(|owner| owner.blocked_bound) {
             result = Ok(CreateCompletion::Retained);
         }
     }
-    if has_preheld_target
-        && create_owner
-            .lock()
-            .ok()
-            .is_some_and(|owner| owner.blocked_bound)
-    {
+    if has_preheld_target && create_owner.lock().is_ok_and(|owner| owner.blocked_bound) {
         result = Ok(CreateCompletion::Retained);
     }
     if result.is_err() && owned_replacement.is_none() {
         let binding = {
             inline_pending_binding
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
         };
         if let (Some(transaction), Some(binding)) = (inline_transaction, binding) {

@@ -77,11 +77,11 @@ impl ResourceMonitorState {
     }
 
     /// #559 (H1) - snapshot-path merge. Advances the missing-root strike counter and,
-    /// when it reaches REAP_STRIKES, NOMINATES the group for reap (returns its root
-    /// identity) without reaping: the reap is gated by a direct observe_identity
-    /// confirm done outside the lock in snapshot(). Preserves merge_tree's warning
+    /// when it reaches `REAP_STRIKES`, NOMINATES the group for reap (returns its root
+    /// identity) without reaping: the reap is gated by a direct `observe_identity`
+    /// confirm done outside the lock in `snapshot()`. Preserves `merge_tree`'s warning
     /// contract, except on the nominating sample, where it returns no warning so the
-    /// raw missing-root string does not also flip overall_state to Warn (G4).
+    /// raw missing-root string does not also flip `overall_state` to Warn (G4).
     pub(super) fn merge_sample(
         &self,
         session_id: Uuid,
@@ -164,7 +164,7 @@ impl ResourceMonitorState {
 
     /// #559 (H1) - perform the confirmed reap under the lock. Re-checks the group is
     /// still Running, still at the strike threshold, and still the same root, so a
-    /// concurrent kill_group that already terminated it wins and this becomes a no-op.
+    /// concurrent `kill_group` that already terminated it wins and this becomes a no-op.
     pub(super) fn apply_reap(&self, session_id: Uuid, root: ProcessIdentity) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
@@ -203,8 +203,8 @@ impl ResourceMonitorState {
     }
 
     /// #559 (H3) - bound retained Terminated rows so inner.groups cannot grow without
-    /// limit. Keeps the MAX_TERMINATED_RETAINED most recent; evicts the oldest.
-    /// Released-permit Terminated groups never count toward active_count, so eviction
+    /// limit. Keeps the `MAX_TERMINATED_RETAINED` most recent; evicts the oldest.
+    /// Released-permit Terminated groups never count toward `active_count`, so eviction
     /// never affects the cap.
     pub(super) fn prune_terminated_groups(&self) {
         let Ok(mut inner) = self.inner.lock() else {

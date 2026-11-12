@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use super::{derive_root_project_dir, OutboxMessage, SendArgs};
+use super::arguments::SendArgs;
+use super::project::derive_root_project_dir;
+use crate::phone::types::OutboxMessage;
 
 pub(super) fn read_bounded_pty_input<R: Read>(reader: R) -> Result<String, &'static str> {
     let mut bytes = Vec::with_capacity(crate::pty::backend::PTY_INPUT_MAX_BYTES + 1);
@@ -179,28 +181,70 @@ fn pty_effective_project_paths(root: &str) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
+/// Checks payload shape and text, then resolves the requested coding agent.
+/// Prints the error code and returns `Err` on failure.
+fn pty_requested_agent(args: &SendArgs, text: &str) -> Result<Option<String>, ()> {
+    if args.mode != "wake" || args.get_output || args.outbox.is_some() {
+        eprintln!("Error: mixed_payload");
+        return Err(());
+    }
+    if let Err(error) = crate::pty::inject::validate_pty_input_text(text) {
+        eprintln!("Error: {error}");
+        return Err(());
+    }
+    if args.agent == "auto" {
+        Ok(None)
+    } else {
+        if crate::config::coding_agent_mutations::validate_custom_agent_id(&args.agent).is_err() {
+            eprintln!("Error: unsupported_profile");
+            return Err(());
+        }
+        Ok(Some(args.agent.clone()))
+    }
+}
+
+/// Verifies the sender replica and its route to `to`.
+/// Prints the error code and returns `Err` on failure.
+fn verify_pty_sender_route(
+    root: &str,
+    to: &str,
+) -> Result<crate::config::teams::VerifiedPtyInputRoute, ()> {
+    let Ok(paths) = pty_effective_project_paths(root) else {
+        eprintln!("Error: sender_identity_invalid");
+        return Err(());
+    };
+    let sender_is_root = crate::config::root_agent::is_root_agent_path(root);
+    let route = match crate::config::teams::verify_pty_input_route(
+        Path::new(root),
+        sender_is_root,
+        to,
+        &paths,
+    ) {
+        Ok(route) => route,
+        Err(code) => {
+            eprintln!("Error: {code}");
+            return Err(());
+        }
+    };
+    let Ok(supplied_root) = crate::path_identity::verify_directory(Path::new(root)) else {
+        eprintln!("Error: unsafe_path");
+        return Err(());
+    };
+    if !crate::path_identity::same_object(&supplied_root, &route.sender.replica_identity) {
+        eprintln!("Error: sender_identity_invalid");
+        return Err(());
+    }
+    Ok(route)
+}
+
 pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i32 {
     use crate::phone::types::{
         canonical_pty_timestamp, pty_input_confirmation_tag, sha256_hex, PtyInputEnterMode,
         PtyInputWirePayload, PTY_INPUT_TTL_SECS, PTY_INPUT_VERSION,
     };
 
-    if args.mode != "wake" || args.get_output || args.outbox.is_some() {
-        eprintln!("Error: mixed_payload");
+    let Ok(requested_agent) = pty_requested_agent(&args, &text) else {
         return 1;
-    }
-    if let Err(error) = crate::pty::inject::validate_pty_input_text(&text) {
-        eprintln!("Error: {error}");
-        return 1;
-    }
-    let requested_agent = if args.agent == "auto" {
-        None
-    } else {
-        if crate::config::coding_agent_mutations::validate_custom_agent_id(&args.agent).is_err() {
-            eprintln!("Error: unsupported_profile");
-            return 1;
-        }
-        Some(args.agent.clone())
     };
     let (token, master_or_root_credential) = match crate::cli::validate_cli_token(&args.token) {
         Ok(value) => value,
@@ -213,37 +257,9 @@ pub(super) fn execute_pty_input(args: SendArgs, root: String, text: String) -> i
         eprintln!("Error: session_token_required");
         return 1;
     }
-    let paths = match pty_effective_project_paths(&root) {
-        Ok(paths) => paths,
-        Err(_) => {
-            eprintln!("Error: sender_identity_invalid");
-            return 1;
-        }
-    };
-    let sender_is_root = crate::config::root_agent::is_root_agent_path(&root);
-    let route = match crate::config::teams::verify_pty_input_route(
-        Path::new(&root),
-        sender_is_root,
-        &args.to,
-        &paths,
-    ) {
-        Ok(route) => route,
-        Err(code) => {
-            eprintln!("Error: {code}");
-            return 1;
-        }
-    };
-    let supplied_root = match crate::path_identity::verify_directory(Path::new(&root)) {
-        Ok(identity) => identity,
-        Err(_) => {
-            eprintln!("Error: unsafe_path");
-            return 1;
-        }
-    };
-    if !crate::path_identity::same_object(&supplied_root, &route.sender.replica_identity) {
-        eprintln!("Error: sender_identity_invalid");
+    let Ok(route) = verify_pty_sender_route(&root, &args.to) else {
         return 1;
-    }
+    };
 
     let injection_id = Uuid::new_v4().to_string();
     let op_id = injection_id.clone();
@@ -388,11 +404,9 @@ fn report_pty_input_confirmation(
                 0
             }
             PtyInputPublicStatus::Rejected => {
-                let code = result
-                    .reason
-                    .as_ref()
-                    .map(|reason| reason_code_for_cli(reason.code))
-                    .unwrap_or("invalid_envelope");
+                let code = result.reason.as_ref().map_or("invalid_envelope", |reason| {
+                    reason_code_for_cli(reason.code)
+                });
                 eprintln!("Rejected: {injection_id} code={code}");
                 1
             }
@@ -400,8 +414,9 @@ fn report_pty_input_confirmation(
                 let code = result
                     .reason
                     .as_ref()
-                    .map(|reason| reason_code_for_cli(reason.code))
-                    .unwrap_or("terminal_store_failed");
+                    .map_or("terminal_store_failed", |reason| {
+                        reason_code_for_cli(reason.code)
+                    });
                 eprintln!("Indeterminate: {injection_id} code={code}; do not resubmit");
                 1
             }

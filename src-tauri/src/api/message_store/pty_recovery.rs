@@ -20,18 +20,17 @@ impl MessageStore {
                     .lock()
                     .map_err(|_| MessageStoreError::StoreCorrupt)?;
                 let mut statement = conn.prepare(
-                    r#"SELECT injection_id,status,expires_at,attempt,updated_at
+                    r"SELECT injection_id,status,expires_at,attempt,updated_at
                        FROM pty_input_operations
                        WHERE (status IN ('preparing','actuating')
                               OR (status IN ('queued','retry') AND expires_at <= ?1))
                          AND (?2 IS NULL OR updated_at > ?2
                               OR (updated_at = ?2 AND injection_id > ?3))
-                       ORDER BY updated_at,injection_id LIMIT 64"#,
+                       ORDER BY updated_at,injection_id LIMIT 64",
                 )?;
-                let (cursor_at, cursor_id) = cursor
-                    .as_ref()
-                    .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
-                    .unwrap_or((None, None));
+                let (cursor_at, cursor_id) = cursor.as_ref().map_or((None, None), |(at, id)| {
+                    (Some(at.as_str()), Some(id.as_str()))
+                });
                 let rows = statement.query_map(params![now_s, cursor_at, cursor_id], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -76,10 +75,10 @@ impl MessageStore {
                         .map_err(|_| MessageStoreError::StoreCorrupt)?;
                     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                     let changed = tx.execute(
-                        r#"UPDATE pty_input_operations SET status='retry',lease_owner=NULL,
+                        r"UPDATE pty_input_operations SET status='retry',lease_owner=NULL,
                              lease_until=NULL,next_attempt_at=?1,updated_at=?1,
                              reason_code=?2,reason_detail=?3
-                           WHERE injection_id=?4 AND status='preparing' AND attempt < 5"#,
+                           WHERE injection_id=?4 AND status='preparing' AND attempt < 5",
                         params![
                             now_s,
                             reason_code_string(crate::phone::types::PtyInputReasonCode::LeaseLost),
@@ -132,19 +131,18 @@ impl MessageStore {
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id,status,expires_at,attempt,lease_until,updated_at
+                r"SELECT injection_id,status,expires_at,attempt,lease_until,updated_at
                    FROM pty_input_operations
                    WHERE ((status='actuating' AND actuating_at < ?1)
                       OR (status IN ('queued','preparing','retry') AND expires_at <= ?2)
                       OR (status='preparing' AND lease_until <= ?2))
                      AND (?3 IS NULL OR updated_at > ?3
                        OR (updated_at = ?3 AND injection_id > ?4))
-                   ORDER BY updated_at,injection_id LIMIT 64"#,
+                   ORDER BY updated_at,injection_id LIMIT 64",
             )?;
-            let (cursor_at, cursor_id) = cursor
-                .as_ref()
-                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
-                .unwrap_or((None, None));
+            let (cursor_at, cursor_id) = cursor.as_ref().map_or((None, None), |(at, id)| {
+                (Some(at.as_str()), Some(id.as_str()))
+            });
             let rows = statement.query_map(
                 params![orphan_cutoff, now_s, cursor_at, cursor_id],
                 |row| {
@@ -229,10 +227,10 @@ impl MessageStore {
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                            SET status='retry',lease_owner=NULL,lease_until=NULL,
                                next_attempt_at=?1,updated_at=?1,reason_code=?2,reason_detail=?3
-                           WHERE injection_id=?4 AND status='preparing' AND lease_until <= ?1"#,
+                           WHERE injection_id=?4 AND status='preparing' AND lease_until <= ?1",
             params![
                 now_s,
                 reason_code_string(crate::phone::types::PtyInputReasonCode::LeaseLost),
@@ -308,16 +306,15 @@ impl MessageStore {
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id,expires_at FROM pty_input_operations
+                r"SELECT injection_id,expires_at FROM pty_input_operations
                    WHERE status IN ('queued','preparing','retry') AND expires_at <= ?1
                      AND (?2 IS NULL OR expires_at > ?2
                        OR (expires_at = ?2 AND injection_id > ?3))
-                   ORDER BY expires_at,injection_id LIMIT 64"#,
+                   ORDER BY expires_at,injection_id LIMIT 64",
             )?;
-            let (cursor_at, cursor_id) = cursor
-                .as_ref()
-                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
-                .unwrap_or((None, None));
+            let (cursor_at, cursor_id) = cursor.as_ref().map_or((None, None), |(at, id)| {
+                (Some(at.as_str()), Some(id.as_str()))
+            });
             let rows = statement.query_map(params![now_s, cursor_at, cursor_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;

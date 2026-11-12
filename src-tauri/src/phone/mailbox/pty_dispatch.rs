@@ -1,5 +1,6 @@
 mod context;
 mod select;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::mailbox::poller::MailboxPoller;
 #[cfg(test)]
 use crate::phone::mailbox::pty_claim::MailboxTestHooks;
@@ -11,12 +12,10 @@ use crate::phone::mailbox::settle::{finish_owned_pty_work, OwnedPtyWorkTransfer}
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use context::{
-    BoundaryAuthority, DispatchSelection, InitialDispatchContext, PtyDispatchContext,
-    PtyDispatchGuards, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
+    BoundaryAuthority, BoundaryWriteGuards, DispatchSelection, InitialDispatchContext,
+    PtyDispatchContext, PtyDispatchGuards, SelectedPtyTarget, SelectionCandidates, SpawnAttempt,
 };
-use select::BoundaryWriteGuards;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 /// Payload and authority validated together before the first write.
@@ -37,9 +36,9 @@ impl<A> std::ops::Deref for PtyDispatcher<'_, A> {
     }
 }
 impl MailboxPoller {
-    pub(crate) async fn dispatch_pty_input_operation_core<R: tauri::Runtime>(
+    pub(crate) async fn dispatch_pty_input_operation_core<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         state: &crate::api::message_store::MessageStoreState,
         injection_id: &str,
         source_plane: crate::phone::types::PtyInputSourcePlane,
@@ -71,7 +70,7 @@ impl MailboxPoller {
         source_executor.returned(failed);
     }
 }
-impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
+impl<H: MailboxHost> PtyDispatcher<'_, H> {
     async fn dispatch_accepted_operation(
         &self,
         state: &crate::api::message_store::MessageStoreState,
@@ -86,9 +85,10 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
             Err(_) => return false,
         };
         let shutdown = app
-            .try_state::<crate::shutdown::ShutdownSignal>()
-            .map(|signal| signal.token().clone())
-            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            .shutdown_opt()
+            .map_or_else(tokio_util::sync::CancellationToken::new, |signal| {
+                signal.token().clone()
+            });
         let _operation_lock = match store.try_operation_lock(injection_id) {
             Ok(Some(lock)) => lock,
             _ => return false,
@@ -172,9 +172,7 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
         let app = self.app;
         // Startup restore must finish before this dispatch owns target guards.
         // No claim or payload has been consumed at this point.
-        if let Some(coordinator) =
-            app.try_state::<crate::session::selection::SelectionCoordinator>()
-        {
+        if let Some(coordinator) = app.selection_opt() {
             if coordinator.wait_for_restore_release().await.is_err() {
                 return false;
             }
@@ -323,8 +321,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                     .is_err()
                 {
                     log::warn!(
-                        "[pty-input] invalid initial deadline id={} code=terminal_store_failed",
-                        injection_id
+                        "[pty-input] invalid initial deadline id={injection_id} \
+                            code=terminal_store_failed"
                     );
                 }
                 return Err(false);
@@ -351,8 +349,8 @@ impl<R: tauri::Runtime> PtyDispatcher<'_, tauri::AppHandle<R>> {
                     .is_err()
                 {
                     log::warn!(
-                        "[pty-input] target-wait expiry failed id={} code=terminal_store_failed",
-                        injection_id
+                        "[pty-input] target-wait expiry failed id={injection_id} \
+                            code=terminal_store_failed"
                     );
                 }
                 return Err(false);

@@ -216,56 +216,55 @@ fn merge_root_agent_config_migration_table() {
     ];
 
     for (label, input, expected) in cases {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_path = temp.path().join("config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&input).expect("serialize input"),
-        )
-        .expect("write config");
+        assert_root_config_migration_case(label, input, expected, token);
+    }
+}
 
-        merge_root_agent_config(&config_path).expect("merge config");
-        let first_bytes = std::fs::read(&config_path).expect("read config");
-        let first: Value = serde_json::from_slice(&first_bytes).expect("parse config");
+fn assert_root_config_migration_case(label: &str, input: Value, expected: Value, token: &str) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&input).expect("serialize input"),
+    )
+    .expect("write config");
 
-        assert_eq!(first["context"], expected, "case: {}", label);
+    merge_root_agent_config(&config_path).expect("merge config");
+    let first_bytes = std::fs::read(&config_path).expect("read config");
+    let first: Value = serde_json::from_slice(&first_bytes).expect("parse config");
+
+    assert_eq!(first["context"], expected, "case: {label}");
+    assert!(
+        !String::from_utf8_lossy(&first_bytes).contains(&format!("\"{token}\"")),
+        "case: {label}: no exact token may survive"
+    );
+    assert!(first["tooling"].is_object(), "case: {label}");
+    if input.get("unknown").is_some() {
+        assert_eq!(first["unknown"]["keep"], true, "case: {label}");
+    }
+    if let Some(last) = input.get("tooling").and_then(|t| t.get("lastCodingAgent")) {
+        assert_eq!(
+            &state_beside(&config_path)["tooling"]["lastCodingAgent"],
+            last,
+            "case: {label}"
+        );
         assert!(
-            !String::from_utf8_lossy(&first_bytes).contains(&format!("\"{}\"", token)),
-            "case: {}: no exact token may survive",
-            label
-        );
-        assert!(first["tooling"].is_object(), "case: {}", label);
-        if input.get("unknown").is_some() {
-            assert_eq!(first["unknown"]["keep"], true, "case: {}", label);
-        }
-        if let Some(last) = input.get("tooling").and_then(|t| t.get("lastCodingAgent")) {
-            assert_eq!(
-                &state_beside(&config_path)["tooling"]["lastCodingAgent"],
-                last,
-                "case: {}",
-                label
-            );
-            assert!(
-                first["tooling"].get("lastCodingAgent").is_none(),
-                "case: {}",
-                label
-            );
-        }
-
-        merge_root_agent_config(&config_path).expect("merge config again");
-        let second_bytes = std::fs::read(&config_path).expect("read config");
-        let second: Value = serde_json::from_slice(&second_bytes).expect("parse config");
-        assert_eq!(
-            second, first,
-            "case: {}: parsed value must be idempotent",
-            label
-        );
-        assert_eq!(
-            second_bytes, first_bytes,
-            "case: {}: bytes must be stable after the first canonical rewrite",
-            label
+            first["tooling"].get("lastCodingAgent").is_none(),
+            "case: {label}"
         );
     }
+
+    merge_root_agent_config(&config_path).expect("merge config again");
+    let second_bytes = std::fs::read(&config_path).expect("read config");
+    let second: Value = serde_json::from_slice(&second_bytes).expect("parse config");
+    assert_eq!(
+        second, first,
+        "case: {label}: parsed value must be idempotent"
+    );
+    assert_eq!(
+        second_bytes, first_bytes,
+        "case: {label}: bytes must be stable after the first canonical rewrite"
+    );
 }
 
 #[test]

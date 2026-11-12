@@ -783,32 +783,7 @@ fn build_placement_physical_frame_unchanged() {
         );
         assert_eq!(got, case.expected, "case {}", case.n);
     }
-    // The Physical frame also keeps name matching, which macOS cannot use.
-    let tauri = [
-        MonitorGeometry {
-            name: Some("Monitor #9".to_string()),
-            position: (4000, 4000),
-            size: (1920, 1080),
-            scale: 1.0,
-        },
-        MonitorGeometry {
-            name: Some("Monitor #8".to_string()),
-            position: (0, 0),
-            size: (1920, 1080),
-            scale: 1.0,
-        },
-    ];
-    let captured = MonitorGeometry {
-        name: Some("Monitor #9".to_string()),
-        position: (0, 0),
-        size: (1920, 1080),
-        scale: 1.0,
-    };
-    // Name beats the nearer origin at index 1.
-    assert_eq!(
-        match_monitor(&tauri, &captured, PlacementFrame::Physical),
-        Some(0)
-    );
+    assert_physical_frame_keeps_name_matching();
 }
 
 #[test]
@@ -991,4 +966,33 @@ fn linux_wayland_refusal_status_is_unregistered_with_reason() {
     // The sidebar toasts on `!registered && error`, and the wording must
     // stay actionable for a user who is already on Xorg.
     assert!(WAYLAND_UNSUPPORTED.contains("Xorg"));
+}
+
+fn assert_physical_frame_keeps_name_matching() {
+    // The Physical frame also keeps name matching, which macOS cannot use.
+    let tauri = [
+        MonitorGeometry {
+            name: Some("Monitor #9".to_string()),
+            position: (4000, 4000),
+            size: (1920, 1080),
+            scale: 1.0,
+        },
+        MonitorGeometry {
+            name: Some("Monitor #8".to_string()),
+            position: (0, 0),
+            size: (1920, 1080),
+            scale: 1.0,
+        },
+    ];
+    let captured = MonitorGeometry {
+        name: Some("Monitor #9".to_string()),
+        position: (0, 0),
+        size: (1920, 1080),
+        scale: 1.0,
+    };
+    // Name beats the nearer origin at index 1.
+    assert_eq!(
+        match_monitor(&tauri, &captured, PlacementFrame::Physical),
+        Some(0)
+    );
 }

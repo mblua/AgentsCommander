@@ -1,4 +1,4 @@
-use super::CodingAgentKind;
+use super::kind::CodingAgentKind;
 
 /// Coding-agent launch kinds that are safe for privileged exact PTY input.
 /// Cursor uses the executable `agent` and therefore has no legacy
@@ -45,8 +45,7 @@ impl PtySubmissionAgent {
             (Self::Claude, Some(CodingAgentKind::Claude))
                 | (Self::Codex, Some(CodingAgentKind::Codex))
                 | (Self::Antigravity, Some(CodingAgentKind::Antigravity))
-                | (Self::CursorAgent, None)
-                | (_, None)
+                | (Self::CursorAgent | _, None)
         )
     }
 }

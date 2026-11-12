@@ -1,7 +1,11 @@
+use super::claim_and::{
+    assert_phase1_retained, discharge_and_probe, prime_route_tracker, wake_route_identities,
+    PreservationSnapshot, RouteRefs,
+};
 use super::*;
 
 /// (#1399 T9 / R1) A panicking worker cannot strand its claim: the
-/// WakeOutcomeReport guard reports a transient error from the unwind, the
+/// `WakeOutcomeReport` guard reports a transient error from the unwind, the
 /// drain releases ownership, and the attempt is counted. Without the guard
 /// the claim stays owned forever and reclamation skips it on every cycle.
 #[tokio::test]
@@ -28,66 +32,11 @@ async fn panicking_worker_reports_through_the_guard_and_frees_the_ledger() {
             .unwrap()
             .push_back(Err("transient twin failure".into()));
 
-        use crate::pty::manager::{
-            ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
-            ResponseRouteIdentity, ReturnDeliveryProof,
-        };
-        let tracker = ResponseCloseState::default();
-        assert!(app.manage(tracker.clone()));
-        let (coordinator_id, coordinator_token) =
-            seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running).await;
-        let manager = {
-            let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let guard = state.read().await;
-            guard.clone()
-        };
-        let target_row = manager.get_session(session_id).await.unwrap();
-        let member = ResponseRouteIdentity {
-            target: CANONICAL_WAKE_TO.into(),
-            session_id,
-            token: target_row.token,
-            generation: 1,
-            carrier_version: 1,
-            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
-        };
-        let coordinator = ResponseRouteIdentity {
-            target: CANONICAL_WAKE_FROM.into(),
-            session_id: coordinator_id,
-            token: coordinator_token,
-            generation: 2,
-            ..member.clone()
-        };
+        let (tracker, member, coordinator) =
+            wake_route_identities(&app, &fixture.sender_cwd, session_id).await;
 
         let now = std::time::Instant::now() + Duration::from_secs(3600);
-        for publisher in [
-            ResponseClosePublisher::Manager,
-            ResponseClosePublisher::Pty,
-            ResponseClosePublisher::RawOutput,
-            ResponseClosePublisher::Detector,
-            ResponseClosePublisher::Menu,
-            ResponseClosePublisher::Hold,
-        ] {
-            tracker.bind_publisher(publisher);
-        }
-        tracker.mark_work_bootstrapped();
-        tracker.try_enable_readiness().unwrap();
-        tracker.apply_settings(true, 30, now);
-        for (identity, eligible) in [(&member, true), (&coordinator, false)] {
-            tracker.register_route(identity.session_id, identity.generation, now);
-            tracker.publish_manager_row(
-                identity.session_id,
-                identity.token,
-                identity.generation,
-                identity.carrier_version,
-                eligible,
-                false,
-                now,
-            );
-            tracker.publish_manager_facts(identity.clone(), eligible, false, now);
-        }
-        tracker.observe_detector(member.session_id, false, now);
-        tracker.publish_menu(member.session_id, Some(false), now);
-        tracker.publish_hold(member.session_id, None, true, now);
+        prime_route_tracker(&tracker, &member, &coordinator, now);
 
         {
             let settings = app.state::<SettingsState>();
@@ -118,205 +67,67 @@ async fn panicking_worker_reports_through_the_guard_and_frees_the_ledger() {
             .unwrap();
         let validated = slot.unwrap();
         let original = validated.response.unwrap();
-        assert!(original.state.same_state(&tracker));
-        assert_eq!(original.target, member.target);
-        assert!(original.delivery_context.is_none());
-        assert!(tracker
-            .reserve_policy_candidate(
-                member.clone(),
-                coordinator.clone(),
-                original.key.clone(),
-                original.digest.clone(),
-                now
-            )
-            .is_ok());
-        poller.poll(&app).await.unwrap();
-        poller.settle_wake_workers().await;
-
-        assert!(poller.live_claims.is_empty());
-        assert_eq!(
-            poller
-                .retry_tracker
-                .get(&source)
-                .map(|state| state.attempt_count),
-            Some(1)
-        );
-        assert!(!wake_claim_path(&source).exists());
-        assert!(source.exists());
-        // Phase 1: preservation before synthetic discharge. Exact pending proves
-        // that the scenario target has a work entry; no counters are inferred here.
-        let retained = poller
-            .response_sources
-            .lock()
-            .unwrap()
-            .get(&source)
-            .unwrap()
-            .clone();
-        assert!(retained.state.same_state(&tracker));
-        assert_eq!(
-            (&retained.target, &retained.key, &retained.digest),
-            (&original.target, &original.key, &original.digest)
-        );
-        assert_eq!(member.target, retained.target);
-        assert!(retained.delivery_context.is_none());
-        assert!(retained.return_context.is_none());
-        assert!(!tracker.target_is_closing(&member.target));
-        assert_eq!(
-            tracker.generation(member.session_id),
-            Some(member.generation)
-        );
-        assert!(tracker
-            .reserve_policy_candidate(
-                member.clone(),
-                coordinator.clone(),
-                original.key.clone(),
-                original.digest.clone(),
-                now
-            )
-            .is_ok());
-        let snapshot_path = if source.exists() {
-            source.clone()
-        } else {
-            wake_claim_path(&source)
+        let refs = RouteRefs {
+            tracker: &tracker,
+            member: &member,
+            coordinator: &coordinator,
+            now,
         };
-        let preservation_snapshot = (
-            retained.target.clone(),
-            retained.key.clone(),
-            retained.digest.clone(),
-            std::fs::read(snapshot_path).unwrap(),
-        );
-        assert_eq!(preservation_snapshot.3, content.as_bytes());
-        assert_eq!(poller.wake_workers.len(), 0);
-        assert_eq!(poller.wake_lanes.len(), 0);
-        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
-        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
-        assert!(matches!(
-            poller.wake_outcomes_rx.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        let scenario_target = original.target.clone();
-        let scenario_key = original.key.clone();
-
-        // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
-        // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
-        assert_eq!(member.target, scenario_target);
-        assert!(!tracker.target_is_closing(&scenario_target));
-        tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
-        // A leaked dispatch/provisional counter is not changed by settle_terminal.
-        // Each fresh probe uses the SAME tracker, target, generation and facts.
-        for sensitivity in 0..5 {
-            let dispatch = if sensitivity == 1 {
-                Some(tracker.begin_delivery(&scenario_target).unwrap())
-            } else {
-                None
-            };
-            let provisional = if sensitivity == 3 {
-                Some(
-                    tracker
-                        .reserve_work(
-                            &scenario_target,
-                            &format!("diagnostic-held-{}", Uuid::new_v4()),
-                        )
-                        .unwrap(),
-                )
-            } else {
-                None
-            };
-            let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
-            let probe_digest = "diagnostic-body";
-            let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
-            assert_eq!(admission.accept_durable(probe_digest), Ok(true));
-            drop(admission);
-            let probe_at = std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
-            let context = tracker
-                .reserve_policy_candidate(
-                    member.clone(),
-                    coordinator.clone(),
-                    probe_key.clone(),
-                    probe_digest.into(),
-                    probe_at,
-                )
-                .unwrap();
-            // Unit-returning API; successful register below validates submitted=true.
-            tracker.mark_request_submitted(&context, true);
-            let registered = tracker.register_request(
-                ResponseDeliveryProof {
-                    context,
-                    member: member.clone(),
-                    coordinator: coordinator.clone(),
-                    published_carrier_version: member.carrier_version,
-                },
-                probe_at,
-            );
-            if sensitivity == 3 {
-                assert!(
-                    registered.is_err(),
-                    "retained real provisional admission must be detected"
-                );
-                tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
-                drop(provisional);
-                drop(dispatch);
-                continue;
-            }
-            registered.unwrap();
-            let context = tracker
-                .admit_return(
-                    &member,
-                    &coordinator,
-                    format!("diagnostic-return-{}", Uuid::new_v4()),
-                    "diagnostic-return-body".into(),
-                    probe_at,
-                )
-                .unwrap();
-            tracker
-                .observe_return_success(ReturnDeliveryProof { context }, probe_at)
-                .unwrap();
-            let ticket =
-                tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
-            if sensitivity == 1 {
-                assert!(
-                    ticket.is_err(),
-                    "retained real SAME-target dispatch must be detected"
-                );
-            } else {
-                assert!(
-                    ticket.is_ok(),
-                    "same-object final success proves dispatch/provisional/writer counters zero"
-                );
-            }
-            drop(dispatch);
-            drop(provisional);
-        }
-        // Synthetic tracker discharge leaves phase1 association/disk intact.
-        let retained_after = poller
-            .response_sources
-            .lock()
-            .unwrap()
-            .get(&source)
-            .unwrap()
-            .clone();
-        assert!(retained_after.state.same_state(&tracker));
-        assert_eq!(
-            (
-                retained_after.target,
-                retained_after.key,
-                retained_after.digest
-            ),
-            (
-                preservation_snapshot.0,
-                preservation_snapshot.1,
-                preservation_snapshot.2
-            )
-        );
-        assert!(retained_after.delivery_context.is_none());
-        assert!(retained_after.return_context.is_none());
-        let path_after = if source.exists() {
-            source.clone()
-        } else {
-            wake_claim_path(&source)
-        };
-        assert_eq!(std::fs::read(path_after).unwrap(), preservation_snapshot.3);
+        let preservation_snapshot = assert_panic_worker_phase1(
+            &refs,
+            &mut poller,
+            &hooks,
+            &app,
+            &source,
+            &content,
+            &original,
+        )
+        .await;
+        discharge_and_probe(&refs, &poller, &source, &original, preservation_snapshot);
     }
+}
+
+async fn assert_panic_worker_phase1(
+    refs: &RouteRefs<'_>,
+    poller: &mut MailboxPoller,
+    hooks: &MailboxTestHooks,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    source: &Path,
+    content: &str,
+    original: &ResponseWakeWork,
+) -> PreservationSnapshot {
+    let RouteRefs {
+        tracker,
+        member,
+        coordinator,
+        now,
+    } = *refs;
+    assert!(original.state.same_state(tracker));
+    assert_eq!(original.target, member.target);
+    assert!(original.delivery_context.is_none());
+    assert!(tracker
+        .reserve_policy_candidate(
+            member.clone(),
+            coordinator.clone(),
+            original.key.clone(),
+            original.digest.clone(),
+            now
+        )
+        .is_ok());
+    poller.poll(app).await.unwrap();
+    poller.settle_wake_workers().await;
+
+    assert!(poller.live_claims.is_empty());
+    assert_eq!(
+        poller
+            .retry_tracker
+            .get(source)
+            .map(|state| state.attempt_count),
+        Some(1)
+    );
+    assert!(!wake_claim_path(source).exists());
+    assert!(source.exists());
+    assert_phase1_retained(refs, hooks, poller, source, original, content).1
 }
 
 /// (#1399 T12) A real Windows exclusive directory handle makes production
@@ -392,7 +203,7 @@ fn outbox_verification_failure_drops_aliases_before_reclamation() {
         };
         scans += 1;
         let claims: Vec<PathBuf> = rd
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("in-flight"))
             .collect();
@@ -423,7 +234,7 @@ fn outbox_verification_failure_drops_aliases_before_reclamation() {
     );
     let claims: Vec<PathBuf> = std::fs::read_dir(&next_cycle_candidates[0])
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("in-flight"))
         .collect();
@@ -601,7 +412,7 @@ fn retry_prune_retains_state_when_live_claim_restores_between_probes() {
 }
 
 /// (#1399 AC-2) Two messages to one target inside one cycle: the first is
-/// claimed and handed off, the second gets LaneBusy and stays untouched in
+/// claimed and handed off, the second gets `LaneBusy` and stays untouched in
 /// the outbox, and exactly one spawn happens while the delivery is in
 /// flight.
 #[tokio::test]

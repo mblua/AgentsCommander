@@ -14,27 +14,33 @@ export function decode(bytes, context) {
 }
 function resolveGitExecutable({ cwd, env }) {
   const windows = process.platform === 'win32';
-  const pathKey = windows ? Object.keys(env).sort(codeOrder).find(key => key.toUpperCase() === 'PATH') : 'PATH';
+  const pathKey = windows ?
+    Object.keys(env).sort(codeOrder).find(key => key.toUpperCase() === 'PATH') : 'PATH';
   const searchPath = (pathKey === undefined ? undefined : env[pathKey]) ??
     (windows ? process.env.PATH : '/usr/bin:/bin');
-  const unavailable = detail => new GateError(`Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
+  const unavailable = detail => new GateError(
+    `Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
   // Search only the configured PATH; no implicit Windows cwd-first lookup.
   for (let directory of (searchPath ?? '').split(path.delimiter)) {
-    if (windows && directory.startsWith('"') && directory.endsWith('"')) directory = directory.slice(1, -1);
+    if (windows && directory.startsWith('"') && directory.endsWith('"'))
+      directory = directory.slice(1, -1);
     const candidate = path.resolve(cwd, directory, windows ? 'git.exe' : 'git');
     try {
       if (!fs.statSync(candidate).isFile()) continue;
       fs.accessSync(candidate, windows ? fs.constants.F_OK : fs.constants.X_OK);
       return candidate;
     } catch (error) {
-      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(error.code)) throw unavailable(error.message);
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(error.code))
+        throw unavailable(error.message);
     }
   }
   throw unavailable();
 }
-export function gitRunner(args, { cwd, env = process.env }) {
+export function gitRunner(args, { cwd, env = process.env, input }) {
   return spawnSync(resolveGitExecutable({ cwd, env }), args, {
-    cwd, env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
+    cwd, env, ...(input === undefined ? {} : { input }),
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    timeout: 120_000,
     maxBuffer: 64 * 1024 * 1024, windowsHide: true,
   });
 }
@@ -42,9 +48,11 @@ export function parseArgs(argv, env = process.env) {
   let baseRef;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] !== '--base-ref' || baseRef !== undefined || i + 1 === argv.length)
-      throw new GateError(`invalid or duplicate argument ${argv[i]}; use --base-ref <commit-ref>`, 2);
+      throw new GateError(`invalid or duplicate argument ${argv[i]}; use --base-ref <commit-ref>`,
+        2);
     baseRef = argv[++i];
-    if (!baseRef.trim() || baseRef.startsWith('--')) throw new GateError('empty/invalid --base-ref', 2);
+    if (!baseRef.trim() || baseRef.startsWith('--'))
+      throw new GateError('empty/invalid --base-ref', 2);
   }
   return { baseRef: baseRef ?? (env.GATE_BASE_REF?.trim() ? env.GATE_BASE_REF : 'origin/main') };
 }
@@ -67,10 +75,33 @@ export function parseChanged(bytes) {
   if (parts.length % 2) throw new GateError('diff: malformed name-status');
   const changed = [];
   for (let i = 0; i < parts.length; i += 2) {
-    if (!/^[ADMT]$/.test(parts[i]) || !parts[i + 1]) throw new GateError('diff: unexpected status/path');
+    if (!/^[ADMT]$/.test(parts[i]) || !parts[i + 1]) throw new GateError(
+      'diff: unexpected status/path');
     changed.push({ status: parts[i], path: parts[i + 1] });
   }
   return changed.sort((a, b) => codeOrder(a.path, b.path));
+}
+// Parse framing as bytes; speculative bodies must never be decoded here.
+function parseBlobBatch(bytes, oids) {
+  const staged = new Map();
+  let offset = 0;
+  for (const oid of oids) {
+    const end = bytes.indexOf(10, offset);
+    if (end < 0) throw new Error('missing batch header');
+    const header = bytes.subarray(offset, end).toString('latin1');
+    const match = /^([a-f0-9]{40}(?:[a-f0-9]{24})?) blob (\d+)$/.exec(header);
+    const size = Number(match?.[2]);
+    if (!match || match[1] !== oid || !Number.isSafeInteger(size) || size < 0)
+      throw new Error('invalid batch header');
+    offset = end + 1;
+    if (size >= bytes.length - offset || bytes[offset + size] !== 10)
+      throw new Error('truncated batch body');
+    // Copy to avoid retaining the full batch buffer after individual cache eviction.
+    staged.set(oid, Buffer.from(bytes.subarray(offset, offset + size)));
+    offset += size + 1;
+  }
+  if (offset !== bytes.length) throw new Error('extra batch output');
+  return staged;
 }
 export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunner } = {}) {
   if (typeof baseRef !== 'string' || !baseRef.trim()) throw new GateError('empty base ref', 2);
@@ -86,7 +117,8 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
   };
   const oid = args => {
     const value = decode(git(args), 'Git OID').trim();
-    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value)) throw new GateError('Git returned invalid OID');
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value)) throw new GateError(
+      'Git returned invalid OID');
     return value;
   };
   const resolve = ref => oid(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
@@ -94,13 +126,66 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
   const baseOid = oid(['merge-base', refOid, headOid]);
   const baseTree = parseTree(git(['ls-tree', '-r', '-z', '--full-tree', baseOid]));
   const headTree = parseTree(git(['ls-tree', '-r', '-z', '--full-tree', headOid]));
-  const changed = parseChanged(git(['diff', '--no-renames', '--name-status', '-z', baseOid, headOid, '--']));
-  const blobs = new Map();
+  const changed = parseChanged(git(['diff', '--no-renames', '--name-status', '-z', baseOid, headOid,
+    '--']));
+  const blobs = new Map(), rawBlobs = new Map(), attempted = new Set();
+  const regular = entry => entry && ['100644', '100755'].includes(entry.mode) &&
+    entry.type === 'blob';
+  const changedRust = changed.filter(entry => entry.path.endsWith('.rs'));
+  const treeRust = tree => [...tree.keys()].filter(name => name.endsWith('.rs')).sort(codeOrder);
+  const baseRust = treeRust(baseTree), headRust = treeRust(headTree);
+  function batchOids(entry) {
+    const oids = [entry.oid], seen = new Set(oids);
+    const append = candidate => {
+      if (!regular(candidate) || seen.has(candidate.oid) || blobs.has(candidate.oid) ||
+          rawBlobs.has(candidate.oid) || attempted.has(candidate.oid)) return;
+      seen.add(candidate.oid);
+      oids.push(candidate.oid);
+    };
+    if (!entry.path.endsWith('.rs')) return oids;
+    const changedIndex = changedRust.findIndex(item => item.path === entry.path);
+    let candidates;
+    if (changedIndex >= 0) {
+      candidates = changedRust.slice(changedIndex).flatMap(item => [
+        baseTree.get(item.path), headTree.get(item.path),
+      ]);
+    } else {
+      const tree = [baseTree, headTree].find(tree => tree.get(entry.path) === entry);
+      if (!tree) return oids;
+      const names = tree === baseTree ? baseRust : headRust;
+      candidates = names.slice(names.indexOf(entry.path)).map(name => tree.get(name));
+    }
+    for (const candidate of candidates) {
+      append(candidate);
+      if (oids.length === 128) break;
+    }
+    return oids;
+  }
+  function prefetch(entry) {
+    const oids = batchOids(entry);
+    for (const oid of oids) attempted.add(oid);
+    try {
+      const input = Buffer.from(oids.join('\n') + '\n');
+      const r = runner(['cat-file', '--batch'], { cwd, input });
+      if (r.error || r.signal || r.status !== 0 || !Buffer.isBuffer(r.stdout) ||
+          r.stdout.length > 64 * 1024 * 1024 || (r.stderr?.length ?? 0) > 64 * 1024 * 1024)
+        return;
+      const staged = parseBlobBatch(r.stdout, oids);
+      for (const [oid, bytes] of staged) rawBlobs.set(oid, bytes);
+    } catch {
+      // Batch failures are invisible until the original individual read fails.
+    }
+  }
   function readBlob(entry) {
     if (!entry) return '';
     if (!['100644', '100755'].includes(entry.mode) || entry.type !== 'blob')
       throw new GateError(`${entry.path}: unsupported mode/type ${entry.mode}/${entry.type}; use a regular tracked file`);
-    if (!blobs.has(entry.oid)) blobs.set(entry.oid, decode(git(['cat-file', 'blob', entry.oid]), entry.path));
+    if (!blobs.has(entry.oid)) {
+      if (!rawBlobs.has(entry.oid) && !attempted.has(entry.oid)) prefetch(entry);
+      const bytes = rawBlobs.get(entry.oid) ?? git(['cat-file', 'blob', entry.oid]);
+      blobs.set(entry.oid, decode(bytes, entry.path));
+      rawBlobs.delete(entry.oid);
+    }
     return blobs.get(entry.oid);
   }
   function addedLines(name) {
@@ -109,7 +194,8 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
     readBlob(a); readBlob(b);
     if (!a) return new Set(readBlob(b).split(/\r?\n/).map((_, i) => i + 1));
     if (!b) return new Set();
-    const diff = decode(git(['diff', '--text', '--no-ext-diff', '--no-textconv', '--no-renames', '-U0', a.oid, b.oid, '--']), name);
+    const diff = decode(git(['diff', '--text', '--no-ext-diff', '--no-textconv', '--no-renames',
+      '-U0', a.oid, b.oid, '--']), name);
     const lines = new Set();
     for (const m of diff.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
       const start = Number(m[1]), count = m[2] === undefined ? 1 : Number(m[2]);
@@ -117,8 +203,10 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
     }
     return lines;
   }
-  return { requestedRef: baseRef, refOid, baseOid, headOid, baseTree, headTree, changed, readBlob, addedLines,
-    assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(`HEAD drift from ${headOid}; retry on a stable checkout`); } };
+  return { requestedRef: baseRef, refOid, baseOid, headOid, baseTree, headTree,
+    changed, readBlob, addedLines,
+    assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(
+      `HEAD drift from ${headOid}; retry on a stable checkout`); } };
 }
 // Versioned accepted findings (#3182). An entry turns a matching FAIL into ACCEPTED;
 // an entry that matches nothing is only a WARN: these gates compare against the PR base,
@@ -127,21 +215,26 @@ export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';
 const ALLOWLIST_GATES = ['01', '02', '05', '06', '07', '08', '09', 'cog'];
 export function parseAllowlist(text) {
   let document;
-  try { document = JSON.parse(text); } catch { throw new GateError(`${ALLOWLIST_FILE}: invalid JSON`); }
+  try { document = JSON.parse(text); } catch { throw new GateError(
+    `${ALLOWLIST_FILE}: invalid JSON`); }
   if (document?.version !== 1 || !Array.isArray(document.entries))
     throw new GateError(`${ALLOWLIST_FILE}: must be an object with version 1 and an entries array`);
   const keys = new Set();
   for (const [i, e] of document.entries.entries()) {
     const bad = reason => new GateError(`${ALLOWLIST_FILE}: entry ${i} ${reason}`);
     if (!e || typeof e !== 'object' || Array.isArray(e)) throw bad('must be an object');
-    if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(`gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
+    if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(
+      `gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
     for (const field of ['rule', 'path', 'reason', 'since'])
-      if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(`${field} must be a non-empty string`);
+      if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(
+        `${field} must be a non-empty string`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(e.since)) throw bad('since must be YYYY-MM-DD');
     if (!Number.isInteger(e.issue) || e.issue <= 0) throw bad('issue must be a positive integer');
     for (const field of ['symbol', 'hash'])
-      if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(`${field} must be a non-empty string when present`);
-    if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol || !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
+      if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(
+        `${field} must be a non-empty string when present`);
+    if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol ||
+      !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
       throw bad('cog entries need rule new|stale, symbol and a 12-hex hash');
     if (e.gate !== 'cog' && e.hash !== undefined) throw bad('hash only applies to cog entries');
     const key = JSON.stringify([e.gate, e.rule, e.path, e.symbol ?? null, e.hash ?? null]);
@@ -164,9 +257,11 @@ export function applyAllowlist(result, entries) {
     const entry = own.find(e => e.rule === d.rule && e.path === d.path);
     if (!entry) return d;
     used.add(entry);
-    return { ...d, status: 'ACCEPTED', allowlist: { reason: entry.reason, issue: entry.issue, since: entry.since } };
+    return { ...d, status: 'ACCEPTED',
+      allowlist: { reason: entry.reason, issue: entry.issue, since: entry.since } };
   });
-  for (const e of own) if (!used.has(e)) diagnostics.push({ gate: result.gate, status: 'WARN', rule: 'stale_allowlist',
+  for (const e of own) if (!used.has(e)) diagnostics.push({
+    gate: result.gate, status: 'WARN', rule: 'stale_allowlist',
     path: e.path, line: 1, reason: `${ALLOWLIST_FILE} entry ${e.rule} matches no finding`,
     remedy: `remove the entry from ${ALLOWLIST_FILE}; the debt it accepted is gone` });
   const fail = diagnostics.some(d => d.status === 'FAIL');
@@ -174,7 +269,9 @@ export function applyAllowlist(result, entries) {
     accepted: diagnostics.filter(d => d.status === 'ACCEPTED').length,
     warnings: diagnostics.filter(d => d.status === 'WARN').length, diagnostics };
 }
-export function isMain(url) { return !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(url); }
+export function isMain(url) {
+  return !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(url);
+}
 export function formatWarning(d) {
   const label = d.rule === 'stale_allowlist' ? 'stale allowlist entry' : 'scan ambiguity';
   return `WARN ${label}: gate ${d.gate} ${d.path} (${d.reason})`;

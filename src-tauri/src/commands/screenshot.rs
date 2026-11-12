@@ -199,12 +199,12 @@ impl crate::screenshot::ScreenshotHost for AppHandle {
             ),
             PlacementFrame::Logical => (
                 tauri::Size::Logical(tauri::LogicalSize {
-                    width: p.width as f64,
-                    height: p.height as f64,
+                    width: f64::from(p.width),
+                    height: f64::from(p.height),
                 }),
                 tauri::Position::Logical(tauri::LogicalPosition {
-                    x: p.x as f64,
-                    y: p.y as f64,
+                    x: f64::from(p.x),
+                    y: f64::from(p.y),
                 }),
             ),
         };

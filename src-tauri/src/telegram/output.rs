@@ -90,7 +90,7 @@ impl BridgeLogger {
             log::info!(
                 "Bridge logger active for session {} ({} bytes)",
                 session_id,
-                path.map(|m| m.len()).unwrap_or(0)
+                path.map_or(0, |m| m.len())
             );
         }
 
@@ -123,7 +123,7 @@ impl BridgeLogger {
             };
             let _ = write_telegram_log(
                 f,
-                format_args!("[{}] {} sid={} | {}\n", now, direction, session_id, preview),
+                format_args!("[{now}] {direction} sid={session_id} | {preview}\n"),
             );
             let _ = flush_telegram_log(f);
         }
@@ -170,8 +170,8 @@ impl DiagLogger {
             // containing a Telegram URL, or any future call site that
             // bypassed api.rs) cannot land in the diag log.
             let text = crate::telegram::redact::redact(text);
-            let _ = write_telegram_log(f, format_args!("--- [{}] ---\n", now));
-            let _ = write_telegram_log(f, format_args!("{}\n", text));
+            let _ = write_telegram_log(f, format_args!("--- [{now}] ---\n"));
+            let _ = write_telegram_log(f, format_args!("{text}\n"));
             let _ = flush_telegram_log(f);
         }
     }
@@ -183,8 +183,8 @@ impl DiagLogger {
             // #280 G-MED-3 — same scrub as log_raw; diag-sent.log bypasses
             // env_logger.
             let text = crate::telegram::redact::redact(text);
-            let _ = write_telegram_log(f, format_args!("--- [{}] ---\n", now));
-            let _ = write_telegram_log(f, format_args!("{}\n", text));
+            let _ = write_telegram_log(f, format_args!("--- [{now}] ---\n"));
+            let _ = write_telegram_log(f, format_args!("{text}\n"));
             let _ = flush_telegram_log(f);
         }
     }
@@ -280,10 +280,7 @@ fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
             end -= 1;
         }
         let actual_end = if end < text.len() {
-            text[start..end]
-                .rfind('\n')
-                .map(|i| start + i + 1)
-                .unwrap_or(end)
+            text[start..end].rfind('\n').map_or(end, |i| start + i + 1)
         } else {
             end
         };

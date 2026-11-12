@@ -161,6 +161,9 @@ pub(crate) struct InstanceArtifact {
 /// generated file is rewritten, or names whose writer is deliberately left
 /// alone and guarded by the git fixture instead.
 pub(crate) const RETAINED_PROMPTS: &str = "last-prompts.retained.json";
+pub(crate) const INJECTED_MESSAGES_FILENAME: &str = "injected-messages.toml";
+pub(crate) const INJECTED_MESSAGES_REFERENCE_FILENAME: &str = "injected-messages.default.toml";
+pub(crate) const INJECTED_MESSAGES_STATE_FILENAME: &str = ".agentscommander-injected-messages.json";
 
 pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
     InstanceArtifact {
@@ -192,7 +195,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: seeded context-template ownership state",
     },
     InstanceArtifact {
-        name: ".agentscommander-injected-messages.json",
+        name: INJECTED_MESSAGES_STATE_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: injected-messages ownership state",
@@ -549,13 +552,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: generated git-guard shim scripts",
     },
     InstanceArtifact {
-        name: "injected-messages.default.toml",
+        name: INJECTED_MESSAGES_REFERENCE_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: injected-messages reference defaults",
     },
     InstanceArtifact {
-        name: "injected-messages.toml",
+        name: INJECTED_MESSAGES_FILENAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: injected-messages configuration",
@@ -851,7 +854,7 @@ pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 12] = [
 /// `.*.*.tmp` is a leading dot, then anything, then a dot, then anything, then
 /// the `.tmp` suffix, so the name needs a leading dot, the suffix, and at least
 /// one dot between them.
-#[allow(dead_code)] // called only from test code: the tie test and the agreement table
+#[cfg(test)] // called only from test code: the tie test and the agreement table
 pub(crate) fn matches_atomic_write_tmp_glob(file_name: &str) -> bool {
     let Some(rest) = file_name.strip_prefix('.') else {
         return false;

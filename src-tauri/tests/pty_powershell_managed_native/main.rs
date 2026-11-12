@@ -49,7 +49,7 @@ use fixture::{
 /// Section 6.2 items 1-3: bare `claude` resolving to a `claude.cmd` shim starts
 /// with the configured system PowerShell as PTY parent, the shim marker arrives
 /// through the normal PTY output, the shim exit code propagates through the
-/// host's WaitForExit, and the spawn-record provenance names the configured
+/// host's `WaitForExit`, and the spawn-record provenance names the configured
 /// PowerShell (never cmd.exe).
 #[test]
 fn configured_powershell_launches_bare_agent_via_cmd_shim() {
@@ -157,17 +157,7 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
     let temp = fixture._temp.path().to_path_buf();
     let reporter_dir = test_binary_dir();
     let reporter_name = test_binary_stem();
-    let logical_args: Vec<&str> = vec![
-        "",
-        "a\"b",
-        "with space",
-        "o'clock",
-        "tail\\",
-        "a%z|p",
-        "a\\b\"c",
-        "a\\\"",
-        "a\\\\\"c",
-    ];
+    let logical_args: Vec<&str> = reporter_logical_args();
 
     let Some(powershell) = powershell_required_host() else {
         eprintln!(concat!(
@@ -197,15 +187,8 @@ fn configured_powershell_managed_native_reporter_argv_and_pty_io() {
             &fixture,
             &reporter_name,
             &child_args,
-            Some(ResolvedAgentHostShell {
-                program: powershell.clone(),
-                args: vec!["-NoProfile".to_string()],
-            }),
-            temp.join("repo-1271-native")
-                .join(".ac")
-                .join("_agent_claude")
-                .to_string_lossy()
-                .as_ref(),
+            powershell_no_profile_host(&powershell),
+            &agent_session_cwd(&temp),
             "1271 managed native reporter",
         )
         .await
@@ -286,61 +269,8 @@ fn configured_powershell_batch_regression() {
     let temp = fixture._temp.path().to_path_buf();
     let shim_dir = temp.join("shim-batch");
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
-    // Section 6.1 cmd-safe values delivered through the nested system-cmd
-    // branch: empty, whitespace, apostrophe, terminal backslash, &, |, ^, !,
-    // <, >, parenthesized. '%' and '"' stay rejected for batch targets.
-    let cmd_safe_args: Vec<&str> = vec![
-        "",
-        "with space",
-        "o'clock",
-        r"tail\",
-        "a&b",
-        "a|b",
-        "a^b",
-        "a!b",
-        "a<b",
-        "a>b",
-        "(x)",
-    ];
-    // The shim echoes one bracketed line per known argument (the injected
-    // --session-id pair lands after the known values and is not echoed), then
-    // exits with a deterministic code.
-    // The shim echoes one quoted bracketed line per known argument (the quoted
-    // echo keeps cmd metacharacters in the expanded value inert; the injected
-    // --session-id pair lands after the known values and is not echoed), then
-    // exits with a deterministic code. `%~N` strips the command-line quotes;
-    // cmd batch can only expand %0-%9, so `shift` brings args 10+ into %1.
-    let mut shim_body = String::from(
-        "echo AC_BATCH_MARKER
-",
-    );
-    let mut shifted = 0usize;
-    for i in 1..=cmd_safe_args.len() {
-        if i <= 9 {
-            shim_body.push_str(&format!(
-                "echo \"V{i}=[%~{i}]\"
-"
-            ));
-        } else {
-            // `shift` moves every parameter one position left; before reading
-            // arg i (i > 9), shift it down to %1.
-            while shifted < i - 1 {
-                shim_body.push_str(
-                    "shift
-",
-                );
-                shifted += 1;
-            }
-            shim_body.push_str(&format!(
-                "echo \"V{i}=[%~1]\"
-"
-            ));
-        }
-    }
-    shim_body.push_str(
-        "exit /b 17
-",
-    );
+    let cmd_safe_args: Vec<&str> = batch_cmd_safe_args();
+    let shim_body = batch_shim_body(cmd_safe_args.len());
     write_cmd_shim(&shim_dir.join("claude.cmd"), &shim_body);
 
     let Some(powershell) = powershell_required_host() else {
@@ -351,17 +281,7 @@ fn configured_powershell_batch_regression() {
         return;
     };
     let mut settings = base_settings(&powershell, &["-NoProfile"], &temp.join("repo-1271-native"));
-    // The command-language tokenizer treats a backslash before the closing
-    // quote as an escape, so a value ending in a backslash is written with the
-    // backslash doubled; the resolved token is the single-backslash value.
-    let command = format!(
-        "claude {}",
-        cmd_safe_args
-            .iter()
-            .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\")))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
+    let command = batch_agent_command(&cmd_safe_args);
     settings.agents = vec![agent_config("claude", &command)];
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -377,11 +297,7 @@ fn configured_powershell_batch_regression() {
             &fixture,
             &settings,
             "claude",
-            temp.join("repo-1271-native")
-                .join(".ac")
-                .join("_agent_claude")
-                .to_string_lossy()
-                .as_ref(),
+            &agent_session_cwd(&temp),
             "1271 batch happy path",
         )
         .await;
@@ -413,49 +329,7 @@ fn configured_powershell_batch_regression() {
             "nested batch shim exit code must propagate exactly"
         );
 
-        // Pre-PTY rejection: explicit .cmd program with '%' in an argument.
-        let explicit = shim_dir.join("explicit.cmd");
-        write_claude_shim(&shim_dir, "AC_EXPLICIT", 3);
-        let explicit_path = path_to_string(&explicit);
-        let err = create_plain_session(
-            &fixture,
-            &explicit_path,
-            &["bad%arg"],
-            Some(ResolvedAgentHostShell {
-                program: powershell.clone(),
-                args: vec!["-NoProfile".to_string()],
-            }),
-            temp.join("repo-1271-native")
-                .join(".ac")
-                .join("_agent_claude")
-                .to_string_lossy()
-                .as_ref(),
-            "1271 explicit batch rejection",
-        )
-        .await
-        .expect_err("explicit .cmd with '%' argument must fail before PTY");
-        assert!(
-            err.contains("unsupported explicit-batch"),
-            "pre-PTY rejection must name the explicit-batch rule: {err}"
-        );
-        assert!(
-            fixture
-                .session_mgr
-                .read()
-                .await
-                .list_sessions()
-                .await
-                .is_empty()
-                || !fixture
-                    .session_mgr
-                    .read()
-                    .await
-                    .list_sessions()
-                    .await
-                    .iter()
-                    .any(|s| s.name == "1271 explicit batch rejection"),
-            "no session may survive the pre-PTY rejection"
-        );
+        assert_explicit_batch_rejected(&fixture, &shim_dir, &powershell, &temp).await;
 
         // Post-lookup runtime rejection: bare claude + unsupported logical
         // argument resolves to batch, the script rejects, host exits nonzero.
@@ -467,11 +341,7 @@ fn configured_powershell_batch_regression() {
             &fixture,
             &settings2,
             "claude",
-            temp.join("repo-1271-native")
-                .join(".ac")
-                .join("_agent_claude")
-                .to_string_lossy()
-                .as_ref(),
+            &agent_session_cwd(&temp),
             "1271 batch runtime rejection",
         )
         .await;
@@ -724,7 +594,7 @@ fn configured_powershell_host_shutdown_reaps_agent() {
             if !process_exists(host_pid) {
                 return;
             }
-            std::thread::sleep(POLL_INTERVAL);
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
         panic!("tracked PowerShell host {host_pid} still alive after destroy");
     });
@@ -934,10 +804,156 @@ fn ac_1271_reporter_mode() {
             }
         }
     }
-    let exit_code = (logical.iter().map(|arg| arg.len()).sum::<usize>() % 256) as i32;
+    let exit_code = (logical.iter().map(std::string::String::len).sum::<usize>() % 256) as i32;
     #[expect(
         clippy::exit,
         reason = "Native reporter returns the argument-derived process status"
     )]
     std::process::exit(exit_code);
+}
+
+fn agent_session_cwd(temp: &std::path::Path) -> String {
+    temp.join("repo-1271-native")
+        .join(".ac")
+        .join("_agent_claude")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn powershell_no_profile_host(powershell: &str) -> Option<ResolvedAgentHostShell> {
+    Some(ResolvedAgentHostShell {
+        program: powershell.to_string(),
+        args: vec!["-NoProfile".to_string()],
+    })
+}
+
+fn reporter_logical_args() -> Vec<&'static str> {
+    vec![
+        "",
+        "a\"b",
+        "with space",
+        "o'clock",
+        "tail\\",
+        "a%z|p",
+        "a\\b\"c",
+        "a\\\"",
+        "a\\\\\"c",
+    ]
+}
+
+/// Section 6.1 cmd-safe values delivered through the nested system-cmd
+/// branch: empty, whitespace, apostrophe, terminal backslash, &, |, ^, !,
+/// <, >, parenthesized. '%' and '"' stay rejected for batch targets.
+fn batch_cmd_safe_args() -> Vec<&'static str> {
+    vec![
+        "",
+        "with space",
+        "o'clock",
+        r"tail\",
+        "a&b",
+        "a|b",
+        "a^b",
+        "a!b",
+        "a<b",
+        "a>b",
+        "(x)",
+    ]
+}
+
+/// The shim echoes one quoted bracketed line per known argument (the quoted
+/// echo keeps cmd metacharacters in the expanded value inert; the injected
+/// --session-id pair lands after the known values and is not echoed), then
+/// exits with a deterministic code. `%~N` strips the command-line quotes;
+/// cmd batch can only expand %0-%9, so `shift` brings args 10+ into %1.
+fn batch_shim_body(arg_count: usize) -> String {
+    let mut shim_body = String::from(
+        "echo AC_BATCH_MARKER
+",
+    );
+    let mut shifted = 0usize;
+    for i in 1..=arg_count {
+        if i <= 9 {
+            shim_body.push_str(&format!(
+                "echo \"V{i}=[%~{i}]\"
+"
+            ));
+        } else {
+            // `shift` moves every parameter one position left; before reading
+            // arg i (i > 9), shift it down to %1.
+            while shifted < i - 1 {
+                shim_body.push_str(
+                    "shift
+",
+                );
+                shifted += 1;
+            }
+            shim_body.push_str(&format!(
+                "echo \"V{i}=[%~1]\"
+"
+            ));
+        }
+    }
+    shim_body.push_str(
+        "exit /b 17
+",
+    );
+    shim_body
+}
+
+/// The command-language tokenizer treats a backslash before the closing
+/// quote as an escape, so a value ending in a backslash is written with the
+/// backslash doubled; the resolved token is the single-backslash value.
+fn batch_agent_command(cmd_safe_args: &[&str]) -> String {
+    format!(
+        "claude {}",
+        cmd_safe_args
+            .iter()
+            .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+/// Pre-PTY rejection: explicit .cmd program with '%' in an argument.
+async fn assert_explicit_batch_rejected(
+    fixture: &fixture::Fixture,
+    shim_dir: &std::path::Path,
+    powershell: &str,
+    temp: &std::path::Path,
+) {
+    let explicit = shim_dir.join("explicit.cmd");
+    write_claude_shim(shim_dir, "AC_EXPLICIT", 3);
+    let explicit_path = path_to_string(&explicit);
+    let err = create_plain_session(
+        fixture,
+        &explicit_path,
+        &["bad%arg"],
+        powershell_no_profile_host(powershell),
+        &agent_session_cwd(temp),
+        "1271 explicit batch rejection",
+    )
+    .await
+    .expect_err("explicit .cmd with '%' argument must fail before PTY");
+    assert!(
+        err.contains("unsupported explicit-batch"),
+        "pre-PTY rejection must name the explicit-batch rule: {err}"
+    );
+    assert!(
+        fixture
+            .session_mgr
+            .read()
+            .await
+            .list_sessions()
+            .await
+            .is_empty()
+            || !fixture
+                .session_mgr
+                .read()
+                .await
+                .list_sessions()
+                .await
+                .iter()
+                .any(|s| s.name == "1271 explicit batch rejection"),
+        "no session may survive the pre-PTY rejection"
+    );
 }

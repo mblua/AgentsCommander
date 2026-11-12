@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 
 pub(super) struct ConfigEnvGuard {
     pub(super) previous: Option<OsString>,
@@ -288,12 +289,170 @@ impl Drop for AcceptanceFixture {
     }
 }
 
+struct FixtureSessions {
+    host_coordinator: Session,
+    host_worker: Session,
+    live_member: Session,
+    room_coordinator: Session,
+    room_live_member: Session,
+    room2_coordinator: Session,
+    exited_member: Session,
+    api_coordinator: Session,
+    api_worker: Session,
+}
+
+struct FixtureContainer {
+    backend: Arc<crate::pty::container_backend::ContainerTransportBackend>,
+    registry_path: PathBuf,
+    api_coordinator_token: crate::pty::container_tokens::ContainerApiToken,
+    api_worker_token: crate::pty::container_tokens::ContainerApiToken,
+    receivers: Vec<tokio::sync::mpsc::Receiver<crate::pty::container_backend::HostToBridgeFrame>>,
+}
+
+async fn create_fixture_sessions(
+    manager: &SessionManager,
+    paths: &ReplicaPaths,
+) -> FixtureSessions {
+    let local = SessionBackendKind::LocalProcess;
+    let host_coordinator = create_session(manager, &paths.coordinator, true, local).await;
+    let host_worker = create_session(manager, &paths.worker, false, local).await;
+    let live_member = create_session(manager, &paths.live_member, false, local).await;
+    let room_coordinator = create_session(manager, &paths.room_coordinator, true, local).await;
+    let room_live_member = create_session(manager, &paths.room_live_member, false, local).await;
+    let room2_coordinator = create_session(manager, &paths.room2_coordinator, true, local).await;
+    let exited_member = create_session(manager, &paths.exited_member, false, local).await;
+    manager.mark_exited(exited_member.id, 0).await;
+    let container = SessionBackendKind::ContainerTransport;
+    let api_coordinator = create_session(manager, &paths.coordinator, true, container).await;
+    let api_worker = create_session(manager, &paths.worker, false, container).await;
+    FixtureSessions {
+        host_coordinator,
+        host_worker,
+        live_member,
+        room_coordinator,
+        room_live_member,
+        room2_coordinator,
+        exited_member,
+        api_coordinator,
+        api_worker,
+    }
+}
+
+fn install_fixture_outputs(local_backend: &FixtureBackend, sessions: &FixtureSessions) {
+    local_backend.install(sessions.host_coordinator.id, b"host coordinator");
+    local_backend.install(sessions.host_worker.id, b"host worker");
+    local_backend.install(sessions.live_member.id, &terminal_canary_output());
+    local_backend.install(sessions.room_live_member.id, &terminal_canary_output());
+    local_backend.install(sessions.room_coordinator.id, b"room coordinator");
+    local_backend.install(sessions.room2_coordinator.id, b"room 2 coordinator");
+    local_backend.install(sessions.exited_member.id, b"exited target");
+}
+
+async fn create_fixture_container(
+    config: &Path,
+    paths: &ReplicaPaths,
+    sessions: &FixtureSessions,
+) -> FixtureContainer {
+    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+    let container_backend = Arc::new(
+        crate::pty::container_backend::ContainerTransportBackend::new(
+            output_senders,
+            idle_detector,
+            None,
+            None,
+        ),
+    );
+    let registry_path = config.join(crate::api::auth::REGISTRY_FILENAME);
+    let token_manager =
+        crate::pty::container_tokens::ContainerApiTokenManager::new_for_path(registry_path.clone());
+    let api_coordinator_token = mint_fixture_token(
+        &token_manager,
+        sessions.api_coordinator.id,
+        paths.coordinator.to_string_lossy().as_ref(),
+        "coordinator",
+    )
+    .await;
+    let api_worker_token = mint_fixture_token(
+        &token_manager,
+        sessions.api_worker.id,
+        paths.worker.to_string_lossy().as_ref(),
+        "worker",
+    )
+    .await;
+    let coordinator_binding = binding_for(
+        &api_coordinator_token,
+        &crate::path_identity::verify_directory(&paths.coordinator).expect("coordinator identity"),
+    );
+    let worker_binding = binding_for(
+        &api_worker_token,
+        &crate::path_identity::verify_directory(&paths.worker).expect("worker identity"),
+    );
+    let receivers = vec![
+        container_backend.install_protocol_snapshot_session_for_test(
+            sessions.api_coordinator.id,
+            coordinator_binding,
+            4,
+            40,
+            b"API coordinator".to_vec(),
+        ),
+        container_backend.install_protocol_snapshot_session_for_test(
+            sessions.api_worker.id,
+            worker_binding,
+            4,
+            40,
+            b"API worker".to_vec(),
+        ),
+    ];
+    FixtureContainer {
+        backend: container_backend,
+        registry_path,
+        api_coordinator_token,
+        api_worker_token,
+        receivers,
+    }
+}
+
+fn record_fixture_routes(pty: &PtyManager, sessions: &FixtureSessions, paths: &ReplicaPaths) {
+    let local = SessionBackendKind::LocalProcess;
+    let container = SessionBackendKind::ContainerTransport;
+    record_route(pty, sessions.host_coordinator.id, local, &paths.coordinator);
+    record_route(pty, sessions.host_worker.id, local, &paths.worker);
+    record_route(pty, sessions.live_member.id, local, &paths.live_member);
+    record_route(
+        pty,
+        sessions.room_coordinator.id,
+        local,
+        &paths.room_coordinator,
+    );
+    record_route(
+        pty,
+        sessions.room_live_member.id,
+        local,
+        &paths.room_live_member,
+    );
+    record_route(
+        pty,
+        sessions.room2_coordinator.id,
+        local,
+        &paths.room2_coordinator,
+    );
+    record_route(pty, sessions.exited_member.id, local, &paths.exited_member);
+    record_route(
+        pty,
+        sessions.api_coordinator.id,
+        container,
+        &paths.coordinator,
+    );
+    record_route(pty, sessions.api_worker.id, container, &paths.worker);
+}
+
 impl AcceptanceFixture {
     pub(super) async fn new(temporary: tempfile::TempDir) -> Self {
         let paths = ReplicaPaths::create(temporary.path());
         let config = temporary.path().join("config");
         std::fs::create_dir_all(&config).expect("config directory");
-        let settings_path = config.join("settings.30.instance.no-git.json");
+        let settings_path = config.join(SETTINGS_FILE_NAME);
         write_security_settings(&settings_path, &paths.collection, true);
 
         let app_settings = crate::config::settings::AppSettings {
@@ -305,191 +464,17 @@ impl AcceptanceFixture {
             crate::config::settings::new_settings_state(app_settings);
 
         let manager = SessionManager::new();
-        let host_coordinator = create_session(
-            &manager,
-            &paths.coordinator,
-            true,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        let host_worker = create_session(
-            &manager,
-            &paths.worker,
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        let live_member = create_session(
-            &manager,
-            &paths.live_member,
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        let room_coordinator = create_session(
-            &manager,
-            &paths.room_coordinator,
-            true,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        let room_live_member = create_session(
-            &manager,
-            &paths.room_live_member,
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        let room2_coordinator = create_session(
-            &manager,
-            &paths.room2_coordinator,
-            true,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        let exited_member = create_session(
-            &manager,
-            &paths.exited_member,
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await;
-        manager.mark_exited(exited_member.id, 0).await;
-        let api_coordinator = create_session(
-            &manager,
-            &paths.coordinator,
-            true,
-            SessionBackendKind::ContainerTransport,
-        )
-        .await;
-        let api_worker = create_session(
-            &manager,
-            &paths.worker,
-            false,
-            SessionBackendKind::ContainerTransport,
-        )
-        .await;
+        let sessions = create_fixture_sessions(&manager, &paths).await;
         let session_manager = Arc::new(tokio::sync::RwLock::new(manager));
 
         let local_backend = FixtureBackend::new();
-        local_backend.install(host_coordinator.id, b"host coordinator");
-        local_backend.install(host_worker.id, b"host worker");
-        local_backend.install(live_member.id, &terminal_canary_output());
-        local_backend.install(room_live_member.id, &terminal_canary_output());
-        local_backend.install(room_coordinator.id, b"room coordinator");
-        local_backend.install(room2_coordinator.id, b"room 2 coordinator");
-        local_backend.install(exited_member.id, b"exited target");
+        install_fixture_outputs(&local_backend, &sessions);
 
-        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-        let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
-        let container_backend = Arc::new(
-            crate::pty::container_backend::ContainerTransportBackend::new(
-                output_senders,
-                idle_detector,
-                None,
-                None,
-            ),
-        );
-        let registry_path = config.join(crate::api::auth::REGISTRY_FILENAME);
-        let token_manager = crate::pty::container_tokens::ContainerApiTokenManager::new_for_path(
-            registry_path.clone(),
-        );
-        let api_coordinator_token = mint_fixture_token(
-            &token_manager,
-            api_coordinator.id,
-            paths.coordinator.to_string_lossy().as_ref(),
-            "coordinator",
-        )
-        .await;
-        let api_worker_token = mint_fixture_token(
-            &token_manager,
-            api_worker.id,
-            paths.worker.to_string_lossy().as_ref(),
-            "worker",
-        )
-        .await;
-        let coordinator_binding = binding_for(
-            &api_coordinator_token,
-            &crate::path_identity::verify_directory(&paths.coordinator)
-                .expect("coordinator identity"),
-        );
-        let worker_binding = binding_for(
-            &api_worker_token,
-            &crate::path_identity::verify_directory(&paths.worker).expect("worker identity"),
-        );
-        let container_receivers = vec![
-            container_backend.install_protocol_snapshot_session_for_test(
-                api_coordinator.id,
-                coordinator_binding,
-                4,
-                40,
-                b"API coordinator".to_vec(),
-            ),
-            container_backend.install_protocol_snapshot_session_for_test(
-                api_worker.id,
-                worker_binding,
-                4,
-                40,
-                b"API worker".to_vec(),
-            ),
-        ];
+        let container = create_fixture_container(&config, &paths, &sessions).await;
 
         let local_trait: Arc<dyn PtyBackend> = local_backend.clone();
-        let pty = PtyManager::new_for_test_with_container_backend(local_trait, container_backend);
-        record_route(
-            &pty,
-            host_coordinator.id,
-            SessionBackendKind::LocalProcess,
-            &paths.coordinator,
-        );
-        record_route(
-            &pty,
-            host_worker.id,
-            SessionBackendKind::LocalProcess,
-            &paths.worker,
-        );
-        record_route(
-            &pty,
-            live_member.id,
-            SessionBackendKind::LocalProcess,
-            &paths.live_member,
-        );
-        record_route(
-            &pty,
-            room_coordinator.id,
-            SessionBackendKind::LocalProcess,
-            &paths.room_coordinator,
-        );
-        record_route(
-            &pty,
-            room_live_member.id,
-            SessionBackendKind::LocalProcess,
-            &paths.room_live_member,
-        );
-        record_route(
-            &pty,
-            room2_coordinator.id,
-            SessionBackendKind::LocalProcess,
-            &paths.room2_coordinator,
-        );
-        record_route(
-            &pty,
-            exited_member.id,
-            SessionBackendKind::LocalProcess,
-            &paths.exited_member,
-        );
-        record_route(
-            &pty,
-            api_coordinator.id,
-            SessionBackendKind::ContainerTransport,
-            &paths.coordinator,
-        );
-        record_route(
-            &pty,
-            api_worker.id,
-            SessionBackendKind::ContainerTransport,
-            &paths.worker,
-        );
+        let pty = PtyManager::new_for_test_with_container_backend(local_trait, container.backend);
+        record_fixture_routes(&pty, &sessions, &paths);
         let pty_manager = Arc::new(std::sync::Mutex::new(pty));
 
         for root in [
@@ -523,12 +508,21 @@ impl AcceptanceFixture {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("terminal snapshot acceptance app");
 
+        let FixtureSessions {
+            host_coordinator,
+            host_worker,
+            live_member,
+            room_coordinator,
+            room_live_member,
+            room2_coordinator,
+            ..
+        } = sessions;
         Self {
             app: Some(app),
             snapshot_state,
             settings,
             settings_path,
-            registry_path,
+            registry_path: container.registry_path,
             message_store: Some(message_store),
             session_manager,
             pty_manager,
@@ -540,10 +534,133 @@ impl AcceptanceFixture {
             room_coordinator,
             room_live_member,
             room2_coordinator,
-            api_coordinator_token,
-            api_worker_token,
-            _container_receivers: container_receivers,
+            api_coordinator_token: container.api_coordinator_token,
+            api_worker_token: container.api_worker_token,
+            _container_receivers: container.receivers,
             _temporary: temporary,
         }
     }
+}
+
+/// Labels and wiring for one isolated acceptance child test. Every label is
+/// spliced into the exact panic and surface messages the parent used inline.
+pub(super) struct IsolatedChild<'a> {
+    pub(super) parent: &'a str,
+    pub(super) evidence_prefix: &'a str,
+    pub(super) executable: &'a str,
+    pub(super) failure: &'a str,
+    pub(super) surface: &'a str,
+    pub(super) test_name: &'a str,
+    pub(super) child_env: &'a str,
+    pub(super) canary_file_env: &'a str,
+    pub(super) fallback_canaries: &'a [&'a str],
+}
+
+/// Runs the isolated child, then proves no canary reached its stdout/stderr.
+pub(super) fn run_isolated_child(child: &IsolatedChild<'_>) {
+    let parent = child.parent;
+    let temporary_root = std::env::current_dir()
+        .unwrap_or_else(|error| panic!("{parent} parent current directory: {error:?}"))
+        .join("target")
+        .join("terminal-snapshot-acceptance-temp");
+    std::fs::create_dir_all(&temporary_root)
+        .unwrap_or_else(|error| panic!("{parent} parent temporary root: {error:?}"));
+    let evidence = tempfile::Builder::new()
+        .prefix(child.evidence_prefix)
+        .tempdir_in(temporary_root)
+        .unwrap_or_else(|error| panic!("{parent} evidence directory: {error:?}"));
+    let canary_file = evidence.path().join("canaries.json");
+    let executable = child.executable;
+    let output = std::process::Command::new(
+        std::env::current_exe()
+            .unwrap_or_else(|error| panic!("{executable} test executable: {error:?}")),
+    )
+    .args([
+        "--exact",
+        child.test_name,
+        "--test-threads=1",
+        "--nocapture",
+    ])
+    .env(child.child_env, "1")
+    .env(child.canary_file_env, &canary_file)
+    .output()
+    .unwrap_or_else(|error| panic!("spawn isolated {executable} test: {error:?}"));
+    let canaries: Vec<String> = std::fs::read(&canary_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| {
+            child
+                .fallback_canaries
+                .iter()
+                .copied()
+                .map(str::to_string)
+                .collect()
+        });
+    let surface = child.surface;
+    assert_canaries_absent_except(&output.stdout, &canaries, &[], &format!("{surface} stdout"));
+    assert_canaries_absent_except(&output.stderr, &canaries, &[], &format!("{surface} stderr"));
+    if !output.status.success() {
+        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        for canary in &canaries {
+            stdout = stdout.replace(canary, "<redacted-canary>");
+            stderr = stderr.replace(canary, "<redacted-canary>");
+        }
+        let failure = child.failure;
+        panic!("isolated {failure} test failed; stdout={stdout:?}; stderr={stderr:?}");
+    }
+}
+
+/// Exact `expect` messages for one capacity-reuse success request.
+pub(super) struct CapacityReuseMessages<'a> {
+    pub(super) timeout: &'a str,
+    pub(super) response: &'a str,
+    pub(super) decode: &'a str,
+}
+
+/// Proves a released slot serves one more strict JSON success with its audit row.
+pub(super) async fn assert_capacity_reuse_request(
+    fixture: &AcceptanceFixture,
+    config: &Path,
+    canaries: &[String],
+    target: &str,
+    messages: &CapacityReuseMessages<'_>,
+    expected_copies: usize,
+) {
+    let success_id = Uuid::new_v4().to_string();
+    let success_response = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_direct_api_request(
+            direct_api_state(fixture),
+            fixture.api_coordinator_token.secret.clone(),
+            direct_api_body(&success_id, target),
+        ),
+    )
+    .await
+    .expect(messages.timeout);
+    let success_status = success_response.status();
+    let success_bytes = axum::body::to_bytes(
+        success_response.into_body(),
+        terminal_snapshot_renderer::MAX_TRANSPORT_BYTES,
+    )
+    .await
+    .expect(messages.response);
+    assert_eq!(success_status, StatusCode::OK);
+    let success = decode_api_success(
+        &success_bytes,
+        &success_id,
+        target,
+        TerminalSnapshotFormat::Json,
+    )
+    .expect(messages.decode);
+    assert!(payload_has_sentinel(&success.result));
+    drop(success);
+    drop(success_bytes);
+    assert_api_lifecycle_idle(&fixture.snapshot_state);
+    assert_eq!(fixture.snapshot_state.test_api_success_handoffs(), 1);
+    assert_api_audit_row(config, canaries, 6, "succeeded", None, Some(&success_id));
+    assert_eq!(
+        fixture.local_backend.counts(fixture.live_member.id).copies,
+        expected_copies
+    );
 }

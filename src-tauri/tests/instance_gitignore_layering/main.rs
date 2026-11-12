@@ -507,7 +507,7 @@ mod resolve;
 mod scan;
 
 use allowed::{
-    Literals, Reach, ALLOWED_GUARDED_CRATE_REFERENCES, ALLOWED_GUARDED_SELF_REFERENCES,
+    Reach, ALLOWED_GUARDED_CRATE_REFERENCES, ALLOWED_GUARDED_SELF_REFERENCES,
     ALLOWED_GUARDED_SUPER_REFERENCES, ALLOWED_HOST_CRATE_REFERENCES, ALLOWED_HOST_SELF_REFERENCES,
     ALLOWED_HOST_SUPER_REFERENCES, ALLOWED_REGISTRY_CRATE_REFERENCES,
     ALLOWED_REGISTRY_SELF_REFERENCES, ALLOWED_REGISTRY_SUPER_REFERENCES, CONSTANT_HOME,
@@ -518,7 +518,8 @@ use resolve::{
     crate_sources, every_file_under, expected, files_of, manifest_dir, observe, relative_of,
     scrubbed,
 };
+use rust_source_scrub::{scrub, Literals};
 use scan::{
     aliases_a_module_group, children_under, defines_the_constant, names_the_replaced_module,
-    normalized, scrub,
+    normalized,
 };

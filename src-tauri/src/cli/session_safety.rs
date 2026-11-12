@@ -30,8 +30,7 @@ pub(crate) fn find_live_sessions_under(root: &Path) -> Vec<LiveSessionBlocker> {
                 working_directory: session.working_directory,
                 status: session
                     .status
-                    .map(|s| format!("{:?}", s))
-                    .unwrap_or_else(|| "Unknown".to_string()),
+                    .map_or_else(|| "Unknown".to_string(), |s| format!("{s:?}")),
                 stale_state,
             })
         })
@@ -70,7 +69,7 @@ fn canonicalize_for_compare(path: &Path) -> PathBuf {
 
 fn strip_long_prefix(s: &str) -> String {
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{}", rest)
+        format!(r"\\{rest}")
     } else if let Some(rest) = s.strip_prefix(r"\\?\") {
         rest.to_string()
     } else {
@@ -95,5 +94,5 @@ fn path_is_under(candidate: &Path, root: &Path) -> bool {
     let candidate = path_key(candidate);
     let root = path_key(root);
     let sep = if cfg!(windows) { "\\" } else { "/" };
-    candidate == root || candidate.starts_with(&format!("{}{}", root, sep))
+    candidate == root || candidate.starts_with(&format!("{root}{sep}"))
 }

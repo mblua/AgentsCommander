@@ -15,7 +15,7 @@ impl SessionManager {
     pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_agent_kind_with_carrier_permit(&carrier_permit, id, kind)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -56,7 +56,7 @@ impl SessionManager {
         kind: Option<CodingAgentKind>,
     ) -> Result<(), AppError> {
         self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
-            session.agent_kind = kind
+            session.agent_kind = kind;
         })
         .await
     }
@@ -118,7 +118,7 @@ impl SessionManager {
             effective_codex_home,
             profile_content_hash,
         )
-        .await
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -217,7 +217,7 @@ impl SessionManager {
     pub async fn set_resolved_claude_projects_dir(&self, id: Uuid, path: Option<PathBuf>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_resolved_claude_projects_dir_with_carrier_permit(&carrier_permit, id, path)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -309,12 +309,12 @@ impl SessionManager {
         FinalizedOwnedCarryOutcome::Applied
     }
 
-    /// Persisted Telegram ON/OFF state for the session. Some(bot_id) means the
+    /// Persisted Telegram ON/OFF state for the session. `Some(bot_id)` means the
     /// bridge should be reattached when the session is restored or woken.
     pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_telegram_bot_id_with_carrier_permit(&carrier_permit, id, bot_id)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -351,7 +351,7 @@ impl SessionManager {
     pub async fn set_was_detached(&self, id: Uuid, detached: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_was_detached_with_carrier_permit(&carrier_permit, id, detached)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -391,7 +391,7 @@ impl SessionManager {
     pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_effective_shell_args_with_carrier_permit(&carrier_permit, id, args)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -442,7 +442,7 @@ impl SessionManager {
     pub async fn set_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_git_repos_with_carrier_permit(&carrier_permit, id, repos)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -512,7 +512,7 @@ impl SessionManager {
     pub async fn set_is_coordinator(&self, id: Uuid, is_coordinator: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_is_coordinator_with_carrier_permit(&carrier_permit, id, is_coordinator)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -532,7 +532,7 @@ impl SessionManager {
     }
 
     /// Recompute `is_coordinator` for every session using the current team snapshot.
-    /// Returns the list of (session_id, new_value) pairs whose flag actually changed,
+    /// Returns the list of (`session_id`, `new_value`) pairs whose flag actually changed,
     /// so callers can emit a single event batch.
     pub async fn refresh_coordinator_flags(
         &self,
@@ -569,7 +569,7 @@ impl SessionManager {
     /// Replace `git_repos` for sessions whose name matches. Bumps `git_repos_gen` on every
     /// write so an in-flight `GitWatcher::poll` that captured the pre-refresh snapshot
     /// cannot overwrite us (see §2.1.d / Grinch #14).
-    /// Returns the list of (session_id, new_repos) pairs where a write actually happened.
+    /// Returns the list of (`session_id`, `new_repos`) pairs where a write actually happened.
     pub async fn refresh_git_repos_for_sessions(
         &self,
         updates: &[(String, Vec<SessionRepo>)],

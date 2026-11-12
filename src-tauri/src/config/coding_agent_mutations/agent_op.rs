@@ -6,7 +6,7 @@ use crate::config::settings::{
 };
 use crate::pty::backend::SessionBackendKind;
 
-/// Default custom-agent color when none is supplied (matches OnboardingModal).
+/// Default custom-agent color when none is supplied (matches `OnboardingModal`).
 pub const DEFAULT_CUSTOM_COLOR: &str = "#6366f1";
 
 /// A settings.agents mutation. Serialized (camelCase, internally tagged on
@@ -188,8 +188,7 @@ pub fn validate_agent_color(color: &str) -> Result<(), String> {
 pub fn mint_agent_id() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as u64);
     let uuid = uuid::Uuid::new_v4().simple().to_string();
     format!("agent_{}_{}", ms, &uuid[..6])
 }

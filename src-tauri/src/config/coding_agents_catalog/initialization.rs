@@ -161,7 +161,7 @@ pub(crate) fn initialize_catalog_under_lock(
                     if scope == InitScope::Project {
                         match migrate_legacy(paths, MIGRATION_SOURCE_PROJECT, &paths.base, &bytes) {
                             Ok(published_at) => {
-                                outcome.published_at = published_at.or(outcome.published_at)
+                                outcome.published_at = published_at.or(outcome.published_at);
                             }
                             Err(reason) => outcome.warnings.push(catalog_diagnostic(
                                 REPORT_CODE_MIGRATION_CONFLICT,
@@ -743,26 +743,17 @@ pub(crate) fn record_catalog_publication(
     )) {
         Ok(identity) => identity,
         Err(error) => {
-            log::warn!(
-                "[coding-agents] seed-manifest catalog row rejected path error={}",
-                error
-            );
+            log::warn!("[coding-agents] seed-manifest catalog row rejected path error={error}");
             return;
         }
     };
     let row = match PublishedManifestRow::coding_agent_catalog(identity, published_at) {
         Ok(row) => row,
         Err(error) => {
-            log::warn!(
-                "[coding-agents] seed-manifest catalog row rejected error={}",
-                error
-            );
+            log::warn!("[coding-agents] seed-manifest catalog row rejected error={error}");
             return;
         }
     };
     let outcome = guard.publication_permit().record_file(activation, row);
-    log::debug!(
-        "[coding-agents] seed-manifest catalog publication outcome={:?}",
-        outcome
-    );
+    log::debug!("[coding-agents] seed-manifest catalog publication outcome={outcome:?}");
 }

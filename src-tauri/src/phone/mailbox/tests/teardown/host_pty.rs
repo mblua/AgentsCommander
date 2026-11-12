@@ -139,7 +139,7 @@ async fn p02_host_poll_progress_marker_and_late_terminal() {
         tokio::pin!(observation);
         tokio::select! {
             result = &mut observation => panic!("P02 poll returned before core: {result:?}"),
-            _ = p02_until(|| control.accepted_core_entered.load(Ordering::Acquire)) => {}
+            () = p02_until(|| control.accepted_core_entered.load(Ordering::Acquire)) => {}
         }
         resume.send(()).unwrap();
         timeout(Duration::from_secs(7), observation)
@@ -203,6 +203,43 @@ async fn p02_host_poll_progress_marker_and_late_terminal() {
     );
     assert_eq!(fixture.backend.writes_for(sid), expected_writes);
     app.state::<SelectionCoordinator>().close_and_join().await;
+}
+
+async fn p02_assert_same_id_lock_excludes_duplicate(
+    poller: &MailboxPoller,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    state: &crate::api::message_store::MessageStoreState,
+    (route, sender, target): (&crate::config::teams::VerifiedPtyInputRoute, Uuid, Uuid),
+) {
+    use crate::phone::types::PtyInputSourcePlane::HostCli;
+    let store = state.store.as_ref().unwrap();
+    *poller
+        .test_hooks
+        .as_ref()
+        .unwrap()
+        .replacement_fixture
+        .lock()
+        .unwrap() = None;
+    let duplicate = enqueue_shared_pty_engine_operation(store, route, sender, b"locked source");
+    let held = store.try_operation_lock(&duplicate).unwrap().unwrap();
+    let writes = shared_engine_writes(app, target);
+    poller
+        .dispatch_pty_input_operation(app, state, &duplicate, HostCli, None)
+        .await;
+    assert_eq!(
+        shared_engine_writes(app, target),
+        writes,
+        "same-ID lock excludes duplicate effects"
+    );
+    assert_eq!(poller.host_pty_slots.available_permits(), 8);
+    assert!(
+        !store
+            .query_pty_input_by_injection(&duplicate)
+            .unwrap()
+            .unwrap()
+            .terminal
+    );
+    drop(held);
 }
 
 #[tokio::test]
@@ -280,33 +317,8 @@ async fn p02_budget_eight_cores_ninth_queued_and_per_id_exclusion() {
     drop(resume_ninth);
     timeout(Duration::from_secs(7), next).await.unwrap();
     p02_until(|| poller.host_pty_slots.available_permits() == 8).await;
-    *poller
-        .test_hooks
-        .as_ref()
-        .unwrap()
-        .replacement_fixture
-        .lock()
-        .unwrap() = None;
-    let duplicate = enqueue_shared_pty_engine_operation(store, &route, sender, b"locked source");
-    let held = store.try_operation_lock(&duplicate).unwrap().unwrap();
-    let writes = shared_engine_writes(app, target);
-    poller
-        .dispatch_pty_input_operation(app, &state, &duplicate, HostCli, None)
+    p02_assert_same_id_lock_excludes_duplicate(&poller, app, &state, (&route, sender, target))
         .await;
-    assert_eq!(
-        shared_engine_writes(app, target),
-        writes,
-        "same-ID lock excludes duplicate effects"
-    );
-    assert_eq!(poller.host_pty_slots.available_permits(), 8);
-    assert!(
-        !store
-            .query_pty_input_by_injection(&duplicate)
-            .unwrap()
-            .unwrap()
-            .terminal
-    );
-    drop(held);
     app.state::<SelectionCoordinator>().close_and_join().await;
 }
 

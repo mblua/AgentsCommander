@@ -107,7 +107,7 @@ pub fn execute_message(args: TelegramSendMessageArgs) -> i32 {
             0
         }
         Err(error) => {
-            eprintln!("Error: {}", error);
+            eprintln!("Error: {error}");
             1
         }
     }
@@ -191,7 +191,7 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
     ) {
         Ok(b) => b.clone(),
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             return 1;
         }
     };
@@ -209,7 +209,7 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("Error: failed to build tokio runtime: {}", e);
+            eprintln!("Error: failed to build tokio runtime: {e}");
             return 1;
         }
     };
@@ -217,7 +217,7 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
     let network = match crate::network::OutboundNetwork::new() {
         Ok(network) => network,
         Err(e) => {
-            eprintln!("Error: failed to build network client: {}", e);
+            eprintln!("Error: failed to build network client: {e}");
             return 1;
         }
     };
@@ -241,7 +241,7 @@ pub fn execute(args: TelegramSendImageArgs) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }

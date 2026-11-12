@@ -250,7 +250,7 @@ fn blocker_report_serializes_with_camelcase_fields() {
         "sessions",
         "processes",
     ] {
-        assert!(json.get(*k).is_some(), "missing field: {}", k);
+        assert!(json.get(*k).is_some(), "missing field: {k}");
     }
     // R.1.a: Platform enum must serialize to lowercase string.
     assert_eq!(
@@ -261,16 +261,16 @@ fn blocker_report_serializes_with_camelcase_fields() {
     // BlockerSession fields
     let s = &json["liveSessions"][0];
     for k in &["sessionId", "agentName", "cwd"] {
-        assert!(s.get(*k).is_some(), "missing session field: {}", k);
+        assert!(s.get(*k).is_some(), "missing session field: {k}");
     }
     // BlockerProcess fields
     let p = &json["externalProcesses"][0];
     for k in &["pid", "name", "cwd", "files"] {
-        assert!(p.get(*k).is_some(), "missing process field: {}", k);
+        assert!(p.get(*k).is_some(), "missing process field: {k}");
     }
     let ignored = &json["exitedSessionRecordsIgnored"][0];
     for k in &["sessionId", "agentName", "cwd", "status", "waitingForInput"] {
-        assert!(ignored.get(*k).is_some(), "missing ignored field: {}", k);
+        assert!(ignored.get(*k).is_some(), "missing ignored field: {k}");
     }
     // Snake-case must NOT leak at the wire boundary.
     for k in &[
@@ -288,16 +288,11 @@ fn blocker_report_serializes_with_camelcase_fields() {
     ] {
         assert!(
             json.get(*k).is_none(),
-            "leaked snake_case field at top level: {}",
-            k
+            "leaked snake_case field at top level: {k}"
         );
     }
     for k in &["session_id", "agent_name"] {
-        assert!(
-            s.get(*k).is_none(),
-            "leaked snake_case session field: {}",
-            k
-        );
+        assert!(s.get(*k).is_none(), "leaked snake_case session field: {k}");
     }
     assert!(ignored.get("waiting_for_input").is_none());
 }
@@ -430,7 +425,7 @@ fn blocker_report_serializes_without_windows_scanner_fields_present() {
     let json: serde_json::Value = serde_json::to_value(&report).expect("serialize");
     assert_eq!(
         json.get("restartManagerAvailable")
-            .and_then(|v| v.as_bool()),
+            .and_then(serde_json::Value::as_bool),
         Some(false)
     );
     assert!(json.get("restartManagerError").is_none());
@@ -456,7 +451,7 @@ fn is_file_in_use_error_matches_lock_violation_on_windows() {
 }
 
 /// §7.1 (Windows variant): `is_file_in_use_error` matches `ERROR_USER_MAPPED_FILE` (1224).
-/// This is the VSCode / IDE memory-mapped-I/O case — the motivating scenario for the
+/// This is the `VSCode` / IDE memory-mapped-I/O case — the motivating scenario for the
 /// diagnostic. See plan §6.1.
 #[cfg(windows)]
 #[test]
@@ -543,28 +538,23 @@ fn collect_files_to_probe_includes_wg_root_and_top_level_dirs() {
 
     assert!(
         result.iter().any(|p| p == &wg_dir),
-        "result must include WG root, got {:?}",
-        result
+        "result must include WG root, got {result:?}"
     );
     assert!(
         result.iter().any(|p| p == &repo_dir),
-        "result must include repo-* subdir, got {:?}",
-        result
+        "result must include repo-* subdir, got {result:?}"
     );
     assert!(
         result.iter().any(|p| p == &agent_dir),
-        "result must include __agent_* subdir, got {:?}",
-        result
+        "result must include __agent_* subdir, got {result:?}"
     );
     assert!(
         result.iter().any(|p| p == &messaging_dir),
-        "result must include messaging/ subdir, got {:?}",
-        result
+        "result must include messaging/ subdir, got {result:?}"
     );
     assert!(
         !result.iter().any(|p| p == &unrelated),
-        "result must NOT include unrelated top-level dirs (got 'docs'); result={:?}",
-        result
+        "result must NOT include unrelated top-level dirs (got 'docs'); result={result:?}"
     );
 }
 
@@ -590,17 +580,14 @@ fn collect_files_to_probe_orders_dirs_before_files() {
     match (first_file_idx, last_dir_idx) {
         (Some(file_i), Some(dir_i)) => assert!(
             dir_i < file_i,
-            "all dirs must precede all files in output; got dirs ending at {} but a file at {}; \
-            result={:?}",
-            dir_i,
-            file_i,
-            result
+            "all dirs must precede all files in output; got dirs ending at {dir_i} but a file at \
+            {file_i}; \
+            result={result:?}"
         ),
         // If there are no files (empty WG) or no dirs (would be a bug),
         // the test is moot — but it shouldn't happen with the setup above.
         other => panic!(
-            "expected at least one dir and one file in result, got {:?}; result={:?}",
-            other, result
+            "expected at least one dir and one file in result, got {other:?}; result={result:?}"
         ),
     }
 }
@@ -739,8 +726,7 @@ fn scan_cwd_processes_windows_detects_child_process_current_dir() {
 
     assert!(
         found,
-        "CWD fallback must detect child powershell.exe under WG; last_error={:?}",
-        last_error
+        "CWD fallback must detect child powershell.exe under WG; last_error={last_error:?}"
     );
 }
 

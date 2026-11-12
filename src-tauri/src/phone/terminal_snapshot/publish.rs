@@ -114,21 +114,14 @@ pub(super) fn publish_response_bytes(
         &temporary,
         &destination,
     );
-    let written_identity = match retained_directory
-        .verify_current()
-        .and_then(|_| retained_directory.verify_opened_regular_file(&temporary, &file, false))
-    {
-        Ok(identity)
-            if crate::path_identity::same_object(&identity, &temporary_identity)
-                && crate::path_identity::is_verified_descendant(&identity, &directory_identity) =>
-        {
-            identity
-        }
-        _ => {
-            cleanup_tracked_artifact(state, &temporary, &temporary_identity);
-            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
-        }
-    };
+    let written_identity = verify_written_response(
+        state,
+        &retained_directory,
+        &temporary,
+        &file,
+        &temporary_identity,
+        &directory_identity,
+    )?;
     finalize_response_publication(
         state,
         &retained_directory,
@@ -138,6 +131,32 @@ pub(super) fn publish_response_bytes(
         &written_identity,
         &directory_identity,
     )
+}
+
+fn verify_written_response(
+    state: &crate::pty::terminal_snapshot::TerminalSnapshotState,
+    retained_directory: &crate::path_identity::RetainedDirectory,
+    temporary: &Path,
+    file: &std::fs::File,
+    temporary_identity: &crate::path_identity::VerifiedPathIdentity,
+    directory_identity: &crate::path_identity::VerifiedPathIdentity,
+) -> Result<crate::path_identity::VerifiedPathIdentity, TerminalSnapshotReasonCode> {
+    let written_identity = match retained_directory
+        .verify_current()
+        .and_then(|()| retained_directory.verify_opened_regular_file(temporary, file, false))
+    {
+        Ok(identity)
+            if crate::path_identity::same_object(&identity, temporary_identity)
+                && crate::path_identity::is_verified_descendant(&identity, directory_identity) =>
+        {
+            identity
+        }
+        _ => {
+            cleanup_tracked_artifact(state, temporary, temporary_identity);
+            return Err(TerminalSnapshotReasonCode::ResponseUnavailable);
+        }
+    };
+    Ok(written_identity)
 }
 
 fn finalize_response_publication(
@@ -256,7 +275,7 @@ fn reconcile_published_response(
 ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode> {
     match retained_directory
         .verify_current()
-        .and_then(|_| retained_directory.verify_opened_regular_file(destination, file, false))
+        .and_then(|()| retained_directory.verify_opened_regular_file(destination, file, false))
     {
         Ok(identity)
             if crate::path_identity::same_object(expected, &identity)

@@ -260,22 +260,107 @@ fn a_foreign_value_and_a_new_value_both_survive_their_own_sequence() {
 
 // -- E1f -----------------------------------------------------------------
 
+fn join_within<T>(handle: std::thread::JoinHandle<T>, bound: Duration) -> Result<T, String> {
+    let started = Instant::now();
+    while !handle.is_finished() {
+        if started.elapsed() >= bound {
+            return Err(format!("the thread did not finish within {bound:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    handle.join().map_err(|_| "the thread panicked".to_string())
+}
+
+type Contender = std::thread::JoinHandle<Result<(), String>>;
+
+/// (Xt) abort: both releases, kill and reap the child, then `go`, then a
+/// bounded join.
+fn abort_the_contention(
+    child: &mut PairChild,
+    contender: Option<(std::sync::mpsc::Sender<()>, Contender)>,
+    why: String,
+    sequence: &Path,
+    join_bound: Duration,
+) -> ! {
+    for stage in [CLEANUP_TRACKED, MUTANT_GAP, CALLER_STATE] {
+        child.release(stage);
+    }
+    let last_stage = child.stages().last().cloned();
+    let child_status = child.kill();
+    let thread_status = contender.map(|(go, handle)| {
+        let _ = go.send(());
+        join_within(handle, join_bound)
+    });
+    panic!(
+        "{why}\nsequence: {:?}\nlast stage: {last_stage:?}\n\
+         child: {child_status}\nthread: {thread_status:?}",
+        lines_of(sequence)
+    );
+}
+
+/// The competing writer, a pre-C binary: it takes the decisions sidecar,
+/// then waits at `go` still holding it.
+fn spawn_contender(
+    lock_path: std::path::PathBuf,
+    decisions_path: std::path::PathBuf,
+    thread_sequence: std::path::PathBuf,
+    go_gate: std::sync::mpsc::Receiver<()>,
+    lock_timeout: Duration,
+) -> Contender {
+    std::thread::spawn(move || {
+        append_line(&thread_sequence, "parent:acquiring");
+        let _lock = crate::config::local_config_io::acquire_sidecar_write_lock(
+            &lock_path,
+            lock_timeout,
+            "contenderLockTimeout",
+            "contending config write lock",
+        )?;
+        append_line(&thread_sequence, "parent:acquired");
+        go_gate
+            .recv_timeout(HOOK_BOUND)
+            .map_err(|e| format!("go was never released: {e}"))?;
+        let mut tracked = get_json(&decisions_path);
+        set_tooling(
+            tracked.as_object_mut().expect("object"),
+            "lastCodingAgent",
+            json!("v2"),
+        );
+        put_json(&decisions_path, &tracked);
+        append_line(&thread_sequence, "parent:published v2");
+        Ok(())
+    })
+}
+
+/// The blocking assertion, on the final marker file.
+fn assert_child_published_before_the_parent_acquired(sequence: &Path) {
+    let lines = lines_of(sequence);
+    let at = |line: &str| {
+        lines
+            .iter()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("{line} is missing from {lines:?}"))
+    };
+    assert!(
+        at("parent:acquired") > at("child:published v3"),
+        "parent:acquired must not appear before child:published v3: {lines:?}"
+    );
+    assert_eq!(
+        lines,
+        [
+            "child:paused",
+            "parent:acquiring",
+            "child:published v3",
+            "parent:acquired",
+            "parent:published v2"
+        ]
+    );
+}
+
 #[test]
 fn nothing_lands_between_the_cleanup_and_the_caller_sequence() {
     const LOCK_TIMEOUT: Duration = Duration::from_secs(60);
     const DISPATCH_BOUND: Duration = Duration::from_secs(2);
     const JOIN_BOUND: Duration = Duration::from_secs(5);
-
-    fn join_within<T>(handle: std::thread::JoinHandle<T>, bound: Duration) -> Result<T, String> {
-        let started = Instant::now();
-        while !handle.is_finished() {
-            if started.elapsed() >= bound {
-                return Err(format!("the thread did not finish within {bound:?}"));
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        handle.join().map_err(|_| "the thread panicked".to_string())
-    }
 
     let p = pair();
     p.seed_decisions(json!({ "tooling": { "lastCodingAgent": "v1" } }));
@@ -290,26 +375,10 @@ fn nothing_lands_between_the_cleanup_and_the_caller_sequence() {
     // (Xt) abort: no more evidence is wanted, so take the one order that
     // cannot block. Both releases, kill and reap the child, then `go`, then
     // a bounded join.
-    type Contender = std::thread::JoinHandle<Result<(), String>>;
     let abort = |child: &mut PairChild,
                  contender: Option<(std::sync::mpsc::Sender<()>, Contender)>,
                  why: String|
-     -> ! {
-        for stage in [CLEANUP_TRACKED, MUTANT_GAP, CALLER_STATE] {
-            child.release(stage);
-        }
-        let last_stage = child.stages().last().cloned();
-        let child_status = child.kill();
-        let thread_status = contender.map(|(go, handle)| {
-            let _ = go.send(());
-            join_within(handle, JOIN_BOUND)
-        });
-        panic!(
-            "{why}\nsequence: {:?}\nlast stage: {last_stage:?}\n\
-             child: {child_status}\nthread: {thread_status:?}",
-            lines_of(&sequence)
-        );
-    };
+     -> ! { abort_the_contention(child, contender, why, &sequence, JOIN_BOUND) };
 
     // (1) the child pauses inside the cleanup with the guard held.
     if child.first_ready(&[CLEANUP_TRACKED], HOOK_BOUND) != Some(CLEANUP_TRACKED) {
@@ -327,28 +396,13 @@ fn nothing_lands_between_the_cleanup_and_the_caller_sequence() {
         .expect("canonical agent dir")
         .join(".config.json.lock");
     let (decisions_path, thread_sequence) = (p.decisions(), sequence.clone());
-    let handle: Contender = std::thread::spawn(move || {
-        append_line(&thread_sequence, "parent:acquiring");
-        let _lock = crate::config::local_config_io::acquire_sidecar_write_lock(
-            &lock_path,
-            LOCK_TIMEOUT,
-            "contenderLockTimeout",
-            "contending config write lock",
-        )?;
-        append_line(&thread_sequence, "parent:acquired");
-        go_gate
-            .recv_timeout(HOOK_BOUND)
-            .map_err(|e| format!("go was never released: {e}"))?;
-        let mut tracked = get_json(&decisions_path);
-        set_tooling(
-            tracked.as_object_mut().expect("object"),
-            "lastCodingAgent",
-            json!("v2"),
-        );
-        put_json(&decisions_path, &tracked);
-        append_line(&thread_sequence, "parent:published v2");
-        Ok(())
-    });
+    let handle: Contender = spawn_contender(
+        lock_path,
+        decisions_path,
+        thread_sequence,
+        go_gate,
+        LOCK_TIMEOUT,
+    );
     let has = |line: &str| lines_of(&sequence).iter().any(|l| l == line);
     let started = Instant::now();
     while !has("parent:acquiring") {
@@ -413,29 +467,13 @@ fn nothing_lands_between_the_cleanup_and_the_caller_sequence() {
     }
 
     // The blocking assertion, on the final marker file.
-    let lines = lines_of(&sequence);
-    let at = |line: &str| {
-        lines
-            .iter()
-            .position(|l| l == line)
-            .unwrap_or_else(|| panic!("{line} is missing from {lines:?}"))
-    };
-    assert!(
-        at("parent:acquired") > at("child:published v3"),
-        "parent:acquired must not appear before child:published v3: {lines:?}"
-    );
-    assert_eq!(
-        lines,
-        [
-            "child:paused",
-            "parent:acquiring",
-            "child:published v3",
-            "parent:acquired",
-            "parent:published v2"
-        ]
-    );
+    assert_child_published_before_the_parent_acquired(&sequence);
 
     // End state: the tracked file holds v2, the newer write, and it wins.
+    assert_the_newer_write_wins(&p);
+}
+
+fn assert_the_newer_write_wins(p: &Pair) {
     assert_eq!(p.tracked()["tooling"]["lastCodingAgent"], json!("v2"));
     p.write(no_change).expect("reconcile");
     assert_eq!(p.stored_state()["tooling"]["lastCodingAgent"], json!("v2"));
@@ -600,9 +638,9 @@ fn an_interrupted_move_leaves_the_value_in_both_files() {
     );
 
     let tracked = p.tracked()["tooling"]["lastCodingAgent"].clone();
-    let state = bytes_of(&p.state())
-        .map(|_| p.stored_state()["tooling"]["lastCodingAgent"].clone())
-        .unwrap_or(Value::Null);
+    let state = bytes_of(&p.state()).map_or(Value::Null, |_| {
+        p.stored_state()["tooling"]["lastCodingAgent"].clone()
+    });
     assert_eq!(
         (&tracked, &state),
         (&json!("claude"), &json!("claude")),
@@ -689,6 +727,31 @@ fn a_refusal_keeps_every_value() {
     // Leg 4, the caller's partial publish: its state publish succeeds and
     // its decisions publish fails. The marker is present on the `Err`.
     let p = unmigrated();
+    refusal_leg_caller_partial_publish(&p, mutate_both);
+
+    // Leg 5, the caller's state publish fails: nothing of its sequence
+    // reaches disk.
+    let p = unmigrated();
+    refusal_leg_caller_state_publish_fails(&p, mutate_both);
+
+    // Variant: `mutate` fails on a pair that already carries the marker.
+    let p = pair();
+    p.seed_decisions(json!({ "tooling": { "profile": "old" } }));
+    p.seed_state(marked(json!({ "lastCodingAgent": "v_old" })));
+    let before = both(&p);
+    let err = p
+        .write(|_, _| Err("the caller refused".to_string()))
+        .expect_err("a failing mutate");
+    assert_eq!(err, "the caller refused");
+    assert_eq!(both(&p), before, "mutate: both files byte-identical");
+    assert_eq!(p.stored_state()["split"], split_marker());
+    assert_eq!(p.read("lastCodingAgent"), json!("v_old"));
+}
+
+fn refusal_leg_caller_partial_publish<F>(p: &Pair, mutate_both: F)
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
     let block = |stage: &str| {
         if stage == CLEANUP_TRACKED {
             std::fs::create_dir(p.decisions_temp()).expect("block the decisions publish");
@@ -717,10 +780,12 @@ fn a_refusal_keeps_every_value() {
     );
     assert_eq!(p.read("lastCodingAgent"), json!("v_new"));
     std::fs::remove_dir(p.decisions_temp()).expect("unblock");
+}
 
-    // Leg 5, the caller's state publish fails: nothing of its sequence
-    // reaches disk.
-    let p = unmigrated();
+fn refusal_leg_caller_state_publish_fails<F>(p: &Pair, mutate_both: F)
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
     let block = |stage: &str| {
         if stage == CLEANUP_TRACKED {
             std::fs::create_dir(p.state_temp()).expect("block the state publish");
@@ -749,19 +814,6 @@ fn a_refusal_keeps_every_value() {
         split_marker(),
         "the next call stamps it"
     );
-
-    // Variant: `mutate` fails on a pair that already carries the marker.
-    let p = pair();
-    p.seed_decisions(json!({ "tooling": { "profile": "old" } }));
-    p.seed_state(marked(json!({ "lastCodingAgent": "v_old" })));
-    let before = both(&p);
-    let err = p
-        .write(|_, _| Err("the caller refused".to_string()))
-        .expect_err("a failing mutate");
-    assert_eq!(err, "the caller refused");
-    assert_eq!(both(&p), before, "mutate: both files byte-identical");
-    assert_eq!(p.stored_state()["split"], split_marker());
-    assert_eq!(p.read("lastCodingAgent"), json!("v_old"));
 }
 
 // -- E5b -----------------------------------------------------------------

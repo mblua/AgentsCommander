@@ -23,6 +23,7 @@ pub(crate) mod coding_agent_requests;
 pub(crate) mod config_locations;
 pub(crate) mod config_seed;
 pub(crate) mod config_write_probe;
+pub(crate) mod context_history;
 pub(crate) mod context_skills;
 pub(crate) mod context_templates;
 pub(crate) mod coordinator_clocks;
@@ -68,6 +69,11 @@ pub(crate) fn read_capture_catalog(path: &Path) -> std::io::Result<String> {
 /// Preserve canonical loop event paths, falling back to the supplied spelling.
 pub(crate) fn canonical_loop_event_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.into())
+}
+
+/// Probe snapshot or stage existence with unchanged native semantics.
+pub(crate) fn session_container_exists(path: &Path) -> bool {
+    path.exists()
 }
 
 /// Read persisted session text with unchanged platform errors.
@@ -306,8 +312,8 @@ pub(crate) fn publish_terminal_snapshot_request(
     }
     stage("publish_request.write_temporary");
     file.write_all(bytes)
-        .and_then(|_| file.flush())
-        .and_then(|_| file.sync_all())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all())
         .map_err(|_| "response_unavailable".to_string())?;
     stage("publish_request.verify_temporary");
     let temporary_identity =

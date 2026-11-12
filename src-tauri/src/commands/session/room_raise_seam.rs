@@ -23,7 +23,7 @@ static BEFORE_ADD: BarrierMap = Mutex::new(None);
 fn install(map: &BarrierMap, key: &str) -> Arc<RoomRaiseBarrier> {
     let barrier = Arc::new(RoomRaiseBarrier::default());
     map.lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert_with(HashMap::new)
         .insert(key.to_string(), Arc::clone(&barrier));
     barrier
@@ -32,7 +32,7 @@ fn install(map: &BarrierMap, key: &str) -> Arc<RoomRaiseBarrier> {
 async fn hit(map: &BarrierMap, key: &str) {
     let barrier = map
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
         .and_then(|map| map.remove(key));
     if let Some(barrier) = barrier {

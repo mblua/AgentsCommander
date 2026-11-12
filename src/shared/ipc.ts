@@ -144,6 +144,16 @@ import type {
   CoManagedState,
   AgentHelpFile,
 } from "./types";
+import type {
+  AgentDetailResponse,
+  ChangesPageResponse,
+  ChangesRequest,
+  ReportQuery,
+  ReportResponse,
+  SidebarMeansQuery,
+  SidebarMeansResponse,
+} from "./context-history";
+import { createPreflightTestAPI } from "./preflightTestApi";
 import { decodeSessionSelection } from "./session-selection";
 
 export type { UiTerminalOperation };
@@ -565,6 +575,9 @@ export function assertCodingAgentMoveOrder(
     throw new Error("The backend returned an unexpected agent order.");
   }
 }
+
+/** #3516 - the saved preflight chain test; the same transport serves Tauri and WS. */
+export const PreflightTestAPI = createPreflightTestAPI(transport);
 
 export const SettingsAPI = {
   // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +
@@ -1063,6 +1076,18 @@ export const ResourceMonitorAPI = {
   snapshot: () => transport.invoke<ResourceSnapshot>("get_resource_snapshot"),
   killGroup: (request: ResourceKillRequest) =>
     transport.invoke<ResourceKillResult>("kill_resource_group", { request }),
+};
+
+/** #3532 - desktop context history; every request travels as the `request` arg. */
+export const ContextHistoryAPI = {
+  report: (request: ReportQuery) =>
+    transport.invoke<ReportResponse>("get_context_history_report", { request }),
+  agentDetail: (request: ReportQuery) =>
+    transport.invoke<AgentDetailResponse>("get_context_history_agent_detail", { request }),
+  changes: (request: ChangesRequest) =>
+    transport.invoke<ChangesPageResponse>("get_context_history_changes", { request }),
+  sidebarMeans: (request: SidebarMeansQuery) =>
+    transport.invoke<SidebarMeansResponse>("get_context_history_sidebar_means", { request }),
 };
 
 export const TaskAPI = {

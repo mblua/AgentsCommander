@@ -47,7 +47,7 @@ pub(crate) fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> 
     let no_labels = profiles
         .profile_labels_by_agent
         .get(id)
-        .is_none_or(|labels| labels.is_empty());
+        .is_none_or(std::collections::BTreeMap::is_empty);
     let no_cells = match profiles.profiles_by_agent.get(id) {
         None => true,
         Some(cells) => {
@@ -168,7 +168,7 @@ pub(crate) fn coding_agent_identity_with_physical_overlay(
 ) -> Value {
     let unmerged = value.clone();
     let base_profiles = value.get("codingAgentProfiles").cloned();
-    let overlay = LocalSettingsOverlay::load_and_merge_paired(
+    let overlay = crate::config::settings::overlay::load_settings_overlay(
         path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,

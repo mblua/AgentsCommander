@@ -251,6 +251,40 @@ fn golden_rule_room_replica_renders_entries_five_and_six_on_disk() {
     let task = display_path(&room_root.join("TASK.md"));
     assert!(out.contains(&task), "entry six must name `{task}`");
 
+    assert_room_task_status_instructions(&out, &room_root);
+    assert!(
+        out.contains("All filesystem access not authorized by entries 1-6 is OFF-LIMITS"),
+        "the closure sentence must claim six entries"
+    );
+    assert!(
+        !out.contains("entries 1-4"),
+        "no four-entry range may survive for an authoritative replica"
+    );
+    assert_eq!(out.matches("## GOLDEN RULE").count(), 1);
+    assert!(!out.contains("{{"));
+    assert!(!out.contains("}}"));
+
+    // AC-9(2): the ONE prefix relation this layout permits. `<ac>/plans` is a
+    // sibling of the room and `<room>/room-shared` is a sibling of the agent
+    // directory, so no prefix relation holds between them in either direction.
+    let ac_prefix = display_path(&ac_root);
+    for rendered in [
+        &plans,
+        &tools,
+        &errors,
+        &project_shared,
+        &room_shared,
+        &task,
+        &agent_root,
+    ] {
+        assert!(
+            rendered.starts_with(&ac_prefix),
+            "`{rendered}` must start with `{ac_prefix}`"
+        );
+    }
+}
+
+fn assert_room_task_status_instructions(out: &str, room_root: &Path) {
     assert!(
         out.contains("Reading `TASK.md` is granted; writing it is NOT."),
         "entry six must state the read/write split"
@@ -296,36 +330,6 @@ fn golden_rule_room_replica_renders_entries_five_and_six_on_disk() {
         );
     }
     assert!(out.contains(&display_path(&room_root.join("TASK-status.jsonl"))));
-    assert!(
-        out.contains("All filesystem access not authorized by entries 1-6 is OFF-LIMITS"),
-        "the closure sentence must claim six entries"
-    );
-    assert!(
-        !out.contains("entries 1-4"),
-        "no four-entry range may survive for an authoritative replica"
-    );
-    assert_eq!(out.matches("## GOLDEN RULE").count(), 1);
-    assert!(!out.contains("{{"));
-    assert!(!out.contains("}}"));
-
-    // AC-9(2): the ONE prefix relation this layout permits. `<ac>/plans` is a
-    // sibling of the room and `<room>/room-shared` is a sibling of the agent
-    // directory, so no prefix relation holds between them in either direction.
-    let ac_prefix = display_path(&ac_root);
-    for rendered in [
-        &plans,
-        &tools,
-        &errors,
-        &project_shared,
-        &room_shared,
-        &task,
-        &agent_root,
-    ] {
-        assert!(
-            rendered.starts_with(&ac_prefix),
-            "`{rendered}` must start with `{ac_prefix}`"
-        );
-    }
 }
 
 /// #1795 `T2`. The Root Agent must render no room entries and no duplicated

@@ -191,6 +191,31 @@ fn single_editor_driver_metadata_only_keeps_refs_bytes_and_runs_full_barrier() {
     );
 }
 
+fn authority_drift_bytes(drift: &str, path: &std::path::Path) -> Vec<u8> {
+    match drift {
+        "packet" => b"{corrupt packet".to_vec(),
+        "history-index" => {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            value["tooling"]["sourceReferences"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, serde_json::json!({"unknown":"new slot"}));
+            serde_json::to_vec(&value).unwrap()
+        }
+        "protected" => {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            value["unknown"] = serde_json::json!("external protected drift");
+            serde_json::to_vec(&value).unwrap()
+        }
+        "source-Z" => {
+            serde_json::to_vec(&serde_json::json!({"schemaVersion":2,"agents":[]})).unwrap()
+        }
+        _ => br#"{"logLevel":"debug"}"#.to_vec(),
+    }
+}
+
 #[test]
 fn single_editor_all_authority_context_source_target_cas_failures() {
     for drift in [
@@ -202,11 +227,8 @@ fn single_editor_all_authority_context_source_target_cas_failures() {
         "overlay-binding",
     ] {
         let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
-        let bound_settings_path = fixture
-            ._root
-            .path()
-            .join("C")
-            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        let bound_settings_path =
+            crate::config::settings::settings_fixture_path(&fixture._root.path().join("C"));
         let settings_before = if drift == "settings-binding" {
             let before = read_identity_reference_physical(&bound_settings_path).unwrap();
             assert_eq!(
@@ -254,28 +276,7 @@ fn single_editor_all_authority_context_source_target_cas_failures() {
                 .join("C")
                 .join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
         };
-        let changed = match drift {
-            "packet" => b"{corrupt packet".to_vec(),
-            "history-index" => {
-                let mut value: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                value["tooling"]["sourceReferences"]
-                    .as_array_mut()
-                    .unwrap()
-                    .insert(0, serde_json::json!({"unknown":"new slot"}));
-                serde_json::to_vec(&value).unwrap()
-            }
-            "protected" => {
-                let mut value: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                value["unknown"] = serde_json::json!("external protected drift");
-                serde_json::to_vec(&value).unwrap()
-            }
-            "source-Z" => {
-                serde_json::to_vec(&serde_json::json!({"schemaVersion":2,"agents":[]})).unwrap()
-            }
-            _ => br#"{"logLevel":"debug"}"#.to_vec(),
-        };
+        let changed = authority_drift_bytes(drift, &path);
         if let Some(before) = &settings_before {
             assert_eq!(
                 read_identity_reference_physical(&path).unwrap(),
@@ -380,47 +381,8 @@ fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
 fn single_editor_registered_source_after_restores_original_groups_two_targets() {
     for matrix in ["N", "K"] {
         let mut fixture = DriverFixture::new();
-        let config = fixture._root.path().join("C");
-        let target = fixture.project.join(".ac").join(format!("_agent_{matrix}"));
-        std::fs::create_dir(&target).unwrap();
-        let mut registered = serde_json::json!({"agents":[
-            {"id":"K","label":"Own","color":"#123456","command":"own-base"},
-            {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
-            "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
-                "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
-                "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
-                "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
-        registered["codingAgentProfiles"]["defaultProfileByAgent"][matrix] = serde_json::json!("B");
-        let mut settings_value = serde_json::to_value(&fixture.settings).unwrap();
-        settings_value["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
-            serde_json::json!("B");
-        fixture.settings = serde_json::from_value(settings_value.clone()).unwrap();
-        std::fs::write(
-            config.join("settings.json"),
-            serde_json::to_vec(&settings_value).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
-            serde_json::to_vec(&registered).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
-            serde_json::to_vec(
-                &serde_json::json!({"codingAgentProfiles":{"defaultProfileByAgent":{(matrix):"B"},
-                "profilesByAgent":{"K":{"B":{"command":"overlay-beta","env":{}}}}}}),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        fixture.context =
-            SourceReadContext::from_settings(&fixture.settings, &config.join("settings.json"))
-                .unwrap();
-        fixture.source = list_active_sources(&fixture.context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::RegisteredInstance)
-            .unwrap();
+        let (_config, target, registered) =
+            super::driver::install_matrix_sources(&mut fixture, matrix);
         let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
         let identity =
             IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();

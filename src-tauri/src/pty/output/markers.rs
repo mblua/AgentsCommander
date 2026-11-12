@@ -1,7 +1,19 @@
 use crate::filesystem::{directories, documents};
 
-use super::ResponseWatcherMap;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+/// Tracks active response marker watchers per session.
+/// Key: (`session_id`, `request_id`) -> accumulated output buffer.
+/// The read loop scans for `%%AC_RESPONSE::<rid>::START/END%%` markers.
+pub type ResponseWatcherMap = Arc<Mutex<HashMap<(Uuid, String), ResponseWatcher>>>;
+
+pub struct ResponseWatcher {
+    pub response_dir: std::path::PathBuf,
+    pub buffer: Option<String>,
+    pub capturing: bool,
+}
 
 /// #973 (B) - is there a cell on this screen a human could see?
 ///
@@ -110,7 +122,7 @@ pub(crate) fn output_has_printable_activity(text: &str) -> bool {
     }
 }
 
-/// Scan PTY output text for %%AC_RESPONSE::<rid>::START/END%% markers.
+/// Scan PTY output text for `%%AC_RESPONSE::<rid>::START/END%%` markers.
 pub(crate) fn scan_response_markers(session_id: Uuid, text: &str, watchers: &ResponseWatcherMap) {
     let completed = {
         let Ok(mut watchers) = watchers.lock() else {
@@ -126,8 +138,8 @@ pub(crate) fn scan_response_markers(session_id: Uuid, text: &str, watchers: &Res
         let mut completed = None;
         for key in keys {
             let (_, rid) = &key;
-            let start_marker = format!("%%AC_RESPONSE::{}::START%%", rid);
-            let end_marker = format!("%%AC_RESPONSE::{}::END%%", rid);
+            let start_marker = format!("%%AC_RESPONSE::{rid}::START%%");
+            let end_marker = format!("%%AC_RESPONSE::{rid}::END%%");
 
             let completion = {
                 let Some(watcher) = watchers.get_mut(&key) else {
@@ -186,9 +198,9 @@ pub(super) fn write_response_file(
     request_id: &str,
     content: String,
 ) {
-    let response_path = response_dir.join(format!("{}.json", request_id));
+    let response_path = response_dir.join(format!("{request_id}.json"));
     if let Err(e) = directories::ensure_pty_response_directory(response_dir) {
-        log::warn!("Failed to create responses dir: {}", e);
+        log::warn!("Failed to create responses dir: {e}");
     }
 
     let response_json = serde_json::json!({
@@ -200,15 +212,11 @@ pub(super) fn write_response_file(
     match serde_json::to_string_pretty(&response_json) {
         Ok(json) => {
             if let Err(e) = documents::write_pty_response(&response_path, json.as_bytes()) {
-                log::warn!("Failed to write response file: {}", e);
+                log::warn!("Failed to write response file: {e}");
             } else {
-                log::info!(
-                    "Captured response for request {} from session {}",
-                    request_id,
-                    session_id
-                );
+                log::info!("Captured response for request {request_id} from session {session_id}");
             }
         }
-        Err(e) => log::warn!("Failed to serialize response: {}", e),
+        Err(e) => log::warn!("Failed to serialize response: {e}"),
     }
 }

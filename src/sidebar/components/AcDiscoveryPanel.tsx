@@ -22,7 +22,7 @@ interface PendingLaunch {
 /** Build gitRepos list for a replica. Order = replica.repoPaths order (invariant §3.1.2). */
 function buildGitRepos(replica: AcAgentReplica): SessionRepoInput[] {
   return (replica.repoPaths ?? []).map((p) => {
-    const dir = p.replace(/\\/g, "/").split("/").pop() ?? "";
+    const dir = p.replaceAll("\\", "/").split("/").pop() ?? "";
     const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
     return { label, sourcePath: p };
   });
@@ -321,7 +321,10 @@ const AcDiscoveryPanel: Component = () => {
                                   <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
                                     <span class="ac-discovery-badge branch">
                                       {(() => {
-                                        const dir = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
+                                        const dir = replica.repoPaths[0]
+                                          .replaceAll("\\", "/")
+                                          .split("/")
+                                          .pop() ?? "";
                                         const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
                                         return `${label}/${replica.repoBranch}`;
                                       })()}
@@ -353,9 +356,9 @@ const AcDiscoveryPanel: Component = () => {
           >
             {(() => {
               const replica = ctxMenuReplica()!;
-              const rp = replica.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+              const rp = replica.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
               const session = sessionsStore.sessions.find(s =>
-                s.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === rp
+                s.workingDirectory.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") === rp
               );
               if (!session) return null;
               return (
@@ -456,7 +459,7 @@ const AcDiscoveryPanel: Component = () => {
                     value={newCtxPath()}
                     onInput={(e) => setNewCtxPath(e.currentTarget.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddCtxFile();
+                      if (e.key === "Enter") void handleAddCtxFile();
                     }}
                   />
                   <button

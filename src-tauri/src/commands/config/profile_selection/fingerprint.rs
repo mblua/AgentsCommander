@@ -108,7 +108,7 @@ pub(crate) fn sha256_hex<T: serde::Serialize>(value: &T) -> Result<String, Strin
         .map_err(|e| format!("Failed to serialize selection fingerprint: {e}"))?;
     Ok(Sha256::digest(&serialized)
         .iter()
-        .map(|byte| format!("{:02x}", byte))
+        .map(|byte| format!("{byte:02x}"))
         .collect())
 }
 
@@ -294,7 +294,7 @@ pub(crate) fn selection_default_fingerprint(
 
 /// Prepared source approvals bind the normalized ticket and marker as well as
 /// the legacy target fingerprint. This companion has no IPC caller in P03.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn source_selection_fingerprint(
     target_fingerprint: &str,
     ticket: &crate::config::settings::SourceSelectionTicket,
@@ -305,7 +305,7 @@ pub(crate) fn source_selection_fingerprint(
 
 /// Prepare a manual setter from a freshly authorized physical source. Publication
 /// remains a separate guarded step so no source IO enters the config layer.
-#[allow(dead_code)]
+#[allow(dead_code)] // no caller; deleting it unuses an import outside #3595
 pub(crate) async fn prepare_source_profile_override(
     settings: &SettingsState,
     replica_path: &Path,
@@ -624,7 +624,7 @@ pub(crate) fn refresh_locked_count(enumeration: &ProfileTargetEnumeration) -> Op
         )) {
             crate::config::coding_agent_profiles::ReplicaSelectionState::Unlocked { .. } => {}
             crate::config::coding_agent_profiles::ReplicaSelectionState::Locked { .. } => {
-                count += 1
+                count += 1;
             }
             crate::config::coding_agent_profiles::ReplicaSelectionState::Invalid { .. } => {
                 return None

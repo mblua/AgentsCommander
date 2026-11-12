@@ -213,11 +213,11 @@ impl ContextScraper {
                 loop {
                     tokio::select! {
                         biased;
-                        _ = shutdown.token().cancelled() => {
+                        () = shutdown.token().cancelled() => {
                             log::info!("[context] Shutdown signal received, stopping");
                             break;
                         }
-                        _ = tokio::time::sleep(SAMPLE_INTERVAL) => {
+                        () = tokio::time::sleep(SAMPLE_INTERVAL) => {
                             scraper.tick().await;
                         }
                     }
@@ -232,8 +232,14 @@ impl ContextScraper {
     /// A fresh entry always starts at `last_emitted: None`. It can never meet an existing
     /// entry: session ids are minted per spawn and AC never reuses one, not even on respawn.
     pub fn register_session(&self, id: Uuid, agent_id: String) {
-        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let _sequence = self
+            .sequence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         registered.insert(
             id,
             Registered {
@@ -246,7 +252,10 @@ impl ContextScraper {
     /// Stop sampling a session. Producer-side end pruning and monitor maintenance both use
     /// this idempotent operation.
     pub(crate) fn retire_session(&self, id: Uuid) {
-        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let _sequence = self
+            .sequence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.retire_session_under_sequence(id);
     }
 
@@ -258,7 +267,7 @@ impl ContextScraper {
         let last_emitted = self
             .registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id)
             .and_then(|entry| entry.last_emitted);
         if last_emitted.is_some() {
@@ -275,7 +284,7 @@ impl ContextScraper {
     pub(crate) fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&id)
     }
 
@@ -284,7 +293,7 @@ impl ContextScraper {
     pub fn last_reading(&self, id: Uuid) -> Option<u8> {
         self.registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&id)
             .and_then(|entry| entry.last_emitted)
     }
@@ -294,7 +303,10 @@ impl ContextScraper {
     /// The guard is a local and an owned `Arc` comes back, so the cache lock is never held
     /// across the rows read below it.
     fn resolve(&self, agent_id: &str, source: &str) -> Option<Arc<ContextPattern>> {
-        let mut cache = self.compiled.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self
+            .compiled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if let Some(cached) = cache.get(agent_id) {
             if cached.source() == source {
@@ -359,7 +371,7 @@ impl ContextScraper {
         if self
             .registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
         {
             return;
@@ -370,7 +382,10 @@ impl ContextScraper {
         // Snapshot first: the loop must not mutate `registered` while iterating it. Sorting
         // makes the rotation deterministic and rotating prevents a fixed saturation tail.
         let mut ids: Vec<(Uuid, String)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            let registered = self
+                .registered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             registered
                 .iter()
                 .map(|(id, entry)| (*id, entry.agent_id.clone()))
@@ -390,11 +405,14 @@ impl ContextScraper {
         for (id, agent_id) in ids {
             let Some(patterns) = patterns.as_ref() else {
                 if self.rows.get_session_liveness(id) == ContextSessionLiveness::SessionOver {
-                    let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+                    let _sequence = self
+                        .sequence
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if self
                         .registered
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .contains_key(&id)
                     {
                         self.samples
@@ -413,11 +431,14 @@ impl ContextScraper {
 
             let (reading, sample, session_over) = self.read_sample(id, usable_pattern);
 
-            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+            let _sequence = self
+                .sequence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !self
                 .registered
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains_key(&id)
             {
                 continue;
@@ -438,7 +459,10 @@ impl ContextScraper {
             }
 
             let changed = {
-                let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+                let mut registered = self
+                    .registered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 match registered.get_mut(&id) {
                     Some(entry) if entry.last_emitted != reading => {
                         entry.last_emitted = reading;

@@ -13,7 +13,7 @@ where
     tokio::pin!(spawn);
     let spawn_result = tokio::select! {
         biased;
-        _ = cancellation.cancelled() => {
+        () = cancellation.cancelled() => {
             return Err(
                 "Context alert delivery was canceled during background spawn".to_string(),
             );
@@ -26,10 +26,9 @@ where
             // #2413 A failed create restores its cleared close markers itself
             // (commands::session::CoordinatorCreateTicket), for every caller.
             return Err(format!(
-                "Failed to spawn supported orchestrator session for '{}': {}",
-                target_fqn, error
+                "Failed to spawn supported orchestrator session for '{target_fqn}': {error}"
             ));
         }
     };
-    Uuid::parse_str(&info.id).map_err(|e| format!("Invalid spawned orchestrator session id: {}", e))
+    Uuid::parse_str(&info.id).map_err(|e| format!("Invalid spawned orchestrator session id: {e}"))
 }

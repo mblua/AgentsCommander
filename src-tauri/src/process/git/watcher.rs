@@ -10,7 +10,7 @@ pub(crate) async fn watcher_status_output(
 
 fn status_command(working_dir: &str) -> tokio::process::Command {
     #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let mut cmd = tokio::process::Command::new("git");
     crate::process::host::credentials::scrub_credentials_from_tokio_command(&mut cmd);
@@ -37,11 +37,7 @@ fn status_command(working_dir: &str) -> tokio::process::Command {
             Err(e) => {
                 // Only reachable if the path contains the path separator itself.
                 // Gate 1 still stands; log rather than abort the detection.
-                log::debug!(
-                    "[git] Could not build GIT_CEILING_DIRECTORIES for {}: {}",
-                    working_dir,
-                    e
-                );
+                log::debug!("[git] Could not build GIT_CEILING_DIRECTORIES for {working_dir}: {e}");
             }
         }
     }
@@ -64,14 +60,14 @@ pub(crate) fn resolve_real_git_path() -> Option<String> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| line.to_string())
+        .map(str::to_string)
 }
 
 #[cfg(windows)]
 fn discovery_command() -> std::process::Command {
     use std::os::windows::process::CommandExt;
 
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut cmd = std::process::Command::new("where.exe");
     crate::process::host::credentials::scrub_credentials_from_std_command(&mut cmd);
     cmd.arg("git.exe").creation_flags(CREATE_NO_WINDOW);

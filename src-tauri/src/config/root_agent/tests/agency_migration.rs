@@ -47,7 +47,7 @@ fn read_bytes(path: &Path) -> Vec<u8> {
 fn warned_for_path(path: &Path) -> bool {
     SKILL_REPAIR_WARNED
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains(path)
 }
 
@@ -55,11 +55,11 @@ fn stray_temp_files(skill_path: &Path) -> Vec<PathBuf> {
     let dir = skill_path.parent().expect("skill parent");
     std::fs::read_dir(dir)
         .expect("read skill dir")
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|p| {
             p.file_name()
-                .and_then(|n| n.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|n| n.starts_with(".SKILL.md."))
         })
         .collect()
@@ -80,7 +80,7 @@ fn user_edited_agency_skill() -> String {
         .strip_prefix("description: ")
         .expect("snapshot line 3 is the description")
         .to_string();
-    lines[2] = format!("description: '{}'", value);
+    lines[2] = format!("description: '{value}'");
     format!("{}\n", lines.join("\n"))
 }
 
@@ -136,7 +136,7 @@ fn migrates_pristine_broken_agency_skill_with_crlf() {
 
 #[test]
 fn migrates_pristine_broken_agency_skill_with_trailing_whitespace() {
-    let padded = format!("{}\n\n", AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX);
+    let padded = format!("{AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX}\n\n");
     let fixture = seed_agency_skill(padded.as_bytes());
     assert_eq!(
         migrate_agency_with_snapshot(&fixture).expect("migration must not fail"),
@@ -171,7 +171,7 @@ fn preserves_user_modified_agency_skill() {
 
 #[test]
 fn preserves_user_modified_agency_skill_with_appended_body() {
-    let edited = format!("{}\nmy notes\n", AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX);
+    let edited = format!("{AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX}\nmy notes\n");
     let fixture = seed_agency_skill(edited.as_bytes());
     assert_eq!(
         migrate_agency_with_snapshot(&fixture).expect("migration must not fail"),
@@ -349,7 +349,7 @@ fn migration_skips_non_utf8_file() {
 /// than asserted in prose.
 #[test]
 fn preserves_bom_prefixed_agency_skill() {
-    let bom = format!("\u{FEFF}{}", AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX);
+    let bom = format!("\u{FEFF}{AGENCY_AGENTS_ROLES_SKILL_PRE_YAML_FIX}");
     let fixture = seed_agency_skill(bom.as_bytes());
     assert_eq!(
         migrate_agency_with_snapshot(&fixture).expect("migration must not fail"),
@@ -483,8 +483,7 @@ fn destination_changed_under_us_is_not_written() {
     let result = migrate_agency_with_snapshot(&fixture);
     assert!(
         result.is_err(),
-        "a destination that changed mid-repair must abort, got {:?}",
-        result
+        "a destination that changed mid-repair must abort, got {result:?}"
     );
     assert_eq!(
         read_bytes(&fixture.path),

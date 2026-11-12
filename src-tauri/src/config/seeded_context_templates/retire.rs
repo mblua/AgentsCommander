@@ -122,9 +122,8 @@ pub(crate) fn retire_live_standalone_global(
                 e
             )
         })?;
-    let is_generated = std::str::from_utf8(&bytes)
-        .ok()
-        .is_some_and(is_known_generated_standalone_global_template);
+    let is_generated =
+        std::str::from_utf8(&bytes).is_ok_and(is_known_generated_standalone_global_template);
 
     if !is_generated {
         log::warn!(
@@ -174,12 +173,10 @@ fn cleanup_failed_retirement_reservation(live_path: &Path, backup_path: &Path) {
     // custom source is a valid unknown file, so "the source disappeared" is never
     // proof that an empty destination is disposable.
     let source_intact = crate::filesystem::context_templates::inspect_template_source(live_path)
-        .map(|m| !is_link_or_reparse(&m) && m.is_file())
-        .unwrap_or(false);
+        .is_ok_and(|m| !is_link_or_reparse(&m) && m.is_file());
     let dest_is_reservation =
         crate::filesystem::context_templates::inspect_template_source(backup_path)
-            .map(|m| !is_link_or_reparse(&m) && m.is_file() && m.len() == 0)
-            .unwrap_or(false);
+            .is_ok_and(|m| !is_link_or_reparse(&m) && m.is_file() && m.len() == 0);
     if source_intact && dest_is_reservation {
         if let Err(cleanup_error) =
             crate::filesystem::context_templates::remove_template_entry(backup_path)
@@ -205,7 +202,7 @@ fn cleanup_failed_retirement_reservation(live_path: &Path, backup_path: &Path) {
 ///
 /// The name is ALWAYS timestamped, so it can never collide with `create_backup`'s
 /// `{f}.bak` / `{f}.{ts}.bak` / `{f}.{ts}.{n}.bak` shapes. `create_backup` itself is
-/// unusable here: it write_all's a COPY and its first name is untimestamped.
+/// unusable here: it `write_all`'s a COPY and its first name is untimestamped.
 pub(crate) fn reserve_retired_backup_path(live_path: &Path) -> Result<PathBuf, String> {
     let parent = live_path.parent().ok_or_else(|| {
         format!(
@@ -215,7 +212,7 @@ pub(crate) fn reserve_retired_backup_path(live_path: &Path) -> Result<PathBuf, S
     })?;
     let filename = live_path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("Invalid standalone global context {}", live_path.display()))?;
     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%SZ").to_string();
 

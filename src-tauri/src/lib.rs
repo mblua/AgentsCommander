@@ -6,6 +6,7 @@ pub(crate) mod cleanup_diagnostics;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub(crate) mod context_history;
 pub(crate) mod debug_logs;
 pub(crate) mod errors;
 pub(crate) mod events;
@@ -18,6 +19,7 @@ pub(crate) mod path_utils;
 pub mod phone;
 pub(crate) mod process;
 pub mod pty;
+pub(crate) mod pty_input;
 pub(crate) mod repos;
 pub mod resource_monitor;
 pub mod screenshot;
@@ -34,6 +36,7 @@ pub mod web;
 mod app_run;
 mod app_state;
 mod co_managed;
+mod history_runtime;
 mod pty_wiring;
 mod quit_gate;
 mod reader_demand;
@@ -76,9 +79,9 @@ pub(crate) use commands::quit_gate::{
     quit_gate_unregister,
 };
 pub(crate) use pty_wiring::{
-    codex_activity_factory, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns, ScraperPersist,
-    ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery, WatcherPatterns,
-    WatcherSink,
+    codex_activity_factory, HistorySessions, QuotaRows, QuotaSink, QuotaSources, ScraperPatterns,
+    ScraperPersist, ScraperRows, ScraperSamples, ScraperSink, WatcherBackends, WatcherDelivery,
+    WatcherPatterns, WatcherSink,
 };
 pub use startup::AppOutbox;
 
@@ -125,6 +128,8 @@ pub(crate) use co_managed::{
     co_managed_candidate_label, utf8_safe_excerpt, CO_MANAGED_EXCERPT_BYTES,
 };
 #[cfg(test)]
+pub(crate) use config::settings::INSTANCE_FAMILIES_RENAMES;
+#[cfg(test)]
 use pty::agent_quota::source::SourceSpec;
 #[cfg(test)]
 use pty::agent_quota::{AgentQuotaSource, QuotaSourceProvider};
@@ -141,7 +146,7 @@ pub(crate) use restore::{should_wake_on_restore, should_wake_working_agent_on_re
 #[cfg(test)]
 pub(crate) use startup::{
     preflight_config_startup_for, preflight_config_startup_in, take_naming_migration_summary,
-    StartupErrorKind, INSTANCE_FAMILIES_RENAMES,
+    StartupErrorKind,
 };
 
 /// Snapshot scanner terminality is deliberately not an input here.
@@ -268,9 +273,9 @@ pub type SpecBoardState = Arc<tokio::sync::RwLock<commands::spec_board::SpecBoar
 /// (MED-2).
 const SHUTDOWN_CLEANUP_BUDGET_SECS: u64 = 5;
 
-/// Master token generated at app startup. Allows bypassing team validation (can_reach).
-/// Persisted to `master-token.txt` in config_dir for CLI use. Regenerated on each app startup. See
-/// #34.
+/// Master token generated at app startup. Allows bypassing team validation (`can_reach`).
+/// Persisted to `master-token.txt` in `config_dir` for CLI use. Regenerated on each app startup.
+/// See #34.
 /// Field is private — use `matches()` for constant-time comparison.
 pub struct MasterToken(String);
 
@@ -300,17 +305,34 @@ impl MasterToken {
 
 pub use session::maintenance::PendingSelfClear;
 
-/// (#1652) Pins the type of the closure `generate_handler!` produces. The
-/// macro's closure parameter is UNANNOTATED and rustc type-checks the body at
-/// the `let` that binds it. A bare binding is therefore
-/// `error[E0282]: type annotations needed`, and annotating the OUTER closure's
-/// parameter does not reach it. This identity function supplies the expected
-/// type on the binding itself. Preferred over
-/// `let generated: Box<dyn Fn(..) -> bool + Send + Sync> = ...` because
-/// `pty_write` is the highest-frequency command and boxing adds an indirection
-/// to every invoke.
-fn pin_handler<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static>(f: F) -> F {
-    f
+impl crate::loops::ipc_observer::IpcObserver {
+    /// (#1652) Pins the type of the closure `generate_handler!` produces. The
+    /// macro's closure parameter is UNANNOTATED and rustc type-checks the body at
+    /// the binding that receives it. A bare binding is therefore
+    /// `error[E0282]: type annotations needed`, and annotating the OUTER closure's
+    /// parameter does not reach it. This method's bound supplies the expected
+    /// type on the argument itself. Preferred over
+    /// `let generated: Box<dyn Fn(..) -> bool + Send + Sync> = ...` because
+    /// `pty_write` is the highest-frequency command and boxing adds an indirection
+    /// to every invoke.
+    /// #3516 - also stamps every invoke for the observer, so `invoke_handler`
+    /// keeps its Length-gate ceiling.
+    fn observe_invokes<F: Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static>(
+        self: Arc<Self>,
+        generated: F,
+    ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+        // #3832 - one more route would push `invoke_handler` past its ceiling.
+        let list_targets: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool =
+            tauri::generate_handler![commands::session::list_preflight_test_targets];
+        move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            self.note_invoke(invoke.message.command());
+            if invoke.message.command() == "list_preflight_test_targets" {
+                list_targets(invoke)
+            } else {
+                commands::context_history::dispatch(invoke, &generated)
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -359,7 +381,7 @@ pub(crate) fn remote_sweeper_seams() -> crate::pty::remote_watcher::RemoteSweepe
 fn invoke_handler(
     observer: Arc<crate::loops::ipc_observer::IpcObserver>,
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
-    let generated = pin_handler(tauri::generate_handler![
+    observer.observe_invokes(tauri::generate_handler![
         commands::session::create_session,
         commands::session::destroy_session,
         commands::session::close_coordinator,
@@ -440,6 +462,10 @@ fn invoke_handler(
         commands::config::get_agent_update_status,
         commands::config::agent_update_answer,
         commands::config::agent_update_cancel,
+        commands::session::describe_preflight_target,
+        commands::session::start_preflight_test,
+        commands::session::get_preflight_test,
+        commands::session::cancel_preflight_test,
         commands::config::agent_updates_cancel_all,
         commands::config::get_agent_update_overview,
         commands::co_managed::co_managed_get,
@@ -549,11 +575,7 @@ fn invoke_handler(
         commands::screenshot::screenshot_cancel_capture,
         commands::screenshot::screenshot_get_hotkey_status,
         commands::screenshot::screenshot_reload_hotkey,
-    ]);
-    move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
-        observer.note_invoke(invoke.message.command());
-        generated(invoke)
-    }
+    ])
 }
 
 impl loops::scheduler::SchedulerHost for tauri::AppHandle {
@@ -782,6 +804,38 @@ fn start_remote_alerts(
     tauri::async_runtime::spawn(session::remote_alerts::run(ports, transitions, shutdown))
 }
 
+/// #3532: start the one context-history actor on the Tauri runtime and return
+/// its ingress. `history_runtime` stays free of Tauri; cancelling `shutdown`
+/// flushes the actor for at most its bounded window.
+fn start_context_history_runtime(
+    scopes: Arc<history_runtime::HistoryScopeState>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> history_runtime::HistoryIngress {
+    let (ingress, actor) = history_runtime::HistoryRuntime::start(scopes, shutdown);
+    tauri::async_runtime::spawn(actor);
+    ingress
+}
+
+/// #3532: manage the history ingress (restart) and the shared scope state
+/// (history IPC) together. Refuses, registering neither, when either is
+/// already managed, so the first registration always stays intact.
+pub(crate) fn register_context_history_state<R: tauri::Runtime, M: tauri::Manager<R>>(
+    app: &M,
+    ingress: history_runtime::HistoryIngress,
+    scopes: Arc<history_runtime::HistoryScopeState>,
+) -> Result<(), String> {
+    let ingress_managed = app.try_state::<history_runtime::HistoryIngress>().is_some();
+    let scopes_managed = app
+        .try_state::<Arc<history_runtime::HistoryScopeState>>()
+        .is_some();
+    if ingress_managed || scopes_managed {
+        return Err("context-history state is already registered".to_string());
+    }
+    app.manage(ingress);
+    app.manage(scopes);
+    Ok(())
+}
+
 impl pty::container_backend::ContainerBackgroundTasks
     for pty::container_backend::ContainerTransportBackend
 {
@@ -877,8 +931,7 @@ impl app_run::exit::ExitHost for tauri::AppHandle {
             .len();
         if destroyed > 0 {
             log::info!(
-                "[shutdown] main destroyed: destroyed {} detached terminal window(s)",
-                destroyed
+                "[shutdown] main destroyed: destroyed {destroyed} detached terminal window(s)"
             );
         }
     }

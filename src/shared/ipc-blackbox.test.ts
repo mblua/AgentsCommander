@@ -20,6 +20,15 @@ import {
 const mocks = vi.hoisted(() => ({ listen: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
 
+// Node 25+ defines its own `globalThis.localStorage`, which is `undefined`
+// without `--localstorage-file`. Vitest's jsdom environment does not replace a
+// global that already exists, so point it at jsdom's Storage explicitly.
+// On Node 22 this is the same object the environment already exposes.
+vi.stubGlobal(
+  "localStorage",
+  (globalThis as unknown as { jsdom: { window: Window } }).jsdom.window.localStorage,
+);
+
 const CURRENT_KEY = "ac.ipc.bb.cur.web";
 const ROTATED_KEY = "ac.ipc.bb.prev.web";
 const TICK_MS = 1_000;

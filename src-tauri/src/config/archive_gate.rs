@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::settings::SettingsState;
 
 pub(crate) trait ArchiveGateHost {
@@ -12,7 +11,7 @@ pub(crate) trait ArchiveGateHost {
 fn folder_name(path: &str) -> String {
     Path::new(path)
         .file_name()
-        .and_then(|n| n.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(path)
         .to_string()
 }
@@ -71,7 +70,7 @@ pub(crate) async fn probe_spawn_refusal<H: ArchiveGateHost + ?Sized>(
     let cwd_owned = cwd.to_string();
     let root = tokio::task::spawn_blocking(move || archived_root_for_cwd(&cwd_owned, &archived))
         .await
-        .map_err(|e| format!("archive gate probe task failed: {}", e))?;
+        .map_err(|e| format!("archive gate probe task failed: {e}"))?;
     let Some(root) = root else {
         return Ok(());
     };
@@ -113,7 +112,7 @@ where
     let cwd_owned = cwd.to_string();
     let root = tokio::task::spawn_blocking(move || archived_root_for_cwd(&cwd_owned, &archived))
         .await
-        .map_err(|e| format!("archive gate task failed: {}", e))?;
+        .map_err(|e| format!("archive gate task failed: {e}"))?;
     let Some(root) = root else {
         return Ok(());
     };
@@ -139,24 +138,23 @@ where
     F: FnOnce(&crate::config::settings::AppSettings),
 {
     let settings = app.archive_settings();
-    let (mut s, permission, path) = loop {
+    let (mut s, permission, target) = loop {
         // Target acquisition never waits while a settings guard is held.
         prepare().await?;
         let s = tokio::time::timeout(Duration::from_secs(5), settings.write())
             .await
             .map_err(|_| {
                 format!(
-                "archive gate: timed out taking the settings write lock while un-archiving '{}'. \
+                    "archive gate: timed out taking the settings write lock while \
+                 un-archiving '{root}'. \
                  A caller of create_session_inner is holding a SettingsState guard. That is a \
-                 bug, not a slow disk.",
-                root
-            )
+                 bug, not a slow disk."
+                )
             })?;
-        let path = crate::config::config_dir()
-            .ok_or("Could not determine settings directory")?
-            .join(SETTINGS_FILE_NAME);
+        let target = crate::config::settings::instance_settings_target()
+            .ok_or("Could not determine settings directory")?;
         if let Some(permission) = admit().await? {
-            break (s, permission, path);
+            break (s, permission, target);
         }
         drop(s);
         tokio::task::yield_now().await;
@@ -167,8 +165,7 @@ where
     // The managed guard stays owned by this future; the blocking closure owns
     // only the file token and captures, and releases it before the await ends.
     let (permission, written) = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let mut transaction =
-            crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
+        let mut transaction = target.begin_project_paths(&current)?;
         let mut candidate = transaction.fresh_settings().clone();
         if crate::config::settings::project_state_has_structural(&candidate) {
             return Err(format!(
@@ -210,11 +207,7 @@ where
     };
     drop(s);
 
-    log::warn!(
-        "[archive] auto-unarchived '{}': session '{}' activated inside it",
-        root,
-        session_label
-    );
+    log::warn!("[archive] auto-unarchived '{root}': session '{session_label}' activated inside it");
     app.auto_unarchived(&reg.path, session_label);
     Ok(())
 }

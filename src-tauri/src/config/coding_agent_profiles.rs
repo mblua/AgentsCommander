@@ -116,7 +116,7 @@ fn write_tooling_string(
             agent_dir.display()
         ));
     }
-    let config_path = agent_dir.join("config.json");
+    let config_path = crate::config::config_file_path(agent_dir);
     crate::config::agent_config::update_agent_config(&config_path, |decisions, state| {
         let obj = match side {
             ToolingSide::Decisions => decisions,
@@ -144,7 +144,6 @@ fn write_tooling_string(
 }
 
 /// Complete semantic slots captured from the SAME original physical snapshots.
-#[allow(dead_code)]
 pub(crate) fn source_original_slots(
     target: &SourceSelectionTarget,
 ) -> Result<
@@ -214,7 +213,6 @@ pub(crate) fn source_original_slots(
     Ok(slots)
 }
 
-#[allow(dead_code)]
 pub(crate) fn source_target_is_affected(
     target: &SourceSelectionTarget,
     source: &crate::config::settings::SourceRef,

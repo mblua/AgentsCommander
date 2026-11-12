@@ -1,5 +1,43 @@
 use super::*;
 
+fn bot_and_room() -> std::collections::BTreeSet<ReaderConsumer> {
+    [ReaderConsumer::Bot, ReaderConsumer::Room]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+}
+
+fn write_old_preamble(old_path: &std::path::Path) {
+    std::fs::write(
+        old_path,
+        format!(
+            "{}\n",
+            claude_line(
+                "old preamble",
+                chrono::Utc::now() - chrono::Duration::seconds(1)
+            )
+        ),
+    )
+    .expect("old transcript");
+}
+
+/// Points the harness at a fresh Claude config dir and plants the backdated
+/// `session.jsonl` decoy there; returns the replacement projects dir.
+async fn stage_replacement_projects_dir(
+    h: &RestartHarness,
+    fixture: &RoomFixture,
+    cwd: &std::path::Path,
+) -> PathBuf {
+    let new_dir = fixture.temp_path().join("claude-home-b");
+    std::fs::create_dir_all(&new_dir).expect("new config dir");
+    h.set_claude_config_dir(&new_dir).await;
+    let new_projects = h.claude_projects_dir(&new_dir, cwd);
+    std::fs::create_dir_all(&new_projects).expect("new transcript dir");
+    let decoy = new_projects.join("session.jsonl");
+    large_claude_transcript(&decoy, "decoy above the tail window");
+    backdate(&decoy, 120);
+    new_projects
+}
+
 /// Test 9 (Claude, changed path): the restart mints a new session UUID and
 /// transfers reader ownership to it. The old id's reader, pump and slot are
 /// gone before the replacement is delivered; the replacement gets a fresh
@@ -25,40 +63,19 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     let old_dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
     std::fs::create_dir_all(&old_dir).expect("old transcript dir");
     let old_path = old_dir.join(format!("{minted_old}.jsonl"));
-    std::fs::write(
-        &old_path,
-        format!(
-            "{}\n",
-            claude_line(
-                "old preamble",
-                chrono::Utc::now() - chrono::Duration::seconds(1)
-            )
-        ),
-    )
-    .expect("old transcript");
+    write_old_preamble(&old_path);
     let old_slot = h.captures.slot(&old_key).expect("old endpoints open");
     // The cold bind offers the recent tail to the sink: that proves the
     // reader is bound before the append below can race the scan.
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "old preamble"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "old preamble").await;
     h.attach_bot(old).await;
     append_claude(&old_path, "old live");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "old live"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "old live").await;
     // Let the pending Telegram buffer flush, so the final old release has
     // nothing left to send.
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     let (old_reader_id, old_demands) = h.snapshot(old).await;
-    assert_eq!(
-        old_demands,
-        [ReaderConsumer::Bot, ReaderConsumer::Room]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    );
+    assert_eq!(old_demands, bot_and_room());
 
     // The replacement resolves a different transcript directory: a >64 KiB
     // Claude file whose only final answer sits above the 64 KiB tail
@@ -66,14 +83,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     // the restart, named from the replacement's minted id (#2454); the
     // pre-restart `session.jsonl` is a backdated decoy that is never the
     // newest, so only the pin can choose the minted file.
-    let new_dir = fixture.temp_path().join("claude-home-b");
-    std::fs::create_dir_all(&new_dir).expect("new config dir");
-    h.set_claude_config_dir(&new_dir).await;
-    let new_projects = h.claude_projects_dir(&new_dir, cwd);
-    std::fs::create_dir_all(&new_projects).expect("new transcript dir");
-    let decoy = new_projects.join("session.jsonl");
-    large_claude_transcript(&decoy, "decoy above the tail window");
-    backdate(&decoy, 120);
+    let new_projects = stage_replacement_projects_dir(&h, &fixture, cwd).await;
 
     let restarted = h.restart_fresh(old).await.expect("restart succeeds");
     let new = Uuid::parse_str(&restarted.id).expect("replacement id");
@@ -111,12 +121,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     let (new_reader_id, new_demands) = h.snapshot(new).await;
     assert!(new_reader_id.is_some());
     assert_ne!(new_reader_id, old_reader_id, "a new reader identity");
-    assert_eq!(
-        new_demands,
-        [ReaderConsumer::Bot, ReaderConsumer::Room]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    );
+    assert_eq!(new_demands, bot_and_room());
     let new_key = new.to_string();
     let new_slot = h.captures.slot(&new_key).expect("new endpoints open");
     // A fresh slot has no cut at all; if a demand join recorded one, its
@@ -136,10 +141,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     let sends_before = h.message_permits();
 
     append_claude(&new_path, "post restart");
-    let (seq, record) = wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "post restart"
-    })
-    .await;
+    let (seq, record) = wait_for_slot_record(&new_slot, |r| r.text == "post restart").await;
     assert_eq!(record.origin, RecordOrigin::Live);
     assert_eq!(record.observed_path, new_path);
     assert!(
@@ -198,15 +200,9 @@ async fn a_fresh_restart_reads_only_its_own_minted_transcript() {
         .captures
         .slot(&old.to_string())
         .expect("old endpoints open");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "cold preamble"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "cold preamble").await;
     append_claude(&old_path, "old live");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "old live"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "old live").await;
     // Not backdated and never touched again: right after the restart it is
     // the only, hence the newest, `.jsonl` in the directory.
 
@@ -267,10 +263,7 @@ async fn a_fresh_restart_reads_only_its_own_minted_transcript() {
 
     // Step 4: exactly the appended line follows the attach.
     append_claude(&new_path, "new live");
-    let (seq, record) = wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "new live"
-    })
-    .await;
+    let (seq, record) = wait_for_slot_record(&new_slot, |r| r.text == "new live").await;
     assert_eq!(record.origin, RecordOrigin::Live);
     assert_eq!(record.observed_path, new_path);
     assert_eq!(
@@ -323,15 +316,9 @@ async fn a_resumed_restart_reads_only_appended_bytes_of_the_same_transcript() {
         .captures
         .slot(&old.to_string())
         .expect("old endpoints open");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "cold preamble"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "cold preamble").await;
     append_claude(&path, "old live");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "old live"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "old live").await;
     let len_before = std::fs::metadata(&path).expect("transcript metadata").len();
 
     let restarted = h.restart(old).await.expect("restart succeeds");
@@ -355,17 +342,14 @@ async fn a_resumed_restart_reads_only_appended_bytes_of_the_same_transcript() {
     // The cold scan re-offers the recent tail as Preamble; waiting for the
     // last tail line proves the replacement has bound the file (and set
     // its offset to the length) before the append below.
-    wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
+    wait_for_slot_record(&new_slot, |r| {
         r.text == "old live" && r.origin == RecordOrigin::Preamble
     })
     .await;
     let seq_after_scan = new_slot.seq();
 
     append_claude(&path, "new live");
-    let (seq, record) = wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "new live"
-    })
-    .await;
+    let (seq, record) = wait_for_slot_record(&new_slot, |r| r.text == "new live").await;
     assert_eq!(record.origin, RecordOrigin::Live);
     assert_eq!(
         record.record_start.expect("live record"),
@@ -397,6 +381,9 @@ async fn a_codex_live_restart_transfers_the_reader_to_the_new_uuid() {
     let old = h.live_session(cwd, CodingAgentKind::Codex).await;
     let old_key = old.to_string();
 
+    // #3420: one reader, spawned by the create-time raise; the explicit
+    // raise below joins it instead of racing it.
+    h.settle_create_time_raise(old).await;
     assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);
     let old_path = write_codex_rollout(
         &h.codex_home,
@@ -406,16 +393,10 @@ async fn a_codex_live_restart_transfers_the_reader_to_the_new_uuid() {
         chrono::Utc::now() - chrono::Duration::seconds(1),
     );
     let old_slot = h.captures.slot(&old_key).expect("old endpoints open");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "codex preamble"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "codex preamble").await;
     h.attach_bot(old).await;
     append_codex(&old_path, "codex live");
-    wait_for_slot_record(&old_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "codex live"
-    })
-    .await;
+    wait_for_slot_record(&old_slot, |r| r.text == "codex live").await;
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
 
     let new_home = fixture.temp_path().join("codex-home-b");
@@ -447,10 +428,7 @@ async fn a_codex_live_restart_transfers_the_reader_to_the_new_uuid() {
     let sends_before = h.message_permits();
 
     append_codex(&new_path, "codex post restart");
-    let (seq, record) = wait_for_slot_record(&new_slot, std::time::Duration::from_secs(10), |r| {
-        r.text == "codex post restart"
-    })
-    .await;
+    let (seq, record) = wait_for_slot_record(&new_slot, |r| r.text == "codex post restart").await;
     assert_eq!(record.origin, RecordOrigin::Live);
     assert_eq!(record.observed_path, new_path);
     assert_eq!(seq, seq_before + 1);

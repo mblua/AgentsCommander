@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
  * ------------------------------------------------------------------ */
 
 const TOOL_NAME = 'rust-module-dependency-cycles';
-const TOOL_VERSION = '1.1.1';
+const TOOL_VERSION = '1.2.0';
 const SCHEMA_VERSION = 1;
 const BASELINE_SCHEMA_VERSION = 1;
 const BASELINE_KIND = 'rust-cycles-baseline';
@@ -72,12 +72,13 @@ const LIMITATIONS = [
   'mod foo; nested inside an inline mod block is not resolved.',
   '#[path] on an inline mod block is not supported.',
   'Explicit [[bin]] / [[test]] manifest sections with custom path values are not read; only conventional target locations are discovered.',
-  '#[cfg] is not evaluated. Non-test gated code is included and tagged; test-gated code is excluded by default.',
+  '#[cfg] is not evaluated. Non-test gated code is included and tagged; test-gated code is excluded by default. Test-gated means a top-level cfg whose predicate provably requires test: test, all(..) with a test-requiring child, or a non-empty any(..) whose every child requires test; not(..), cfg_attr, unknown and malformed predicates never count.',
   'Function-level output is a lower bound in every mode.',
 ];
 
 /** Item modifiers that may precede the keyword that names the item kind. */
-const MODIFIERS = new Set(['pub', 'async', 'unsafe', 'const', 'extern', 'default', 'auto', 'static']);
+const MODIFIERS = new Set(['pub', 'async', 'unsafe', 'const', 'extern', 'default', 'auto',
+  'static']);
 
 /** Words that can sit immediately before a `(` without being a call. */
 const NON_CALL_WORDS = new Set([
@@ -87,7 +88,6 @@ const NON_CALL_WORDS = new Set([
   'use', 'mod', 'pub', 'crate', 'super', 'self', 'Self', 'true', 'false', 'and', 'or',
 ]);
 
-const CFG_TEST_RE = /\bcfg\s*\(\s*test\s*\)/;
 const CFG_ANY_RE = /\bcfg\s*\(/;
 
 class UsageError extends Error {}
@@ -99,66 +99,69 @@ class AnalysisError extends Error {}
 
 function printHelp() {
   const lines = [];
-  lines.push(`${TOOL_NAME} ${TOOL_VERSION}`);
-  lines.push('');
-  lines.push('Detect Rust dependency cycles at module and function granularity.');
-  lines.push('Zero dependencies, no build step, no Rust toolchain, target need not compile.');
-  lines.push('');
-  lines.push('USAGE');
-  lines.push('  node 01-rust_module-dependency-cycles.mjs <path> [options]');
-  lines.push('  node 01-rust_module-dependency-cycles.mjs --self-test');
-  lines.push('  node 01-rust_module-dependency-cycles.mjs --help | --version');
-  lines.push('');
-  lines.push('  <path> is a directory or a single .rs file. Required except with');
-  lines.push('  --self-test, --help and --version. A second positional is a usage error.');
-  lines.push('');
-  lines.push('OPTIONS');
-  lines.push('  --json                     emit JSON on stdout and nothing else on stdout');
-  lines.push('  --level <v>                module | function | all            (default: all)');
-  lines.push('  --function-scope <v>       cross-module | all        (default: cross-module)');
-  lines.push('  --fail-on <v>              none | module | any           (default: module)');
-  lines.push('  --baseline <file>          compare against a baseline; only new cycles gate');
-  lines.push('  --write-baseline <file>    write the current cycles as a baseline and exit');
-  lines.push('  --emit-graph <file>        write the complete dependency graph to that file');
-  lines.push('  --include-tests            include #[cfg(test)] items, mod tests blocks and');
-  lines.push('                             test/bench/example crate targets');
-  lines.push('  --exclude <pattern>        skip matching paths (repeatable)');
-  lines.push('  --quiet                    suppress the human summary; exit code only');
-  lines.push('  --self-test                run the embedded fixture suite');
-  lines.push('  -h, --help                 print this help and exit 0');
-  lines.push('  -V, --version              print the version and exit 0');
-  lines.push('');
-  lines.push('  Both --flag value and --flag=value are accepted.');
-  lines.push('');
-  lines.push('EXIT CODES');
-  lines.push('  0  analysis succeeded and nothing gates; also --help, --version,');
-  lines.push('     and a successful --write-baseline');
-  lines.push('  1  analysis succeeded and gating cycles were found');
-  lines.push('  2  usage error (unknown flag, bad value, bad or incompatible baseline file,');
-  lines.push('     --emit-graph together with --write-baseline)');
-  lines.push('  3  analysis error (path missing, no .rs files, no crate root, read error,');
-  lines.push('     or the graph file cannot be written or fails its integrity check,');
-  lines.push('     or any unexpected exception)');
-  lines.push('  4  --self-test had at least one failing assertion');
-  lines.push('');
-  lines.push('  1 and 3 are deliberately distinct: "there are cycles" and "I could not');
-  lines.push('  look properly" must never be confused by a CI gate.');
-  lines.push('');
-  lines.push('BASELINE');
-  lines.push('  There is no implicit baseline path and no auto-discovery. A baseline that');
-  lines.push('  is picked up silently is a way to hide cycles by accident.');
-  lines.push('    node 01-rust_module-dependency-cycles.mjs . --write-baseline .rust-cycles-baseline.json');
-  lines.push('    node 01-rust_module-dependency-cycles.mjs . --baseline .rust-cycles-baseline.json');
-  lines.push('');
-  lines.push('GRAPH');
-  lines.push('  There is no implicit graph path and no auto-discovery, for the same reason');
-  lines.push('  as the baseline. The file carries every node and every edge, one record per');
-  lines.push('  reference site, never deduplicated. It never goes to stdout.');
-  lines.push('    node 01-rust_module-dependency-cycles.mjs . --emit-graph graph.json');
-  lines.push('  --emit-graph and --write-baseline are mutually exclusive (exit 2). No graph');
-  lines.push('  is written when the analysis produced error-level diagnostics.');
-  lines.push('');
-  lines.push('LIMITATIONS (what this tool structurally cannot see)');
+  lines.push(
+    `${TOOL_NAME} ${TOOL_VERSION}`,
+    '',
+    'Detect Rust dependency cycles at module and function granularity.',
+    'Zero dependencies, no build step, no Rust toolchain, target need not compile.',
+    '',
+    'USAGE',
+    '  node 01-rust_module-dependency-cycles.mjs <path> [options]',
+    '  node 01-rust_module-dependency-cycles.mjs --self-test',
+    '  node 01-rust_module-dependency-cycles.mjs --help | --version',
+    '',
+    '  <path> is a directory or a single .rs file. Required except with',
+    '  --self-test, --help and --version. A second positional is a usage error.',
+    '',
+    'OPTIONS',
+    '  --json                     emit JSON on stdout and nothing else on stdout',
+    '  --level <v>                module | function | all            (default: all)',
+    '  --function-scope <v>       cross-module | all        (default: cross-module)',
+    '  --fail-on <v>              none | module | any           (default: module)',
+    '  --baseline <file>          compare against a baseline; only new cycles gate',
+    '  --write-baseline <file>    write the current cycles as a baseline and exit',
+    '  --emit-graph <file>        write the complete dependency graph to that file',
+    '  --include-tests            include #[cfg(test)] and compound test-gated items',
+    '                             (e.g. #[cfg(all(test, unix))]), mod tests blocks and',
+    '                             test/bench/example crate targets',
+    '  --exclude <pattern>        skip matching paths (repeatable)',
+    '  --quiet                    suppress the human summary; exit code only',
+    '  --self-test                run the embedded fixture suite',
+    '  -h, --help                 print this help and exit 0',
+    '  -V, --version              print the version and exit 0',
+    '',
+    '  Both --flag value and --flag=value are accepted.',
+    '',
+    'EXIT CODES',
+    '  0  analysis succeeded and nothing gates; also --help, --version,',
+    '     and a successful --write-baseline',
+    '  1  analysis succeeded and gating cycles were found',
+    '  2  usage error (unknown flag, bad value, bad or incompatible baseline file,',
+    '     --emit-graph together with --write-baseline)',
+    '  3  analysis error (path missing, no .rs files, no crate root, read error,',
+    '     or the graph file cannot be written or fails its integrity check,',
+    '     or any unexpected exception)',
+    '  4  --self-test had at least one failing assertion',
+    '',
+    '  1 and 3 are deliberately distinct: "there are cycles" and "I could not',
+    '  look properly" must never be confused by a CI gate.',
+    '',
+    'BASELINE',
+    '  There is no implicit baseline path and no auto-discovery. A baseline that',
+    '  is picked up silently is a way to hide cycles by accident.',
+    '    node 01-rust_module-dependency-cycles.mjs . --write-baseline .rust-cycles-baseline.json',
+    '    node 01-rust_module-dependency-cycles.mjs . --baseline .rust-cycles-baseline.json',
+    '',
+    'GRAPH',
+    '  There is no implicit graph path and no auto-discovery, for the same reason',
+    '  as the baseline. The file carries every node and every edge, one record per',
+    '  reference site, never deduplicated. It never goes to stdout.',
+    '    node 01-rust_module-dependency-cycles.mjs . --emit-graph graph.json',
+    '  --emit-graph and --write-baseline are mutually exclusive (exit 2). No graph',
+    '  is written when the analysis produced error-level diagnostics.',
+    '',
+    'LIMITATIONS (what this tool structurally cannot see)'
+  );
   for (let i = 0; i < LIMITATIONS.length; i++) {
     lines.push(`  ${i + 1}. ${LIMITATIONS[i]}`);
   }
@@ -242,21 +245,24 @@ function parseArgs(argv) {
         break;
       case '--level': {
         const v = needValue(name, inline, iter);
-        if (!LEVELS.includes(v)) throw new UsageError(`invalid value for --level: ${v} (expected ${LEVELS.join(' | ')})`);
+        if (!LEVELS.includes(v)) throw new UsageError(
+          `invalid value for --level: ${v} (expected ${LEVELS.join(' | ')})`);
         opts.level = v;
         break;
       }
       case '--function-scope': {
         const v = needValue(name, inline, iter);
         if (!FUNCTION_SCOPES.includes(v)) {
-          throw new UsageError(`invalid value for --function-scope: ${v} (expected ${FUNCTION_SCOPES.join(' | ')})`);
+          throw new UsageError(
+            `invalid value for --function-scope: ${v} (expected ${FUNCTION_SCOPES.join(' | ')})`);
         }
         opts.functionScope = v;
         break;
       }
       case '--fail-on': {
         const v = needValue(name, inline, iter);
-        if (!FAIL_ON.includes(v)) throw new UsageError(`invalid value for --fail-on: ${v} (expected ${FAIL_ON.join(' | ')})`);
+        if (!FAIL_ON.includes(v)) throw new UsageError(
+          `invalid value for --fail-on: ${v} (expected ${FAIL_ON.join(' | ')})`);
         opts.failOn = v;
         break;
       }
@@ -290,7 +296,8 @@ function parseArgs(argv) {
     throw new UsageError('--emit-graph and --write-baseline are mutually exclusive');
   }
   if (positionals.length === 0) throw new UsageError('missing <path>');
-  if (positionals.length > 1) throw new UsageError(`unexpected extra positional: ${positionals[1]}`);
+  if (positionals.length > 1) throw new UsageError(
+    `unexpected extra positional: ${positionals[1]}`);
   opts.pathArg = positionals[0];
   return opts;
 }
@@ -304,7 +311,8 @@ function isIdentStart(c) {
 }
 
 function isIdentChar(c) {
-  return c !== undefined && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_');
+  return c !== undefined && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <=
+    '9') || c === '_');
 }
 
 /**
@@ -487,6 +495,87 @@ function readIdent(s, i, to) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 4a. Test cfg classification
+ * ------------------------------------------------------------------ */
+
+/**
+ * True only when `attribute` is one complete top-level #[cfg(P)] or #![cfg(P)]
+ * whose predicate provably requires test. Comments and strings are masked
+ * first, so a cfg inside them, inside cfg_attr or inside another attribute is
+ * never matched. Malformed or unsupported syntax returns false: retaining an
+ * arc never hides a production dependency.
+ */
+function hasRequiredTestCfg(attribute) {
+  const m = stripCommentsAndStrings(attribute);
+  const n = m.length;
+  let i = skipWs(m, 0, n);
+  if (m[i] !== '#') return false;
+  i++;
+  if (m[i] === '!') i++;
+  i = skipWs(m, i, n);
+  if (m[i] !== '[') return false;
+  const close = matchDelimiter(m, i);
+  if (close < 0 || skipWs(m, close + 1, n) !== n) return false;
+  const kw = readIdent(m, skipWs(m, i + 1, close), close);
+  if (!kw || kw.name !== 'cfg' || kw.end - kw.start !== 3) return false;
+  const open = skipWs(m, kw.end, close);
+  if (m[open] !== '(') return false;
+  const end = matchDelimiter(m, open);
+  if (end < 0 || skipWs(m, end + 1, close) !== close) return false;
+  const list = readCfgPredicateList(m, attribute, open + 1, end);
+  return list !== null && list.length === 1 && list[0];
+}
+
+/**
+ * Parse a comma separated predicate list in [from, to), allowing a trailing
+ * comma. Returns one requires-test boolean per child, or null when any child
+ * is unsupported or malformed.
+ */
+function readCfgPredicateList(m, raw, from, to) {
+  const out = [];
+  let i = skipWs(m, from, to);
+  while (i < to) {
+    const p = readCfgPredicate(m, raw, i, to);
+    if (!p) return null;
+    out.push(p.requiresTest);
+    i = skipWs(m, p.end, to);
+    if (i >= to) break;
+    if (m[i] !== ',') return null;
+    i = skipWs(m, i + 1, to);
+  }
+  return out;
+}
+
+/** One predicate at `i`: ident, ident = "string", or all/any/not(list). */
+function readCfgPredicate(m, raw, i, to) {
+  const id = readIdent(m, i, to);
+  if (!id) return null;
+  const k = skipWs(m, id.end, to);
+  if (m[k] === '=') {
+    // The string is masked to spaces; the raw text proves it is a string.
+    let q = k + 1;
+    while (q < to && m[q] === ' ' && raw[q] !== '"' && raw[q] !== 'r') q++;
+    if (raw[q] !== '"' && !(raw[q] === 'r' && (raw[q + 1] === '"' || raw[q + 1] ===
+      '#'))) return null;
+    let e = q;
+    while (e < to && m[e] === ' ') e++;
+    return { requiresTest: false, end: e };
+  }
+  if (m[k] !== '(') return { requiresTest: id.name === 'test' && id.end - id.start === 4, end:
+    id.end };
+  const close = matchDelimiter(m, k);
+  if (close < 0 || close >= to) return null;
+  const kids = readCfgPredicateList(m, raw, k + 1, close);
+  if (kids === null) return null;
+  let requiresTest;
+  if (id.name === 'all') requiresTest = kids.some(Boolean);
+  else if (id.name === 'any') requiresTest = kids.length > 0 && kids.every(Boolean);
+  else if (id.name === 'not' && kids.length === 1) requiresTest = false;
+  else return null;
+  return { requiresTest, end: close + 1 };
+}
+
+/* ------------------------------------------------------------------ *
  * 5. Line and column
  * ------------------------------------------------------------------ */
 
@@ -526,7 +615,7 @@ function lineColOf(lineIndex, offset) {
  * ------------------------------------------------------------------ */
 
 function toPosix(p) {
-  return p.replace(/\\/g, '/');
+  return p.replaceAll('\\', '/');
 }
 
 function relPath(root, abs) {
@@ -731,7 +820,7 @@ function collectDependencyNames(tables) {
 }
 
 function identify(name) {
-  return String(name).replace(/-/g, '_');
+  return String(name).replaceAll('-', '_');
 }
 
 /* ------------------------------------------------------------------ *
@@ -850,7 +939,8 @@ function discoverTargets(rootAbs, manifests, opts, ctx) {
 
     const lib = tables.get('lib');
     const libName = lib && lib.get('name') ? lib.get('name') : pkgIdent;
-    const libPath = lib && lib.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir, 'src', 'lib.rs');
+    const libPath = lib && lib.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
+      'src', 'lib.rs');
 
     const common = {
       packageName,
@@ -898,7 +988,8 @@ function discoverTargets(rootAbs, manifests, opts, ctx) {
     // Integration test, bench and example targets are separate leaf crates.
     // They cannot participate in a cycle with the lib, and a test referencing
     // production code is not a coupling constraint on splitting the crate.
-    for (const [subdir, kind] of [['tests', 'test'], ['benches', 'bench'], ['examples', 'example']]) {
+    for (const [subdir, kind] of [['tests', 'test'], ['benches', 'bench'], ['examples',
+      'example']]) {
       for (const { stem, file } of listRootFilesIn(path.join(dir, subdir))) {
         targets.push(makeTarget({
           ...common,
@@ -1013,7 +1104,8 @@ function parseImplSelfType(header) {
     const ch = h[k];
     if (ch === '<' || ch === '(' || ch === '[') depth++;
     else if (ch === '>' || ch === ')' || ch === ']') depth = depth > 0 ? depth - 1 : 0;
-    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1) && /[\s<]/.test(h[k + 4] || ' ')) {
+    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1) && /[\s<]/.test(h[k + 4] ||
+      ' ')) {
       forIdx = k + 4;
     }
   }
@@ -1100,7 +1192,7 @@ function scanScope(st, from, to, ctx, depth) {
         }
         const raw = st.src.slice(i, e + 1);
         if (inner) {
-          if (ctx.kind === 'file' && CFG_TEST_RE.test(raw)) st.out.fileCfgTest = true;
+          if (ctx.kind === 'file' && hasRequiredTestCfg(raw)) st.out.fileCfgTest = true;
         } else {
           if (attrs.length === 0) attrStart = i;
           attrs.push(raw);
@@ -1143,7 +1235,7 @@ function scanItem(st, i, to, ctx, attrs, itemStart, depth) {
   j = skipWs(m, j, to);
   const kw = readIdent(m, j, to);
   const attrText = attrs.join(' ');
-  const cfgTest = CFG_TEST_RE.test(attrText);
+  const cfgTest = attrs.some(hasRequiredTestCfg);
   const cfgGated = !cfgTest && CFG_ANY_RE.test(attrText);
   const pathAttrRaw = attrs.find((a) => /#\s*\[\s*path\s*=/.test(a)) || null;
 
@@ -1512,7 +1604,8 @@ function buildModuleTree(target, opts, ctx) {
       ctx.diagnostics.push({
         level: 'warn',
         code: 'duplicate-module-file',
-        message: `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
+        message:
+          `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
         file: relPath(ctx.root, fileAbs),
       });
       continue;
@@ -1571,7 +1664,8 @@ function buildModuleTree(target, opts, ctx) {
         const raw = pm ? pm[1] : null;
         const candidate = raw ? path.resolve(searchDir, raw) : null;
         const bounded =
-          candidate !== null && withinRoot(target.sourceRoot, candidate) && withinRoot(ctx.root, candidate);
+          candidate !== null && withinRoot(target.sourceRoot, candidate) && withinRoot(ctx.root,
+            candidate);
         if (bounded && isFile(candidate)) {
           resolved = candidate;
         } else if (bounded && isDirectory(candidate) && isFile(path.join(candidate, 'mod.rs'))) {
@@ -1585,7 +1679,8 @@ function buildModuleTree(target, opts, ctx) {
           ctx.diagnostics.push({
             level: 'warn',
             code: 'unsupported-path-attribute',
-            message: bounded === false ? '#[path] escapes the crate source root' : '#[path] target does not exist',
+            message: bounded === false ? '#[path] escapes the crate source root' :
+              '#[path] target does not exist',
             file: rel,
           });
           continue;
@@ -1743,6 +1838,16 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   } else if (target.kind !== 'lib' && (first === target.libName || first === target.pkgIdent)) {
     base = [];
     rest = segments.slice(1);
+  } else if (contextSegments.length > 0
+    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
+    // Rust 2018 resolves a relative first segment in the current module before
+    // the crate root: `use process::X` inside `a::b` with `mod process;` names
+    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
+    // against the current module, so the child arc is recorded and a same-name
+    // crate-root module can never receive a false arc (#3998).
+    base = contextSegments.slice();
+    rest = segments.slice();
+    ctx.stats.barePathResolutions++;
   } else {
     const isExternal = target.externCrates.has(first);
     const rootModule = tree.modules.get(target.targetId);
@@ -1933,7 +2038,8 @@ function sortedModules(tree) {
  * ------------------------------------------------------------------ */
 
 const MACRO_INVOCATION_RE = /\b([A-Za-z_][A-Za-z0-9_]*)\s*!\s*[([{]/g;
-const METHOD_CALL_RE = /[A-Za-z0-9_)\]]\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
+const METHOD_CALL_RE =
+  /[A-Za-z0-9_)\]]\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
 // The lookbehind keeps this to a bare first segment. `std::fs::File::open(`
 // must not read as `File::open(` on a locally defined `File`: without type
 // information that is a guess, and a guess is how an invented edge happens.
@@ -2082,7 +2188,8 @@ function buildCallGraph(targets, trees, opts, ctx) {
       const dead = skip.concat(macroRanges);
       const importMap = buildImportMap(fc, mod, target, tree, ctx, skip);
       const bodies = items.fns
-        .filter((fn) => fn.bodyStart >= 0 && !inAnyRange(fn.start, skip) && !discardedStarts.has(fn.start))
+        .filter((fn) => fn.bodyStart >= 0 && !inAnyRange(fn.start, skip) && !discardedStarts.has(
+          fn.start))
         .map((fn) => ({ fn, id: functionNodeId(mod.id, fn.ownerType, fn.name) }));
 
       const enclosing = (offset) => {
@@ -2141,7 +2248,8 @@ function buildCallGraph(targets, trees, opts, ctx) {
       const qualified = extractQualifiedPaths(fc.masked, dead, target);
       for (const found of qualified) {
         const after = skipWs(fc.masked, found.end, fc.masked.length);
-        const isCall = fc.masked[after] === '(' || (fc.masked[after] === ':' && fc.masked[after + 1] === ':');
+        const isCall = fc.masked[after] === '(' || (fc.masked[after] === ':' && fc.masked[after +
+          1] === ':');
         if (!isCall) continue;
         const openIdx = fc.masked[after] === '(' ? after : findTurbofishParen(fc.masked, after);
         if (openIdx < 0) continue;
@@ -2156,7 +2264,8 @@ function buildCallGraph(targets, trees, opts, ctx) {
         if (!detailed) continue;
         let toId = null;
         if (detailed.rest.length === 1) toId = `${detailed.moduleId}::${detailed.rest[0]}`;
-        else if (detailed.rest.length === 2) toId = `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
+        else if (detailed.rest.length === 2) toId =
+          `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
         if (!emit(from, toId, found.start, 'path-call')) ctx.blindSpots.unresolvedBareCalls++;
       }
 
@@ -2287,7 +2396,8 @@ function tarjan(nodeIds, adjacency) {
   const neighbours = new Map();
   for (const id of ids) {
     const set = adjacency.get(id);
-    neighbours.set(id, set ? Array.from(set).filter((n) => adjacency.has(n) || ids.includes(n)).sort(compareCodeUnits) : []);
+    neighbours.set(id, set ? Array.from(set).filter((n) => adjacency.has(n) || ids.includes(
+      n)).sort(compareCodeUnits) : []);
   }
 
   const index = new Map();
@@ -2362,7 +2472,8 @@ function hasSelfEdge(adjacency, id) {
  * a line does not change it, while adding or removing a member does.
  */
 function cycleId(members) {
-  return createHash('sha256').update(members.slice().sort(compareCodeUnits).join('\n')).digest('hex').slice(0, 16);
+  return createHash('sha256').update(members.slice().sort(compareCodeUnits).join('\n')).digest(
+    'hex').slice(0, 16);
 }
 
 function edgesWithin(edges, memberSet) {
@@ -2424,12 +2535,14 @@ function classifyFunctionCycles(graph, ctx) {
     if (members.length === 1) {
       if (hasSelfEdge(graph.adjacency, members[0])) {
         const node = graph.nodes.get(members[0]);
-        recursion.push({ function: members[0], file: node ? node.file : '', line: node ? node.line : 0 });
+        recursion.push({ function: members[0], file: node ? node.file : '', line: node ? node.line :
+          0 });
       }
       continue;
     }
     const memberSet = new Set(members);
-    const modules = Array.from(new Set(members.map((id) => graph.nodes.get(id).moduleId))).sort(compareCodeUnits);
+    const modules = Array.from(new Set(members.map((id) => graph.nodes.get(id).moduleId))).sort(
+      compareCodeUnits);
     cycles.push({
       id: cycleId(members),
       scope: modules.length === 1 ? 'intra-module' : 'cross-module',
@@ -2486,7 +2599,8 @@ function writeBaseline(file, result, opts) {
       includeTests: opts.includeTests,
     },
     moduleCycles: result.moduleCycles.map((c) => ({ id: c.id, members: c.members })),
-    functionCycles: result.functionCycles.map((c) => ({ id: c.id, scope: c.scope, members: c.members })),
+    functionCycles: result.functionCycles.map((c) => ({ id: c.id, scope: c.scope, members:
+      c.members })),
   };
   fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   return payload;
@@ -2552,7 +2666,8 @@ function applyBaseline(result, baseline, baselinePath, opts, ctx) {
       resolvedCycles.push({ graph: 'function', id: cycle.id, members: cycle.members || [] });
     }
   }
-  resolvedCycles.sort((a, b) => (a.graph !== b.graph ? (a.graph < b.graph ? -1 : 1) : a.id < b.id ? -1 : 1));
+  resolvedCycles.sort((a, b) => (a.graph !== b.graph ? (a.graph < b.graph ? -1 : 1) : a.id < b.id ?
+    -1 : 1));
 
   return {
     used: true,
@@ -2637,7 +2752,8 @@ function analyze(opts) {
     const walk = findRustFiles(rootAbs, compiled, ctx);
     rustFiles = walk.rustFiles;
     manifests = walk.manifests;
-    if (rustFiles.length === 0) throw new AnalysisError(`no .rs files found under ${toPosix(rootAbs)}`);
+    if (rustFiles.length === 0) throw new AnalysisError(
+      `no .rs files found under ${toPosix(rootAbs)}`);
     targets = discoverTargets(rootAbs, manifests, opts, ctx);
     crateDiscovery = 'manifest';
     if (targets.length === 0) {
@@ -2762,7 +2878,8 @@ function computeExitCode(result, baselineInfo, opts) {
     // Only cross-module function cycles are eligible to gate. `--function-scope`
     // decides what is reported, not what fails the build, so this reads the full
     // classified set rather than the reported one.
-    gating += result.allFunctionCycles.filter((c) => c.scope === 'cross-module').filter(gates).length;
+    gating += result.allFunctionCycles.filter((c) => c.scope === 'cross-module').filter(
+      gates).length;
   }
   return gating > 0 ? 1 : 0;
 }
@@ -2956,7 +3073,8 @@ function checkGraphIntegrity(payload) {
     }
     if (hasModules) {
       for (const fn of payload.functions) {
-        if (!moduleIdSet.has(fn.moduleId)) problems.push({ check: 4, from: fn.id, to: fn.moduleId });
+        if (!moduleIdSet.has(fn.moduleId)) problems.push({ check: 4, from: fn.id, to:
+          fn.moduleId });
       }
     }
   }
@@ -3051,17 +3169,15 @@ function renderHuman(result, baselineInfo, exitCode) {
   const out = [];
   const targetCount = result.crates.length;
 
-  out.push(`${TOOL_NAME} ${TOOL_VERSION}`);
   out.push(
+    `${TOOL_NAME} ${TOOL_VERSION}`,
     `target: ${path.basename(result.rootAbs)}  (${result.crateDiscovery} discovery, ` +
       `${targetCount} crate target${targetCount === 1 ? '' : 's'})`,
-  );
-  out.push('');
-  out.push(
+    '',
     `scanned ${summary.filesScanned} files, resolved ${summary.modulesResolved} modules ` +
       `and ${summary.functionsResolved} functions`,
+    ''
   );
-  out.push('');
 
   const newSuffix = (cycles) =>
     baselineInfo.used ? ` (${cycles.filter((c) => c.status === 'new').length} new)` : '';
@@ -3095,10 +3211,10 @@ function renderHuman(result, baselineInfo, exitCode) {
       }
     }
   }
-  out.push('');
   out.push(
+    '',
     `RECURSION (not a dependency cycle, never gates): ${result.recursion.length} function` +
-      `${result.recursion.length === 1 ? '' : 's'}`,
+      `${result.recursion.length === 1 ? '' : 's'}`
   );
   for (const entry of result.recursion) {
     out.push(`  ${entry.function}  ${entry.file}:${entry.line}`);
@@ -3121,7 +3237,8 @@ function renderHuman(result, baselineInfo, exitCode) {
   out.push(`  ${leader('unresolved internal paths', width)} ${bs.unresolvedInternalPaths}`);
   out.push(`  ${leader('external references ignored', width)} ${bs.externalReferences}`);
   out.push(`  ${leader('unreachable files excluded', width)} ${bs.unreachableFiles.length}`);
-  out.push(`  ${leader('unsupported #[path] attributes', width)} ${bs.unsupportedPathAttributes.length}`);
+  out.push(
+    `  ${leader('unsupported #[path] attributes', width)} ${bs.unsupportedPathAttributes.length}`);
   out.push(`  ${leader('mod decls inside inline mod blocks', width)} ${bs.inlineModuleFileDeclarations.length}`);
   out.push('  Function-level results are a LOWER BOUND. Zero is not proof of absence.');
   out.push('');
@@ -3271,6 +3388,22 @@ function main(argv) {
 
 const CRATE_ABC = 'mod a;\nmod b;\nmod c;\n';
 
+/** [module, attribute] pairs whose use must stay in the graph (F47). */
+const RETAINED_CFG_CASES = [
+  ['r_any', '#[cfg(any(test, unix))]'],
+  ['r_not', '#[cfg(not(test))]'],
+  ['r_notnot', '#[cfg(not(not(test)))]'],
+  ['r_all_empty', '#[cfg(all())]'],
+  ['r_any_empty', '#[cfg(any())]'],
+  ['r_feature', '#[cfg(feature = "test")]'],
+  ['r_cfg_attr', '#[cfg_attr(test, cfg(test))]'],
+  ['r_malformed', '#[cfg(test unix)]'],
+  ['r_unknown', '#[cfg(xor(test, test))]'],
+  ['r_doc', '#[doc = "cfg(test)"]'],
+  ['r_all_prod', '#[cfg(all(unix, feature = "x"))]'],
+  ['r_plain', ''],
+];
+
 const FIXTURES = [
   {
     name: 'F1 line comment is not a reference',
@@ -3331,9 +3464,11 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      h.no(hasModuleEdge(res, 'crate::a', 'crate::b'), 'a -> b edge from #[cfg(test)] mod by default');
+      h.no(hasModuleEdge(res, 'crate::a', 'crate::b'),
+        'a -> b edge from #[cfg(test)] mod by default');
       const withTests = h.run(['--include-tests']);
-      h.yes(hasModuleEdge(withTests.result, 'crate::a', 'crate::b'), 'a -> b edge under --include-tests');
+      h.yes(hasModuleEdge(withTests.result, 'crate::a', 'crate::b'),
+        'a -> b edge under --include-tests');
     },
   },
   {
@@ -3345,7 +3480,8 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      h.no(hasModuleEdge(res, 'crate::a', 'crate::b'), 'a -> b edge from inside a macro_rules body');
+      h.no(hasModuleEdge(res, 'crate::a', 'crate::b'),
+        'a -> b edge from inside a macro_rules body');
       h.atLeast(res.ctx.blindSpots.macroDefinitionsSkipped, 1, 'macroDefinitionsSkipped');
     },
   },
@@ -3464,7 +3600,8 @@ const FIXTURES = [
     assert(res, h) {
       h.eq(res.functionCycles.length, 1, 'reported function cycles at default scope');
       h.eq(res.functionCycles[0].scope, 'cross-module', 'reported cycle scope');
-      h.eqJson(res.functionCycles[0].members, ['crate::a::f', 'crate::b::g'], 'cross-module members');
+      h.eqJson(res.functionCycles[0].members, ['crate::a::f', 'crate::b::g'],
+        'cross-module members');
 
       const all = h.run(['--function-scope', 'all']);
       const intra = all.result.functionCycles.filter((c) => c.scope === 'intra-module');
@@ -3508,7 +3645,8 @@ const FIXTURES = [
         h.no(path.isAbsolute(edge.file), `edge file is relative: ${edge.file}`);
         h.no(edge.file === 'orphan.rs', 'orphan.rs contributed an edge');
       }
-      h.yes(res.ctx.blindSpots.unreachableFiles.includes('orphan.rs'), 'orphan.rs listed as unreachable');
+      h.yes(res.ctx.blindSpots.unreachableFiles.includes('orphan.rs'),
+        'orphan.rs listed as unreachable');
     },
   },
   {
@@ -3641,7 +3779,8 @@ const FIXTURES = [
       };
       h.yes(rejects(['--write-baseline=']), '--write-baseline= rejected');
       h.yes(rejects(['--baseline=']), '--baseline= rejected');
-      h.yes(rejects(['--baseline=', '--write-baseline=x']), '--baseline= with --write-baseline=x rejected');
+      h.yes(rejects(['--baseline=', '--write-baseline=x']),
+        '--baseline= with --write-baseline=x rejected');
       h.yes(rejects(['--exclude=']), '--exclude= rejected');
     },
   },
@@ -3685,8 +3824,10 @@ const FIXTURES = [
         0,
         'no collision after the rename',
       );
-      h.atLeast(collided.method, full.result.ctx.blindSpots.unresolvedMethodCalls, 'unresolvedMethodCalls');
-      h.atLeast(collided.bare, full.result.ctx.blindSpots.unresolvedBareCalls, 'unresolvedBareCalls');
+      h.atLeast(collided.method, full.result.ctx.blindSpots.unresolvedMethodCalls,
+        'unresolvedMethodCalls');
+      h.atLeast(collided.bare, full.result.ctx.blindSpots.unresolvedBareCalls,
+        'unresolvedBareCalls');
     },
   },
   {
@@ -3747,7 +3888,8 @@ const FIXTURES = [
       const upward = res.moduleGraph.edges.filter((e) => e.from === 'crate::b' && e.to === 'crate');
       h.eq(upward.length, 2, 'edge records from crate::b to crate');
       h.eq(upward.filter((e) => e.item === 'Thing').length, 2, 'both carry item Thing');
-      const downward = res.moduleGraph.edges.filter((e) => e.from === 'crate' && e.to === 'crate::b');
+      const downward = res.moduleGraph.edges.filter((e) => e.from === 'crate' && e.to ===
+        'crate::b');
       h.eq(downward.length, 1, 'edge records from crate to crate::b');
       h.eq(downward[0].item, 'Other', 'item of the crate -> crate::b record');
     },
@@ -3801,7 +3943,8 @@ const FIXTURES = [
       h.yes(graph.edges.every((e) => ids.has(e.to)), 'every edge target is a node');
       const second = path.join(h.dir, 'g2.json');
       h.run(['--emit-graph', second]);
-      h.eq(fs.readFileSync(second, 'utf8'), fs.readFileSync(first, 'utf8'), 'two runs byte identical');
+      h.eq(fs.readFileSync(second, 'utf8'), fs.readFileSync(first, 'utf8'),
+        'two runs byte identical');
     },
   },
   {
@@ -3822,7 +3965,8 @@ const FIXTURES = [
       };
       const all = read('ga.json', ['--level', 'all']);
       h.yes('modules' in all && 'edges' in all, 'module sections present at --level all');
-      h.yes('functions' in all && 'functionEdges' in all, 'function sections present at --level all');
+      h.yes('functions' in all && 'functionEdges' in all,
+        'function sections present at --level all');
       const mod = read('gm.json', ['--level', 'module']);
       h.eq('functions' in mod, false, 'functions absent at --level module');
       h.eq('functionEdges' in mod, false, 'functionEdges absent at --level module');
@@ -3928,7 +4072,8 @@ const FIXTURES = [
       h.eq(edges[0].item, 'T', 'the surviving edge carries item T');
       h.no(edges.some((e) => e.from === e.to), 'no self-edge survives');
       const nodes = new Set(res.moduleGraph.nodes);
-      h.yes(edges.every((e) => e.item !== null || nodes.has(e.to)), 'a null item still points at a node');
+      h.yes(edges.every((e) => e.item !== null || nodes.has(e.to)),
+        'a null item still points at a node');
       // Reachability. Without this the fixture passes whether the fold fired and
       // was dropped or was never entered at all, and it is the only coverage the
       // fold has. crate::a::inner being no node is exactly what makes the base
@@ -4049,7 +4194,8 @@ const FIXTURES = [
     run: [],
     assert(res, h) {
       h.eqJson(
-        res.moduleGraph.edges.filter((e) => e.from === 'crate::a' && e.to === 'crate::zeta').map((e) => e.item),
+        res.moduleGraph.edges.filter((e) => e.from === 'crate::a' && e.to === 'crate::zeta').map((
+          e) => e.item),
         ['Z', 'Y'],
         'the brace list is unsorted, so emission order is Z then Y',
       );
@@ -4063,7 +4209,8 @@ const FIXTURES = [
          'modules', 'edges', 'functions', 'functionEdges', 'blindSpots', 'diagnostics'],
         'top level key order',
       );
-      h.eqJson(g.tool, { name: 'rust-module-dependency-cycles', version: TOOL_VERSION }, 'tool block');
+      h.eqJson(g.tool, { name: 'rust-module-dependency-cycles', version: TOOL_VERSION },
+        'tool block');
       h.eqJson(
         Object.keys(g.target),
         ['rootPath', 'crateDiscovery', 'level', 'functionScope', 'includeTests', 'excludes'],
@@ -4081,7 +4228,8 @@ const FIXTURES = [
            rootFile: 'lib.rs', edition: '2021', modules: 4, files: 4 }],
         'crates',
       );
-      h.eqJson(Object.keys(g.modules[0]), ['id', 'parent', 'file', 'crateTarget', 'loc'], 'module key order');
+      h.eqJson(Object.keys(g.modules[0]), ['id', 'parent', 'file', 'crateTarget', 'loc'],
+        'module key order');
       h.eqJson(
         g.modules.map((m) => [m.id, m.parent, m.file, m.crateTarget, m.loc]),
         [['crate', null, 'lib.rs', 'crate', 4],
@@ -4096,7 +4244,8 @@ const FIXTURES = [
         'edge key order',
       );
       h.eqJson(
-        g.edges.map((e) => [e.from, e.to, e.item, e.file, e.line, e.column, e.kind, e.cfgGated, e.text]),
+        g.edges.map((e) => [e.from, e.to, e.item, e.file, e.line, e.column, e.kind, e.cfgGated,
+          e.text]),
         [['crate', 'crate::zeta', 'Z', 'lib.rs', 4, 1, 'use', false, 'use crate::zeta::Z;'],
          ['crate::a', 'crate::alpha', 'A', 'a.rs', 2, 1, 'use', false, 'use crate::alpha::A;'],
          ['crate::a', 'crate::zeta', 'Y', 'a.rs', 1, 1, 'use', false, 'use crate::zeta::{Z, Y}'],
@@ -4164,12 +4313,15 @@ const FIXTURES = [
       };
       const mods = [{ id: 'crate', parent: null }];
       h.eq(only({ modules: mods, edges: [{ from: 'crate', to: 'crate::ghost' }] }), 1, 'check 1');
-      h.eq(only({ modules: [...mods, { id: 'crate::a', parent: 'crate::ghost' }], edges: [] }), 2, 'check 2');
+      h.eq(only({ modules: [...mods, { id: 'crate::a', parent: 'crate::ghost' }], edges: [] }), 2,
+        'check 2');
       h.eq(only({ functions: [{ id: 'crate::f', moduleId: 'crate' }],
                   functionEdges: [{ from: 'crate::f', to: 'crate::ghost' }] }), 3, 'check 3');
-      h.eq(only({ modules: mods, edges: [], functions: [{ id: 'crate::f', moduleId: 'crate::ghost' }],
+      h.eq(only({ modules: mods, edges: [], functions: [{ id: 'crate::f', moduleId:
+        'crate::ghost' }],
                   functionEdges: [] }), 4, 'check 4');
-      h.eqJson(checkGraphIntegrity({ modules: mods, edges: [], functions: [], functionEdges: [] }), [],
+      h.eqJson(checkGraphIntegrity({ modules: mods, edges: [], functions: [], functionEdges: [] }),
+        [],
         'a closed payload has no problems');
       // Section gating: a payload with no modules key must not run the module
       // checks, and a payload with no functions key must not run the function
@@ -4177,10 +4329,12 @@ const FIXTURES = [
       h.eqJson(checkGraphIntegrity({ functions: [{ id: 'crate::f', moduleId: 'crate::ghost' }],
                                      functionEdges: [] }), [],
         'check 4 is skipped when modules is absent');
-      h.eqJson(checkGraphIntegrity({ modules: mods, edges: [{ from: 'crate', to: 'crate::ghost' }] }).map((x) => x.check),
+      h.eqJson(checkGraphIntegrity({ modules: mods, edges: [{ from: 'crate', to:
+        'crate::ghost' }] }).map((x) => x.check),
         [1], 'the function checks are skipped when functions is absent');
       h.eqJson(checkGraphIntegrity({ functions: [{ id: 'crate::f', moduleId: 'crate' }],
-                                     functionEdges: [{ from: 'crate::f', to: 'crate::ghost' }] }).map((x) => x.check),
+                                     functionEdges: [{ from: 'crate::f', to:
+                                       'crate::ghost' }] }).map((x) => x.check),
         [3], 'the module checks are skipped when modules is absent');
     },
   },
@@ -4190,7 +4344,8 @@ const FIXTURES = [
     // has to reach the dump.
     name: 'F39 a warn diagnostic still writes a graph and reaches the dump',
     files: {
-      'lib.rs': 'mod missing;\nmod b;\npub fn f() { crate::b::g(); }\npub fn h(_x: &super::Thing) {}\n',
+      'lib.rs':
+        'mod missing;\nmod b;\npub fn f() { crate::b::g(); }\npub fn h(_x: &super::Thing) {}\n',
       'b.rs': 'pub fn g() {}\n',
     },
     run: [],
@@ -4350,6 +4505,134 @@ const FIXTURES = [
       );
     },
   },
+  {
+    // #3991: rustc resolves `x` inside `a` to its child `a::x`, not to `crate::x`.
+    name: 'F44 child use path never binds to a same-name crate-root module',
+    files: Object.fromEntries([
+      ['lib.rs', 'mod a;\nmod x;\n'],
+      ['a.rs', 'mod x;\npub(crate) use x::T;\npub fn f() { x::g(); }\n'],
+      ...['a/x.rs', 'x.rs'].map((file) => [file, 'pub struct T;\npub fn g() {}\n']),
+    ]),
+    run: [],
+    assert(res, h) {
+      h.yes(moduleIds(res).includes('crate::a::x'), 'child module crate::a::x exists');
+      h.no(hasModuleEdge(res, 'crate::a', 'crate::x'), 'false a -> crate-root x edge');
+    },
+  },
+  {
+    // #3995: compound predicates that provably require test exclude declared
+    // file modules like direct cfg(test). Every gate here except multi was
+    // missed by the old direct-only rule.
+    name: 'F45 compound test cfg excludes file modules and their arcs',
+    files: Object.fromEntries([
+      ['lib.rs', [
+        'mod b;',
+        '#[cfg(all(test, windows))]\nmod wt;',
+        '#[cfg(all(unix, test))]\nmod ut;',
+        '#[cfg(all(unix, any(test, all(feature = "x", test))))]\nmod nt;',
+        '#[cfg(any(test, all(test, windows)))]\nmod at;',
+        '#[cfg(unix)]\n#[cfg(test)]\nmod multi;',
+        '#[cfg( all ( /* note */ windows ,\n  test , ) )]\nmod sp;',
+        '',
+      ].join('\n')],
+      ['b.rs', 'pub struct T;\n'],
+      ...['wt', 'ut', 'nt', 'at', 'multi', 'sp'].map((m) => [`${m}.rs`, 'use crate::b::T;\n']),
+    ]),
+    run: [],
+    assert(res, h) {
+      const withTests = h.run(['--include-tests']).result;
+      for (const m of ['wt', 'ut', 'nt', 'at', 'multi', 'sp']) {
+        h.yes(isTestOnlyModule(res, `crate::${m}`), `crate::${m} is a test-only module`);
+        h.no(hasModuleEdge(res, `crate::${m}`, 'crate::b'), `${m} -> b edge excluded by default`);
+        h.yes(hasModuleEdge(withTests, `crate::${m}`, 'crate::b'),
+          `${m} -> b under --include-tests`);
+      }
+    },
+  },
+  {
+    name: 'F46 compound test cfg on inline items, use, functions and inner attributes',
+    files: {
+      'lib.rs': 'mod a;\nmod b;\nmod c;\nmod d;\nmod e;\n',
+      'a.rs': [
+        '#[cfg(all(test, unix))]',
+        'use crate::b::T;',
+        '#[cfg(all(test, unix,))]',
+        'fn helper() { crate::c::g(); }',
+        '#[cfg(all(windows, test))]',
+        'mod inline {',
+        '    use crate::d::U;',
+        '}',
+        'pub fn f() {}',
+        '',
+      ].join('\n'),
+      'b.rs': 'pub struct T;\n',
+      'c.rs': 'pub fn g() {}\n',
+      'd.rs': 'pub struct U;\n',
+      'e.rs': '#![cfg(all(test, unix))]\nuse crate::b::T;\n',
+    },
+    run: [],
+    assert(res, h) {
+      const calls = (r) => r.callGraph.edges.map((e) => e.to);
+      for (const to of ['crate::b', 'crate::c', 'crate::d']) {
+        h.no(hasModuleEdge(res, 'crate::a', to), `a -> ${to} excluded by default`);
+      }
+      h.no(calls(res).includes('crate::c::g'), 'no call edge from an excluded function');
+      h.yes(moduleIds(res).includes('crate::e'), 'inner attribute keeps module metadata');
+      h.no(isTestOnlyModule(res, 'crate::e'), 'inner attribute does not remove the module');
+      h.no(hasModuleEdge(res, 'crate::e', 'crate::b'), 'inner attribute skips file contents');
+      const withTests = h.run(['--include-tests']).result;
+      for (const to of ['crate::b', 'crate::c', 'crate::d']) {
+        h.yes(hasModuleEdge(withTests, 'crate::a', to), `a -> ${to} under --include-tests`);
+      }
+      h.yes(calls(withTests).includes('crate::c::g'), 'call edge under --include-tests');
+      h.yes(hasModuleEdge(withTests, 'crate::e', 'crate::b'), 'e -> b under --include-tests');
+    },
+  },
+  {
+    // Predicates that do not prove test, plus malformed ones, keep their arcs.
+    // all(unix, feature) is the production control for the all-case.
+    name: 'F47 retained cfg predicates and ordinary paths keep their arcs',
+    files: Object.fromEntries([
+      ['lib.rs', 'mod a;\nmod call_any;\nmod call_plain;\n'
+        + RETAINED_CFG_CASES.map(([m]) => `mod ${m};\n`).join('')],
+      ['a.rs', RETAINED_CFG_CASES.map(([m, attr]) => `${attr}\nuse crate::${m}::T;\n`).join('')
+        + '#[cfg(any(test, unix))]\nfn h() { crate::call_any::g(); }\n'
+        + 'pub fn f() { crate::call_plain::g(); }\n'],
+      ...RETAINED_CFG_CASES.map(([m]) => [`${m}.rs`, 'pub struct T;\n']),
+      ['call_any.rs', 'pub fn g() {}\n'],
+      ['call_plain.rs', 'pub fn g() {}\n'],
+    ]),
+    run: [],
+    assert(res, h) {
+      for (const [m, attr] of RETAINED_CFG_CASES) {
+        h.yes(hasModuleEdge(res, 'crate::a', `crate::${m}`),
+          `a -> ${m} retained under ${attr || 'no attribute'}`);
+      }
+      const calls = res.callGraph.edges.map((e) => e.to);
+      h.yes(calls.includes('crate::call_any::g'), 'call under any(test, unix) retained');
+      h.yes(calls.includes('crate::call_plain::g'), 'ordinary call retained');
+    },
+  },
+  {
+    // terminal_snapshot shape: a compound-gated use names a direct-test module.
+    // The old rule kept the use and refused to publish an open graph.
+    name: 'F48 compound-gated use of a cfg(test) module keeps the graph closed',
+    files: {
+      'lib.rs': '#[cfg(test)]\nmod t;\nmod a;\n',
+      'a.rs': '#[cfg(all(test, unix))]\nuse crate::t::VALUE;\npub fn f() {}\n',
+      't.rs': 'pub const VALUE: u32 = 1;\n',
+    },
+    run: [],
+    assert(res, h) {
+      const p = path.join(h.dir, 'g.json');
+      const r = h.main(['--emit-graph', p, '--quiet']);
+      h.eq(r.code, 0, 'exit 0');
+      const g = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const ids = new Set(g.modules.map((m) => m.id));
+      h.yes(g.edges.every((e) => ids.has(e.from) && ids.has(e.to)), 'published graph is closed');
+      h.no(ids.has('crate::t'), 'crate::t is not a node');
+    },
+  },
 ];
 
 function moduleIds(res) {
@@ -4358,6 +4641,14 @@ function moduleIds(res) {
     for (const id of tree.modules.keys()) ids.push(id);
   }
   return ids;
+}
+
+function isTestOnlyModule(res, id) {
+  for (const tree of res.trees.values()) {
+    const mod = tree.modules.get(id);
+    if (mod) return mod.testOnly === true;
+  }
+  return false;
 }
 
 function hasModuleEdge(res, from, to) {

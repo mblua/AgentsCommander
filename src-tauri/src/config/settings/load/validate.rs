@@ -8,6 +8,7 @@ use super::{
 };
 
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    settings.normalize_context_history_sessions();
     if !(RESPONSE_CLOSE_IDLE_SECONDS_MIN..=RESPONSE_CLOSE_IDLE_SECONDS_MAX)
         .contains(&settings.response_close_idle_seconds)
     {
@@ -60,8 +61,8 @@ pub fn validate_typing_hold_settings(settings: &AppSettings) -> Result<(), Strin
     let seconds = settings.typing_hold_seconds;
     if !(TYPING_HOLD_SECONDS_MIN..=TYPING_HOLD_SECONDS_MAX).contains(&seconds) {
         return Err(format!(
-            "typingHoldSeconds must be between {} and {} (got {})",
-            TYPING_HOLD_SECONDS_MIN, TYPING_HOLD_SECONDS_MAX, seconds
+            "typingHoldSeconds must be between {TYPING_HOLD_SECONDS_MIN} and \
+            {TYPING_HOLD_SECONDS_MAX} (got {seconds})"
         ));
     }
     Ok(())
@@ -94,7 +95,7 @@ pub fn validate_api_server_settings(settings: &mut AppSettings) -> Result<(), St
 pub fn validate_screenshot_hotkey(value: &str) -> Result<(), String> {
     crate::screenshot::parse_screenshot_hotkey(value)
         .map(|_| ())
-        .map_err(|e| format!("Screenshot hotkey: {}", e))
+        .map_err(|e| format!("Screenshot hotkey: {e}"))
 }
 
 /// #2281 Reject a sidebar compact hotkey that the settings contract cannot
@@ -106,7 +107,7 @@ pub fn validate_screenshot_hotkey(value: &str) -> Result<(), String> {
 /// byte-identical and never repaired, so a lower-case spelling is stored as-is.
 pub fn validate_sidebar_compact_hotkey(value: &str) -> Result<(), String> {
     let reject = |reason: &str| Err(format!("Sidebar compact hotkey: {reason}"));
-    let parts: Vec<&str> = value.trim().split('+').map(|p| p.trim()).collect();
+    let parts: Vec<&str> = value.trim().split('+').map(str::trim).collect();
     if parts.len() != 3 {
         return reject("expected exactly three '+' separated parts, e.g. Ctrl+Shift+E");
     }
@@ -199,8 +200,7 @@ pub fn validate_config_seed_dest(dest: &str) -> Result<(), String> {
     ];
     if RESERVED.contains(&stem.as_str()) {
         return Err(format!(
-            "config seed destination '{}' is a reserved Windows device name",
-            d
+            "config seed destination '{d}' is a reserved Windows device name"
         ));
     }
     Ok(())

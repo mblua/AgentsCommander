@@ -51,21 +51,13 @@ pub(crate) fn write_loop_bytes(path: &Path, content: impl AsRef<[u8]>) -> io::Re
     std::fs::write(path, content)
 }
 
-pub(crate) fn append_loop_ignore_rows(path: &Path, content: &str) -> io::Result<()> {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(content.as_bytes()))
-}
-
 pub(crate) fn append_loop_audit_line(path: &Path, line: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-    writeln!(file, "{}", line).map_err(|e| format!("Failed to append {}: {}", path.display(), e))
+    writeln!(file, "{line}").map_err(|e| format!("Failed to append {}: {}", path.display(), e))
 }
 
 /// Writes `content` to `tmp_path` and replaces `config_path` with it. On any
@@ -79,7 +71,7 @@ pub(crate) fn write_config_via_tmp(
         .and_then(|()| replace_file_with_retry(tmp_path, config_path))
         .map_err(|e| {
             let _ = std::fs::remove_file(tmp_path);
-            format!("Failed to write Loop config: {}", e)
+            format!("Failed to write Loop config: {e}")
         })
 }
 
@@ -108,7 +100,7 @@ pub(crate) fn replace_file_with_retry(src: &Path, dst: &Path) -> std::io::Result
 pub(crate) fn is_transient_replace_error(e: &std::io::Error) -> bool {
     // ERROR_ACCESS_DENIED (what a held destination produces) and
     // ERROR_SHARING_VIOLATION.
-    matches!(e.raw_os_error(), Some(5) | Some(32))
+    matches!(e.raw_os_error(), Some(5 | 32))
 }
 
 #[cfg(not(windows))]

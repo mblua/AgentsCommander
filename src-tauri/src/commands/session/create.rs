@@ -31,12 +31,15 @@ pub(crate) use admission::try_acquire_create_publication_region;
 #[cfg(target_os = "windows")]
 pub(crate) use admission::with_create_resource_region;
 #[cfg(test)]
+pub(crate) use admission::CoordinatorCreateTicket;
+#[cfg(test)]
 #[cfg(target_os = "windows")]
 pub(crate) use admission::CreateResourceAdmission;
 #[cfg(test)]
 pub(crate) use admission::OwnedCreateAdmission;
 pub(crate) use launch::build_configured_agent_spawn_for_cwd;
 pub(crate) use launch::compute_profile_outdated;
+#[cfg(test)]
 pub(crate) use launch::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use launch::resolve_create_session_cwd;
 #[cfg(test)]
@@ -171,15 +174,7 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     .await
 }
 
-#[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Preserve PTY create result layout and unchanged completion consumers"
-)]
-pub(crate) enum PtyTargetCreateStep {
-    Finalized(SessionInfo),
-    Retained,
-}
+pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Runtime>(

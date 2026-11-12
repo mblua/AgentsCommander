@@ -6,12 +6,92 @@ use super::{
 
 #[test]
 fn team_add_member_creates_replica_and_peer_is_reachable() {
-    let tmp = Tmp::new("cli-team-add-member");
+    let (_tmp, bin, config_dir, project, added) =
+        setup_room_with_dev_rust_member("cli-team-add-member");
+    let replica = project
+        .join(".ac")
+        .join("room-1-dev-team")
+        .join("__agent_dev-rust");
+    assert_eq!(added["added"], true);
+    assert!(replica.join("config.json").is_file());
+
+    let sender_root = project
+        .join(".ac")
+        .join("room-1-dev-team")
+        .join("__agent_architect");
+    let mut command = command_for_binary(&bin);
+    command
+        .args([
+            "list-peers-lean",
+            "--root",
+            &sender_root.to_string_lossy(),
+            "--token",
+            "00000000-0000-0000-0000-000000000000",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("list peers")
+    };
+    let out = child.wait_with_output().expect("collect output");
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let peers: serde_json::Value = serde_json::from_slice(&out.stdout).expect("peers");
+    let found = peers.as_array().expect("array").iter().any(|peer| {
+        peer["name"] == "ProjectAlpha:room-1-dev-team/dev-rust" && peer["reachable"] == true
+    });
+    assert!(found, "added peer should be reachable: {peers}");
+    let requests = read_project_refresh_requests(&config_dir);
+    assert_eq!(requests.len(), 3);
+    assert_refresh_request(
+        find_refresh_request(&requests, "teamMembershipChanged"),
+        &project,
+        ".ac/room-1-dev-team/__agent_dev-rust",
+        "room-1-dev-team/dev-rust",
+        "teamMembershipChanged",
+    );
+
+    let removed = run_json(
+        &bin,
+        &[
+            "team",
+            "remove-member",
+            "--project",
+            "ProjectAlpha",
+            "--workgroup",
+            "room-1-dev-team",
+            "--agent",
+            "dev-rust",
+        ],
+    );
+    assert_eq!(removed["removed"], true);
+    assert!(!replica.exists());
+    let requests = read_project_refresh_requests(&config_dir);
+    assert_eq!(requests.len(), 4);
+    assert_refresh_request(
+        find_refresh_request(&requests, "teamMembershipRemoved"),
+        &project,
+        ".ac/room-1-dev-team/__agent_dev-rust",
+        "room-1-dev-team/dev-rust",
+        "teamMembershipRemoved",
+    );
+}
+
+/// Shared fixture: team, room and a dev-rust member, returned with every guard.
+fn setup_room_with_dev_rust_member(
+    label: &str,
+) -> (Tmp, PathBuf, PathBuf, PathBuf, serde_json::Value) {
+    let tmp = Tmp::new(label);
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     write_settings(&config_dir, tmp.path());
     let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
-
     let _team = run_json(
         &bin,
         &[
@@ -52,79 +132,7 @@ fn team_add_member_creates_replica_and_peer_is_reachable() {
             "dev-rust",
         ],
     );
-    let replica = project
-        .join(".ac")
-        .join("room-1-dev-team")
-        .join("__agent_dev-rust");
-    assert_eq!(added["added"], true);
-    assert!(replica.join("config.json").is_file());
-
-    let sender_root = project
-        .join(".ac")
-        .join("room-1-dev-team")
-        .join("__agent_architect");
-    let mut command = command_for_binary(&bin);
-    command
-        .args([
-            "list-peers-lean",
-            "--root",
-            &sender_root.to_string_lossy(),
-            "--token",
-            "00000000-0000-0000-0000-000000000000",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = {
-        let _guard = spawn_lock();
-        command.spawn().expect("list peers")
-    };
-    let out = child.wait_with_output().expect("collect output");
-    assert!(
-        out.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let peers: serde_json::Value = serde_json::from_slice(&out.stdout).expect("peers");
-    let found = peers.as_array().expect("array").iter().any(|peer| {
-        peer["name"] == "ProjectAlpha:room-1-dev-team/dev-rust" && peer["reachable"] == true
-    });
-    assert!(found, "added peer should be reachable: {}", peers);
-    let requests = read_project_refresh_requests(&config_dir);
-    assert_eq!(requests.len(), 3);
-    assert_refresh_request(
-        find_refresh_request(&requests, "teamMembershipChanged"),
-        &project,
-        ".ac/room-1-dev-team/__agent_dev-rust",
-        "room-1-dev-team/dev-rust",
-        "teamMembershipChanged",
-    );
-
-    let removed = run_json(
-        &bin,
-        &[
-            "team",
-            "remove-member",
-            "--project",
-            "ProjectAlpha",
-            "--workgroup",
-            "room-1-dev-team",
-            "--agent",
-            "dev-rust",
-        ],
-    );
-    assert_eq!(removed["removed"], true);
-    assert!(!replica.exists());
-    let requests = read_project_refresh_requests(&config_dir);
-    assert_eq!(requests.len(), 4);
-    assert_refresh_request(
-        find_refresh_request(&requests, "teamMembershipRemoved"),
-        &project,
-        ".ac/room-1-dev-team/__agent_dev-rust",
-        "room-1-dev-team/dev-rust",
-        "teamMembershipRemoved",
-    );
+    (tmp, bin, config_dir, project, added)
 }
 
 /// #1939 - write through the same #1938 guarded funnel production uses.
@@ -140,66 +148,9 @@ fn guarded_update(
     .expect("guarded config update");
 }
 
-/// #1939 - a repeated `team add-member` must merge into the existing replica
-/// config instead of replacing it: the protected pair, its flag, tooling
-/// history, custom context and unknown keys survive, including a config write
-/// that runs through the same guarded writer while the repeat is in flight.
-#[test]
-fn issue_1937_repeat_member_preserves_config() {
-    let tmp = Tmp::new("cli-issue-1937-repeat-member");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    write_settings(&config_dir, tmp.path());
-    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
-
-    let _team = run_json(
-        &bin,
-        &[
-            "team",
-            "create",
-            "--project",
-            "ProjectAlpha",
-            "--team",
-            "Dev Team",
-            "--coordinator",
-            "architect",
-        ],
-    );
-    let _wg = run_json(
-        &bin,
-        &[
-            "workgroup",
-            "add",
-            "--project",
-            "ProjectAlpha",
-            "--team",
-            "Dev Team",
-            "--title",
-            "Build",
-        ],
-    );
-    let first = run_json(
-        &bin,
-        &[
-            "team",
-            "add-member",
-            "--project",
-            "ProjectAlpha",
-            "--workgroup",
-            "room-1-dev-team",
-            "--agent",
-            "dev-rust",
-        ],
-    );
-    assert_eq!(first["added"], true);
-
-    let replica_dir = project
-        .join(".ac")
-        .join("room-1-dev-team")
-        .join("__agent_dev-rust");
-    let config_path = replica_dir.join("config.json");
-
-    guarded_update(&config_path, |obj| {
+/// #1939 - seed tooling, custom keys and context through the guarded writer.
+fn seed_custom_replica_config(config_path: &Path) {
+    guarded_update(config_path, |obj| {
         obj.insert(
             "tooling".to_string(),
             serde_json::json!({
@@ -218,6 +169,99 @@ fn issue_1937_repeat_member_preserves_config() {
         );
         Ok(())
     });
+}
+
+fn assert_repeat_preserved_config(config_path: &Path, replica_dir: &Path) {
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(config_path).expect("read replica config"))
+            .expect("parse replica config");
+    assert_eq!(saved["identity"], "../../_agent_dev-rust");
+    assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
+    assert_eq!(saved["tooling"]["profile"], "B");
+    assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
+    assert_eq!(saved["tooling"]["selectionLocked"], true);
+    // #2816 (C3) - the repeat add-member migrates the state key through site 6.
+    let state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(replica_dir.join("config.state.no-git.json"))
+            .expect("read replica state file"),
+    )
+    .expect("parse replica state file");
+    assert_eq!(state["tooling"]["lastCodingAgent"], "claude");
+    assert!(saved["tooling"].get("lastCodingAgent").is_none());
+    assert_eq!(saved["customToolingKey"], "keep-me");
+    assert_eq!(saved["concurrentGuardMarker"], 4);
+    let context: Vec<&str> = saved["context"]
+        .as_array()
+        .expect("context array")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    assert!(context.contains(&"custom-notes.md"), "{context:?}");
+    assert!(
+        context.iter().any(|entry| entry.ends_with("/Role.md")),
+        "{context:?}"
+    );
+}
+
+fn assert_migration_journal_note(fixture_root: &Path, config_dir: &Path, config_path: &Path) {
+    // #2816 (C3) E9c - the migration's journal note is under the directory this
+    // fixture's own `AGENTSCOMMANDER_CONFIG_DIR` names, and nowhere else in the
+    // fixture's tree.
+    const JOURNAL_NAME: &str = "naming-migration.state.no-git.json";
+    fn journals_under(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read fixture dir") {
+            let path = entry.expect("fixture entry").path();
+            if path.is_dir() {
+                journals_under(&path, found);
+            } else if path.file_name().is_some_and(|name| name == JOURNAL_NAME) {
+                found.push(path);
+            }
+        }
+    }
+    let mut journals = Vec::new();
+    journals_under(fixture_root, &mut journals);
+    assert_eq!(journals, vec![config_dir.join(JOURNAL_NAME)]);
+
+    // The file alone proves nothing: every CLI start journals the instance
+    // families there. The C3 record is this replica's own scope and its note.
+    let journal: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(config_dir.join(JOURNAL_NAME)).expect("read journal"),
+    )
+    .expect("parse journal");
+    let scope = format!(
+        "config-state:{}",
+        std::fs::canonicalize(config_path)
+            .expect("canonical replica config")
+            .display()
+    );
+    let notes = journal["scopes"][&scope]["notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no `{scope}` scope with notes in {journal}"));
+    assert!(
+        notes
+            .iter()
+            .any(|note| note == "moved to the state file: lastCodingAgent"),
+        "{notes:?}"
+    );
+}
+
+/// #1939 - a repeated `team add-member` must merge into the existing replica
+/// config instead of replacing it: the protected pair, its flag, tooling
+/// history, custom context and unknown keys survive, including a config write
+/// that runs through the same guarded writer while the repeat is in flight.
+#[test]
+fn issue_1937_repeat_member_preserves_config() {
+    let (tmp, bin, config_dir, project, first) =
+        setup_room_with_dev_rust_member("cli-issue-1937-repeat-member");
+    assert_eq!(first["added"], true);
+
+    let replica_dir = project
+        .join(".ac")
+        .join("room-1-dev-team")
+        .join("__agent_dev-rust");
+    let config_path = replica_dir.join("config.json");
+
+    seed_custom_replica_config(&config_path);
 
     // Repeat the member add while this test process performs guarded writes
     // concurrently: the cross-process sidecar lock serializes them, and the
@@ -258,75 +302,9 @@ fn issue_1937_repeat_member_preserves_config() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let saved: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).expect("read replica config"))
-            .expect("parse replica config");
-    assert_eq!(saved["identity"], "../../_agent_dev-rust");
-    assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
-    assert_eq!(saved["tooling"]["profile"], "B");
-    assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
-    assert_eq!(saved["tooling"]["selectionLocked"], true);
-    // #2816 (C3) - the repeat add-member migrates the state key through site 6.
-    let state: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(replica_dir.join("config.state.no-git.json"))
-            .expect("read replica state file"),
-    )
-    .expect("parse replica state file");
-    assert_eq!(state["tooling"]["lastCodingAgent"], "claude");
-    assert!(saved["tooling"].get("lastCodingAgent").is_none());
-    assert_eq!(saved["customToolingKey"], "keep-me");
-    assert_eq!(saved["concurrentGuardMarker"], 4);
-    let context: Vec<&str> = saved["context"]
-        .as_array()
-        .expect("context array")
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
-    assert!(context.contains(&"custom-notes.md"), "{context:?}");
-    assert!(
-        context.iter().any(|entry| entry.ends_with("/Role.md")),
-        "{context:?}"
-    );
+    assert_repeat_preserved_config(&config_path, &replica_dir);
 
-    // #2816 (C3) E9c - the migration's journal note is under the directory this
-    // fixture's own `AGENTSCOMMANDER_CONFIG_DIR` names, and nowhere else in the
-    // fixture's tree.
-    const JOURNAL_NAME: &str = "naming-migration.state.no-git.json";
-    fn journals_under(dir: &Path, found: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("read fixture dir") {
-            let path = entry.expect("fixture entry").path();
-            if path.is_dir() {
-                journals_under(&path, found);
-            } else if path.file_name().is_some_and(|name| name == JOURNAL_NAME) {
-                found.push(path);
-            }
-        }
-    }
-    let mut journals = Vec::new();
-    journals_under(tmp.path(), &mut journals);
-    assert_eq!(journals, vec![config_dir.join(JOURNAL_NAME)]);
-
-    // The file alone proves nothing: every CLI start journals the instance
-    // families there. The C3 record is this replica's own scope and its note.
-    let journal: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(config_dir.join(JOURNAL_NAME)).expect("read journal"),
-    )
-    .expect("parse journal");
-    let scope = format!(
-        "config-state:{}",
-        std::fs::canonicalize(&config_path)
-            .expect("canonical replica config")
-            .display()
-    );
-    let notes = journal["scopes"][&scope]["notes"]
-        .as_array()
-        .unwrap_or_else(|| panic!("no `{scope}` scope with notes in {journal}"));
-    assert!(
-        notes
-            .iter()
-            .any(|note| note == "moved to the state file: lastCodingAgent"),
-        "{notes:?}"
-    );
+    assert_migration_journal_note(tmp.path(), &config_dir, &config_path);
 }
 
 // #1088: a live session whose name+cwd match a WG peer surfaces its context-usage
@@ -334,51 +312,8 @@ fn issue_1937_repeat_member_preserves_config() {
 // sessions.json on disk, no daemon), and peers without a matching reading omit it.
 #[test]
 fn list_peers_surfaces_context_percent_for_matching_live_session() {
-    let tmp = Tmp::new("cli-peer-context-percent");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    write_settings(&config_dir, tmp.path());
-    let project = project_with_agents(tmp.path(), &["architect", "dev-rust"]);
-
-    let _team = run_json(
-        &bin,
-        &[
-            "team",
-            "create",
-            "--project",
-            "ProjectAlpha",
-            "--team",
-            "Dev Team",
-            "--coordinator",
-            "architect",
-        ],
-    );
-    let _wg = run_json(
-        &bin,
-        &[
-            "workgroup",
-            "add",
-            "--project",
-            "ProjectAlpha",
-            "--team",
-            "Dev Team",
-            "--title",
-            "Build",
-        ],
-    );
-    let _added = run_json(
-        &bin,
-        &[
-            "team",
-            "add-member",
-            "--project",
-            "ProjectAlpha",
-            "--workgroup",
-            "room-1-dev-team",
-            "--agent",
-            "dev-rust",
-        ],
-    );
+    let (_tmp, bin, config_dir, project, _added) =
+        setup_room_with_dev_rust_member("cli-peer-context-percent");
 
     let replica = project
         .join(".ac")

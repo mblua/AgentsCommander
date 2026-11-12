@@ -58,7 +58,7 @@ pub use resolution::{
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -465,7 +465,7 @@ pub struct WatcherEngine {
 
 impl WatcherEngine {
     // Retained for unit-test callers; production uses new_with_activity_factory.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn new(
         backends: Arc<dyn WatcherBackendSource>,
         patterns: Arc<dyn WatcherPatternSource>,
@@ -575,10 +575,10 @@ impl WatcherEngine {
             log::debug!("[watchers] session {id} has no backend route yet; will resolve on read");
         }
         let replaced = {
-            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+            let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
             self.registered
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .insert(
                     id,
                     RegisteredSession {
@@ -603,10 +603,10 @@ impl WatcherEngine {
     /// internal consumer, if any, is retired after the engine guards are released.
     pub fn retire_session(&self, id: Uuid) {
         let retired = {
-            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+            let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
             self.registered
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&id)
         };
         if let Some(consumer) = retired.and_then(|session| session.activity) {
@@ -618,17 +618,17 @@ impl WatcherEngine {
     fn samples_activity(&self) -> bool {
         self.registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .values()
             .any(|session| session.activity.is_some())
     }
 
     // Retained for unit-test assertions; production does not query registration.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn is_session_registered(&self, id: Uuid) -> bool {
         self.registered
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .contains_key(&id)
     }
 
@@ -645,7 +645,7 @@ impl WatcherEngine {
             }
         }
 
-        let mut cache = self.compiled.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self.compiled.lock().unwrap_or_else(PoisonError::into_inner);
         cache.retain(|id, _| wanted.contains_key(id.as_str()));
 
         let mut out = HashMap::with_capacity(wanted.len());
@@ -692,8 +692,11 @@ impl WatcherEngine {
     /// Held under the same registration lock the tick uses, so the "creation requires
     /// registration" rule that stops a purged session from being resurrected still holds.
     fn publish_unwatched(&self, resolved: &HashMap<String, AgentResolution>) {
-        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
-        let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
+        let registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for (id, session) in registered.iter() {
             // #2879 - a session registered only for internal observation has no user view.
             let Some(agent_id) = &session.agent_id else {
@@ -825,7 +828,7 @@ impl WatcherEngine {
         compiled: &HashMap<String, Option<Arc<pattern::WatcherPattern>>>,
         at: chrono::DateTime<chrono::Utc>,
     ) -> (Option<WatcherMatchBatch>, bool, ActivityDelivery) {
-        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
         let Some(session) = registered.get_mut(&id) else {
             return (None, false, None);

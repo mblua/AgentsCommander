@@ -251,7 +251,7 @@ pub(crate) fn append_rail_diagnostic_to(
     Ok(())
 }
 
-/// ACK covers validation and dispatch, not file write/fsync. RUST_LOG must allow Debug.
+/// ACK covers validation and dispatch, not file write/fsync. `RUST_LOG` must allow Debug.
 #[tauri::command]
 pub fn append_rail_diagnostic(record: Option<serde_json::Value>) -> Result<(), String> {
     append_rail_diagnostic_to(record, log::logger())

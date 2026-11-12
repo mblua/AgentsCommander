@@ -1,11 +1,11 @@
 #![cfg(target_os = "windows")]
 //! Integration test for issue #129. Reproduces the PS-NonInteractive `&` direct-
-//! call failure mode and asserts that the fix (conditional AttachConsole) lets
+//! call failure mode and asserts that the fix (conditional `AttachConsole`) lets
 //! stdout flow through the inherited pipe.
 //!
 //! IMPORTANT: marked #[ignore] because the bug only reproduces in release mode
 //! (`windows_subsystem = "windows"` is gated on `not(debug_assertions)`). To run:
-//!     cargo test --release --test cli_powershell_capture -- --ignored
+//!     `cargo test --release --test cli_powershell_capture -- --ignored`
 //!
 //! CI coverage for shipped/testable release executable names lives in:
 //!     npm run build:prod
@@ -147,15 +147,14 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive() {
 
     let (_code, stdout, stderr) = run_ps(
         "powershell.exe",
-        &format!("list-peers --token {} --root '{}'", token, safe_root),
+        &format!("list-peers --token {token} --root '{safe_root}'"),
         &guard,
     )
     .expect("powershell.exe must be available on Windows CI/dev");
 
     assert!(
         !stdout.trim().is_empty(),
-        "stdout should contain the JSON payload (post-fix). stderr=[{}]",
-        stderr
+        "stdout should contain the JSON payload (post-fix). stderr=[{stderr}]"
     );
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout should parse as JSON");
@@ -176,13 +175,11 @@ fn send_help_outputs_under_powershell_noninteractive() {
 
     assert!(
         !stdout.trim().is_empty(),
-        "stdout should contain help text. stderr=[{}]",
-        stderr
+        "stdout should contain help text. stderr=[{stderr}]"
     );
     assert!(
         stdout.contains("--to") || stdout.contains("DELIVERY MODES"),
-        "help text missing expected content; got: {}",
-        stdout
+        "help text missing expected content; got: {stdout}"
     );
 }
 
@@ -220,7 +217,7 @@ fn list_peers_outputs_valid_json_under_pwsh_noninteractive() {
 
     let result = run_ps(
         "pwsh.exe",
-        &format!("list-peers --token {} --root '{}'", token, safe_root),
+        &format!("list-peers --token {token} --root '{safe_root}'"),
         &guard,
     );
     let (_code, stdout, _stderr) = match result {
@@ -292,8 +289,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() 
 
     assert!(
         !stdout.trim().is_empty(),
-        "stdout should contain the JSON payload via the Git Bash carrier. stderr=[{}]",
-        stderr
+        "stdout should contain the JSON payload via the Git Bash carrier. stderr=[{stderr}]"
     );
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout should parse as JSON");
@@ -301,8 +297,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() 
     assert_eq!(
         code, 0,
         "outer powershell.exe must exit 0 (bash.exe propagates the AC binary's \
-         $LASTEXITCODE through `; exit $LASTEXITCODE`); stderr=[{}]",
-        stderr
+         $LASTEXITCODE through `; exit $LASTEXITCODE`); stderr=[{stderr}]"
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
@@ -446,268 +441,318 @@ fn isolation_occurrences(tokens: &[String], pattern: &str) -> usize {
         .count()
 }
 
-#[test]
-fn issue_1867_isolation_source_contract() {
-    // Frozen per-file and per-function routes. A bypass cannot hide in another helper.
-    type Counts = &'static [(&'static str, usize)];
-    type Entry = (&'static str, &'static str, usize, Counts, Counts);
-    let inventory: &[Entry] = &[
-        (
-            "cli_agency_templates.rs",
-            include_str!("cli_agency_templates.rs"),
-            6,
-            &[
-                (
-                    "agency_templates_unknown_subcommand_exits_one_with_usage",
-                    1,
-                ),
-                ("agency_templates_update_prints_json_on_success_and_noop", 1),
-                ("agency_templates_status_missing_cache_returns_json", 1),
-                ("agency_templates_list_missing_cache_returns_empty_array", 1),
-                ("agency_templates_list_pretty_returns_cached_metadata", 1),
-                ("agency_templates_status_reports_locked_cache", 1),
-            ],
-            &[("Command::new(\"git\")", 1)],
-        ),
-        (
-            "cli_behavior_contract.rs",
-            concat!(
-                include_str!("cli_behavior_contract/main.rs"),
-                include_str!("cli_behavior_contract/public_commands.rs"),
+// Frozen per-file and per-function routes. A bypass cannot hide in another helper.
+type Counts = &'static [(&'static str, usize)];
+type Entry = (&'static str, &'static str, usize, Counts, Counts);
+static ISOLATION_INVENTORY: &[Entry] = &[
+    (
+        "cli_agency_templates.rs",
+        include_str!("cli_agency_templates.rs"),
+        6,
+        &[
+            (
+                "agency_templates_unknown_subcommand_exits_one_with_usage",
+                1,
             ),
-            3,
-            &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
-            &[],
+            ("agency_templates_update_prints_json_on_success_and_noop", 1),
+            ("agency_templates_status_missing_cache_returns_json", 1),
+            ("agency_templates_list_missing_cache_returns_empty_array", 1),
+            ("agency_templates_list_pretty_returns_cached_metadata", 1),
+            ("agency_templates_status_reports_locked_cache", 1),
+        ],
+        &[("Command::new(\"git\")", 1)],
+    ),
+    (
+        "cli_behavior_contract.rs",
+        concat!(
+            include_str!("cli_behavior_contract/main.rs"),
+            include_str!("cli_behavior_contract/public_commands.rs"),
         ),
-        (
-            "cli_close_session.rs",
-            include_str!("cli_close_session.rs"),
-            1,
-            &[("run_close_session_in_mode", 1)],
-            &[("Command::new(\"powershell.exe\")", 1)],
+        3,
+        &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
+        &[],
+    ),
+    (
+        "cli_close_session.rs",
+        include_str!("cli_close_session.rs"),
+        1,
+        &[("run_close_session_in_mode", 1)],
+        &[("Command::new(\"powershell.exe\")", 1)],
+    ),
+    (
+        "cli_create_agent_matrix.rs",
+        concat!(
+            include_str!("cli_create_agent_matrix/main.rs"),
+            include_str!("cli_create_agent_matrix/launch.rs"),
         ),
-        (
-            "cli_create_agent_matrix.rs",
-            concat!(
-                include_str!("cli_create_agent_matrix/main.rs"),
-                include_str!("cli_create_agent_matrix/launch.rs"),
+        18,
+        &[
+            (
+                "create_agent_matrix_success_prints_json_and_writes_layout",
+                1,
             ),
-            18,
-            &[
-                (
-                    "create_agent_matrix_success_prints_json_and_writes_layout",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_rejects_ambiguous_project_name_without_writing",
-                    1,
-                ),
-                ("create_agent_project_mode_requires_description", 1),
-                ("create_agent_rejects_parent_argument", 1),
-                ("create_agent_rejects_project_path_input_without_writing", 1),
-                (
-                    "create_agent_matrix_rejects_project_path_input_without_writing",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_success_writes_project_refresh_request",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_project_name_resolves_from_settings_not_cwd",
-                    1,
-                ),
-                ("create_agent_project_mode_delegates_to_matrix_creation", 1),
-                (
-                    "create_agent_matrix_local_template_writes_role_and_skills",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_invalid_template_exits_1_without_target_dir",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_from_cached_agency_template_seeds_role_without_skills",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_launch_reports_launched_when_app_confirms",
-                    1,
-                ),
-                ("create_agent_matrix_launch_rejection_is_reported", 1),
-                (
-                    "create_agent_matrix_whitespace_launch_command_warns_without_request",
-                    1,
-                ),
-                (
-                    "create_agent_matrix_empty_launch_request_warns_without_request",
-                    1,
-                ),
-                (
-                    "create_agent_project_mode_blank_launch_command_warns_without_request",
-                    1,
-                ),
-            ],
-            &[],
-        ),
-        (
-            "cli_harness.rs",
-            include_str!("cli_harness.rs"),
-            1,
-            &[("run", 1)],
-            &[],
-        ),
-        (
-            "cli_loop.rs",
-            include_str!("cli_loop.rs"),
-            1,
-            &[("run_output", 1)],
-            &[],
-        ),
-        (
-            "cli_project_registration.rs",
-            concat!(
-                include_str!("cli_project_registration/main.rs"),
-                include_str!("cli_project_registration/activation.rs"),
-                include_str!("cli_project_registration/catalog.rs"),
-                include_str!("cli_project_registration/p03.rs"),
-                include_str!("cli_project_registration/p05.rs"),
-                include_str!("cli_project_registration/registration.rs"),
-                include_str!("cli_project_registration/source_pins.rs"),
+            (
+                "create_agent_matrix_resolves_project_name_from_settings_for_unrelated_root",
+                1,
             ),
-            3,
-            &[("run_success", 1), ("run_json", 1), ("run_failure", 1)],
-            &[],
-        ),
-        (
-            "cli_raise_hand.rs",
-            include_str!("cli_raise_hand.rs"),
-            1,
-            &[("run_raise_hand_with_simulator", 1)],
-            &[("Command::new(\"powershell.exe\")", 1)],
-        ),
-        (
-            "cli_role_experiment.rs",
-            include_str!("cli_role_experiment/main.rs"),
-            2,
-            &[("run", 1), ("run_fake", 1)],
-            &[],
-        ),
-        (
-            "cli_task_logger.rs",
-            include_str!("cli_task_logger.rs"),
-            5,
-            &[
-                ("task_set_title_audit_line_reaches_file_sink", 1),
-                (
-                    "task_append_body_audit_line_reaches_file_sink_and_preserves_title",
-                    1,
-                ),
-                (
-                    "task_snapshot_write_replay_emit_real_audit_without_secrets",
-                    1,
-                ),
-                ("run_task_cli", 1),
-                (
-                    "task_set_body_subprocess_rejections_have_no_managed_writes",
-                    1,
-                ),
-            ],
-            &[],
-        ),
-        (
-            "cli_workgroup_team.rs",
-            concat!(
-                include_str!("cli_workgroup_team/main.rs"),
-                include_str!("cli_workgroup_team/workgroup.rs"),
-                include_str!("cli_workgroup_team/membership.rs"),
-                include_str!("cli_workgroup_team/team.rs"),
-                include_str!("cli_workgroup_team/scope.rs"),
-                include_str!("cli_workgroup_team/production.rs"),
-                include_str!("cli_workgroup_team/room.rs"),
-                include_str!("cli_workgroup_team/activity.rs"),
+            (
+                "create_agent_matrix_rejects_ambiguous_project_name_without_writing",
+                1,
             ),
-            11,
-            &[
-                ("run_json", 1),
-                ("run_activity_raw", 1),
-                ("run_json_machine", 1),
-                ("run_fail", 1),
-                ("run_fail_output", 1),
-                ("run_stdout", 1),
-                ("team_add_member_creates_replica_and_peer_is_reachable", 1),
-                ("issue_1937_repeat_member_preserves_config", 1),
-                (
-                    "list_peers_surfaces_context_percent_for_matching_live_session",
-                    1,
-                ),
-                (
-                    "workgroup_add_legacy_missing_team_still_bootstraps_with_warning",
-                    1,
-                ),
-                (
-                    "purge_room_and_purge_wg_produce_identical_outbox_messages",
-                    1,
-                ),
-            ],
-            &[("Command::new(\"git\")", 2), ("Command::new(\"cmd\")", 1)],
-        ),
-        (
-            "cli_ui_automation/main.rs",
-            concat!(
-                include_str!("cli_ui_automation/main.rs"),
-                include_str!("cli_ui_automation/pointer_and_query.rs"),
+            ("create_agent_project_mode_requires_description", 1),
+            ("create_agent_rejects_parent_argument", 1),
+            ("create_agent_rejects_project_path_input_without_writing", 1),
+            (
+                "create_agent_matrix_rejects_project_path_input_without_writing",
+                1,
             ),
-            4,
-            &[
-                ("run", 1),
-                ("run_with_env", 1),
-                ("run_without_draining_output_until_exit", 1),
-                ("reap_on_drop_kills_the_child_when_the_caller_panics", 1),
-            ],
-            &[],
+            (
+                "create_agent_matrix_success_writes_project_refresh_request",
+                1,
+            ),
+            (
+                "create_agent_matrix_project_name_resolves_from_settings_not_cwd",
+                1,
+            ),
+            ("create_agent_project_mode_delegates_to_matrix_creation", 1),
+            (
+                "create_agent_matrix_local_template_writes_role_and_skills",
+                1,
+            ),
+            (
+                "create_agent_matrix_invalid_template_exits_1_without_target_dir",
+                1,
+            ),
+            (
+                "create_agent_matrix_from_cached_agency_template_seeds_role_without_skills",
+                1,
+            ),
+            (
+                "create_agent_matrix_launch_reports_launched_when_app_confirms",
+                1,
+            ),
+            ("create_agent_matrix_launch_rejection_is_reported", 1),
+            (
+                "create_agent_matrix_whitespace_launch_command_warns_without_request",
+                1,
+            ),
+            (
+                "create_agent_matrix_empty_launch_request_warns_without_request",
+                1,
+            ),
+            (
+                "create_agent_project_mode_blank_launch_command_warns_without_request",
+                1,
+            ),
+        ],
+        &[],
+    ),
+    (
+        "cli_harness.rs",
+        include_str!("cli_harness.rs"),
+        1,
+        &[("run", 1)],
+        &[],
+    ),
+    (
+        "cli_loop.rs",
+        include_str!("cli_loop.rs"),
+        1,
+        &[("run_output", 1)],
+        &[],
+    ),
+    (
+        "cli_project_registration.rs",
+        concat!(
+            include_str!("cli_project_registration/main.rs"),
+            include_str!("cli_project_registration/activation.rs"),
+            include_str!("cli_project_registration/catalog.rs"),
+            include_str!("cli_project_registration/p03.rs"),
+            include_str!("cli_project_registration/p05.rs"),
+            include_str!("cli_project_registration/registration.rs"),
+            include_str!("cli_project_registration/source_pins.rs"),
         ),
-        (
-            "cli_window_placement.rs",
-            include_str!("cli_window_placement.rs"),
-            2,
-            &[("run", 1), ("run_with_env", 1)],
-            &[],
+        3,
+        &[("run_success", 1), ("run_json", 1), ("run_failure", 1)],
+        &[],
+    ),
+    (
+        "cli_raise_hand.rs",
+        include_str!("cli_raise_hand.rs"),
+        1,
+        &[("run_raise_hand_with_simulator", 1)],
+        &[("Command::new(\"powershell.exe\")", 1)],
+    ),
+    (
+        "cli_role_experiment.rs",
+        include_str!("cli_role_experiment/main.rs"),
+        2,
+        &[("run", 1), ("run_fake", 1)],
+        &[],
+    ),
+    (
+        "cli_task_logger.rs",
+        include_str!("cli_task_logger.rs"),
+        5,
+        &[
+            ("task_set_title_audit_line_reaches_file_sink", 1),
+            (
+                "task_append_body_audit_line_reaches_file_sink_and_preserves_title",
+                1,
+            ),
+            (
+                "task_snapshot_write_replay_emit_real_audit_without_secrets",
+                1,
+            ),
+            ("run_task_cli", 1),
+            (
+                "task_set_body_subprocess_rejections_have_no_managed_writes",
+                1,
+            ),
+        ],
+        &[],
+    ),
+    (
+        "cli_workgroup_team.rs",
+        concat!(
+            include_str!("cli_workgroup_team/main.rs"),
+            include_str!("cli_workgroup_team/workgroup.rs"),
+            include_str!("cli_workgroup_team/membership.rs"),
+            include_str!("cli_workgroup_team/team.rs"),
+            include_str!("cli_workgroup_team/scope.rs"),
+            include_str!("cli_workgroup_team/production.rs"),
+            include_str!("cli_workgroup_team/room.rs"),
+            include_str!("cli_workgroup_team/activity.rs"),
         ),
-        (
-            "terminal_snapshot_host.rs",
-            include_str!("terminal_snapshot_host.rs"),
-            2,
-            &[("run", 1), ("run_with_closed_stdout", 1)],
-            &[],
+        11,
+        &[
+            ("run_json", 1),
+            ("run_activity_raw", 1),
+            ("run_json_machine", 1),
+            ("run_fail", 1),
+            ("run_fail_output", 1),
+            ("run_stdout", 1),
+            ("team_add_member_creates_replica_and_peer_is_reachable", 1),
+            ("issue_1937_repeat_member_preserves_config", 1),
+            (
+                "list_peers_surfaces_context_percent_for_matching_live_session",
+                1,
+            ),
+            (
+                "workgroup_add_legacy_missing_team_still_bootstraps_with_warning",
+                1,
+            ),
+            (
+                "purge_room_and_purge_wg_produce_identical_outbox_messages",
+                1,
+            ),
+        ],
+        &[("Command::new(\"git\")", 2), ("Command::new(\"cmd\")", 1)],
+    ),
+    (
+        "cli_ui_automation/main.rs",
+        concat!(
+            include_str!("cli_ui_automation/main.rs"),
+            include_str!("cli_ui_automation/pointer_and_query.rs"),
         ),
-    ];
-    for &(file, source, count, bindings, exclusions) in inventory {
-        let tokens = isolation_tokens(source);
-        for forbidden in ["std::env::set_var", "std::env::remove_var", "BUILD_PROFILE"] {
-            assert_eq!(
-                isolation_occurrences(&tokens, forbidden),
-                0,
-                "{file}: {forbidden}"
-            );
+        4,
+        &[
+            ("run", 1),
+            ("run_with_env", 1),
+            ("run_without_draining_output_until_exit", 1),
+            ("reap_on_drop_kills_the_child_when_the_caller_panics", 1),
+        ],
+        &[],
+    ),
+    (
+        "cli_window_placement.rs",
+        include_str!("cli_window_placement.rs"),
+        2,
+        &[("run", 1), ("run_with_env", 1)],
+        &[],
+    ),
+    (
+        "terminal_snapshot_host.rs",
+        include_str!("terminal_snapshot_host.rs"),
+        2,
+        &[("run", 1), ("run_with_closed_stdout", 1)],
+        &[],
+    ),
+];
+
+fn isolation_path_helper(file: &str) -> &'static str {
+    match file {
+        "cli_agency_templates.rs"
+        | "cli_behavior_contract.rs"
+        | "cli_create_agent_matrix.rs"
+        | "cli_loop.rs"
+        | "cli_project_registration.rs"
+        | "cli_role_experiment.rs"
+        | "cli_workgroup_team.rs" => {
+            r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().expect("bin stem").to_string_lossy().to_string();
+                bin.parent().expect("bin parent").join(format!(".{}", stem))
+            }"#
         }
-        let helper = isolation_function(&tokens, "command_for_binary");
-        let config = if isolation_occurrences(&tokens, "fn config_dir_for(") == 1 {
-            "config_dir_for"
-        } else {
-            "config_dir_for_bin"
-        };
-        let env_remove = if file == "cli_behavior_contract.rs" || file == "cli_task_logger.rs" {
-            r#"command.env_remove("AC_MACHINE_OUTPUT");"#
-        } else {
-            ""
-        };
-        let expected = format!(
-            r#"fn command_for_binary(bin: &Path) -> Command {{
+        "cli_close_session.rs"
+        | "cli_raise_hand.rs"
+        | "cli_window_placement.rs"
+        | "terminal_snapshot_host.rs" => {
+            r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().expect("bin stem").to_string_lossy();
+                bin.parent().expect("bin parent").join(format!(".{stem}"))
+            }"#
+        }
+        "cli_harness.rs" => {
+            r#"fn config_dir_for(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().unwrap().to_string_lossy().to_string();
+                bin.parent().unwrap().join(format!(".{}", stem))
+            }"#
+        }
+        "cli_task_logger.rs" => {
+            r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().expect("bin has stem").to_string_lossy().to_string();
+                bin.parent().expect("bin parent").join(format!(".{}", stem))
+            }"#
+        }
+        "cli_ui_automation/main.rs" => {
+            r#"fn config_dir_for(bin: &Path) -> PathBuf {
+                let stem = bin.file_stem().unwrap().to_string_lossy();
+                bin.parent().unwrap().join(format!(".{stem}"))
+            }"#
+        }
+        _ => panic!("unrecognized isolation fixture: {file}"),
+    }
+}
+
+fn assert_isolation_fixture(
+    file: &str,
+    source: &str,
+    count: usize,
+    bindings: Counts,
+    exclusions: Counts,
+) {
+    let tokens = isolation_tokens(source);
+    for forbidden in ["std::env::set_var", "std::env::remove_var", "BUILD_PROFILE"] {
+        assert_eq!(
+            isolation_occurrences(&tokens, forbidden),
+            0,
+            "{file}: {forbidden}"
+        );
+    }
+    let helper = isolation_function(&tokens, "command_for_binary");
+    let config = if isolation_occurrences(&tokens, "fn config_dir_for(") == 1 {
+        "config_dir_for"
+    } else {
+        "config_dir_for_bin"
+    };
+    let env_remove = if file == "cli_behavior_contract.rs" || file == "cli_task_logger.rs" {
+        r#"command.env_remove("AC_MACHINE_OUTPUT");"#
+    } else {
+        ""
+    };
+    let expected = format!(
+        r#"fn command_for_binary(bin: &Path) -> Command {{
             let mut command = Command::new(bin);
             {env_remove}
             let stem = bin.file_stem().expect("bin stem").to_string_lossy();
@@ -716,100 +761,59 @@ fn issue_1867_isolation_source_contract() {
             }}
             command
         }}"#
-        );
+    );
+    assert_eq!(
+        helper,
+        isolation_tokens(&expected),
+        "{file}: suffix and override contract"
+    );
+    // Freeze the complete construction: counting parent/join calls alone lets
+    // a ../ prefix escape the fixture and share state between sibling tests.
+    let expected_path_helper = isolation_path_helper(file);
+    assert_eq!(
+        isolation_function(&tokens, config),
+        isolation_tokens(expected_path_helper),
+        "{file}: config path must stay inside its owned fixture"
+    );
+    assert_eq!(
+        isolation_occurrences(&tokens, "command_for_binary("),
+        count + 1,
+        "{file}: routes"
+    );
+    for &(name, calls) in bindings {
         assert_eq!(
-            helper,
-            isolation_tokens(&expected),
-            "{file}: suffix and override contract"
+            isolation_occurrences(isolation_function(&tokens, name), "command_for_binary("),
+            calls,
+            "{file}: {name}"
         );
-        // Freeze the complete construction: counting parent/join calls alone lets
-        // a ../ prefix escape the fixture and share state between sibling tests.
-        let expected_path_helper = match file {
-            "cli_agency_templates.rs"
-            | "cli_behavior_contract.rs"
-            | "cli_create_agent_matrix.rs"
-            | "cli_loop.rs"
-            | "cli_project_registration.rs"
-            | "cli_role_experiment.rs"
-            | "cli_workgroup_team.rs" => {
-                r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
-                let stem = bin.file_stem().expect("bin stem").to_string_lossy().to_string();
-                bin.parent().expect("bin parent").join(format!(".{}", stem))
-            }"#
-            }
-            "cli_close_session.rs"
-            | "cli_raise_hand.rs"
-            | "cli_window_placement.rs"
-            | "terminal_snapshot_host.rs" => {
-                r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
-                let stem = bin.file_stem().expect("bin stem").to_string_lossy();
-                bin.parent().expect("bin parent").join(format!(".{stem}"))
-            }"#
-            }
-            "cli_harness.rs" => {
-                r#"fn config_dir_for(bin: &Path) -> PathBuf {
-                let stem = bin.file_stem().unwrap().to_string_lossy().to_string();
-                bin.parent().unwrap().join(format!(".{}", stem))
-            }"#
-            }
-            "cli_task_logger.rs" => {
-                r#"fn config_dir_for_bin(bin: &Path) -> PathBuf {
-                let stem = bin.file_stem().expect("bin has stem").to_string_lossy().to_string();
-                bin.parent().expect("bin parent").join(format!(".{}", stem))
-            }"#
-            }
-            "cli_ui_automation/main.rs" => {
-                r#"fn config_dir_for(bin: &Path) -> PathBuf {
-                let stem = bin.file_stem().unwrap().to_string_lossy();
-                bin.parent().unwrap().join(format!(".{stem}"))
-            }"#
-            }
-            _ => panic!("unrecognized isolation fixture: {file}"),
-        };
-        assert_eq!(
-            isolation_function(&tokens, config),
-            isolation_tokens(expected_path_helper),
-            "{file}: config path must stay inside its owned fixture"
-        );
-        assert_eq!(
-            isolation_occurrences(&tokens, "command_for_binary("),
-            count + 1,
-            "{file}: routes"
-        );
-        for &(name, calls) in bindings {
-            assert_eq!(
-                isolation_occurrences(isolation_function(&tokens, name), "command_for_binary("),
-                calls,
-                "{file}: {name}"
-            );
-        }
-        assert_eq!(
-            isolation_occurrences(&tokens, "Command::new("),
-            1 + exclusions.iter().map(|(_, n)| n).sum::<usize>(),
-            "{file}: exclusions"
-        );
-        for &(command, calls) in exclusions {
-            assert_eq!(
-                isolation_occurrences(&tokens, command),
-                calls,
-                "{file}: {command}"
-            );
-        }
     }
-    let source = include_str!("cli_powershell_capture.rs");
-    let tokens = isolation_tokens(source);
     assert_eq!(
         isolation_occurrences(&tokens, "Command::new("),
+        1 + exclusions.iter().map(|(_, n)| n).sum::<usize>(),
+        "{file}: exclusions"
+    );
+    for &(command, calls) in exclusions {
+        assert_eq!(
+            isolation_occurrences(&tokens, command),
+            calls,
+            "{file}: {command}"
+        );
+    }
+}
+
+fn assert_powershell_builders(tokens: &[String]) {
+    assert_eq!(
+        isolation_occurrences(tokens, "Command::new("),
         5,
         "two builders and three probes"
     );
     assert_eq!(
-        isolation_occurrences(&tokens, ".env("),
+        isolation_occurrences(tokens, ".env("),
         2,
         "only the two builder overrides"
     );
-    let direct = isolation_function(&tokens, "ps_command");
-    let script = isolation_function(&tokens, "ps_script_command");
+    let direct = isolation_function(tokens, "ps_command");
+    let script = isolation_function(tokens, "ps_script_command");
     for (name, builder) in [("ps_command", direct), ("ps_script_command", script)] {
         assert_eq!(
             isolation_occurrences(builder, "guard: &TempConfigRoot"),
@@ -830,7 +834,7 @@ fn issue_1867_isolation_source_contract() {
             "{name}: only owned override"
         );
     }
-    let constructor = isolation_function(&tokens, "new");
+    let constructor = isolation_function(tokens, "new");
     assert_eq!(
         constructor,
         isolation_tokens(
@@ -845,15 +849,18 @@ fn issue_1867_isolation_source_contract() {
         "unique owned root construction"
     );
     assert_eq!(
-        isolation_function(&tokens, "drop"),
+        isolation_function(tokens, "drop"),
         isolation_tokens("fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }"),
         "owned cleanup"
     );
     assert_eq!(
-        isolation_function(&tokens, "path"),
+        isolation_function(tokens, "path"),
         isolation_tokens("fn path(&self) -> &Path { &self.path }"),
         "owned root accessor"
     );
+}
+
+fn assert_powershell_callers(tokens: &[String]) {
     for (function, call) in [
         ("run_ps", "ps_command(shell, args, guard)"),
         (
@@ -861,7 +868,7 @@ fn issue_1867_isolation_source_contract() {
             "ps_script_command(shell, script, guard)",
         ),
     ] {
-        let body = isolation_function(&tokens, function);
+        let body = isolation_function(tokens, function);
         assert_eq!(
             isolation_occurrences(body, "guard: &TempConfigRoot"),
             1,
@@ -877,7 +884,7 @@ fn issue_1867_isolation_source_contract() {
     for function in ["ps_command", "run_ps_script_with_exit_propagation"] {
         assert_eq!(
             isolation_occurrences(
-                isolation_function(&tokens, function),
+                isolation_function(tokens, function),
                 concat!(
                     r#"Command::new(shell).arg("-Help").stdout(Stdio::"#,
                     r#"null()).stderr(Stdio::null()).status().is_err()"#
@@ -895,7 +902,7 @@ fn issue_1867_isolation_source_contract() {
         "list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash",
     ];
     for name in ignored {
-        let body = isolation_function(&tokens, name);
+        let body = isolation_function(tokens, name);
         assert_eq!(
             isolation_occurrences(body, "let guard = TempConfigRoot::new();"),
             1,
@@ -909,7 +916,7 @@ fn issue_1867_isolation_source_contract() {
     }
     assert_eq!(
         isolation_occurrences(
-            isolation_function(&tokens, ignored[4]),
+            isolation_function(tokens, ignored[4]),
             concat!(
                 r#"Command::new("bash.exe").arg("--version").stdout(St"#,
                 r#"dio::null()).stderr(Stdio::null()).status().is_err()"#
@@ -920,9 +927,20 @@ fn issue_1867_isolation_source_contract() {
     );
     for forbidden in ["std::env::set_var", "std::env::remove_var", "BUILD_PROFILE"] {
         assert_eq!(
-            isolation_occurrences(&tokens, forbidden),
+            isolation_occurrences(tokens, forbidden),
             0,
             "PowerShell: {forbidden}"
         );
     }
+}
+
+#[test]
+fn issue_1867_isolation_source_contract() {
+    for &(file, source, count, bindings, exclusions) in ISOLATION_INVENTORY {
+        assert_isolation_fixture(file, source, count, bindings, exclusions);
+    }
+    let source = include_str!("cli_powershell_capture.rs");
+    let tokens = isolation_tokens(source);
+    assert_powershell_builders(&tokens);
+    assert_powershell_callers(&tokens);
 }

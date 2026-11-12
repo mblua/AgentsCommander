@@ -16,16 +16,15 @@ use super::settle::{
     resolve_wg_path_from_session_dirs, self_clear_gate_advance, SelfClearBoundary,
     SelfClearGateAction, SelfClearGateState,
 };
-use crate::config::settings::SettingsState;
+use crate::config::agent_command::{executable_basename, resolve_configured_agent_spawn_for_cwd};
 use crate::config::teams;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::session::maintenance::PendingSelfClear;
-use crate::session::manager::SessionManager;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 use uuid::Uuid;
 
 fn missing_switch_reservation(
@@ -34,10 +33,7 @@ fn missing_switch_reservation(
     flavor: &SelfHandoffFlavor,
     forgotten: bool,
 ) -> SelfHandoffOutcome {
-    log::warn!(
-        "[mailbox] switch driver missing legacy reservation for {}",
-        original_session_id
-    );
+    log::warn!("[mailbox] switch driver missing legacy reservation for {original_session_id}");
     SelfHandoffOutcome::Failed(SelfHandoffFailure {
         action: flavor.action,
         attempt: Uuid::new_v4(),
@@ -102,7 +98,7 @@ fn collect_replica_matches(
     // outer loop so ambiguity across projects is detected.
     if crate::config::entity_prefix::has_entity_prefix(target_local) {
         if let Some((wg_name, agent_short)) = target_local.split_once('/') {
-            let replica_dir = format!("__agent_{}", agent_short);
+            let replica_dir = format!("__agent_{agent_short}");
 
             let project_matches = |dir_name: &str| -> bool {
                 match target_project {
@@ -287,9 +283,9 @@ impl MailboxPoller {
 
     /// (#885) Write the purge response JSON and move the message to delivered/.
     /// Mirrors `handle_close_session`'s dual-write block (§224 A.6, G-IMPL-2).
-    pub(crate) async fn write_purge_response_and_deliver<R: tauri::Runtime>(
+    pub(crate) async fn write_purge_response_and_deliver<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         is_app_outbox: bool,
@@ -298,7 +294,7 @@ impl MailboxPoller {
         let json = match serde_json::to_string_pretty(response) {
             Ok(j) => j,
             Err(e) => {
-                log::warn!("[mailbox] Failed to serialize purge-wg response: {}", e);
+                log::warn!("[mailbox] Failed to serialize purge-wg response: {e}");
                 return self.move_to_delivered(app, path, msg).await;
             }
         };
@@ -311,13 +307,11 @@ impl MailboxPoller {
                     .map(|ac_dir| ac_dir.join("responses"));
                 if let Some(responses_dir) = outbox_relative_responses_dir {
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                    let response_path = responses_dir.join(format!("{}.json", rid));
+                    let response_path = responses_dir.join(format!("{rid}.json"));
                     if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                         log::warn!(
                             "[mailbox] Failed to write purge-wg response to outbox-relative path \
-                            {:?}: {}",
-                            response_path,
-                            e
+                            {response_path:?}: {e}"
                         );
                     }
                 }
@@ -328,11 +322,10 @@ impl MailboxPoller {
                     .join(crate::config::agent_local_dir_name())
                     .join("responses");
                 let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                let response_path = responses_dir.join(format!("{}.json", rid));
+                let response_path = responses_dir.join(format!("{rid}.json"));
                 if let Err(e) = mailbox_disk::write_mailbox_document(&response_path, &json) {
                     log::warn!(
-                        "[mailbox] Failed to write purge-wg response to resolved-sender path: {}",
-                        e
+                        "[mailbox] Failed to write purge-wg response to resolved-sender path: {e}"
                     );
                 }
             }
@@ -344,9 +337,9 @@ impl MailboxPoller {
     /// #617 - write the self-clear queue-ack response, then move the message to
     /// delivered/. Mirrors the close-session dual-write (self-contained copy; the
     /// landed close-session block is intentionally left untouched, blast radius 0).
-    pub(crate) async fn write_self_clear_response<R: tauri::Runtime>(
+    pub(crate) async fn write_self_clear_response<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         session_id: Uuid,
@@ -371,7 +364,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -383,7 +376,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -393,9 +386,9 @@ impl MailboxPoller {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn write_self_switch_response<R: tauri::Runtime>(
+    pub(crate) async fn write_self_switch_response<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         session_id: Uuid,
@@ -422,7 +415,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -433,7 +426,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -446,9 +439,9 @@ impl MailboxPoller {
     /// delivered/. `profile` serializes as JSON `null` when the session inherited its letter: the
     /// recipe pins nothing there, and reporting an invented `"A"` would be a lie about the pin.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn write_self_restart_response<R: tauri::Runtime>(
+    pub(crate) async fn write_self_restart_response<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         session_id: Uuid,
@@ -475,7 +468,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -486,7 +479,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -496,9 +489,9 @@ impl MailboxPoller {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn write_raise_hand_response<R: tauri::Runtime>(
+    pub(crate) async fn write_raise_hand_response<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         path: &std::path::Path,
         msg: &OutboxMessage,
         session_id: Uuid,
@@ -523,7 +516,7 @@ impl MailboxPoller {
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                         let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{}.json", rid)),
+                            &responses_dir.join(format!("{rid}.json")),
                             &json,
                         );
                     }
@@ -534,7 +527,7 @@ impl MailboxPoller {
                         .join("responses");
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
                     let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{}.json", rid)),
+                        &responses_dir.join(format!("{rid}.json")),
                         &json,
                     );
                 }
@@ -544,9 +537,9 @@ impl MailboxPoller {
     }
 
     /// App-facing adapter; callers place the entire adapter inside their observation deadline.
-    pub(crate) async fn close_session_attempt<R: tauri::Runtime>(
+    pub(crate) async fn close_session_attempt<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         sid: Uuid,
         force: bool,
         timeout_secs: u32,
@@ -555,16 +548,9 @@ impl MailboxPoller {
         #[cfg(test)]
         use super::teardown::TeardownOutcome;
         use super::teardown::{force_close, graceful_close};
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
+        let manager = app.sessions().read().await.clone();
         #[cfg(test)]
-        if app
-            .try_state::<crate::session::selection::SelectionCoordinator>()
-            .is_none()
-        {
+        if app.selection_opt().is_none() {
             if let Some(hooks) = &self.test_hooks {
                 hooks.destroy_calls.lock().unwrap().push(sid);
                 hooks
@@ -581,17 +567,11 @@ impl MailboxPoller {
                 Err(_) => TeardownOutcome::AlreadyGone,
             };
         }
-        let coordinator = app
-            .state::<crate::session::selection::SelectionCoordinator>()
-            .inner()
-            .clone();
+        let coordinator = app.selection().clone();
         if force {
             force_close(manager, coordinator, sid, accepted).await
         } else {
-            let pty = app
-                .state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>()
-                .inner()
-                .clone();
+            let pty = app.routes().clone();
             graceful_close(
                 manager,
                 coordinator,
@@ -600,7 +580,7 @@ impl MailboxPoller {
                 timeout_secs,
                 accepted,
                 Self::resolve_exit_command,
-                |id, bytes| crate::commands::pty::mark_successful_pty_write_busy(app, id, bytes),
+                |id, bytes| app.mark_successful_pty_write_busy(id, bytes),
             )
             .await
         }
@@ -612,7 +592,7 @@ impl MailboxPoller {
         let full_cmd = format!("{} {}", shell, shell_args.join(" "));
         let basenames: Vec<String> = full_cmd
             .split_whitespace()
-            .map(crate::commands::session::executable_basename)
+            .map(executable_basename)
             .collect();
 
         if basenames.iter().any(|b| b == "claude" || b == "aider") {
@@ -635,10 +615,10 @@ impl MailboxPoller {
     /// with §DR2-4 composition: `matches.push(...); break;` within a single
     /// `rp` iteration (FQN can only match one replica dir per project) while
     /// the outer loop continues so cross-project ambiguity is still detected.
-    pub(crate) async fn resolve_repo_path<R: tauri::Runtime>(
+    pub(crate) async fn resolve_repo_path<S: MailboxHost>(
         &self,
         agent_name: &str,
-        app: &tauri::AppHandle<R>,
+        app: &S,
     ) -> Option<String> {
         let (target_project, target_local) = crate::config::teams::split_project_prefix(agent_name);
         let is_qualified = target_project.is_some();
@@ -654,7 +634,7 @@ impl MailboxPoller {
             }
         };
 
-        let settings = app.state::<SettingsState>();
+        let settings = app.pty_settings();
         let (project_paths, archived) = {
             let cfg = settings.read().await;
             (
@@ -664,7 +644,7 @@ impl MailboxPoller {
         };
 
         // Loop 1: session CWDs
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
         drop(mgr);
@@ -737,9 +717,9 @@ impl MailboxPoller {
     /// Resolve a wake fallback completely without preparing directories or
     /// mutating recipient lifecycle state. The returned command is carried
     /// unchanged through capability preflight and the later spawn.
-    pub(crate) async fn resolve_wake_spawn_plan<R: tauri::Runtime>(
+    pub(crate) async fn resolve_wake_spawn_plan<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
     ) -> Result<ResolvedWakeSpawnPlan, String> {
         let resolved_command = self.resolve_agent_command(app, msg).await?;
@@ -769,9 +749,9 @@ impl MailboxPoller {
         };
         let (configured_spawn, resolved_agent_host_shell) =
             if let Some(agent_id) = resolved_command.agent_id.as_deref() {
-                let settings = app.state::<SettingsState>();
+                let settings = app.pty_settings();
                 let cfg = settings.read().await;
-                let spawn = crate::commands::session::resolve_configured_agent_spawn_for_cwd(
+                let spawn = resolve_configured_agent_spawn_for_cwd(
                     &cfg,
                     agent_id,
                     &cwd,
@@ -823,13 +803,13 @@ impl MailboxPoller {
 
     /// Resolve which agent CLI to spawn when `deliver_wake` needs a new
     /// persistent session for the destination agent.
-    pub(crate) async fn resolve_agent_command<R: tauri::Runtime>(
+    pub(crate) async fn resolve_agent_command<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
     ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
         let agents = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let cfg = settings.read().await;
             // #2716 (B3, option C) row 7: an unreadable agents layer is refused and
             // reported, never resolved against a list that is not the user's.
@@ -880,17 +860,17 @@ impl MailboxPoller {
     /// §4.4: peel optional `<project>:` prefix before splitting the local part.
     /// If the target is qualified, the returned candidate must also be in the
     /// same project (checked via derived FQN).
-    pub(crate) async fn resolve_wg_path_from_sessions<R: tauri::Runtime>(
+    pub(crate) async fn resolve_wg_path_from_sessions<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         agent_name: &str,
     ) -> Option<String> {
         let archived = {
-            let settings = app.state::<SettingsState>();
+            let settings = app.pty_settings();
             let cfg = settings.read().await;
             cfg.archived_project_paths.clone()
         };
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let session_mgr = app.sessions();
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_working_dirs().await;
         drop(mgr);

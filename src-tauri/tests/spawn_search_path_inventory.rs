@@ -122,6 +122,8 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
 // Batch #3503: recertified by the workspace source walk after merging main.
 // Extracted helpers add no constructor sites; all 99 classified rows still match.
+// #4016: recertified by the source walk; cli/stdout/tests.rs adds one TestOnly
+// child-runner constructor, for 100 classified rows.
 const INVENTORY: &[Row] = &[
     ("src-tauri/src/events/pty/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
@@ -185,11 +187,18 @@ const INVENTORY: &[Row] = &[
         &[(CoveredBy2589, 1)],
     ),
     (
+        "src-tauri/src/process/agent/owner/command_run.rs",
+        1,
+        0,
+        &[(CoveredBy2589, 1)],
+    ),
+    (
         "src-tauri/src/process/harness.rs",
         3,
         2,
         &[(WindowsOnly, 1)],
     ),
+    ("src-tauri/src/cli/stdout/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/cli/tests/startup_message_tests.rs",
         1,
@@ -210,15 +219,15 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/gitignore_layout.rs",
-        7,
+        9,
         0,
-        &[(TestOnly, 7)],
+        &[(TestOnly, 9)],
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/gitignore_rules.rs",
-        14,
+        13,
         0,
-        &[(TestOnly, 14)],
+        &[(TestOnly, 13)],
     ),
     (
         "src-tauri/src/commands/ac_discovery/tests/snapshot_null.rs",
@@ -449,6 +458,18 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/filesystem/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
+        "src-tauri/src/filesystem/context_history/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/context_history/store/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/loops/scheduler/tests/issue_2682.rs",
         1,
         0,
@@ -462,6 +483,12 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/phone/mailbox/tests/physical_cwd.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
+        "src-tauri/src/phone/mailbox/tests/project_refresh.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -549,43 +576,13 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/process/git/remote.rs", 1, 1, &[]),
     ("src-tauri/src/process/github.rs", 1, 1, &[]),
     (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/common_blocking.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
         "src-tauri/src/pty/terminal_snapshot/tests/acceptance/daemon_paths.rs",
         1,
         0,
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_cancellation.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/host_finalizer.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
-    (
-        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/panic_boundaries.rs",
+        "src-tauri/src/pty/terminal_snapshot/tests/acceptance/fixture.rs",
         1,
         0,
         &[(TestOnly, 1)],
@@ -676,7 +673,7 @@ fn constructor_count(body: &str) -> usize {
     NEEDLES.iter().map(|needle| occurrences(body, needle)).sum()
 }
 
-/// Every production point where AgentsCommander executes something either
+/// Every production point where `AgentsCommander` executes something either
 /// applies the #2589 effective search path or is classified exempt with one
 /// reason from a fixed vocabulary. For each scanned file the guard checks
 /// `total == covered + sum(exempt)`, so an added or removed site anywhere,

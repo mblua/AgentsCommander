@@ -44,7 +44,7 @@ pub(crate) async fn spec_path_is_link_or_reparse(path: &Path) -> Result<bool, St
         Ok(false)
     })
     .await
-    .map_err(|e| format!("Failed to inspect path link state: {}", e))?
+    .map_err(|e| format!("Failed to inspect path link state: {e}"))?
 }
 
 pub(crate) async fn create_spec_directory(path: &Path) -> io::Result<()> {
@@ -95,12 +95,12 @@ pub(crate) async fn visit_snapshot_contents(
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("Failed to read snapshot directory: {}", e)),
+        Err(e) => return Err(format!("Failed to read snapshot directory: {e}")),
     };
     while let Some(entry) = entries
         .next_entry()
         .await
-        .map_err(|e| format!("Failed to read snapshot entry: {}", e))?
+        .map_err(|e| format!("Failed to read snapshot entry: {e}"))?
     {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -118,13 +118,13 @@ pub(crate) async fn snapshot_file_metadata(
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("Failed to read snapshot directory: {}", e)),
+        Err(e) => return Err(format!("Failed to read snapshot directory: {e}")),
     };
     let mut files = Vec::new();
     while let Some(entry) = entries
         .next_entry()
         .await
-        .map_err(|e| format!("Failed to read snapshot entry: {}", e))?
+        .map_err(|e| format!("Failed to read snapshot entry: {e}"))?
     {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -133,7 +133,7 @@ pub(crate) async fn snapshot_file_metadata(
         let metadata = entry
             .metadata()
             .await
-            .map_err(|e| format!("Failed to read snapshot metadata: {}", e))?;
+            .map_err(|e| format!("Failed to read snapshot metadata: {e}"))?;
         files.push((path, metadata.len(), metadata.modified().ok()));
     }
     Ok(files)

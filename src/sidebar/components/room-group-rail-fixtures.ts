@@ -4,7 +4,7 @@ import { defaultGroupsConfig, exactGroupRegexForWorkgroup } from "../stores/work
 
 export function createRailProject(rooms: AcWorkgroup[]): ProjectState {
   return {
-    path: "C:\\Project",
+    path: String.raw`C:\Project`,
     folderName: "Project",
     workgroups: rooms,
     agents: [],

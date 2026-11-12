@@ -2,7 +2,7 @@ use super::*;
 
 use super::state::{
     active_project_candidates_for_owner, generation_key, guarded_state_write, read_raw_loop_state,
-    read_state_snapshot, retain_unarchived_candidates, unresolved_targets_in_project,
+    read_state_snapshot, retain_unarchived_candidates,
 };
 use crate::config::sessions_persistence;
 
@@ -50,7 +50,7 @@ fn project_with_loop(config: &LoopConfigToml) -> tempfile::TempDir {
 /// AC-17 fixture - the only app these writers need. They reach
 /// `append_loop_audit_once`, `write_loop_state_atomic` and
 /// `emit_transition`, and `emit_loop_change` uses the loop event port. Its
-/// AppHandle adapter emits without managed state, so none is required here.
+/// `AppHandle` adapter emits without managed state, so none is required here.
 fn audit_writer_app() -> tauri::App {
     crate::test_support::test_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

@@ -1,18 +1,15 @@
 use std::sync::atomic::Ordering;
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
-use tauri::{AppHandle, Manager, Runtime};
 use uuid::Uuid;
 
 use crate::config::sessions_persistence::persist_current_state_result;
-use crate::pty::manager::PtyManager;
 use crate::session::manager::{
     CommitDecision, CommitResult, LifecycleMutations, ManagerAggregateSnapshot,
     PendingCreateBinding, SessionManager,
 };
 use crate::session::session::SessionInfo;
-use crate::DetachedSessionsState;
 
 use super::admission::CoordinatorPhase;
 use super::authority::CommitCapability;
@@ -25,21 +22,21 @@ use super::replacement::{
     LifecycleEffectSlot, OwnedEffectState, OwnedLifecycleEntry, OwnedReplacementDescriptor,
     ReplacementOwner, ReplacementStage,
 };
-use super::{CoordinatorInner, LifecycleExecutor};
+use super::{CoordinatorInner, LifecycleExecutor, SelectionContext, SelectionHost};
 
-pub(crate) struct SelectionTransaction<R: Runtime> {
-    pub(super) app: AppHandle<R>,
+pub(crate) struct SelectionTransaction<C: SelectionContext> {
+    host: C::Host,
     pub(super) capability: CommitCapability,
     pub(super) lifecycle_entry: Option<(Arc<ReplacementOwner>, Uuid)>,
     pub(super) coordinator: Weak<CoordinatorInner>,
     pub(super) restore_nonce: Option<Uuid>,
-    executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<R>>>>,
+    executor: Option<Arc<dyn LifecycleExecutor<SelectionTransaction<C>>>>,
 }
 
-impl<R: Runtime> Clone for SelectionTransaction<R> {
+impl<C: SelectionContext> Clone for SelectionTransaction<C> {
     fn clone(&self) -> Self {
         Self {
-            app: self.app.clone(),
+            host: self.host.clone(),
             capability: self.capability.clone(),
             lifecycle_entry: self.lifecycle_entry.clone(),
             coordinator: self.coordinator.clone(),
@@ -49,10 +46,10 @@ impl<R: Runtime> Clone for SelectionTransaction<R> {
     }
 }
 
-impl<R: Runtime> SelectionTransaction<R> {
-    pub(super) fn new(app: AppHandle<R>, coordinator: Weak<CoordinatorInner>) -> Self {
+impl<C: SelectionContext> SelectionTransaction<C> {
+    pub(super) fn new_host(host: C::Host, coordinator: Weak<CoordinatorInner>) -> Self {
         Self {
-            app,
+            host,
             capability: CommitCapability {
                 _private: super::seal::Token,
             },
@@ -76,9 +73,9 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(app: AppHandle<R>) -> Self {
+    pub(crate) fn for_test_host(host: C::Host) -> Self {
         Self {
-            app,
+            host,
             capability: CommitCapability::for_test(),
             lifecycle_entry: None,
             coordinator: Weak::new(),
@@ -155,7 +152,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         }
     }
 
-    /// Only the actual ReuseLive return can certify this path. Restart/create
+    /// Only the actual `ReuseLive` return can certify this path. Restart/create
     /// paths never call this and still require their own reached-effect proof.
     pub(crate) fn observe_reuse_live_result(&self, result: &Result<SessionInfo, String>) {
         let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
@@ -275,7 +272,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         let manager = self.manager().await;
         let activity_owner = manager.activity_owner();
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let authorized = owner.state.lock().ok().is_some_and(|state| {
+        let authorized = owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == *nonce
                 && state.stage == ReplacementStage::Executing
                 && state.entry_create.as_ref().is_some_and(|create| {
@@ -378,7 +375,7 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) fn has_accepted_lifecycle_core(&self) -> bool {
         self.lifecycle_entry.as_ref().is_some_and(|(owner, nonce)| {
-            owner.state.lock().ok().is_some_and(|state| {
+            owner.state.lock().is_ok_and(|state| {
                 state.executor_nonce == *nonce && state.stage == ReplacementStage::Executing
             })
         })
@@ -457,16 +454,12 @@ impl<R: Runtime> SelectionTransaction<R> {
         }
     }
 
-    pub(crate) fn app(&self) -> &AppHandle<R> {
-        &self.app
+    pub(crate) fn host(&self) -> &C::Host {
+        &self.host
     }
 
     pub(crate) async fn manager(&self) -> SessionManager {
-        self.app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone()
+        self.host.sessions_required().read().await.clone()
     }
 
     /// Uses the caller's preallocated binding and the current selection turn.
@@ -526,16 +519,16 @@ impl<R: Runtime> SelectionTransaction<R> {
 
     pub(crate) fn runtime_snapshot(&self, session_id: Uuid) -> RuntimeSelectionSnapshot {
         let detached = self
-            .app
-            .state::<DetachedSessionsState>()
+            .host
+            .detached_required()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&session_id);
         let has_pty = self
-            .app
-            .state::<Arc<Mutex<PtyManager>>>()
+            .host
+            .pty_required()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_session(session_id);
         RuntimeSelectionSnapshot {
             session_id,
@@ -621,10 +614,7 @@ impl<R: Runtime> SelectionTransaction<R> {
         let manager = self.manager().await;
         if let Err(error) = persist_current_state_result(&manager).await {
             log::warn!(
-                "[selection] persistence failed source={} session={:?}: {}",
-                source,
-                session_id,
-                error
+                "[selection] persistence failed source={source} session={session_id:?}: {error}"
             );
         }
     }

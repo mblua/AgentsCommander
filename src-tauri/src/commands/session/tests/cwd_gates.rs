@@ -76,6 +76,12 @@ async fn create_session_inner_gate_blocks_unregistered_cwd() {
     );
     close_test_coordinator(&app).await;
 
+    assert_registered_root_passes_creation_gate(&temp).await;
+}
+
+async fn assert_registered_root_passes_creation_gate(temp: &tempfile::TempDir) {
+    use crate::config::sessions_persistence::CreationGateEnforcement;
+
     // Registered existing root with Enforce -> Ok and a row is created.
     let project_root = temp.path().join("project");
     let reg_cwd = temp
@@ -97,7 +103,7 @@ async fn create_session_inner_gate_blocks_unregistered_cwd() {
         backend2.clone(),
     )));
     let app2 = session_test_app(settings, Arc::clone(&session_mgr2), Arc::clone(&pty_mgr2));
-    let reg_cwd = reg_cwd.to_string();
+    let reg_cwd = reg_cwd.clone();
     let outcome = super::super::create_session_inner_impl(
         app2.handle(),
         &session_mgr2,
@@ -295,7 +301,7 @@ async fn restore_wake_gate_exceptions() {
 /// Test 16 (S5/N4): the Tauri `create_session` command with `cwd: None`
 /// resolves to the home dir and (in the test build, where the gate defaults
 /// to Skip) creates Ok. The production refusal of that default is covered by
-/// the pure-function predicate tests in sessions_persistence.
+/// the pure-function predicate tests in `sessions_persistence`.
 #[tokio::test]
 async fn create_session_command_without_cwd_falls_back_to_home() {
     // §1295 S5: the command resolves cwd:None to the home dir (gate Skip in

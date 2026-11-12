@@ -88,12 +88,12 @@ pub(super) fn lookup_idempotency_row(
     op_id: &str,
 ) -> Result<Option<IdempotencyRow>, rusqlite::Error> {
     conn.query_row(
-        r#"SELECT injection_id,request_fingerprint,sender_incarnation_fingerprint
+        r"SELECT injection_id,request_fingerprint,sender_incarnation_fingerprint
            FROM pty_input_operations WHERE sender_fqn=?1 AND op_id=?2
            UNION ALL
            SELECT injection_id,request_fingerprint,sender_incarnation_fingerprint
            FROM pty_input_tombstones WHERE sender_fqn=?1 AND op_id=?2
-           LIMIT 1"#,
+           LIMIT 1",
         params![sender, op_id],
         |row| {
             Ok(IdempotencyRow {
@@ -198,26 +198,26 @@ pub(super) fn load_pty_result(
     conn: &rusqlite::Connection,
     injection_id: &str,
 ) -> Result<Option<crate::phone::types::PtyInputResult>, MessageStoreError> {
-    const LIVE_QUERY: &str = r#"
+    const LIVE_QUERY: &str = r"
         SELECT version,injection_id,op_id,sender_fqn,status,payload_bytes,
                payload_sha256,source_plane,selected_session_id,selected_backend,
                issued_at,expires_at,queued_at,actuating_at,terminal_at,
                reason_detail,updated_at,reason_code,target_fqn
         FROM pty_input_operations WHERE injection_id=?1
-    "#;
+    ";
     if let Some(result) = conn
         .query_row(LIVE_QUERY, [injection_id], result_from_row)
         .optional()?
     {
         return Ok(Some(result));
     }
-    const TOMBSTONE_QUERY: &str = r#"
+    const TOMBSTONE_QUERY: &str = r"
         SELECT version,injection_id,op_id,sender_fqn,status,payload_bytes,
                payload_sha256,source_plane,selected_session_id,selected_backend,
                issued_at,expires_at,queued_at,actuating_at,terminal_at,
                reason_detail,terminal_at,reason_code,target_fqn
         FROM pty_input_tombstones WHERE injection_id=?1
-    "#;
+    ";
     Ok(conn
         .query_row(TOMBSTONE_QUERY, [injection_id], result_from_row)
         .optional()?)
@@ -259,14 +259,14 @@ pub(super) fn insert_pty_audit(
     at: &str,
 ) -> Result<(), rusqlite::Error> {
     let inserted = tx.execute(
-        r#"INSERT INTO pty_input_audit(
+        r"INSERT INTO pty_input_audit(
              event_id,injection_id,op_id,sender_fqn,target_fqn,version,
              payload_bytes,payload_sha256,source_plane,selected_session_id,
              selected_backend,status,reason_code,at
            ) SELECT ?1,injection_id,op_id,sender_fqn,target_fqn,version,
                     payload_bytes,payload_sha256,source_plane,selected_session_id,
                     selected_backend,?2,?3,?4
-             FROM pty_input_operations WHERE injection_id=?5"#,
+             FROM pty_input_operations WHERE injection_id=?5",
         params![
             uuid::Uuid::new_v4().to_string(),
             status,
@@ -286,7 +286,7 @@ pub(super) fn tombstone_matches(
     injection_id: &str,
 ) -> Result<bool, rusqlite::Error> {
     tx.query_row(
-        r#"SELECT EXISTS(
+        r"SELECT EXISTS(
              SELECT 1 FROM pty_input_operations operation
              JOIN pty_input_tombstones tombstone
                ON tombstone.injection_id = operation.injection_id
@@ -312,7 +312,7 @@ pub(super) fn tombstone_matches(
                AND tombstone.status=operation.status
                AND tombstone.reason_code IS operation.reason_code
                AND tombstone.reason_detail IS operation.reason_detail
-           )"#,
+           )",
         [injection_id],
         |row| row.get(0),
     )
@@ -366,19 +366,7 @@ pub(super) fn terminalize_in_transaction(
             if !tombstone_matches(&tx, injection_id)? {
                 return Err(MessageStoreError::StoreCorrupt);
             }
-            if let Err(error) = tx.commit() {
-                if let Some(state) = response_close {
-                    state.fail_closed();
-                }
-                return Err(error.into());
-            }
-            if let Some(state) = response_close {
-                state.settle_terminal(
-                    &response_row.0,
-                    &response_work_key("pty", &response_row.1, &response_row.2),
-                    std::time::Instant::now(),
-                );
-            }
+            commit_and_settle_terminal(tx, response_close, &response_row)?;
             response_persistence.completed = true;
             return Ok(());
         }
@@ -395,12 +383,12 @@ pub(super) fn terminalize_in_transaction(
     let reason_code = desired_reason_code;
     let reason_detail = desired_reason_detail;
     let changed = tx.execute(
-        r#"UPDATE pty_input_operations SET status=?1,terminal_at=?2,updated_at=?2,
+        r"UPDATE pty_input_operations SET status=?1,terminal_at=?2,updated_at=?2,
                payload=NULL,requested_agent_id=NULL,sender_identity_fingerprint=NULL,
                target_identity_fingerprint=NULL,authority_session_id=NULL,
                authority_client_id=NULL,authority_client_generation=NULL,
                lease_owner=NULL,lease_until=NULL,reason_code=?3,reason_detail=?4
-           WHERE injection_id=?5 AND status=?6"#,
+           WHERE injection_id=?5 AND status=?6",
         params![
             status,
             now,
@@ -418,6 +406,17 @@ pub(super) fn terminalize_in_transaction(
     if !tombstone_matches(&tx, injection_id)? {
         return Err(MessageStoreError::StoreCorrupt);
     }
+    commit_and_settle_terminal(tx, response_close, &response_row)?;
+    response_persistence.completed = true;
+    Ok(())
+}
+
+/// Commits the terminal transition; fails the response close closed on commit error.
+fn commit_and_settle_terminal(
+    tx: rusqlite::Transaction<'_>,
+    response_close: Option<&ResponseCloseState>,
+    response_row: &(String, String, String),
+) -> Result<(), MessageStoreError> {
     if let Err(error) = tx.commit() {
         if let Some(state) = response_close {
             state.fail_closed();
@@ -431,7 +430,6 @@ pub(super) fn terminalize_in_transaction(
             std::time::Instant::now(),
         );
     }
-    response_persistence.completed = true;
     Ok(())
 }
 
@@ -448,10 +446,10 @@ pub(super) fn insert_audit(
     at: &str,
 ) -> Result<(), rusqlite::Error> {
     tx.execute(
-        r#"
+        r"
         INSERT INTO message_audit(event_id, message_id, status, detail, at)
         VALUES(?1, ?2, ?3, ?4, ?5)
-        "#,
+        ",
         params![
             uuid::Uuid::new_v4().to_string(),
             message_id,
@@ -475,7 +473,7 @@ fn insert_pty_tombstone(
     injection_id: &str,
 ) -> Result<(), rusqlite::Error> {
     tx.execute(
-        r#"INSERT INTO pty_input_tombstones(
+        r"INSERT INTO pty_input_tombstones(
              injection_id,sender_fqn,target_fqn,op_id,nonce_sha256,
              request_fingerprint,confirmation_tag,sender_incarnation_fingerprint,
              version,payload_sha256,payload_bytes,source_plane,selected_session_id,
@@ -487,7 +485,7 @@ fn insert_pty_tombstone(
                     selected_backend,issued_at,expires_at,queued_at,actuating_at,
                     terminal_at,status,reason_code,reason_detail
              FROM pty_input_operations WHERE injection_id=?1
-           ON CONFLICT(injection_id) DO NOTHING"#,
+           ON CONFLICT(injection_id) DO NOTHING",
         [injection_id],
     )?;
     Ok(())

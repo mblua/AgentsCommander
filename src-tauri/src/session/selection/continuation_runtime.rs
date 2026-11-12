@@ -1,7 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, Runtime};
-
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{CommitDecision, CommitResult, LifecycleMutations, SessionManager};
 use crate::session::session::SessionInfo;
@@ -12,6 +10,7 @@ use super::replacement::{
     OwnedReplacementDescriptor, ReplacementCleanupAuthority, ReplacementStage,
 };
 use super::transaction::SelectionTransaction;
+use super::{SelectionContext, SelectionHost};
 
 #[cfg(test)]
 use super::replacement_fixture::{
@@ -21,9 +20,9 @@ use super::replacement_fixture::{
 impl OwnedReplacementContinuation {
     /// None is an internal retained outcome. It is never translated into a
     /// successful create or ordinary pending-create error/rollback.
-    pub(super) async fn commit_finalized<R: Runtime>(
+    pub(super) async fn commit_finalized<C: SelectionContext>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         decision: CommitDecision,
         cause: SelectionCause,
         mutations: LifecycleMutations,
@@ -33,11 +32,7 @@ impl OwnedReplacementContinuation {
         }
         let manager = transaction.manager().await;
         let activity_owner = manager.activity_owner();
-        let pty = transaction
-            .app()
-            .state::<Arc<Mutex<PtyManager>>>()
-            .inner()
-            .clone();
+        let pty = transaction.host().pty_required().clone();
         #[cfg(test)]
         if !self
             .fixture_reached(ReplacementFixtureCut::BeforeCommit)
@@ -46,17 +41,7 @@ impl OwnedReplacementContinuation {
             return None;
         }
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let launch = self.owner.state.lock().ok().and_then(|state| {
-            if state.executor_nonce != self.executor_nonce
-                || state.stage != ReplacementStage::PendingCreate
-            {
-                return None;
-            }
-            let progress = state.replacement.as_ref()?;
-            (progress.cleanup == ReplacementCleanupAuthority::Executor(self.executor_nonce))
-                .then(|| progress.launch.clone())
-                .flatten()
-        })?;
+        let launch = self.pending_commit_launch()?;
         let authorized = manager
             .with_current_carrier_snapshot(&permit, |current| {
                 let tracker = pty.try_lock().ok().map(|pty| pty.response_close_state());
@@ -204,9 +189,9 @@ impl OwnedReplacementContinuation {
         true
     }
 
-    async fn retire_previous<R: Runtime>(
+    async fn retire_previous<C: SelectionContext>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
     ) -> Option<bool> {
@@ -290,17 +275,7 @@ impl OwnedReplacementContinuation {
             })
             .await;
         drop(permit);
-        let activity = self
-            .owner
-            .state
-            .lock()
-            .ok()?
-            .replacement
-            .as_ref()?
-            .retirement_result
-            .as_ref()?
-            .activity
-            .clone();
+        let activity = self.retirement_activity()?;
         crate::config::activity_log::append_batch(&activity, &activity_owner);
         transaction
             .lifecycle_executor()
@@ -337,22 +312,13 @@ impl OwnedReplacementContinuation {
         Some(())
     }
 
-    pub(super) async fn complete_finalized_create<R: Runtime>(
+    pub(super) async fn complete_finalized_create<C: SelectionContext>(
         &self,
-        transaction: &SelectionTransaction<R>,
+        transaction: &SelectionTransaction<C>,
     ) -> Option<(SessionInfo, SessionSelection)> {
         let manager = transaction.manager().await;
-        let pty = transaction
-            .app()
-            .state::<Arc<Mutex<PtyManager>>>()
-            .inner()
-            .clone();
-        let settings = transaction
-            .app()
-            .state::<crate::config::settings::SettingsState>()
-            .read()
-            .await
-            .clone();
+        let pty = transaction.host().pty_required().clone();
+        let settings = transaction.host().settings_required().read().await.clone();
         let roots =
             crate::config::sessions_persistence::session_retention_project_paths(&settings).ok()?;
         if !self.apply_finalized_carry(&manager, &pty).await {
@@ -410,25 +376,7 @@ impl OwnedReplacementContinuation {
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let current = manager
             .with_current_carrier_snapshot(&permit, |current| {
-                if !self.publication_region_current(current, &pty)
-                    || !crate::config::sessions_persistence::finish_carrier_replacement(
-                        &permit,
-                        &carrier,
-                        self.owner.operation,
-                        previous,
-                        current,
-                    )
-                {
-                    return None;
-                }
-                let key = crate::config::sessions_persistence::current_protected_carrier(
-                    &permit, &carrier, current,
-                )?;
-                let row = current
-                    .rows
-                    .iter()
-                    .find(|row| row.id == key.session_id && row.token == key.token)?;
-                Some((SessionInfo::from(row), current.selection.clone(), key))
+                self.finish_current_replacement(&permit, &carrier, previous, current, &pty)
             })
             .await?;
         {
@@ -440,5 +388,67 @@ impl OwnedReplacementContinuation {
         }
         drop(permit);
         Some((current.0, current.1))
+    }
+
+    fn pending_commit_launch(&self) -> Option<super::replacement::OwnedLaunchReceipt> {
+        self.owner.state.lock().ok().and_then(|state| {
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::PendingCreate
+            {
+                return None;
+            }
+            let progress = state.replacement.as_ref()?;
+            (progress.cleanup == ReplacementCleanupAuthority::Executor(self.executor_nonce))
+                .then(|| progress.launch.clone())
+                .flatten()
+        })
+    }
+
+    fn retirement_activity(&self) -> Option<Vec<crate::config::activity_log::ActivityRecord>> {
+        Some(
+            self.owner
+                .state
+                .lock()
+                .ok()?
+                .replacement
+                .as_ref()?
+                .retirement_result
+                .as_ref()?
+                .activity
+                .clone(),
+        )
+    }
+
+    fn finish_current_replacement(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        carrier: &crate::config::sessions_persistence::PublishedCarrier,
+        previous: uuid::Uuid,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> Option<(
+        SessionInfo,
+        SessionSelection,
+        crate::config::sessions_persistence::PublishedCarrier,
+    )> {
+        if !self.publication_region_current(current, pty)
+            || !crate::config::sessions_persistence::finish_carrier_replacement(
+                permit,
+                carrier,
+                self.owner.operation,
+                previous,
+                current,
+            )
+        {
+            return None;
+        }
+        let key = crate::config::sessions_persistence::current_protected_carrier(
+            permit, carrier, current,
+        )?;
+        let row = current
+            .rows
+            .iter()
+            .find(|row| row.id == key.session_id && row.token == key.token)?;
+        Some((SessionInfo::from(row), current.selection.clone(), key))
     }
 }

@@ -24,14 +24,10 @@ impl Wake for ReleaseProbe {
     fn wake_by_ref(self: &Arc<Self>) {
         let frame = self.probe_rx.lock().unwrap().try_recv().ok();
         let closed = frame.is_some_and(|frame| match frame {
-            WsOutMsg::Text(text) => {
-                serde_json::from_str::<Value>(&text)
-                    .ok()
-                    .is_some_and(|frame| {
-                        frame["event"] == "agent_update_prompt_closed"
-                            && frame["payload"]["command"] == "claude"
-                    })
-            }
+            WsOutMsg::Text(text) => serde_json::from_str::<Value>(&text).is_ok_and(|frame| {
+                frame["event"] == "agent_update_prompt_closed"
+                    && frame["payload"]["command"] == "claude"
+            }),
             WsOutMsg::Binary(_) => false,
         });
         self.seen

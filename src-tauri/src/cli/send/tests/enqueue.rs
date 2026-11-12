@@ -97,15 +97,15 @@ fn confirm_delivery_watcher(outbox: std::path::PathBuf) -> std::thread::JoinHand
             if let Ok(entries) = std::fs::read_dir(&outbox) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                    if path.extension().and_then(std::ffi::OsStr::to_str) == Some("json") {
                         let id = path
                             .file_stem()
-                            .and_then(|s| s.to_str())
+                            .and_then(std::ffi::OsStr::to_str)
                             .unwrap_or_default()
                             .to_string();
                         let delivered = outbox.join("delivered");
                         let _ = std::fs::create_dir_all(&delivered);
-                        let _ = std::fs::write(delivered.join(format!("{}.json", id)), "{}");
+                        let _ = std::fs::write(delivered.join(format!("{id}.json")), "{}");
                         return;
                     }
                 }
@@ -321,7 +321,7 @@ fn outbox_json(outbox: &tempfile::TempDir) -> serde_json::Value {
     let entries: Vec<_> = std::fs::read_dir(outbox.path())
         .unwrap()
         .flatten()
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter(|e| e.path().extension().and_then(std::ffi::OsStr::to_str) == Some("json"))
         .collect();
     assert_eq!(entries.len(), 1, "expected exactly one outbox message file");
     serde_json::from_str(&std::fs::read_to_string(entries[0].path()).unwrap()).unwrap()

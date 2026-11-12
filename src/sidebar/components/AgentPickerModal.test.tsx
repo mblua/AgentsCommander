@@ -1013,7 +1013,7 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.targets")).toContain("3 live session(s)");
     // A replica with two live sessions is surfaced per-row.
     const rows = targets.querySelectorAll('[data-ac-role="row"]');
-    expect(rows.length).toBe(3);
+    expect(rows).toHaveLength(3);
     expect(targets.querySelector('[data-ac-live-sessions="2"]')).toBeTruthy();
 
     dispose();
@@ -2902,7 +2902,7 @@ describe("AgentPickerModal", () => {
       await settle();
 
       expect(mockSettingsApi.reorderCodingAgent).toHaveBeenCalledTimes(1);
-      expect(mockSettingsApi.get.mock.calls.length).toBe(fetchesBefore + 1);
+      expect(mockSettingsApi.get.mock.calls).toHaveLength(fetchesBefore + 1);
       expect(cardIds()).toEqual(["a", "b", "c", "d", "e"]);
       const error = target("agentPicker.moveError");
       expect(error.getAttribute("aria-live")).toBe("polite");

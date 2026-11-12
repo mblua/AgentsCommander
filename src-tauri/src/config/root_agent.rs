@@ -6,6 +6,7 @@ mod skill_files;
 mod skill_snapshots;
 
 pub use crate::config::ROOT_AGENT_DIR_NAME;
+use crate::filesystem::projects::entities::roles;
 #[cfg(test)]
 pub(crate) use context_snapshots::frozen_root_context_snapshots;
 #[cfg(test)]
@@ -24,12 +25,13 @@ use file_io::{
 };
 #[cfg(test)]
 use file_io::{create_default_skill_temp_file_with, publish_missing_default_skill_file_with};
+#[cfg(test)]
+use legacy_contexts::ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME;
 use legacy_contexts::{
     OLD_DEFERRED_MESSAGING_PARAGRAPH, OLD_ROOT_ROLE_MD, ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD,
     ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD, ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD,
     ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD, ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD,
-    ROOT_COORDINATION_MESSAGING_PARAGRAPH,
-    ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME, ROOT_ROLE_MD,
+    ROOT_COORDINATION_MESSAGING_PARAGRAPH, ROOT_ROLE_MD,
 };
 pub(crate) use provisioning::root_agent_path_requires_protection;
 #[cfg(test)]
@@ -58,7 +60,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 pub(crate) const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
 
@@ -66,13 +68,16 @@ pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
 /// Canonical Root context order. The selected file owns all instructional prose.
-const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", "Role.md"];
+const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", roles::ROLE_FILE_NAME];
 /// Frozen pre-979 default, kept for exact legacy recognition during migration.
-const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] =
-    &[CONTEXT_TOKEN_GLOBAL, "../Context.root-agent.md", "Role.md"];
+const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
+    CONTEXT_TOKEN_GLOBAL,
+    "../Context.root-agent.md",
+    roles::ROLE_FILE_NAME,
+];
 /// Older default, kept because it must still upgrade to the new default (and so
 /// gain the Root supplement) rather than degrade to a bare `["Role.md"]`.
-const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, "Role.md"];
+const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, roles::ROLE_FILE_NAME];
 const ROOT_AGENT_SKILLS_DIR: &str = "skills";
 const SKILL_MD_FILENAME: &str = "SKILL.md";
 /// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing
@@ -148,10 +153,8 @@ pub fn is_root_agent_target(target: &str) -> bool {
     target == ROOT_AGENT_SENDER
 }
 
-static OLD_ROOT_CONTEXT_WITH_COORDINATION_MD: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        concat!(
-            r#"---
+const OLD_ROOT_CONTEXT_WITH_COORDINATION_MD: &str = concat!(
+    r#"---
 name: 'agents-commander'
 description: 'Root coordinator for AgentsCommander sessions, workgroups, and agents.'
 type: agent
@@ -160,16 +163,16 @@ type: agent
 # Agents Commander
 
 You are the AgentsCommander Root Agent. You are the top-level coordinator for this "#,
-            r#"AgentsCommander binary.
+    r#"AgentsCommander binary.
 
 ## Responsibility
 
 Act as the top-level planning and oversight agent for sessions, workgroups, and agents available "#,
-            r#"to this AgentsCommander instance. Help the user inspect available work, plan "#,
-            r#"delegation, track status, and synthesize results. When direct peer "#,
-            r#"messaging is unavailable, say so plainly and ask the user to route "#,
-            r#"messages or wait for a future root messaging feature rather than "#,
-            r#"claiming sends were performed.
+    r#"to this AgentsCommander instance. Help the user inspect available work, plan "#,
+    r#"delegation, track status, and synthesize results. When direct peer "#,
+    r#"messaging is unavailable, say so plainly and ask the user to route "#,
+    r#"messages or wait for a future root messaging feature rather than "#,
+    r#"claiming sends were performed.
 
 ## State
 
@@ -181,33 +184,45 @@ Your own canonical state lives in this `ac-root-agent` directory:
 - `Role.md`
 
 You are not a workgroup replica and you do not have an origin Agent Matrix. Use this directory "#,
-            r#"for your own durable state.
+    r#"for your own durable state.
 
 ## Coordination
 
 Use the AgentsCommander CLI only for commands that are valid from this root-agent directory. "#,
-            r#"Follow the write restrictions in the common context "#,
-            r#"exactly.
+    r#"Follow the write restrictions in the common context "#,
+    r#"exactly.
 
-{ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME}
-"#
-        ),
-        ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME =
-            ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME
-    )
-});
+"#,
+    r#"You may "#,
+    r#"message "#,
+    r#"verified workgroup coordinator replicas only. Before sending, run `list-peers-lean` with "#,
+    r#"your `AGENTSCOMMANDER_*` credentials and use only the `name` values it returns. In "#,
+    r#"Root Agent sessions this list omits origin coordinators and non-coordinator replicas.
+
+Root messaging is file-based:
+
+1. Write the message to `messaging/` inside this `ac-root-agent` directory.
+2. Use a filename shaped like `YYYYMMDD-HHMMSS-root-to-<wgN>-<coordinator>-<slug>.md`.
+3. Send it with:
+
+```text
+"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "#,
+    r#""<AGENTSCOMMANDER_ROOT>" --to "<coordinator_name>" --send <filename> --mode wake
+```
+
+Never send to origin coordinators or non-coordinator specialist/member agents from this root "#,
+    r#"session.
+
+Coordinators may reply by sending to `agentscommander://root-agent`; their replies appear in "#,
+    r#"this session as standard file notifications."#,
+    "
+"
+);
 
 pub fn root_agent_dir() -> Result<String, String> {
-    static ROOT_DIR: OnceLock<String> = OnceLock::new();
-    if let Some(cached) = ROOT_DIR.get() {
-        return Ok(cached.clone());
-    }
-
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
-    let root_dir = display_path(&config_dir.join(ROOT_AGENT_DIR_NAME));
-    let _ = ROOT_DIR.set(root_dir.clone());
-    Ok(root_dir)
+    Ok(display_path(&config_dir.join(ROOT_AGENT_DIR_NAME)))
 }
 
 /// One WARN per path per process; `debug!` thereafter.

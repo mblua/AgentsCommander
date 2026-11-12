@@ -48,6 +48,7 @@ mod co_managed;
 mod create;
 mod destroy;
 mod lifecycle;
+mod preflight;
 mod restart;
 mod restart_resume;
 mod resume_args;
@@ -55,6 +56,17 @@ mod resume_probe;
 mod root_agent;
 pub(crate) mod selection_executor;
 mod telegram;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::fixture::{
+    FixtureReplacementInput, FixtureReplacementLease, FixtureReplacementResult,
+};
+pub use crate::session::create_contracts::CreateSelectionIntent;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::OwnedReplacementCreateRequest;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::OwnedReplacementCreateStep;
+#[cfg(test)]
+pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
 #[cfg(test)]
 use agent_command::coding_agent_descriptor;
 pub(crate) use agent_command::executable_basename;
@@ -92,6 +104,7 @@ pub(crate) use create::purge_session_side_state;
 #[cfg(test)]
 pub(crate) use create::register_session_samplers;
 use create::reset_substantive_input;
+#[cfg(test)]
 pub(crate) use create::resolve_configured_agent_spawn_for_cwd;
 pub(crate) use create::resolve_create_session_cwd;
 #[cfg(test)]
@@ -104,14 +117,13 @@ use create::try_acquire_create_publication_region;
 #[cfg(target_os = "windows")]
 use create::with_create_resource_region;
 #[cfg(test)]
+pub(crate) use create::CoordinatorCreateTicket;
+#[cfg(test)]
 #[cfg(target_os = "windows")]
 use create::CreateResourceAdmission;
-pub use create::CreateSelectionIntent;
 use create::InitialLastPrompt;
 #[cfg(test)]
 use create::OwnedCreateAdmission;
-pub(crate) use create::PtyTargetCreateStep;
-pub(crate) use create::{OwnedReplacementCreateRequest, OwnedReplacementCreateStep};
 pub(crate) use destroy::background_destroy_session_inner;
 use destroy::count_working_members;
 pub use destroy::destroy_session_inner;
@@ -134,6 +146,12 @@ use lifecycle::prepare_restore_lifecycle_authority;
 #[cfg(test)]
 pub(crate) use lifecycle::LifecycleAuthorityAdmission;
 pub(crate) use lifecycle::LifecycleEntryAuthority;
+pub(crate) use preflight::test_run::{
+    cancel_preflight_test_inner, describe_preflight_target_inner, get_preflight_test_inner,
+    list_preflight_test_targets_inner, start_preflight_test_inner, PreflightTargetDescription,
+    PreflightTestDeps, PreflightTestDraft, PreflightTestSnapshot, PreflightTestTarget,
+};
+pub(crate) use preflight::PreflightState;
 pub(crate) use restart::carry_communication_for_restart;
 use restart::effective_create_skip_auto_resume;
 #[cfg(test)]
@@ -205,53 +223,6 @@ pub(crate) mod coordinator_create_seam;
 /// deterministic instead of timing-dependent.
 #[cfg(test)]
 pub(crate) mod restart_reader_seam;
-
-/// Owns the original locks only across the admitted test create cut. These
-/// values never enter the retained operation record.
-#[cfg(test)]
-pub(crate) struct FixturePtyCutLease {
-    pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
-    pub(crate) target: String,
-    pub(crate) exact: crate::api::message_store::PtyInputTargetGuard,
-    pub(crate) stripe: crate::api::message_store::PtyInputStripeGuard,
-}
-
-#[cfg(test)]
-pub(crate) enum FixtureReplacementLease {
-    OrdinaryMoved(FixturePtyCutLease),
-    PtyCutShared(Arc<FixturePtyCutLease>),
-}
-
-#[cfg(test)]
-pub(crate) struct FixtureReplacementInput {
-    pub(crate) request: OwnedReplacementCreateRequest,
-    pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
-    pub(crate) lease: FixtureReplacementLease,
-}
-
-#[cfg(test)]
-pub(crate) struct FixtureReplacementResult {
-    pub(crate) outcome: Result<OwnedReplacementCreateStep, String>,
-    pub(crate) ordinary_lease: Option<FixturePtyCutLease>,
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for FixtureReplacementResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixtureReplacementResult")
-            .field("outcome", &self.outcome)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for FixtureReplacementInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixtureReplacementInput")
-            .field("continuation", &self.continuation)
-            .finish_non_exhaustive()
-    }
-}
 
 #[cfg(test)]
 pub(crate) async fn execute_inline_replacement_fixture<R: tauri::Runtime>(
@@ -399,10 +370,7 @@ pub async fn create_session(
         };
 
     log::info!(
-        "[session] FINAL resolved: shell={:?}, args={:?}, label={:?}",
-        shell,
-        shell_args,
-        agent_label
+        "[session] FINAL resolved: shell={shell:?}, args={shell_args:?}, label={agent_label:?}"
     );
 
     drop(cfg);
@@ -481,14 +449,14 @@ async fn publish_legacy_destroy_outcome<R: tauri::Runtime>(
         purge_session_side_state(transaction.app(), session_id);
         // #2232 phase 4 section 5: destroy releases **both** demands, which
         // cancels the reader and closes the session's `CaptureRegistry` entry.
-        crate::telegram::manager::release_all_reader_demands(transaction.app(), session_id).await;
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
     }
 
-    for row in committed.changed_rows.iter().filter(|row| {
-        Uuid::parse_str(&row.id)
-            .ok()
-            .is_some_and(|id| retained_marked.contains(&id))
-    }) {
+    for row in committed
+        .changed_rows
+        .iter()
+        .filter(|row| Uuid::parse_str(&row.id).is_ok_and(|id| retained_marked.contains(&id)))
+    {
         transaction.publish_created(row);
     }
     for session_id in &committed.cleared_raise_hand_ids {
@@ -598,8 +566,7 @@ pub async fn close_coordinator(
             let waiting = mgr
                 .get_session(*mid)
                 .await
-                .map(|s| s.waiting_for_input)
-                .unwrap_or(true);
+                .is_none_or(|s| s.waiting_for_input);
             member_states.push((true, waiting));
         }
         let working_count = count_working_members(&member_states);
@@ -623,7 +590,7 @@ pub async fn close_coordinator(
         let now = chrono::Utc::now();
         let newly = clocks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_manually_closed(&fqn, now);
         if newly {
             let _ = app.emit(
@@ -639,7 +606,7 @@ pub async fn close_coordinator(
         }
         let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
         if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
-            log::warn!("[manual-close] clocks save failed: {}", e);
+            log::warn!("[manual-close] clocks save failed: {e}");
         }
     }
 
@@ -855,7 +822,7 @@ pub async fn create_root_agent_session(
 }
 
 /// #1646 / #1647 - Resolves a blocking menu episode for a session.
-/// Clears the blocked menu in SessionManager and publishes the updated communication state.
+/// Clears the blocked menu in `SessionManager` and publishes the updated communication state.
 /// #1669 - the clear is persisted through the same atomic helper `scan_tick` uses,
 /// so a disk-reading CLI stops reporting `blockedMenu` as soon as the user
 /// resolves the menu. The scan loop cannot do this: `resolve_current_episode`
@@ -895,6 +862,76 @@ pub async fn get_last_agent_message(
     Ok(agent_config::read_last_agent_message_at(
         &session.working_directory,
     ))
+}
+
+fn preflight_deps(app: &AppHandle) -> Result<PreflightTestDeps, String> {
+    Ok(PreflightTestDeps {
+        settings: app.state::<SettingsState>().inner().clone(),
+        session_mgr: app
+            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+            .inner()
+            .clone(),
+        pty_mgr: app.state::<Arc<Mutex<PtyManager>>>().inner().clone(),
+        state: app
+            .try_state::<Arc<PreflightState>>()
+            .ok_or_else(|| "Preflight tests are unavailable.".to_string())?
+            .inner()
+            .clone(),
+    })
+}
+
+/// #3832 - the given folders of one agent that a preflight test can target.
+#[tauri::command]
+pub(crate) async fn list_preflight_test_targets(
+    app: AppHandle,
+    agent_id: String,
+    replica_paths: Vec<String>,
+) -> Result<Vec<PreflightTestTarget>, String> {
+    let deps = preflight_deps(&app)?;
+    list_preflight_test_targets_inner(&deps, agent_id, replica_paths).await
+}
+
+/// #3516 - the saved preflight chain of a stopped agent folder; #3832 optional draft.
+#[tauri::command]
+pub(crate) async fn describe_preflight_target(
+    app: AppHandle,
+    agent_id: String,
+    profile_letter: Option<String>,
+    replica_path: String,
+    draft: Option<PreflightTestDraft>,
+) -> Result<PreflightTargetDescription, String> {
+    let deps = preflight_deps(&app)?;
+    describe_preflight_target_inner(&deps, agent_id, profile_letter, replica_path, draft).await
+}
+
+/// #3516 - starts a preflight test run; returns its id.
+#[tauri::command]
+pub(crate) async fn start_preflight_test(
+    app: AppHandle,
+    agent_id: String,
+    profile_letter: Option<String>,
+    replica_path: String,
+    settings_revision: String,
+    draft: Option<PreflightTestDraft>,
+) -> Result<String, String> {
+    let (d, revision) = (preflight_deps(&app)?, settings_revision);
+    start_preflight_test_inner(d, agent_id, profile_letter, replica_path, revision, draft).await
+}
+
+#[tauri::command]
+pub(crate) fn get_preflight_test(
+    state: State<'_, Arc<PreflightState>>,
+    run_id: String,
+) -> Result<PreflightTestSnapshot, String> {
+    get_preflight_test_inner(&state, &run_id)
+}
+
+#[tauri::command]
+pub(crate) fn cancel_preflight_test(
+    state: State<'_, Arc<PreflightState>>,
+    run_id: String,
+) -> Result<PreflightTestSnapshot, String> {
+    cancel_preflight_test_inner(&state, &run_id)
 }
 
 #[cfg(test)]

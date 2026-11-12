@@ -6,6 +6,8 @@ use crate::config::settings::AppSettings;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 
+pub use super::wire::{ScopeFault, ScopeFaultCode};
+
 use super::wire::{
     AssignmentMode, ConflictDecision, ProfileAssignmentScope, ProfileAssignmentTarget, SavedPair,
     SelectionState,
@@ -17,28 +19,6 @@ pub(crate) struct ProfileCandidate {
     pub(crate) target: ProfileAssignmentTarget,
     pub(crate) matrix_dir: PathBuf,
     pub(crate) expected: Option<crate::config::coding_agent_profiles::ReplicaSelectionExpectation>,
-}
-
-/// #2557 - one replica or folder the scope walk could not count, and why.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScopeFault {
-    pub code: ScopeFaultCode,
-    pub replica_name: String,
-    pub replica_path: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ScopeFaultCode {
-    ConfigUnreadable,
-    ConfigNotJson,
-    ConfigNotObject,
-    IdentityMissing,
-    IdentityMismatch,
-    LocationInvalid,
-    PathUnreadable,
-    FolderUnreadable,
 }
 
 impl ScopeFault {
@@ -133,7 +113,7 @@ pub(crate) fn validate_profile_assignment_request(
         .iter()
         .any(|agent| agent.id == coding_agent_id)
     {
-        return Err(format!("Agent '{}' is not configured", coding_agent_id));
+        return Err(format!("Agent '{coding_agent_id}' is not configured"));
     }
     normalize_profile_letter_for_assignment(profile)?;
     Ok(())
@@ -261,16 +241,14 @@ pub(crate) fn validate_selection_anchor(
     Ok((validated.launch_path, validated.origin_matrix_dir))
 }
 
-pub(crate) fn enumerate_profile_assignment_targets(
+fn collect_scope_candidate_dirs(
     settings: &AppSettings,
-    target_replica_path: &Path,
     scope: &ProfileAssignmentScope,
-    sessions: &[SessionInfo],
-) -> Result<ProfileTargetEnumeration, String> {
-    let (anchor_dir, anchor_matrix_dir) = validate_selection_anchor(settings, target_replica_path)?;
+    anchor_dir: &Path,
+) -> Result<CandidateDirs, String> {
     let mut candidate_dirs = CandidateDirs::new();
     match scope {
-        ProfileAssignmentScope::Replica => candidate_dirs.dirs.push(anchor_dir.clone()),
+        ProfileAssignmentScope::Replica => candidate_dirs.dirs.push(anchor_dir.to_path_buf()),
         ProfileAssignmentScope::Workgroup => {
             let room_dir = anchor_dir
                 .parent()
@@ -283,6 +261,17 @@ pub(crate) fn enumerate_profile_assignment_targets(
             }
         }
     }
+    Ok(candidate_dirs)
+}
+
+pub(crate) fn enumerate_profile_assignment_targets(
+    settings: &AppSettings,
+    target_replica_path: &Path,
+    scope: &ProfileAssignmentScope,
+    sessions: &[SessionInfo],
+) -> Result<ProfileTargetEnumeration, String> {
+    let (anchor_dir, anchor_matrix_dir) = validate_selection_anchor(settings, target_replica_path)?;
+    let candidate_dirs = collect_scope_candidate_dirs(settings, scope, &anchor_dir)?;
     let mut warnings = candidate_dirs.warnings;
     let mut scope_faults = candidate_dirs.faults;
     let mut counts_complete = candidate_dirs.complete;
@@ -417,15 +406,15 @@ pub(crate) fn canonical_real_dir(path: &Path, label: &str) -> Result<PathBuf, St
 pub(crate) fn validate_wg_replica_path(path: &Path) -> Result<(), String> {
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !name.starts_with("__agent_") {
         return Err(format!("Target '{}' is not a Room replica", path.display()));
     }
     let wg_name = path
         .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
@@ -490,12 +479,12 @@ pub(crate) fn build_profile_assignment_target(
     let wg_dir = replica_dir.parent().unwrap_or_else(|| Path::new(""));
     let workgroup_name = wg_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("")
         .to_string();
     let replica_name = replica_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))
         .unwrap_or("")
         .to_string();

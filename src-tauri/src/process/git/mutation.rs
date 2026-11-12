@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Output;
 use std::time::Duration;
 
-const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_mins(10);
 const GIT_RESET_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -94,7 +94,7 @@ fn clone_command(url: &str, target: &Path) -> tokio::process::Command {
         .arg(target.as_os_str());
     cmd.kill_on_drop(true);
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000);
+    cmd.creation_flags(0x0800_0000);
     cmd
 }
 
@@ -105,7 +105,7 @@ fn reset_command(target: &Path) -> tokio::process::Command {
     cmd.args(["reset"]).current_dir(target);
     cmd.kill_on_drop(true);
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000);
+    cmd.creation_flags(0x0800_0000);
     cmd
 }
 
@@ -120,7 +120,7 @@ fn workgroup_status_command(path: &Path) -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
+        cmd.creation_flags(0x0800_0000);
     }
     cmd
 }
@@ -136,7 +136,7 @@ fn workgroup_unpushed_command(path: &Path) -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
+        cmd.creation_flags(0x0800_0000);
     }
     cmd
 }

@@ -621,8 +621,7 @@ fn materialize_root_context_never_consumes_a_ac_ancestor_global_template() {
         assert_eq!(
             content.matches(heading).count(),
             0,
-            "removed Root block {} must stay absent",
-            heading
+            "removed Root block {heading} must stay absent"
         );
     }
     assert_contains_canonical_path(&content, &root);
@@ -675,7 +674,7 @@ fn sweep_removes_stale_keeps_fresh_and_non_cache() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir = tmp.path();
 
-    let old = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60); // 40d
+    let old = SystemTime::now() - Duration::from_hours(960); // 40d
     let mk = |name: &str, backdate: bool| {
         let p = dir.join(name);
         std::fs::write(&p, "x").unwrap();
@@ -693,11 +692,7 @@ fn sweep_removes_stale_keeps_fresh_and_non_cache() {
     let other_md = mk("notes.md", true); // not a context prefix
     let other_txt = mk("replica-context-555.txt", true); // wrong extension
 
-    let removed = sweep_context_cache_dir(
-        dir,
-        SystemTime::now(),
-        Duration::from_secs(30 * 24 * 60 * 60),
-    );
+    let removed = sweep_context_cache_dir(dir, SystemTime::now(), Duration::from_hours(720));
 
     assert_eq!(removed, 3, "the three stale generated files are removed");
     assert!(!stale_replica.exists());
@@ -727,7 +722,7 @@ fn sweep_keeps_file_with_future_mtime() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let p = tmp.path().join("replica-context-future.md");
     std::fs::write(&p, "x").unwrap();
-    let future = SystemTime::now() + Duration::from_secs(10 * 24 * 60 * 60);
+    let future = SystemTime::now() + Duration::from_hours(240);
     std::fs::File::options()
         .write(true)
         .open(&p)

@@ -140,7 +140,7 @@ impl SessionManager {
     pub async fn set_is_root_agent(&self, id: Uuid, value: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_is_root_agent_with_carrier_permit(&carrier_permit, id, value)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -219,7 +219,7 @@ impl SessionManager {
         self.get_session(id).await.map(|s| s.shell)
     }
 
-    /// Return the working_directory iff the session exists AND is a coordinator.
+    /// Return the `working_directory` iff the session exists AND is a coordinator.
     /// Cheap (no full Session clone) for the user-message hot path. (#552)
     pub async fn coordinator_cwd(&self, id: Uuid) -> Option<String> {
         let state = self.state.read().await;
@@ -233,7 +233,7 @@ impl SessionManager {
 
     /// (#552) AGENT-OWNED sessions only, paired with their auto-close team key
     /// `<project>:<wg>` (the agent FQN minus the trailing `/agent`). Ad-hoc user
-    /// shells (no agent_id, not a coordinator) are excluded so they are never
+    /// shells (no `agent_id`, not a coordinator) are excluded so they are never
     /// auto-closed. Sessions whose cwd does not yield a `/`-bearing FQN are skipped.
     pub async fn agent_team_members(&self) -> Vec<(Uuid, String)> {
         let state = self.state.read().await;
@@ -258,7 +258,7 @@ impl SessionManager {
     }
 
     /// (#552 auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
-    /// coordinator working_directory) for every coordinator session record. The
+    /// coordinator `working_directory`) for every coordinator session record. The
     /// auto-close task snapshots this BEFORE destroying so it can set the
     /// "auto-closed" marker on the correct coordinator row: the FQN keys the
     /// store, the cwd is the event `replicaPath`. One coordinator per team; on
@@ -310,7 +310,7 @@ impl SessionManager {
         out
     }
 
-    /// Per-session view for the `GitWatcher` fan-out. Returns (session_id, repos, gen).
+    /// Per-session view for the `GitWatcher` fan-out. Returns (`session_id`, repos, gen).
     /// The generation snapshot lets the watcher call `set_git_repos_if_gen` for its
     /// write, skipping the write+emit if a refresh landed during detection.
     pub async fn get_sessions_repos(&self) -> Vec<(Uuid, Vec<SessionRepo>, u64)> {
@@ -323,7 +323,7 @@ impl SessionManager {
             .collect()
     }
 
-    /// (session_id, working_directory) view for callers that only need the CWD
+    /// (`session_id`, `working_directory`) view for callers that only need the CWD
     /// (e.g. mailbox outbox scanning, agent-name resolution).
     pub async fn get_sessions_working_dirs(&self) -> Vec<(Uuid, String)> {
         let state = self.state.read().await;
@@ -332,6 +332,19 @@ impl SessionManager {
             .iter()
             .filter(|(id, _)| !state.pending_create.contains_key(id))
             .map(|(id, s)| (*id, s.working_directory.clone()))
+            .collect()
+    }
+
+    /// #3516 - preflight-test exclusion only: the working directory of every non-`Exited`
+    /// row in `order`, pending creates included (a launch pre-creates its row as pending).
+    pub async fn working_dirs_including_pending(&self) -> Vec<String> {
+        let state = self.state.read().await;
+        state
+            .order
+            .iter()
+            .filter_map(|id| state.sessions.get(id))
+            .filter(|session| !matches!(session.status, SessionStatus::Exited(_)))
+            .map(|session| session.working_directory.clone())
             .collect()
     }
 
@@ -527,5 +540,88 @@ impl SessionManager {
             pending_ids: state.pending_create.keys().copied().collect(),
             selection: state.selection.clone(),
         }
+    }
+}
+
+/// #3532 - the launch facts context history reads for one session, copied under
+/// one manager read. `None` in a batch means absent or still pending create.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HistoryLaunchFact {
+    pub(crate) id: Uuid,
+    pub(crate) working_directory: String,
+    pub(crate) status: SessionStatus,
+    pub(crate) is_root_agent: bool,
+    pub(crate) shell: String,
+    pub(crate) effective_shell_args: Option<Vec<String>>,
+}
+
+impl HistoryLaunchFact {
+    pub(crate) fn exited(&self) -> bool {
+        matches!(self.status, SessionStatus::Exited(_))
+    }
+}
+
+/// Largest batch of [`SessionManager::history_launch_facts`].
+pub(crate) const HISTORY_LAUNCH_BATCH_MAX: usize = 100;
+/// Largest request of [`SessionManager::history_live_ids`].
+pub(crate) const HISTORY_LIVE_IDS_MAX: usize = 4_096;
+
+fn unique_ids(ids: &[Uuid], max: usize) -> bool {
+    ids.len() <= max && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len()
+}
+
+impl SessionManager {
+    /// Facts of 1..=100 unique ids, in request order, under one read; `None`
+    /// for an absent or pending session. An invalid request is refused before
+    /// the lock. No IO and no `SessionInfo`.
+    pub(crate) async fn history_launch_facts(
+        &self,
+        ids: &[Uuid],
+    ) -> Option<Vec<Option<HistoryLaunchFact>>> {
+        if ids.is_empty() || !unique_ids(ids, HISTORY_LAUNCH_BATCH_MAX) {
+            return None;
+        }
+        let state = self.state.read().await;
+        let fact = |id: &Uuid| {
+            let session = state.sessions.get(id)?;
+            (!state.pending_create.contains_key(id)).then(|| HistoryLaunchFact {
+                id: *id,
+                working_directory: session.working_directory.clone(),
+                status: session.status.clone(),
+                is_root_agent: session.is_root_agent,
+                shell: session.shell.clone(),
+                effective_shell_args: session.effective_shell_args.clone(),
+            })
+        };
+        Some(ids.iter().map(fact).collect())
+    }
+
+    /// The ids among 0..=4096 unique `ids` that are present, visible and not
+    /// exited, under one read. An invalid request is refused before the lock.
+    pub(crate) async fn history_live_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Option<std::collections::HashSet<Uuid>> {
+        if !unique_ids(ids, HISTORY_LIVE_IDS_MAX) {
+            return None;
+        }
+        if ids.is_empty() {
+            return Some(std::collections::HashSet::new());
+        }
+        let state = self.state.read().await;
+        let live = |id: &&Uuid| {
+            !state.pending_create.contains_key(id)
+                && state
+                    .sessions
+                    .get(id)
+                    .is_some_and(|session| !matches!(session.status, SessionStatus::Exited(_)))
+        };
+        Some(ids.iter().filter(live).copied().collect())
+    }
+
+    /// #3532 test seam: finish a pending create as the commit path would.
+    #[cfg(test)]
+    pub(crate) async fn finish_pending_create_for_test(&self, id: Uuid) {
+        self.state.write().await.pending_create.remove(&id);
     }
 }

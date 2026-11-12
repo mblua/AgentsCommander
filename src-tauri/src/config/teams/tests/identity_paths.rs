@@ -130,7 +130,7 @@ fn resolve_agent_target_rejects_ambiguous() {
             assert!(candidates.contains(&"proj-b:wg-1-devs/alice".to_string()));
             assert_eq!(candidates.len(), 2);
         }
-        other => panic!("expected Ambiguous, got {:?}", other),
+        other => panic!("expected Ambiguous, got {other:?}"),
     }
 }
 
@@ -185,7 +185,7 @@ fn resolve_agent_target_two_level_scan() {
         ResolutionError::Ambiguous { candidates, .. } => {
             assert_eq!(candidates.len(), 2);
         }
-        other => panic!("expected Ambiguous (two-level scan), got {:?}", other),
+        other => panic!("expected Ambiguous (two-level scan), got {other:?}"),
     }
 }
 
@@ -221,10 +221,7 @@ fn resolve_agent_target_rejects_filesystem_dir_names() {
     ] {
         match resolve_agent_target(bad, &paths) {
             Err(ResolutionError::LooksLikeFilesystemDir(s)) => assert_eq!(s, bad),
-            other => panic!(
-                "expected LooksLikeFilesystemDir for {:?}, got {:?}",
-                bad, other
-            ),
+            other => panic!("expected LooksLikeFilesystemDir for {bad:?}, got {other:?}"),
         }
     }
 }
@@ -290,7 +287,7 @@ fn dev_team(project: &str) -> DiscoveredTeam {
         project: project.into(),
         agent_names: vec![format!("{}/dev-rust", project)],
         agent_paths: vec![None],
-        coordinator_name: Some(format!("{}/tech-lead", project)),
+        coordinator_name: Some(format!("{project}/tech-lead")),
         coordinator_path: None,
     }
 }

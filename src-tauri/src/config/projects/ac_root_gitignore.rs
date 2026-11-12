@@ -23,6 +23,30 @@ pub(crate) fn escape_gitignore_name(name: &str) -> String {
     out
 }
 
+/// #3532 - the context history store owns this directory: its SQLite database
+/// and rollback journals. `heatmap.json` stays visible.
+const CONTEXT_HISTORY_IGNORE_ENTRY: (&str, &str) = (
+    "/context-history/",
+    "# AgentsCommander: exclude the context history database and journals.",
+);
+
+/// #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
+fn catalog_artifact_patterns() -> [String; 10] {
+    [
+        CODING_AGENTS_LOCAL_ARTIFACT,
+        CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+        CODING_AGENTS_LOCK_ARTIFACT,
+        CODING_AGENTS_BASE_TMP_ARTIFACT,
+        CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
+        CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+        CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
+        CODING_AGENTS_SET_ASIDE_ARTIFACT,
+    ]
+    .map(|artifact| format!("/{artifact}"))
+}
+
 /// [`ensure_ac_root_gitignore`] with the already-resolved instructions
 /// filenames. The `CLAUDE.md` / `AGENTS.md` floor rows are always written; each
 /// other distinct name adds an escaped `**/__agent_*/<name>` row. A name failing
@@ -50,20 +74,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
 
-    // #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
-    let catalog = [
-        CODING_AGENTS_LOCAL_ARTIFACT,
-        CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
-        CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
-        CODING_AGENTS_LOCK_ARTIFACT,
-        CODING_AGENTS_BASE_TMP_ARTIFACT,
-        CODING_AGENTS_LOCAL_TMP_ARTIFACT,
-        CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
-        CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
-        CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
-        CODING_AGENTS_SET_ASIDE_ARTIFACT,
-    ]
-    .map(|artifact| format!("/{artifact}"));
+    let catalog = catalog_artifact_patterns();
     let custom_patterns = custom_instructions_patterns(configured);
 
     // Each entry: (pattern, comment explaining why)
@@ -121,6 +132,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         // naming migration sets a displaced project file aside in `.ac/`.
         project_settings_lock_row,
         set_aside_row,
+        CONTEXT_HISTORY_IGNORE_ENTRY,
     ];
     required_entries.extend(agent_runtime_ignore_entries());
     required_entries.extend(catalog_ignore_entries(&catalog));
@@ -251,11 +263,10 @@ const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 fn custom_instructions_patterns(configured: &[String]) -> Vec<String> {
     let mut custom_patterns: Vec<String> = Vec::new();
     for name in configured {
-        if !crate::config::agent_command::is_safe_instructions_filename(name) {
+        if !crate::config::instructions_filename::is_safe_instructions_filename(name) {
             log::warn!(
                 target: "agentscommander_lib::commands::ac_discovery::gitignore",
-                "[ac-gitignore] dropping unsafe instructions filename {:?}",
-                name
+                "[ac-gitignore] dropping unsafe instructions filename {name:?}"
             );
             continue;
         }
@@ -278,7 +289,7 @@ fn write_required_gitignore(
 ) -> Result<(), String> {
     if discovery::ac_root_gitignore_exists(gitignore_path) {
         let content = discovery::read_ac_root_gitignore(gitignore_path)
-            .map_err(|e| format!("Failed to read Project AC Root .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to read Project AC Root .gitignore: {e}"))?;
         let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
         // #2715 - the append-only writer never removes a row, so the catalog
         // rows the naming migration renamed are retired here.
@@ -303,7 +314,7 @@ fn write_required_gitignore(
                 }
             });
             if !is_present {
-                additions.push_str(&format!("\n{}\n{}\n", comment, pattern));
+                additions.push_str(&format!("\n{comment}\n{pattern}\n"));
             }
         }
         if !SEED_MANIFEST_COORDINATION_PATTERNS
@@ -325,20 +336,20 @@ fn write_required_gitignore(
             let separator = if content.ends_with('\n') { "" } else { "\n" };
             discovery::write_ac_root_gitignore(
                 gitignore_path,
-                &format!("{}{}{}", content, separator, additions),
+                &format!("{content}{separator}{additions}"),
             )
-            .map_err(|e| format!("Failed to update Project AC Root .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to update Project AC Root .gitignore: {e}"))?;
         }
     } else {
         let mut content = String::new();
         for (pattern, comment) in required_entries {
-            content.push_str(&format!("{}\n{}\n\n", comment, pattern));
+            content.push_str(&format!("{comment}\n{pattern}\n\n"));
         }
         content.push_str(SEED_MANIFEST_COORDINATION_BLOCK);
         content.push('\n');
         content.push_str(SEED_MANIFEST_MANIFEST_BLOCK);
         discovery::write_ac_root_gitignore(gitignore_path, &content)
-            .map_err(|e| format!("Failed to create Project AC Root .gitignore: {}", e))?;
+            .map_err(|e| format!("Failed to create Project AC Root .gitignore: {e}"))?;
     }
 
     Ok(())
@@ -418,4 +429,93 @@ pub(crate) fn migrate_legacy_seed_manifest_gitignore(content: String) -> (String
         .map(|(line, _)| *line)
         .collect();
     (migrated, true)
+}
+
+/// Append missing agent state and private PAIR reservation rows.
+pub(crate) fn ensure_config_state_ignore_rows(ac_root: &Path) -> Result<(), String> {
+    use crate::config::instance_artifacts::{
+        CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_NAME,
+        CONFIG_IDENTITY_RESERVATION_TMP,
+    };
+    ensure_incremental_ignore_rows(
+        ac_root,
+        |content| {
+            let mut blocks = crate::config::naming_migration::missing_ignore_rows(
+                content,
+                &crate::config::naming_migration::config_state_ignore_rows(),
+            );
+            for name in [
+                CONFIG_IDENTITY_RESERVATION_NAME,
+                CONFIG_IDENTITY_RESERVATION_LOCK,
+                CONFIG_IDENTITY_RESERVATION_TMP,
+            ] {
+                let row = format!("**/{name}");
+                if !content.lines().any(|line| line == row) {
+                    blocks.push_str(&format!(
+                        "# AgentsCommander: private PAIR reservation state\n{row}\n"
+                    ));
+                }
+            }
+            blocks
+        },
+        || {},
+    )
+}
+
+pub(crate) fn ensure_project_settings_ignore_rows(
+    ac_root: &Path,
+    before_append: impl FnOnce(),
+) -> Result<(), String> {
+    ensure_incremental_ignore_rows(
+        ac_root,
+        |content| {
+            crate::config::naming_migration::missing_ignore_rows(
+                content,
+                &crate::config::naming_migration::project_settings_ignore_rows(),
+            )
+        },
+        before_append,
+    )
+}
+
+pub(crate) fn ensure_loop_state_ignore_rows(
+    ac_root: &Path,
+    before_append: impl FnOnce(),
+) -> Result<(), String> {
+    ensure_incremental_ignore_rows(
+        ac_root,
+        |content| {
+            crate::config::naming_migration::missing_ignore_rows(
+                content,
+                &crate::config::naming_migration::loop_state_ignore_rows(),
+            )
+        },
+        before_append,
+    )
+}
+
+fn ensure_incremental_ignore_rows(
+    ac_root: &Path,
+    select: impl FnOnce(&str) -> String,
+    before_append: impl FnOnce(),
+) -> Result<(), String> {
+    let path = ac_root.join(".gitignore");
+    let io = |what: &str, e: std::io::Error| format!("failed to {what} {}: {e}", path.display());
+    let content = match discovery::read_ac_root_gitignore(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io("read", e)),
+    };
+    let blocks = select(&content);
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    before_append();
+    let separator = if content.is_empty() || content.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    discovery::append_ac_root_gitignore(&path, &format!("{separator}{blocks}"))
+        .map_err(|e| io("append to", e))
 }

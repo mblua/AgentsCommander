@@ -14,10 +14,36 @@ use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::profile::CodingAgentKind;
 use crate::telegram::bridge::{self, ReaderDest, SessionReaderKind};
-#[cfg(test)]
-pub(crate) use crate::telegram::manager::release_all_reader_demands;
-use crate::telegram::manager::{DemandEpoch, ReaderConsumer, ReaderEntry, TelegramBridgeState};
+use crate::telegram::manager::{
+    BridgeShutdown, DemandEpoch, ReaderConsumer, ReaderEntry, TelegramBridgeState,
+};
 use crate::telegram::types::{BridgeInfo, TelegramBotConfig};
+
+/// Release **every** demand for a session. Destroy and shutdown do this; a
+/// persistence rollback releases only the bot demand (section 5).
+pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return;
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_release_all(session_id)
+    };
+    if let Some(shutdown) = shutdown {
+        shutdown.spawn_wait_or_abort();
+    }
+}
+
+impl BridgeShutdown {
+    pub fn spawn_wait_or_abort(self) {
+        tauri::async_runtime::spawn(async move {
+            self.wait_or_abort().await;
+        });
+    }
+}
 
 impl<R: tauri::Runtime> bridge::TelegramRuntime for AppHandle<R> {
     fn poll_error_policy<'a>(
@@ -348,7 +374,7 @@ pub(crate) async fn raise_reader_demand_guarded<R: tauri::Runtime>(
     // destroy path takes the session lock and then this state, so awaiting the
     // session lock while holding this state would invert that order.
     if !session_is_live(app, session_id).await {
-        crate::telegram::manager::release_all_reader_demands(app, session_id).await;
+        release_all_reader_demands(app, session_id).await;
         return false;
     }
     true
@@ -461,7 +487,7 @@ async fn configured_telegram_attach_bot(
         .iter()
         .find(|b| b.id == bot_id)
         .cloned()
-        .ok_or_else(|| format!("Bot not found: {}", bot_id))
+        .ok_or_else(|| format!("Bot not found: {bot_id}"))
 }
 
 pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
@@ -484,10 +510,10 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
         Ok(r) => r,
         Err(reason) => {
             let err_msg = format!(
-                "Telegram bridge: {} for session {} (shell={:?}). Bridge inactive.",
-                reason, session_id, shell
+                "Telegram bridge: {reason} for session {session_id} (shell={shell:?}). \
+                 Bridge inactive."
             );
-            log::error!("{}", err_msg);
+            log::error!("{err_msg}");
             let _ = app.emit(
                 "telegram_bridge_error",
                 serde_json::json!({
@@ -536,10 +562,9 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             let shutdown = tg.detach(session_id).ok();
             let err_msg = format!(
                 "Telegram bridge attached but sessions.json could not be persisted; rolled back \
-                live bridge for session {}: {}",
-                session_id, e
+                live bridge for session {session_id}: {e}"
             );
-            log::error!("{}", err_msg);
+            log::error!("{err_msg}");
             let _ = app.emit(
                 "telegram_bridge_error",
                 serde_json::json!({
@@ -646,10 +671,9 @@ pub(crate) async fn detach_telegram_inner<R: tauri::Runtime>(
     if let Err(e) = persist_result {
         let err_msg = format!(
             "Telegram bridge detached live, but sessions.json could not be persisted for session \
-            {}: {}",
-            uuid, e
+            {uuid}: {e}"
         );
-        log::error!("{}", err_msg);
+        log::error!("{err_msg}");
         let _ = app.emit(
             "telegram_bridge_error",
             serde_json::json!({
@@ -686,8 +710,8 @@ pub async fn telegram_get_bridge(
     Ok(tg.get_bridge(uuid))
 }
 
-/// Test bot connection: discovers chat_id from the latest message sent to the bot,
-/// sends a confirmation message back, and returns the discovered chat_id.
+/// Test bot connection: discovers `chat_id` from the latest message sent to the bot,
+/// sends a confirmation message back, and returns the discovered `chat_id`.
 /// The user just needs to send any message to the bot before clicking Test.
 #[tauri::command]
 pub async fn telegram_send_test(
@@ -814,13 +838,10 @@ pub(crate) async fn perform_send_image(
         crate::telegram::attachments::prepare_telegram_attachment(path, SEND_DOCUMENT_MAX_BYTES)
             .await?;
 
-    let filename = match p.file_name().and_then(|s| s.to_str()) {
+    let filename = match p.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(name) => name.to_string(),
         None => {
-            log::warn!(
-                "telegram_send_image: non-UTF8 filename for {}, sending as 'image'",
-                path
-            );
+            log::warn!("telegram_send_image: non-UTF8 filename for {path}, sending as 'image'");
             "image".to_string()
         }
     };
@@ -830,8 +851,8 @@ pub(crate) async fn perform_send_image(
 
     let ext = p
         .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_ascii_lowercase())
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     let endpoint = choose_endpoint(size, &ext);
     let mime = extension_to_mime(&ext);
@@ -872,7 +893,7 @@ pub(crate) async fn perform_send_image(
     };
 
     if let Err(ref e) = result {
-        log::error!("telegram_send_image failed: {}", e);
+        log::error!("telegram_send_image failed: {e}");
     }
     result
 }
@@ -893,7 +914,7 @@ pub async fn telegram_send_image(
         .telegram_bots
         .iter()
         .find(|b| b.id == bot_id)
-        .ok_or_else(|| format!("Bot not found: {}", bot_id))?
+        .ok_or_else(|| format!("Bot not found: {bot_id}"))?
         .clone();
     drop(cfg);
 

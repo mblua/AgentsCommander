@@ -67,7 +67,7 @@ pub fn spawn_watch_task(
             sink,
         )
         .await;
-        log::info!("[JSONL_EXIT] Watcher task ended for session {}", session_id);
+        log::info!("[JSONL_EXIT] Watcher task ended for session {session_id}");
     })
 }
 
@@ -212,7 +212,7 @@ fn claude_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String
 ///
 /// Claude's JSONL format carries no turn id (`claude_watcher.rs:58` of the
 /// planning base documents exactly this), so the id slot is `None` by
-/// construction. Returns None for non-assistant messages, tool_use blocks,
+/// construction. Returns None for non-assistant messages, `tool_use` blocks,
 /// thinking blocks, etc.
 fn extract_assistant_text_with_turn(line: &str) -> Option<(String, Option<String>)> {
     // G6 fast-path: skip lines that can't be assistant messages (avoids multi-MB JSON parses)
@@ -441,7 +441,7 @@ fn apply_destination_change(
             .map(|(_, body)| body)
             .collect(),
         Err(e) => {
-            log::warn!("[JSONL_ERR] live-attach preamble read failed: {}", e);
+            log::warn!("[JSONL_ERR] live-attach preamble read failed: {e}");
             Vec::new()
         }
     }
@@ -623,9 +623,7 @@ impl ClaudeReader {
         // it, rotation follows the newest mtime exactly as before.
         let mut pinned_attach = false;
         let latest =
-            if !runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
-                newest
-            } else {
+            if runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
                 let pinned = self
                     .pin_id
                     .as_deref()
@@ -672,6 +670,8 @@ impl ClaudeReader {
                     }
                     AttachDecision::Wait | AttachDecision::Nothing => None,
                 }
+            } else {
+                newest
             };
         (latest, pinned_attach)
     }
@@ -693,7 +693,7 @@ impl ClaudeReader {
             // File rotation (new Claude session): read from start
             self.file_offset = 0;
             self.rotation_backfill_pending = true;
-            self.bridge_log("JSONL_ROTATE", &format!("new file: {:?}", latest));
+            self.bridge_log("JSONL_ROTATE", &format!("new file: {latest:?}"));
             log::info!(
                 "[JSONL_ROTATE] session {} old={} new={} offset={}",
                 self.session_id,
@@ -724,8 +724,7 @@ impl ClaudeReader {
                 // Only switch if current file is stale
                 mtime
                     .elapsed()
-                    .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
-                    .unwrap_or(true)
+                    .map_or(true, |d| d.as_secs() >= ROTATION_STALE_SECS)
             }
             _ => true, // No current file — always accept
         }
@@ -778,11 +777,10 @@ impl ClaudeReader {
                 );
             }
             Err(e) => {
-                self.bridge_log("JSONL_ERR", &format!("preamble scan failed: {}", e));
+                self.bridge_log("JSONL_ERR", &format!("preamble scan failed: {e}"));
                 self.file_offset = jsonl_kernel::transcript_metadata(p)
                     .ok()
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                    .map_or(0, |m| m.len());
             }
         }
     }
@@ -835,7 +833,7 @@ impl ClaudeReader {
                 );
                 self.event_port.bridge_error(
                     &self.session_id,
-                    &format!("JSONL read error: {}", e),
+                    &format!("JSONL read error: {e}"),
                     None,
                 );
             }
@@ -970,7 +968,7 @@ async fn watch_loop(
         // poll, never after it (section 6).
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
 
             changed = dest_rx.changed() => {
                 if changed.is_err() {

@@ -34,7 +34,7 @@ use crate::pty::remote_watcher::{base_branch_display, RemoteTransition, Transiti
 /// re-run loop, not a mechanism: the first twelve are instant, and nothing is
 /// delayed to make room for them.
 const NOTICE_CAP: usize = 12;
-const NOTICE_WINDOW: Duration = Duration::from_secs(60 * 60);
+const NOTICE_WINDOW: Duration = Duration::from_hours(1);
 const PENDING_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 type NowSource = Arc<dyn Fn() -> Instant + Send + Sync>;
 type RetryWait = Arc<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
@@ -56,7 +56,7 @@ const BLIND_GAP_THRESHOLD_SECS: i64 = 600;
 /// report; an epoch is unreadable. This serves both readers.
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%:z";
 
-/// The two notify axes, already ANDed with their feature dials by the port.
+/// The two notify axes, already `ANDed` with their feature dials by the port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteNotifyDials {
     pub ci: bool,
@@ -105,7 +105,7 @@ async fn run_with_ports(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.cancelled() => break,
+            () = shutdown.cancelled() => break,
             received = transitions.recv() => match received {
                 Some(transition) => {
                     let now = now_source();
@@ -214,18 +214,14 @@ impl RemoteAlertState {
                     }
                 }
                 Err(reason) => {
-                    log::warn!(
-                        "[remote-alerts] delivery failed for {}: {}",
-                        room_dir,
-                        reason
-                    );
+                    log::warn!("[remote-alerts] delivery failed for {room_dir}: {reason}");
                     return true;
                 }
             }
             tokio::select! {
                 biased;
-                _ = self.shutdown.cancelled() => return false,
-                _ = (self.retry_wait)(PENDING_RETRY_INTERVAL) => {}
+                () = self.shutdown.cancelled() => return false,
+                () = (self.retry_wait)(PENDING_RETRY_INTERVAL) => {}
             }
             if self.shutdown.is_cancelled() {
                 return false;
@@ -312,14 +308,14 @@ fn blind_gap(transition: &RemoteTransition) -> Option<(String, String)> {
 fn human_gap(seconds: i64) -> String {
     let minutes = seconds / 60;
     if minutes < 60 {
-        return format!("{} minutes", minutes);
+        return format!("{minutes} minutes");
     }
     let hours = minutes / 60;
     let rest = minutes % 60;
     if rest == 0 {
-        format!("{} hours", hours)
+        format!("{hours} hours")
     } else {
-        format!("{} hours {} minutes", hours, rest)
+        format!("{hours} hours {rest} minutes")
     }
 }
 
@@ -396,7 +392,7 @@ fn warn_room_once(warned: &Mutex<HashSet<String>>, room: &Path, message: String)
         Err(_) => true,
     };
     if first {
-        log::warn!("{}", message);
+        log::warn!("{message}");
     }
 }
 

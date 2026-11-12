@@ -38,7 +38,7 @@ pub const TEMP_SESSION_PREFIX: &str = "[temp]";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRepo {
-    /// Repo dir name with leading "repo-" stripped (e.g. "AgentsCommander").
+    /// Repo dir name with leading "repo-" stripped (e.g. `AgentsCommander`).
     pub label: String,
     /// Absolute path to the repo root. Local Git status detection runs in this directory.
     pub source_path: String,
@@ -132,7 +132,7 @@ pub struct Session {
     /// Monotonic generation counter for `git_repos`. Bumped on every refresh/watcher write.
     /// Used for compare-and-swap in `set_git_repos_if_gen` so an in-flight watcher poll
     /// cannot overwrite a refresh that landed during its detection window. Runtime-only;
-    /// never persisted and never exposed via SessionInfo.
+    /// never persisted and never exposed via `SessionInfo`.
     #[serde(skip)]
     pub git_repos_gen: u64,
     /// #1682 - a message write reached one of this session's arming sites in this process, so its
@@ -236,14 +236,7 @@ pub struct Session {
     pub context_percent: Option<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum SessionStatus {
-    Active,
-    Running,
-    Idle,
-    Exited(i32),
-}
+pub use crate::session::status::SessionStatus;
 
 /// Backend "working" predicate. Identical to `cli/list_peers.rs`'s documented
 /// `working` field and to `isWorkingActivity` in shared/session-activity.ts.
@@ -276,10 +269,7 @@ pub fn persisted_is_working(
     waiting_for_input: Option<bool>,
 ) -> bool {
     waiting_for_input == Some(false)
-        && matches!(
-            status,
-            Some(SessionStatus::Active) | Some(SessionStatus::Running)
-        )
+        && matches!(status, Some(SessionStatus::Active | SessionStatus::Running))
 }
 
 pub(crate) fn is_live_session_record(has_id: bool, status: Option<&SessionStatus>) -> bool {
@@ -295,10 +285,10 @@ pub(crate) fn find_workgroup_task_path_for_cwd(cwd: &str) -> Option<std::path::P
     while let Some(path) = current {
         let is_workgroup_dir = path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(crate::config::entity_prefix::has_entity_prefix);
         if is_workgroup_dir {
-            return Some(path.join("TASK.md"));
+            return Some(path.join(crate::filesystem::tasks::TASK_FILE_NAME));
         }
         current = path.parent();
     }
@@ -383,7 +373,7 @@ pub struct SessionInfo {
     #[serde(default)]
     pub profile_outdated: bool,
     /// Internal carrier for sessions persistence. Not part of the frontend contract;
-    /// the UI uses BridgeInfo events/listing for live bridge state.
+    /// the UI uses `BridgeInfo` events/listing for live bridge state.
     #[serde(skip)]
     pub telegram_bot_id: Option<String>,
     #[serde(default)]

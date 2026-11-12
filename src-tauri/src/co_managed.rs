@@ -6,16 +6,57 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use futures::future::BoxFuture;
+use serde_json::Value;
+use tokio::sync::RwLock;
+
+use crate::capture::key::ConsumptionKey;
+use crate::capture::registry::CaptureRegistry;
+use crate::capture::sink::CaptureSlot;
+use crate::capture::state::{AbstainReason, CaptureState, CommittedEffect, EffectPreconditions};
+use crate::config::co_managed::CoManagedState;
 use crate::config::settings::SettingsState;
+use crate::network::OutboundNetwork;
+use crate::pty::input_activity::SubstantiveInputState;
+use crate::session::manager::SessionManager;
+use crate::session::selection::task::SelectionTasks;
+use crate::session::selection::SelectionEvents;
+
 use crate::filesystem::co_managed_queue::{
     canonical_co_managed_message, create_co_managed_queue_entry, ensure_co_managed_queue,
     flush_co_managed_queue_file, read_co_managed_message_snapshot, remove_co_managed_message,
     write_co_managed_queue_bytes,
 };
-use crate::session::manager::SessionManager;
-use tauri::Manager;
 
 use crate::{capture, config};
+
+pub(crate) trait CoManagedEvents: Send + Sync {
+    fn co_managed_event(&self, event: &'static str, value: Value);
+}
+
+pub(crate) trait CoManagedHost: Send + Sync + CoManagedEvents + SelectionEvents {
+    fn sessions_optional(&self) -> Option<&Arc<RwLock<SessionManager>>>;
+    fn sessions_required(&self) -> &Arc<RwLock<SessionManager>>;
+    fn settings_required(&self) -> &SettingsState;
+    fn input_optional(&self) -> Option<&SubstantiveInputState>;
+    fn registry_optional(&self) -> Option<&Arc<CaptureRegistry>>;
+    fn network_required(&self) -> &OutboundNetwork;
+    fn tasks(&self) -> &dyn SelectionTasks;
+    fn effective_state<'a>(
+        &'a self,
+        room: &'a Path,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<CoManagedState, String>>;
+    fn commit_effect(
+        &self,
+        room_root: PathBuf,
+        slot: CaptureSlot,
+        expected_seq: u64,
+        expected_key: ConsumptionKey,
+        pre: EffectPreconditions,
+        capture: Arc<CaptureState>,
+    ) -> BoxFuture<'static, Result<CommittedEffect, AbstainReason>>;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // #2232 phase 7: the Co-managed supervisor
@@ -94,12 +135,15 @@ impl CoManagedTestHooks {
     fn record_step(&self, step: &'static str) {
         self.steps
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(step);
     }
 
     pub(crate) fn steps(&self) -> Vec<&'static str> {
-        self.steps.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.steps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn commit_calls(&self) -> usize {
@@ -107,13 +151,16 @@ impl CoManagedTestHooks {
     }
 
     pub(crate) fn set_after_commit(&self, hook: Box<dyn FnOnce() + Send>) {
-        *self.after_commit.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+        *self
+            .after_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
 
     fn take_after_commit(&self) -> Option<Box<dyn FnOnce() + Send>> {
         self.after_commit
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
     }
 }
@@ -192,7 +239,9 @@ impl CoManagedSupervisorHandle {
     }
 
     pub(crate) fn lock_state(&self) -> std::sync::MutexGuard<'_, CoManagedSupervisorState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn is_watching(&self, id: &str) -> bool {
@@ -288,15 +337,14 @@ impl CoManagedSupervisorHandle {
 /// `session_idle` **first**, with the Co-managed decision in the same payload,
 /// then hands the edge to the supervisor. A separate later event would always
 /// paint waiting first, which is what this signature exists to prevent.
-pub(crate) fn emit_session_idle_edge<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn emit_session_idle_edge<E: CoManagedEvents + ?Sized>(
+    app: &E,
     armed: &capture::armed::ArmedFlags,
     supervisor: Option<&CoManagedSupervisorHandle>,
     session_id: uuid::Uuid,
 ) -> bool {
     let comanaged = armed.is_armed(&session_id.to_string());
-    let _ = tauri::Emitter::emit(
-        app,
+    app.co_managed_event(
         "session_idle",
         serde_json::json!({ "id": session_id.to_string(), "comanaged": comanaged }),
     );
@@ -308,14 +356,13 @@ pub(crate) fn emit_session_idle_edge<R: tauri::Runtime>(
 
 /// `session_comanaged_state`, emitted with `emit` (every window), never
 /// `emit_to`, so a detached terminal window receives it too (plan 9.2).
-pub(crate) fn emit_co_managed_state<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn emit_co_managed_state<E: CoManagedEvents + ?Sized>(
+    app: &E,
     session_id: uuid::Uuid,
     active: bool,
     reason: Option<&str>,
 ) {
-    let _ = tauri::Emitter::emit(
-        app,
+    app.co_managed_event(
         "session_comanaged_state",
         serde_json::json!({
             "id": session_id.to_string(),
@@ -405,12 +452,12 @@ pub(crate) fn co_managed_user_message(
 /// Surface a user-facing communication on the session. The slot is single:
 /// `raise_hand` and `set_blocked_menu` overwrite it, and when that happens the
 /// pointer is lost, not the file, which stays findable in `messaging/`.
-pub(crate) async fn surface_co_managed_user_message<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn surface_co_managed_user_message<H: CoManagedHost + ?Sized>(
+    app: &H,
     session_id: uuid::Uuid,
     message: String,
 ) {
-    let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+    let Some(manager) = app.sessions_optional() else {
         return;
     };
     let outcome = {
@@ -431,10 +478,10 @@ pub(crate) async fn surface_co_managed_user_message<R: tauri::Runtime>(
 }
 
 /// Read the six `AppSettings` Jev fields into the leaf's plain value type.
-pub(crate) async fn co_managed_jev_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn co_managed_jev_settings<H: CoManagedHost + ?Sized>(
+    app: &H,
 ) -> Result<capture::jev::JevSettings, config::settings::SettingsOwnerError> {
-    let settings = app.state::<SettingsState>();
+    let settings = app.settings_required();
     let guard = settings.current_read().await?;
     Ok(capture::jev::JevSettings {
         api_key: guard.jev_api_key.clone(),
@@ -548,7 +595,7 @@ pub(crate) fn write_co_managed_queue_message(
         .map_err(|e| format!("queue envelope serialize failed: {e}"))?;
     let path = dir.join(format!("{}.json", envelope.id));
     let mut file = create_co_managed_queue_entry(&path)
-        .map_err(|e| format!("queue envelope create failed: {}", e))?;
+        .map_err(|e| format!("queue envelope create failed: {e}"))?;
     write_co_managed_queue_bytes(&mut file, &bytes)
         .map_err(|e| format!("queue envelope write failed: {e}"))?;
     flush_co_managed_queue_file(&mut file)
@@ -632,3 +679,6 @@ impl CoManagedRoute {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

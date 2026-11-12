@@ -42,6 +42,17 @@ fn upsert_and_same_millisecond_noop_use_atomic_writer_once() {
     );
 }
 
+fn snapshot_paths(guard: &ProjectSeedManifestGuard) -> Vec<String> {
+    match &guard.snapshot {
+        CanonicalSnapshot::Writable { state, .. } => state
+            .rows
+            .values()
+            .map(|row| row.path.serialized().to_string())
+            .collect::<Vec<_>>(),
+        CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
+    }
+}
+
 #[test]
 fn config_scope_replacement_is_canonical_noop_and_preserves_in_memory_semantics() {
     let (_temp, project) = setup_project();
@@ -86,14 +97,7 @@ fn config_scope_replacement_is_canonical_noop_and_preserves_in_memory_semantics(
         ManifestRecordOutcome::Unchanged
     );
     assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), canonical);
-    let paths = match &guard.snapshot {
-        CanonicalSnapshot::Writable { state, .. } => state
-            .rows
-            .values()
-            .map(|row| row.path.serialized().to_string())
-            .collect::<Vec<_>>(),
-        CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
-    };
+    let paths = snapshot_paths(&guard);
     assert_eq!(
         paths,
         vec![
@@ -109,14 +113,7 @@ fn config_scope_replacement_is_canonical_noop_and_preserves_in_memory_semantics(
         ManifestRecordOutcome::Unchanged
     );
     assert_eq!(std::fs::read(canonical_path(&project)).unwrap(), canonical);
-    let paths = match &guard.snapshot {
-        CanonicalSnapshot::Writable { state, .. } => state
-            .rows
-            .values()
-            .map(|row| row.path.serialized().to_string())
-            .collect::<Vec<_>>(),
-        CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
-    };
+    let paths = snapshot_paths(&guard);
     assert_eq!(
         paths,
         vec![
@@ -136,14 +133,7 @@ fn config_scope_replacement_is_canonical_noop_and_preserves_in_memory_semantics(
         guard.publication_permit().replace_scope(&activation, empty),
         ManifestRecordOutcome::Unchanged
     );
-    let final_paths = match &guard.snapshot {
-        CanonicalSnapshot::Writable { state, .. } => state
-            .rows
-            .values()
-            .map(|row| row.path.serialized().to_string())
-            .collect::<Vec<_>>(),
-        CanonicalSnapshot::ReadOnly { .. } => panic!("writable snapshot expected"),
-    };
+    let final_paths = snapshot_paths(&guard);
     assert_eq!(
         final_paths,
         vec![".ac/Context.AgentsCommander.md".to_string()]

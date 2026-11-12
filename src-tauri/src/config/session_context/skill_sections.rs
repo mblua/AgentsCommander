@@ -40,10 +40,8 @@ pub(crate) fn project_skills_for_session(
         ),
         Err(error) => {
             log::warn!(
-                "[project-skills] unavailable at {}: {}; continuing without project skill \
-                    discovery",
-                root,
-                error
+                "[project-skills] unavailable at {root}: {error}; continuing without project skill \
+                    discovery"
             );
             SkillIndex {
                 matrix_root: Some(display_path(&ac_root)),
@@ -117,16 +115,13 @@ pub(crate) fn team_skills_for_session(agent_root: &str, matrix_root: Option<&str
     ) {
         Ok(path) => crate::path_utils::normalize_windows_verbatim_path_buf(&path),
         Err(error) => {
-            log::warn!("[team-skills] matrix canonicalization failed: {}", error);
+            log::warn!("[team-skills] matrix canonicalization failed: {error}");
             return String::new();
         }
     };
     let replica_team = if matrix_root.is_some() {
         let Some(team) = replica_skill_team(agent_root) else {
-            log::warn!(
-                "[team-skills] invalid enclosing room team at {}",
-                agent_root
-            );
+            log::warn!("[team-skills] invalid enclosing room team at {agent_root}");
             return String::new();
         };
         Some(team)
@@ -259,7 +254,7 @@ pub(crate) fn render_team_skills_section(sources: &[(String, SkillIndex)]) -> St
                 .iter()
                 .flat_map(|skill| &skill.metadata_warnings),
         ) {
-            log::warn!("[team-skills] {}: {}", team, warning);
+            log::warn!("[team-skills] {team}: {warning}");
             let line = format!("Warning [team-skills:{team}]: {warning}\n");
             if output.len().saturating_add(line.len()) <= limit {
                 output.push_str(&line);
@@ -351,8 +346,8 @@ pub(crate) fn render_project_skills_section(
     }
     let mut omitted_warnings = 0;
     for warning in warnings {
-        log::warn!("[project-skills] {}", warning);
-        let line = format!("Warning [project-skills]: {}\n", warning);
+        log::warn!("[project-skills] {warning}");
+        let line = format!("Warning [project-skills]: {warning}\n");
         if output.len().saturating_add(line.len()) <= limit {
             output.push_str(&line);
         } else {
@@ -361,9 +356,8 @@ pub(crate) fn render_project_skills_section(
     }
     if omitted_skills != 0 || omitted_warnings != 0 {
         log::warn!(
-            "[project-skills] startup-context budget reached; omitted {} skills and {} warnings",
-            omitted_skills,
-            omitted_warnings
+            "[project-skills] startup-context budget reached; omitted {omitted_skills} skills and \
+            {omitted_warnings} warnings"
         );
         output.push_str(&format!(
             "Project skill index startup-context budget reached; omitted {omitted_skills} skills \
@@ -417,10 +411,8 @@ pub(crate) fn append_budget_summary(
     );
 
     log::warn!(
-        "[skills] startup-context budget reached; omitted {} skills and {} warnings from generated \
-            context",
-        omitted_skills,
-        omitted_warnings
+        "[skills] startup-context budget reached; omitted {omitted_skills} skills and \
+            {omitted_warnings} warnings from generated context"
     );
 
     if summary.len() > SKILL_INDEX_TOTAL_MAX_BYTES {
@@ -451,10 +443,10 @@ pub(crate) fn append_budget_summary(
 pub(crate) fn skill_trigger_text(skill: &SkillMetadata) -> String {
     let trigger = match (&skill.description, &skill.when_to_use) {
         (Some(description), Some(when_to_use)) => {
-            format!("{} When to use: {}", description, when_to_use)
+            format!("{description} When to use: {when_to_use}")
         }
         (Some(description), None) => description.clone(),
-        (None, Some(when_to_use)) => format!("When to use: {}", when_to_use),
+        (None, Some(when_to_use)) => format!("When to use: {when_to_use}"),
         (None, None) => "No description metadata; inspect SKILL.md before use.".to_string(),
     };
     truncate_chars(&trigger, SKILL_TRIGGER_TEXT_MAX_CHARS)
@@ -486,10 +478,7 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
         }
         (Some(_), Some(skills_root)) => {
             let root = sanitize_skill_metadata_for_context(skills_root);
-            push_with_budget(
-                &mut output,
-                &format!("Canonical skills root: `{}`\n\n", root),
-            );
+            push_with_budget(&mut output, &format!("Canonical skills root: `{root}`\n\n"));
             push_with_budget(&mut output, GENERATED_SKILLS_SECTION_REPLICA_LINE);
             if index.skills.is_empty() {
                 push_with_budget(
@@ -502,7 +491,7 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
             let root = sanitize_skill_metadata_for_context(matrix_root);
             push_with_budget(
                 &mut output,
-                &format!("Canonical Agent Matrix root: `{}`\n", root),
+                &format!("Canonical Agent Matrix root: `{root}`\n"),
             );
         }
     }
@@ -512,36 +501,34 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
     let scope_label = skill_scope_label(index);
 
     if !index.skills.is_empty() {
-        if !push_with_budget(&mut output, "\n### Available Skills\n\n") {
-            omitted_skills += index.skills.len();
-        } else {
+        if push_with_budget(&mut output, "\n### Available Skills\n\n") {
             for skill in &index.skills {
                 let name = sanitize_skill_metadata_for_context(&skill.name);
                 let entrypoint = sanitize_skill_metadata_for_context(&skill.entrypoint_path);
                 let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
                 let full_entry = format!(
-                    "- `{}` - {}\n  Scope: {}\n  Entrypoint: `{}`\n",
-                    name, trigger, scope_label, entrypoint
+                    "- `{name}` - {trigger}\n  Scope: {scope_label}\n  Entrypoint: `{entrypoint}`\n"
                 );
                 if push_with_budget(&mut output, &full_entry) {
                     continue;
                 }
 
                 let minimal_entry = format!(
-                    "- `{}` - Metadata omitted because the skill index exceeded the {} byte \
-                        startup-context budget; inspect SKILL.md if needed.\n  Scope: {}\n  \
-                        Entrypoint: `{}`\n",
-                    name, SKILL_INDEX_TOTAL_MAX_BYTES, scope_label, entrypoint
+                    "- `{name}` - Metadata omitted because the skill index exceeded the \
+                        {SKILL_INDEX_TOTAL_MAX_BYTES} byte startup-context budget; inspect \
+                        SKILL.md if needed.\n  Scope: {scope_label}\n  \
+                        Entrypoint: `{entrypoint}`\n"
                 );
                 if !push_with_budget(&mut output, &minimal_entry) {
                     omitted_skills += 1;
                     log::warn!(
-                        "[skills] omitted skill `{}` from generated context because the skill \
-                            index budget was exhausted",
-                        name
+                        "[skills] omitted skill `{name}` from generated context because the skill \
+                            index budget was exhausted"
                     );
                 }
             }
+        } else {
+            omitted_skills += index.skills.len();
         }
     }
 
@@ -564,13 +551,12 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
     if !warnings.is_empty() {
         if push_with_budget(&mut output, "\n### Skill Discovery Warnings\n\n") {
             for warning in warnings {
-                let line = format!("- {}\n", warning);
+                let line = format!("- {warning}\n");
                 if !push_with_budget(&mut output, &line) {
                     omitted_warnings += 1;
                     log::warn!(
                         "[skills] omitted warning from generated context because the skill index \
-                            budget was exhausted: {}",
-                        warning
+                            budget was exhausted: {warning}"
                     );
                 }
             }

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The only place a `git` `Command` is constructed. Pure, like
 /// the GitHub owner constructor. Gate 2 of `detect_git_status` (`GIT_CEILING_DIRECTORIES`)

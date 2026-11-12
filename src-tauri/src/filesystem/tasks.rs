@@ -6,6 +6,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
+pub(crate) const TASK_FILE_NAME: &str = "TASK.md";
+
 pub(crate) fn read_task_title_text(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
@@ -144,9 +146,9 @@ pub(crate) fn rename_task_artifact_with_retry(source: &Path, target: &Path) -> s
             Err(e)
                 if attempt < 2
                     && (e.kind() == std::io::ErrorKind::PermissionDenied
-                        || matches!(e.raw_os_error(), Some(5) | Some(32))) =>
+                        || matches!(e.raw_os_error(), Some(5 | 32))) =>
             {
-                std::thread::sleep(Duration::from_millis(100))
+                std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => return Err(e),
         }
@@ -296,7 +298,7 @@ pub(crate) fn publish_description_stage(source: &Path, target: &Path) -> std::io
             std::fs::rename(source, target)
         };
         match rename() {
-            Ok(_) => return Ok(()),
+            Ok(()) => return Ok(()),
             Err(e) => {
                 let retry = e.kind() == std::io::ErrorKind::PermissionDenied
                     || e.raw_os_error() == Some(32) // ERROR_SHARING_VIOLATION

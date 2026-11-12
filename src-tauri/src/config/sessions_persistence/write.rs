@@ -87,7 +87,7 @@ impl<T> Drop for PersistOperationOwner<T> {
                 .cell
                 .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *state = PersistOperationState::Ambiguous;
             drop(state);
             self.cell.changed.notify_one();
@@ -176,7 +176,7 @@ pub(crate) enum PersistMode {
     NoPrune,
 }
 
-/// Save current sessions to the app config directory (see config_dir()).
+/// Save current sessions to the app config directory (see `config_dir()`).
 ///
 /// Concurrency model (#291):
 /// - **In-process callers are serialized** by `SAVE_SESSIONS_LOCK`; the
@@ -519,7 +519,7 @@ pub(super) fn settle_rename_attempt(
             confirm_publication_readback(slot, path, nonce, epoch);
             drop(leaf);
             drop(retired);
-            log::info!("Saved {} sessions to {:?}", rows, path);
+            log::info!("Saved {rows} sessions to {path:?}");
             SettledRenameAttempt::Completed(true)
         }
         RenamePublicationAttempt::Suppressed => SettledRenameAttempt::Completed(false),

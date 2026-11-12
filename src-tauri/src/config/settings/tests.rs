@@ -331,7 +331,8 @@ fn b3_assert_split_matches_seed(path: &std::path::Path, seeded: &[u8], skip: &[&
     ];
     // r12k: the reference is the seed decoded by the loader's typed path and
     // serialized again, compared key by key, both directions.
-    let typed: super::AppSettings = serde_json::from_slice(seeded).unwrap();
+    let mut typed: super::AppSettings = serde_json::from_slice(seeded).unwrap();
+    typed.normalize_context_history_sessions();
     let mut reference = match serde_json::to_value(&typed).unwrap() {
         serde_json::Value::Object(object) => object,
         other => panic!("AppSettings serialized to {other}"),

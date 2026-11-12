@@ -132,57 +132,7 @@ fn pi_serde_and_profile_contract_are_stable() {
 /// submission agent and its profile carries the exact workspace-latest tokens.
 #[test]
 fn muse_serde_profile_detection_and_submission_boundary_are_stable() {
-    // Serde/as_str wire value.
-    assert_eq!(
-        serde_json::to_string(&CodingAgentKind::Muse).unwrap(),
-        "\"muse\""
-    );
-    assert_eq!(
-        serde_json::from_str::<CodingAgentKind>("\"muse\"").unwrap(),
-        CodingAgentKind::Muse
-    );
-    assert_eq!(CodingAgentKind::Muse.as_str(), "muse");
-
-    // Exact profile.
-    let profile = CodingAgentKind::Muse.profile();
-    assert_eq!(profile.kind, CodingAgentKind::Muse);
-    assert_eq!(profile.idle, IdleTuning::AGENT_DEFAULT);
-    assert_eq!(profile.resume_tokens, ["resume", "--last"]);
-    assert!(profile.container_credential.is_none());
-    assert!(!profile.auto_self_clear_supported);
-    assert_eq!(
-        idle_tuning_for(Some(CodingAgentKind::Muse)),
-        IdleTuning::AGENT_DEFAULT
-    );
-
-    // Direct positives: bare, absolute (both separators), and an exe stem.
-    let codex_looking = vec![
-        "--workspace".to_string(),
-        "/tmp/codex".to_string(),
-        "resume".to_string(),
-        "--last".to_string(),
-    ];
-    for shell in ["muse", "/opt/muse/bin/muse", "/usr/local/bin/muse"] {
-        assert_eq!(
-            CodingAgentKind::detect(shell, &[]),
-            Some(CodingAgentKind::Muse),
-            "shell={shell:?}"
-        );
-        assert_eq!(
-            CodingAgentKind::detect(shell, &codex_looking),
-            Some(CodingAgentKind::Muse),
-            "direct Muse outranks a Codex-looking argument value, shell={shell:?}"
-        );
-        assert_eq!(
-            CodingAgentKind::detect(shell, &["--provider".into(), "claude".into()]),
-            Some(CodingAgentKind::Muse),
-            "shell={shell:?}"
-        );
-    }
-    assert_eq!(
-        CodingAgentKind::detect("muse.exe", &[]),
-        Some(CodingAgentKind::Muse)
-    );
+    assert_muse_wire_profile_and_direct_detection();
 
     // Negatives: prefix names, mixed case, and argument-only identity inside
     // env/shell/PowerShell/cmd/compound wrappers.
@@ -279,6 +229,60 @@ fn muse_serde_profile_detection_and_submission_boundary_are_stable() {
         detect_pty_submission_agent("claude", &[], Some(CodingAgentKind::Muse)),
         None,
         "a Muse hint never agrees with another provider's executable"
+    );
+}
+
+fn assert_muse_wire_profile_and_direct_detection() {
+    // Serde/as_str wire value.
+    assert_eq!(
+        serde_json::to_string(&CodingAgentKind::Muse).unwrap(),
+        "\"muse\""
+    );
+    assert_eq!(
+        serde_json::from_str::<CodingAgentKind>("\"muse\"").unwrap(),
+        CodingAgentKind::Muse
+    );
+    assert_eq!(CodingAgentKind::Muse.as_str(), "muse");
+
+    // Exact profile.
+    let profile = CodingAgentKind::Muse.profile();
+    assert_eq!(profile.kind, CodingAgentKind::Muse);
+    assert_eq!(profile.idle, IdleTuning::AGENT_DEFAULT);
+    assert_eq!(profile.resume_tokens, ["resume", "--last"]);
+    assert!(profile.container_credential.is_none());
+    assert!(!profile.auto_self_clear_supported);
+    assert_eq!(
+        idle_tuning_for(Some(CodingAgentKind::Muse)),
+        IdleTuning::AGENT_DEFAULT
+    );
+
+    // Direct positives: bare, absolute (both separators), and an exe stem.
+    let codex_looking = vec![
+        "--workspace".to_string(),
+        "/tmp/codex".to_string(),
+        "resume".to_string(),
+        "--last".to_string(),
+    ];
+    for shell in ["muse", "/opt/muse/bin/muse", "/usr/local/bin/muse"] {
+        assert_eq!(
+            CodingAgentKind::detect(shell, &[]),
+            Some(CodingAgentKind::Muse),
+            "shell={shell:?}"
+        );
+        assert_eq!(
+            CodingAgentKind::detect(shell, &codex_looking),
+            Some(CodingAgentKind::Muse),
+            "direct Muse outranks a Codex-looking argument value, shell={shell:?}"
+        );
+        assert_eq!(
+            CodingAgentKind::detect(shell, &["--provider".into(), "claude".into()]),
+            Some(CodingAgentKind::Muse),
+            "shell={shell:?}"
+        );
+    }
+    assert_eq!(
+        CodingAgentKind::detect("muse.exe", &[]),
+        Some(CodingAgentKind::Muse)
     );
 }
 
@@ -468,7 +472,7 @@ fn idle_tuning_for_launch_resolves_burst_subfields() {
         Some((None, Some(1e9), Some(1e9))),
     );
     assert_eq!(capped.burst_window, Duration::from_secs(600));
-    assert_eq!(capped.burst_prior_silence, Duration::from_secs(86_400));
+    assert_eq!(capped.burst_prior_silence, Duration::from_hours(24));
 
     let kind = Some(CodingAgentKind::Pi);
     let resolved = idle_tuning_for_launch(kind, Some((Some(2048), Some(2.0), Some(30.0))));

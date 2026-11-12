@@ -1,26 +1,28 @@
+use super::arguments::RunArgs;
+use super::artifacts::AttemptArtifact;
+use super::artifacts::AttemptOwnershipArtifact;
+use super::artifacts::CliError;
+use super::artifacts::LoadedExperiment;
+use super::artifacts::ParsedPromptSuite;
+use super::artifacts::ReportArtifact;
+use super::artifacts::RunArtifact;
+use super::artifacts::RunSuiteArtifact;
+use super::artifacts::RunVariantArtifact;
+use super::artifacts::RunWorkgroupArtifact;
+use super::artifacts::VariantMetadata;
 use super::report::build_attempts;
 use super::report::default_run_artifact_paths;
 use super::report::validate_report_artifacts;
 use super::storage::load_attempts;
 use super::storage::read_json;
 use super::storage::replace_attempts;
+use super::storage::validate_required_artifact_file;
 use super::storage::validate_workgroup_under_ac_root;
 use super::storage::{attempts_name, attempts_path, attempts_path_display};
+use super::storage::{load_report, load_run, validate_report_presence, validate_run_presence};
 use super::support::err;
 use super::support::err_at_path;
 use super::validation::reject_link_or_reparse;
-use super::AttemptArtifact;
-use super::AttemptOwnershipArtifact;
-use super::CliError;
-use super::LoadedExperiment;
-use super::ParsedPromptSuite;
-use super::ReportArtifact;
-use super::RunArgs;
-use super::RunArtifact;
-use super::RunSuiteArtifact;
-use super::RunVariantArtifact;
-use super::RunWorkgroupArtifact;
-use super::VariantMetadata;
 use crate::filesystem::{directories, documents};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -43,21 +45,18 @@ pub(super) fn load_and_validate_resume_artifacts(
     ),
     Vec<CliError>,
 > {
-    let run_path = run_dir.join("run.json");
-    let attempts_path = attempts_path(run_dir);
-    let report_path = run_dir.join("report.json");
-    let markdown_path = run_dir.join("report.md");
     let state_dir = run_dir.join("attempt-state");
-    validate_resume_artifact_presence(
-        [&run_path, &attempts_path, &report_path, &markdown_path],
-        &state_dir,
+    validate_run_presence(run_dir)?;
+    validate_required_artifact_file(&attempts_path(run_dir))?;
+    validate_report_presence(run_dir)?;
+    validate_required_artifact_file(
+        &run_dir.join(default_run_artifact_paths(String::new()).report_markdown),
     )?;
+    validate_attempt_state_dir(&state_dir)?;
 
-    let run_artifact: RunArtifact = read_json(&run_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &run_path)])?;
+    let run_artifact = load_run(run_dir)?;
     let attempts = load_attempts(run_dir)?;
-    let report_artifact: ReportArtifact = read_json(&report_path)
-        .map_err(|e| vec![err_at_path("run_artifact_unparseable", e, &report_path)])?;
+    let report_artifact = load_report(run_dir)?;
 
     let expected_attempts = build_attempts(run_id, &suite.prompts, variants, args.replicates);
     let expected_variants: Vec<RunVariantArtifact> = variants
@@ -263,20 +262,7 @@ fn validate_resume_attempt_and_report_identity(
     }
 }
 
-fn validate_resume_artifact_presence(
-    paths: [&Path; 4],
-    state_dir: &Path,
-) -> Result<(), Vec<CliError>> {
-    for path in paths {
-        reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
-        if !directories::experiment_path_is_file(path) {
-            return Err(vec![err_at_path(
-                "run_artifact_missing",
-                format!("Run artifact not found: {}", path.display()),
-                path,
-            )]);
-        }
-    }
+fn validate_attempt_state_dir(state_dir: &Path) -> Result<(), Vec<CliError>> {
     reject_link_or_reparse(state_dir, "run_artifact_link_or_reparse", None)?;
     if !directories::experiment_path_is_dir(state_dir) {
         return Err(vec![err_at_path(
@@ -284,6 +270,82 @@ fn validate_resume_artifact_presence(
             format!("Run artifact directory not found: {}", state_dir.display()),
             state_dir,
         )]);
+    }
+    Ok(())
+}
+
+/// Checks one attempt-state file: name, owning attempt and ownership record.
+/// Mismatches go to `errors`; read failures of the entry abort the walk.
+fn validate_attempt_state_entry(
+    path: &Path,
+    attempt_ids: &HashSet<&str>,
+    attempts_by_id: &BTreeMap<&str, &AttemptArtifact>,
+    workgroup: &RunWorkgroupArtifact,
+    errors: &mut Vec<CliError>,
+) -> Result<(), Vec<CliError>> {
+    reject_link_or_reparse(path, "run_artifact_link_or_reparse", None)?;
+    if !directories::experiment_path_is_file(path) {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!("Attempt-state entry is not a file: {}", path.display()),
+            path,
+        ));
+        return Ok(());
+    }
+    let Some(file_name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!("Attempt-state entry has invalid name: {}", path.display()),
+            path,
+        ));
+        return Ok(());
+    };
+    let attempt_id = file_name
+        .strip_suffix(".running.json")
+        .or_else(|| file_name.strip_suffix(".done.json"));
+    let Some(attempt_id) = attempt_id else {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!(
+                "Attempt-state entry has unsupported name: {}",
+                path.display()
+            ),
+            path,
+        ));
+        return Ok(());
+    };
+    if !attempt_ids.contains(attempt_id) {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            format!(
+                "Attempt-state entry does not match a run attempt: {}",
+                path.display()
+            ),
+            path,
+        ));
+        return Ok(());
+    }
+    let ownership: AttemptOwnershipArtifact = match read_json(path) {
+        Ok(ownership) => ownership,
+        Err(e) => {
+            errors.push(err_at_path("run_artifact_unparseable", e, path));
+            return Ok(());
+        }
+    };
+    if ownership.schema_version != 1 {
+        errors.push(err_at_path(
+            "run_artifact_mismatch",
+            "Attempt ownership schemaVersion must be 1",
+            path,
+        ));
+        return Ok(());
+    }
+    if let Some(attempt) = attempts_by_id.get(attempt_id) {
+        if let Err(mut ownership_errors) =
+            validate_ownership_matches_attempt(&ownership, attempt, workgroup)
+        {
+            errors.append(&mut ownership_errors);
+        }
     }
     Ok(())
 }
@@ -307,75 +369,17 @@ fn validate_attempt_state_contract(
             let (path, _) = entry.map_err(|e| {
                 vec![err_at_path(
                     "run_artifact_unparseable",
-                    format!("Failed to read attempt-state entry: {}", e),
+                    format!("Failed to read attempt-state entry: {e}"),
                     state_dir,
                 )]
             })?;
-            reject_link_or_reparse(&path, "run_artifact_link_or_reparse", None)?;
-            if !directories::experiment_path_is_file(&path) {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!("Attempt-state entry is not a file: {}", path.display()),
-                    &path,
-                ));
-                return Ok(());
-            }
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!("Attempt-state entry has invalid name: {}", path.display()),
-                    &path,
-                ));
-                return Ok(());
-            };
-            let attempt_id = file_name
-                .strip_suffix(".running.json")
-                .or_else(|| file_name.strip_suffix(".done.json"));
-            let Some(attempt_id) = attempt_id else {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!(
-                        "Attempt-state entry has unsupported name: {}",
-                        path.display()
-                    ),
-                    &path,
-                ));
-                return Ok(());
-            };
-            if !attempt_ids.contains(attempt_id) {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    format!(
-                        "Attempt-state entry does not match a run attempt: {}",
-                        path.display()
-                    ),
-                    &path,
-                ));
-                return Ok(());
-            }
-            let ownership: AttemptOwnershipArtifact = match read_json(&path) {
-                Ok(ownership) => ownership,
-                Err(e) => {
-                    errors.push(err_at_path("run_artifact_unparseable", e, &path));
-                    return Ok(());
-                }
-            };
-            if ownership.schema_version != 1 {
-                errors.push(err_at_path(
-                    "run_artifact_mismatch",
-                    "Attempt ownership schemaVersion must be 1",
-                    &path,
-                ));
-                return Ok(());
-            }
-            if let Some(attempt) = attempts_by_id.get(attempt_id) {
-                if let Err(mut ownership_errors) =
-                    validate_ownership_matches_attempt(&ownership, attempt, workgroup)
-                {
-                    errors.append(&mut ownership_errors);
-                }
-            }
-            Ok(())
+            validate_attempt_state_entry(
+                &path,
+                &attempt_ids,
+                &attempts_by_id,
+                workgroup,
+                &mut errors,
+            )
         })();
         match result {
             Ok(()) => std::ops::ControlFlow::Continue(()),
@@ -414,14 +418,14 @@ pub(super) fn replica_root_for_attempt(
         documents::canonical_experiment_role(&workgroup_path).map_err(|e| {
             vec![err_at_path(
                 "run_artifact_mismatch",
-                format!("Failed to canonicalize room: {}", e),
+                format!("Failed to canonicalize room: {e}"),
                 &workgroup_path,
             )]
         })?;
     let canonical_replica = documents::canonical_experiment_role(&replica).map_err(|e| {
         vec![err_at_path(
             "run_artifact_mismatch",
-            format!("Failed to canonicalize replica: {}", e),
+            format!("Failed to canonicalize replica: {e}"),
             &replica,
         )]
     })?;

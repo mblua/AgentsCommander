@@ -26,7 +26,7 @@ pub(super) struct ScreenReplayState {
     /// chunk installs a truncated one. Conservative in one direction only: `false` never
     /// means the front is definitely unsafe, it means nothing proved it safe (#1458).
     pub(super) history_aligned: bool,
-    /// The last grid the ConPTY actually took (rows, cols): recorded by every
+    /// The last grid the `ConPTY` actually took (rows, cols): recorded by every
     /// follow call BEFORE the skippable steps, so a skipped or failed
     /// `set_size` leaves a visible divergence for the attach reconcile (#1439).
     /// On transport backends (container) the follow runs after merely queuing

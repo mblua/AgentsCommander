@@ -10,7 +10,7 @@ use crate::config::agent_path::effective_search_path;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 /// #2736 - resolved install commands with a running install task. Keyed by the
@@ -32,7 +32,7 @@ pub(crate) fn contains_install_command(owner: &AgentInstallState, command: &str)
     owner
         .commands
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .contains(command)
 }
 
@@ -44,7 +44,10 @@ pub(crate) struct InstallInFlight {
 
 impl InstallInFlight {
     pub(crate) fn acquire(owner: Arc<AgentInstallState>, command: &str) -> Result<Self, String> {
-        let mut in_flight = owner.commands.lock().unwrap_or_else(|e| e.into_inner());
+        let mut in_flight = owner
+            .commands
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if !in_flight.insert(command.to_string()) {
             return Err("an install is already running for that command".to_string());
         }
@@ -60,7 +63,7 @@ impl Drop for InstallInFlight {
         self.owner
             .commands
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&self.command);
     }
 }
@@ -200,18 +203,7 @@ pub(crate) fn install_run_from_settlement(
         stderr,
         defects,
     } = settlement;
-    let (ok, exit_code, detail) = if !defects.is_empty() {
-        // A status observed before the defective cleanup is still reported.
-        let observed = match &waited {
-            TargetWait::Exited(Ok(status)) => status.code(),
-            _ => None,
-        };
-        (
-            false,
-            observed,
-            format!("process cleanup defective: {}", defects.join("; ")),
-        )
-    } else {
+    let (ok, exit_code, detail) = if defects.is_empty() {
         match waited {
             TargetWait::TimedOut => (
                 false,
@@ -229,6 +221,17 @@ pub(crate) fn install_run_from_settlement(
             ),
             TargetWait::Cancelled => (false, None, "unexpected cancellation".to_string()),
         }
+    } else {
+        // A status observed before the defective cleanup is still reported.
+        let observed = match &waited {
+            TargetWait::Exited(Ok(status)) => status.code(),
+            _ => None,
+        };
+        (
+            false,
+            observed,
+            format!("process cleanup defective: {}", defects.join("; ")),
+        )
     };
     AgentInstallRun {
         ok,

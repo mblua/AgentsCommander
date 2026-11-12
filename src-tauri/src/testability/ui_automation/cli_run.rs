@@ -1,12 +1,13 @@
-use super::pid_is_alive;
+use super::files::{read_session_file_with_retry, retry_remove_file, write_json_atomic_new};
 #[cfg(target_os = "windows")]
-use super::process_path;
-use super::{
-    current_exe_path_string, now_unix_ms, paths_equal_for_compare, read_session_file_with_retry,
-    retry_remove_file, write_json_atomic_new, CliRequest, UiAutomationRequest,
-    UiAutomationResponse, UiAutomationSession, BACKEND_AUTOMATION_WINDOW,
-    CLI_MAX_AVAILABLE_TARGETS, CLI_MAX_TARGET_TEXT_CHARS, ENV_ENABLE, POLL_MS, REQUESTS_DIR,
-    RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
+use super::liveness::process_path;
+use super::liveness::{
+    current_exe_path_string, now_unix_ms, paths_equal_for_compare, pid_is_alive,
+};
+use super::protocol::{
+    CliRequest, UiAutomationRequest, UiAutomationResponse, UiAutomationSession,
+    BACKEND_AUTOMATION_WINDOW, CLI_MAX_AVAILABLE_TARGETS, CLI_MAX_TARGET_TEXT_CHARS, ENV_ENABLE,
+    POLL_MS, REQUESTS_DIR, RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
 };
 use crate::filesystem::{directories, documents};
 use crate::testability::window_placement::TESTABLE_EXE_NAME;
@@ -148,8 +149,7 @@ fn ensure_cli_automation_directories(automation_dir: &Path) -> Result<(), Value>
 
 pub fn resolve_enabled_from_cli_or_env(ui_automation: bool) -> Result<bool, String> {
     let env_enabled = crate::config::environment::ui_automation_enable(ENV_ENABLE)
-        .ok()
-        .is_some_and(|value| value == "1");
+        .is_ok_and(|value| value == "1");
     let requested = ui_automation || env_enabled;
     if !requested {
         return Ok(false);
@@ -430,7 +430,7 @@ pub(super) fn add_cli_truncation_diagnostics(
     let mut diagnostics = response
         .diagnostics
         .take()
-        .filter(|value| value.is_object())
+        .filter(serde_json::Value::is_object)
         .and_then(|value| match value {
             Value::Object(map) => Some(map),
             _ => None,
@@ -445,11 +445,11 @@ pub(super) fn add_cli_truncation_diagnostics(
 
 pub(super) fn print_stdout_json<T: Serialize>(value: &T) {
     match serde_json::to_string(value) {
-        Ok(json) => crate::cli_println!("{json}"),
-        Err(e) => crate::cli_println!(
+        Ok(json) => crate::cli::stdout::print_stdout(format_args!("{json}")),
+        Err(e) => crate::cli::stdout::print_stdout(format_args!(
             "{{\"ok\":false,\"error\":\"json_serialize_failed\",\"message\":{}}}",
             serde_json::to_string(&e.to_string()).unwrap_or_else(|_| "\"unknown\"".to_string())
-        ),
+        )),
     }
 }
 

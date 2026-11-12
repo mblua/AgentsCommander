@@ -29,113 +29,113 @@ struct MatrixRow {
     contributed: bool,
 }
 
+/// The #871 classification matrix rows pinned below.
+const MATRIX_ROWS: &[MatrixRow] = &[
+    MatrixRow {
+        label: "printable run",
+        chunk: b"hello",
+        from_clear: (true, false),
+        from_pending: (true, false),
+        contributed: true,
+    },
+    MatrixRow {
+        label: "printable run then CR",
+        chunk: b"hello\r",
+        from_clear: (false, true),
+        from_pending: (false, true),
+        contributed: true,
+    },
+    MatrixRow {
+        label: "bare CR",
+        chunk: b"\r",
+        from_clear: (false, false),
+        from_pending: (false, true),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "bare LF",
+        chunk: b"\n",
+        from_clear: (false, false),
+        from_pending: (false, true),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "space",
+        chunk: b" ",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "tab",
+        chunk: b"\t",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "backspace",
+        chunk: b"\x08",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "DEL",
+        chunk: b"\x7f",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "Ctrl-C",
+        chunk: b"\x03",
+        from_clear: (false, false),
+        from_pending: (false, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "Ctrl-U",
+        chunk: b"\x15",
+        from_clear: (false, false),
+        from_pending: (false, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "Ctrl-D",
+        chunk: b"\x04",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "SS3 arrow key",
+        chunk: b"\x1bOA",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "DCS reply",
+        chunk: b"\x1bP1$r0m\x1b\\",
+        from_clear: (false, false),
+        from_pending: (true, false),
+        contributed: false,
+    },
+    MatrixRow {
+        label: "bracketed paste",
+        chunk: b"\x1b[200~hi\x1b[201~",
+        from_clear: (true, false),
+        from_pending: (true, false),
+        contributed: true,
+    },
+];
 /// #1682 regression guard on #871. `classify_chunk` is #871's classifier and
 /// #1682 is only a consumer of it, so this pins what the classifier does to
 /// `pending_nonspace` and to `submitted` for every chunk class the fix
 /// touches, from BOTH starting states, independently of the new field.
 #[test]
 fn classify_chunk_matrix_pins_871_pending_and_submitted() {
-    let rows: &[MatrixRow] = &[
-        MatrixRow {
-            label: "printable run",
-            chunk: b"hello",
-            from_clear: (true, false),
-            from_pending: (true, false),
-            contributed: true,
-        },
-        MatrixRow {
-            label: "printable run then CR",
-            chunk: b"hello\r",
-            from_clear: (false, true),
-            from_pending: (false, true),
-            contributed: true,
-        },
-        MatrixRow {
-            label: "bare CR",
-            chunk: b"\r",
-            from_clear: (false, false),
-            from_pending: (false, true),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "bare LF",
-            chunk: b"\n",
-            from_clear: (false, false),
-            from_pending: (false, true),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "space",
-            chunk: b" ",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "tab",
-            chunk: b"\t",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "backspace",
-            chunk: b"\x08",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "DEL",
-            chunk: b"\x7f",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "Ctrl-C",
-            chunk: b"\x03",
-            from_clear: (false, false),
-            from_pending: (false, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "Ctrl-U",
-            chunk: b"\x15",
-            from_clear: (false, false),
-            from_pending: (false, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "Ctrl-D",
-            chunk: b"\x04",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "SS3 arrow key",
-            chunk: b"\x1bOA",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "DCS reply",
-            chunk: b"\x1bP1$r0m\x1b\\",
-            from_clear: (false, false),
-            from_pending: (true, false),
-            contributed: false,
-        },
-        MatrixRow {
-            label: "bracketed paste",
-            chunk: b"\x1b[200~hi\x1b[201~",
-            from_clear: (true, false),
-            from_pending: (true, false),
-            contributed: true,
-        },
-    ];
-
     // The six reviewer classes classify exactly like the arrow key: they
     // leave `pending` alone and submit nothing from either starting state.
     let reviewer_rows: Vec<MatrixRow> = NON_CONTRIBUTING_CHUNKS
@@ -149,7 +149,7 @@ fn classify_chunk_matrix_pins_871_pending_and_submitted() {
         })
         .collect();
 
-    for row in rows.iter().chain(reviewer_rows.iter()) {
+    for row in MATRIX_ROWS.iter().chain(reviewer_rows.iter()) {
         let mut pending = false;
         let effect = classify_chunk(&mut pending, row.chunk);
         assert_eq!(
@@ -198,23 +198,17 @@ fn an_abandoned_line_ages_out_under_a_stream_of_non_submit_chunks() {
 
     let forever = Duration::from_secs(3600);
     for &(label, chunk) in NON_CONTRIBUTING_CHUNKS {
-        assert!(
-            !t.feed(id, chunk),
-            "{}: must not report a submission",
-            label
-        );
+        assert!(!t.feed(id, chunk), "{label}: must not report a submission");
         assert!(
             !t.pending_within(id, USER_WRITE_STAMP_WINDOW),
-            "{}: must not refresh a line abandoned before it arrived",
-            label
+            "{label}: must not refresh a line abandoned before it arrived"
         );
         // #871's flag itself is untouched: it is the AGE that expired, not
         // `pending_nonspace`, which only CR/LF-with-content, Ctrl-C/Ctrl-U
         // and `reset` may clear.
         assert!(
             t.pending_within(id, forever),
-            "{}: must leave `pending_nonspace` set",
-            label
+            "{label}: must leave `pending_nonspace` set"
         );
     }
 

@@ -58,15 +58,14 @@ fn upsert_dedup_strips_trailing_separator() {
     let _ = register_existing_project(&mut s, &original).unwrap();
     // Add `\` (or `/` on POSIX) to simulate shell tab-completion.
     let with_trailing = if cfg!(windows) {
-        format!("{}\\", original)
+        format!("{original}\\")
     } else {
-        format!("{}/", original)
+        format!("{original}/")
     };
     let r2 = register_existing_project(&mut s, &with_trailing).unwrap();
     assert!(
         !r2.registered,
-        "trailing-separator variant should dedup: {} vs {}",
-        original, with_trailing
+        "trailing-separator variant should dedup: {original} vs {with_trailing}"
     );
     assert_eq!(s.project_paths.len(), 1);
 }
@@ -202,22 +201,19 @@ fn project_registration_serializes_camel_case() {
         created: false,
     };
     let json = serde_json::to_string(&r).unwrap();
-    assert!(json.contains("\"path\""), "missing path field: {}", json);
+    assert!(json.contains("\"path\""), "missing path field: {json}");
     assert!(
         json.contains("\"registered\""),
-        "missing registered field: {}",
-        json
+        "missing registered field: {json}"
     );
     assert!(
         json.contains("\"created\""),
-        "missing created field: {}",
-        json
+        "missing created field: {json}"
     );
     // No snake_case relics from any current field name.
     assert!(
         !json.contains("ac_root"),
-        "snake_case field name leaked: {}",
-        json
+        "snake_case field name leaked: {json}"
     );
 
     let archived = ArchivedProject {
@@ -229,17 +225,14 @@ fn project_registration_serializes_camel_case() {
     let json = serde_json::to_string(&archived).unwrap();
     assert!(
         json.contains("\"folderName\""),
-        "missing folderName field: {}",
-        json
+        "missing folderName field: {json}"
     );
     assert!(
         json.contains("\"hasWorkspace\""),
-        "missing hasWorkspace field: {}",
-        json
+        "missing hasWorkspace field: {json}"
     );
     assert!(
         !json.contains("folder_name") && !json.contains("has_workspace"),
-        "snake_case archived field leaked: {}",
-        json
+        "snake_case archived field leaked: {json}"
     );
 }

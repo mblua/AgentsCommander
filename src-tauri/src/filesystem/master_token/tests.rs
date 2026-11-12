@@ -72,3 +72,76 @@ fn each_call_reads_the_current_file() {
     assert!(!matches(Some(dir.path()), "first"));
     assert!(matches(Some(dir.path()), "second"));
 }
+
+#[test]
+fn publish_master_token_exact_bytes() {
+    let config = tempfile::tempdir().unwrap();
+    let value = "exact-é";
+    publish(config.path(), value).unwrap();
+    assert_eq!(
+        std::fs::read(config.path().join(FILE_NAME)).unwrap(),
+        value.as_bytes()
+    );
+}
+
+#[test]
+fn publish_master_token_truncates() {
+    let config = tempfile::tempdir().unwrap();
+    publish(config.path(), "long-existing-value").unwrap();
+    publish(config.path(), "short").unwrap();
+    assert_eq!(
+        std::fs::read(config.path().join(FILE_NAME)).unwrap(),
+        b"short"
+    );
+}
+
+#[test]
+fn publish_master_token_missing_directory() {
+    let config = tempfile::tempdir().unwrap();
+    let missing = config.path().join("missing");
+    assert!(publish(&missing, "value").is_err());
+    assert!(!missing.exists());
+}
+
+#[test]
+fn publish_master_token_round_trip() {
+    let config = tempfile::tempdir().unwrap();
+    let value = "round-trip-token";
+    publish(config.path(), value).unwrap();
+    assert!(matches(Some(config.path()), "round-trip-token"));
+}
+
+#[test]
+fn bounded_regular_accepts_file_exactly_at_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), "12345678").unwrap();
+    assert!(matches_bounded_regular(dir.path(), "12345678", 8));
+}
+
+#[test]
+fn bounded_regular_rejects_file_over_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), "123456789").unwrap();
+    assert!(!matches_bounded_regular(dir.path(), "123456789", 8));
+}
+
+#[test]
+fn bounded_regular_invalid_utf8_does_not_match() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), b"\xffToken").unwrap();
+    assert!(!matches_bounded_regular(
+        dir.path(),
+        "\u{FFFD}Token",
+        8 * 1024
+    ));
+    assert!(!matches_bounded_regular(dir.path(), "Token", 8 * 1024));
+}
+
+#[test]
+fn bounded_regular_trims_only_persisted_text() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(FILE_NAME), " \r\nToken\r\n ").unwrap();
+    assert!(matches_bounded_regular(dir.path(), "Token", 8 * 1024));
+    assert!(!matches_bounded_regular(dir.path(), " Token", 8 * 1024));
+    assert!(!matches_bounded_regular(dir.path(), "token", 8 * 1024));
+}

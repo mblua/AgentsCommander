@@ -14,7 +14,7 @@ pub const USER_HOME_PLACEHOLDER: &str = "%USER_HOME%";
 
 /// Single source of truth for the AC path-placeholder token set. Every site that
 /// gates on, validates, or scans these tokens MUST iterate this list, so adding a
-/// token wires the gate AND the CODEX_HOME validators at once (the #576 hard rule).
+/// token wires the gate AND the `CODEX_HOME` validators at once (the #576 hard rule).
 /// Expansion in `expand_placeholders` stays as explicit per-token `if` blocks: each
 /// token has its own root field + error and fails closed if forgotten, so a loop
 /// there would obscure more than it saves.
@@ -95,12 +95,12 @@ fn derive_matrix_root(canonical: &Path, ac_root: Option<&Path>) -> Option<PathBu
     }
     let agent_name = canonical
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix("__agent_"))
         .filter(|name| {
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         })?;
-    ac_root.map(|ac_root| ac_root.join(format!("_agent_{}", agent_name)))
+    ac_root.map(|ac_root| ac_root.join(format!("_agent_{agent_name}")))
 }
 
 pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<String, String> {
@@ -156,8 +156,7 @@ fn user_home() -> Option<&'static Path> {
             if home.is_none() {
                 log::warn!(
                     "[placeholders] home directory is undeterminable; \
-                     {} stays literal in seeded content",
-                    USER_HOME_PLACEHOLDER
+                     {USER_HOME_PLACEHOLDER} stays literal in seeded content"
                 );
             }
             home
@@ -262,26 +261,25 @@ fn strip_extended_prefix(path: PathBuf) -> PathBuf {
 }
 
 fn is_ac_replica_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
     if !name.starts_with("__agent_") {
         return false;
     }
     path.parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
         .is_some_and(crate::config::entity_prefix::has_entity_prefix)
 }
 
 fn is_root_agent_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
     name.eq_ignore_ascii_case(crate::config::root_agent::ROOT_AGENT_DIR_NAME)
         && crate::config::root_agent::root_agent_dir()
-            .map(|root| same_path_text(&PathBuf::from(root), path))
-            .unwrap_or(false)
+            .is_ok_and(|root| same_path_text(&PathBuf::from(root), path))
 }
 
 #[cfg(windows)]

@@ -4,13 +4,13 @@ pub(super) fn require_str(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| format!("Missing required field: {}", key))
+        .ok_or_else(|| format!("Missing required field: {key}"))
 }
 
 /// #973 - a terminal dimension off the wire, for `pty_resize`.
 ///
 /// This is a network-facing input path, and `as u16` SILENTLY TRUNCATES: `cols: 65536` arrives
-/// at the PTY as **0**, and `cols: 65537` as **1**. A zero-column ConPTY is precisely what #973
+/// at the PTY as **0**, and `cols: 65537` as **1**. A zero-column `ConPTY` is precisely what #973
 /// exists to keep out, and a one-column one is not much better - both from a number that looked
 /// perfectly plausible on the wire.
 ///
@@ -20,7 +20,7 @@ pub(super) fn require_str(args: &Value, key: &str) -> Result<String, String> {
 /// one that is PRESENT and cannot be a terminal dimension is an error.
 ///
 /// A zero is deliberately NOT an error here, and the reason is NOT that a legitimate client sends
-/// one - it cannot. xterm's `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1, so a zero on
+/// one - it cannot. xterm's `fit()` clamps to `MINIMUM_COLS` = 2 / `MINIMUM_ROWS` = 1, so a zero on
 /// this path means a client that is not xterm, or is broken, or is hostile. This function is what
 /// stands between such a client and the PTY.
 ///
@@ -41,7 +41,7 @@ pub(super) fn terminal_dimension(args: &Value, key: &str, default: u16) -> Resul
     value
         .as_u64()
         .and_then(|n| u16::try_from(n).ok())
-        .ok_or_else(|| format!("Invalid field {}: not a terminal dimension: {}", key, value))
+        .ok_or_else(|| format!("Invalid field {key}: not a terminal dimension: {value}"))
 }
 
 pub(super) fn require_json<T>(args: &Value, key: &str) -> Result<T, String>
@@ -51,24 +51,23 @@ where
     let value = args
         .get(key)
         .cloned()
-        .ok_or_else(|| format!("Missing required field: {}", key))?;
-    serde_json::from_value(value).map_err(|e| format!("Invalid field {}: {}", key, e))
+        .ok_or_else(|| format!("Missing required field: {key}"))?;
+    serde_json::from_value(value).map_err(|e| format!("Invalid field {key}: {e}"))
 }
 
 pub(super) fn str_or(args: &Value, key: &str, default: &str) -> String {
     args.get(key)
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| default.to_string())
+        .map_or_else(|| default.to_string(), String::from)
 }
 
 pub(super) fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
-    args.get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
+    args.get(key).and_then(|v| v.as_array()).map_or_else(
+        || default.to_vec(),
+        |arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        })
-        .unwrap_or_else(|| default.to_vec())
+        },
+    )
 }

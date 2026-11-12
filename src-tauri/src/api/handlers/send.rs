@@ -44,14 +44,13 @@ async fn handle_inner(
 ) -> Result<(StatusCode, SendResponse), ApiError> {
     if body.len() > MAX_BODY_BYTES {
         return Err(ApiError::PayloadTooLarge(format!(
-            "request body too large (>{} bytes)",
-            MAX_BODY_BYTES
+            "request body too large (>{MAX_BODY_BYTES} bytes)"
         )));
     }
 
     // deny_unknown_fields rejects forbidden identity fields at parse time.
     let req: SendRequest = serde_json::from_slice(body)
-        .map_err(|e| ApiError::BadRequest(format!("invalid request body: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
 
     // Auth + scope. Identity comes from the token, never the body.
     let client = handlers::authenticate(state, headers, ip, SCOPE_SEND)?;
@@ -130,8 +129,7 @@ fn extract_payload(bound_root: &str, req: &SendRequest) -> Result<Payload, ApiEr
         (None, Some(inline)) => {
             if inline.len() > INLINE_BODY_MAX_BYTES {
                 return Err(ApiError::PayloadTooLarge(format!(
-                    "message.inline exceeds inline cap ({} bytes)",
-                    INLINE_BODY_MAX_BYTES
+                    "message.inline exceeds inline cap ({INLINE_BODY_MAX_BYTES} bytes)"
                 )));
             }
             Ok(Payload {
@@ -168,8 +166,7 @@ fn store_error_with_archive_warning(error: MessageStoreError, warning: Option<&s
 fn store_error(err: MessageStoreError) -> ApiError {
     match err {
         MessageStoreError::BodyTooLarge => ApiError::PayloadTooLarge(format!(
-            "message body exceeds inline cap ({} bytes)",
-            INLINE_BODY_MAX_BYTES
+            "message body exceeds inline cap ({INLINE_BODY_MAX_BYTES} bytes)"
         )),
         other => ApiError::Internal(other.to_string()),
     }

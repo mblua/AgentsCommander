@@ -1,14 +1,15 @@
-use std::path::PathBuf;
 use tauri::State;
 
 use sha2::{Digest, Sha256};
 
-use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::config::projects::{
     display_canonical, IssueKind, ProjectPathPersistenceState, ProjectSource, RawJsonField,
     RawStringField, ResolvedPair, SideStatus, StructuralIssue,
 };
-use crate::config::settings::{AppSettings, SettingsState, OVERLAY_KEY_AGENTS};
+use crate::config::settings::{
+    instance_settings_display_path, instance_settings_target, AppSettings, SettingsFileTarget,
+    SettingsState, OVERLAY_KEY_AGENTS,
+};
 
 // ── #1077 SettingsSnapshot: the get_settings client response ────────────────
 
@@ -194,7 +195,7 @@ pub(crate) fn compute_issue_id(
     ]);
     let serialized = serde_json::to_string(&tuple).unwrap_or_default();
     let digest = Sha256::digest(serialized.as_bytes());
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub(crate) fn side_status_label(status: SideStatus) -> &'static str {
@@ -349,11 +350,10 @@ pub(crate) fn settings_snapshot_from(
         settings: cleaned,
         project_path_resolution: resolution,
         // #1347: derived from the process instance location, deliberately NOT
-        // from `settings_snapshot_helper`'s injectable `settings_path`, which is
+        // from `settings_snapshot_helper`'s injectable target, which is
         // a test-only reconciliation write target and not a client-facing
-        // location. Same expression already used at the reconciliation site.
-        settings_file_path: crate::config::config_dir()
-            .map(|d| d.join(SETTINGS_FILE_NAME).to_string_lossy().into_owned()),
+        // location. The owner preserves the existing display expression.
+        settings_file_path: instance_settings_display_path(),
         overlay_owns_agents: settings
             .local_overlay_state
             .owns_top_level(OVERLAY_KEY_AGENTS),
@@ -365,23 +365,20 @@ pub(crate) fn settings_snapshot_from(
     }
 }
 
-/// The shared, path-injectable settings-snapshot helper. At the first snapshot
+/// The shared, target-injectable settings-snapshot helper. At the first snapshot
 /// boundary it reconciles any eligible pending repair to disk (§4.3), then
-/// returns the report. Tests inject `settings_path`; production resolves it.
+/// returns the report. Tests inject a target; production resolves it.
 pub(crate) async fn settings_snapshot_helper(
     settings: &SettingsState,
-    settings_path: Option<PathBuf>,
+    target: Option<SettingsFileTarget>,
 ) -> SettingsSnapshot {
-    let path =
-        settings_path.or_else(|| crate::config::config_dir().map(|d| d.join(SETTINGS_FILE_NAME)));
+    let target = target.or_else(instance_settings_target);
     // State precedes the file lock. Disk work runs off the runtime worker;
     // no file lock or transaction survives an await.
     let mut guard = settings.clone().write_owned().await;
     let task = tokio::task::spawn_blocking(move || {
-        let result = match path {
-            Some(path) => {
-                crate::config::settings::repair_fresh_project_paths_at_path(&mut guard, &path)
-            }
+        let result = match target {
+            Some(target) => target.repair_project_paths(&mut guard),
             None => {
                 let message = "Could not determine project settings path".to_string();
                 guard.project_paths_persistence_error = Some(message.clone());

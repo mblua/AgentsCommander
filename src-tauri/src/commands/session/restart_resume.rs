@@ -62,7 +62,9 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
     let typing_pending = match app.try_state::<crate::pty::input_activity::SubstantiveInputState>()
     {
         Some(state) => {
-            let tracker = state.lock().unwrap_or_else(|e| e.into_inner());
+            let tracker = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             tracker.pending_within(id, crate::pty::input_activity::USER_WRITE_STAMP_WINDOW)
         }
         None => false,
@@ -82,7 +84,7 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
         Ok(true) => {}
         Ok(false) => return,
         Err(e) => {
-            log::warn!("Failed to persist lastAgentMessageAt for {}: {}", id, e);
+            log::warn!("Failed to persist lastAgentMessageAt for {id}: {e}");
             return;
         }
     }

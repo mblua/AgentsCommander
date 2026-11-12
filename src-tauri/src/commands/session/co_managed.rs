@@ -90,13 +90,12 @@ pub(crate) async fn co_managed_inputs_for_session<R: Runtime>(
         .and_then(|ac_root| {
             crate::config::teams::resolve_wg_coordinator_replica(ac_root, room_root)
         })
-        .map(|resolved| {
+        .is_some_and(|resolved| {
             co_managed_same_directory(
                 &resolved.replica_dir,
                 std::path::Path::new(&session.working_directory),
             )
-        })
-        .unwrap_or(false);
+        });
 
     let reader = crate::commands::telegram::derive_reader(
         &session.shell,
@@ -202,7 +201,7 @@ pub(crate) async fn release_room_reader_demand<R: Runtime>(app: &AppHandle<R>, s
 }
 
 /// The provider name that reaches `OffReason::UnsupportedProvider`; it matches
-/// `CodingAgentKind`'s snake_case wire form.
+/// `CodingAgentKind`'s `snake_case` wire form.
 pub(crate) fn co_managed_provider_label(kind: Option<CodingAgentKind>) -> &'static str {
     match kind {
         Some(CodingAgentKind::Claude) => "claude",
@@ -244,24 +243,24 @@ impl<R: Runtime> crate::reader_demand::ReaderDemandHost for AppHandle<R> {
             .map(|state| state.inner())
     }
 
-    fn holds_room_reader_demand<'a>(
-        &'a self,
+    fn holds_room_reader_demand(
+        &self,
         session_id: Uuid,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+    ) -> impl std::future::Future<Output = bool> + Send + '_ {
         crate::commands::telegram::holds_room_reader_demand(self, session_id)
     }
 
-    fn raise_room_reader_demand<'a>(
-        &'a self,
+    fn raise_room_reader_demand(
+        &self,
         session_id: Uuid,
-    ) -> impl std::future::Future<Output = bool> + Send + 'a {
+    ) -> impl std::future::Future<Output = bool> + Send + '_ {
         crate::commands::session::raise_room_reader_demand(self, session_id)
     }
 
-    fn release_room_reader_demand<'a>(
-        &'a self,
+    fn release_room_reader_demand(
+        &self,
         session_id: Uuid,
-    ) -> impl std::future::Future<Output = ()> + Send + 'a {
+    ) -> impl std::future::Future<Output = ()> + Send + '_ {
         crate::commands::session::co_managed::release_room_reader_demand(self, session_id)
     }
 

@@ -95,24 +95,7 @@ async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
     )
     .await;
 
-    let mine = p4_lines_since(before, &p4_short(session_id));
-    assert!(
-        mine.iter().any(|line| line.contains("cycle start")),
-        "positive control: this run's cycle-start line must be captured: {mine:?}"
-    );
-    assert!(
-        mine.iter().any(|line| line.contains("jev classify")),
-        "positive control: this run's classify line must be captured: {mine:?}"
-    );
-    let all = crate::logging::test_tee_snapshot();
-    assert!(
-        !all.iter().any(|line| line.contains(CANDIDATE_MARKER)),
-        "candidate text leaked into the log"
-    );
-    assert!(
-        !all.iter().any(|line| line.contains(KEY_MARKER)),
-        "the API key leaked into the log"
-    );
+    assert_cycle_logs_hide_secrets(before, session_id, CANDIDATE_MARKER, KEY_MARKER);
 
     // E2 marker 1: a catalog whose `categories` key holds `A"MARK1"A`,
     // which serde escapes. Readiness rejects such a catalog before a
@@ -136,20 +119,7 @@ async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
     let returned =
         crate::capture::jev::classify(&network, &settings, &catalog, "text", &catalog_tag).await;
     let catalog_lines = p4_lines_since(before, &catalog_tag);
-    assert!(
-        matches!(
-            &returned,
-            crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(MARK1)
-        ),
-        "the RETURNED reason is unchanged: {returned:?}"
-    );
-    assert!(
-        catalog_lines
-            .iter()
-            .any(|line| line
-                .contains("catalog invalid: catalog is not valid JSON: <redacted len=")),
-        "the class label and length must survive: {catalog_lines:?}"
-    );
+    assert_invalid_catalog_log_redacted(&returned, &catalog_lines, MARK1);
 
     // E2 markers 2 and 3: a raw `"MARK2"` response id (the round-7
     // bypass) and an id mimicking an allowlisted prefix.
@@ -203,6 +173,53 @@ async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
             "untrusted bytes {marker} leaked into the log"
         );
     }
+}
+
+fn assert_invalid_catalog_log_redacted(
+    returned: &crate::capture::jev::ClassifyOutcome,
+    catalog_lines: &[String],
+    marker: &str,
+) {
+    assert!(
+        matches!(
+            returned,
+            crate::capture::jev::ClassifyOutcome::Abstained { reason } if reason.contains(marker)
+        ),
+        "the RETURNED reason is unchanged: {returned:?}"
+    );
+    assert!(
+        catalog_lines
+            .iter()
+            .any(|line| line
+                .contains("catalog invalid: catalog is not valid JSON: <redacted len=")),
+        "the class label and length must survive: {catalog_lines:?}"
+    );
+}
+
+fn assert_cycle_logs_hide_secrets(
+    before: usize,
+    session_id: uuid::Uuid,
+    candidate: &str,
+    key: &str,
+) {
+    let mine = p4_lines_since(before, &p4_short(session_id));
+    assert!(
+        mine.iter().any(|line| line.contains("cycle start")),
+        "positive control: this run's cycle-start line must be captured: {mine:?}"
+    );
+    assert!(
+        mine.iter().any(|line| line.contains("jev classify")),
+        "positive control: this run's classify line must be captured: {mine:?}"
+    );
+    let all = crate::logging::test_tee_snapshot();
+    assert!(
+        !all.iter().any(|line| line.contains(candidate)),
+        "candidate text leaked into the log"
+    );
+    assert!(
+        !all.iter().any(|line| line.contains(key)),
+        "the API key leaked into the log"
+    );
 }
 
 /// #2455 test 8 (D, round 7): the request-build and malformed-body legs

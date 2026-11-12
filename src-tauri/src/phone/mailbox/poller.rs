@@ -8,10 +8,13 @@ use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{
     current_response_row, ResponseCandidateAttempt, ResponseRequestCandidate, ResponseWakeWork,
 };
+use super::refresh::ProjectRefreshRequest;
 #[cfg(test)]
 use super::tests::ClearObservationProbe;
-use crate::config::settings::SettingsState;
 use crate::filesystem::phone_mailbox as mailbox_disk;
+use crate::phone::mailbox::host::MailboxHost;
+use crate::phone::mailbox::pty_observation::WakeDeliveryState;
+use crate::phone::mailbox::response_observation::ResponseCompletionState;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
@@ -22,7 +25,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use uuid::Uuid;
 
 pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
@@ -31,13 +33,9 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
     }
 
     let mut entries: Vec<PathBuf> = match mailbox_disk::mailbox_directory_paths(requests_dir) {
-        Ok(rd) => rd.filter_map(|entry| entry.ok()).collect(),
+        Ok(rd) => rd.filter_map(Result::ok).collect(),
         Err(e) => {
-            log::warn!(
-                "[project-refresh-requests] Failed to read {:?}: {}",
-                requests_dir,
-                e
-            );
+            log::warn!("[project-refresh-requests] Failed to read {requests_dir:?}: {e}");
             return ProjectRefreshPollBatch::default();
         }
     };
@@ -48,35 +46,26 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
     let mut project_order: Vec<String> = Vec::new();
 
     for path in entries {
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
             continue;
         }
 
         let content = match read_text_bom_tolerant(&path) {
             Ok(c) => c,
             Err(e) => {
-                log::warn!(
-                    "[project-refresh-requests] Failed to read {:?}: {}",
-                    path,
-                    e
-                );
+                log::warn!("[project-refresh-requests] Failed to read {path:?}: {e}");
                 continue;
             }
         };
 
-        let mut request: crate::cli::create_agent_matrix::ProjectRefreshRequest =
-            match serde_json::from_str(&content) {
-                Ok(r) => r,
-                Err(e) => {
-                    log::warn!(
-                        "[project-refresh-requests] Failed to parse {:?}: {}",
-                        path,
-                        e
-                    );
-                    let _ = mailbox_disk::remove_mailbox_artifact(&path);
-                    continue;
-                }
-            };
+        let mut request: ProjectRefreshRequest = match serde_json::from_str(&content) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[project-refresh-requests] Failed to parse {path:?}: {e}");
+                let _ = mailbox_disk::remove_mailbox_artifact(&path);
+                continue;
+            }
+        };
 
         let canonical_project_path = canonical_project_refresh_path(&request.project_path);
         request.project_path = canonical_project_path.clone();
@@ -116,9 +105,9 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
 /// any failure rename the claim back before the outcome is sent, so by the
 /// time the scanner drains it the origin path is valid again and the
 /// retry/reject block sees a real file.
-pub(crate) async fn deliver_claimed_wake<R: tauri::Runtime>(
+pub(crate) async fn deliver_claimed_wake<S: MailboxHost>(
     delivery: &MailboxPoller,
-    app: &tauri::AppHandle<R>,
+    app: &S,
     claim: &Path,
     origin: &Path,
     validated: &ValidatedWake,
@@ -185,8 +174,10 @@ pub(crate) struct PreparedResponseRequest {
     pub(crate) roots: Vec<String>,
 }
 
-pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn reserve_response_request_at_write<
+    S: WakeDeliveryState + ResponseCompletionState + ?Sized,
+>(
+    app: &S,
     current: &crate::session::manager::CarrierSnapshot,
     session: &Session,
     prepared: &PreparedResponseRequest,
@@ -202,7 +193,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     }
     if app
-        .try_state::<crate::session::selection::SelectionCoordinator>()
+        .response_selection()
         .is_some_and(|coordinator| coordinator.restore_is_active())
     {
         response_diag_local!(
@@ -212,7 +203,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     }
-    let settings = app.state::<SettingsState>().inner().clone();
+    let settings = app.pty_settings().clone();
     let Ok(settings) = settings.try_read_owned() else {
         response_diag_local!(
             "prewrite_reserve",
@@ -234,14 +225,34 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
     else {
         return;
     };
-    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let Some(member_route) = response_request_member_route(&pty, member, work) else {
+    let pty = app.pty_routes().clone();
+    reserve_with_routes(
+        &pty,
+        &settings,
+        prepared,
+        work,
+        attempt,
+        (member, coordinator),
+    );
+}
+
+/// Verifies the member and coordinator routes, holds the coordinator authority
+/// lock and publishes the response-request candidate while that lock is held.
+fn reserve_with_routes(
+    pty: &Arc<Mutex<PtyManager>>,
+    settings: &crate::config::settings::AppSettings,
+    prepared: &PreparedResponseRequest,
+    work: &ResponseWakeWork,
+    attempt: &ResponseCandidateAttempt,
+    (member, coordinator): (&Session, &Session),
+) {
+    let Some(member_route) = response_request_member_route(pty, member, work) else {
         return;
     };
     let Some(replica) = member_route.saved_replica() else {
         return;
     };
-    let Ok(coordinator_route) = PtyManager::snapshot_route_proof(&pty, coordinator.id) else {
+    let Ok(coordinator_route) = PtyManager::snapshot_route_proof(pty, coordinator.id) else {
         response_diag_local!(
             "prewrite_reserve",
             "coordinator_route_missing",
@@ -249,7 +260,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         );
         return;
     };
-    let Ok(authority) = PtyManager::authority_route_proof(&pty, coordinator.id) else {
+    let Ok(authority) = PtyManager::authority_route_proof(pty, coordinator.id) else {
         response_diag_local!(
             "prewrite_reserve",
             "coordinator_authority_missing",
@@ -293,7 +304,7 @@ pub(crate) fn reserve_response_request_at_write<R: tauri::Runtime>(
         member,
         coordinator,
         replica,
-        &settings,
+        settings,
     );
 }
 
@@ -506,7 +517,7 @@ pub(crate) struct OwnedPeerWakeExecution {
     pub(crate) delivery: (WakeDeliveryOrigin, bool),
     pub(crate) response: Option<ResponseWakeWork>,
     pub(crate) flags_present: bool,
-    pub(crate) request: crate::commands::session::OwnedReplacementCreateRequest,
+    pub(crate) request: crate::session::create_contracts::OwnedReplacementCreateRequest,
     pub(crate) resolved_command: ResolvedWakeAgentCommand,
     pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
     pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
@@ -523,7 +534,7 @@ pub(crate) struct OwnedPeerTarget {
 }
 
 pub(crate) fn owned_replacement_launch_recipe(
-    request: &crate::commands::session::OwnedReplacementCreateRequest,
+    request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
 ) -> serde_json::Value {
     let configured = request.resolved_spawn.as_ref().map(|spawn| {
         let seed = spawn.seed.as_ref().map(|seed| {
@@ -634,7 +645,7 @@ pub(crate) struct PurgePeerResult {
 /// four-leg test:
 ///   1. `activity_age >= effective_quiet` (printable silence)
 ///   2. `watcher_idle` (watcher agreement)
-///   3. `mirror_idle` (SessionManager agreement)
+///   3. `mirror_idle` (`SessionManager` agreement)
 ///   4. `resize_settled` (F-1: activity readings are trustworthy)
 pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration) -> PurgeDecision {
     let mut passed = true;
@@ -758,13 +769,12 @@ impl Default for MailboxPoller {
 /// odd encoding into outbox / session-requests (typically PowerShell on Windows).
 pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
     let bytes = mailbox_disk::read_mailbox_message(path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+        .map_err(|e| format!("Failed to read file: {e}"))?;
 
     if bytes.starts_with(&[0xFF, 0xFE]) {
         log::warn!(
-            "[bom] UTF-16 LE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 \
-            without BOM)",
-            path
+            "[bom] UTF-16 LE BOM detected in {path:?} — decoding to UTF-8 (writer should use UTF-8 \
+            without BOM)"
         );
         let u16_data: Vec<u16> = bytes[2..]
             .as_chunks::<2>()
@@ -775,9 +785,8 @@ pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xFE, 0xFF]) {
         log::warn!(
-            "[bom] UTF-16 BE BOM detected in {:?} — decoding to UTF-8 (writer should use UTF-8 \
-            without BOM)",
-            path
+            "[bom] UTF-16 BE BOM detected in {path:?} — decoding to UTF-8 (writer should use UTF-8 \
+            without BOM)"
         );
         let u16_data: Vec<u16> = bytes[2..]
             .as_chunks::<2>()
@@ -788,13 +797,11 @@ pub(crate) fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
         Ok(String::from_utf16_lossy(&u16_data))
     } else if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         log::warn!(
-            "[bom] UTF-8 BOM detected in {:?} — stripping (writer should use UTF-8 without BOM)",
-            path
+            "[bom] UTF-8 BOM detected in {path:?} — stripping (writer should use UTF-8 without BOM)"
         );
-        String::from_utf8(bytes[3..].to_vec())
-            .map_err(|e| format!("Invalid UTF-8 after BOM: {}", e))
+        String::from_utf8(bytes[3..].to_vec()).map_err(|e| format!("Invalid UTF-8 after BOM: {e}"))
     } else {
-        String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {}", e))
+        String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))
     }
 }
 

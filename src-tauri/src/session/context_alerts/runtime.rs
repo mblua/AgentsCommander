@@ -104,8 +104,7 @@ impl ProductionContextAlertRuntime {
             Ok(resolution) => resolution,
             Err(error) => {
                 return MemberPolicyResolution::RetryableFailure(format!(
-                    "Member policy blocking task failed for session {}: {}",
-                    session_id, error
+                    "Member policy blocking task failed for session {session_id}: {error}"
                 ));
             }
         };
@@ -204,8 +203,7 @@ impl ProductionContextAlertRuntime {
             Ok(Err(error)) => return AttemptPreparation::RetryableFailure(error),
             Err(error) => {
                 return AttemptPreparation::RetryableFailure(format!(
-                    "Orchestrator route blocking task failed: {}",
-                    error
+                    "Orchestrator route blocking task failed: {error}"
                 ))
             }
         };
@@ -281,7 +279,7 @@ fn canonical_lexical_member_replica(session: &Session) -> Result<PathBuf, String
     let Some(lexical_replica) = lexical_cwd.ancestors().find(|ancestor| {
         ancestor
             .file_name()
-            .and_then(|name| name.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
         return Err("sampled CWD is not inside a lexical room member replica".to_string());
@@ -328,20 +326,17 @@ fn canonical_lexical_member_replica(session: &Session) -> Result<PathBuf, String
     }
 }
 
-pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
-    let canonical_lexical_replica = match canonical_lexical_member_replica(session) {
-        Ok(path) => path,
-        Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
-    };
-
-    let canonical_cwd = match session_context::canonical_context_source(&session.working_directory)
+fn canonical_sampled_replica(
+    working_directory: &str,
+    canonical_lexical_replica: &Path,
+) -> Result<PathBuf, String> {
+    let canonical_cwd = match session_context::canonical_context_source(working_directory)
         .map(|path| crate::path_utils::normalize_windows_verbatim_path_buf(&path))
     {
         Ok(path) => path,
         Err(error) => {
-            return MemberPolicyResolution::PermanentIneligible(format!(
-                "sampled CWD '{}' cannot be canonicalized: {}",
-                session.working_directory, error
+            return Err(format!(
+                "sampled CWD '{working_directory}' cannot be canonicalized: {error}"
             ))
         }
     };
@@ -351,24 +346,31 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("__agent_"))
     }) else {
-        return MemberPolicyResolution::PermanentIneligible(
-            "sampled CWD is not inside a room member replica".to_string(),
-        );
+        return Err("sampled CWD is not inside a room member replica".to_string());
     };
-    let replica_dir = match canonical_real_directory(replica_candidate, "Member replica") {
-        Ok(path) => path,
-        Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
-    };
+    let replica_dir = canonical_real_directory(replica_candidate, "Member replica")?;
     if canonical_lexical_replica != replica_dir {
-        return MemberPolicyResolution::PermanentIneligible(
+        return Err(
             "sampled CWD reaches a different replica through a link or path escape".to_string(),
         );
     }
     if canonical_cwd != replica_dir && !canonical_cwd.starts_with(&replica_dir) {
-        return MemberPolicyResolution::PermanentIneligible(
-            "sampled CWD escapes its member replica".to_string(),
-        );
+        return Err("sampled CWD escapes its member replica".to_string());
     }
+    Ok(replica_dir)
+}
+
+pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyResolution {
+    let canonical_lexical_replica = match canonical_lexical_member_replica(session) {
+        Ok(path) => path,
+        Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
+    };
+
+    let replica_dir =
+        match canonical_sampled_replica(&session.working_directory, &canonical_lexical_replica) {
+            Ok(path) => path,
+            Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
+        };
     let layout = match crate::config::ac_root::wg_replica_layout_from_agent_dir(&replica_dir) {
         Ok(Some(layout)) => layout,
         Ok(None) => {
@@ -413,7 +415,7 @@ pub(super) fn resolve_member_policy_blocking(session: &Session) -> MemberPolicyR
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
     };
     let project = match validated_project_fqn_component(
-        project_dir.file_name().and_then(|name| name.to_str()),
+        project_dir.file_name().and_then(std::ffi::OsStr::to_str),
     ) {
         Ok(project) => project,
         Err(error) => return MemberPolicyResolution::PermanentIneligible(error),
@@ -499,13 +501,13 @@ pub(super) fn prepare_internal_route_blocking(
         crate::config::replica_identity::agent_bare_name_from_ref(&config.coordinator)?;
     let expected = fingerprint
         .workgroup_dir
-        .join(format!("__agent_{}", coordinator));
+        .join(format!("__agent_{coordinator}"));
     let canonical_expected = canonical_real_directory(&expected, "Orchestrator replica")?;
     if canonical_expected.parent() != Some(fingerprint.workgroup_dir.as_path())
         || canonical_expected
             .file_name()
-            .and_then(|name| name.to_str())
-            != Some(format!("__agent_{}", coordinator).as_str())
+            .and_then(std::ffi::OsStr::to_str)
+            != Some(format!("__agent_{coordinator}").as_str())
     {
         return Err("Orchestrator replica escapes the sampled room".to_string());
     }
@@ -562,7 +564,7 @@ pub(super) fn validate_attempt_guard(
         || replica.parent() != Some(workgroup.as_path())
         || workgroup.parent() != Some(ac_root.as_path())
         || ac_root.parent() != Some(project.as_path())
-        || replica.file_name().and_then(|name| name.to_str())
+        || replica.file_name().and_then(std::ffi::OsStr::to_str)
             != Some(format!("__agent_{}", fingerprint.member).as_str())
         || parse_team_from_workgroup_name(&fingerprint.workgroup)? != fingerprint.team
     {

@@ -110,12 +110,13 @@ pub(super) async fn offline_url() -> String {
 async fn disabled_makes_no_request_and_writes_nothing() {
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let network = crate::network::OutboundNetwork::new_for_tests(4);
     let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
     let outcome = run_remote_blocking_menus_check(
         &network,
-        &settings_path,
+        &target,
         false,
         crate::config::settings::REMOTE_BLOCKING_MENUS_URL,
         now,
@@ -132,6 +133,7 @@ async fn disabled_makes_no_request_and_writes_nothing() {
 async fn a_recent_stamp_makes_no_request() {
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let network = crate::network::OutboundNetwork::new_for_tests(4);
     let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
@@ -142,7 +144,7 @@ async fn a_recent_stamp_makes_no_request() {
     .unwrap();
     let outcome = run_remote_blocking_menus_check(
         &network,
-        &settings_path,
+        &target,
         true,
         crate::config::settings::REMOTE_BLOCKING_MENUS_URL,
         now,
@@ -151,6 +153,12 @@ async fn a_recent_stamp_makes_no_request() {
     assert_eq!(outcome, RemoteMenusCheck::NotDue);
     assert!(network.acquired_labels_for_tests().is_empty());
 
+    assert_eq!(
+        target.read_remote_blocking_menus_check_stamp(),
+        Some(now - chrono::Duration::hours(1))
+    );
+    assert!(!crate::config::settings::blocking_menus_remote_path(&settings_path).exists());
+
     // A stamp in the future (clock moved backwards) is due again.
     crate::config::settings::write_remote_blocking_menus_check_stamp(
         &settings_path,
@@ -158,7 +166,7 @@ async fn a_recent_stamp_makes_no_request() {
     )
     .unwrap();
     let url = offline_url().await;
-    let outcome = run_remote_blocking_menus_check(&network, &settings_path, true, &url, now).await;
+    let outcome = run_remote_blocking_menus_check(&network, &target, true, &url, now).await;
     assert!(
         matches!(outcome, RemoteMenusCheck::Unreachable(_)),
         "got {outcome:?}"
@@ -177,6 +185,7 @@ async fn a_recent_stamp_makes_no_request() {
 async fn an_accepted_download_is_cached_and_applies_at_the_next_start() {
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let network = crate::network::OutboundNetwork::new_for_tests(4);
     let now = "2026-09-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
@@ -184,7 +193,7 @@ async fn an_accepted_download_is_cached_and_applies_at_the_next_start() {
         crate::config::settings::BlockingMenusStore::load_from_settings_path(&settings_path);
 
     let url = serve_once(200, remote_menus_fixture()).await;
-    let outcome = run_remote_blocking_menus_check(&network, &settings_path, true, &url, now).await;
+    let outcome = run_remote_blocking_menus_check(&network, &target, true, &url, now).await;
 
     assert_eq!(outcome, RemoteMenusCheck::Accepted);
     assert_eq!(
@@ -236,6 +245,33 @@ async fn an_accepted_download_is_cached_and_applies_at_the_next_start() {
 enum RemoteMenusReply {
     Offline,
     Http(u16, Vec<u8>),
+}
+
+fn assert_previous_cache_kept(
+    label: &str,
+    settings_path: &std::path::Path,
+    seed: &[u8],
+    now: DateTime<Utc>,
+) {
+    assert_eq!(
+        std::fs::read(crate::config::settings::blocking_menus_remote_path(
+            settings_path
+        ))
+        .unwrap(),
+        seed,
+        "{label}: the previous cache must stay byte-equal"
+    );
+    let store = crate::config::settings::BlockingMenusStore::load_from_settings_path(settings_path);
+    assert_eq!(
+        store.resolve("grok-1", "grok"),
+        vec![seeded_grok()],
+        "{label}: the previous cache still resolves"
+    );
+    assert_eq!(
+        crate::config::settings::read_remote_blocking_menus_check_stamp(settings_path),
+        Some(now),
+        "{label}: the failed attempt still stamps now"
+    );
 }
 
 #[tokio::test]
@@ -307,6 +343,7 @@ async fn every_failure_keeps_the_previous_cache() {
     for (label, reply, expected) in cases {
         let temp = tempfile::TempDir::new().unwrap();
         let settings_path = temp.path().join("settings.json");
+        let target = SettingsFileTarget::for_test_path(&settings_path);
         let network = crate::network::OutboundNetwork::new_for_tests(4);
         let seed = remote_menus_seed();
         std::fs::write(
@@ -319,8 +356,7 @@ async fn every_failure_keeps_the_previous_cache() {
             RemoteMenusReply::Offline => offline_url().await,
             RemoteMenusReply::Http(status, body) => serve_once(status, body).await,
         };
-        let outcome =
-            run_remote_blocking_menus_check(&network, &settings_path, true, &url, now).await;
+        let outcome = run_remote_blocking_menus_check(&network, &target, true, &url, now).await;
 
         match (label, outcome) {
             ("offline", RemoteMenusCheck::Unreachable(_)) => {}
@@ -333,26 +369,7 @@ async fn every_failure_keeps_the_previous_cache() {
             (_, other) => panic!("{label}: expected a failure, got {other:?}"),
         }
 
-        assert_eq!(
-            std::fs::read(crate::config::settings::blocking_menus_remote_path(
-                &settings_path
-            ))
-            .unwrap(),
-            seed,
-            "{label}: the previous cache must stay byte-equal"
-        );
-        let store =
-            crate::config::settings::BlockingMenusStore::load_from_settings_path(&settings_path);
-        assert_eq!(
-            store.resolve("grok-1", "grok"),
-            vec![seeded_grok()],
-            "{label}: the previous cache still resolves"
-        );
-        assert_eq!(
-            crate::config::settings::read_remote_blocking_menus_check_stamp(&settings_path),
-            Some(now),
-            "{label}: the failed attempt still stamps now"
-        );
+        assert_previous_cache_kept(label, &settings_path, &seed, now);
     }
 }
 
@@ -363,13 +380,14 @@ async fn the_startup_path_reads_the_remote_flag_not_the_npm_flag() {
     // Case A: the remote flag is off even though the npm flag is on.
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let app = test_app(crate::config::settings::AppSettings {
         remote_blocking_menus_enabled: false,
         npm_update_notifications_enabled: true,
         ..Default::default()
     });
     let url = offline_url().await;
-    let outcome = run_remote_blocking_menus_for_app(app.handle(), &settings_path, &url, now).await;
+    let outcome = run_remote_blocking_menus_for_app(app.handle(), &target, &url, now).await;
     assert_eq!(outcome, RemoteMenusCheck::Disabled);
     assert!(app
         .state::<crate::network::OutboundNetwork>()
@@ -381,13 +399,14 @@ async fn the_startup_path_reads_the_remote_flag_not_the_npm_flag() {
     // Case B, the control: the remote flag is on even though the npm flag is off.
     let temp = tempfile::TempDir::new().unwrap();
     let settings_path = temp.path().join("settings.json");
+    let target = SettingsFileTarget::for_test_path(&settings_path);
     let app = test_app(crate::config::settings::AppSettings {
         remote_blocking_menus_enabled: true,
         npm_update_notifications_enabled: false,
         ..Default::default()
     });
     let url = serve_once(200, remote_menus_fixture()).await;
-    let outcome = run_remote_blocking_menus_for_app(app.handle(), &settings_path, &url, now).await;
+    let outcome = run_remote_blocking_menus_for_app(app.handle(), &target, &url, now).await;
     assert_eq!(outcome, RemoteMenusCheck::Accepted);
     assert_eq!(
         app.state::<crate::network::OutboundNetwork>()

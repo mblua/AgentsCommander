@@ -51,9 +51,8 @@ pub fn read_replica_profile_content_hash(launch_path: &Path) -> Option<String> {
 pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Result<(), String> {
     let is_agent_dir = launch_path
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("__agent_") || name.starts_with("_agent_"))
-        .unwrap_or(false);
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| name.starts_with("__agent_") || name.starts_with("_agent_"));
     // #592 - the Root Agent (`ac-root-agent`) is a legitimate replica that runs a
     // coding agent and must support drift like any other; its dir name does not
     // match the `__agent_`/`_agent_` prefix, so accept it explicitly. Name-only
@@ -64,8 +63,7 @@ pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Resul
     // state file is created. The read side is ungated, so it round-trips.
     let is_root_agent = launch_path
         .to_str()
-        .map(crate::config::root_agent::is_root_agent_dir_name)
-        .unwrap_or(false);
+        .is_some_and(crate::config::root_agent::is_root_agent_dir_name);
     if !is_agent_dir && !is_root_agent {
         return Ok(());
     }
@@ -131,7 +129,7 @@ pub(super) fn write_profile_to_launch_path(
     launch_path: &Path,
     profile: Option<&str>,
 ) -> Result<(), String> {
-    let config_path = launch_path.join("config.json");
+    let config_path = crate::config::config_file_path(launch_path);
     crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         // #1939 - shape-based, like agent_config: absent tooling becomes an
         // object, a present non-object is an error, never silently reset.

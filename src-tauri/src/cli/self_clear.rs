@@ -8,15 +8,15 @@ use crate::phone::types::OutboxMessage;
 use super::send::sender_for_root;
 
 /// Pure: map the daemon's self-clear response body to a CLI exit code.
-/// 0 = queued | already_queued. 2 = unparseable / missing / unknown status
-/// (daemon spoke incoherently). Mirrors close_session::interpret_close_response_exit_code.
+/// 0 = queued | `already_queued`. 2 = unparseable / missing / unknown status
+/// (daemon spoke incoherently). Mirrors `close_session::interpret_close_response_exit_code`.
 fn interpret_self_clear_response_exit_code(content: &str) -> i32 {
     let resp: serde_json::Value = match serde_json::from_str(content) {
         Ok(v) => v,
         Err(_) => return 2,
     };
     match resp.get("status").and_then(|v| v.as_str()) {
-        Some("queued") | Some("already_queued") => 0,
+        Some("queued" | "already_queued") => 0,
         _ => 2,
     }
 }
@@ -58,7 +58,7 @@ SCOPE: direct Claude / Codex / Antigravity-family shells, Cursor agent, and exac
 Pi shells. Outer cmd / pwsh wrappers remain unsupported; matching is lexical, not binary \
 attestation.")]
 pub struct SelfClearArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
     #[arg(long)]
     pub token: Option<String>,
@@ -113,7 +113,7 @@ pub fn execute(args: SelfClearArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_t, r)) => r,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -157,19 +157,15 @@ pub fn execute(args: SelfClearArgs) -> i32 {
 
     // Outbox selection mirrors close_session::execute (is_root -> app outbox else agent outbox).
     let outbox_dir = if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| self_clear_files::read_self_clear_outbox_pointer(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if self_clear_files::self_clear_path_is_directory(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
+        crate::filesystem::app_outbox_pointer::directory(
+            crate::config::config_dir().as_deref(),
+            &ac_dir,
+        )
     } else {
         ac_dir.join("outbox")
     };
     if let Err(error) = super::outbox_delivery::deliver(&outbox_dir, &message, "self-clear") {
-        eprintln!("Error: {}", error);
+        eprintln!("Error: {error}");
         return 1;
     }
 
@@ -184,7 +180,7 @@ fn wait_for_self_clear_response(
     // Poll response (queue ack). The daemon writes it immediately after queuing,
     // NOT after the clear runs - so this is fast.
     let responses_dir = ac_dir.join("responses");
-    let response_path = responses_dir.join(format!("{}.json", request_id));
+    let response_path = responses_dir.join(format!("{request_id}.json"));
     let resp_timeout = std::time::Duration::from_secs(timeout_secs);
     let resp_poll = std::time::Duration::from_millis(250);
     let resp_start = std::time::Instant::now();
@@ -219,15 +215,15 @@ fn wait_for_self_clear_response(
                     return interpret_self_clear_response_exit_code(&content);
                 }
                 Err(e) => {
-                    eprintln!("Error: failed to read response: {}", e);
+                    eprintln!("Error: failed to read response: {e}");
                     return 1;
                 }
             }
         }
         if resp_start.elapsed() >= resp_timeout {
             eprintln!(
-                "Error: self-clear delivered but no queue ack within {}s (request {})",
-                timeout_secs, request_id
+                "Error: self-clear delivered but no queue ack within {timeout_secs}s \
+                 (request {request_id})"
             );
             return 2;
         }

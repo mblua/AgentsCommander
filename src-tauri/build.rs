@@ -16,7 +16,7 @@ fn main() {
     });
 
     // Make BUILD_PROFILE available via env!("BUILD_PROFILE") in Rust code.
-    println!("cargo:rustc-env=BUILD_PROFILE={}", profile);
+    println!("cargo:rustc-env=BUILD_PROFILE={profile}");
     println!("cargo:rerun-if-env-changed=BUILD_PROFILE");
 
     let has_dist = configure_embedded_dist(&profile);
@@ -25,7 +25,18 @@ fn main() {
     }
     embed_windows_test_manifest();
 
-    tauri_build::build()
+    // #4047: static VC runtime linking is set explicitly here. The Tauri CLI
+    // (2.10.1) exports the deprecated STATIC_VCRUNTIME=true on every
+    // `tauri build`, and tauri-build 2.7.1 lets that variable override
+    // WindowsAttributes and prints a deprecation warning. Drop it so this
+    // explicit setting is the only source. No effect on non-MSVC targets.
+    std::env::remove_var("STATIC_VCRUNTIME");
+    let windows = tauri_build::WindowsAttributes::new().static_vc_runtime(true);
+    let attributes = tauri_build::Attributes::new().windows_attributes(windows);
+    if let Err(error) = tauri_build::try_build(attributes) {
+        println!("{error:#}");
+        std::process::exit(1);
+    }
 }
 
 fn configure_embedded_dist(profile: &str) -> bool {
@@ -43,8 +54,8 @@ fn configure_embedded_dist(profile: &str) -> bool {
 
     if profile != "dev" {
         panic!(
-            "missing ../dist/index.html for {} build; run npm run build before compiling src-tauri",
-            profile
+            "missing ../dist/index.html for {profile} build; run npm run build before compiling \
+            src-tauri"
         );
     }
 

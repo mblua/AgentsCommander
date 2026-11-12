@@ -10,13 +10,13 @@ use super::poller::{
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{ResponseWakeWork, WakeDelivery};
 use super::settle::err_is_pty_session_missing;
+use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
-use crate::session::manager::SessionManager;
+use crate::session::manager::{PendingCreateBinding, SessionManager};
 use crate::session::session::SessionCommunicationKind;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ async fn prepare_replacement_context(
             return Ok(false);
         };
         let prepared = crate::config::agent_command::prepare_agent_spawn_command(spawn);
-        effect.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+        effect.complete(prepared.as_ref().map(|()| None).map_err(Clone::clone));
         if let Err(error) = prepared {
             continuation
                 .rollback_failed_create(manager, pty, &error)
@@ -81,12 +81,12 @@ fn replacement_target_ownership(
 enum PeerReplacementFixture {
     NotUsed,
     Retained,
-    Created(Box<Result<crate::commands::session::OwnedReplacementCreateStep, String>>),
+    Created(Box<Result<crate::session::create_contracts::OwnedReplacementCreateStep, String>>),
 }
 
 #[cfg(test)]
-async fn execute_peer_replacement_fixture<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+async fn execute_peer_replacement_fixture<S: MailboxHost>(
+    app: &S,
     execution: &mut OwnedPeerWakeExecution,
     continuation: &crate::session::selection::OwnedReplacementContinuation,
     fixture: Option<Arc<crate::session::selection::ReplacementFixtureControl>>,
@@ -101,15 +101,14 @@ async fn execute_peer_replacement_fixture<R: tauri::Runtime>(
     let (Some(exact), Some(stripe)) = (execution.exact.take(), execution.stripe.take()) else {
         return PeerReplacementFixture::Retained;
     };
-    let Some(coordinator) = app.try_state::<crate::session::selection::SelectionCoordinator>()
-    else {
+    let Some(coordinator) = app.selection_opt() else {
         return PeerReplacementFixture::Retained;
     };
-    let input = crate::commands::session::FixtureReplacementInput {
+    let input = crate::session::create_contracts::fixture::FixtureReplacementInput {
         request: execution.request.clone(),
         continuation: continuation.clone().with_fixture_control(control.clone()),
-        lease: crate::commands::session::FixtureReplacementLease::OrdinaryMoved(
-            crate::commands::session::FixturePtyCutLease {
+        lease: crate::session::create_contracts::fixture::FixtureReplacementLease::OrdinaryMoved(
+            crate::session::create_contracts::fixture::FixturePtyCutLease {
                 gate: execution.gate.clone(),
                 target: execution.message.to.clone(),
                 exact,
@@ -142,10 +141,9 @@ async fn peer_candidate_carry(
     Option<crate::session::session::SessionCommunication>,
 ) {
     let mgr = session_mgr.read().await;
-    mgr.get_session(session_id)
-        .await
-        .map(|s| (s.telegram_bot_id.clone(), s.communication.clone()))
-        .unwrap_or((None, None))
+    mgr.get_session(session_id).await.map_or((None, None), |s| {
+        (s.telegram_bot_id.clone(), s.communication.clone())
+    })
 }
 
 impl MailboxPoller {
@@ -198,12 +196,12 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn execute_owned_peer_replacement<R: tauri::Runtime>(
+    pub(crate) async fn execute_owned_peer_replacement<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
+        pty: &Arc<Mutex<PtyManager>>,
         execution: &mut OwnedPeerWakeExecution,
     ) -> Result<OwnedPeerWakeStep, String> {
-        use crate::session::selection::LifecycleEffectSlot;
         #[cfg(test)]
         let (fixture, fixture_continuation) = self.peer_replacement_fixture_context(execution);
 
@@ -218,16 +216,11 @@ impl MailboxPoller {
         {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        let manager = app
-            .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
-            .read()
-            .await
-            .clone();
-        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let manager = app.pty_sessions().read().await.clone();
         if !continuation.validate_source().await {
             return Ok(OwnedPeerWakeStep::Retained);
         }
-        if !prepare_replacement_context(execution, continuation, &manager, &pty).await? {
+        if !prepare_replacement_context(execution, continuation, &manager, pty).await? {
             return Ok(OwnedPeerWakeStep::Retained);
         }
         #[cfg(test)]
@@ -243,8 +236,7 @@ impl MailboxPoller {
             Some(created) => created,
             None => {
                 let proof = replacement_target_ownership(execution)?;
-                crate::commands::session::create_owned_response_replacement(
-                    app,
+                app.create_owned_response_replacement(
                     execution.request.clone(),
                     continuation.clone(),
                     &proof,
@@ -253,23 +245,12 @@ impl MailboxPoller {
             }
         };
 
-        match created {
-            Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {}
-            Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
-                return Ok(OwnedPeerWakeStep::Retained)
-            }
-            Err(error) => return Err(error),
+        if let crate::session::create_contracts::OwnedReplacementCreateStep::Retained = created? {
+            return Ok(OwnedPeerWakeStep::Retained);
         }
-        let Some(info) = continuation.refresh_completion_info(&manager, &pty).await else {
-            return Ok(OwnedPeerWakeStep::Retained);
-        };
-        let id = continuation.binding().map(|binding| binding.session_id());
-        let Some(id) = id else {
-            return Ok(OwnedPeerWakeStep::Retained);
-        };
-        // Start the work receipt only after its initial current-B checks. A
-        // failed preflight has reached no bridge, settle or input effect.
-        let Some(effect) = continuation.start_effect(LifecycleEffectSlot::WorkTransfer) else {
+        let Some((info, id, effect)) =
+            begin_replacement_work_transfer(continuation, &manager, pty).await
+        else {
             return Ok(OwnedPeerWakeStep::Retained);
         };
         if info.telegram_bot_id.is_some() {
@@ -279,13 +260,12 @@ impl MailboxPoller {
         let settle = match self.wait_for_spawned_wake_idle(app, id).await {
             Ok(settle) => settle,
             Err(error) => {
-                effect.complete(Err(error.clone()));
-                continuation.note_retained_work(error);
+                retain_after_transfer_error(effect, continuation, error);
                 return Ok(OwnedPeerWakeStep::Retained);
             }
         };
         if continuation
-            .refresh_completion_info(&manager, &pty)
+            .refresh_completion_info(&manager, pty)
             .await
             .is_none()
         {
@@ -305,23 +285,22 @@ impl MailboxPoller {
             )
             .await;
         if let Err(error) = injected {
-            effect.complete(Err(error.clone()));
-            continuation.note_retained_work(error);
+            retain_after_transfer_error(effect, continuation, error);
             return Ok(OwnedPeerWakeStep::Retained);
         }
         drop(execution.exact.take());
         drop(execution.stripe.take());
         continuation
-            .finish_observed_work_transfer(&manager, &pty, effect, true)
+            .finish_observed_work_transfer(&manager, pty, effect, true)
             .await;
         Ok(OwnedPeerWakeStep::Delivered(replacement_delivery(
             execution,
         )))
     }
 
-    async fn try_inject_peer_candidate<R: tauri::Runtime>(
+    async fn try_inject_peer_candidate<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         delivery: (WakeDeliveryOrigin, bool),
         response: Option<&ResponseWakeWork>,
@@ -332,7 +311,7 @@ impl MailboxPoller {
         let (logical_command, flags_present) = dispatch;
         if logical_command {
             let shell = {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let session_mgr = app.pty_sessions();
                 let mgr = session_mgr.read().await;
                 mgr.get_session(session_id)
                     .await
@@ -340,9 +319,9 @@ impl MailboxPoller {
             };
             let Some(shell) = shell else {
                 log::warn!(
-                    "[mailbox] wake: candidate {} vanished during logical-command preflight, \
-                    trying next",
-                    session_id
+                    "[mailbox] wake: candidate {session_id} vanished during \
+                    logical-command preflight, \
+                    trying next"
                 );
                 return Ok(None);
             };
@@ -394,9 +373,8 @@ impl MailboxPoller {
                 // races to dead, the spawn-persistent fall-through
                 // must still set spawn_with_resume.
                 log::warn!(
-                    "[mailbox] wake: candidate {} died after liveness probe ({}), trying next",
-                    session_id,
-                    e
+                    "[mailbox] wake: candidate {session_id} died after liveness probe ({e}), \
+                    trying next"
                 );
                 Ok(None)
             }
@@ -404,9 +382,9 @@ impl MailboxPoller {
         }
     }
 
-    pub(crate) async fn select_peer_wake_candidate<R: tauri::Runtime>(
+    pub(crate) async fn select_peer_wake_candidate<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         delivery: (WakeDeliveryOrigin, bool),
         response: Option<&ResponseWakeWork>,
@@ -442,11 +420,7 @@ impl MailboxPoller {
         let (candidates, had_any_match) = self.peer_wake_candidates(app, msg).await;
 
         for &(session_id, ref status) in &candidates {
-            log::debug!(
-                "[mailbox] wake: candidate {} captured-status={:?}",
-                session_id,
-                status
-            );
+            log::debug!("[mailbox] wake: candidate {session_id} captured-status={status:?}");
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
@@ -473,9 +447,9 @@ impl MailboxPoller {
                     // semantic.
                     if pending_exited_destroy.is_none() {
                         pending_exited_destroy = Some(session_id);
-                        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                        let session_mgr = app.pty_sessions();
                         let (bot_id, communication) =
-                            peer_candidate_carry(session_mgr.inner(), session_id).await;
+                            peer_candidate_carry(session_mgr, session_id).await;
                         pending_exited_telegram_bot_id = bot_id;
                         // (#747) carry a restored raised hand across the
                         // destroy+respawn; the wake injection is not user input
@@ -483,10 +457,9 @@ impl MailboxPoller {
                         pending_exited_communication = communication;
                         spawn_with_resume = true;
                         log::debug!(
-                            "[mailbox] wake: deferring Exited destroy for {} (status={:?}) pending \
-                            later Inject success",
-                            session_id,
-                            status
+                            "[mailbox] wake: deferring Exited destroy for {session_id} \
+                            (status={status:?}) pending \
+                            later Inject success"
                         );
                     }
                 }
@@ -523,9 +496,9 @@ impl MailboxPoller {
         )))
     }
 
-    async fn spawn_peer_wake_fallback<R: tauri::Runtime>(
+    async fn spawn_peer_wake_fallback<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         plan: ResolvedWakeSpawnPlan,
         spawn_with_resume: bool,
@@ -585,7 +558,7 @@ impl MailboxPoller {
             })?;
 
         let session_id =
-            Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
+            Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {e}"))?;
 
         Ok((
             session_id,
@@ -594,9 +567,9 @@ impl MailboxPoller {
         ))
     }
 
-    async fn finish_peer_wake_fallback<R: tauri::Runtime>(
+    async fn finish_peer_wake_fallback<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         delivery: (WakeDeliveryOrigin, bool),
         response: Option<&ResponseWakeWork>,
@@ -634,13 +607,13 @@ impl MailboxPoller {
         // attended hand on the next restart.
         if let Some(orphan_id) = pending_exited_orphan_to_clear.take() {
             let cleared = {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let session_mgr = app.pty_sessions();
                 let mgr = session_mgr.read().await;
                 mgr.clear_communication_if_kind(orphan_id, SessionCommunicationKind::RaiseHand)
                     .await
             };
             if cleared {
-                crate::session::selection::publish_session_communication(app, orphan_id, None);
+                app.publish(orphan_id, None);
             }
         }
 
@@ -649,18 +622,14 @@ impl MailboxPoller {
         // RespawnExited arm), so the resumed conversation keeps its pending
         // user-attention marker until real user input.
         if let Some(communication) = pending_exited_communication.take() {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let session_mgr = app.pty_sessions();
             let restored = {
                 let mgr = session_mgr.read().await;
                 mgr.restore_communication(session_id, communication.clone())
                     .await
             };
             if restored {
-                crate::session::selection::publish_session_communication(
-                    app,
-                    session_id,
-                    Some(&communication),
-                );
+                app.publish(session_id, Some(&communication));
             }
         }
 
@@ -695,9 +664,9 @@ impl MailboxPoller {
         Ok(delivered)
     }
 
-    pub(crate) async fn deliver_peer_wake_fallback<R: tauri::Runtime>(
+    pub(crate) async fn deliver_peer_wake_fallback<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         msg: &OutboxMessage,
         delivery: (WakeDeliveryOrigin, bool),
         response: Option<&ResponseWakeWork>,
@@ -723,7 +692,7 @@ impl MailboxPoller {
         );
         if crate::config::root_agent::is_root_agent_target(&msg.to) {
             let restoring = app
-                .state::<Arc<crate::RestoreInProgress>>()
+                .restore_required()
                 .0
                 .load(std::sync::atomic::Ordering::SeqCst);
             return if restoring {
@@ -755,8 +724,7 @@ impl MailboxPoller {
 
         if let Some(exited_id) = pending_exited_destroy {
             log::debug!(
-                "[mailbox] wake: executing deferred destroy for Exited candidate {}",
-                exited_id
+                "[mailbox] wake: executing deferred destroy for Exited candidate {exited_id}"
             );
             if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
                 // Best-effort. Orphan SessionManager record lingers until AC3's
@@ -764,10 +732,9 @@ impl MailboxPoller {
                 // below still fires with the correct spawn_with_resume flag.
                 // (grinch G.M5 option (c).)
                 log::error!(
-                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until \
-                    AC3): {}",
-                    exited_id,
-                    e
+                    "[mailbox] wake: failed to destroy exited session {exited_id} \
+                    (orphan will linger until \
+                    AC3): {e}"
                 );
                 // (#747) The orphan Exited record still holds its restored
                 // raised hand. Do NOT clear it here: if the spawn below also
@@ -807,9 +774,9 @@ impl MailboxPoller {
     /// Deliver a validated AgentsCommander-generated notice through the existing wake,
     /// resume, background-spawn, settle, and canonical injection plumbing. No serialized
     /// message field can select this path.
-    pub(crate) async fn deliver_internal_system_notice<R: tauri::Runtime>(
+    pub(crate) async fn deliver_internal_system_notice<S: MailboxHost>(
         &self,
-        app: &tauri::AppHandle<R>,
+        app: &S,
         target: InternalSystemTarget,
         notice: InternalSystemNotice,
         cancellation: CancellationToken,
@@ -827,4 +794,36 @@ impl MailboxPoller {
         .await
         .map(|_| ())
     }
+}
+
+/// Refreshes the replacement's completion info, resolves its bound session id and
+/// starts the work-transfer receipt, in that order. `None` means retain.
+async fn begin_replacement_work_transfer(
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Option<(
+    crate::session::session::SessionInfo,
+    Uuid,
+    crate::session::selection::LifecycleEffectGuard,
+)> {
+    use crate::session::selection::LifecycleEffectSlot;
+    let info = continuation.refresh_completion_info(manager, pty).await?;
+    let id = continuation
+        .binding()
+        .map(PendingCreateBinding::session_id)?;
+    // Start the work receipt only after its initial current-B checks. A
+    // failed preflight has reached no bridge, settle or input effect.
+    let effect = continuation.start_effect(LifecycleEffectSlot::WorkTransfer)?;
+    Some((info, id, effect))
+}
+
+/// Completes the work-transfer receipt with `error` and records it as retained work.
+fn retain_after_transfer_error(
+    effect: crate::session::selection::LifecycleEffectGuard,
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    error: String,
+) {
+    effect.complete(Err(error.clone()));
+    continuation.note_retained_work(error);
 }

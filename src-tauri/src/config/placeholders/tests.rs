@@ -132,10 +132,7 @@ fn expand_in_content_substitutes_known_tokens_forward_slashed() {
         "root=%AC_REPLICA_ROOT%/x and %AC_WORKSPACE_ROOT% and %AC_MATRIX_ROOT%",
         &ctx,
     );
-    assert!(
-        out.contains(&format!("root={}/x", expected_replica)),
-        "{out}"
-    );
+    assert!(out.contains(&format!("root={expected_replica}/x")), "{out}");
     // No backslashes from the substituted paths (forward-slash normalized).
     assert!(!out.contains('\\'), "{out}");
 }
@@ -189,7 +186,7 @@ fn content_expands_user_home_forward_slashed() {
     let out = expand_placeholders_in_content("excl=%USER_HOME%/.claude/CLAUDE.md", &ctx);
     match expected_home_fwd() {
         Some(home) => {
-            assert_eq!(out, format!("excl={}/.claude/CLAUDE.md", home));
+            assert_eq!(out, format!("excl={home}/.claude/CLAUDE.md"));
             assert!(!out.contains('\\'), "{out}");
             assert!(!out.contains(USER_HOME_PLACEHOLDER), "{out}");
         }

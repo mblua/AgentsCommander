@@ -271,36 +271,31 @@ pub struct SourceSnapshot<Agent> {
 }
 
 // #2897 P03: compiled gate; no caller-controlled activation bypass.
-#[allow(dead_code)]
 pub(crate) const fn source_protocol_active() -> bool {
     false
 }
 
 /// PAIR layout belongs beside the physical identity-reference facade.
-#[allow(dead_code)]
 pub(crate) fn identity_reference_pair_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (
-        root.join("config.json"),
+        crate::config::config_file_path(root),
         root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
         root.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn read_identity_reference_physical(
     path: &Path,
 ) -> Result<IdentityReferencePhysicalState, IdentityReferenceError> {
     crate::config::local_config_io::read_config_pair_physical(path)
 }
 
-#[allow(dead_code)]
 pub(crate) fn identity_reference_protected_revision(
     tuple: &[IdentityReferencePhysicalState; 2],
 ) -> Result<[IdentityReferenceProtectedRevision; 2], IdentityReferenceError> {
     crate::config::local_config_io::protected_config_pair_revision(tuple)
 }
 
-#[allow(dead_code)]
 pub(crate) fn execute_identity_reference_pair_guarded(
     decisions: &Path,
     state: &Path,
@@ -317,7 +312,6 @@ pub(crate) fn execute_identity_reference_pair_guarded(
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn verify_identity_reference_pair_guarded(
     decisions: &Path,
     state: &Path,
@@ -336,7 +330,6 @@ pub(crate) fn verify_identity_reference_pair_guarded(
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn release_identity_reference_pair_guarded(
     decisions: &Path,
     state: &Path,
@@ -357,7 +350,6 @@ pub(crate) fn release_identity_reference_pair_guarded(
 // settings owns authorization, original inventory and the local journal.
 // No legacy loader, Save endpoint or transport invokes these primitives yet.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum SourceCoordinationError {
     #[error("sourceIdentityUncertain")]
     IdentityUncertain,
@@ -379,7 +371,6 @@ pub(crate) enum SourceCoordinationError {
 // #2893 P02: internal readers and pure preparations. No caller publishes these
 // plans yet; the existing whole-settings save remains the production boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) enum SourcePreparationError {
     #[error("contextUnavailable")]
     ContextUnavailable,
@@ -393,17 +384,20 @@ pub(crate) enum SourcePreparationError {
     StaleRevision,
     #[error("sourceReadOnly")]
     ReadOnly,
+    // Removing this variant also requires changing source/read.rs.
+    #[allow(dead_code)]
     #[error("independentFormatRequired")]
     IndependentFormatRequired,
     #[error("invalidSourceCandidate")]
     InvalidCandidate,
+    // Constructed by the general-only preparation, which is currently test-only.
+    #[allow(dead_code)]
     #[error("protectedSettingsField")]
     ProtectedSettingsField,
     #[error("{0}")]
     Identity(IdentityValidationError),
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn source_transition_digest_bytes(bytes: &[u8]) -> SourceRevision {
     source_bytes_revision(bytes)
 }
@@ -417,14 +411,12 @@ pub(crate) fn source_bytes_revision(bytes: &[u8]) -> SourceRevision {
 
 /// Unknown evidence is not physical absence and is never a CAS precondition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) enum OriginPhysicalInput {
     Absent,
     Bytes(Vec<u8>),
     Unknown,
 }
 
-#[allow(dead_code)] // Dormant until the later source protocol cuts.
 impl OriginPhysicalInput {
     pub(crate) fn read(path: &Path) -> Self {
         match settings_sources::bytes(path) {

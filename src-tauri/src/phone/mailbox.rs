@@ -1,7 +1,9 @@
 #[macro_use]
 mod diagnostics;
+pub(crate) mod browser;
 mod clear_attempt;
 mod handoff;
+pub(crate) mod host;
 mod internal_delivery;
 mod notice;
 mod outbox_auth;
@@ -13,6 +15,7 @@ mod pty_claim;
 mod pty_dispatch;
 pub(crate) mod pty_observation;
 mod pty_validation;
+pub(crate) mod refresh;
 mod request_polling;
 pub(crate) mod response_observation;
 mod response_source;
@@ -144,8 +147,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
-#[cfg(test)]
-use tauri::Manager;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]

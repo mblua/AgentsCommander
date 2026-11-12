@@ -13,9 +13,7 @@ use super::{
 };
 
 pub(super) fn is_readable_dir(path: &Path) -> bool {
-    seed_disk::inspect_seed_source(path)
-        .map(|m| m.is_dir())
-        .unwrap_or(false)
+    seed_disk::inspect_seed_source(path).is_ok_and(|m| m.is_dir())
 }
 
 pub(super) fn manifest_source_for_tier(tier: ConfigSeedTier) -> ManifestSource {
@@ -185,7 +183,7 @@ pub(super) fn remove_seed_scratch(path: &Path, context: &str, unique_sfx: &str) 
 }
 
 /// #769 P2 - true iff `path` is a readable directory containing at least one
-/// regular, non-reparse FILE (searched recursively). The CatalogDefault tier uses
+/// regular, non-reparse FILE (searched recursively). The `CatalogDefault` tier uses
 /// this so an empty master (or a dir of only subdirs/links) reads as "not present"
 /// and the tier stays inert, keeping today's spawn behavior byte-identical.
 pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
@@ -224,8 +222,8 @@ pub(crate) fn is_nonempty_seed_dir(path: &Path) -> bool {
 /// concurrency contract); otherwise it can delete a concurrent spawn's in-flight
 /// scratch (grinch HIGH-1).
 pub(super) fn clear_stale_seed_scratch(parent: &Path, dest_name: &str) {
-    let tmp_prefix = format!("{}.acseed-tmp-", dest_name);
-    let old_prefix = format!("{}.acseed-old-", dest_name);
+    let tmp_prefix = format!("{dest_name}.acseed-tmp-");
+    let old_prefix = format!("{dest_name}.acseed-old-");
     let entries = match seed_disk::seed_entries(parent) {
         Ok(entries) => entries,
         Err(error) => {

@@ -244,7 +244,7 @@ test('3330 R4-B1 nested arrays never hide a custom production root', () => {
       + ',\n]\npath="src/h.rs"\n', true);
 });
 test('3330 unknown headers alone disable inheritance', () => {
-  for (const header of ['["lib"]', "[ 'lib' ]", '["l\\u0069b"]', '[[bin]]', '[lib.x]'])
+  for (const header of ['["lib"]', "[ 'lib' ]", String.raw`["l\u0069b"]`, '[[bin]]', '[lib.x]'])
     manifestProof(packageHeader + header + '\npath="src/h.rs"\n', true);
 });
 test('3330 unknown statements alone disable inheritance', () => {

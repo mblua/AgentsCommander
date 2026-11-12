@@ -1,5 +1,66 @@
 use super::*;
 
+fn spawn_activating_restart(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+    old_id: Uuid,
+) -> tokio::task::JoinHandle<Result<SessionInfo, String>> {
+    use tauri::Manager;
+
+    let app_handle = app.handle().clone();
+    let session_mgr = Arc::clone(session_mgr);
+    let pty_mgr = Arc::clone(pty_mgr);
+    let settings = app
+        .state::<crate::config::settings::SettingsState>()
+        .inner()
+        .clone();
+    tokio::spawn(async move {
+        super::super::restart_session_inner_with_activation(
+            &app_handle,
+            &session_mgr,
+            &pty_mgr,
+            &settings,
+            old_id,
+            None,
+            None,
+            Some(false),
+            true,
+        )
+        .await
+    })
+}
+
+async fn privileged_target_create(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+    cwd: String,
+    session_name: &str,
+    ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+) -> Result<super::super::PtyTargetCreateStep, String> {
+    super::super::create_session_inner_with_pty_target_ownership(
+        app.handle(),
+        session_mgr,
+        pty_mgr,
+        "codex".to_string(),
+        Vec::new(),
+        cwd,
+        Some(session_name.to_string()),
+        None,
+        None,
+        true,
+        Vec::new(),
+        true,
+        None,
+        None,
+        None,
+        CreateSelectionIntent::Background,
+        ownership,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn restart_after_route_loss_cleans_old_external_state_once_before_replacement() {
     use tauri::Manager;
@@ -39,29 +100,7 @@ async fn restart_after_route_loss_cleans_old_external_state_once_before_replacem
     let (spawn_release_tx, spawn_release_rx) = tokio::sync::oneshot::channel();
     backend.gate_spawn(2, spawn_started_tx, spawn_release_rx);
     let events = capture_session_lifecycle(&app);
-    let restart = {
-        let app_handle = app.handle().clone();
-        let session_mgr = Arc::clone(&session_mgr);
-        let pty_mgr = Arc::clone(&pty_mgr);
-        let settings = app
-            .state::<crate::config::settings::SettingsState>()
-            .inner()
-            .clone();
-        tokio::spawn(async move {
-            super::super::restart_session_inner_with_activation(
-                &app_handle,
-                &session_mgr,
-                &pty_mgr,
-                &settings,
-                old_id,
-                None,
-                None,
-                Some(false),
-                true,
-            )
-            .await
-        })
-    };
+    let restart = spawn_activating_restart(&app, &session_mgr, &pty_mgr, old_id);
 
     let replacement_id = spawn_started_rx.await.expect("replacement spawn starts");
     assert!(!telegram.lock().await.has_bridge(old_id));
@@ -362,18 +401,18 @@ async fn create_session_inner_rolls_back_pre_created_session_on_spawn_error() {
 
 /// #973 - THE REGRESSION. Red against main, which hardcodes `cols: 120, rows: 30`.
 ///
-/// AC used to open every ConPTY at 120x30 and let the frontend correct it 300-500 ms
+/// AC used to open every `ConPTY` at 120x30 and let the frontend correct it 300-500 ms
 /// later. That correction lands inside a coding agent's TUI startup, and a resize there
 /// makes Codex redraw its still-empty viewport and lose the wakeup for the content that
 /// becomes ready straight after: a blank terminal, alive, until any key is pressed.
 ///
-/// Measured outside AC, on a bare ConPTY: opened at 120x30 and then resized in the
+/// Measured outside AC, on a bare `ConPTY`: opened at 120x30 and then resized in the
 /// window, Codex comes up blank 8 times in 10. Opened at the size the view actually
 /// wants, and never resized, 0 times in 10.
 ///
 /// This pins the plumbing: the size the caller supplies is the size the PTY is opened
 /// at. It does not, and cannot, prove Codex stops hanging - that needs a real child in a
-/// real ConPTY inside a ~100 ms race. The harness is the proof of that.
+/// real `ConPTY` inside a ~100 ms race. The harness is the proof of that.
 #[tokio::test]
 async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or_live() {
     let (_fixture, first_cwd, _) = strict_target_fixture();
@@ -405,23 +444,12 @@ async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or
         .lock()
         .unwrap()
         .mark_spawning(&first_cwd, "pending race");
-    let pending_error = super::super::create_session_inner_with_pty_target_ownership(
-        app.handle(),
+    let pending_error = privileged_target_create(
+        &app,
         &session_mgr,
         &pty_mgr,
-        "codex".to_string(),
-        Vec::new(),
         first_cwd.clone(),
-        Some("privileged target".to_string()),
-        None,
-        None,
-        true,
-        Vec::new(),
-        true,
-        None,
-        None,
-        None,
-        CreateSelectionIntent::Background,
+        "privileged target",
         &ownership,
     )
     .await
@@ -430,23 +458,12 @@ async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or
     assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 0);
     drop(pending);
 
-    let created = super::super::create_session_inner_with_pty_target_ownership(
-        app.handle(),
+    let created = privileged_target_create(
+        &app,
         &session_mgr,
         &pty_mgr,
-        "codex".to_string(),
-        Vec::new(),
         first_cwd.clone(),
-        Some("privileged target".to_string()),
-        None,
-        None,
-        true,
-        Vec::new(),
-        true,
-        None,
-        None,
-        None,
-        CreateSelectionIntent::Background,
+        "privileged target",
         &ownership,
     )
     .await
@@ -457,23 +474,12 @@ async fn privileged_preheld_target_gate_does_not_reenter_and_rechecks_pending_or
     assert_eq!(created.working_directory, first_cwd);
     assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
 
-    let live_error = super::super::create_session_inner_with_pty_target_ownership(
-        app.handle(),
+    let live_error = privileged_target_create(
+        &app,
         &session_mgr,
         &pty_mgr,
-        "codex".to_string(),
-        Vec::new(),
         first_cwd,
-        Some("stale background create".to_string()),
-        None,
-        None,
-        true,
-        Vec::new(),
-        true,
-        None,
-        None,
-        None,
-        CreateSelectionIntent::Background,
+        "stale background create",
         &ownership,
     )
     .await
@@ -839,10 +845,10 @@ async fn create_session_without_a_view_keeps_the_historical_120x30() {
     );
 }
 
-/// #973 - opening a 0-column ConPTY would be worse than the bug we are fixing, so a
+/// #973 - opening a 0-column `ConPTY` would be worse than the bug we are fixing, so a
 /// degenerate fitted size must fall back rather than be honoured.
 ///
-/// It does not come from xterm: `fit()` clamps to MINIMUM_COLS = 2 / MINIMUM_ROWS = 1. It is
+/// It does not come from xterm: `fit()` clamps to `MINIMUM_COLS` = 2 / `MINIMUM_ROWS` = 1. It is
 /// guarded because this is a `u16` boundary that anything upstream can hand a 0 to, and
 /// because the cost of being wrong is a terminal with no screen at all.
 #[tokio::test]

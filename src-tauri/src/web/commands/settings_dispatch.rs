@@ -105,7 +105,7 @@ pub(super) async fn dispatch_settings_command(
             .await?;
             Ok(json!(null))
         }
-        _ => Err(format!("Unknown command: {}", cmd)),
+        _ => Err(format!("Unknown command: {cmd}")),
     }
 }
 

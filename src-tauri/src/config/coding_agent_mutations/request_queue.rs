@@ -65,6 +65,40 @@ pub enum RequestDisposition {
 // Queue transport helpers (daemon path). All writes are atomic temp+rename.
 // ---------------------------------------------------------------------------
 
+/// Project the request and result directories without performing IO.
+pub fn coding_agent_queue_directories(config_dir: &Path) -> (PathBuf, PathBuf) {
+    let requests_dir = config_dir.join(CODING_AGENT_REQUESTS_DIR);
+    let results_dir = requests_dir.join(RESULTS_SUBDIR);
+    (requests_dir, results_dir)
+}
+
+/// Cancel a pending request, preserving the physical removal error for the CLI.
+pub fn cancel_coding_agent_request(request_path: &Path) -> std::io::Result<()> {
+    coding_agent_requests::remove_queue_file(request_path)
+}
+
+/// Collect pending JSON paths in native directory order before settings are locked.
+pub fn pending_coding_agent_requests(requests_dir: &Path) -> Vec<PathBuf> {
+    if !coding_agent_requests::queue_path_is_dir(requests_dir) {
+        return Vec::new();
+    }
+    match coding_agent_requests::queue_directory_paths(requests_dir) {
+        Ok(entries) => entries
+            .filter_map(std::result::Result::ok)
+            .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Take a parsed result, then remove its file on a best-effort basis.
+pub fn take_coding_agent_result(results_dir: &Path, request_id: &str) -> Option<CodingAgentResult> {
+    let result = read_coding_agent_result(results_dir, request_id)?;
+    let _ =
+        coding_agent_requests::remove_queue_file(&results_dir.join(format!("{request_id}.json")));
+    Some(result)
+}
+
 /// Atomically write a request into `dir` as `<requestId>.json`. Returns the
 /// final path (used by the CLI to cancel on timeout).
 pub fn write_coding_agent_request(dir: &Path, req: &CodingAgentRequest) -> Result<PathBuf, String> {
@@ -145,7 +179,7 @@ pub fn process_coding_agent_request(
     // stem (also the requestId it generated).
     let request_id = request_path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("unknown")
         .to_string();
 

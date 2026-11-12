@@ -38,7 +38,7 @@ const GIT_REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2
 ///
 /// Every failure mode (path missing, not a work tree root, no `origin`, git not on
 /// PATH, timeout) collapses to `None` on purpose: the caller's only decision is
-/// "show Browse items or not". Bounded by GIT_REMOTE_TIMEOUT with
+/// "show Browse items or not". Bounded by `GIT_REMOTE_TIMEOUT` with
 /// `.kill_on_drop(true)` so a hung `git.exe` is reaped instead of leaked.
 pub async fn git_remote_url_inner(path: &str) -> Option<String> {
     match tokio::time::timeout(GIT_REMOTE_TIMEOUT, run_git_remote_get_url(path)).await {
@@ -101,7 +101,7 @@ async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
             None
         }
         Err(e) => {
-            log::debug!("[repos] failed to spawn git in {}: {}", working_dir, e);
+            log::debug!("[repos] failed to spawn git in {working_dir}: {e}");
             None
         }
     }

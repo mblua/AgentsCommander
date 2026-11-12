@@ -40,7 +40,7 @@ pub(super) fn write_raise_hand_task_title(cwd: &Path, title: &str) {
     let task_path =
         crate::session::session::find_workgroup_task_path_for_cwd(&cwd.to_string_lossy())
             .expect("raise-hand test cwd should be inside a workgroup");
-    std::fs::write(task_path, format!("---\ntitle: {}\n---\n\nbody", title)).unwrap();
+    std::fs::write(task_path, format!("---\ntitle: {title}\n---\n\nbody")).unwrap();
 }
 
 pub(super) fn build_raise_hand_message(
@@ -53,7 +53,7 @@ pub(super) fn build_raise_hand_message(
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
     std::fs::create_dir_all(&outbox_dir).unwrap();
-    let path = outbox_dir.join(format!("{}.json", msg_id));
+    let path = outbox_dir.join(format!("{msg_id}.json"));
     let msg = OutboxMessage {
         id: msg_id.into(),
         token,
@@ -108,10 +108,10 @@ pub(super) async fn pending_self_clear_contains(
 }
 
 /// Build a self-clear outbox message with an explicit `from`, written under
-/// `<cwd>/<local-dir>/outbox/`. The canonical OutboxMessage literal for the
+/// `<cwd>/<local-dir>/outbox/`. The canonical `OutboxMessage` literal for the
 /// self-clear tests lives here; `build_self_clear_message` delegates with the
 /// fixed dev-rust sender, and the Root e2e tests pass either the corrected
-/// sender (ROOT_AGENT_SENDER) or the buggy path-derived value. Returns the
+/// sender (`ROOT_AGENT_SENDER`) or the buggy path-derived value. Returns the
 /// on-disk path and the message; the `process_message` driver reads the message
 /// back from disk and ignores the returned struct.
 pub(super) fn build_self_clear_message_with_from(
@@ -125,7 +125,7 @@ pub(super) fn build_self_clear_message_with_from(
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
     std::fs::create_dir_all(&outbox_dir).unwrap();
-    let path = outbox_dir.join(format!("{}.json", msg_id));
+    let path = outbox_dir.join(format!("{msg_id}.json"));
     let msg = OutboxMessage {
         id: msg_id.into(),
         token,
@@ -207,7 +207,7 @@ pub(super) async fn seed_self_switch_session(
             vec![],
             cwd.to_string_lossy().to_string(),
             agent_id.map(str::to_string),
-            agent_id.map(|id| format!("Label for {}", id)),
+            agent_id.map(|id| format!("Label for {id}")),
             Vec::new(),
             false,
             crate::pty::backend::SessionBackendKind::LocalProcess,
@@ -242,7 +242,7 @@ pub(super) fn build_self_switch_message(
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
     std::fs::create_dir_all(&outbox_dir).unwrap();
-    let path = outbox_dir.join(format!("{}.json", msg_id));
+    let path = outbox_dir.join(format!("{msg_id}.json"));
     let msg = OutboxMessage {
         id: msg_id.into(),
         token,
@@ -281,7 +281,7 @@ pub(super) fn read_reject_reason(cwd: &Path, msg_id: &str) -> Option<String> {
         cwd.join(crate::config::agent_local_dir_name())
             .join("outbox")
             .join("rejected")
-            .join(format!("{}.reason.txt", msg_id)),
+            .join(format!("{msg_id}.reason.txt")),
     )
     .ok()
 }
@@ -299,7 +299,7 @@ pub(super) fn build_self_restart_message_with_from(
         .join(crate::config::agent_local_dir_name())
         .join("outbox");
     std::fs::create_dir_all(&outbox_dir).unwrap();
-    let path = outbox_dir.join(format!("{}.json", msg_id));
+    let path = outbox_dir.join(format!("{msg_id}.json"));
     let msg = OutboxMessage {
         id: msg_id.into(),
         token,
@@ -343,7 +343,7 @@ pub(super) const SELF_RESTART_TEST_FROM: &str = "proj-a:wg-1-dev-team/dev-rust";
 // takes the WakeAction::Inject arm; the inject itself is scripted Ok, and the
 // scripted ConsumptionVerdict drives the returned Result.
 
-/// Build a well-formed wake OutboxMessage targeting the fixture's dev-rust
+/// Build a well-formed wake `OutboxMessage` targeting the fixture's dev-rust
 /// replica. `deliver_wake_with_origin` does not re-validate token/routing
 /// (that is `process_message`'s job), so a direct call is the tightest way to
 /// assert the Ok/Err the verdict produces.

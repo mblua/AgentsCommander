@@ -365,17 +365,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
             let operation = operation.clone();
             let intent = intent.clone();
             let uuids = fixture.controls.uuid_count();
-            let expected = fixture.expectation();
-            resume_identity_transition_internal(
-                &fixture.settings,
-                &fixture.context,
-                &fixture.source,
-                &operation,
-                &expected,
-                &|| Ok(()),
-                &fixture.controls,
-            )
-            .unwrap();
+            resume_expected(&fixture, &operation);
             let recovered = read_own_source_journal(&fixture.context).unwrap().1;
             assert_eq!(recovered.intents[&operation], intent);
             assert_eq!(
@@ -391,17 +381,7 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
                 .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
                 .exists());
             let calls = source_transition_effect_counts().1;
-            let expected = fixture.expectation();
-            resume_identity_transition_internal(
-                &fixture.settings,
-                &fixture.context,
-                &fixture.source,
-                &operation,
-                &expected,
-                &|| Ok(()),
-                &fixture.controls,
-            )
-            .unwrap();
+            resume_expected(&fixture, &operation);
             assert_eq!(source_transition_effect_counts().1, calls);
         }
         assert_eq!(
@@ -409,6 +389,21 @@ fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets(
             unrelated
         );
     }
+}
+
+/// Resumes `operation` against a fresh expectation and requires success.
+fn resume_expected(fixture: &DriverFixture, operation: &str) {
+    let expected = fixture.expectation();
+    resume_identity_transition_internal(
+        &fixture.settings,
+        &fixture.context,
+        &fixture.source,
+        operation,
+        &expected,
+        &|| Ok(()),
+        &fixture.controls,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -485,47 +480,7 @@ fn single_editor_driver_failed_reload_retains_pending_and_activity_max_through_r
 fn single_editor_original_factory_real_matrix_default_group_and_history_no_default() {
     for matrix in ["N", "K"] {
         let mut fixture = DriverFixture::new();
-        let config = fixture._root.path().join("C");
-        let target = fixture.project.join(".ac").join(format!("_agent_{matrix}"));
-        std::fs::create_dir(&target).unwrap();
-        let mut registered = serde_json::json!({"agents":[
-            {"id":"K","label":"Own","color":"#123456","command":"own-base"},
-            {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
-            "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
-                "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
-                "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
-                "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
-        registered["codingAgentProfiles"]["defaultProfileByAgent"][matrix] = serde_json::json!("B");
-        let mut settings_value = serde_json::to_value(&fixture.settings).unwrap();
-        settings_value["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
-            serde_json::json!("B");
-        fixture.settings = serde_json::from_value(settings_value.clone()).unwrap();
-        std::fs::write(
-            config.join("settings.json"),
-            serde_json::to_vec(&settings_value).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
-            serde_json::to_vec(&registered).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
-            serde_json::to_vec(
-                &serde_json::json!({"codingAgentProfiles":{"defaultProfileByAgent":{(matrix):"B"},
-                "profilesByAgent":{"K":{"B":{"command":"overlay-beta","env":{}}}}}}),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        fixture.context =
-            SourceReadContext::from_settings(&fixture.settings, &config.join("settings.json"))
-                .unwrap();
-        fixture.source = list_active_sources(&fixture.context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::RegisteredInstance)
-            .unwrap();
+        let (config, target, registered) = install_matrix_sources(&mut fixture, matrix);
         let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
         let inputs = OriginInputs::capture(&fixture.context).unwrap();
         let origin = LegacyCompatibilityOrigin::classify(&inputs);
@@ -551,69 +506,163 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
             Some(&origin)
         )
         .is_err());
+        let proof = MatrixProof {
+            fixture: &fixture,
+            snapshot: &snapshot,
+            origin: &origin,
+            lease: &lease,
+            candidate: &candidate,
+            selection: &selection,
+            target: &target,
+            matrix,
+        };
+        let capture = proof.assert_default_group(&registered);
+        let _overlay_captures = proof.assert_overlay_proofs(&config, &capture);
+        let _history_captures = proof.assert_history_and_replica();
+    }
+}
+
+/// Registers the own/other agents with a `B` default for `matrix` and points the fixture at
+/// the registered instance source. Returns the config dir, the Matrix target and the registry.
+pub(super) fn install_matrix_sources(
+    fixture: &mut DriverFixture,
+    matrix: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, serde_json::Value) {
+    let config = fixture._root.path().join("C");
+    let target = fixture.project.join(".ac").join(format!("_agent_{matrix}"));
+    std::fs::create_dir(&target).unwrap();
+    let mut registered = serde_json::json!({"agents":[
+        {"id":"K","label":"Own","color":"#123456","command":"own-base"},
+        {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
+        "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
+            "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
+            "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
+            "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
+    registered["codingAgentProfiles"]["defaultProfileByAgent"][matrix] = serde_json::json!("B");
+    let mut settings_value = serde_json::to_value(&fixture.settings).unwrap();
+    settings_value["codingAgentProfiles"]["defaultProfileByAgent"][matrix] = serde_json::json!("B");
+    fixture.settings = serde_json::from_value(settings_value.clone()).unwrap();
+    std::fs::write(
+        config.join("settings.json"),
+        serde_json::to_vec(&settings_value).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+        serde_json::to_vec(&registered).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+        serde_json::to_vec(
+            &serde_json::json!({"codingAgentProfiles":{"defaultProfileByAgent":{(matrix):"B"},
+            "profilesByAgent":{"K":{"B":{"command":"overlay-beta","env":{}}}}}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fixture.context =
+        SourceReadContext::from_settings(&fixture.settings, &config.join("settings.json")).unwrap();
+    fixture.source = list_active_sources(&fixture.context)
+        .into_iter()
+        .find(|source| source.kind == SourceKind::RegisteredInstance)
+        .unwrap();
+    (config, target, registered)
+}
+
+/// The per-matrix state shared by the original-link proof phases.
+struct MatrixProof<'a, 'b> {
+    fixture: &'a DriverFixture,
+    snapshot: &'a crate::config::settings::RawSourceSnapshot,
+    origin: &'a LegacyCompatibilityOrigin,
+    lease: &'a SourceWriteContext<'b>,
+    candidate: &'a serde_json::Value,
+    selection: &'a ConfigurationRef,
+    target: &'a std::path::Path,
+    matrix: &'a str,
+}
+
+impl MatrixProof<'_, '_> {
+    fn capture(
+        &self,
+        origin: &LegacyCompatibilityOrigin,
+    ) -> crate::config::settings::SourceInventoryCapture {
+        capture_source_inventory(
+            &self.fixture.settings,
+            self.snapshot,
+            origin,
+            self.lease.physical_source_key(),
+        )
+        .unwrap()
+    }
+
+    fn prepare_linked(
+        &self,
+        candidate: &serde_json::Value,
+        origin: &LegacyCompatibilityOrigin,
+        capture: &crate::config::settings::SourceInventoryCapture,
+    ) -> Result<PreparedSourceCandidate, SourcePreparationError> {
+        prepare_source_candidate_with_original_links(
+            self.snapshot,
+            &self.snapshot.snapshot.revision,
+            candidate,
+            Some(origin),
+            Some(capture.original_links()),
+        )
+    }
+
+    /// A `B` Default proof admits the candidate, a disjoint `J` edit and a direct default edit.
+    fn assert_default_group(
+        &self,
+        registered: &serde_json::Value,
+    ) -> crate::config::settings::SourceInventoryCapture {
+        let target = self.target;
         let config_json = serde_json::json!({"tooling":{"replicaSelectionDefault":{
-            "codingAgentId":"K","profile":"B","configurationRef":selection.clone()
+            "codingAgentId":"K","profile":"B","configurationRef":self.selection.clone()
         }}});
         std::fs::write(
             target.join("config.json"),
             serde_json::to_vec(&config_json).unwrap(),
         )
         .unwrap();
-        let capture = capture_source_inventory(
-            &fixture.settings,
-            &snapshot,
-            &origin,
-            lease.physical_source_key(),
-        )
-        .unwrap();
-        prepare_source_candidate_with_original_links(
-            &snapshot,
-            &snapshot.snapshot.revision,
-            &candidate,
-            Some(&origin),
-            Some(capture.original_links()),
-        )
-        .unwrap();
+        let capture = self.capture(self.origin);
+        self.prepare_linked(self.candidate, self.origin, &capture)
+            .unwrap();
         let mut disjoint_j = registered.clone();
         disjoint_j["agents"][1]["command"] = serde_json::json!("other-new-base");
-        prepare_source_candidate_with_original_links(
-            &snapshot,
-            &snapshot.snapshot.revision,
-            &disjoint_j,
-            Some(&origin),
-            Some(capture.original_links()),
-        )
-        .unwrap();
+        self.prepare_linked(&disjoint_j, self.origin, &capture)
+            .unwrap();
         let mut direct_default = registered.clone();
-        direct_default["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
+        direct_default["codingAgentProfiles"]["defaultProfileByAgent"][self.matrix] =
             serde_json::json!("A");
-        prepare_source_candidate_with_original_links(
-            &snapshot,
-            &snapshot.snapshot.revision,
-            &direct_default,
-            Some(&origin),
-            Some(capture.original_links()),
-        )
-        .unwrap();
+        self.prepare_linked(&direct_default, self.origin, &capture)
+            .unwrap();
+        capture
+    }
 
+    /// Overlay drift, a letterless Default and an `A` proof over a changed `B` all refuse.
+    fn assert_overlay_proofs(
+        &self,
+        config: &std::path::Path,
+        capture: &crate::config::settings::SourceInventoryCapture,
+    ) -> (
+        crate::config::settings::SourceInventoryCapture,
+        crate::config::settings::SourceInventoryCapture,
+    ) {
+        let (target, snapshot, candidate) = (self.target, self.snapshot, self.candidate);
         let overlay_path =
             config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
         let overlay_before = std::fs::read(&overlay_path).unwrap();
         let mut drift: serde_json::Value = serde_json::from_slice(&overlay_before).unwrap();
         drift["logLevel"] = serde_json::json!("debug");
         std::fs::write(&overlay_path, serde_json::to_vec(&drift).unwrap()).unwrap();
-        let changed_inputs = OriginInputs::capture(&fixture.context).unwrap();
+        let changed_inputs = OriginInputs::capture(&self.fixture.context).unwrap();
         let changed_origin = LegacyCompatibilityOrigin::classify(&changed_inputs);
-        assert!(prepare_source_candidate_with_original_links(
-            &snapshot,
-            &snapshot.snapshot.revision,
-            &candidate,
-            Some(&changed_origin),
-            Some(capture.original_links())
-        )
-        .is_err());
+        assert!(self
+            .prepare_linked(candidate, &changed_origin, capture)
+            .is_err());
         std::fs::write(&overlay_path, &overlay_before).unwrap();
-        let mut missing_letter = selection.clone();
+        let mut missing_letter = self.selection.clone();
         missing_letter.requested_profile = None;
         missing_letter.profile_calculated_id = None;
         std::fs::write(
@@ -623,28 +672,17 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
             .unwrap(),
         )
         .unwrap();
-        let missing = capture_source_inventory(
-            &fixture.settings,
-            &snapshot,
-            &origin,
-            lease.physical_source_key(),
-        )
-        .unwrap();
-        assert!(prepare_source_candidate_with_original_links(
-            &snapshot,
-            &snapshot.snapshot.revision,
-            &candidate,
-            Some(&origin),
-            Some(missing.original_links())
-        )
-        .is_err());
+        let missing = self.capture(self.origin);
+        assert!(self
+            .prepare_linked(candidate, self.origin, &missing)
+            .is_err());
         let mut both: serde_json::Value = serde_json::from_slice(&overlay_before).unwrap();
         both["codingAgentProfiles"]["profilesByAgent"]["K"]["A"] =
             serde_json::json!({"command":"overlay-alpha","env":{}});
         std::fs::write(&overlay_path, serde_json::to_vec(&both).unwrap()).unwrap();
-        let both_inputs = OriginInputs::capture(&fixture.context).unwrap();
+        let both_inputs = OriginInputs::capture(&self.fixture.context).unwrap();
         let both_origin = LegacyCompatibilityOrigin::classify(&both_inputs);
-        let mut alpha = selection.clone();
+        let mut alpha = self.selection.clone();
         alpha.requested_profile = Some("A".into());
         alpha.profile_calculated_id = Some(profile_identity(&snapshot.snapshot.profiles["K"]["A"]));
         let config_json = serde_json::json!({"tooling":{"replicaSelectionDefault":{
@@ -655,25 +693,24 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
             serde_json::to_vec(&config_json).unwrap(),
         )
         .unwrap();
-        let alpha_capture = capture_source_inventory(
-            &fixture.settings,
-            &snapshot,
-            &both_origin,
-            lease.physical_source_key(),
-        )
-        .unwrap();
+        let alpha_capture = self.capture(&both_origin);
         assert!(
-            prepare_source_candidate_with_original_links(
-                &snapshot,
-                &snapshot.snapshot.revision,
-                &candidate,
-                Some(&both_origin),
-                Some(alpha_capture.original_links())
-            )
-            .is_err(),
+            self.prepare_linked(candidate, &both_origin, &alpha_capture)
+                .is_err(),
             "A proof covered changed non-disjoint B"
         );
         std::fs::write(&overlay_path, &overlay_before).unwrap();
+        (missing, alpha_capture)
+    }
+
+    /// Neither a history-only reference nor a replica selection mints a Matrix Default proof.
+    fn assert_history_and_replica(
+        &self,
+    ) -> (
+        crate::config::settings::SourceInventoryCapture,
+        crate::config::settings::SourceInventoryCapture,
+    ) {
+        let (target, selection, matrix) = (self.target, self.selection, self.matrix);
         std::fs::write(target.join("config.json"), b"{}").unwrap();
         let state_json =
             serde_json::json!({"tooling":{"sourceReferences":[{"configurationRef":selection}]}});
@@ -682,37 +719,29 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
             serde_json::to_vec(&state_json).unwrap(),
         )
         .unwrap();
-        let history = capture_source_inventory(
-            &fixture.settings,
-            &snapshot,
-            &origin,
-            lease.physical_source_key(),
-        )
-        .unwrap();
-        assert!(prepare_source_candidate_with_original_links(
-            &snapshot,
-            &snapshot.snapshot.revision,
-            &candidate,
-            Some(&origin),
-            Some(history.original_links())
-        )
-        .is_err());
+        let history = self.capture(self.origin);
+        assert!(self
+            .prepare_linked(self.candidate, self.origin, &history)
+            .is_err());
         std::fs::write(
             target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
             b"{}",
         )
         .unwrap();
-        let replica = fixture
+        let replica = self
+            .fixture
             .project
             .join(".ac/wg-7-proof")
             .join(format!("__agent_{matrix}"));
         std::fs::create_dir_all(&replica).unwrap();
         let replica_selection = ConfigurationRef {
             version: 1,
-            source: fixture.source.clone(),
+            source: self.fixture.source.clone(),
             calculated_id: configuration_identity("own-base", &[]),
             requested_profile: Some("B".into()),
-            profile_calculated_id: Some(profile_identity(&snapshot.snapshot.profiles["K"]["B"])),
+            profile_calculated_id: Some(profile_identity(
+                &self.snapshot.snapshot.profiles["K"]["B"],
+            )),
             legacy_entry_hint: Some("K".into()),
         };
         std::fs::write(
@@ -723,23 +752,12 @@ fn single_editor_original_factory_real_matrix_default_group_and_history_no_defau
             .unwrap(),
         )
         .unwrap();
-        let replica_capture = capture_source_inventory(
-            &fixture.settings,
-            &snapshot,
-            &origin,
-            lease.physical_source_key(),
-        )
-        .unwrap();
+        let replica_capture = self.capture(self.origin);
         assert!(
-            prepare_source_candidate_with_original_links(
-                &snapshot,
-                &snapshot.snapshot.revision,
-                &candidate,
-                Some(&origin),
-                Some(replica_capture.original_links())
-            )
-            .is_err(),
+            self.prepare_linked(self.candidate, self.origin, &replica_capture)
+                .is_err(),
             "replica minted Matrix Default proof"
         );
+        (history, replica_capture)
     }
 }

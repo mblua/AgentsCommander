@@ -14,12 +14,7 @@ use uuid::Uuid;
 /// Root-agent sessions skip the record half (the root restore path ignores the
 /// marker, #630 scope; mirrors the restart site's exclusion in
 /// commands/session.rs); the mirror half self-gates on coordinators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundaryMetadataOutcome {
-    Applied,
-    Unchanged,
-    Failed,
-}
+pub(crate) use crate::pty::inject::BoundaryMetadataOutcome;
 
 pub(super) fn combine_boundary_metadata(
     first: BoundaryMetadataOutcome,
@@ -47,7 +42,7 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
     if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
         state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .reset(session_id);
     }
     let manager = {
@@ -57,13 +52,9 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
     };
     // Single-clone lookup; DUAL root predicate mirrors the restart path so the
     // two exclusions never disagree.
-    let is_root = manager
-        .get_session(session_id)
-        .await
-        .map(|s| {
-            s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
-        })
-        .unwrap_or(false);
+    let is_root = manager.get_session(session_id).await.is_some_and(|s| {
+        s.is_root_agent || crate::config::root_agent::is_root_agent_path(&s.working_directory)
+    });
     let record = if is_root {
         BoundaryMetadataOutcome::Unchanged
     } else {
@@ -83,8 +74,7 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
             Err(_) => {
                 log::error!(
                     "[session-state] fresh-boundary stamp persist \
-                        failed session={} code=boundary_metadata_failed",
-                    session_id
+                        failed session={session_id} code=boundary_metadata_failed"
                 );
                 BoundaryMetadataOutcome::Failed
             }
@@ -133,8 +123,7 @@ pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
         Err(_) => {
             log::error!(
                 "[session-state] post-boundary-content drop persist \
-                    failed session={} code=boundary_metadata_failed",
-                session_id
+                    failed session={session_id} code=boundary_metadata_failed"
             );
             BoundaryMetadataOutcome::Failed
         }
@@ -147,7 +136,7 @@ pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
 /// (`coordinator_cwd` -> None; root agents land here too) or when the value is
 /// already in the target state. Persists the clocks file immediately on a real
 /// transition: these boundaries are rare and must survive an app close inside
-/// the 60s flush tick (same discipline as close_coordinator's explicit save).
+/// the 60s flush tick (same discipline as `close_coordinator`'s explicit save).
 pub(crate) async fn write_start_fresh_mirror_for_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
@@ -176,7 +165,9 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
     // agent_fqn_from_path returns String (teams.rs:80), not Option.
     let fqn = crate::config::teams::agent_fqn_from_path(&cwd);
     let changed = {
-        let mut guard = clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = clocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if on {
             guard.mark_start_fresh(&fqn, chrono::Utc::now())
         } else {
@@ -189,7 +180,12 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
             if on { "set" } else { "cleared" },
             fqn
         );
-        let snapshot = { clocks.lock().unwrap_or_else(|e| e.into_inner()).snapshot() };
+        let snapshot = {
+            clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot()
+        };
         if crate::config::coordinator_clocks::save_map(&snapshot).is_err() {
             log::warn!(
                 "[coordinator-clocks] start_fresh_at save failed code=boundary_metadata_failed"

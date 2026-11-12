@@ -189,7 +189,7 @@ fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
         ("purge-room", "--wg", "d"),
     ] {
         // A root per invocation, so the four runs cannot race on one outbox.
-        let root = tmp.path().join(format!("root-{}", slot));
+        let root = tmp.path().join(format!("root-{slot}"));
         std::fs::create_dir_all(&root).expect("create agent root");
 
         let mut command = command_for_binary(&bin);
@@ -287,7 +287,7 @@ fn outbox_files(root: &Path) -> Vec<PathBuf> {
         };
         for f in files.flatten() {
             let p = f.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("json") {
+            if p.extension().and_then(std::ffi::OsStr::to_str) == Some("json") {
                 out.push(p);
             }
         }

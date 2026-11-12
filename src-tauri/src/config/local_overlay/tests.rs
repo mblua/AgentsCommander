@@ -718,3 +718,159 @@ fn overlay_file_name_matches_the_registry() {
         crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME
     );
 }
+
+#[test]
+fn direct_overlay_path_reads_only_the_supplied_file_and_preserves_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("chosen-overlay.json");
+    let bytes = br#"{"logLevel":"debug","newKey":7}"#;
+    std::fs::write(&path, bytes).unwrap();
+    std::fs::write(temp.path().join(SETTINGS_LOCAL_FILE_NAME), "{}").unwrap();
+    let mut base = json!({"logLevel": "info"});
+    let state = LocalSettingsOverlay::load_and_merge_overlay_path_paired(
+        &path,
+        &mut base,
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+    assert_eq!(base, json!({"logLevel": "debug", "newKey": 7}));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        state.diagnostics("chosen-overlay.json"),
+        vec![OverlayDiagnostic::Applied {
+            source: "chosen-overlay.json".to_string(),
+            owned: vec!["logLevel".to_string(), "newKey".to_string()],
+        }]
+    );
+    let mut restored = base.as_object().unwrap().clone();
+    state.restore_base(&mut restored);
+    assert_eq!(Value::Object(restored), json!({"logLevel": "info"}));
+}
+
+#[test]
+fn direct_overlay_path_preserves_missing_empty_and_rejected_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("chosen-overlay.json");
+    let mut base = json!({"logLevel": "info"});
+    let absent = LocalSettingsOverlay::load_and_merge_overlay_path_paired(
+        &path,
+        &mut base,
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+    assert!(absent.is_empty());
+    assert!(absent.diagnostics("chosen-overlay.json").is_empty());
+    for bytes in ["{}", "{ not json", "[1, 2]"] {
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::write(temp.path().join(SETTINGS_LOCAL_FILE_NAME), bytes).unwrap();
+        let mut legacy_base = base.clone();
+        let direct = LocalSettingsOverlay::load_and_merge_overlay_path_paired(
+            &path,
+            &mut base,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        let legacy = LocalSettingsOverlay::load_and_merge_paired(
+            &temp.path().join("settings.json"),
+            &mut legacy_base,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(base, json!({"logLevel": "info"}));
+        assert_eq!(base, legacy_base);
+        assert!(direct.is_empty());
+        assert_eq!(direct.rejection(), legacy.rejection());
+        assert_eq!(
+            direct.diagnostics("same-label"),
+            legacy.diagnostics("same-label")
+        );
+    }
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let rejected = LocalSettingsOverlay::load_and_merge_overlay_path_paired(
+        &path,
+        &mut base,
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+    assert!(matches!(
+        rejected.rejection(),
+        Some(OverlayRejection::Unreadable(_))
+    ));
+    assert_eq!(base, json!({"logLevel": "info"}));
+}
+
+#[test]
+fn direct_overlay_path_preserves_exclusions_derived_ids_and_paired_restore_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("chosen-overlay.json");
+    let bytes = br#"{
+        "disk":2,"legacy":2,"agents":[{"id":"new"}],
+        "row":{"oldCommand":"new-command"}
+    }"#;
+    std::fs::write(&path, bytes).unwrap();
+    std::fs::write(temp.path().join(SETTINGS_LOCAL_FILE_NAME), bytes).unwrap();
+    let pairs = [PairedLeaf {
+        path: &["row"],
+        canonical: "command",
+        legacy: "oldCommand",
+        select: |row, key| {
+            Ok(row
+                .get(key)
+                .or_else(|| row.get("oldCommand"))
+                .and_then(Value::as_str)
+                .map(str::to_owned))
+        },
+    }];
+    let original = json!({
+        "disk":1,"legacy":1,"agents":[{"id":"old"}],
+        "row":{"command":"base-command"}
+    });
+    let mut base = original.clone();
+    let mut legacy_base = original.clone();
+    let state = LocalSettingsOverlay::load_and_merge_overlay_path_paired(
+        &path,
+        &mut base,
+        &["disk"],
+        &["legacy"],
+        TEST_CLOSURES,
+        &pairs,
+    );
+    let legacy = LocalSettingsOverlay::load_and_merge_paired(
+        &temp.path().join("settings.json"),
+        &mut legacy_base,
+        &["disk"],
+        &["legacy"],
+        TEST_CLOSURES,
+        &pairs,
+    );
+    assert_eq!(base, legacy_base);
+    assert_eq!(base["disk"], json!(1));
+    assert_eq!(base["legacy"], json!(1));
+    assert_eq!(base["row"], json!({"command":"new-command"}));
+    assert!(state.owned_paths().contains(&vec![
+        "codingAgentProfiles".to_string(),
+        "profilesByAgent".to_string(),
+        "new".to_string(),
+    ]));
+    assert_eq!(state.owned_paths(), legacy.owned_paths());
+    assert_eq!(state.base_values, legacy.base_values);
+    assert_eq!(
+        state.diagnostics("same-label"),
+        legacy.diagnostics("same-label")
+    );
+    let mut restored = base.as_object().unwrap().clone();
+    state.restore_base(&mut restored);
+    assert_eq!(Value::Object(restored), original);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}

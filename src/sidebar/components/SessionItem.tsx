@@ -90,12 +90,12 @@ export function sessionDisplayName(
     const pathProject = extractProjectName(wd);
     if (pathProject) {
       const projectFolder = originProject() || pathProject;
-      const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+      const normalized = wd.replaceAll("\\", "/").replace(/\/+$/, "");
       const parts = normalized.split("/");
       const agentDir = parts[parts.length - 1].replace(/^__?agent_/, "");
       return `${agentDir}@${projectFolder}`;
     }
-    const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normalized = wd.replaceAll("\\", "/").replace(/\/+$/, "");
     const parts = normalized.split("/");
     if (parts.length >= 2) {
       return parts.slice(-2).join("/");
@@ -134,6 +134,8 @@ const SessionItem: Component<{
   isActive: boolean;
   originProject?: string;
   extraContextAction?: SessionContextExtraAction;
+  /** #3532 P11 - project whose context history colors the CTX badge. */
+  historyProjectPath?: string;
 }> = (props) => {
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [showAgentModal, setShowAgentModal] = createSignal(false);
@@ -153,6 +155,10 @@ const SessionItem: Component<{
   const ctxVisible = () =>
     contextBadgeConfigured(settingsStore.current?.agents, props.session.agentId);
   const ctxPercent = () => sessionsStore.contextPercentBySessionId[props.session.id];
+  const historyScope = () =>
+    props.historyProjectPath && !props.session.isRootAgent
+      ? { projectPath: props.historyProjectPath, runtimeSessionId: props.session.id }
+      : undefined;
   const quotaUsed = () => {
     const agentId = props.session.agentId;
     return agentId ? sessionsStore.weeklyQuotaUsedByAgentId[agentId] : undefined;
@@ -227,7 +233,7 @@ const SessionItem: Component<{
     await SessionAPI.switch(props.session.id);
     if (isTauri) {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
+      const detachedLabel = `terminal-${props.session.id.replaceAll("-", "")}`;
       const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
       if (!detachedWin) {
         await WindowAPI.ensureTerminal();
@@ -243,7 +249,7 @@ const SessionItem: Component<{
   const repoForModal = (): RepoMatch => {
     const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
     const repo = sessionsStore.repos.find((r) =>
-      r.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === np
+      r.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") === np
     );
     return repo ?? { name: props.session.name, path: props.session.workingDirectory, agents: [] };
   };
@@ -489,7 +495,12 @@ const SessionItem: Component<{
               >{tier().text}</span>
             )}</Show>
             <Show when={ctxVisible()}>
-              <ContextBadge percent={ctxPercent()} testId={`session.${props.session.id}.contextBadge`} />
+              <ContextBadge
+                percent={ctxPercent()}
+                testId={`session.${props.session.id}.contextBadge`}
+                historyScope={historyScope()}
+                colorSessions={settingsStore.current?.contextHistoryColorSessions}
+              />
             </Show>
             <Show when={props.session.isCoordinator && !isInactive() && props.session.gitRepos.length > 0}>
               <div class="session-item-branches">

@@ -2,7 +2,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
@@ -96,24 +95,6 @@ pub struct TelegramBridgeManager {
 
 pub type TelegramBridgeState = Arc<tokio::sync::Mutex<TelegramBridgeManager>>;
 
-/// Release **every** demand for a session. Destroy and shutdown do this; a
-/// persistence rollback releases only the bot demand (section 5).
-pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Uuid,
-) {
-    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
-        return;
-    };
-    let shutdown = {
-        let mut tg = tg_state.lock().await;
-        tg.reader_release_all(session_id)
-    };
-    if let Some(shutdown) = shutdown {
-        shutdown.spawn_wait_or_abort();
-    }
-}
-
 #[must_use = "BridgeShutdown must be consumed with spawn_wait_or_abort() or abort_now() \
               after releasing TelegramBridgeState"]
 pub struct BridgeShutdown {
@@ -122,19 +103,13 @@ pub struct BridgeShutdown {
 }
 
 impl BridgeShutdown {
-    pub fn spawn_wait_or_abort(self) {
-        tauri::async_runtime::spawn(async move {
-            self.wait_or_abort().await;
-        });
-    }
-
     pub fn abort_now(self) {
         for task in self.tasks {
             task.abort();
         }
     }
 
-    async fn wait_or_abort(self) {
+    pub(crate) async fn wait_or_abort(self) {
         let deadline = Instant::now() + Duration::from_secs(2);
         for mut task in self.tasks {
             if Instant::now() >= deadline {
@@ -375,8 +350,7 @@ impl TelegramBridgeManager {
                 return Ok(existing.info.clone());
             }
             return Err(AppError::Telegram(format!(
-                "Session {} already has a bridge attached",
-                session_id
+                "Session {session_id} already has a bridge attached"
             )));
         }
 
@@ -425,7 +399,7 @@ impl TelegramBridgeManager {
 
     pub fn detach(&mut self, session_id: Uuid) -> Result<BridgeShutdown, AppError> {
         let handle = self.bridges.remove(&session_id).ok_or_else(|| {
-            AppError::Telegram(format!("No bridge attached to session {}", session_id))
+            AppError::Telegram(format!("No bridge attached to session {session_id}"))
         })?;
 
         handle.cancel.cancel();

@@ -27,7 +27,7 @@ pub(crate) fn read_role_if_present(matrix: &Path) -> Option<String> {
 pub(crate) fn write_created_role(matrix: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     let path = role_path(matrix);
     super::publication::write_created_role(&path, bytes)
-        .map_err(|e| format!("Failed to write Role.md: {}", e))?;
+        .map_err(|e| format!("Failed to write Role.md: {e}"))?;
     Ok(path)
 }
 

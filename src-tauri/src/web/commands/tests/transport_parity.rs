@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::session::selection_executor::run_owned_selection_operation;
 use crate::config::coding_agent_profiles::SelectionWriteIntent;
 
 fn selection_lock_web_fixture(
@@ -119,7 +120,7 @@ async fn issue_1937_transport_parity_default_commands_match_inner_and_broadcast(
     let replica_text = replica.to_string_lossy().to_string();
     let matrix = replica
         .parent()
-        .and_then(|dir| dir.parent())
+        .and_then(std::path::Path::parent)
         .expect("matrix parent")
         .join("_agent_codex");
     let (state, mut rx) = ws_state_for(settings);
@@ -214,7 +215,7 @@ async fn issue_1937_transport_parity_new_commands_reject_unknown_fields() {
     let replica_bytes = std::fs::read(replica.join("config.json")).expect("read config");
     let matrix = replica
         .parent()
-        .and_then(|dir| dir.parent())
+        .and_then(std::path::Path::parent)
         .expect("matrix parent")
         .join("_agent_codex");
     let (state, mut rx) = ws_state_for(settings);
@@ -372,7 +373,7 @@ async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_wa
     let replica_text = replica.to_string_lossy().to_string();
     let matrix = replica
         .parent()
-        .and_then(|dir| dir.parent())
+        .and_then(std::path::Path::parent)
         .expect("matrix parent")
         .join("_agent_codex");
     let (state, _rx) = ws_state_for(settings);
@@ -392,13 +393,11 @@ async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_wa
     // caller (the WebSocket waiter) is dropped.
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-    let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || async move {
-            entered_tx.send(()).expect("signal entered");
-            release_rx.await.expect("release holder");
-            Ok::<(), String>(())
-        },
-    ));
+    let holder = tokio::spawn(run_owned_selection_operation(move || async move {
+        entered_tx.send(()).expect("signal entered");
+        release_rx.await.expect("release holder");
+        Ok::<(), String>(())
+    }));
     entered_rx.await.expect("holder entered");
 
     let state_for_dispatch = state.clone();
@@ -476,33 +475,31 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
     // The holder owns the turn while a mutation is still in flight; the
     // publication happens after the barrier, so a racing preview would
     // observe the unlocked pre-publication state.
-    let holder = tokio::spawn(crate::session::selection::run_owned_selection_operation(
-        move || {
-            let settings = settings_for_holder;
-            let replica = replica_for_holder;
-            async move {
-                entered_tx.send(()).expect("signal entered");
-                release_rx.await.expect("release holder");
-                let snapshot = settings.read().await.clone();
-                let expected =
-                    crate::config::coding_agent_profiles::read_replica_selection_state(&replica)
-                        .expectation()
-                        .expect("fresh expectation");
-                crate::config::coding_agent_profiles::write_replica_selection(
-                    &snapshot,
-                    &replica,
-                    &crate::config::coding_agent_profiles::ReplicaSelectionPair {
-                        coding_agent_id: "codex".to_string(),
-                        requested_profile: "B".to_string(),
-                    },
-                    SelectionWriteIntent::IndividualAssignLock,
-                    &expected,
-                )
-                .expect("publish the lock");
-                Ok::<(), String>(())
-            }
-        },
-    ));
+    let holder = tokio::spawn(run_owned_selection_operation(move || {
+        let settings = settings_for_holder;
+        let replica = replica_for_holder;
+        async move {
+            entered_tx.send(()).expect("signal entered");
+            release_rx.await.expect("release holder");
+            let snapshot = settings.read().await.clone();
+            let expected =
+                crate::config::coding_agent_profiles::read_replica_selection_state(&replica)
+                    .expectation()
+                    .expect("fresh expectation");
+            crate::config::coding_agent_profiles::write_replica_selection(
+                &snapshot,
+                &replica,
+                &crate::config::coding_agent_profiles::ReplicaSelectionPair {
+                    coding_agent_id: "codex".to_string(),
+                    requested_profile: "B".to_string(),
+                },
+                SelectionWriteIntent::IndividualAssignLock,
+                &expected,
+            )
+            .expect("publish the lock");
+            Ok::<(), String>(())
+        }
+    }));
     entered_rx.await.expect("holder entered");
 
     let state_for_dispatch = state.clone();
@@ -548,9 +545,9 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
 }
 
 /// #1271 - full create-path harness for the web dispatcher. `ws_state_for`
-/// lacks the SelectionCoordinator and the other states `create_session_inner`
+/// lacks the `SelectionCoordinator` and the other states `create_session_inner`
 /// requires, so the web-path invalid-input postcondition test builds them
-/// here, mirroring the pty_lifecycle harness (plan Finding F).
+/// here, mirroring the `pty_lifecycle` harness (plan Finding F).
 #[cfg(windows)]
 fn ws_state_for_1271(
     settings: AppSettings,

@@ -38,7 +38,7 @@ struct SessionEntry {
     created_at: String,
 }
 
-/// Convert a SessionStatus to its string tag (for filtering).
+/// Convert a `SessionStatus` to its string tag (for filtering).
 fn status_tag(status: &SessionStatus) -> &'static str {
     match status {
         SessionStatus::Active => "active",
@@ -66,7 +66,7 @@ fn raised_hand_from_persisted(s: &PersistedSession) -> bool {
     })
 }
 
-/// Convert a PersistedSession (with runtime fields) to a CLI output entry.
+/// Convert a `PersistedSession` (with runtime fields) to a CLI output entry.
 fn to_entry(s: &PersistedSession) -> SessionEntry {
     let status_value = match &s.status {
         Some(st) => serde_json::to_value(st).unwrap_or(serde_json::json!("unknown")),
@@ -109,8 +109,7 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
     let suppress_stale_warning = args
         .status
         .as_deref()
-        .map(|s| s.eq_ignore_ascii_case("exited"))
-        .unwrap_or(false);
+        .is_some_and(|s| s.eq_ignore_ascii_case("exited"));
     if !suppress_stale_warning {
         match crate::config::daemon_pid::detect_daemon_state() {
             crate::config::daemon_pid::DaemonState::Running { .. } => {}
@@ -132,17 +131,15 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
             crate::config::daemon_pid::DaemonState::StalePidFile { pid } => {
                 if crate::config::environment::machine_output_string().is_err() {
                     eprintln!(
-                        "[WARN] sessions.json may be stale — AgentsCommander daemon pid {} is not \
-                         running (stale daemon.pid file). list-sessions reads the file directly; \
-                         results reflect the daemon's last persisted state.",
-                        pid
+                        "[WARN] sessions.json may be stale — AgentsCommander daemon pid {pid} \
+                         is not running (stale daemon.pid file). list-sessions reads the file \
+                         directly; results reflect the daemon's last persisted state."
                     );
                 } else {
                     log::warn!(
-                        "sessions.json may be stale — AgentsCommander daemon pid {} is not \
+                        "sessions.json may be stale — AgentsCommander daemon pid {pid} is not \
                          running (stale daemon.pid file). list-sessions reads the file directly; \
-                         results reflect the daemon's last persisted state.",
-                        pid
+                         results reflect the daemon's last persisted state."
                     );
                 }
             }
@@ -188,7 +185,7 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("Error: failed to serialize output: {}", e);
+            eprintln!("Error: failed to serialize output: {e}");
             1
         }
     }

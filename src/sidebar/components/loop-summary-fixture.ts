@@ -1,6 +1,6 @@
 import type { AcLoopSummary } from "../../shared/types";
 
-const projectPath = "C:\\Project";
+const projectPath = String.raw`C:\Project`;
 
 /**
  * Shared `AcLoopSummary` fixture for the ProjectPanel loop tests.
@@ -22,8 +22,8 @@ export function loopSummaryFixture(overrides: Partial<AcLoopSummary> = {}): AcLo
     promptPreview: "scheduled run",
     busyCoordinator: "skip",
     sessionStart: "fresh",
-    path: `${projectPath}\\.ac\\_loop_standup`,
-    configPath: `${projectPath}\\.ac\\_loop_standup\\config.toml`,
+    path: String.raw`${projectPath}\.ac\_loop_standup`,
+    configPath: String.raw`${projectPath}\.ac\_loop_standup\config.toml`,
     lastCheckedAt: null,
     lastDueAt: null,
     lastDeliveredAt: null,

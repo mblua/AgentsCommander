@@ -17,7 +17,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The single spawn site. Holds the lock across `spawn` only.
@@ -164,7 +164,7 @@ fn refresh_requests(config_dir: &Path) -> Vec<serde_json::Value> {
     let mut paths = std::fs::read_dir(&requests_dir)
         .expect("read refresh dir")
         .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+        .filter(|path| path.extension().and_then(std::ffi::OsStr::to_str) == Some("json"))
         .collect::<Vec<_>>();
     paths.sort();
     paths

@@ -1,12 +1,10 @@
 //! Co-managed routing, effect commit and trigger handling.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::config::settings::SettingsState;
-use crate::session::manager::SessionManager;
-use tauri::Manager;
+use super::CoManagedHost;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -18,7 +16,8 @@ use super::{
 };
 use crate::capture;
 use crate::reader_demand::{
-    reader_demand_pass, recovery_pass, watch_capture_slots, READER_DEMAND_TICK_SECS,
+    reader_demand_pass, recovery_pass, watch_capture_slots, ReaderDemandHost,
+    READER_DEMAND_TICK_SECS,
 };
 
 /// Settings project paths plus the project derived from the room root, the
@@ -29,7 +28,7 @@ use crate::reader_demand::{
 /// let a verified coordinator reach Root (F4).
 pub(crate) fn co_managed_project_paths(settings_paths: &[String], room_root: &Path) -> Vec<String> {
     let mut paths = settings_paths.to_vec();
-    let Some(project_dir) = room_root.parent().and_then(|ac_root| ac_root.parent()) else {
+    let Some(project_dir) = room_root.parent().and_then(std::path::Path::parent) else {
         return paths;
     };
     let canon_project = crate::filesystem::projects::canonical_refresh_project(project_dir).ok();
@@ -155,14 +154,14 @@ pub(crate) enum CoManagedCommit {
 
 /// The preconditions, gathered fresh immediately before each attempt. No lock
 /// of ours is held across the awaits; the results travel in as a typed value.
-pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn gather_co_managed_preconditions<H: CoManagedHost + ?Sized>(
+    app: &H,
     session_id: uuid::Uuid,
     room_root: &Path,
     kind: capture::state::EffectKind,
 ) -> capture::state::EffectPreconditions {
     let (session_alive, unique_live_session_for_cwd) = {
-        let Some(manager) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() else {
+        let Some(manager) = app.sessions_optional() else {
             return capture::state::EffectPreconditions {
                 session_alive: false,
                 session_id: session_id.to_string(),
@@ -191,25 +190,20 @@ pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
         (session.is_some(), unique)
     };
 
-    let no_pending_user_input =
-        match app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
-            Some(state) => {
-                let tracker = state.lock().unwrap_or_else(|e| e.into_inner());
-                !tracker.pending_within(
-                    session_id,
-                    crate::pty::input_activity::USER_WRITE_STAMP_WINDOW,
-                )
-            }
-            None => true,
-        };
+    let no_pending_user_input = match app.input_optional() {
+        Some(state) => {
+            let tracker = state.lock().unwrap_or_else(PoisonError::into_inner);
+            !tracker.pending_within(
+                session_id,
+                crate::pty::input_activity::USER_WRITE_STAMP_WINDOW,
+            )
+        }
+        None => true,
+    };
 
     let effective_ready = matches!(
-        crate::commands::session::co_managed_effective_state_for_session(
-            app,
-            room_root,
-            &session_id.to_string()
-        )
-        .await,
+        app.effective_state(room_root, &session_id.to_string())
+            .await,
         Ok(crate::config::co_managed::CoManagedState::Ready)
     );
 
@@ -228,7 +222,8 @@ pub(crate) async fn gather_co_managed_preconditions<R: tauri::Runtime>(
 /// up to `LOCK_WAIT_BUDGET` (100 ms). Called directly it would park a Tokio
 /// worker on every idle edge, so it runs on the blocking pool and a join error
 /// is an abstention, never a silent success.
-pub(crate) async fn commit_co_managed_effect(
+pub(crate) async fn commit_co_managed_effect<H: CoManagedHost + ?Sized>(
+    host: &H,
     room_root: PathBuf,
     slot: capture::sink::CaptureSlot,
     expected_seq: u64,
@@ -236,20 +231,8 @@ pub(crate) async fn commit_co_managed_effect(
     pre: capture::state::EffectPreconditions,
     capture: Arc<capture::state::CaptureState>,
 ) -> Result<capture::state::CommittedEffect, capture::state::AbstainReason> {
-    tauri::async_runtime::spawn_blocking(move || {
-        capture::state::commit_effect(
-            &room_root,
-            &slot,
-            expected_seq,
-            &expected_key,
-            &pre,
-            &capture,
-        )
-    })
-    .await
-    .unwrap_or(Err(capture::state::AbstainReason::LockUnavailable(
-        "commit task join failed".to_string(),
-    )))
+    host.commit_effect(room_root, slot, expected_seq, expected_key, pre, capture)
+        .await
 }
 
 /// Three attempts per trigger, the first plus two retries, with a fresh full
@@ -257,8 +240,8 @@ pub(crate) async fn commit_co_managed_effect(
 /// retryable outcomes. The ceiling is the executable form of the bound: under
 /// contention the feature abstains with a reason instead of looping forever.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn commit_co_managed_with_retries<H: CoManagedHost + ?Sized>(
+    app: &H,
     handle: &CoManagedSupervisorHandle,
     session_id: uuid::Uuid,
     room_root: &Path,
@@ -275,6 +258,7 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
         let pre = gather_co_managed_preconditions(app, session_id, room_root, kind).await;
         handle.record_commit_call();
         let result = commit_co_managed_effect(
+            app,
             room_root.to_path_buf(),
             slot.clone(),
             expected_seq,
@@ -301,8 +285,10 @@ pub(crate) async fn commit_co_managed_with_retries<R: tauri::Runtime>(
                 handle.run_after_commit_hook();
                 return CoManagedCommit::Committed(committed);
             }
-            Err(capture::state::AbstainReason::PreconditionsStale)
-            | Err(capture::state::AbstainReason::LockBusy) => {}
+            Err(
+                capture::state::AbstainReason::PreconditionsStale
+                | capture::state::AbstainReason::LockBusy,
+            ) => {}
             Err(error) => return CoManagedCommit::Rejected(error),
         }
     }
@@ -317,8 +303,8 @@ pub(crate) enum CoManagedOutcome {
 
 /// One full effect: secrets first, then classification, then the bounded
 /// commit, then the action. Every path returns the reason the cycle ended.
-pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn co_managed_cycle<H: CoManagedHost + ?Sized>(
+    app: &H,
     handle: &CoManagedSupervisorHandle,
     session_id: uuid::Uuid,
     room_root: &Path,
@@ -334,7 +320,7 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
         }
     };
     let session = {
-        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = app.sessions_required();
         let guard = manager.read().await;
         guard.get_session(session_id).await
     };
@@ -373,9 +359,9 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
     // (2) Classify through the phase-6 leaf call.
     let catalog = co_managed_catalog(room_root);
     let outcome = {
-        let network = app.state::<crate::network::OutboundNetwork>();
+        let network = app.network_required();
         capture::jev::classify(
-            &network,
+            network,
             &settings,
             &catalog,
             &text,
@@ -386,7 +372,7 @@ pub(crate) async fn co_managed_cycle<R: tauri::Runtime>(
 
     // (3) Decide before committing, so an unreachable peer never spends budget.
     let project_paths = {
-        let settings = app.state::<SettingsState>();
+        let settings = app.settings_required();
         let guard = match settings.current_read().await {
             Ok(guard) => guard,
             Err(error) => {
@@ -532,8 +518,8 @@ async fn report_co_managed_budget_exhausted<F: std::future::Future<Output = ()>>
 /// failure after the commit is reported there too (the declared residual: the
 /// reservation is not rolled back).
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn perform_co_managed_route<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn perform_co_managed_route<H: CoManagedHost + ?Sized>(
+    app: &H,
     handle: &CoManagedSupervisorHandle,
     session_id: uuid::Uuid,
     room_root: &Path,
@@ -599,25 +585,24 @@ pub(crate) async fn perform_co_managed_route<R: tauri::Runtime>(
 /// One supervisor input. Trigger (b) runs a cycle only when the session is
 /// already idle; any other slot transition only keeps the armed flag current,
 /// which is how the idle edge finds it set.
-pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) async fn handle_co_managed_trigger<H: CoManagedHost + ?Sized>(
+    app: &H,
     handle: &CoManagedSupervisorHandle,
     trigger: CoManagedTrigger,
 ) {
     let session_id = trigger.session_id();
     let id = session_id.to_string();
 
-    let Some(registry) = app.try_state::<Arc<capture::registry::CaptureRegistry>>() else {
+    let Some(registry) = app.registry_optional() else {
         log::info!("[co-managed] trigger dropped [{id}]: no capture registry in state");
         return;
     };
-    let Some((slot, state, candidate)) = co_managed_trigger_candidate(&registry, handle, &id)
-    else {
+    let Some((slot, state, candidate)) = co_managed_trigger_candidate(registry, handle, &id) else {
         return;
     };
 
     let session = {
-        let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let manager = app.sessions_required();
         let guard = manager.read().await;
         guard.get_session(session_id).await
     };
@@ -638,9 +623,7 @@ pub(crate) async fn handle_co_managed_trigger<R: tauri::Runtime>(
         return;
     };
 
-    let effective =
-        crate::commands::session::co_managed_effective_state_for_session(app, &room_root, &id)
-            .await;
+    let effective = app.effective_state(&room_root, &id).await;
     let ready = matches!(
         effective,
         Ok(crate::config::co_managed::CoManagedState::Ready)
@@ -788,13 +771,15 @@ fn finish_co_managed_cycle(
 /// every live session's slot; the watcher forwards each slot transition as
 /// trigger (b) and keeps the armed flag current on records while the session
 /// is still busy.
-pub(crate) fn spawn_co_managed_supervisor<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+pub(crate) fn spawn_co_managed_supervisor<H: CoManagedHost + ReaderDemandHost + Clone + 'static>(
+    app: H,
     handle: CoManagedSupervisorHandle,
     mut triggers: tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>,
     shutdown: CancellationToken,
 ) {
-    tauri::async_runtime::spawn(async move {
+    let moved_app = app.clone();
+    drop(app.tasks().spawn(Box::pin(async move {
+        let app = moved_app;
         let mut discovery = tokio::time::interval(Duration::from_millis(500));
         discovery.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut reader_demand = tokio::time::interval(Duration::from_secs(READER_DEMAND_TICK_SECS));
@@ -802,7 +787,7 @@ pub(crate) fn spawn_co_managed_supervisor<R: tauri::Runtime>(
         loop {
             tokio::select! {
                 biased;
-                _ = shutdown.cancelled() => break,
+                () = shutdown.cancelled() => break,
                 _ = discovery.tick() => watch_capture_slots(&app, &handle).await,
                 _ = reader_demand.tick() => {
                     reader_demand_pass(&app).await;
@@ -814,5 +799,5 @@ pub(crate) fn spawn_co_managed_supervisor<R: tauri::Runtime>(
                 }
             }
         }
-    });
+    })));
 }

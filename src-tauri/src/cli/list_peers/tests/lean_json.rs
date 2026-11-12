@@ -4,11 +4,10 @@ use super::*;
 fn list_peers_lean_subcommand_is_registered() {
     use clap::CommandFactory;
     let cmd = crate::cli::Cli::command();
-    let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+    let names: Vec<&str> = cmd.get_subcommands().map(clap::Command::get_name).collect();
     assert!(
         names.contains(&"list-peers-lean"),
-        "list-peers-lean should be a registered subcommand; got: {:?}",
-        names
+        "list-peers-lean should be a registered subcommand; got: {names:?}"
     );
 }
 
@@ -45,12 +44,7 @@ fn lean_json_keeps_essential_fields() {
         "\"teams\":",
         "\"roleSummary\":",
     ] {
-        assert!(
-            json.contains(kept),
-            "lean JSON missing {} — got {}",
-            kept,
-            json
-        );
+        assert!(json.contains(kept), "lean JSON missing {kept} — got {json}");
     }
 }
 
@@ -70,9 +64,7 @@ fn lean_json_omits_verbose_fields() {
     ] {
         assert!(
             !json.contains(forbidden),
-            "lean JSON must not contain {} — got {}",
-            forbidden,
-            json
+            "lean JSON must not contain {forbidden} — got {json}"
         );
     }
 }
@@ -285,3 +277,65 @@ fn peer_info_carries_agent_and_profile_into_lean_projection() {
 }
 
 // ── #1669: blockedMenu projection through the peer→session join ──
+
+// #4030 — exact wire bytes, frozen before/after peer-status ownership moves.
+
+fn wire_alias_peer() -> LeanPeerInfo {
+    let mut peer = sample_peer_info("project:wg-1-team/dev");
+    peer.role = "Role".to_string();
+    peer.reachable = false;
+    peer.blocked_menu = true;
+    peer.blocked_menu_message = Some("menu notice".to_string());
+    peer.context_percent = Some(0);
+    peer.agent = Some("codex".to_string());
+    peer.profile = Some("B".to_string());
+    LeanPeerInfo::from(&peer)
+}
+
+#[test]
+fn peer_wire_aliases_preserve_exact_json_before_and_after_move() {
+    let lean = wire_alias_peer();
+    let api_peer: crate::api::schema::LeanPeerInfo = lean.clone();
+    let compact = concat!(
+        r#"{"name":"project:wg-1-team/dev","working":true,"sessionStatus":"running","#,
+        r#""waitingForInput":false,"blockedMenu":true,"blockedMenuMessage":"menu notice","#,
+        r#""reachable":false,"teams":["ac-devs"],"roleSummary":"Role","contextPercent":0,"#,
+        r#""agent":"codex","profile":"B"}"#
+    );
+    assert_eq!(serde_json::to_string(&api_peer).unwrap(), compact);
+    let response = crate::api::schema::PeersResponse {
+        api_version: crate::api::schema::API_VERSION.to_string(),
+        op_id: "4030-proof".to_string(),
+        peers: vec![api_peer],
+    };
+    let envelope = format!(r#"{{"apiVersion":"1","opId":"4030-proof","peers":[{compact}]}}"#);
+    assert_eq!(serde_json::to_string(&response).unwrap(), envelope);
+    let pretty = concat!(
+        "[\n  {\n    \"name\": \"project:wg-1-team/dev\",\n    \"working\": true,\n",
+        "    \"sessionStatus\": \"running\",\n    \"waitingForInput\": false,\n",
+        "    \"blockedMenu\": true,\n    \"blockedMenuMessage\": \"menu notice\",\n",
+        "    \"reachable\": false,\n    \"teams\": [\n      \"ac-devs\"\n    ],\n",
+        "    \"roleSummary\": \"Role\",\n    \"contextPercent\": 0,\n",
+        "    \"agent\": \"codex\",\n    \"profile\": \"B\"\n  }\n]"
+    );
+    assert_eq!(serde_json::to_string_pretty(&vec![lean]).unwrap(), pretty);
+}
+
+#[test]
+fn peer_wire_omissions_preserve_exact_json_before_and_after_move() {
+    let mut peer = sample_peer_info("project:wg-1-team/dev");
+    peer.role = String::new();
+    let lean = LeanPeerInfo::from(&peer);
+    let api_peer: crate::api::schema::LeanPeerInfo = lean.clone();
+    let compact = concat!(
+        r#"{"name":"project:wg-1-team/dev","working":true,"sessionStatus":"running","#,
+        r#""waitingForInput":false,"reachable":true,"teams":["ac-devs"]}"#
+    );
+    assert_eq!(serde_json::to_string(&api_peer).unwrap(), compact);
+    let pretty = concat!(
+        "[\n  {\n    \"name\": \"project:wg-1-team/dev\",\n    \"working\": true,\n",
+        "    \"sessionStatus\": \"running\",\n    \"waitingForInput\": false,\n",
+        "    \"reachable\": true,\n    \"teams\": [\n      \"ac-devs\"\n    ]\n  }\n]"
+    );
+    assert_eq!(serde_json::to_string_pretty(&vec![lean]).unwrap(), pretty);
+}

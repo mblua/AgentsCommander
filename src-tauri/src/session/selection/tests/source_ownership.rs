@@ -116,14 +116,14 @@ fn collect_rust_sources(dir: &Path, files: &mut Vec<(String, String)>) {
         // what `production_prefix` cuts off when the tests live inline.
         let stem = path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("");
         if stem == "tests" || stem.ends_with("_tests") {
             continue;
         }
         if path.is_dir() {
             collect_rust_sources(&path, files);
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+        } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs") {
             files.push((
                 path.to_string_lossy().replace('\\', "/"),
                 std::fs::read_to_string(&path).expect("read Rust source file"),
@@ -167,6 +167,21 @@ fn coordinator_job_handle_violations(source: &str) -> Vec<&'static str> {
     ]
     .into_iter()
     .filter(|forbidden| declaration.contains(forbidden))
+    .collect()
+}
+
+fn fixture_payload_handle_violations(payload: &str) -> Vec<&'static str> {
+    [
+        "SessionManager",
+        "PtyManager",
+        "AppHandle",
+        "SelectionTransaction",
+        "BoxFuture",
+        "dyn Future",
+        "FnOnce",
+    ]
+    .into_iter()
+    .filter(|forbidden| payload.contains(forbidden))
     .collect()
 }
 
@@ -286,17 +301,25 @@ fn coordinator_jobs_are_typed_data_without_managed_handles_or_futures() {
         "CoordinatorJob contains a managed handle or arbitrary executable field: {:?}",
         coordinator_job_handle_violations(source)
     );
-    let commands = include_str!("../../../commands/session.rs");
+    let fixture = include_str!("../../create_contracts/fixture.rs");
     let opaque = &source[source.find("pub(crate) struct OpaqueFixtureInput").unwrap()
         ..source
             .find("impl fmt::Debug for OpaqueFixtureInput")
             .unwrap()];
-    let payload = &commands[commands
+    let payload = &fixture[fixture
         .find("pub(crate) struct FixturePtyCutLease")
         .unwrap()
-        ..commands
+        ..fixture
             .find("impl std::fmt::Debug for FixtureReplacementInput")
             .unwrap()];
+    assert!(
+        fixture_payload_handle_violations(payload).is_empty(),
+        "fixture payload hides forbidden {:?}",
+        fixture_payload_handle_violations(payload)
+    );
+    println!("fixture payload positive control accepted");
+    let lease_body_end = payload.find('}').expect("FixturePtyCutLease closing brace");
+    let mut rejected = 0;
     for forbidden in [
         "SessionManager",
         "PtyManager",
@@ -306,10 +329,16 @@ fn coordinator_jobs_are_typed_data_without_managed_handles_or_futures() {
         "dyn Future",
         "FnOnce",
     ] {
-        assert!(
-            !payload.contains(forbidden),
-            "fixture payload hides forbidden {forbidden}"
+        let mut mutated_payload = payload.to_owned();
+        mutated_payload.insert_str(lease_body_end, &format!("    rogue: {forbidden},\n"));
+        let violations = fixture_payload_handle_violations(&mutated_payload);
+        assert_eq!(
+            violations,
+            vec![forbidden],
+            "sentinel accepted fixture payload hides forbidden {forbidden}"
         );
+        rejected += 1;
+        println!("fixture payload hides forbidden {forbidden}: rejected");
         assert!(
             !opaque.contains(forbidden),
             "opaque fixture records hide forbidden {forbidden}"
@@ -321,4 +350,6 @@ fn coordinator_jobs_are_typed_data_without_managed_handles_or_futures() {
             "sentinel accepted forbidden CoordinatorJob field {forbidden}"
         );
     }
+    assert_eq!(rejected, 7);
+    println!("fixture payload rejected sentinel count={rejected}");
 }

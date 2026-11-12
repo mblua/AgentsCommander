@@ -235,7 +235,7 @@ async fn single_category_below_threshold_abstains_and_above_it_passes() {
     .await;
     match low {
         ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("threshold"), "{reason}")
+            assert!(reason.contains("threshold"), "{reason}");
         }
         other @ ClassifyOutcome::Classified { .. } => panic!("0.65 must abstain, got {other:?}"),
     }
@@ -286,7 +286,7 @@ async fn permanent_4xx_abstains_with_zero_retries() {
     let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
     match outcome {
         ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("403"), "{reason}")
+            assert!(reason.contains("403"), "{reason}");
         }
         other @ ClassifyOutcome::Classified { .. } => panic!("403 must abstain, got {other:?}"),
     }
@@ -378,7 +378,7 @@ async fn absent_catalog_is_inert_and_issues_no_request() {
     .await;
     match outcome {
         ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("NoCatalogFile"), "{reason}")
+            assert!(reason.contains("NoCatalogFile"), "{reason}");
         }
         other @ ClassifyOutcome::Classified { .. } => {
             panic!("a missing catalog must be inert, got {other:?}")
@@ -401,7 +401,7 @@ async fn a_missing_api_key_is_inert_and_issues_no_request() {
     let outcome = classify(&network, &settings, &catalog, "candidate", "test").await;
     match outcome {
         ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("NoApiKey"), "{reason}")
+            assert!(reason.contains("NoApiKey"), "{reason}");
         }
         other @ ClassifyOutcome::Classified { .. } => {
             panic!("a missing API key must be inert, got {other:?}")
@@ -441,7 +441,7 @@ async fn a_fifth_destination_abstains_while_a_valid_sibling_classifies() {
     );
 }
 
-/// Test 12 (jev half): an orchestrator without a peer and a default_reply
+/// Test 12 (jev half): an orchestrator without a peer and a `default_reply`
 /// without a reply each abstain, naming the category.
 #[tokio::test]
 async fn orchestrator_without_peer_and_default_reply_without_reply_abstain() {
@@ -455,7 +455,7 @@ async fn orchestrator_without_peer_and_default_reply_without_reply_abstain() {
         let outcome = classify(&network, &settings_for(&url), &catalog, "candidate", "test").await;
         match outcome {
             ClassifyOutcome::Abstained { reason } => {
-                assert!(reason.contains(name), "{reason}")
+                assert!(reason.contains(name), "{reason}");
             }
             other @ ClassifyOutcome::Classified { .. } => {
                 panic!("{name} must abstain, got {other:?}")
@@ -521,7 +521,7 @@ async fn a_non_default_model_classifies_and_names_itself_in_abstentions() {
     let abstained = classify(&network, &settings, &catalog, "candidate", "test").await;
     match abstained {
         ClassifyOutcome::Abstained { reason } => {
-            assert!(reason.contains("jev-9.9.9"), "{reason}")
+            assert!(reason.contains("jev-9.9.9"), "{reason}");
         }
         other @ ClassifyOutcome::Classified { .. } => {
             panic!("a low score must abstain, got {other:?}")

@@ -248,19 +248,13 @@ fn read_process_cwd_windows(pid: u32) -> Option<String> {
     let handle =
         unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid) };
     if handle.is_null() {
-        log::debug!(
-            "[wg_delete_diagnostic] CWD scan: OpenProcess failed for pid {}",
-            pid
-        );
+        log::debug!("[wg_delete_diagnostic] CWD scan: OpenProcess failed for pid {pid}");
         return None;
     }
     let handle = HandleGuard(handle);
 
     read_process_cwd_from_handle(handle.raw()).or_else(|| {
-        log::debug!(
-            "[wg_delete_diagnostic] CWD scan: unable to read cwd for pid {}",
-            pid
-        );
+        log::debug!("[wg_delete_diagnostic] CWD scan: unable to read cwd for pid {pid}");
         None
     })
 }

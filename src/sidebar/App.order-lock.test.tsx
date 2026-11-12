@@ -139,7 +139,9 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
     const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
     try {
       await waitFor(() => {
-        expect(rendered.root.querySelectorAll('[data-ac-testid^="replica.row.quick."]').length).toBe(2);
+        expect(
+          rendered.root.querySelectorAll('[data-ac-testid^="replica.row.quick."]'),
+        ).toHaveLength(2);
       });
       sessionsStore.setCoordSortByActivity(true);
 
@@ -191,7 +193,9 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
     const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
     try {
       await waitFor(() => {
-        expect(rendered.root.querySelectorAll('[data-ac-testid^="replica.row.quick."]').length).toBe(2);
+        expect(
+          rendered.root.querySelectorAll('[data-ac-testid^="replica.row.quick."]'),
+        ).toHaveLength(2);
       });
       sessionsStore.setCoordSortByActivity(true);
 

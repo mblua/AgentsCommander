@@ -45,6 +45,13 @@ import TrashIcon from "./TrashIcon";
 import { reorderedIds } from "./settings/agentReorderDnd";
 import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { GripIcon } from "./settings/GripIcon";
+import { PreflightFields } from "./settings/PreflightFields";
+import { PreflightTestPanel } from "./settings/PreflightTestPanel";
+import ContextHistorySettings, * as ctxHistory from "./settings/ContextHistorySettings";
+import { selectSessionWindow } from "../../shared/context-history";
+import {
+  TIMEOUT_SAVE_ERROR, isTimeoutKeyOfAgent, parseTimeoutInput, timeoutKey,
+} from "./settings/preflightModel";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import AgentHelpTipsModal from "./AgentHelpTipsModal";
@@ -214,14 +221,17 @@ const TERMINAL_SNAPSHOT_SETTING_CONFLICT = "terminal_snapshot_setting_conflict";
 const TERMINAL_SNAPSHOT_CONFLICT_MESSAGE =
   "Terminal snapshots changed in another settings window. The current value was reloaded.";
 
-type SettingsTab = "general" | "agents" | "resources" | "integrations" | "watchers";
+type SettingsTab =
+  "general" | "agents" | "resources" | "integrations" | "watchers" | "context-history";
 
+// #4049 Context Heat Map is desktop-only: the browser never lists or opens it.
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" },
   { key: "agents", label: "Coding Agents" },
   { key: "resources", label: "Resources" },
   { key: "watchers", label: "Watchers" },
   { key: "integrations", label: "Integrations" },
+  { key: "context-history", label: "Context Heat Map" },
 ];
 
 /**
@@ -241,7 +251,9 @@ export const resolveSettingsSection = (s: string | undefined): SettingsTab =>
       ? "integrations"
       : s === "watchers"
         ? "watchers"
-        : "general";
+        : s === "context-history" && isTauri
+          ? "context-history"
+          : "general";
 
 const BYTES_PER_GIB = 1024 ** 3;
 const CONTAINER_IMAGE_EXAMPLE = "agentscommander/ac-claude:latest";
@@ -677,7 +689,7 @@ const WatcherRow: Component<{
             step="100"
             value={props.config.dedupeWindowMs}
             onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
+              const value = Number.parseInt(e.currentTarget.value, 10);
               // The editor must not be able to write a value the Rust decoder would reject:
               // a negative or unrepresentable one reclassifies this very row as unrecognised,
               // which would take it out of the editor in the middle of being edited and leave
@@ -840,6 +852,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [roomIdleConfirmationSecondsText, setRoomIdleConfirmationSecondsText] = createSignal(
     String(seededSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
   );
+  const [ctxRetentionText, setCtxRetentionText] = createSignal(String(
+    seededSettings?.contextHistoryRetentionDays ??
+      ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
+  ));
+  const [ctxWindowsText, setCtxWindowsText] = createSignal(
+    (seededSettings?.contextHistorySessionWindows ?? []).join(", "),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -921,6 +940,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
   const [profileCellText, setProfileCellText] = createStore<Record<string, string>>({});
   const [profileCellErrors, setProfileCellErrors] = createStore<Record<string, string>>({});
+  // #3516 - invalid preflight timeout text by timeoutKey(); a present key blocks Save.
+  const [preflightTimeoutDrafts, setPreflightTimeoutDrafts] =
+    createStore<Record<string, string>>({});
+  const [preflightTest, setPreflightTest] = createSignal<
+    { agentId: string; letter: string | null; opener: HTMLElement } | null
+  >(null);
   const [profileCellEnvRows, setProfileCellEnvRows] = createStore<Record<string, ProfileCellEnvRow[]>>({});
 
   const apiServerChecked = () =>
@@ -1056,7 +1081,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     for (const project of projectStore.projects) {
       for (const workgroup of project.workgroups) {
         for (const replica of workgroup.agents) {
-          const normalized = replica.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+          const normalized = replica.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
           if (seen.has(normalized)) continue;
           seen.add(normalized);
           options.push({
@@ -1320,6 +1345,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         setSettings("data", nextSettings);
         setModalSeed(cloneSettings(appSettingsOnly(loaded)));
       }
+      dropPreflightTimeoutDrafts(() => true);
     }
     const resultingAgents = settings.data?.agents ?? [];
     if (previousActiveId !== null) {
@@ -1590,6 +1616,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const nextSettings = cloneSettings(appSettingsOnly(loaded));
       if (nextSettings) nextSettings.apiServerEnabled = apiRunning;
       setSettings("data", nextSettings);
+      dropPreflightTimeoutDrafts(() => true);
       const loadedSeed = cloneSettings(appSettingsOnly(loaded));
       setModalSeed(loadedSeed);
       setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
@@ -1602,6 +1629,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setRoomIdleConfirmationSecondsText(
         String(nextSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
       );
+      setCtxRetentionText(String(
+        nextSettings?.contextHistoryRetentionDays ??
+          ctxHistory.CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT,
+      ));
+      setCtxWindowsText((nextSettings?.contextHistorySessionWindows ?? []).join(", "));
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
   });
@@ -1812,6 +1844,77 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     }, WATCHER_PREVIEW_DEBOUNCE_MS);
     onCleanup(() => clearTimeout(timer));
   });
+
+  // #3516 - preflight writers. Each marks the draft dirty first, so a settings
+  // refetch keeps the edit; an empty command or timeout removes the key.
+  const dropPreflightTimeoutDrafts = (match: (key: string) => boolean) =>
+    setPreflightTimeoutDrafts(produce((drafts) => {
+      for (const key of Object.keys(drafts)) if (match(key)) delete drafts[key];
+    }));
+  const writePreflightTimeout = (
+    key: string,
+    text: string,
+    write: (value: number | undefined) => void,
+  ) => {
+    setDraftDirty(true);
+    const parsed = parseTimeoutInput(text);
+    if (!parsed.ok) {
+      setPreflightTimeoutDrafts(key, text);
+      return;
+    }
+    dropPreflightTimeoutDrafts((candidate) => candidate === key);
+    write(parsed.value);
+  };
+  const writeAgentField = (agentId: string, edit: (agent: AgentConfig) => void) => {
+    const index = settings.data?.agents.findIndex((agent) => agent.id === agentId) ?? -1;
+    if (index >= 0) setSettings("data", "agents", index, produce(edit));
+  };
+  const writeCellField = (
+    agentId: string,
+    letter: string,
+    edit: (cell: ProfileCellConfig) => void,
+  ) => {
+    const cell = { ...(profileCell(agentId, letter) ?? emptyProfileCell()) };
+    edit(cell);
+    setProfileCell(agentId, letter, cell);
+  };
+  const assignPreflight = (target: AgentConfig | ProfileCellConfig, text: string) => {
+    if (text.trim() === "") delete target.preflight;
+    else target.preflight = text;
+  };
+  const assignPreflightTimeout = (
+    target: AgentConfig | ProfileCellConfig,
+    value: number | undefined,
+  ) => {
+    if (value === undefined) delete target.preflightTimeoutSeconds;
+    else target.preflightTimeoutSeconds = value;
+  };
+  const setAgentPreflight = (agentId: string, text: string) => {
+    setDraftDirty(true);
+    writeAgentField(agentId, (agent) => assignPreflight(agent, text));
+  };
+  const setAgentPreflightTimeout = (agentId: string, text: string) =>
+    writePreflightTimeout(timeoutKey(agentId, null), text, (value) =>
+      writeAgentField(agentId, (agent) => assignPreflightTimeout(agent, value)));
+  const setCellPreflight = (agentId: string, letter: string, text: string) => {
+    setDraftDirty(true);
+    writeCellField(agentId, letter, (cell) => assignPreflight(cell, text));
+  };
+  const setCellPreflightTimeout = (agentId: string, letter: string, text: string) =>
+    writePreflightTimeout(timeoutKey(agentId, letter), text, (value) =>
+      writeCellField(agentId, letter, (cell) => assignPreflightTimeout(cell, value)));
+  // A tracked read: hasOwnProperty on a store proxy does not subscribe.
+  const hasPreflightTimeoutDraft = (key: string) => preflightTimeoutDrafts[key] !== undefined;
+  const preflightTimeoutText = (key: string, saved: number | undefined): string => {
+    if (hasPreflightTimeoutDraft(key)) return preflightTimeoutDrafts[key] ?? "";
+    return saved === undefined ? "" : String(saved);
+  };
+  const closePreflightTest = () => {
+    const opener = preflightTest()?.opener;
+    setPreflightTest(null);
+    const fallback = document.querySelector<HTMLElement>('[data-ac-testid="settings.cancel"]');
+    (opener?.isConnected ? opener : fallback)?.focus();
+  };
 
   const updateAgent = (
     index: number,
@@ -2076,6 +2179,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setProfileCellEnvRows(produce((draft) => {
       for (const key of Object.keys(draft)) if (key.endsWith(suffix)) delete draft[key];
     }));
+    dropPreflightTimeoutDrafts((key) => key.startsWith("cell:") && key.endsWith(suffix));
   };
 
   // #2057 (D5) - empties this one agent's cell and label for `letter` so the
@@ -2104,6 +2208,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setProfileCellEnvRows(produce((draft) => {
       delete draft[key];
     }));
+    const timeout = timeoutKey(agentId, letter);
+    dropPreflightTimeoutDrafts((candidate) => candidate === timeout);
   };
 
   const updateProfileCellCommand = (agentId: string, letter: string, text: string) => {
@@ -2218,6 +2324,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const removed = settings.data.agents[index];
     setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
     if (removed) {
+      dropPreflightTimeoutDrafts((key) => isTimeoutKeyOfAgent(key, removed.id));
       pendingQuotaSeed.delete(removed.id);
       if (activeAgentId() === removed.id) setActiveAgentId(null);
       if (leftRailId() === removed.id) setLeftRailId(null);
@@ -2401,6 +2508,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     for (const [key, error] of Object.entries(profileCellErrors)) {
       if (error) return `Profile cell ${key}: ${error}`;
     }
+    if (Object.keys(preflightTimeoutDrafts).length > 0) return TIMEOUT_SAVE_ERROR;
     return validateProfileCells(settings.data.codingAgentProfiles.profilesByAgent);
   };
 
@@ -2527,6 +2635,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       : null;
   };
 
+  const validateContextHistoryRetention = (): string | null =>
+    settings.data && ctxHistory.parseContextHistoryRetentionDays(ctxRetentionText()) === null
+      ? "Context Heat Map: keep history must be a whole number of days from 1 to 365"
+      : null;
+
+  const validateContextHistorySessionWindows = (): string | null =>
+    settings.data && ctxHistory.parseContextHistorySessionWindows(ctxWindowsText()) === null
+      ? "Context Heat Map: session windows must be 1 to 8 ascending, distinct whole " +
+        "numbers from 1 to 10000"
+      : null;
+
   // #2704 - which General category holds a blocking validation error (red dot cue).
   const generalInvalid = createMemo((): Record<GeneralCategoryId, boolean> => ({
     appearance: !!(validateScreenshotHotkey() || validateSidebarCompactHotkey() || validateRoomNumberMask()),
@@ -2543,6 +2662,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateTypingHoldSeconds() ??
     validateResponseCloseIdleSeconds() ??
     validateRoomIdleConfirmationSeconds() ??
+    validateContextHistoryRetention() ??
+    validateContextHistorySessionWindows() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
     validateSidebarCompactHotkey() ??
@@ -2643,6 +2764,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // #3516 - the open preflight test panel owns Escape (second guard).
+    if (preflightTest()) return;
     if (e.key === "Escape") closeSettings();
   };
 
@@ -2661,7 +2784,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         | "coordinatorAutoCloseMinutes",
     ) =>
     (e: InputEvent & { currentTarget: HTMLInputElement }) => {
-      const value = parseInt(e.currentTarget.value, 10);
+      const value = Number.parseInt(e.currentTarget.value, 10);
       if (!Number.isNaN(value)) {
         updateField(field, value);
       }
@@ -4087,6 +4210,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             >
               Applies to every Coding Agent using this command.
             </div>
+            <PreflightFields
+              level="agent"
+              command={agent.preflight}
+              timeoutText={preflightTimeoutText(
+                timeoutKey(agent.id, null), agent.preflightTimeoutSeconds)}
+              timeoutInvalid={hasPreflightTimeoutDraft(timeoutKey(agent.id, null))}
+              onCommand={(value) => setAgentPreflight(agent.id, value)}
+              onTimeoutText={(text) => setAgentPreflightTimeout(agent.id, text)}
+              onTimeoutReset={() => setAgentPreflightTimeout(agent.id, "")}
+              onTest={(opener) => setPreflightTest({ agentId: agent.id, letter: null, opener })}
+              testid={`settings.agentRow.${i()}.preflight`}
+            />
             <Show when={containerOptionsEnabled()}>
               <label class="settings-field">
                 <span class="settings-label">Runtime</span>
@@ -4641,7 +4776,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="1"
             value={settings.data!.maxConcurrentAgentProcesses}
             onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
+              const value = Number.parseInt(e.currentTarget.value, 10);
               if (!Number.isNaN(value)) {
                 updateField("maxConcurrentAgentProcesses", value);
               }
@@ -4890,6 +5025,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               launch; the backend validates the result.
             </div>
           </Show>
+          <PreflightFields
+            level="profile"
+            command={profileCell(agent.id, letter)?.preflight}
+            timeoutText={preflightTimeoutText(timeoutKey(agent.id, letter),
+              profileCell(agent.id, letter)?.preflightTimeoutSeconds)}
+            timeoutInvalid={hasPreflightTimeoutDraft(timeoutKey(agent.id, letter))}
+            onCommand={(value) => setCellPreflight(agent.id, letter, value)}
+            onTimeoutText={(text) => setCellPreflightTimeout(agent.id, letter, text)}
+            onTimeoutReset={() => setCellPreflightTimeout(agent.id, letter, "")}
+            onTest={(opener) => setPreflightTest({ agentId: agent.id, letter, opener })}
+            testid={`${cardId}.preflight`}
+          />
 
           <div
             class="settings-profile-env"
@@ -5344,8 +5491,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 max="120"
                 value={settings.data!.voiceAutoExecuteDelay}
                 onInput={(e) => {
-                  const v = parseInt(e.currentTarget.value, 10);
-                  if (!isNaN(v)) updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
+                  const v = Number.parseInt(e.currentTarget.value, 10);
+                  if (!Number.isNaN(v)) {
+                    updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
+                  }
                 }}
               />
             </label>
@@ -5406,8 +5555,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             min="1"
             value={settings.data!.jevTimeoutSecs ?? 20}
             onInput={(e) => {
-              const v = parseInt(e.currentTarget.value, 10);
-              if (!isNaN(v)) updateField("jevTimeoutSecs", Math.max(1, v));
+              const v = Number.parseInt(e.currentTarget.value, 10);
+              if (!Number.isNaN(v)) updateField("jevTimeoutSecs", Math.max(1, v));
             }}
             data-ac-testid="settings.integrations.jevTimeoutSecs"
           />
@@ -5422,8 +5571,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="0.01"
             value={settings.data!.jevThreshold ?? 0.70}
             onInput={(e) => {
-              const v = parseFloat(e.currentTarget.value);
-              if (!isNaN(v)) updateField("jevThreshold", v);
+              const v = Number.parseFloat(e.currentTarget.value);
+              if (!Number.isNaN(v)) updateField("jevThreshold", v);
             }}
             data-ac-testid="settings.integrations.jevThreshold"
           />
@@ -5438,8 +5587,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="0.01"
             value={settings.data!.jevMargin ?? 0.15}
             onInput={(e) => {
-              const v = parseFloat(e.currentTarget.value);
-              if (!isNaN(v)) updateField("jevMargin", v);
+              const v = Number.parseFloat(e.currentTarget.value);
+              if (!Number.isNaN(v)) updateField("jevMargin", v);
             }}
             data-ac-testid="settings.integrations.jevMargin"
           />
@@ -5573,7 +5722,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
         {/* Tab bar */}
         <div class="settings-tabs">
-          <For each={TABS}>
+          <For each={TABS.filter((tab) => isTauri || tab.key !== "context-history")}>
             {(tab) => (
               <button
                 class={`settings-tab ${activeTab() === tab.key ? "active" : ""}`}
@@ -5613,6 +5762,50 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <Show when={activeTab() === "watchers"}>{renderWatchersTab()}</Show>
             <Show when={activeTab() === "integrations"}>
               {renderIntegrationsTab()}
+            </Show>
+            <Show when={isTauri && activeTab() === "context-history"}>
+              <ContextHistorySettings
+                enabled={settings.data!.contextHistoryEnabled ?? false}
+                retentionText={ctxRetentionText()}
+                retentionError={validateContextHistoryRetention()}
+                windowsText={ctxWindowsText()}
+                windowsError={validateContextHistorySessionWindows()}
+                windows={settings.data!.contextHistorySessionWindows ?? []}
+                colorSessions={selectSessionWindow(
+                  settings.data!.contextHistorySessionWindows ?? [],
+                  settings.data!.contextHistoryColorSessions,
+                  null,
+                )?.requestedSessions ?? null}
+                onEnabled={(on) => updateField("contextHistoryEnabled", on)}
+                onRetentionText={(raw) => {
+                  setCtxRetentionText(raw);
+                  const days = ctxHistory.parseContextHistoryRetentionDays(raw);
+                  if (days !== null) updateField("contextHistoryRetentionDays", days);
+                }}
+                onWindowsText={(raw) => {
+                  setCtxWindowsText(raw);
+                  const counts = ctxHistory.parseContextHistorySessionWindows(raw);
+                  if (counts === null) return;
+                  updateField("contextHistorySessionWindows", counts);
+                  const colour = settings.data!.contextHistoryColorSessions;
+                  if (colour === undefined || !counts.includes(colour)) {
+                    updateField("contextHistoryColorSessions", counts[counts.length - 1]);
+                  }
+                }}
+                onColorSessions={(sessions) => updateField("contextHistoryColorSessions", sessions)}
+              />
+            </Show>
+            <Show when={preflightTest()} keyed>
+              {(test) => (
+                <PreflightTestPanel
+                  agentId={test.agentId}
+                  letter={test.letter}
+                  draft={settings.data!}
+                  timeoutDraftPending={Object.keys(preflightTimeoutDrafts)
+                    .some((key) => isTimeoutKeyOfAgent(key, test.agentId))}
+                  onClose={closePreflightTest}
+                />
+              )}
             </Show>
           </div>
         </Show>

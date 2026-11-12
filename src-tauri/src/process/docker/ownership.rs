@@ -155,8 +155,7 @@ impl DockerCommandOwner {
         format!(
             "session={} reason={}",
             self.session_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+                .map_or_else(|| "none".to_string(), |id| id.to_string()),
             self.reason
         )
     }
@@ -280,7 +279,7 @@ impl DockerCommandOwnership {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(DockerCommandOwnershipEntry::new(id, owner, last_error));
     }
 
@@ -288,7 +287,7 @@ impl DockerCommandOwnership {
         let mut entries = self
             .entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.retain_mut(|entry| {
             if entry.in_flight {
                 return true;
@@ -315,7 +314,7 @@ impl DockerCommandOwnership {
                 let mut entries = self
                     .entries
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 entries
                     .iter_mut()
                     .find(|entry| !entry.in_flight && entry.owner.is_some())
@@ -356,7 +355,7 @@ impl DockerCommandOwnership {
             let mut entries = self
                 .entries
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(index) = entries.iter().position(|entry| entry.id == id) {
                 if terminal {
                     entries.remove(index);
@@ -369,8 +368,7 @@ impl DockerCommandOwnership {
             } else if !terminal {
                 log::error!(
                     "[container-runtime] retained Docker command diagnostic entry disappeared \
-                    during retry id={} state=retained",
-                    id
+                    during retry id={id} state=retained"
                 );
                 entries.push(DockerCommandOwnershipEntry::new(id, owner, attempt_error));
             }
@@ -385,7 +383,7 @@ impl DockerCommandOwnership {
         self.reap_finished();
         self.entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|entry| RetainedDockerCommandContext {
                 session_id: entry.session_id,
@@ -411,7 +409,7 @@ impl DockerCommandOwnership {
         *self
             .retry_gate
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(DockerCommandRetryGate {
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(DockerCommandRetryGate {
             entered,
             release: release_receiver,
         });
@@ -423,7 +421,7 @@ impl DockerCommandOwnership {
         let gate = self
             .retry_gate
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(gate) = gate {
             if gate.entered.send(()).is_ok() {
@@ -445,8 +443,7 @@ impl Drop for DockerCommandOwnership {
         if missing_owner_count > 0 {
             log::error!(
                 "[container-runtime] Docker command ownership dropped with in-flight diagnostic \
-                entries count={}",
-                missing_owner_count
+                entries count={missing_owner_count}"
             );
         }
         let mut owners = entries
@@ -459,7 +456,7 @@ impl Drop for DockerCommandOwnership {
         PROCESS_RETAINED_DOCKER_COMMANDS
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .append(&mut owners);
     }
 }
@@ -619,7 +616,9 @@ pub(crate) struct DockerCommandReaderReleaseForTest {
 impl DockerCommandReaderReleaseForTest {
     pub(crate) fn release(&self) {
         let (released, changed) = &*self.gate;
-        *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        *released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         changed.notify_all();
     }
 }

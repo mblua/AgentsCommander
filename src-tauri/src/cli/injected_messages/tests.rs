@@ -29,7 +29,6 @@ fn verb_is_documented_in_help() {
     let help = Cli::command().render_long_help().to_string();
     assert!(
         help.contains("injected-messages"),
-        "the verb must be discoverable in --help:\n{}",
-        help
+        "the verb must be discoverable in --help:\n{help}"
     );
 }

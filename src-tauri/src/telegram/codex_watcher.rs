@@ -86,7 +86,7 @@ pub fn spawn_watch_task(
             sink,
         )
         .await;
-        log::info!("[CODEX_EXIT] Watcher task ended for session {}", session_id);
+        log::info!("[CODEX_EXIT] Watcher task ended for session {session_id}");
     })
 }
 
@@ -607,7 +607,7 @@ async fn watch_loop(
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            () = cancel.cancelled() => break,
             changed = dest_rx.changed() => {
                 if changed.is_err() {
                     break;
@@ -654,7 +654,7 @@ impl CodexWatchState {
                         }
                     }
                     Err(e) => {
-                        log::warn!("[CODEX_ERR] live-attach preamble read failed: {}", e);
+                        log::warn!("[CODEX_ERR] live-attach preamble read failed: {e}");
                     }
                 }
             }
@@ -728,19 +728,17 @@ impl CodexWatchState {
                     );
                 }
                 Err(e) => {
-                    bridge_log!(self, "CODEX_ERR", &format!("preamble scan failed: {}", e));
+                    bridge_log!(self, "CODEX_ERR", &format!("preamble scan failed: {e}"));
                     self.file_offset = jsonl_kernel::transcript_metadata(found)
                         .ok()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                        .map_or(0, |m| m.len());
                 }
             }
         } else {
             self.line_remainder.clear();
             self.file_offset = jsonl_kernel::transcript_metadata(found)
                 .ok()
-                .map(|m| m.len())
-                .unwrap_or(0);
+                .map_or(0, |m| m.len());
             bridge_log!(
                 self,
                 "CODEX_ROTATE",
@@ -798,7 +796,7 @@ impl CodexWatchState {
                     );
                     self.event_port.bridge_error(
                         &self.session_id,
-                        &format!("Codex JSONL read error: {}", e),
+                        &format!("Codex JSONL read error: {e}"),
                         None,
                     );
                 }

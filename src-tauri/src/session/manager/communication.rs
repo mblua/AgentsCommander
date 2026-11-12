@@ -89,7 +89,6 @@ impl SessionManager {
 
     #[allow(clippy::too_many_arguments)]
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
     pub(crate) async fn rollback_raise_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -352,7 +351,7 @@ impl SessionManager {
     pub async fn set_start_fresh_on_restore(&self, id: Uuid, value: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
         self.set_start_fresh_on_restore_with_carrier_permit(&carrier_permit, id, value)
-            .await
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

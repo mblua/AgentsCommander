@@ -1,3 +1,4 @@
+use super::super::thresholds::{env_u64, DEFAULT_PAINT_FLOOR_BYTES};
 use super::*;
 use std::sync::atomic::AtomicUsize;
 
@@ -53,8 +54,8 @@ fn aged_record(cli: Option<CodingAgentKind>) -> SpawnRecord {
 
 const CONPTY_PROLOGUE: &[u8] = b"\x1b[?9001h\x1b[?1004h";
 
-/// The real thing, captured off a live `cmd.exe /C codex ...` spawn: ConPTY handshake,
-/// ConPTY screen setup, and the npm shim's own `title %COMSPEC%`. 71 bytes, ~45ms, and
+/// The real thing, captured off a live `cmd.exe /C codex ...` spawn: `ConPTY` handshake,
+/// `ConPTY` screen setup, and the npm shim's own `title %COMSPEC%`. 71 bytes, ~45ms, and
 /// the agent has not written a thing.
 const AC_SHELL_PROLOGUE: &[u8] = b"\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H\
       \x1b]0;C:\\WINDOWS\\system32\\cmd.exe \x07\x1b[?25h";

@@ -3,7 +3,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcAgentMatrix {
-    /// Display name: "{project_folder}/{agent_name}" with _agent_ prefix stripped
+    /// Display name: "{`project_folder}/{agent_name`}" with _agent_ prefix stripped
     pub name: String,
     /// Absolute path to the agent matrix directory
     pub path: String,
@@ -55,7 +55,7 @@ pub struct AcAgentReplica {
     /// None. Only meaningful when `is_coordinator`. The badge displays and
     /// auto-close triggers on this value (closed time counts). The field keeps
     /// its #552 name (rename to `idleSinceAt` deferred, Decision C). Read from
-    /// the persisted CoordinatorClocks store keyed by FQN.
+    /// the persisted `CoordinatorClocks` store keyed by FQN.
     pub last_user_message_at: Option<String>,
     /// #552 RFC3339 timestamp this coordinator's team was auto-closed for
     /// inactivity, or None. Only meaningful when `is_coordinator`. Drives the

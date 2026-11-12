@@ -58,12 +58,14 @@ function rustToken(source, index) {
     /\\(?:\r?\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[\s\S])/g,
     (escape) => {
       if (/^\\\r?\n/.test(escape)) return '';
-      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"', "\\'": "'" };
+      const simple = { '\\n': '\n', '\\r': '\r', '\\t': '\t', '\\0': '\0', '\\\\': '\\', '\\"': '"',
+        "\\'": "'" };
       if (escape in simple) return simple[escape];
       if (escape.startsWith('\\x')) return String.fromCharCode(parseInt(escape.slice(2), 16));
       if (escape.startsWith('\\u{')) {
         const code = parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
-        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)) return String.fromCodePoint(code);
+        if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff))
+          return String.fromCodePoint(code);
       }
       valid = false;
       return escape;
@@ -72,39 +74,52 @@ function rustToken(source, index) {
   return { end: index + quoted[0].length, ...(valid ? { value } : {}) };
 }
 
+// Read one concat! body after its opener; the caller publishes only valid results.
+function readConcatBody(source, index, opener) {
+  const state = {
+    stack: [({ '(': ')', '[': ']', '{': '}' })[opener]],
+    index,
+    value: '',
+    expectString: true,
+    valid: true,
+    strings: [],
+  };
+  while (state.index < source.length && state.stack.length > 0) {
+    const token = rustToken(source, state.index);
+    const char = source[state.index];
+    if (token.trivia) { state.index = token.end; continue; }
+    advanceConcatToken(state, token, char);
+    state.index = token.end;
+  }
+  if (state.stack.length !== 0) state.valid = false;
+  return { end: state.index, value: state.value, strings: state.strings, valid: state.valid };
+}
+
+function advanceConcatToken(state, token, char) {
+  if (token.value !== undefined) {
+    state.strings.push({ start: state.index, end: token.end });
+    if (!state.expectString || state.stack.length !== 1) state.valid = false;
+    state.value += token.value;
+    state.expectString = false;
+  } else if (char === state.stack.at(-1)) {
+    state.stack.pop();
+  } else if ('([{'.includes(char)) {
+    state.stack.push(({ '(': ')', '[': ']', '{': '}' })[char]);
+    state.valid = false;
+  } else if (char === ',' && !state.expectString && state.stack.length === 1) {
+    state.expectString = true;
+  } else {
+    state.valid = false;
+  }
+}
+
 function concatSources(source, file, warnings) {
   const expressions = [];
   const start = /\bconcat\s*!\s*([([{])/g;
   let match;
   while ((match = start.exec(source)) !== null) {
-    const stack = [({ '(': ')', '[': ']', '{': '}' })[match[1]]];
-    let index = start.lastIndex;
-    let value = '';
-    let expectString = true;
-    let valid = true;
-    const strings = [];
-    while (index < source.length && stack.length > 0) {
-      const token = rustToken(source, index);
-      const char = source[index];
-      if (token.trivia) { index = token.end; continue; }
-      if (token.value !== undefined) {
-        strings.push({ start: index, end: token.end });
-        if (!expectString || stack.length !== 1) valid = false;
-        value += token.value;
-        expectString = false;
-      } else if (char === stack.at(-1)) {
-        stack.pop();
-      } else if ('([{'.includes(char)) {
-        stack.push(({ '(': ')', '[': ']', '{': '}' })[char]);
-        valid = false;
-      } else if (char === ',' && !expectString && stack.length === 1) {
-        expectString = true;
-      } else {
-        valid = false;
-      }
-      index = token.end;
-    }
-    if (stack.length !== 0) valid = false;
+    const { end: index, value, strings, valid } = readConcatBody(
+      source, start.lastIndex, match[1]);
     if (valid) {
       // All reconstructed URLs report the line of concat!, including multiline macros.
       expressions.push({ start: match.index, end: index, value, strings });
@@ -197,7 +212,8 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
 }
 
 function loadTrackedFiles() {
-  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024 });
   return output.split('\0').filter((file) => file.length > 0);
 }
 
@@ -238,7 +254,8 @@ function runCheck(options) {
 
   for (const warning of result.warnings) console.warn(`served-paths warning: ${warning}`);
   if (result.errors.length === 0) {
-    console.log(`served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
+    console.log(
+      `served-paths: ${result.rows.length} rows, ${result.literals.length} literals, consistent`);
     return 0;
   }
   const prefix = process.env.GITHUB_ACTIONS === 'true' ? '::error::' : '';
@@ -297,6 +314,34 @@ function expectError(result, substring) {
   }
 }
 
+const SELF_TEST_SPLIT_MACRO = 'concat!("https://raw.githubusercontent.com/mblua/AgentsCommander/"'
+  + ',"main/docs/home-en.md");';
+
+function selfTestConcatWarning(line) {
+  return 'src/main.ts:' + line
+    + ' concat! is outside reconstructed URL scanning: only string literals are supported;'
+    + ' original literal scanning remains active';
+}
+
+function expectHomeConcatScan(source, lines, warnings) {
+  const result = runServedPathsFixture({
+    inventoryText: selfTestInventory([SELF_TEST_ROWS[0]]),
+    trackedFiles: ['docs/home-en.md', 'src/main.ts'],
+    sources: { 'src/main.ts': source },
+  });
+  expectNoErrors(result);
+  if (result.rows.length !== 1 || result.literals.length !== lines.length
+    || result.warnings.length !== warnings.length
+    || result.warnings.join('\n') !== warnings.join('\n')
+    || result.literals.some((literal, index) => literal.file !== 'src/main.ts'
+      || literal.line !== lines[index] || literal.ref !== 'main'
+      || literal.path !== 'docs/home-en.md')) {
+    throw new Error('expected literal lines ' + JSON.stringify(lines) + ' and warnings '
+      + JSON.stringify(warnings) + ', got ' + JSON.stringify(result.literals) + ' '
+      + JSON.stringify(result.warnings));
+  }
+}
+
 function selfTestCases() {
   return [
     ['case 1: good fixture stays silent', () => {
@@ -320,13 +365,15 @@ function selfTestCases() {
     }],
     ['case 4: a fetched ref that differs from the row', () => {
       const result = runServedPathsFixture({
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/home-en.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/mblua/AgentsCommander/dev/docs/home-en.md\n' },
       });
       expectError(result, 'has no row');
     }],
     ['case 5: owner and repo are compared case-insensitively', () => {
       const result = runServedPathsFixture({
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/new.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/new.md\n' },
       });
       expectError(result, 'has no row');
     }],
@@ -334,7 +381,8 @@ function selfTestCases() {
       const result = runServedPathsFixture({
         inventoryText: selfTestInventory(['| `docs/home-en.md` | `main` | 0.8.43 |']),
         trackedFiles: ['docs/home-en.md', 'src/main.ts'],
-        sources: { 'src/main.ts': '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/home-en.md\n' },
+        sources: { 'src/main.ts':
+          '// https://raw.githubusercontent.com/MBLUA/agentscommander/main/docs/home-en.md\n' },
       });
       expectNoErrors(result);
       if (result.literals.length !== 1) {
@@ -343,7 +391,8 @@ function selfTestCases() {
     }],
     ['case 7: a malformed inventory row', () => {
       const result = runServedPathsFixture({
-        inventoryText: selfTestInventory([...SELF_TEST_ROWS, '| docs/home-en.md | main | 0.8.43 |']),
+        inventoryText: selfTestInventory(
+          [...SELF_TEST_ROWS, '| docs/home-en.md | main | 0.8.43 |']),
       });
       expectError(result, 'malformed inventory row');
     }],
@@ -375,7 +424,8 @@ function selfTestCases() {
         sources: { 'src/main.ts': crlf(SELF_TEST_GOOD_SOURCE) },
       });
       expectNoErrors(result);
-      if (result.rows.length !== baseline.rows.length || result.literals.length !== baseline.literals.length) {
+      if (result.rows.length !== baseline.rows.length ||
+        result.literals.length !== baseline.literals.length) {
         throw new Error(`expected ${baseline.rows.length} rows and ${baseline.literals.length} literals, got ${result.rows.length} and ${result.literals.length}`);
       }
     }],
@@ -427,6 +477,23 @@ function selfTestCases() {
       } });
       expectError(result, 'fetches dev/docs/new.md');
     }],
+    ['case 21: consecutive concat macros both produce literals', () => {
+      const source = SELF_TEST_SPLIT_MACRO + ' /* trivia */ ' + SELF_TEST_SPLIT_MACRO;
+      expectHomeConcatScan(source, [1, 1], []);
+    }],
+    ['case 22: trailing comma concat produces no duplicate literal', () => {
+      expectHomeConcatScan('concat!("' + HOME_LITERAL + '",);', [1], []);
+    }],
+    ['case 23: nested opener warns and retains fallback literals', () => {
+      const source = 'concat!(["' + HOME_LITERAL + '"]); '
+        + SELF_TEST_SPLIT_MACRO + ' /* trivia */ ' + SELF_TEST_SPLIT_MACRO;
+      expectHomeConcatScan(source, [1, 1, 1], [selfTestConcatWarning(1)]);
+    }],
+    ['case 24: unsupported concat warnings follow source line order', () => {
+      const source = 'concat!(x,"' + HOME_LITERAL + '");\n'
+        + 'concat!(y,"' + HOME_LITERAL + '");\n' + SELF_TEST_SPLIT_MACRO;
+      expectHomeConcatScan(source, [1, 2, 3], [selfTestConcatWarning(1), selfTestConcatWarning(2)]);
+    }],
   ];
 }
 
@@ -446,7 +513,8 @@ function selfTest() {
     }
   }
   if (failures.length > 0) {
-    for (const failure of failures) console.error(`check-served-paths self-test failed: ${failure}`);
+    for (const failure of failures) console.error(
+      `check-served-paths self-test failed: ${failure}`);
     return 4;
   }
   console.log(`check-served-paths self-test passed (${selfTestCases().length} cases)`);

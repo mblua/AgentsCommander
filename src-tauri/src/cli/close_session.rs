@@ -14,7 +14,7 @@ use super::send::agent_name_from_root;
 /// escritura del response. Default total: 30 + 60 = 90s, igual que el
 /// default de `send --confirm-timeout`. No escala con la cantidad de
 /// sesiones del target: el CLI no la conoce (el daemon resuelve el target
-/// recien en handle_close_session y cierra secuencialmente, ~`--timeout`
+/// recien en `handle_close_session` y cierra secuencialmente, ~`--timeout`
 /// por sesion); expirar reporta "outcome unknown" (exit 2), no fallo.
 const RESPONSE_WAIT_OVERHEAD_SECS: u64 = 60;
 
@@ -25,8 +25,8 @@ fn response_wait_budget(timeout_secs: u32) -> std::time::Duration {
 /// §1440: mensaje de expiracion de la espera unica. `delivered_seen` decide
 /// el sabor: el daemon termino y el response no aparecio donde el CLI
 /// pollea, o no hay todavia rastro terminal del mensaje. Ambos ids van
-/// etiquetados con su artefacto: `request` = responses/<request_id>.json,
-/// `message` = outbox|delivered/<msg_id>.json y las lineas de app.log.
+/// etiquetados con su artefacto: `request` = responses/<`request_id>.json`,
+/// `message` = outbox|delivered/<`msg_id>.json` y las lineas de app.log.
 fn format_no_response_error(
     budget_secs: u64,
     request_id: &str,
@@ -35,24 +35,23 @@ fn format_no_response_error(
 ) -> String {
     if delivered_seen {
         format!(
-            "close-session delivered but daemon did not write a response within {}s; outcome \
-             unknown (request {}, message {})",
-            budget_secs, request_id, msg_id
+            "close-session delivered but daemon did not write a response within \
+             {budget_secs}s; outcome unknown (request {request_id}, message {msg_id})"
         )
     } else {
         format!(
-            "close-session: no confirmation within {}s; outcome unknown (request {}, message \
-             {} still queued or in progress). The daemon may still be closing sessions in \
-             the background: closing several sessions takes about sessions x --timeout \
-             seconds and this wait budgets one. Verify with list-peers-lean before retrying.",
-            budget_secs, request_id, msg_id
+            "close-session: no confirmation within {budget_secs}s; outcome unknown \
+             (request {request_id}, message {msg_id} still queued or in progress). The daemon \
+             may still be closing sessions in the background: closing several sessions takes \
+             about sessions x --timeout seconds and this wait budgets one. Verify with \
+             list-peers-lean before retrying."
         )
     }
 }
 
 /// Pure: decide CLI exit code from the daemon's response body.
 /// §224 G2 — exit codes:
-///   0  — known status (closed | already_closed | no_match | restore_in_progress).
+///   0  — known status (closed | `already_closed` | `no_match` | `restore_in_progress`).
 ///   2  — unparseable JSON, missing `status` field, non-string status, or
 ///        unknown status value. Distinct from 1 (used elsewhere for auth/IO
 ///        failures) so scripts can distinguish "daemon spoke incoherently"
@@ -127,7 +126,7 @@ verify with list-peers-lean.\n\n\
 DISCOVERY: Use `list-peers-lean` to get valid agent names. The `name` field of \
 each entry is the canonical FQN to pass to --target.")]
 pub struct CloseSessionArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION
     /// MODEL.
     #[arg(long)]
@@ -169,8 +168,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
         Err(msg) => {
-            log::error!("{}", msg);
-            eprintln!("{}", msg);
+            log::error!("{msg}");
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -184,7 +183,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     let settings = match crate::config::settings::load_settings_for_cli_strict() {
         Ok(settings) => settings,
         Err(error) => {
-            eprintln!("Error: {}", error);
+            eprintln!("Error: {error}");
             return 1;
         }
     };
@@ -192,8 +191,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         match crate::config::teams::resolve_agent_target(&args.target, &settings.project_paths) {
             Ok(fqn) => fqn,
             Err(e) => {
-                log::error!("{}", e);
-                eprintln!("Error: {}", e);
+                log::error!("{e}");
+                eprintln!("Error: {e}");
                 return 1;
             }
         };
@@ -202,11 +201,10 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     // Check master token from LocalDir as additional bypass (independent of validate_cli_token).
     let is_master = is_root || {
         if let Some(ref token_str) = args.token {
-            crate::config::config_dir()
-                .map(|d| d.join("master-token.txt"))
-                .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-                .map(|m| m.trim() == token_str)
-                .unwrap_or(false)
+            crate::filesystem::master_token::matches(
+                crate::config::config_dir().as_deref(),
+                token_str,
+            )
         } else {
             false
         }
@@ -218,15 +216,13 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
             || !teams::is_coordinator_of(&sender, &resolved_target, &discovered)
         {
             log::error!(
-                "authorization denied — '{}' is not an orchestrator of '{}'. Only orchestrators \
-                 can close sessions of their team agents.",
-                sender,
-                resolved_target
+                "authorization denied — '{sender}' is not an orchestrator of '{resolved_target}'. \
+                 Only orchestrators can close sessions of their team agents."
             );
             eprintln!(
-                "Error: authorization denied — '{}' is not an orchestrator of '{}'. \
-                 Only orchestrators can close sessions of their team agents.",
-                sender, resolved_target
+                "Error: authorization denied — '{sender}' is not an orchestrator of \
+                 '{resolved_target}'. \
+                 Only orchestrators can close sessions of their team agents."
             );
             return 1;
         }
@@ -250,24 +246,24 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     let outbox_dir = close_session_outbox(&ac_dir, is_root);
 
     if let Err(e) = directories::ensure_cli_outbox(&outbox_dir) {
-        log::error!("failed to create outbox directory: {}", e);
-        eprintln!("Error: failed to create outbox directory: {}", e);
+        log::error!("failed to create outbox directory: {e}");
+        eprintln!("Error: failed to create outbox directory: {e}");
         return 1;
     }
 
-    let outbox_path = outbox_dir.join(format!("{}.json", msg_id));
+    let outbox_path = outbox_dir.join(format!("{msg_id}.json"));
     let json = match serde_json::to_string_pretty(&message) {
         Ok(j) => j,
         Err(e) => {
-            log::error!("failed to serialize message: {}", e);
-            eprintln!("Error: failed to serialize message: {}", e);
+            log::error!("failed to serialize message: {e}");
+            eprintln!("Error: failed to serialize message: {e}");
             return 1;
         }
     };
 
     if let Err(e) = documents::write_cli_outbox_message(&outbox_path, json.as_bytes()) {
-        log::error!("failed to write outbox file: {}", e);
-        eprintln!("Error: failed to write outbox file: {}", e);
+        log::error!("failed to write outbox file: {e}");
+        eprintln!("Error: failed to write outbox file: {e}");
         return 1;
     }
 
@@ -275,18 +271,10 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
 }
 
 fn close_session_outbox(ac_dir: &std::path::Path, is_root: bool) -> PathBuf {
-    if is_root {
-        let app_outbox = crate::config::config_dir()
-            .map(|d| d.join("app-outbox-path.txt"))
-            .and_then(|p| documents::read_cli_outbox_text(&p).ok())
-            .map(|s| PathBuf::from(s.trim()));
-        match app_outbox {
-            Some(p) if directories::cli_agent_root_is_dir(&p) => p,
-            _ => ac_dir.join("outbox"),
-        }
-    } else {
-        ac_dir.join("outbox")
-    }
+    crate::filesystem::app_outbox_pointer::directory(
+        is_root.then(crate::config::config_dir).flatten().as_deref(),
+        ac_dir,
+    )
 }
 
 fn close_session_message(
@@ -344,15 +332,13 @@ fn wait_for_close_response(
     // "delivery confirmation", cuyo presupuesto fijo de 30s expiraba durante
     // cierres graceful normales de ~30s y reportaba un timeout falso (97.9%
     // de los graceful, #1440).
-    let delivered_path = outbox_dir
-        .join("delivered")
-        .join(format!("{}.json", msg_id));
+    let delivered_path = outbox_dir.join("delivered").join(format!("{msg_id}.json"));
     let rejected_reason_path = outbox_dir
         .join("rejected")
-        .join(format!("{}.reason.txt", msg_id));
+        .join(format!("{msg_id}.reason.txt"));
 
     let responses_dir = ac_dir.join("responses");
-    let response_path = responses_dir.join(format!("{}.json", request_id));
+    let response_path = responses_dir.join(format!("{request_id}.json"));
     let budget = response_wait_budget(timeout_secs);
     let poll = std::time::Duration::from_millis(250);
     let start = std::time::Instant::now();
@@ -389,8 +375,8 @@ fn wait_for_close_response(
             let reason = documents::read_cli_outbox_text(&rejected_reason_path)
                 .unwrap_or_else(|_| "unknown reason".to_string());
             let trimmed = reason.trim();
-            log::error!("close-session rejected — {}", trimmed);
-            eprintln!("Error: close-session rejected — {}", trimmed);
+            log::error!("close-session rejected — {trimmed}");
+            eprintln!("Error: close-session rejected — {trimmed}");
             return 1;
         }
         if start.elapsed() >= budget {
@@ -407,8 +393,8 @@ fn wait_for_close_response(
                 msg_id,
                 directories::cli_outbox_artifact_exists(&delivered_path),
             );
-            log::error!("{}", m);
-            eprintln!("Error: {}", m);
+            log::error!("{m}");
+            eprintln!("Error: {m}");
             return 2;
         }
         std::thread::sleep(poll);

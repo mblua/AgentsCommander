@@ -22,7 +22,7 @@ pub struct ContainerCredentialPlan {
 }
 
 /// F2 - true if `path` exists AND is a symlink or Windows junction/reparse point.
-/// `symlink_metadata` does NOT traverse the leaf. NotFound => false (safe to
+/// `symlink_metadata` does NOT traverse the leaf. `NotFound` => false (safe to
 /// create/copy); any other error => true (undeterminable = skip-worthy). Mirrors
 /// the private, entry-based `filesystem::config_seed::is_symlink_or_reparse`,
 /// using the shared `path_identity` metadata predicate.

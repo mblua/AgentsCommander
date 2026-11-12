@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use super::registry::{ProcessTreeBackend, ResourceError, ResourceMonitorState};
-use super::types::{
-    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,
-};
+use super::registry::ResourceMonitorState;
 
 #[cfg(windows)]
 mod platform;

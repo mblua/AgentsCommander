@@ -4,17 +4,20 @@ use super::*;
 
 fn settings_with_project_paths(paths: &[&str]) -> AppSettings {
     AppSettings {
-        project_paths: paths.iter().map(|p| p.to_string()).collect(),
-        project_path: paths.first().map(|p| p.to_string()),
+        project_paths: paths.iter().map(std::string::ToString::to_string).collect(),
+        project_path: paths.first().map(std::string::ToString::to_string),
         ..AppSettings::default()
     }
 }
 
 fn settings_with_project_and_archived_paths(paths: &[&str], archived: &[&str]) -> AppSettings {
     AppSettings {
-        project_paths: paths.iter().map(|p| p.to_string()).collect(),
-        project_path: paths.first().map(|p| p.to_string()),
-        archived_project_paths: archived.iter().map(|p| p.to_string()).collect(),
+        project_paths: paths.iter().map(std::string::ToString::to_string).collect(),
+        project_path: paths.first().map(std::string::ToString::to_string),
+        archived_project_paths: archived
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
         ..AppSettings::default()
     }
 }
@@ -509,7 +512,7 @@ fn resync_persists_mutation_against_decoded_state() {
 /// Three hand-written mistakes, one per entry: a capitalized enum variant, a scalar where
 /// a list belongs, and a quoted number. Without the per-entry wrapper, ONE of them makes
 /// `serde_json::from_value::<AppSettings>` fail, `load_settings_from_path` replaces
-/// everything with `AppSettings::default()`, and AgentsCommander starts with no agents
+/// everything with `AppSettings::default()`, and `AgentsCommander` starts with no agents
 /// configured and one log line - after which every save is refused by the #1077 gate.
 #[test]
 fn one_malformed_watcher_does_not_take_the_settings_file_down() {

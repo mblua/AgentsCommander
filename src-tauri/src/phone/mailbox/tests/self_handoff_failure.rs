@@ -18,13 +18,8 @@ fn failure_fixture(id: Uuid) -> SelfHandoffFailure {
     }
 }
 
-#[tokio::test]
-async fn issue_3189_locked_persist_retains_and_reports() {
-    let id = Uuid::new_v4();
-    let new_id = Uuid::new_v4();
-    let pending = Arc::new(crate::PendingSelfClear::default());
-    let root = tempfile::tempdir().unwrap();
-    let project = root.path().join("project");
+fn locked_codex_replica(root: &Path) -> (PathBuf, PathBuf) {
+    let project = root.join("project");
     let matrix = project.join(".ac/_agent_dev-rust");
     let replica = project.join(".ac/room-1-test/__agent_dev-rust");
     std::fs::create_dir_all(&matrix).unwrap();
@@ -39,6 +34,41 @@ async fn issue_3189_locked_persist_retains_and_reports() {
         .to_string(),
     )
     .unwrap();
+    (project, replica)
+}
+
+fn assert_locked_persist_reports(
+    reports: &[SelfHandoffFailure],
+    locked: bool,
+    reason: &str,
+    id: Uuid,
+    replica: &Path,
+    notes: &[u8],
+) {
+    if locked {
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].reason, reason);
+        assert!(!reports[0].continuation);
+        assert_eq!(reports[0].current, Some(id));
+        assert_eq!(
+            std::fs::read(replica.join("SELF-HANDOFF.md")).unwrap(),
+            notes
+        );
+        assert!(!replica.join("self-clear").exists());
+    } else {
+        assert!(reports.is_empty());
+        assert!(!replica.join("SELF-HANDOFF.md").exists());
+        assert!(replica.join("self-clear").is_dir());
+    }
+}
+
+#[tokio::test]
+async fn issue_3189_locked_persist_retains_and_reports() {
+    let id = Uuid::new_v4();
+    let new_id = Uuid::new_v4();
+    let pending = Arc::new(crate::PendingSelfClear::default());
+    let root = tempfile::tempdir().unwrap();
+    let (project, replica) = locked_codex_replica(root.path());
     let settings = AppSettings {
         project_paths: vec![project.to_string_lossy().into()],
         agents: vec![wake_agent("codex", "Codex", "codex")],
@@ -112,21 +142,7 @@ async fn issue_3189_locked_persist_retains_and_reports() {
         })
         .await;
         let reports = reports.lock().unwrap();
-        if locked {
-            assert_eq!(reports.len(), 1);
-            assert_eq!(reports[0].reason, reason);
-            assert!(!reports[0].continuation);
-            assert_eq!(reports[0].current, Some(id));
-            assert_eq!(
-                std::fs::read(replica.join("SELF-HANDOFF.md")).unwrap(),
-                notes
-            );
-            assert!(!replica.join("self-clear").exists());
-        } else {
-            assert!(reports.is_empty());
-            assert!(!replica.join("SELF-HANDOFF.md").exists());
-            assert!(replica.join("self-clear").is_dir());
-        }
+        assert_locked_persist_reports(&reports, locked, &reason, id, &replica, notes);
     }
 }
 
@@ -444,10 +460,13 @@ async fn issue_3189_cap_each_leg_all_actions() {
             let phase_complete = Arc::new(AtomicBool::new(false));
             let phase_seen = phase_complete.clone();
             let session_state = move |_| {
-                if second_leg && phase_seen.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(1100));
+                let delay = second_leg && phase_seen.load(Ordering::SeqCst);
+                async move {
+                    if delay {
+                        tokio::time::sleep(Duration::from_millis(1100)).await;
+                    }
+                    (true, true)
                 }
-                async move { (true, true) }
             };
             let cap = if second_leg {
                 Duration::from_secs(1)

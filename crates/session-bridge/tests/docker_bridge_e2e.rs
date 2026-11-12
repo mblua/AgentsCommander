@@ -43,42 +43,7 @@ fn docker_bridge_connects_streams_pty_output_and_exits() {
     let server = thread::spawn(move || run_ws_server(listener));
 
     let container_name = format!("ac-session-bridge-e2e-{}", Uuid::new_v4().simple());
-    let output = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--name",
-            &container_name,
-            "--add-host",
-            "host.docker.internal:host-gateway",
-            "--tmpfs",
-            "/workspace",
-            "-e",
-            &format!("AGENTSCOMMANDER_API_URL=http://host.docker.internal:{port}"),
-            "-e",
-            &format!("AGENTSCOMMANDER_API_TOKEN={TOKEN}"),
-            "-e",
-            &format!("AGENTSCOMMANDER_SESSION_ID={SESSION_ID}"),
-            "-e",
-            &format!("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN={TICKET}"),
-            "-e",
-            "AGENTSCOMMANDER_ROOT=/workspace",
-            "-e",
-            "AGENTSCOMMANDER_BRIDGE_WORKDIR=/workspace",
-            "-e",
-            "AGENTSCOMMANDER_BRIDGE_COMMAND=/bin/sh",
-            "-e",
-            "AGENTSCOMMANDER_BRIDGE_ARGS_JSON=[\"-lc\",\"printf bridge-e2e\"]",
-            "-e",
-            "AGENTSCOMMANDER_BRIDGE_ENV_JSON=[]",
-            "-e",
-            "AGENTSCOMMANDER_BRIDGE_COLS=80",
-            "-e",
-            "AGENTSCOMMANDER_BRIDGE_ROWS=24",
-            image,
-        ])
-        .output()
-        .expect("run bridge container");
+    let output = run_bridge_container(&container_name, port, image);
     let server_result = server.join().expect("server thread");
     assert!(
         output.status.success(),
@@ -135,6 +100,45 @@ fn docker_bridge_connects_streams_pty_output_and_exits() {
     );
 
     run_helper_post_status_e2e(image);
+}
+
+fn run_bridge_container(container_name: &str, port: u16, image: &str) -> std::process::Output {
+    Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--name",
+            container_name,
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "--tmpfs",
+            "/workspace",
+            "-e",
+            &format!("AGENTSCOMMANDER_API_URL=http://host.docker.internal:{port}"),
+            "-e",
+            &format!("AGENTSCOMMANDER_API_TOKEN={TOKEN}"),
+            "-e",
+            &format!("AGENTSCOMMANDER_SESSION_ID={SESSION_ID}"),
+            "-e",
+            &format!("AGENTSCOMMANDER_SESSION_REGISTRATION_TOKEN={TICKET}"),
+            "-e",
+            "AGENTSCOMMANDER_ROOT=/workspace",
+            "-e",
+            "AGENTSCOMMANDER_BRIDGE_WORKDIR=/workspace",
+            "-e",
+            "AGENTSCOMMANDER_BRIDGE_COMMAND=/bin/sh",
+            "-e",
+            "AGENTSCOMMANDER_BRIDGE_ARGS_JSON=[\"-lc\",\"printf bridge-e2e\"]",
+            "-e",
+            "AGENTSCOMMANDER_BRIDGE_ENV_JSON=[]",
+            "-e",
+            "AGENTSCOMMANDER_BRIDGE_COLS=80",
+            "-e",
+            "AGENTSCOMMANDER_BRIDGE_ROWS=24",
+            image,
+        ])
+        .output()
+        .expect("run bridge container")
 }
 
 fn run_helper_post_status_e2e(image: &str) {
@@ -340,7 +344,7 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &[u8]) -> io::Resu
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .and_then(|path| path.parent())
+        .and_then(std::path::Path::parent)
         .expect("repo root")
         .to_path_buf()
 }

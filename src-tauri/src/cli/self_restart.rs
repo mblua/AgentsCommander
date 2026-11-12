@@ -6,7 +6,7 @@ use crate::filesystem::{directories, documents};
 use crate::phone::types::OutboxMessage;
 
 /// Pure: map the daemon's self-handoff-and-restart response body to a CLI exit code.
-/// 0 = queued | already_queued. 2 = unparseable / missing / non-string / unknown status
+/// 0 = queued | `already_queued`. 2 = unparseable / missing / non-string / unknown status
 /// (daemon spoke incoherently). Byte-equivalent to
 /// `self_clear::interpret_self_clear_response_exit_code`.
 fn interpret_self_restart_response_exit_code(content: &str) -> i32 {
@@ -15,7 +15,7 @@ fn interpret_self_restart_response_exit_code(content: &str) -> i32 {
         Err(_) => return 2,
     };
     match resp.get("status").and_then(|v| v.as_str()) {
-        Some("queued") | Some("already_queued") => 0,
+        Some("queued" | "already_queued") => 0,
         _ => 2,
     }
 }
@@ -59,7 +59,7 @@ BEST-EFFORT: neither phase is guaranteed. A perpetually busy session that never 
 sustained idle, or a daemon restart mid-cycle, drops the remainder (a greppable warn line is \
 logged). Re-issue if your context is still present later.")]
 pub struct SelfRestartArgs {
-    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// Session token from `AGENTSCOMMANDER_TOKEN`. Shape-validated in the CLI;
     /// per-session authorization happens at the daemon mailbox.
     #[arg(long)]
     pub token: Option<String>,
@@ -148,7 +148,7 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_t, r)) => r,
         Err(msg) => {
-            eprintln!("{}", msg);
+            eprintln!("{msg}");
             return 1;
         }
     };
@@ -169,14 +169,14 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
     if let Err(error) =
         super::outbox_delivery::deliver(&outbox_dir, &message, "self-handoff-and-restart")
     {
-        eprintln!("Error: {}", error);
+        eprintln!("Error: {error}");
         return 1;
     }
 
     // Poll response (queue ack). The daemon writes it immediately after queuing,
     // NOT after the respawn runs - so this is fast.
     let responses_dir = ac_dir.join("responses");
-    let response_path = responses_dir.join(format!("{}.json", request_id));
+    let response_path = responses_dir.join(format!("{request_id}.json"));
     let resp_timeout = std::time::Duration::from_secs(args.timeout);
     let resp_poll = std::time::Duration::from_millis(250);
     let resp_start = std::time::Instant::now();
@@ -213,7 +213,7 @@ pub fn execute(args: SelfRestartArgs) -> i32 {
                     return interpret_self_restart_response_exit_code(&content);
                 }
                 Err(e) => {
-                    eprintln!("Error: failed to read response: {}", e);
+                    eprintln!("Error: failed to read response: {e}");
                     return 1;
                 }
             }

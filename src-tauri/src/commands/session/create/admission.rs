@@ -10,6 +10,7 @@ use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::PendingCreateBinding;
 use crate::session::manager::SessionManager;
+use crate::session::selection::CreateFinalizationTicket;
 use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionTransaction;
 use std::path::PathBuf;
@@ -48,7 +49,9 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
             .app
             .try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
         {
-            let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = clocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             g.finish_coordinator_create(&self.fqn, true);
         }
     }
@@ -76,7 +79,9 @@ impl<R: tauri::Runtime> CoordinatorCreateTicket<R> {
         // Held through the emits below (see `CLOSE_MARKER_EVENT_ORDER`).
         self.coordinator_order.with_order(|| {
             let (escrow, manual, auto) = {
-                let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                let mut g = clocks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let escrow = g.finish_coordinator_create(&self.fqn, false);
                 let mut manual = None;
                 let mut auto = None;
@@ -402,7 +407,7 @@ pub(crate) fn release_owned_create_target(owner: &Arc<Mutex<OwnedCreateAdmission
             .and_then(|mut ticket| {
                 ticket
                     .as_mut()
-                    .map(|ticket| ticket.release_capacity_for_wait())
+                    .map(CreateFinalizationTicket::release_capacity_for_wait)
             })
             .unwrap_or(false);
         if !unbound {
@@ -460,7 +465,7 @@ pub(crate) async fn resume_create_resource_admission(
         // Do not occupy quota needed by the protected owner while G waits.
         // This is only a preflight probe; target/U/M admission still follows.
         let permit = acquire_carrier_mutation_permit().await;
-        let eligible = owner.lock().ok().is_some_and(|owner| {
+        let eligible = owner.lock().is_ok_and(|owner| {
             use crate::config::sessions_persistence::CreateCarrierScope;
             match crate::config::sessions_persistence::classify_create_carrier_scope(
                 &permit,
@@ -614,7 +619,7 @@ pub(crate) async fn try_acquire_create_publication_region_checked(
     })?;
     let admitted = manager
         .with_current_carrier_snapshot(&permit, |current| {
-            owner.lock().ok().is_some_and(|mut owner| {
+            owner.lock().is_ok_and(|mut owner| {
                 context_is_current()
                     && match (
                         owner.owned_replacement.as_ref(),
@@ -690,7 +695,7 @@ pub(crate) async fn acquire_lifecycle_create_publication_region<R: tauri::Runtim
         };
     }
     let Some(domain) = domain else {
-        if owner.lock().ok().is_some_and(|owner| owner.preheld_target) {
+        if owner.lock().is_ok_and(|owner| owner.preheld_target) {
             return match try_acquire_create_publication_region(owner, manager).await {
                 Some(permit) => Ok(permit),
                 None => {
@@ -768,14 +773,14 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     inline_transaction: Option<&SelectionTransaction<R>>,
 ) -> Result<(), String> {
     if lifecycle_domain.is_some()
-        || inline_transaction.is_some_and(|transaction| transaction.has_restore_context())
+        || inline_transaction.is_some_and(SelectionTransaction::has_restore_context)
     {
         // The actual outer lifecycle/restore executor already owns this effect.
         // Its borrow and outcome must return to that same executor, not a child.
         let tracker = app
             .state::<Arc<Mutex<PtyManager>>>()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .response_close_state();
         return crate::config::archive_gate::enforce_unarchived_for_spawn(
             app,
@@ -797,7 +802,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                     written.response_close_enabled,
                     written.response_close_idle_seconds,
                     std::time::Instant::now(),
-                )
+                );
             },
         )
         .await;
@@ -810,7 +815,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     let tracker = app
         .state::<Arc<Mutex<PtyManager>>>()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .response_close_state();
     crate::config::sessions_persistence::run_owned_persist_core(async move {
         crate::config::archive_gate::enforce_unarchived_for_spawn(
@@ -826,9 +831,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                 let manager = manager.clone();
                 async move {
                     let admitted = try_acquire_create_publication_region(&owner, &manager).await;
-                    if admitted.is_none()
-                        && owner.lock().ok().is_some_and(|owner| owner.preheld_target)
-                    {
+                    if admitted.is_none() && owner.lock().is_ok_and(|owner| owner.preheld_target) {
                         if let Ok(mut owner) = owner.lock() {
                             owner.blocked_bound = true;
                         }
@@ -842,7 +845,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                     written.response_close_enabled,
                     written.response_close_idle_seconds,
                     std::time::Instant::now(),
-                )
+                );
             },
         )
         .await
@@ -863,8 +866,8 @@ pub(crate) fn release_resource_launch_permit(
 /// #552 seed the badge clock for a coordinator's first spawn so it shows 0m
 /// immediately, and clear any "auto-closed" marker. An auto-closed coordinator
 /// is DESTROYED, so its reopen flows through this create path (the "create
-/// in-place" branch of handleReplicaClick), NOT restart_session_inner.
-/// seed_if_absent never overwrites, so a respawn does NOT reset the badge.
+/// in-place" branch of `handleReplicaClick`), NOT `restart_session_inner`.
+/// `seed_if_absent` never overwrites, so a respawn does NOT reset the badge.
 /// (#2413) Returns the create's marker ticket (`None` = no clocks state); the
 /// caller ends it with `succeeded()` or `failed()` so a failed create puts the
 /// cleared markers back.
@@ -885,7 +888,9 @@ pub(crate) fn note_coordinator_create_on_app<R: tauri::Runtime>(
         // after this create's clear has emitted null.
         coordinator_order.with_order(|| {
             let (seeded, cleared_auto, cleared_manual) = {
-                let mut g = clocks.lock().unwrap_or_else(|e| e.into_inner());
+                let mut g = clocks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let seeded = g.seed_if_absent(&fqn, now);
                 let auto_before = g.auto_closed_at(&fqn);
                 let manual_before = g.manually_closed_at(&fqn);

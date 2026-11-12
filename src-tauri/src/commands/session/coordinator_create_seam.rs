@@ -16,13 +16,17 @@ pub(crate) fn forced_root(key: &str) -> bool {
 pub(crate) fn force(key: &str) {
     FORCED
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert_with(HashSet::new)
         .insert(key.to_string());
 }
 
 pub(crate) fn unforce(key: &str) {
-    if let Some(set) = FORCED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+    if let Some(set) = FORCED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_mut()
+    {
         set.remove(key);
     }
 }
@@ -30,7 +34,7 @@ pub(crate) fn unforce(key: &str) {
 pub(crate) fn forced(key: &str) -> bool {
     FORCED
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .is_some_and(|set| set.contains(key))
 }

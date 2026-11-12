@@ -179,7 +179,7 @@ pub(crate) fn create_backup(path: &Path, bytes: &[u8]) -> Result<PathBuf, String
     })?;
     let filename = path
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| format!("Invalid context template filename {}", path.display()))?;
     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%SZ").to_string();
 

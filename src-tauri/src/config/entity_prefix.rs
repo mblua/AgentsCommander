@@ -2,7 +2,7 @@
 //! it replaces (#1614). Phase 2 (#1615) retires the legacy prefix; until then
 //! every discovery, identity and authorization gate accepts both.
 
-/// Prefix of every Room directory AgentsCommander creates.
+/// Prefix of every Room directory `AgentsCommander` creates.
 pub const ROOM_DIR_PREFIX: &str = "room-";
 
 /// Prefix of a legacy Workgroup directory. Never produced again (#1614); still

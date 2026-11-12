@@ -31,15 +31,15 @@ Coordinators may reply by sending to `agentscommander://root-agent`; their repli
 /// #1614 D8c: `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
 /// through base commit d7008b34. The live constant is DUAL-USE: it is the
 /// paragraph the deferred-messaging migration writes into the user's live
-/// Role.md, and it is simultaneously interpolated into
-/// `OLD_ROOT_CONTEXT_WITH_COORDINATION_MD`, which is entry 2 of the frozen
-/// `old_generated` array. Rule R forces the first to change and Rule P3
-/// forces the second not to, so the two are split and the RECOGNIZER reads
-/// this frozen half. Never edit.
-/// Provenance: the d7008b34 blob, root_agent.rs lines 292-306; declaration
+/// Role.md. The recognizer embeds an independent literal copy in
+/// `OLD_ROOT_CONTEXT_WITH_COORDINATION_MD`, entry 2 of the frozen
+/// `old_generated` array. This historical paragraph remains pinned by
+/// the existing tests. Never edit.
+/// Provenance: the d7008b34 blob, `root_agent.rs` lines 292-306; declaration
 /// 956 bytes sha256 17D7303A...E517 (plan 3.12 Table A), value 897 bytes
 /// sha256 FC2164A2...F207 (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.
+#[cfg_attr(not(test), allow(dead_code))] // Frozen paragraph retained for byte-pin tests (#4077).
 pub(crate) const ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME: &str = concat!(
     r#"You may "#,
     r#"message "#,

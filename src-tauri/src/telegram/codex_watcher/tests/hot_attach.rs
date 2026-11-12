@@ -9,7 +9,7 @@ fn append_final(path: &Path, body: &str) -> std::io::Result<()> {
     let ts = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
     let line = current_final_record_with_ts(body, Some(&ts));
     let mut f = fs::OpenOptions::new().append(true).open(path)?;
-    writeln!(f, "{}", line)?;
+    writeln!(f, "{line}")?;
     f.sync_all()
 }
 

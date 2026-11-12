@@ -6,9 +6,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::types::{
-    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, ResourceGroupState,
-    ResourceKillReason, ResourceKillResult, ResourceLaunchMetadata, ResourceLimits,
-    ResourceSnapshot, TerminateOutcome,
+    ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory,
+    ResourceAgentGroupSnapshot, ResourceGroupState, ResourceKillReason, ResourceKillResult,
+    ResourceLaunchMetadata, ResourceLimits, ResourceProcessSnapshot, ResourceSnapshot,
+    TerminateOutcome,
 };
 
 mod sampling;
@@ -175,7 +176,7 @@ struct ResourceAgentGroup {
     kill_started_at: Option<Instant>,
     last_error: Option<String>,
     permit_released: bool,
-    /// #559 - consecutive samples where observe_tree reported the root missing.
+    /// #559 - consecutive samples where `observe_tree` reported the root missing.
     /// Reaped only after two strikes so a single enumeration fluke never frees a
     /// live agent's slot. Reset to 0 whenever the root is observed alive or merely
     /// unreadable, so the counter is consecutive-only by design (a momentarily
@@ -497,26 +498,22 @@ impl ResourceMonitorState {
     pub fn has_registered_group(&self, session_id: Uuid) -> bool {
         self.inner
             .lock()
-            .map(|inner| inner.groups.contains_key(&session_id))
-            .unwrap_or(false)
+            .is_ok_and(|inner| inner.groups.contains_key(&session_id))
     }
 
     pub fn active_agent_groups(&self) -> usize {
         if !self.supports_process_tree_enforcement() {
             return 0;
         }
-        self.inner
-            .lock()
-            .map(|inner| active_count(&inner))
-            .unwrap_or(0)
+        self.inner.lock().map_or(0, |inner| active_count(&inner))
     }
 
     /// #559 (H2) - true if a quarantined group is eligible for another cleanup retry
-    /// (its last cleanup attempt is older than the backoff). kill_started_at is
-    /// refreshed by kill_group at the start of every attempt, so the backoff spaces
+    /// (its last cleanup attempt is older than the backoff). `kill_started_at` is
+    /// refreshed by `kill_group` at the start of every attempt, so the backoff spaces
     /// attempts from the start of the previous one. A Quarantined group always has
-    /// kill_started_at = Some (it can only reach Quarantined through kill_group), so
-    /// the unwrap_or(true) branch is dead-but-defensive.
+    /// `kill_started_at` = Some (it can only reach Quarantined through `kill_group`), so
+    /// the `unwrap_or(true)` branch is dead-but-defensive.
     pub fn quarantine_retry_due(&self, session_id: Uuid) -> bool {
         let Ok(inner) = self.inner.lock() else {
             return false;
@@ -524,14 +521,13 @@ impl ResourceMonitorState {
         match inner.groups.get(&session_id) {
             Some(group) if matches!(group.state, ResourceGroupState::Quarantined) => group
                 .kill_started_at
-                .map(|t| t.elapsed() >= QUARANTINE_RETRY_BACKOFF)
-                .unwrap_or(true),
+                .is_none_or(|t| t.elapsed() >= QUARANTINE_RETRY_BACKOFF),
             _ => false,
         }
     }
 
     /// #1151 - on the real impl, not inside `mod tests`, so watchdog.rs's tests can reach
-    /// it. Mirrors PtyManager::new_for_test (pty/manager.rs), which is `#[cfg(test)]
+    /// it. Mirrors `PtyManager::new_for_test` (pty/manager.rs), which is `#[cfg(test)]
     /// pub(crate)` on the real impl for exactly this cross-module need.
     ///
     /// `checked_sub` rather than plain subtraction: `Instant`'s epoch is unspecified
@@ -607,7 +603,13 @@ impl ResourceMonitorState {
 
         let snapshot = {
             let inner = self.inner.lock().expect("resource monitor lock poisoned");
-            build_snapshot(&inner, limits, app_memory, warnings)
+            let groups = inner
+                .groups
+                .values()
+                .map(group_snapshot)
+                .collect::<Vec<_>>();
+            let active = active_count(&inner);
+            build_snapshot(groups, active, limits, app_memory, warnings)
         };
         if let Ok(mut inner) = self.inner.lock() {
             inner.last_snapshot = Some(snapshot.clone());
@@ -655,26 +657,26 @@ struct SampleOutcome {
 }
 
 /// #559 - consecutive missing-root samples required before a group is NOMINATED for
-/// reap. A pre-filter only; the reap itself is gated by a direct observe_identity
-/// confirm (see snapshot()), so this threshold never authorizes a reap on its own.
+/// reap. A pre-filter only; the reap itself is gated by a direct `observe_identity`
+/// confirm (see `snapshot()`), so this threshold never authorizes a reap on its own.
 const REAP_STRIKES: u8 = 2;
 
 /// #559 - upper bound on retained Terminated (released-permit) rows kept for
 /// recent-history display. Deliberately a fixed bound, independent of the
 /// active-slot cap `max_concurrent_agent_processes` (#565): eviction here never
-/// affects active_count, so it does not need to track the configurable cap.
+/// affects `active_count`, so it does not need to track the configurable cap.
 const MAX_TERMINATED_RETAINED: usize = 16;
 
 /// #559 - minimum interval between cleanup retries for a single quarantine.
 const QUARANTINE_RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
-/// #647 D: true if any error carries the EXACT ACCESS_DENIED code (`win32 error 5`),
+/// #647 D: true if any error carries the EXACT `ACCESS_DENIED` code (`win32 error 5`),
 /// so "win32 error 50/53/567" do NOT match. Errors are formatted "...win32 error {code}".
 fn has_access_denied_signature(errors: &[String]) -> bool {
     errors.iter().any(|e| {
         e.split("win32 error ").skip(1).any(|tail| {
             tail.chars()
-                .take_while(|c| c.is_ascii_digit())
+                .take_while(char::is_ascii_digit)
                 .collect::<String>()
                 == "5"
         })
@@ -725,6 +727,52 @@ fn root_placeholder(identity: ProcessIdentity) -> ObservedProcess {
         cpu_percent: None,
         kill_allowed: true,
     }
+}
+
+fn group_snapshot(group: &ResourceAgentGroup) -> ResourceAgentGroupSnapshot {
+    let mut processes = group
+        .observed_processes
+        .values()
+        .map(ResourceProcessSnapshot::from)
+        .collect::<Vec<_>>();
+    processes.sort_by_key(|process| (process.name.clone(), process.pid));
+    let private_bytes = sum_optional(processes.iter().map(|p| p.private_bytes));
+    let working_set_bytes = sum_optional(processes.iter().map(|p| p.working_set_bytes));
+    ResourceAgentGroupSnapshot {
+        session_id: group.session_id.to_string(),
+        name: group
+            .agent_label
+            .clone()
+            .or_else(|| group.agent_id.clone())
+            .unwrap_or_else(|| group.name.clone()),
+        workgroup: group.workgroup.clone(),
+        agent: group.agent.clone(),
+        project: group.project.clone(),
+        root_pid: group.root_identity.pid,
+        root_identity: group.root_identity,
+        state: group.state,
+        descendants_observed: group.descendants_observed,
+        process_count: processes.len(),
+        private_bytes,
+        working_set_bytes,
+        cpu_percent: None,
+        processes,
+        kill_allowed: matches!(
+            group.state,
+            ResourceGroupState::Running | ResourceGroupState::Terminating
+        ),
+        last_error: group.last_error.clone(),
+    }
+}
+
+fn sum_optional(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    let mut any = false;
+    let mut total = 0_u64;
+    for value in values.flatten() {
+        any = true;
+        total = total.saturating_add(value);
+    }
+    any.then_some(total)
 }
 
 #[cfg(test)]

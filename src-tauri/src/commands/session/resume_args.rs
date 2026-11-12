@@ -160,7 +160,7 @@ pub(crate) fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String
                 .iter()
                 .position(|arg| is_antigravity_executable(arg))
             {
-                let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+                let tokens: Vec<&str> = shell_args.iter().map(String::as_str).collect();
                 if antigravity_tokens_have_resume(&tokens, idx + 1) {
                     return false;
                 }
@@ -169,15 +169,13 @@ pub(crate) fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String
             }
 
             for arg in shell_args.iter_mut() {
-                let mut tokens: Vec<String> = arg
-                    .split_whitespace()
-                    .map(|token| token.to_string())
-                    .collect();
+                let mut tokens: Vec<String> =
+                    arg.split_whitespace().map(ToString::to_string).collect();
                 if let Some(idx) = tokens
                     .iter()
                     .position(|token| is_antigravity_executable(token))
                 {
-                    let token_refs: Vec<&str> = tokens.iter().map(|token| token.as_str()).collect();
+                    let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
                     if antigravity_tokens_have_resume(&token_refs, idx + 1) {
                         return false;
                     }
@@ -203,7 +201,7 @@ pub(crate) fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> 
     };
     match executable_basename(shell).as_str() {
         "codex" => {
-            let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+            let tokens: Vec<&str> = shell_args.iter().map(String::as_str).collect();
             if codex_tokens_have_resume(&tokens, 0) || codex_has_explicit_subcommand(&tokens, 0) {
                 return false;
             }
@@ -216,7 +214,7 @@ pub(crate) fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> 
                 .iter()
                 .position(|arg| executable_basename(arg) == "codex")
             {
-                let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
+                let tokens: Vec<&str> = shell_args.iter().map(String::as_str).collect();
                 if codex_tokens_have_resume(&tokens, idx + 1)
                     || codex_has_explicit_subcommand(&tokens, idx + 1)
                 {
@@ -228,15 +226,13 @@ pub(crate) fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> 
             }
 
             for arg in shell_args.iter_mut() {
-                let mut tokens: Vec<String> = arg
-                    .split_whitespace()
-                    .map(|token| token.to_string())
-                    .collect();
+                let mut tokens: Vec<String> =
+                    arg.split_whitespace().map(ToString::to_string).collect();
                 if let Some(idx) = tokens
                     .iter()
                     .position(|token| executable_basename(token) == "codex")
                 {
-                    let token_refs: Vec<&str> = tokens.iter().map(|token| token.as_str()).collect();
+                    let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
                     if codex_tokens_have_resume(&token_refs, idx + 1)
                         || codex_has_explicit_subcommand(&token_refs, idx + 1)
                     {
@@ -391,7 +387,7 @@ pub(crate) fn trusted_muse_auto_resume_spawn(
     }
     if std::path::Path::new(shell)
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         != Some("muse")
     {
         return false;

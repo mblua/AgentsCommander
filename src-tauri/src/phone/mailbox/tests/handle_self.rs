@@ -1,7 +1,6 @@
 use super::*;
 
-#[tokio::test]
-async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
+async fn assert_bad_raise_hand_tokens_rejected() {
     for (idx, token) in [
         (0, "not-a-uuid".to_string()),
         (1, Uuid::new_v4().to_string()),
@@ -11,7 +10,7 @@ async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
         assert!(app.manage(crate::pty::manager::ResponseCloseState::default()));
         write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
         let msg_id = format!("msg-rh-bad-token-{idx}");
-        let rid = Uuid::from_u128(0x33180001000040008000000000000200 + idx).to_string();
+        let rid = Uuid::from_u128(0x3318_0001_0000_4000_8000_0000_0000_0200 + idx).to_string();
         let (path, _msg) =
             build_raise_hand_message(&fixture.sender_cwd, &msg_id, &rid, Some(token));
         let poller = MailboxPoller::default();
@@ -30,6 +29,11 @@ async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
         );
         assert!(poller.response_sources.lock().unwrap().is_empty());
     }
+}
+
+#[tokio::test]
+async fn raise_hand_process_message_bad_tokens_are_rejected_not_false() {
+    assert_bad_raise_hand_tokens_rejected().await;
     // D: a real session token crosses the full validation/deferred handoff.
     let fixture = make_mailbox_fixture();
     let app = app_handle(&fixture.app);

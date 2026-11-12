@@ -69,7 +69,7 @@ impl ContainerRuntimeControl {
             .inner
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.shutdown_deadline = Some(match state.shutdown_deadline {
             Some(existing) => existing.min(deadline),
             None => deadline,
@@ -81,7 +81,7 @@ impl ContainerRuntimeControl {
         self.inner
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .shutdown_deadline
             .is_some()
     }
@@ -90,7 +90,7 @@ impl ContainerRuntimeControl {
         self.inner
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .shutdown_deadline
     }
 
@@ -104,7 +104,7 @@ impl ContainerRuntimeControl {
             .inner
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(deadline) = state.shutdown_deadline {
                 return deadline;
@@ -113,7 +113,7 @@ impl ContainerRuntimeControl {
                 .inner
                 .changed
                 .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 }
@@ -214,17 +214,14 @@ impl RetainedContainerOwnerContext {
     pub fn diagnostic(&self) -> String {
         let session = self
             .session_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), |id| id.to_string());
         let program = self
             .program
             .as_deref()
-            .map(normalize_retained_diagnostic_value)
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), normalize_retained_diagnostic_value);
         let runtime_handle = self
             .runtime_handle
-            .map(|present| present.to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .map_or_else(|| "none".to_string(), |present| present.to_string());
         let mut diagnostic = format!(
             "owner={} session={} reason={} program={} runtimeHandle={} state={} inFlight={}",
             self.owner,
@@ -451,7 +448,7 @@ pub fn api_url_for_container(bind: &str, port: u16) -> Result<String, AppError> 
         "0.0.0.0" | "::" => "host.docker.internal",
         other => other,
     };
-    Ok(format!("http://{}:{}", host, port))
+    Ok(format!("http://{host}:{port}"))
 }
 
 fn compact_log_tail_bounded(log_tail: &str, max_chars: usize) -> String {

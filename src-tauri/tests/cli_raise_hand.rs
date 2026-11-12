@@ -26,7 +26,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
     // A test that panics elsewhere must not disable the guard for the rest.
     SPAWN_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn command_for_binary(bin: &Path) -> Command {
@@ -208,7 +208,7 @@ impl SimulatorHandle {
             SimulatorHandle::Process(child) => {
                 let out = child
                     .wait_with_output()
-                    .map_err(|e| format!("wait for simulator process: {}", e))?;
+                    .map_err(|e| format!("wait for simulator process: {e}"))?;
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
                 if !out.status.success() {
@@ -429,7 +429,7 @@ fn run_raise_hand_with_simulator(
     response_body: &str,
 ) -> (Option<i32>, String, String, String, String) {
     let stem = fix.bin.file_stem().unwrap().to_string_lossy().to_string();
-    let ac_dir = fix.agent_root.join(format!(".{}", stem));
+    let ac_dir = fix.agent_root.join(format!(".{stem}"));
     let outbox_dir = ac_dir.join("outbox");
     let responses_dir = ac_dir.join("responses");
     std::fs::create_dir_all(&outbox_dir).unwrap();

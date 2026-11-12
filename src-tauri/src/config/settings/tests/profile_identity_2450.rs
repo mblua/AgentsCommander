@@ -250,7 +250,7 @@ fn adoption_runs_before_repair() {
     assert_eq!(cells["B"].command, "--b");
     let mut expected_a = empty_profile_cell();
     expected_a.id_hash = Some(configuration_identity("claude", &[]));
-    expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
+    expected_a.id_hash_debug = Some(vec!["claude".into(), String::new()]);
     assert_eq!(cells.get("A"), Some(&expected_a));
     assert_eq!(
         cells["B"].id_hash,
@@ -590,10 +590,10 @@ fn repair_still_gives_every_agent_an_A_cell() {
     assert_eq!(cells["n"]["B"].command, "--b");
     let mut expected_a = empty_profile_cell();
     expected_a.id_hash = Some(configuration_identity("claude", &[]));
-    expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
+    expected_a.id_hash_debug = Some(vec!["claude".into(), String::new()]);
     assert_eq!(cells["n"]["A"], expected_a);
     expected_a.id_hash = Some(configuration_identity("codex", &[]));
-    expected_a.id_hash_debug = Some(vec!["codex".into(), "".into()]);
+    expected_a.id_hash_debug = Some(vec!["codex".into(), String::new()]);
     assert_eq!(cells["k"]["A"], expected_a);
     assert_eq!(
         cells["n"]["B"].id_hash,

@@ -8,6 +8,7 @@ use super::DiscoveredTeam;
 use super::ResolutionError;
 use crate::config::ac_root::existing_ac_root;
 use crate::config::ac_root::find_ac_root_segment;
+use crate::filesystem::projects::entities::agent_matrix_directory_present;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -67,7 +68,7 @@ pub fn resolve_agent_target(
         // Existence check.
         let agent = local.split_once('/').map(|(_, a)| a).unwrap_or_default();
         let wg = local.split_once('/').map(|(w, _)| w).unwrap_or_default();
-        let replica_dir = format!("__agent_{}", agent);
+        let replica_dir = format!("__agent_{agent}");
         for (name, dir) in enumerate_project_dirs(project_paths) {
             if name != project {
                 continue;
@@ -76,7 +77,7 @@ pub fn resolve_agent_target(
                 continue;
             };
             let candidate = ac_root.join(wg).join(&replica_dir);
-            if candidate.is_dir() {
+            if agent_matrix_directory_present(&candidate) {
                 return Ok(target.to_string());
             }
         }
@@ -87,15 +88,15 @@ pub fn resolve_agent_target(
     if is_valid_wg_local_shape(target) {
         let wg = target.split_once('/').map(|(w, _)| w).unwrap_or_default();
         let agent = target.split_once('/').map(|(_, a)| a).unwrap_or_default();
-        let replica_dir = format!("__agent_{}", agent);
+        let replica_dir = format!("__agent_{agent}");
         let mut candidates: Vec<String> = Vec::new();
         for (name, dir) in enumerate_project_dirs(project_paths) {
             let Some(ac_root) = existing_ac_root(&dir) else {
                 continue;
             };
             let candidate = ac_root.join(wg).join(&replica_dir);
-            if candidate.is_dir() {
-                let fqn = format!("{}:{}/{}", name, wg, agent);
+            if agent_matrix_directory_present(&candidate) {
+                let fqn = format!("{name}:{wg}/{agent}");
                 if !candidates.contains(&fqn) {
                     candidates.push(fqn);
                 }
@@ -134,7 +135,7 @@ pub(super) fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String
             .strip_prefix("__agent_")
             .or_else(|| dir_name.strip_prefix("_agent_"))
             .unwrap_or(dir_name);
-        format!("{}/{}", origin, agent_name)
+        format!("{origin}/{agent_name}")
     } else {
         // Relative ref: extract last component and strip prefix
         let last = trimmed.split('/').next_back().unwrap_or(trimmed);
@@ -142,7 +143,7 @@ pub(super) fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String
             .strip_prefix("__agent_")
             .or_else(|| last.strip_prefix("_agent_"))
             .unwrap_or(last);
-        format!("{}/{}", project_folder, agent_name)
+        format!("{project_folder}/{agent_name}")
     }
 }
 
@@ -164,14 +165,14 @@ pub(super) fn resolve_agent_path(ac_root: &Path, agent_ref: &str) -> Option<Path
 
     // Relative to the Project AC Root directory.
     let candidate = ac_root.join(trimmed);
-    if candidate.is_dir() {
+    if agent_matrix_directory_present(&candidate) {
         return Some(candidate);
     }
 
     // Try parent of the Project AC Root directory (project root).
     if let Some(project_root) = ac_root.parent() {
         let candidate = project_root.join(trimmed);
-        if candidate.is_dir() {
+        if agent_matrix_directory_present(&candidate) {
             return Some(candidate);
         }
     }

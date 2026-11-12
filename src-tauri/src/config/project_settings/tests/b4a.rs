@@ -666,9 +666,9 @@ fn b4a_assert_rows_once(content: &str, label: &str) {
     }
 }
 
-#[test]
-fn the_scope_ignores_the_new_names_before_it_renames_anything() {
-    // The pre-upgrade shape, a project that is never registered.
+/// The pre-upgrade shape, a project that is never registered. Returns the
+/// fixture so it lives as long as the calling test.
+fn b4a_assert_base_sweep_ignores_new_names() -> B4aFixture {
     let f = b4a_fixture();
     let ac = f.project.join(".ac");
     std::fs::write(
@@ -707,67 +707,13 @@ fn the_scope_ignores_the_new_names_before_it_renames_anything() {
             "{relative}: {source}"
         );
     }
+    f
+}
 
-    // A failed sweep refuses and renames nothing.
-    let g = b4a_fixture();
-    std::fs::create_dir(g.project.join(".ac").join(".gitignore")).unwrap();
-    std::fs::write(legacy_settings_path(&g.project), B4A_LEGACY_BYTES).unwrap();
-    assert!(load_workgroup_groups_in(&g.project, Some(&g.cfg)).is_err());
-    assert_eq!(
-        std::fs::read(legacy_settings_path(&g.project)).unwrap(),
-        B4A_LEGACY_BYTES.as_bytes(),
-        "a failed sweep must leave the data at the old name"
-    );
-    assert!(!settings_path(&g.project).exists());
-
-    // The decoy: a leading-space line is not the rule.
-    let h = b4a_fixture();
-    std::fs::write(
-        h.project.join(".ac").join(".gitignore"),
-        " /settings.50.personal.no-git.json\n",
-    )
-    .unwrap();
-    std::fs::write(legacy_settings_path(&h.project), B4A_LEGACY_BYTES).unwrap();
-    load_workgroup_groups_in(&h.project, Some(&h.cfg)).expect("load");
-    b4a_assert_rows_once(&b4a_gitignore(&h.project), "decoy");
-
-    // Both orders of the sweep and the registration writer: every AC row
-    // once, and a user line seeded before either run survives.
-    for sweep_first in [true, false] {
-        let k = b4a_fixture();
-        let ac = k.project.join(".ac");
-        std::fs::write(ac.join(".gitignore"), "user-line-2717\n").unwrap();
-        std::fs::write(legacy_settings_path(&k.project), B4A_LEGACY_BYTES).unwrap();
-        let writer = || {
-            crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
-                .expect("writer")
-        };
-        if sweep_first {
-            load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");
-            writer();
-        } else {
-            writer();
-            load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");
-        }
-        let content = b4a_gitignore(&k.project);
-        let label = if sweep_first {
-            "sweep, writer"
-        } else {
-            "writer, sweep"
-        };
-        b4a_assert_rows_once(&content, label);
-        assert!(content.lines().any(|l| l == "user-line-2717"), "{label}");
-        let rules: Vec<&str> = content
-            .lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-            .collect();
-        let unique: std::collections::BTreeSet<&str> = rules.iter().copied().collect();
-        assert_eq!(unique.len(), rules.len(), "{label}: a row appears twice");
-    }
-
-    // Interleaved: the registration writer and a user edit land between the
-    // sweep's read and its append. Nothing is lost; a 4.4 row may repeat
-    // once; no other rule repeats.
+/// Interleaved: the registration writer and a user edit land between the
+/// sweep's read and its append. Returns the fixture so it lives as long as
+/// the calling test.
+fn b4a_assert_interleaved_sweep_keeps_every_line() -> B4aFixture {
     let expected_rules: Vec<String> = {
         let fresh = b4a_fixture();
         let fresh_ac = fresh.project.join(".ac");
@@ -817,4 +763,73 @@ fn the_scope_ignores_the_new_names_before_it_renames_anything() {
             "interleaved: {rule} appears {n} times"
         );
     }
+    m
+}
+
+#[test]
+fn the_scope_ignores_the_new_names_before_it_renames_anything() {
+    // The pre-upgrade shape, a project that is never registered.
+    let _f = b4a_assert_base_sweep_ignores_new_names();
+
+    // A failed sweep refuses and renames nothing.
+    let g = b4a_fixture();
+    std::fs::create_dir(g.project.join(".ac").join(".gitignore")).unwrap();
+    std::fs::write(legacy_settings_path(&g.project), B4A_LEGACY_BYTES).unwrap();
+    assert!(load_workgroup_groups_in(&g.project, Some(&g.cfg)).is_err());
+    assert_eq!(
+        std::fs::read(legacy_settings_path(&g.project)).unwrap(),
+        B4A_LEGACY_BYTES.as_bytes(),
+        "a failed sweep must leave the data at the old name"
+    );
+    assert!(!settings_path(&g.project).exists());
+
+    // The decoy: a leading-space line is not the rule.
+    let h = b4a_fixture();
+    std::fs::write(
+        h.project.join(".ac").join(".gitignore"),
+        " /settings.50.personal.no-git.json\n",
+    )
+    .unwrap();
+    std::fs::write(legacy_settings_path(&h.project), B4A_LEGACY_BYTES).unwrap();
+    load_workgroup_groups_in(&h.project, Some(&h.cfg)).expect("load");
+    b4a_assert_rows_once(&b4a_gitignore(&h.project), "decoy");
+
+    // Both orders of the sweep and the registration writer: every AC row
+    // once, and a user line seeded before either run survives.
+    for sweep_first in [true, false] {
+        let k = b4a_fixture();
+        let ac = k.project.join(".ac");
+        std::fs::write(ac.join(".gitignore"), "user-line-2717\n").unwrap();
+        std::fs::write(legacy_settings_path(&k.project), B4A_LEGACY_BYTES).unwrap();
+        let writer = || {
+            crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
+                .expect("writer");
+        };
+        if sweep_first {
+            load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");
+            writer();
+        } else {
+            writer();
+            load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");
+        }
+        let content = b4a_gitignore(&k.project);
+        let label = if sweep_first {
+            "sweep, writer"
+        } else {
+            "writer, sweep"
+        };
+        b4a_assert_rows_once(&content, label);
+        assert!(content.lines().any(|l| l == "user-line-2717"), "{label}");
+        let rules: Vec<&str> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .collect();
+        let unique: std::collections::BTreeSet<&str> = rules.iter().copied().collect();
+        assert_eq!(unique.len(), rules.len(), "{label}: a row appears twice");
+    }
+
+    // Interleaved: the registration writer and a user edit land between the
+    // sweep's read and its append. Nothing is lost; a 4.4 row may repeat
+    // once; no other rule repeats.
+    let _m = b4a_assert_interleaved_sweep_keeps_every_line();
 }

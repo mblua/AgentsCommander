@@ -297,10 +297,10 @@ impl ContextAlertRuntime for ScriptedRuntime {
             .unwrap()
             .get(&session_id)
             .cloned()
-            .map(MemberPolicyResolution::Eligible)
-            .unwrap_or_else(|| {
-                MemberPolicyResolution::PermanentIneligible("missing policy".to_string())
-            });
+            .map_or_else(
+                || MemberPolicyResolution::PermanentIneligible("missing policy".to_string()),
+                MemberPolicyResolution::Eligible,
+            );
         let blocked = self.blocked_resolution.lock().unwrap().take();
         Box::pin(async move {
             if let Some(blocked) = blocked {
@@ -462,7 +462,7 @@ async fn identity_fixture_named(project: &str, workgroup_name: &str) -> Identity
     let member_matrix = ac_root.join("_agent_member");
     let coordinator_matrix = ac_root.join("_agent_coordinator");
     let team = parse_team_from_workgroup_name(workgroup_name).unwrap();
-    let team_dir = ac_root.join(format!("_team_{}", team));
+    let team_dir = ac_root.join(format!("_team_{team}"));
     for path in [
         &nested,
         &coordinator_replica,

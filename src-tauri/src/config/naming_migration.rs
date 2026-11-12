@@ -2,12 +2,14 @@
 //! the locking, the disk-driven decision table and the create-only rename
 //! primitive that every later phase-B migration calls.
 //!
-//! A leaf on purpose: it names only `super::instance_artifacts`, `std`, `serde`,
-//! `serde_json`, `chrono` and, per platform, the OS bindings. The crate root is a
-//! member of the crate's one cyclic SCC, and a module called from it that named
-//! any SCC member would join that SCC. The guard
-//! `naming_migration_names_nothing_that_reaches_the_knot` in
-//! `tests/instance_gitignore_layering.rs` holds that line.
+//! A leaf on purpose: it names only `super::instance_artifacts`, the
+//! `crate::filesystem::naming_journal` seam, `std`, `serde`, `serde_json`,
+//! `chrono` and, per platform, the OS bindings. Its `ignore_rows` child imports
+//! the same `instance_artifacts` owner directly. The crate root is a member of
+//! the crate's one cyclic SCC, and a module called from it that named any SCC
+//! member would join that SCC; no route leads from these owners back to it. The
+//! guard `naming_migration_names_nothing_that_reaches_the_knot` in
+//! `tests/instance_gitignore_layering/registry.rs` holds that line.
 //!
 //! No step deletes or overwrites. When both the old and the new name exist, the
 //! new file wins and the old one is moved, create-only, to
@@ -25,11 +27,7 @@ use crate::filesystem::naming_journal;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::instance_artifacts::{
-    CONFIG_STATE_TARGET_NAME, LOOP_STATE_TARGET_NAME, LOOP_STATE_TMP_TARGET_GLOB,
-    NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME, PROJECT_SETTINGS_TARGET_NAME,
-    SET_ASIDE_GLOB,
-};
+use super::instance_artifacts::{NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME};
 
 mod ignore_rows;
 
@@ -169,11 +167,6 @@ impl Journal {
         }
     }
 
-    #[allow(dead_code)] // B1a API; no production caller yet
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub(crate) fn scope(&self, scope: &str) -> Option<&ScopeRecord> {
         self.scopes.get(scope)
     }
@@ -279,13 +272,13 @@ pub(crate) fn read_journal(dir: Option<&Path>) -> Result<Option<Journal>, Refusa
     }
 }
 
-#[allow(dead_code)] // first production caller: the B2 scope summary
+#[cfg(test)]
 pub(crate) fn status(j: &Journal, scope: &str) -> Option<ScopeStatus> {
     j.scopes.get(scope).map(|s| s.status)
 }
 
 /// For the journal summary only. Skip decisions call `scope_is_settled`.
-#[allow(dead_code)] // first production caller: the B2 scope summary
+#[cfg(test)]
 pub(crate) fn is_complete(j: &Journal, scope: &str) -> bool {
     status(j, scope) == Some(ScopeStatus::Complete)
 }
@@ -391,7 +384,6 @@ pub(crate) fn lock_scope(
 /// For a caller whose own handle already covers the NEW name: takes only the
 /// OLD sidecar. It never re-opens the caller's lock, which would block against
 /// that handle.
-#[allow(dead_code)] // first production caller: B2, under the catalog writer lock
 pub(crate) fn lock_scope_under_held(
     dir: &Path,
     old_lock: Option<&str>,
@@ -496,7 +488,7 @@ fn replace_file(src: &Path, dst: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn is_transient_replace_error(e: &io::Error) -> bool {
     // ERROR_ACCESS_DENIED (a held destination) and ERROR_SHARING_VIOLATION.
-    matches!(e.raw_os_error(), Some(5) | Some(32))
+    matches!(e.raw_os_error(), Some(5 | 32))
 }
 
 #[cfg(not(windows))]

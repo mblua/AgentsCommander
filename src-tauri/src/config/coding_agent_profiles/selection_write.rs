@@ -157,7 +157,7 @@ pub(super) fn write_replica_selection_prepared(
         return Err("Coding agent id must not be empty".to_string());
     }
     let replica_dir = validated_replica_dir(settings, replica_path)?;
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(&replica_dir);
     let requested_pair = ReplicaSelectionPair {
         coding_agent_id: pair.coding_agent_id.clone(),
         requested_profile: profile.clone(),
@@ -238,7 +238,7 @@ pub(super) fn write_replica_selection_prepared(
         });
 
     match written {
-        Ok(_) => Ok(SelectionWriteOutcome {
+        Ok(()) => Ok(SelectionWriteOutcome {
             changed: true,
             published: true,
             lock_transition: transition.get(),
@@ -305,7 +305,7 @@ pub(crate) fn set_prepared_source_profile_override(
     }
     let replica_dir = validated_replica_dir(settings, replica_path)?;
     crate::config::agent_config::update_existing_agent_config(
-        &replica_dir.join("config.json"),
+        &crate::config::config_file_path(&replica_dir),
         |obj, _state| {
             validate_selection_write_state(&replica_dir, expected)?;
             let tooling = obj
@@ -348,7 +348,7 @@ pub(super) fn clear_replica_selection_lock_with_publish(
     publish: Option<crate::config::agent_config::ConfigPublisher<'_>>,
 ) -> Result<SelectionWriteOutcome, String> {
     let replica_dir = validated_replica_dir(settings, replica_path)?;
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(&replica_dir);
     let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
 
     let written = crate::config::agent_config::update_existing_agent_config_with_publish(
@@ -376,7 +376,7 @@ pub(super) fn clear_replica_selection_lock_with_publish(
     );
 
     match written {
-        Ok(_) => Ok(SelectionWriteOutcome {
+        Ok(()) => Ok(SelectionWriteOutcome {
             changed: true,
             published: true,
             lock_transition: Some(SelectionLockTransition::LockedToUnlocked),
@@ -403,7 +403,7 @@ pub fn set_replica_coding_agent_selection(
         .iter()
         .any(|agent| agent.id == coding_agent_id)
     {
-        return Err(format!("Agent '{}' is not configured", coding_agent_id));
+        return Err(format!("Agent '{coding_agent_id}' is not configured"));
     }
     let profile = normalize_profile_letter(profile)
         .ok_or_else(|| "Profile must be a single letter A through Z".to_string())?;

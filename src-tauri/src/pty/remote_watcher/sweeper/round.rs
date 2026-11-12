@@ -7,12 +7,12 @@ use futures::stream::StreamExt;
 
 use crate::config::remote_activity_cache::PersistedRepoCi;
 
+use super::super::sweeper_state::RemoteSweeper;
 use super::super::{
     activity_for, due, persisted_repo_ci, query_key, CiState, KeyOutcome, KeyPlan, PathFacts,
     QueryKey, RemoteActivity, RemoteActivityPayload, SnapshotPersistence, StalenessCarry,
     DEFAULT_BRANCH_LABEL, GH_BUDGET_BURST, MAX_GH_CALLS_PER_MINUTE, QUERY_CONCURRENCY,
 };
-use super::RemoteSweeper;
 
 pub(super) struct RoundReservations {
     pub(super) pending_base: Vec<(String, String)>,
@@ -89,11 +89,7 @@ impl RemoteSweeper {
             due_keys.sort_by_cached_key(|(key, _)| {
                 let entry = state.keys.get(key);
                 (
-                    if entry.map(|e| e.ci.confirmed) == Some(Some(CiState::Running)) {
-                        0u8
-                    } else {
-                        1u8
-                    },
+                    u8::from(entry.map(|e| e.ci.confirmed) != Some(Some(CiState::Running))),
                     entry.and_then(|e| e.ci.last_confirmed_at),
                     entry.and_then(|e| e.staleness.last_confirmed_at),
                     key.clone(),

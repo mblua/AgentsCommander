@@ -17,9 +17,9 @@ pub(crate) const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) struct ReplicaBranchEntry {
     pub(crate) replica_path: String,
     /// (label, absolute repo path) pairs. Order = replica config.json `repos` array order.
-    /// Never sort or dedupe — `Vec<SessionRepo>` equality in poll() depends on order.
+    /// Never sort or dedupe — `Vec<SessionRepo>` equality in `poll()` depends on order.
     pub(crate) repos: Vec<(String, String)>,
-    /// Session name format: "wg_name/replica_name"
+    /// Session name format: "`wg_name/replica_name`"
     pub(crate) session_name: String,
 }
 
@@ -28,7 +28,7 @@ pub(crate) struct ReplicaBranchEntry {
 pub(crate) struct DiscoveryBranchPayload {
     pub(crate) replica_path: String,
     /// Single-repo shorthand, semantics unchanged: `None` for a multi-repo replica,
-    /// so the AcDiscoveryPanel chip keeps hiding the branch there.
+    /// so the `AcDiscoveryPanel` chip keeps hiding the branch there.
     pub(crate) branch: Option<String>,
     /// #943 B2 - per-repo branches, positionally parallel to `repo_paths` below and
     /// therefore to `AcAgentReplica.repo_paths` (`update_replicas_for_project` maps

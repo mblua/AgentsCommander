@@ -15,6 +15,7 @@ use crate::filesystem::ac_discovery::{
     canonical_discovery_repo, discovery_directory_entries, discovery_path_is_dir,
     discovery_role_exists,
 };
+use crate::filesystem::projects::entities::roles;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -37,7 +38,7 @@ pub(crate) async fn discover_project_tree(
 
     let entries = match discovery_directory_entries(ac_root) {
         Ok(e) => e,
-        Err(e) => return Err(format!("Failed to read Project AC Root directory: {}", e)),
+        Err(e) => return Err(format!("Failed to read Project AC Root directory: {e}")),
     };
 
     for entry in entries.flatten() {
@@ -54,7 +55,7 @@ pub(crate) async fn discover_project_tree(
         // Agent matrices: _agent_*
         if dir_name.starts_with("_agent_") {
             let display_name = agent_display_name(project_folder, &dir_name);
-            let role_exists = discovery_role_exists(&entry_path.join("Role.md"));
+            let role_exists = discovery_role_exists(&roles::role_path(&entry_path));
 
             let preferred_agent_id = read_preferred_agent_id(&entry_path, cfg);
 
@@ -179,7 +180,7 @@ async fn discover_workgroup(
                     .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
                 let profile_read = read_replica_profile_result(&wg_path);
                 if let Some(warning) = &profile_read.warning {
-                    log::warn!("[ac-discovery] {}", warning);
+                    log::warn!("[ac-discovery] {warning}");
                 }
                 let current_profile = profile_read.profile;
 
@@ -252,25 +253,17 @@ fn replica_coordinator_fields(
     // shape). Covered by
     // teams::tests::is_any_coordinator_requires_qualified_fqn.
     let is_coordinator = crate::config::teams::resolve_wg_coordinator_replica(ac_root, entry_path)
-        .map(|resolved| resolved.agent_name == replica_name)
-        .unwrap_or(false);
+        .is_some_and(|resolved| resolved.agent_name == replica_name);
 
     log::debug!(
-        "[ac-discovery] call={} replica — project='{}' wg='{}' replica='{}' \
-            fqn='{}:{}/{}' is_coordinator={}",
-        call_id,
-        project_folder,
-        dir_name,
-        replica_name,
-        project_folder,
-        dir_name,
-        replica_name,
-        is_coordinator
+        "[ac-discovery] call={call_id} replica — project='{project_folder}' wg='{dir_name}' \
+            replica='{replica_name}' \
+            fqn='{project_folder}:{dir_name}/{replica_name}' is_coordinator={is_coordinator}"
     );
 
     // #552 look up this coordinator's persisted clocks by FQN
     // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
-    let fqn = format!("{}:{}/{}", project_folder, dir_name, replica_name);
+    let fqn = format!("{project_folder}:{dir_name}/{replica_name}");
     let clock_entry = if is_coordinator {
         clocks_snapshot.get(&fqn)
     } else {
@@ -281,7 +274,7 @@ fn replica_coordinator_fields(
     // dormant/just-loaded row shows the real accumulated idle
     // (closed time included), not just the user-message age.
     let last_user_message_at = clock_entry
-        .and_then(|e| e.idle_anchor())
+        .and_then(crate::config::coordinator_clocks::ClockEntry::idle_anchor)
         .map(|dt| dt.to_rfc3339());
     let auto_closed_at = clock_entry
         .and_then(|e| e.auto_closed_at)

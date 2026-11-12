@@ -383,3 +383,50 @@ async fn readiness_restore_blocks_later_getters_and_absence_reaches_authority() 
     }
     assert!(heartbeat.finish().await);
 }
+
+#[test]
+fn wake_delivery_getters_keep_required_and_optional_registration() {
+    let app = crate::test_support::test_builder()
+        .manage(crate::MasterToken::new("master".to_string()))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build test app");
+    let handle = app.handle();
+    // Required stays required: an unregistered coordinator panics like `state()`.
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle.selection();
+    }))
+    .is_err());
+    assert!(handle
+        .master_token()
+        .is_some_and(|token| token.matches("master")));
+    assert!(handle.message_store().is_none());
+    // Optional getters: absent registration is `None`, not a panic.
+    assert!(handle.pty_routes_opt().is_none());
+    assert!(handle.pty_readiness_opt().is_none());
+}
+
+#[test]
+fn wake_delivery_optional_getters_return_registered_state() {
+    let readiness = IdleDetector::new(|_| {}, |_| {});
+    let backend = Arc::new(
+        crate::pty::container_backend::ContainerTransportBackend::new(
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            Arc::clone(&readiness),
+            None,
+            None,
+        ),
+    );
+    let routes = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
+    let app = crate::test_support::test_builder()
+        .manage(Arc::clone(&routes))
+        .manage(Arc::clone(&readiness))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build test app");
+    let handle = app.handle();
+    assert!(handle
+        .pty_routes_opt()
+        .is_some_and(|got| Arc::ptr_eq(got, &routes)));
+    assert!(handle
+        .pty_readiness_opt()
+        .is_some_and(|got| Arc::ptr_eq(got, &readiness)));
+}

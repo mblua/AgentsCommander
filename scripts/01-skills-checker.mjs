@@ -356,7 +356,8 @@ function readFrontmatter(filePath) {
     }
 
     if (reader.failure() !== null) {
-      return { ok: false, code: 'E-ENTRYPOINT-UNREADABLE', detail: errnoOf(reader.failure()), verb: 'read' };
+      return { ok: false, code: 'E-ENTRYPOINT-UNREADABLE', detail: errnoOf(reader.failure()),
+        verb: 'read' };
     }
     return finishAtEof(st);
   } finally {
@@ -475,7 +476,8 @@ function decodeFrontmatter(bytes) {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(bytes));
     return { ok: true, text };
   } catch (err) {
-    return { ok: false, code: 'E-FM-NOT-UTF8', detail: err instanceof Error ? err.message : String(err) };
+    return { ok: false, code: 'E-FM-NOT-UTF8',
+      detail: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -508,7 +510,8 @@ function leadingWsRun(line) {
 }
 
 function readQuotedScalar(text, start) {
-  return text[start] === "'" ? readSingleQuoted(text, start + 1) : readDoubleQuoted(text, start + 1);
+  return text[start] === "'" ? readSingleQuoted(text, start + 1) : readDoubleQuoted(text,
+    start + 1);
 }
 
 function readSingleQuoted(text, i) {
@@ -526,7 +529,8 @@ function readSingleQuoted(text, i) {
     out += ch;
     i += 1;
   }
-  return { ok: false, reason: 'a single-quoted scalar whose closing quote is not on the same line' };
+  return { ok: false,
+    reason: 'a single-quoted scalar whose closing quote is not on the same line' };
 }
 
 function readDoubleQuoted(text, i) {
@@ -544,7 +548,8 @@ function readDoubleQuoted(text, i) {
     out += ch;
     i += 1;
   }
-  return { ok: false, reason: 'a double-quoted scalar whose closing quote is not on the same line' };
+  return { ok: false,
+    reason: 'a double-quoted scalar whose closing quote is not on the same line' };
 }
 
 const SIMPLE_ESCAPES = new Map([
@@ -566,9 +571,10 @@ function decodeEscape(text, i) {
     if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
       return { ok: false, reason: 'a double-quoted scalar with a malformed \\u escape' };
     }
-    return { ok: true, value: String.fromCharCode(parseInt(hex, 16)), width: 6 };
+    return { ok: true, value: String.fromCharCode(Number.parseInt(hex, 16)), width: 6 };
   }
-  return { ok: false, reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
+  return { ok: false,
+    reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
 }
 
 // 6.5.1a. A mapping entry is a key, then `:`, then end of line or at least one space or
@@ -623,7 +629,8 @@ function splitPlainKey(body) {
   // line look like an ordinary entry for a key nothing reads, so a plain typo produced
   // a run with no finding at all, not even W-YAML-UNDECIDABLE. Leading whitespace is
   // already routed to W-YAML-UNDECIDABLE by the `indent > 0` branch of parseMiniYaml.
-  return { ok: true, key: body.slice(0, separator).replace(/[ \t]+$/, ''), rest: body.slice(separator + 1) };
+  return { ok: true, key: body.slice(0, separator).replace(/[ \t]+$/, ''), rest: body.slice(
+    separator + 1) };
 }
 
 // The block-scalar header at the start of a value, or null when it is not one.
@@ -874,7 +881,8 @@ function rootConstruct(body) {
     return { construct: 'a flow sequence at the document root', mappingCandidate: false };
   }
   if (lead === '%' || lead === '!' || lead === '&' || lead === '*') {
-    return { construct: 'a directive, tag, anchor or alias at the document root', mappingCandidate: true };
+    return { construct: 'a directive, tag, anchor or alias at the document root',
+      mappingCandidate: true };
   }
   if (body === '?' || body.startsWith('? ')) {
     return { construct: 'an explicit key', mappingCandidate: true };
@@ -1156,17 +1164,20 @@ function validateFields(candidate, mapping, collector, lineOffset) {
   reportHyphenVariant(candidate, mapping, fileLine, collector);
 
   // ---- name (:641-660) ----
-  const name = resolveNameField(candidate, mapping.entries.get('name'), folder, fileLine, collector);
+  const name = resolveNameField(candidate, mapping.entries.get('name'), folder, fileLine,
+    collector);
   if (name.stop) return { resolvedName: null, nameLine: null };
   if (name.nameResolved && reportInvalidName(candidate, folder, name, collector)) {
     return { resolvedName: null, nameLine: name.nameLine };
   }
 
   // ---- description (:674-684) ----
-  checkDescription(candidate, mapping.entries.get('description'), name.resolvedName, fileLine, collector);
+  checkDescription(candidate, mapping.entries.get('description'), name.resolvedName, fileLine,
+    collector);
 
   // ---- when_to_use (:687-692) ----
-  checkWhenToUse(candidate, mapping.entries.get('when_to_use'), name.resolvedName, fileLine, collector);
+  checkWhenToUse(candidate, mapping.entries.get('when_to_use'), name.resolvedName, fileLine,
+    collector);
 
   return { resolvedName: name.nameResolved ? name.resolvedName : null, nameLine: name.nameLine };
 }
@@ -1462,7 +1473,8 @@ function reportFrontmatterFailure(frontmatter, candidate, folder, collector) {
   const entrypoint = candidate.entrypoint;
   const detail = frontmatter.detail === undefined ? '' : frontmatter.detail;
   const messages = {
-    'E-ENTRYPOINT-UNREADABLE': `The entrypoint could not be ${frontmatter.verb === 'read' ? 'read' : 'opened'} (${detail}).`,
+    'E-ENTRYPOINT-UNREADABLE':
+      `The entrypoint could not be ${frontmatter.verb === 'read' ? 'read' : 'opened'} (${detail}).`,
     'E-FM-NO-OPEN':
       'No opening frontmatter delimiter on line 1. The first line must reduce to exactly `---` after stripping one terminator, an optional leading BOM and ASCII whitespace.',
     'E-FM-FIRST-LINE-TOO-LONG': `The first line, including its terminator, exceeds ${FIRST_LINE_MAX_BYTES} bytes. The indexer reports this as a missing opening delimiter (:342-345).`,
@@ -1482,7 +1494,8 @@ function reportFrontmatterFailure(frontmatter, candidate, folder, collector) {
     code: frontmatter.code,
     absolutePath: entrypoint,
     skillDirectory: candidate.dir,
-    line: frontmatter.code === 'E-FM-NO-OPEN' || frontmatter.code === 'E-FM-FIRST-LINE-TOO-LONG' ? 1 : null,
+    line: frontmatter.code === 'E-FM-NO-OPEN' ||
+      frontmatter.code === 'E-FM-FIRST-LINE-TOO-LONG' ? 1 : null,
     message: messages[frontmatter.code],
     indexerMessage: skippedSkill(folder, tails[frontmatter.code]),
   });
@@ -1551,7 +1564,8 @@ function runCheck(root) {
   for (const finding of collector.findings) {
     if (finding.severity !== SEVERITY.error) continue;
     if (finding.code === 'W-ENTRYPOINT-CASE-SHADOWED') continue;
-    const owner = walked.candidates.find((candidate) => candidate.entrypoint === finding.absolutePath);
+    const owner = walked.candidates.find((candidate) => candidate.entrypoint ===
+      finding.absolutePath);
     if (owner !== undefined) erroredEntrypoints.add(finding.absolutePath);
   }
 
@@ -1675,7 +1689,8 @@ function renderFinding(finding, out) {
   out('');
   const anchor = finding.line === null ? finding.path : `${finding.path}:${finding.line}`;
   const suffix =
-    finding.reason === null ? `${finding.code}  (rule ${finding.rule ?? 'checker-only'})` : `${finding.code}  (reason: ${finding.reason})`;
+    finding.reason === null ? `${finding.code}  (rule ${finding.rule ?? 'checker-only'})` :
+      `${finding.code}  (reason: ${finding.reason})`;
   out(`${SEVERITY_LABEL[finding.severity]}${LABEL_GAP} ${anchor}  ${suffix}`);
   for (const line of wrapContinuation(finding.message)) out(`       ${line}`);
   if (finding.indexerMessage !== null) {
@@ -1776,7 +1791,8 @@ function applyKnownFlags(result, flags) {
   }
 }
 
-/** @returns {{help:boolean, selfTest:boolean, json:boolean, root:(string|null), error:(string|null)}} */
+/** @returns {{help:boolean, selfTest:boolean, json:boolean, root:(string|null),
+ * error:(string|null)}} */
 function parseArgs(argv) {
   const result = { help: false, selfTest: false, json: false, root: null, error: null };
   const { flags, positionals } = splitArgs(argv);
@@ -2052,7 +2068,8 @@ function selfTest(out) {
     const errs = [];
     const code = runCli([file], () => {}, (line) => errs.push(line));
     assertSelf(code === 2, 'a root that is a file must exit 2');
-    assertSelf(errs.join('\n').includes('is not a directory'), 'the message must say it is not a directory');
+    assertSelf(errs.join('\n').includes('is not a directory'),
+      'the message must say it is not a directory');
   });
 
   run('4', (root) => {
@@ -2064,7 +2081,8 @@ function selfTest(out) {
     const errs = [];
     const code = runCli([root, '--bogus'], () => {}, (line) => errs.push(line));
     assertSelf(code === 2, 'an unknown flag must exit 2');
-    assertSelf(errs.join('\n').includes("unknown option '--bogus'"), 'the message must name the flag');
+    assertSelf(errs.join('\n').includes("unknown option '--bogus'"),
+      'the message must name the flag');
   });
 
   run('6', (root) => {
@@ -2073,7 +2091,8 @@ function selfTest(out) {
     const code = runCli(['--', dashed], () => {}, () => {});
     assertSelf(code === 0, 'a root after `--` must be treated as the root, not a flag');
     const parsed = parseArgs(['--', '-dashed']);
-    assertSelf(parsed.root === '-dashed' && parsed.error === null, '`--` must terminate flag parsing');
+    assertSelf(parsed.root === '-dashed' && parsed.error === null,
+      '`--` must terminate flag parsing');
   });
 
   run('7', (root) => {
@@ -2094,7 +2113,8 @@ function selfTest(out) {
   run('9', (root) => {
     writeFixture(root, 'Node_Modules/pkg/skills/x/SKILL.md', validSkillMd('x'));
     const report = runCheck(root);
-    assertSelf(report.summary.entrypointsFound === 0, 'the SKIP_DIRS comparison must be case-insensitive');
+    assertSelf(report.summary.entrypointsFound === 0,
+      'the SKIP_DIRS comparison must be case-insensitive');
   });
 
   run('10', (root) => {
@@ -2109,7 +2129,8 @@ function selfTest(out) {
     makeDir(root, '_agent_x/skills');
     makeDirLink(target, path.join(root, '_agent_x/skills/linked'));
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'E-SKILL-DIR-LINK'), 'a linked skill directory in canonical position is a hard error');
+    assertSelf(hasCode(report, 'E-SKILL-DIR-LINK'),
+      'a linked skill directory in canonical position is a hard error');
     assertSelf(
       !report.findings.some((f) => f.absolutePath.includes(`skills${path.sep}linked${path.sep}`)),
       'the walk must not descend into a linked skill directory',
@@ -2121,7 +2142,8 @@ function selfTest(out) {
     makeDir(root, 'docs/skills');
     makeDirLink(target, path.join(root, 'docs/skills/linked'));
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'W-SKILL-DIR-LINK'), 'a linked skill directory outside canonical position is a warning');
+    assertSelf(hasCode(report, 'W-SKILL-DIR-LINK'),
+      'a linked skill directory outside canonical position is a warning');
     assertSelf(report.exitCode === 0, 'a docs/skills link must not fail the run');
   });
 
@@ -2137,7 +2159,8 @@ function selfTest(out) {
     fs.writeFileSync(fileTarget, 'now a file');
     fs.rmSync(goneTarget, { recursive: true, force: true });
     const report = runCheck(root);
-    assertSelf(countCode(report, 'E-SKILL-DIR-LINK') === 2, 'both links must be hard errors regardless of target');
+    assertSelf(countCode(report, 'E-SKILL-DIR-LINK') === 2,
+      'both links must be hard errors regardless of target');
   });
 
   run('12', (root) => {
@@ -2145,7 +2168,8 @@ function selfTest(out) {
     makeDir(root, 'plain');
     makeDirLink(target, path.join(root, 'plain/linked'));
     const report = runCheck(root);
-    assertSelf(report.findings.length === 0, 'a link outside any skills/ folder produces no finding');
+    assertSelf(report.findings.length === 0,
+      'a link outside any skills/ folder produces no finding');
   });
 
   run('12a', (root) => {
@@ -2165,8 +2189,10 @@ function selfTest(out) {
     makeDir(root, '_agent_x');
     makeDirLink(target, path.join(root, '_agent_x/skills'));
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'E-SKILLS-NOT-DIR'), 'a resolving `skills` link is E-SKILLS-NOT-DIR');
-    assertSelf(!hasCode(report, 'E-SKILL-DIR-LINK'), 'the symlink branch of step 3 must not claim it first');
+    assertSelf(hasCode(report, 'E-SKILLS-NOT-DIR'),
+      'a resolving `skills` link is E-SKILLS-NOT-DIR');
+    assertSelf(!hasCode(report, 'E-SKILL-DIR-LINK'),
+      'the symlink branch of step 3 must not claim it first');
   });
 
   // ---- Entrypoint (6.3) ----
@@ -2194,20 +2220,23 @@ function selfTest(out) {
   run('16', (root) => {
     makeDir(root, '_agent_x/skills/x');
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'E-NO-ENTRYPOINT'), 'a canonical skill directory with no entrypoint is a hard error');
+    assertSelf(hasCode(report, 'E-NO-ENTRYPOINT'),
+      'a canonical skill directory with no entrypoint is a hard error');
   });
 
   run('17', (root) => {
     makeDir(root, 'docs/skills/x');
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'I-NO-ENTRYPOINT'), 'outside canonical position the same absence is a note');
+    assertSelf(hasCode(report, 'I-NO-ENTRYPOINT'),
+      'outside canonical position the same absence is a note');
     assertSelf(report.exitCode === 0, 'a note must not fail the run');
   });
 
   run('18', (root) => {
     makeDir(root, '_agent_x/skills/x/SKILL.md');
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'E-ENTRYPOINT-NOT-FILE'), 'a directory named SKILL.md is a hard error');
+    assertSelf(hasCode(report, 'E-ENTRYPOINT-NOT-FILE'),
+      'a directory named SKILL.md is a hard error');
   });
 
   run('19', (root) => {
@@ -2245,10 +2274,12 @@ function selfTest(out) {
   };
 
   run('21', (root) => {
-    assertSelf(hasCode(fm(root, 'Just a body.\n'), 'E-FM-NO-OPEN'), 'no frontmatter at all is E-FM-NO-OPEN');
+    assertSelf(hasCode(fm(root, 'Just a body.\n'), 'E-FM-NO-OPEN'),
+      'no frontmatter at all is E-FM-NO-OPEN');
   });
   run('22', (root) => {
-    assertSelf(hasCode(fm(root, '\n---\nname: x\n---\n'), 'E-FM-NO-OPEN'), 'a blank first line is E-FM-NO-OPEN');
+    assertSelf(hasCode(fm(root, '\n---\nname: x\n---\n'), 'E-FM-NO-OPEN'),
+      'a blank first line is E-FM-NO-OPEN');
   });
   run('23', (root) => {
     const report = fm(root, '---\r\nname: ok-name\r\ndescription: x\r\n---\r\n');
@@ -2267,24 +2298,29 @@ function selfTest(out) {
     assertSelf(report.summary.errors === 0, 'whitespace around the fences is trimmed');
   });
   run('27', (root) => {
-    assertSelf(hasCode(fm(root, '----\nname: x\n----\n'), 'E-FM-NO-OPEN'), 'a longer fence is rejected');
+    assertSelf(hasCode(fm(root, '----\nname: x\n----\n'), 'E-FM-NO-OPEN'),
+      'a longer fence is rejected');
   });
   run('28', (root) => {
-    assertSelf(hasCode(fm(root, '+++\nname = "x"\n+++\n'), 'E-FM-NO-OPEN'), 'a TOML fence is rejected');
+    assertSelf(hasCode(fm(root, '+++\nname = "x"\n+++\n'), 'E-FM-NO-OPEN'),
+      'a TOML fence is rejected');
   });
   run('29', (root) => {
     const report = fm(root, '---');
-    assertSelf(hasCode(report, 'E-FM-NO-CLOSE'), 'a bare `---` with no newline is E-FM-NO-CLOSE, not E-FM-NO-OPEN');
+    assertSelf(hasCode(report, 'E-FM-NO-CLOSE'),
+      'a bare `---` with no newline is E-FM-NO-CLOSE, not E-FM-NO-OPEN');
     assertSelf(!hasCode(report, 'E-FM-NO-OPEN'), 'and specifically not E-FM-NO-OPEN');
   });
   run('29a', (root) => {
     const report = fm(root, '---\nname: ok-name\ndescription: x\n---');
-    assertSelf(report.summary.errors === 0, 'a closing delimiter as the unterminated final line is valid');
+    assertSelf(report.summary.errors === 0,
+      'a closing delimiter as the unterminated final line is valid');
     assertSelf(report.exitCode === 0, 'and the run stays green');
   });
   run('29b', (root) => {
     const report = fm(root, '---\nname: ok-name\ndescription: x');
-    assertSelf(hasCode(report, 'E-FM-NO-CLOSE'), 'an unterminated final BODY line is E-FM-NO-CLOSE');
+    assertSelf(hasCode(report, 'E-FM-NO-CLOSE'),
+      'an unterminated final BODY line is E-FM-NO-CLOSE');
   });
   run('29c', (root) => {
     // Sized into the 8-byte window between Guard A (> remaining + 8) and Guard B
@@ -2293,14 +2329,16 @@ function selfTest(out) {
     const body = `${'a'.repeat(16000)}\n`;
     const remaining = FRONTMATTER_MAX_BYTES - body.length;
     const report = fm(root, `---\n${body}${'b'.repeat(remaining + 4)}`);
-    assertSelf(hasCode(report, 'E-FM-TOO-LARGE'), 'an overflowing unterminated final line is E-FM-TOO-LARGE');
+    assertSelf(hasCode(report, 'E-FM-TOO-LARGE'),
+      'an overflowing unterminated final line is E-FM-TOO-LARGE');
     assertSelf(!hasCode(report, 'E-FM-NO-CLOSE'), 'and not E-FM-NO-CLOSE');
   });
   run('29d', (root) => {
     assertSelf(hasCode(fm(root, ''), 'E-FM-NO-OPEN'), 'a zero-byte file is E-FM-NO-OPEN');
   });
   run('30', (root) => {
-    assertSelf(hasCode(fm(root, '---\nname: ok-name\n'), 'E-FM-NO-CLOSE'), 'EOF before a closing fence');
+    assertSelf(hasCode(fm(root, '---\nname: ok-name\n'), 'E-FM-NO-CLOSE'),
+      'EOF before a closing fence');
   });
   run('31', (root) => {
     const report = fm(root, `---\n${'a'.repeat(16384)}\n---\n`);
@@ -2317,7 +2355,8 @@ function selfTest(out) {
       Buffer.from('\n---\n', 'utf8'),
     ]);
     writeFixture(root, '_agent_x/skills/x/SKILL.md', bytes);
-    assertSelf(hasCode(runCheck(root), 'E-FM-NOT-UTF8'), 'invalid UTF-8 in the frontmatter is a hard error');
+    assertSelf(hasCode(runCheck(root), 'E-FM-NOT-UTF8'),
+      'invalid UTF-8 in the frontmatter is a hard error');
   });
   run('34', (root) => {
     const bytes = Buffer.concat([
@@ -2334,17 +2373,20 @@ function selfTest(out) {
   });
   run('35a', (root) => {
     const report = fm(root, `${' '.repeat(1020)}---\nname: ok-name\ndescription: x\n---\n`);
-    assertSelf(report.summary.errors === 0, '1020 spaces + `---\\n` is exactly 1024 bytes and is valid');
+    assertSelf(report.summary.errors === 0,
+      '1020 spaces + `---\\n` is exactly 1024 bytes and is valid');
   });
   run('35b', (root) => {
     const report = fm(root, `${' '.repeat(1021)}---\nname: ok-name\n---\n`);
-    assertSelf(hasCode(report, 'E-FM-FIRST-LINE-TOO-LONG'), '1025 bytes fails, proving the terminator is counted');
+    assertSelf(hasCode(report, 'E-FM-FIRST-LINE-TOO-LONG'),
+      '1025 bytes fails, proving the terminator is counted');
   });
   run('35c', (root) => {
     const body = `${'a'.repeat(16000)}\n`;
     const remaining = FRONTMATTER_MAX_BYTES - body.length;
     const report = fm(root, `---\n${body}${' '.repeat(remaining + 20)}---\n`);
-    assertSelf(hasCode(report, 'E-FM-TOO-LARGE'), 'Guard A rejects an over-padded closing delimiter');
+    assertSelf(hasCode(report, 'E-FM-TOO-LARGE'),
+      'Guard A rejects an over-padded closing delimiter');
     assertSelf(!hasCode(report, 'E-FM-NO-CLOSE'), 'and it is not treated as a successful close');
   });
   run('35d', (root) => {
@@ -2367,7 +2409,8 @@ function selfTest(out) {
   });
   run('35f', (root) => {
     const report = fm(root, '\v---\v\nname: ok-name\n---\n');
-    assertSelf(hasCode(report, 'E-FM-NO-OPEN'), '\\x0B is not ASCII whitespace in Rust, so the fence is rejected');
+    assertSelf(hasCode(report, 'E-FM-NO-OPEN'),
+      '\\x0B is not ASCII whitespace in Rust, so the fence is rejected');
   });
 
   // ---- YAML (6.5) ----
@@ -2396,7 +2439,8 @@ function selfTest(out) {
     );
   });
   run('38', (root) => {
-    assertSelf(hasCode(fm(root, '---\nname: ok-name\n\tdescription: x\n---\n'), 'E-YAML-PARSE'), 'a tab in indentation');
+    assertSelf(hasCode(fm(root, '---\nname: ok-name\n\tdescription: x\n---\n'), 'E-YAML-PARSE'),
+      'a tab in indentation');
   });
   run('39', (root) => {
     const report = fm(root, '---\nname: \'ok-name\'\ndescription: "a quoted value"\n---\n');
@@ -2419,12 +2463,15 @@ function selfTest(out) {
           `---\nname:${value === '' ? '' : ` ${value}`}\nwhen_to_use: 9\n---\n`,
         );
         const report = runCheck(inner);
-        assertSelf(hasCode(report, 'E-NAME-NOT-STRING'), `name: ${value} must be E-NAME-NOT-STRING`);
+        assertSelf(hasCode(report, 'E-NAME-NOT-STRING'),
+          `name: ${value} must be E-NAME-NOT-STRING`);
         // 6.6.1 step 2 says Stop, and :641-650 continues past the field layer, so an
         // indexerMessage about description or when_to_use would name a startup-log line
         // that is never printed.
-        assertSelf(!hasCode(report, 'W-DESC-MISSING'), 'field validation must stop at the name failure');
-        assertSelf(!hasCode(report, 'W-WHEN-NOT-STRING'), 'and it must not reach when_to_use either');
+        assertSelf(!hasCode(report, 'W-DESC-MISSING'),
+          'field validation must stop at the name failure');
+        assertSelf(!hasCode(report, 'W-WHEN-NOT-STRING'),
+          'and it must not reach when_to_use either');
         assertSelf(report.findings.length === 1, 'the name failure is the only finding');
       } finally {
         removeRoot(inner);
@@ -2433,10 +2480,12 @@ function selfTest(out) {
   });
   run('42', (root) => {
     const report = fm(root, '---\nname: ok-name\ndescription: yes\n---\n');
-    assertSelf(report.findings.length === 0, '`yes` is a plain STRING under the YAML 1.2 core schema');
+    assertSelf(report.findings.length === 0,
+      '`yes` is a plain STRING under the YAML 1.2 core schema');
     const other = tempRoot();
     try {
-      writeFixture(other, '_agent_x/skills/x/SKILL.md', '---\nname: ok-name\ndescription: on\n---\n');
+      writeFixture(other, '_agent_x/skills/x/SKILL.md',
+        '---\nname: ok-name\ndescription: on\n---\n');
       assertSelf(runCheck(other).findings.length === 0, '`on` is a plain STRING too');
     } finally {
       removeRoot(other);
@@ -2444,44 +2493,55 @@ function selfTest(out) {
   });
   run('42a', (root) => {
     const report = fm(root, '---\nThis skill helps with X.\nIt does Y.\n---\n');
-    assertSelf(hasCode(report, 'E-YAML-NOT-MAPPING'), 'a multi-line plain scalar root is not a mapping');
+    assertSelf(hasCode(report, 'E-YAML-NOT-MAPPING'),
+      'a multi-line plain scalar root is not a mapping');
     assertSelf(report.exitCode === 1, 'and it fails the run');
   });
   run('42b', (root) => {
     const report = fm(root, '---\n{name: ok-name}\n---\n');
     assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), 'a flow mapping at the root is undecidable');
-    assertSelf(!hasCode(report, 'E-YAML-NOT-MAPPING'), 'zero recognized entries is not proof the root is a scalar');
+    assertSelf(!hasCode(report, 'E-YAML-NOT-MAPPING'),
+      'zero recognized entries is not proof the root is a scalar');
     assertSelf(report.exitCode === 0, 'and it must not fail the run');
   });
   run('42c', (root) => {
     const report = fm(root, '---\nname: "ok-name"  # renamed\ndescription: x\n---\n');
-    assertSelf(report.findings.length === 0, 'a trailing comment after a quoted scalar is not a finding');
+    assertSelf(report.findings.length === 0,
+      'a trailing comment after a quoted scalar is not a finding');
     const other = tempRoot();
     try {
-      writeFixture(other, '_agent_x/skills/x/SKILL.md', '---\nname:\tok-name\ndescription: x\n---\n');
-      assertSelf(runCheck(other).findings.length === 0, 'a TAB is legal separation whitespace after `key:`');
+      writeFixture(other, '_agent_x/skills/x/SKILL.md',
+        '---\nname:\tok-name\ndescription: x\n---\n');
+      assertSelf(runCheck(other).findings.length === 0,
+        'a TAB is legal separation whitespace after `key:`');
     } finally {
       removeRoot(other);
     }
   });
   run('42d', (root) => {
-    const report = fm(root, '---\nname: ok-name\ndescription: |\n  \ttab-indented example line\n  plain line\n---\n');
-    assertSelf(report.findings.length === 0, 'a tab INSIDE block-scalar content is not E-YAML-PARSE');
+    const report = fm(root,
+      '---\nname: ok-name\ndescription: |\n  \ttab-indented example line\n  plain line\n---\n');
+    assertSelf(report.findings.length === 0,
+      'a tab INSIDE block-scalar content is not E-YAML-PARSE');
   });
   run('42e', (root) => {
     const report = fm(root, '---\ndescription: |\n  name: shadowed\nname: ok-name\n---\n');
-    assertSelf(!hasCode(report, 'E-YAML-DUPLICATE-KEY'), 'the block consumes `name: shadowed` as content');
+    assertSelf(!hasCode(report, 'E-YAML-DUPLICATE-KEY'),
+      'the block consumes `name: shadowed` as content');
     assertSelf(report.summary.errors === 0, 'and the file is valid');
   });
   run('42f', (root) => {
     for (const value of ['!!str ok-name', '&a ok-name']) {
       const inner = tempRoot();
       try {
-        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ${value}\ndescription: x\n---\n`);
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md',
+          `---\nname: ${value}\ndescription: x\n---\n`);
         const report = runCheck(inner);
         assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), `${value} must be undecidable`);
-        assertSelf(hasCode(report, 'W-NAME-UNDECIDABLE'), `${value} must warn, never E-NAME-INVALID`);
-        assertSelf(!hasCode(report, 'E-NAME-INVALID'), 'an undecidable value may never produce an error');
+        assertSelf(hasCode(report, 'W-NAME-UNDECIDABLE'),
+          `${value} must warn, never E-NAME-INVALID`);
+        assertSelf(!hasCode(report, 'E-NAME-INVALID'),
+          'an undecidable value may never produce an error');
         assertSelf(report.exitCode === 0, 'and the run stays green');
       } finally {
         removeRoot(inner);
@@ -2495,7 +2555,8 @@ function selfTest(out) {
     for (const header of ['|0', '>0']) {
       const inner = tempRoot();
       try {
-        writeFixture(inner, '_agent_x/skills/x/SKILL.md', `---\nname: ok-name\ndescription: ${header}\n  text\n---\n`);
+        writeFixture(inner, '_agent_x/skills/x/SKILL.md',
+          `---\nname: ok-name\ndescription: ${header}\n  text\n---\n`);
         const report = runCheck(inner);
         // A bare hasCode('W-YAML-UNDECIDABLE') pins NOTHING here: the orphaned `  text`
         // line is undecidable whether or not the header was rejected, so the assertion
@@ -2561,23 +2622,28 @@ function selfTest(out) {
     assertSelf(hasCode(report, 'W-YAML-UNDECIDABLE'), 'a flow mapping value is undecidable');
   });
   run('45', (root) => {
-    const report = fm(root, '---\nname: ok-name\na: &anchor x\nb: *anchor\nc: !!str y\ndescription: z\n---\n');
-    assertSelf(countCode(report, 'W-YAML-UNDECIDABLE') === 3, 'an anchor, an alias and a tag are each undecidable');
+    const report = fm(root,
+      '---\nname: ok-name\na: &anchor x\nb: *anchor\nc: !!str y\ndescription: z\n---\n');
+    assertSelf(countCode(report, 'W-YAML-UNDECIDABLE') === 3,
+      'an anchor, an alias and a tag are each undecidable');
   });
   run('46', (root) => {
     const report = fm(root, '---\nname: ok-name\ndescription: x\nname: other-name\n---\n');
     assertSelf(hasCode(report, 'E-YAML-DUPLICATE-KEY'), 'a duplicate key is a hard error');
     assertSelf(report.exitCode === 1, 'and it fails the run');
-    assertSelf(!hasCode(report, 'W-DESC-MISSING'), 'no field-level finding is emitted for that entrypoint');
+    assertSelf(!hasCode(report, 'W-DESC-MISSING'),
+      'no field-level finding is emitted for that entrypoint');
     assertSelf(report.findings.length === 1, 'the duplicate is the only finding');
   });
   run('46b', (root) => {
     const report = fm(root, '---\nname: ok-name\nfoo: 1\ndescription: x\nfoo: 2\n---\n');
-    assertSelf(hasCode(report, 'E-YAML-DUPLICATE-KEY'), 'duplicate detection covers keys the indexer never reads');
+    assertSelf(hasCode(report, 'E-YAML-DUPLICATE-KEY'),
+      'duplicate detection covers keys the indexer never reads');
   });
   run('46c', (root) => {
     const report = fm(root, "---\nname: ok-name\n'name': other\n---\n");
-    assertSelf(hasCode(report, 'E-YAML-DUPLICATE-KEY'), '`name` and `\'name\'` are the same key after unquoting');
+    assertSelf(hasCode(report, 'E-YAML-DUPLICATE-KEY'),
+      '`name` and `\'name\'` are the same key after unquoting');
     // Whitespace before the `:` is separation, not part of the key, so these collide too.
     for (const second of ['name : other', 'name\t: other', "'name' : other"]) {
       const inner = tempRoot();
@@ -2597,10 +2663,13 @@ function selfTest(out) {
     // this would exit 1 on E-NAME-INVALID instead of staying clean.
     const distinct = tempRoot();
     try {
-      writeFixture(distinct, '_agent_x/skills/Bad_Folder/SKILL.md', "---\nname: ok-name\n'name ': other\ndescription: x\n---\n");
+      writeFixture(distinct, '_agent_x/skills/Bad_Folder/SKILL.md',
+        "---\nname: ok-name\n'name ': other\ndescription: x\n---\n");
       const report = runCheck(distinct);
-      assertSelf(!hasCode(report, 'E-YAML-DUPLICATE-KEY'), "`'name '` and `name` are two distinct keys");
-      assertSelf(!hasCode(report, 'E-NAME-INVALID'), '`name` still resolves through the key, not the folder');
+      assertSelf(!hasCode(report, 'E-YAML-DUPLICATE-KEY'),
+        "`'name '` and `name` are two distinct keys");
+      assertSelf(!hasCode(report, 'E-NAME-INVALID'),
+        '`name` still resolves through the key, not the folder');
       assertSelf(report.findings.length === 0, 'and the file is otherwise clean');
     } finally {
       removeRoot(distinct);
@@ -2621,7 +2690,8 @@ function selfTest(out) {
     assertSelf(report.exitCode === 0, 'as a note only');
   });
   run('49', (root) => {
-    const report = fm(root, '---\n# a comment\n\nname: ok-name\n\n  # an indented comment\ndescription: x\n---\n');
+    const report = fm(root,
+      '---\n# a comment\n\nname: ok-name\n\n  # an indented comment\ndescription: x\n---\n');
     assertSelf(report.findings.length === 0, 'blank and comment lines are ignored');
   });
 
@@ -2635,15 +2705,19 @@ function selfTest(out) {
     // A space or tab before the `:` is separation whitespace; the key is still `name`.
     // Keeping it made the parser record a key nothing reads, so `name` resolved from the
     // folder instead and the run came back with NO finding at all.
-    writeFixture(root, '_agent_x/skills/ok-folder/SKILL.md', '---\nname : Bad_Name\ndescription: x\n---\n');
+    writeFixture(root, '_agent_x/skills/ok-folder/SKILL.md',
+      '---\nname : Bad_Name\ndescription: x\n---\n');
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'E-NAME-INVALID'), '`name : Bad_Name` must resolve through the key, not the folder');
+    assertSelf(hasCode(report, 'E-NAME-INVALID'),
+      '`name : Bad_Name` must resolve through the key, not the folder');
     assertSelf(report.exitCode === 1, 'and it must fail the run');
 
     const tabbed = tempRoot();
     try {
-      writeFixture(tabbed, '_agent_x/skills/ok-folder/SKILL.md', '---\nname\t: Bad_Name\ndescription: x\n---\n');
-      assertSelf(hasCode(runCheck(tabbed), 'E-NAME-INVALID'), 'a tab before the `:` behaves the same');
+      writeFixture(tabbed, '_agent_x/skills/ok-folder/SKILL.md',
+        '---\nname\t: Bad_Name\ndescription: x\n---\n');
+      assertSelf(hasCode(runCheck(tabbed), 'E-NAME-INVALID'),
+        'a tab before the `:` behaves the same');
     } finally {
       removeRoot(tabbed);
     }
@@ -2652,9 +2726,11 @@ function selfTest(out) {
     // the skill is clean. Keeping the space here produced a spurious E-NAME-INVALID.
     const mirrored = tempRoot();
     try {
-      writeFixture(mirrored, '_agent_x/skills/Bad_Folder/SKILL.md', '---\nname : ok-name\ndescription: x\n---\n');
+      writeFixture(mirrored, '_agent_x/skills/Bad_Folder/SKILL.md',
+        '---\nname : ok-name\ndescription: x\n---\n');
       const clean = runCheck(mirrored);
-      assertSelf(clean.findings.length === 0, '`name : ok-name` in a bad folder is indexed cleanly');
+      assertSelf(clean.findings.length === 0,
+        '`name : ok-name` in a bad folder is indexed cleanly');
       assertSelf(clean.exitCode === 0, 'and must not fail the run');
     } finally {
       removeRoot(mirrored);
@@ -2665,7 +2741,8 @@ function selfTest(out) {
     const report = runCheck(root);
     assertSelf(hasCode(report, 'E-NAME-INVALID'), 'the folder fallback is charset-checked too');
     const finding = report.findings.find((f) => f.code === 'E-NAME-INVALID');
-    assertSelf(finding.message.includes('containing directory name'), 'the message must name the folder fallback');
+    assertSelf(finding.message.includes('containing directory name'),
+      'the message must name the folder fallback');
   });
   run('51a', (root) => {
     // :653-660 also continues past the field layer, so the charset failure stops
@@ -2680,7 +2757,8 @@ function selfTest(out) {
   run('52', (root) => {
     writeFixture(root, '_agent_x/skills/ok-name/SKILL.md', "---\nname: ''\ndescription: x\n---\n");
     const report = runCheck(root);
-    assertSelf(report.summary.errors === 0, 'an empty name trims to absent and falls back to the folder');
+    assertSelf(report.summary.errors === 0,
+      'an empty name trims to absent and falls back to the folder');
   });
   run('53', (root) => {
     writeFixture(root, '_agent_x/skills/folder-name/SKILL.md', validSkillMd('other-name'));
@@ -2698,7 +2776,8 @@ function selfTest(out) {
     const report = fm(root, '---\nname: Café\ndescription: x\n---\n');
     assertSelf(hasCode(report, 'E-NAME-INVALID'), 'a non-ASCII name is invalid');
     const finding = report.findings.find((f) => f.code === 'E-NAME-INVALID');
-    assertSelf(finding.message.includes(' 4'), 'the length must be counted in Unicode scalar values');
+    assertSelf(finding.message.includes(' 4'),
+      'the length must be counted in Unicode scalar values');
   });
   run('57', (root) => {
     writeFixture(root, '_agent_x/skills/aaa/SKILL.md', validSkillMd('shared'));
@@ -2721,7 +2800,8 @@ function selfTest(out) {
     assertSelf(report.summary.skillsIndexable === 1, 'and the skill is still indexable');
   });
   run('60', (root) => {
-    assertSelf(hasCode(fm(root, "---\nname: ok-name\ndescription: ''\n---\n"), 'W-DESC-MISSING'), 'an empty description');
+    assertSelf(hasCode(fm(root, "---\nname: ok-name\ndescription: ''\n---\n"), 'W-DESC-MISSING'),
+      'an empty description');
   });
   run('61', (root) => {
     const report = fm(root, '---\nname: ok-name\ndescription: 42\n---\n');
@@ -2734,15 +2814,18 @@ function selfTest(out) {
     assertSelf(report.exitCode === 0, 'and never fails the run');
   });
   run('63', (root) => {
-    assertSelf(fm(root, '---\nname: ok-name\ndescription: x\n---\n').findings.length === 0, 'absent when_to_use');
+    assertSelf(fm(root, '---\nname: ok-name\ndescription: x\n---\n').findings.length === 0,
+      'absent when_to_use');
   });
   run('63a', (root) => {
     const report = fm(root, '---\nname: "﻿ok-name"\ndescription: x\n---\n');
-    assertSelf(hasCode(report, 'E-NAME-INVALID'), 'Rust str::trim does NOT strip U+FEFF, so this name is invalid');
+    assertSelf(hasCode(report, 'E-NAME-INVALID'),
+      'Rust str::trim does NOT strip U+FEFF, so this name is invalid');
   });
   run('63b', (root) => {
     const report = fm(root, '---\nname: "ok-name"\ndescription: x\n---\n');
-    assertSelf(report.summary.errors === 0, 'Rust str::trim DOES strip U+0085, so this name is valid');
+    assertSelf(report.summary.errors === 0,
+      'Rust str::trim DOES strip U+0085, so this name is valid');
   });
   run('63c', (root) => {
     if (!unreadableDirSupported) {
@@ -2753,7 +2836,8 @@ function selfTest(out) {
     fs.chmodSync(dir, 0o000);
     try {
       const report = runCheck(root);
-      assertSelf(hasCode(report, 'E-SKILL-DIR-UNREADABLE'), 'an unreadable canonical skill directory is a hard error');
+      assertSelf(hasCode(report, 'E-SKILL-DIR-UNREADABLE'),
+        'an unreadable canonical skill directory is a hard error');
       assertSelf(!hasCode(report, 'W-DIR-UNREADABLE'), 'and not a warning');
     } finally {
       fs.chmodSync(dir, 0o700);
@@ -2769,7 +2853,8 @@ function selfTest(out) {
     fs.chmodSync(dir, 0o000);
     try {
       const report = runCheck(root);
-      assertSelf(hasCode(report, 'W-DIR-UNREADABLE'), 'outside canonical position the same failure is a warning');
+      assertSelf(hasCode(report, 'W-DIR-UNREADABLE'),
+        'outside canonical position the same failure is a warning');
       assertSelf(report.exitCode === 0, 'and it must not fail the run');
     } finally {
       fs.chmodSync(dir, 0o700);
@@ -2781,7 +2866,8 @@ function selfTest(out) {
     writeFixture(root, '_agent_x/skills/bbb/SKILL.md', validSkillMd('shared'));
     const report = runCheck(root);
     assertSelf(hasCode(report, 'E-FM-NO-CLOSE'), 'the broken candidate is reported');
-    assertSelf(!hasCode(report, 'E-NAME-DUPLICATE'), 'a candidate with any hard error never claims its name');
+    assertSelf(!hasCode(report, 'E-NAME-DUPLICATE'),
+      'a candidate with any hard error never claims its name');
     assertSelf(
       !report.findings.some((f) => f.path.includes('bbb')),
       'and the innocent skill gets no finding at all',
@@ -2793,7 +2879,8 @@ function selfTest(out) {
     makeDirLink(target, path.join(root, '_agent_x/skills'));
     fs.rmSync(target, { recursive: true, force: true });
     const report = runCheck(root);
-    assertSelf(report.findings.length === 0, 'a broken `skills` symlink is silent, exactly as the indexer is');
+    assertSelf(report.findings.length === 0,
+      'a broken `skills` symlink is silent, exactly as the indexer is');
     assertSelf(report.exitCode === 0, 'and never fails the run');
   });
   run('63f', (root) => {
@@ -2808,13 +2895,15 @@ function selfTest(out) {
   // ---- Position (6.7) ----
   run('64', (root) => {
     writeFixture(root, '_agent_x/skills/y/SKILL.md', validSkillMd('y'));
-    assertSelf(!hasCode(runCheck(root), 'I-NOT-INDEXABLE'), 'canonical position produces no position finding');
+    assertSelf(!hasCode(runCheck(root), 'I-NOT-INDEXABLE'),
+      'canonical position produces no position finding');
   });
   run('65', (root) => {
     writeFixture(root, '__agent_x/skills/y/SKILL.md', validSkillMd('y'));
     const report = runCheck(root);
     const finding = report.findings.find((f) => f.code === 'I-NOT-INDEXABLE');
-    assertSelf(finding !== undefined && finding.reason === 'replica-root', 'a replica root is never scanned');
+    assertSelf(finding !== undefined && finding.reason === 'replica-root',
+      'a replica root is never scanned');
     assertSelf(report.exitCode === 0, 'and it is a note only');
   });
   run('66', (root) => {
@@ -2825,7 +2914,8 @@ function selfTest(out) {
   run('67', (root) => {
     writeFixture(root, '_agent_x/Skills/y/SKILL.md', validSkillMd('y'));
     const finding = runCheck(root).findings.find((f) => f.code === 'I-NOT-INDEXABLE');
-    assertSelf(finding.reason === 'skills-dir-case', 'a case-variant skills dir is platform-dependent');
+    assertSelf(finding.reason === 'skills-dir-case',
+      'a case-variant skills dir is platform-dependent');
   });
   run('68', (root) => {
     // 6.7 and the 6.9 worked example both give `not-under-skills-dir` for this exact
@@ -2838,7 +2928,8 @@ function selfTest(out) {
     try {
       writeFixture(other, 'not-a-matrix/skills/y/SKILL.md', validSkillMd('y'));
       const owner = runCheck(other).findings.find((f) => f.code === 'I-NOT-INDEXABLE');
-      assertSelf(owner.reason === 'owner-root-not-recognized', 'an unrecognized owner root is a note');
+      assertSelf(owner.reason === 'owner-root-not-recognized',
+        'an unrecognized owner root is a note');
     } finally {
       removeRoot(other);
     }
@@ -2846,7 +2937,8 @@ function selfTest(out) {
   run('69', (root) => {
     writeFixture(root, 'docs/skills/y/SKILL.md', '---\nname: Bad_Name\ndescription: x\n---\n');
     const report = runCheck(root);
-    assertSelf(hasCode(report, 'E-NAME-INVALID'), 'severity rule 1: a present entrypoint is held to the rules everywhere');
+    assertSelf(hasCode(report, 'E-NAME-INVALID'),
+      'severity rule 1: a present entrypoint is held to the rules everywhere');
     assertSelf(report.exitCode === 1, 'and it fails the run wherever it sits');
   });
 
@@ -2864,7 +2956,8 @@ function selfTest(out) {
       'summary.errors must match the array',
     );
     assertSelf(
-      document.summary.warnings === document.findings.filter((f) => f.severity === 'warning').length,
+      document.summary.warnings === document.findings.filter((f) => f.severity ===
+        'warning').length,
       'summary.warnings must match the array',
     );
     assertSelf(
@@ -2873,7 +2966,8 @@ function selfTest(out) {
     );
   });
   run('71', (root) => {
-    writeFixture(root, '_agent_x/skills/b-skill/SKILL.md', '---\nname: Bad_Name\ndescription: x\n---\n');
+    writeFixture(root, '_agent_x/skills/b-skill/SKILL.md',
+      '---\nname: Bad_Name\ndescription: x\n---\n');
     writeFixture(root, '_agent_x/skills/a-skill/SKILL.md', '---\nname: ok-name\n---\n');
     const first = renderJson(runCheck(root));
     const second = renderJson(runCheck(root));
@@ -2910,7 +3004,8 @@ function selfTest(out) {
     writeFixture(root, '_agent_x/skills/x/SKILL.md', '---\nname: ok-name\n---\n');
     writeFixture(root, 'docs/examples/SKILL.md', validSkillMd('examples'));
     const report = runCheck(root);
-    assertSelf(report.summary.warnings > 0 && report.summary.infos > 0, 'the fixture must carry both');
+    assertSelf(report.summary.warnings > 0 && report.summary.infos > 0,
+      'the fixture must carry both');
     assertSelf(report.exitCode === 0, 'warnings and notes never change the exit code');
   });
   run('75', (root) => {
@@ -2924,8 +3019,10 @@ function selfTest(out) {
     const code = runCli([root], (line) => lines.push(line), () => {});
     assertSelf(code === 1, 'a `skills` file is a hard error');
     const last = lines[lines.length - 1];
-    assertSelf(last.includes('no entrypoint implicated'), 'the FAIL line must say no entrypoint is implicated');
-    assertSelf(!last.includes('FAIL: 0 skills'), 'and must never read `FAIL: 0 skills would not be indexed`');
+    assertSelf(last.includes('no entrypoint implicated'),
+      'the FAIL line must say no entrypoint is implicated');
+    assertSelf(!last.includes('FAIL: 0 skills'),
+      'and must never read `FAIL: 0 skills would not be indexed`');
   });
   run('77', (root) => {
     if (!caseSensitiveFs) {
@@ -2936,8 +3033,10 @@ function selfTest(out) {
     fs.writeFileSync(path.join(dir, 'SKILL.md'), validSkillMd('x'));
     fs.writeFileSync(path.join(dir, 'skill.md'), validSkillMd('x'));
     const report = runCheck(root);
-    assertSelf(report.summary.entrypointsFound === 2, 'every discovered match counts, shadowed ones included');
-    assertSelf(report.summary.skillsIndexable === 1, 'but a shadowed variant is not a second indexable skill');
+    assertSelf(report.summary.entrypointsFound === 2,
+      'every discovered match counts, shadowed ones included');
+    assertSelf(report.summary.skillsIndexable === 1,
+      'but a shadowed variant is not a second indexable skill');
     return undefined;
   });
   run('78', (root) => {
@@ -2945,12 +3044,15 @@ function selfTest(out) {
     // the SAME line of the same file is unreachable here and the emission-order tiebreak
     // is defensive. What is reachable, and what this case pins, is that several findings
     // sharing a code order identically across runs, so the sort is total in practice.
-    writeFixture(root, '_agent_x/skills/x/SKILL.md', '---\nname: ok-name\ndescription: x\nother: {a: 1}\nmore: {b: 2}\n---\n');
-    writeFixture(root, '_agent_x/skills/y/SKILL.md', '---\nname: ok-two\ndescription: x\nother: {a: 1}\nmore: {b: 2}\n---\n');
+    writeFixture(root, '_agent_x/skills/x/SKILL.md',
+      '---\nname: ok-name\ndescription: x\nother: {a: 1}\nmore: {b: 2}\n---\n');
+    writeFixture(root, '_agent_x/skills/y/SKILL.md',
+      '---\nname: ok-two\ndescription: x\nother: {a: 1}\nmore: {b: 2}\n---\n');
     const first = renderJson(runCheck(root));
     const second = renderJson(runCheck(root));
     assertSelf(first === second, 'the emission-order tiebreak must make the sort total');
-    assertSelf(JSON.parse(first).summary.warnings === 4, 'the fixture must carry four same-code findings');
+    assertSelf(JSON.parse(first).summary.warnings === 4,
+      'the fixture must carry four same-code findings');
   });
   run('79', (root) => {
     if (!unreadableDirSupported) {
@@ -2961,7 +3063,8 @@ function selfTest(out) {
     fs.chmodSync(dir, 0o000);
     try {
       const report = runCheck(root);
-      assertSelf(hasCode(report, 'E-SKILLS-DIR-UNREADABLE'), 'an unreadable skills root is its own code');
+      assertSelf(hasCode(report, 'E-SKILLS-DIR-UNREADABLE'),
+        'an unreadable skills root is its own code');
       const finding = report.findings.find((f) => f.code === 'E-SKILLS-DIR-UNREADABLE');
       assertSelf(
         finding.indexerMessage.includes('`skills` directory could not be read'),
@@ -2999,7 +3102,8 @@ function selfTest(out) {
     return 1;
   }
 
-  const skippedNote = skipped.length === 0 ? '0 skipped' : `${skipped.length} skipped (${skipped.join(', ')})`;
+  const skippedNote = skipped.length === 0 ? '0 skipped' :
+    `${skipped.length} skipped (${skipped.join(', ')})`;
   out(`${TAG} self-test passed: ${total} cases, ${ran} run, ${skippedNote}`);
   return 0;
 }

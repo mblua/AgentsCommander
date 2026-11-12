@@ -6,10 +6,38 @@
       "name": "attempts.jsonl",
       "scope": "src-tauri/src/cli/role_experiment/",
       "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 2,
-        "sites": 4
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "RoleExperiment/Run",
+      "name": "run.json",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "RoleExperiment/ReportJson",
+      "name": "report.json",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/storage.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
       }
     },
     {
@@ -17,6 +45,8 @@
       "name": "sessions.json",
       "scope": "src-tauri/src/config/sessions_persistence/",
       "owner": "src-tauri/src/config/sessions_persistence/store.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -28,6 +58,8 @@
       "name": "orphaned-sessions.archive.json",
       "scope": "src-tauri/src/config/sessions_persistence/",
       "owner": "src-tauri/src/config/sessions_persistence/orphan.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -50,6 +82,8 @@
       "name": ".team-config-write.lock",
       "scope": "src-tauri/src/config/entity_creation/teams/",
       "owner": "src-tauri/src/config/entity_creation/teams/store.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -61,6 +95,8 @@
       "name": "conventions.md",
       "scope": "src-tauri/src/config/entity_creation/teams/",
       "owner": "src-tauri/src/config/entity_creation/teams/conventions.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,
@@ -94,6 +130,137 @@
       "name": "screenshots",
       "scope": "src-tauri/src/screenshot/native/",
       "owner": "src-tauri/src/screenshot/native/confirm.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "Instance/Settings",
+      "name": "settings.30.instance.no-git.json",
+      "scope": "src-tauri/src/",
+      "owner": "src-tauri/src/config/settings.rs",
+      "ownerModule": true,
+      "constantPaths": [
+        "crate::config::instance_artifacts::SETTINGS_FILE_NAME",
+        "crate::config::instance_artifacts::SETTINGS_TARGET_NAME",
+        "crate::config::instance_artifacts::names::SETTINGS_FILE_NAME",
+        "crate::config::instance_artifacts::names::SETTINGS_TARGET_NAME"
+      ],
+      "metadataPolicy": "instance-settings-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "CodingAgentMutation/Requests",
+      "name": "coding-agent-requests",
+      "scope": "src-tauri/src/config/coding_agent_mutations/",
+      "owner": "src-tauri/src/config/coding_agent_mutations/request_queue.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "CodingAgentMutation/Results",
+      "name": "results",
+      "scope": "src-tauri/src/config/coding_agent_mutations/",
+      "owner": "src-tauri/src/config/coding_agent_mutations/request_queue.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "AppOutbox/Pointer",
+      "name": "app-outbox-path.txt",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/app_outbox_pointer.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "Instance/MasterToken",
+      "name": "master-token.txt",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/master_token.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "CodingAgentMaster/OpenCode",
+      "name": "opencode.json",
+      "scope": "src-tauri/src/config/coding_agents_catalog/",
+      "owner": "src-tauri/src/config/coding_agents_catalog/seed_master.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "Instance/UpdateCache",
+      "name": "update-check.json",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/update_cache.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "Web/Token",
+      "name": "web-token.txt",
+      "scope": "src-tauri/src/filesystem/",
+      "owner": "src-tauri/src/filesystem/documents.rs",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 40,
+        "sites": 98
+      }
+    },
+    {
+      "id": "ProjectPaths/Registrations",
+      "name": "project-paths.json",
+      "scope": "src-tauri/src/config/settings/",
+      "owner": "src-tauri/src/config/settings/project_path/migration.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
+      "externalLiteralBaseline": 0,
+      "writerInventory": {
+        "files": 0,
+        "sites": 0
+      }
+    },
+    {
+      "id": "RoleExperiment/ReportMarkdown",
+      "name": "report.md",
+      "scope": "src-tauri/src/cli/role_experiment/",
+      "owner": "src-tauri/src/cli/role_experiment/report.rs",
+      "literalScope": "src-tauri/src/",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 0,

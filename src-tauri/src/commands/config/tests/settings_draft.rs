@@ -18,6 +18,64 @@ fn settings_draft_events_flag_agent_base_command_edit() {
     assert!(events.env_agent_ids.is_empty(), "no env changed");
 }
 
+fn apply_real_profile_change(after: &mut AppSettings, change: &str) {
+    let profiles = &mut after.coding_agent_profiles;
+    let cell = profiles
+        .profiles_by_agent
+        .get_mut("agent-0")
+        .unwrap()
+        .get_mut("A")
+        .unwrap();
+    match change {
+        "command" => cell.command.push_str("--real"),
+        "env" => {
+            cell.env.insert("K".into(), "V".into());
+        }
+        "enabled" => cell.enabled = !cell.enabled,
+        "notes" => cell.notes.push_str("real"),
+        "preflight" => cell.preflight = Some("real".into()),
+        "timeout" => cell.preflight_timeout_seconds = Some(99),
+        "cell" => {
+            profiles
+                .profiles_by_agent
+                .get_mut("agent-0")
+                .unwrap()
+                .remove("A");
+        }
+        "agent" => {
+            profiles
+                .profiles_by_agent
+                .insert("new".into(), BTreeMap::new());
+        }
+        "default" => {
+            profiles
+                .default_profile_by_agent
+                .insert("agent-0".into(), "B".into());
+        }
+        "label" => {
+            profiles.profile_labels_by_agent.insert(
+                "agent-0".into(),
+                BTreeMap::from([("A".into(), "real".into())]),
+            );
+        }
+        "slots" => {
+            profiles.profile_slots.clear();
+        }
+        "schema" => profiles.schema_version += 1,
+        "identity" => {
+            profiles
+                .identity_by_agent
+                .insert("agent-0".into(), "real".into());
+        }
+        "home" => {
+            profiles
+                .codex_home_key_by_agent
+                .insert("agent-0".into(), "real".into());
+        }
+        _ => unreachable!(),
+    }
+}
+
 #[test]
 fn id_hash_activation_events_ignore_only_cell_metadata() {
     let mut before = settings_with_single_agent();
@@ -72,61 +130,7 @@ fn id_hash_activation_events_ignore_only_cell_metadata() {
         "home",
     ] {
         let mut after = metadata.clone();
-        let profiles = &mut after.coding_agent_profiles;
-        let cell = profiles
-            .profiles_by_agent
-            .get_mut("agent-0")
-            .unwrap()
-            .get_mut("A")
-            .unwrap();
-        match change {
-            "command" => cell.command.push_str("--real"),
-            "env" => {
-                cell.env.insert("K".into(), "V".into());
-            }
-            "enabled" => cell.enabled = !cell.enabled,
-            "notes" => cell.notes.push_str("real"),
-            "preflight" => cell.preflight = Some("real".into()),
-            "timeout" => cell.preflight_timeout_seconds = Some(99),
-            "cell" => {
-                profiles
-                    .profiles_by_agent
-                    .get_mut("agent-0")
-                    .unwrap()
-                    .remove("A");
-            }
-            "agent" => {
-                profiles
-                    .profiles_by_agent
-                    .insert("new".into(), BTreeMap::new());
-            }
-            "default" => {
-                profiles
-                    .default_profile_by_agent
-                    .insert("agent-0".into(), "B".into());
-            }
-            "label" => {
-                profiles.profile_labels_by_agent.insert(
-                    "agent-0".into(),
-                    BTreeMap::from([("A".into(), "real".into())]),
-                );
-            }
-            "slots" => {
-                profiles.profile_slots.clear();
-            }
-            "schema" => profiles.schema_version += 1,
-            "identity" => {
-                profiles
-                    .identity_by_agent
-                    .insert("agent-0".into(), "real".into());
-            }
-            "home" => {
-                profiles
-                    .codex_home_key_by_agent
-                    .insert("agent-0".into(), "real".into());
-            }
-            _ => unreachable!(),
-        }
+        apply_real_profile_change(&mut after, change);
         let events = super::settings_draft_update_events(&before, &after);
         assert!(events.profiles_changed, "{change}");
         assert!(events.env_agent_ids.is_empty(), "{change}");

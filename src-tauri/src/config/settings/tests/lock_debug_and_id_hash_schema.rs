@@ -216,13 +216,13 @@ fn settings_lock_debug_child() {
             settings_lock_debug_receipt(&timeout);
         }
         "owner" | "runtime" | "filter-on" => {
-            settings_lock_debug_owner_scenario(&mode, &path, &processed, &log)
+            settings_lock_debug_owner_scenario(&mode, &path, &processed, &log);
         }
         "suppress" => {
-            settings_lock_debug_suppress_scenario(&path, &processed, &gated, &resume, &log)
+            settings_lock_debug_suppress_scenario(&path, &processed, &gated, &resume, &log);
         }
         "saturated" => {
-            settings_lock_debug_saturated_scenario(&path, &processed, &gated, &resume, &log)
+            settings_lock_debug_saturated_scenario(&path, &processed, &gated, &resume, &log);
         }
         "failures" => settings_lock_debug_failure_scenarios(&path, &processed),
         _ => panic!("unknown child mode {mode}"),
@@ -365,48 +365,7 @@ fn settings_lock_debug_failure_scenarios(
     path: &std::path::Path,
     processed: &std::sync::mpsc::Receiver<serde_json::Value>,
 ) {
-    // I/O failure during preparation has no acquired, and preserves outward.
-    let bad_parent = path.with_file_name("not-a-directory");
-    std::fs::write(&bad_parent, b"PRIVATE-SETTINGS-SENTINEL").unwrap();
-    let error = match super::super::SettingsFileLock::acquire(
-        &bad_parent.join("settings.json"),
-        std::time::Duration::ZERO,
-    ) {
-        Ok(_) => panic!("invalid parent accepted"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        error.legacy_outward.into_general_string(),
-        super::super::SETTINGS_LOCK_UNAVAILABLE_CODE
-    );
-    settings_lock_debug_processed(processed, "acquire-start");
-    let failure = settings_lock_debug_processed(processed, "acquire-error");
-    assert_eq!(failure["reason"], "io_error");
-    assert!(failure["wait_ms"].is_null());
-    // An invalid sidecar is rejected with no acquired event.
-    let directory = path.with_file_name("invalid-sidecar");
-    std::fs::create_dir_all(directory.join(super::super::SETTINGS_LOCK_FILE_NAME)).unwrap();
-    assert!(super::super::SettingsFileLock::acquire(
-        &directory.join("settings.json"),
-        std::time::Duration::ZERO
-    )
-    .is_err());
-    settings_lock_debug_processed(processed, "acquire-start");
-    settings_lock_debug_processed(processed, "acquire-error");
-    std::fs::remove_dir_all(&directory).unwrap();
-    // Deadline overflow happens after opening. Windows rename additionally
-    // proves the no-share-delete handle was closed before the failure receipt.
-    assert!(super::super::SettingsFileLock::acquire(path, std::time::Duration::MAX).is_err());
-    settings_lock_debug_processed(processed, "acquire-start");
-    let failure = settings_lock_debug_processed(processed, "acquire-error");
-    assert_eq!(failure["reason"], "lock_deadline_overflow");
-    let sidecar = path
-        .parent()
-        .unwrap()
-        .join(super::super::SETTINGS_LOCK_FILE_NAME);
-    let renamed = sidecar.with_extension("test-closed");
-    std::fs::rename(&sidecar, &renamed).unwrap();
-    std::fs::rename(&renamed, &sidecar).unwrap();
+    assert_settings_lock_debug_preparation_failures(path, processed);
     // Early return and unwinding both release before an immediate new owner.
     let early = || -> Result<(), ()> {
         let _guard = super::super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
@@ -859,4 +818,52 @@ fn id_hash_schema_ignores_camelcase_and_preserves_supplied_strings() {
         assert_eq!(encoded["id_hash"], raw);
         assert!(encoded.get("idHash").is_none());
     }
+}
+
+fn assert_settings_lock_debug_preparation_failures(
+    path: &std::path::Path,
+    processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+) {
+    // I/O failure during preparation has no acquired, and preserves outward.
+    let bad_parent = path.with_file_name("not-a-directory");
+    std::fs::write(&bad_parent, b"PRIVATE-SETTINGS-SENTINEL").unwrap();
+    let error = match super::super::SettingsFileLock::acquire(
+        &bad_parent.join("settings.json"),
+        std::time::Duration::ZERO,
+    ) {
+        Ok(_) => panic!("invalid parent accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.legacy_outward.into_general_string(),
+        super::super::SETTINGS_LOCK_UNAVAILABLE_CODE
+    );
+    settings_lock_debug_processed(processed, "acquire-start");
+    let failure = settings_lock_debug_processed(processed, "acquire-error");
+    assert_eq!(failure["reason"], "io_error");
+    assert!(failure["wait_ms"].is_null());
+    // An invalid sidecar is rejected with no acquired event.
+    let directory = path.with_file_name("invalid-sidecar");
+    std::fs::create_dir_all(directory.join(super::super::SETTINGS_LOCK_FILE_NAME)).unwrap();
+    assert!(super::super::SettingsFileLock::acquire(
+        &directory.join("settings.json"),
+        std::time::Duration::ZERO
+    )
+    .is_err());
+    settings_lock_debug_processed(processed, "acquire-start");
+    settings_lock_debug_processed(processed, "acquire-error");
+    std::fs::remove_dir_all(&directory).unwrap();
+    // Deadline overflow happens after opening. Windows rename additionally
+    // proves the no-share-delete handle was closed before the failure receipt.
+    assert!(super::super::SettingsFileLock::acquire(path, std::time::Duration::MAX).is_err());
+    settings_lock_debug_processed(processed, "acquire-start");
+    let failure = settings_lock_debug_processed(processed, "acquire-error");
+    assert_eq!(failure["reason"], "lock_deadline_overflow");
+    let sidecar = path
+        .parent()
+        .unwrap()
+        .join(super::super::SETTINGS_LOCK_FILE_NAME);
+    let renamed = sidecar.with_extension("test-closed");
+    std::fs::rename(&sidecar, &renamed).unwrap();
+    std::fs::rename(&renamed, &sidecar).unwrap();
 }

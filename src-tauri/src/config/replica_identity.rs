@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use crate::config::ac_root::{ensure_authoritative_ac_root, find_ac_root_ancestor};
 use crate::filesystem::config_locations;
+use crate::filesystem::projects::entities::roles;
 
-pub const ROLE_MD_FILENAME: &str = "Role.md";
+pub const ROLE_MD_FILENAME: &str = roles::ROLE_FILE_NAME;
 pub const WG_REPLICA_REQUIRED_CONTEXT: &[&str] = &["$AGENTSCOMMANDER_CONTEXT"];
 const DEPRECATED_REPOS_INFO_CONTEXT: &str = "$REPOS_WORKSPACE_INFO";
 
@@ -67,7 +68,7 @@ pub fn agent_bare_name_from_ref(raw_agent: &str) -> Result<String, String> {
     let dir_name = normalized
         .split('/')
         .rfind(|part| !part.is_empty())
-        .ok_or_else(|| format!("Invalid agent reference '{}'", raw_agent))?;
+        .ok_or_else(|| format!("Invalid agent reference '{raw_agent}'"))?;
     let bare = dir_name
         .strip_prefix("__agent_")
         .or_else(|| dir_name.strip_prefix("_agent_"))
@@ -89,18 +90,16 @@ fn persisted_identity_agent_name(identity: &str) -> Result<String, String> {
     let dir_name = normalized
         .split('/')
         .rfind(|part| !part.is_empty())
-        .ok_or_else(|| format!("Invalid Room replica identity '{}'", identity))?;
+        .ok_or_else(|| format!("Invalid Room replica identity '{identity}'"))?;
 
     #[cfg(windows)]
     let bare = {
         if !dir_name
             .get(.."_agent_".len())
-            .map(|prefix| prefix.eq_ignore_ascii_case("_agent_"))
-            .unwrap_or(false)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("_agent_"))
         {
             return Err(format!(
-                "Room replica identity '{}' must end in '_agent_<name>'",
-                identity
+                "Room replica identity '{identity}' must end in '_agent_<name>'"
             ));
         }
         &dir_name["_agent_".len()..]
@@ -162,10 +161,10 @@ fn validate_local_matrix(
     matrix_dir: &Path,
     agent_name: &str,
 ) -> Result<(), String> {
-    let expected_dir_name = format!("_agent_{}", agent_name);
+    let expected_dir_name = format!("_agent_{agent_name}");
     let actual_dir_name = matrix_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
             format!(
                 "Agent Matrix '{}' has no valid directory name",
@@ -174,8 +173,8 @@ fn validate_local_matrix(
         })?;
     if actual_dir_name != expected_dir_name {
         return Err(format!(
-            "Room replica identity target '{}' does not match expected '{}'",
-            actual_dir_name, expected_dir_name
+            "Room replica identity target '{actual_dir_name}' \
+             does not match expected '{expected_dir_name}'"
         ));
     }
 
@@ -230,7 +229,7 @@ fn validate_local_matrix(
 pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdentity, String> {
     let replica_dir_name = replica_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
             format!(
                 "Replica path '{}' has no valid directory name",
@@ -238,10 +237,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
             )
         })?;
     let agent_name = replica_dir_name.strip_prefix("__agent_").ok_or_else(|| {
-        format!(
-            "Room replica directory '{}' must be named '__agent_<name>'",
-            replica_dir_name
-        )
+        format!("Room replica directory '{replica_dir_name}' must be named '__agent_<name>'")
     })?;
     validate_agent_name(agent_name)?;
 
@@ -253,7 +249,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
     })?;
     let wg_name = wg_dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     if !crate::config::entity_prefix::has_entity_prefix(wg_name) {
         return Err(format!(
@@ -270,7 +266,7 @@ pub fn expected_wg_replica_identity(replica_dir: &Path) -> Result<WgReplicaIdent
     })?;
     ensure_authoritative_ac_root(&ac_root)?;
 
-    let matrix_dir = ac_root.join(format!("_agent_{}", agent_name));
+    let matrix_dir = ac_root.join(format!("_agent_{agent_name}"));
     validate_local_matrix(&ac_root, &matrix_dir, agent_name)?;
     let identity = relative_path(replica_dir, &matrix_dir)?;
 
@@ -361,7 +357,7 @@ pub fn normalize_wg_replica_context_entries(
     }
 
     if role_exists {
-        let role_entry = format!("{}/{}", identity_rel, ROLE_MD_FILENAME);
+        let role_entry = format!("{identity_rel}/{ROLE_MD_FILENAME}");
         if seen.insert(role_entry.clone()) {
             result.push(role_entry);
         }
@@ -414,7 +410,7 @@ pub fn read_wg_replica_config_read_only_classified(
 ) -> Result<(Value, WgReplicaIdentity), (ReplicaConfigFault, String)> {
     #[cfg(test)]
     strict_read_probe::record(replica_dir);
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(replica_dir);
     let (bytes, _) = crate::path_identity::read_bounded_regular(&config_path, 1024 * 1024)
         .map_err(|_| {
             (
@@ -446,7 +442,7 @@ pub fn read_and_repair_wg_replica_config(
     required_context_prefix: &[&str],
 ) -> Result<(Value, WgReplicaIdentity), String> {
     expected_wg_replica_identity(replica_dir)?;
-    let config_path = replica_dir.join("config.json");
+    let config_path = crate::config::config_file_path(replica_dir);
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
     // #2816 (C3) - the returned value is the decisions object as published,
     // captured inside the guard: no re-read and no state overlay.

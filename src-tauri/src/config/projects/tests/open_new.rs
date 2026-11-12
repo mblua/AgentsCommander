@@ -422,6 +422,11 @@ fn synchronous_new_project_refreshes_and_saves_disk_authoritative_settings() {
         &settings_path,
     )
     .expect("seed disk settings");
+    let sidecar = settings_path.with_file_name("project-paths.json");
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    raw["unknown"] = serde_json::json!({"keep": [1, null, "sentinel"]});
+    std::fs::write(&sidecar, serde_json::to_vec(&raw).unwrap()).unwrap();
     disk_settings.project_paths = vec!["stale-memory".to_string()];
     disk_settings.project_path = Some("stale-memory".to_string());
     let project = fix.path().join("new-project");
@@ -457,6 +462,7 @@ fn synchronous_new_project_refreshes_and_saves_disk_authoritative_settings() {
         &std::fs::read_to_string(settings_path.with_file_name("project-paths.json")).unwrap(),
     )
     .unwrap();
+    assert_eq!(saved["unknown"], raw["unknown"]);
     assert_eq!(
         saved["projectPaths"],
         serde_json::json!([disk_only, result.path])
@@ -548,3 +554,27 @@ fn new_rejects_when_path_is_a_regular_file() {
 }
 
 // ── upsert keeps legacy projectPath in lockstep ───────────────────────
+
+#[test]
+fn synchronous_project_checkpoint_compensates_without_reencoding_raw_fields() {
+    let fix = FixtureRoot::new("proj-new-sync-checkpoint");
+    let path = fix.path().join("legacy-settings.json");
+    std::fs::write(&path, b"{}").unwrap();
+    let sidecar = path.with_file_name("project-paths.json");
+    let raw = serde_json::json!({
+        "projectPaths": [], "archivedProjectPaths": {"malformed": true},
+        "projectPath": 17, "unknown": {"keep": [null, "sentinel"]}
+    });
+    std::fs::write(&sidecar, serde_json::to_vec(&raw).unwrap()).unwrap();
+    let store = NewProjectSettingsStore::Path(path);
+    let mut transaction = store.begin(&AppSettings::default()).unwrap().unwrap();
+    let checkpoint = transaction.checkpoint().unwrap();
+    let mut replacement = raw.clone();
+    replacement["projectPath"] = serde_json::Value::Null;
+    replacement["archivedProjectPaths"] = serde_json::json!([]);
+    std::fs::write(&sidecar, serde_json::to_vec(&replacement).unwrap()).unwrap();
+    transaction.restore_checkpoint(&checkpoint).unwrap();
+    let restored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert_eq!(restored, raw);
+}

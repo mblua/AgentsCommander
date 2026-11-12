@@ -15,7 +15,7 @@
 //!   - GUI not running: a strict load (refuses to modify a present-but-unparseable
 //!     settings.json rather than silently defaulting) then apply then save.
 //!
-//! Known limitation (documented for scripts): a SettingsModal already open with
+//! Known limitation (documented for scripts): a `SettingsModal` already open with
 //! an unsaved draft can, on its next Save, revert a concurrent CLI mutation. The
 //! CLI does not clobber the GUI, but the reverse remains. Run `--launch` (or
 //! re-`show`) right after `add` so consumption happens before a Modal Save.
@@ -121,7 +121,7 @@ pub struct AddArgs {
     /// Env row KEY=VALUE (repeatable). All CLI envs are source=user, enabled=true.
     #[arg(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
-    /// Provide an isolated CODEX_HOME at spawn (Codex)
+    /// Provide an isolated `CODEX_HOME` at spawn (Codex)
     #[arg(long = "isolated-home", value_name = "true|false", action = clap::ArgAction::Set)]
     pub isolated_home: Option<bool>,
     /// Bare .md filename AC writes into the agent root at launch
@@ -217,7 +217,7 @@ fn run(args: CodingAgentArgs, gui_running: bool) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             1
         }
     }
@@ -475,8 +475,7 @@ fn dispatch_via_daemon(
     op: CodingAgentOp,
     confirm_timeout: u64,
 ) -> Result<(), String> {
-    let requests_dir = config_dir.join(ops::CODING_AGENT_REQUESTS_DIR);
-    let results_dir = requests_dir.join(ops::RESULTS_SUBDIR);
+    let (requests_dir, results_dir) = ops::coding_agent_queue_directories(config_dir);
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let request = CodingAgentRequest {
@@ -500,7 +499,7 @@ fn dispatch_via_daemon(
     }
 
     // Timeout: cancel by removing our own request file (R2/R3).
-    match crate::filesystem::documents::remove_cli_session_artifact(&request_path) {
+    match ops::cancel_coding_agent_request(&request_path) {
         Ok(()) => Err(format!(
             "GUI did not process the request within {confirm_timeout}s; \
              request cancelled (safe to retry)"
@@ -534,11 +533,7 @@ applied. Run `coding-agent show --id <id>` before retrying. Do NOT blind-retry."
 
 /// Read a result and best-effort delete the result file.
 fn take_result(results_dir: &Path, request_id: &str) -> Option<CodingAgentResult> {
-    let result = ops::read_coding_agent_result(results_dir, request_id)?;
-    let _ = crate::filesystem::documents::remove_cli_session_artifact(
-        &results_dir.join(format!("{request_id}.json")),
-    );
-    Some(result)
+    ops::take_coding_agent_result(results_dir, request_id)
 }
 
 fn finish_daemon_result(result: CodingAgentResult) -> Result<(), String> {
@@ -716,8 +711,7 @@ fn parse_env_flags(raw: &[String]) -> Result<Vec<CodingAgentEnv>, String> {
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[cfg(test)]

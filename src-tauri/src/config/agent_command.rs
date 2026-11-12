@@ -20,12 +20,18 @@ use crate::session::profile::CodingAgentKind;
 
 mod instructions;
 mod matching;
+mod preflight;
 mod profile_hash;
 mod seed_candidates;
 mod seed_warning;
 mod spawn_stamp;
 
 pub use seed_warning::compute_config_dir_warning;
+
+pub use preflight::{
+    configured_preflight, preflight_identity_frame, resolve_preflight_stages, PreflightStage,
+    PreflightStageSource, DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
+};
 
 pub use instructions::{
     default_instructions_filename_for_command, is_safe_instructions_filename,
@@ -43,6 +49,60 @@ pub use profile_hash::{
     canonical_command_text, cell_identity, compose_effective_command, profile_content_hash,
     raw_merged_profile_env,
 };
+
+pub(crate) fn resolve_configured_agent_spawn_for_cwd(
+    settings: &AppSettings,
+    agent_id: &str,
+    cwd: &str,
+    requested_profile: Option<&str>,
+    requested_profile_authoritative: bool,
+) -> Result<Option<AgentSpawnCommand>, String> {
+    // #2716 (B3, option C): the agents layer could not be read, so the list is not
+    // the user's; refuse rather than fall through to a plain terminal.
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    crate::config::agent_command::resolve_agent_spawn_command(
+        settings,
+        agent_id,
+        Some(std::path::Path::new(&cwd)),
+        requested_profile,
+        requested_profile_authoritative,
+    )
+    .map(Some)
+}
+
+pub(crate) fn build_configured_agent_spawn_for_cwd(
+    settings: &AppSettings,
+    agent_id: &str,
+    cwd: &str,
+    requested_profile: Option<&str>,
+) -> Result<Option<AgentSpawnCommand>, String> {
+    // #2716 (B3, option C): the same refusal as the resolver above; each builder
+    // carries its own, so no entry point can reach a spawn past either one.
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    crate::config::agent_command::build_agent_spawn_command(
+        settings,
+        agent_id,
+        Some(std::path::Path::new(&cwd)),
+        requested_profile,
+    )
+    .map(Some)
+}
 
 /// #1551 - true when `token` is a bare program name (no path separator, not absolute):
 /// the only form resolved through PATH, and the only form the version probe executes.
@@ -109,6 +169,9 @@ pub struct AgentSpawnCommand {
     /// session chokepoint, never here). `None` when the agent has no active seed
     /// or the launch root is not an AC replica/root-agent.
     pub seed: Option<crate::config::config_seed::ResolvedConfigSeed>,
+    /// #3516 - ordered preflight stages (0-2). `Err` carries an invalid saved
+    /// preflight; spawn resolution itself never fails because of it.
+    pub preflight_stages: Result<Vec<PreflightStage>, String>,
     /// #2434 - the #2451 `matchTier` carrier value (`MatchTier::as_wire_str`).
     /// `None` unless a restart resolved a reference through the matcher.
     pub match_tier: Option<String>,
@@ -279,10 +342,10 @@ fn stringify_agent_command_token(token: &str) -> String {
     out
 }
 
-fn executable_basename(s: &str) -> String {
+pub(crate) fn executable_basename(s: &str) -> String {
     std::path::Path::new(s)
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(s)
         .to_lowercase()
 }
@@ -294,7 +357,7 @@ fn executable_basename(s: &str) -> String {
 fn executable_filename(s: &str) -> String {
     std::path::Path::new(s)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(s)
         .to_lowercase()
 }
@@ -331,7 +394,7 @@ fn collect_profile_env(
     env: &BTreeMap<String, String>,
     placeholder_context: Option<&PlaceholderContext>,
 ) -> Result<BTreeMap<String, String>, String> {
-    let context = format!("Profile '{}:{}' env settings", agent_id, profile);
+    let context = format!("Profile '{agent_id}:{profile}' env settings");
     let mut out = BTreeMap::new();
     let mut seen = BTreeMap::new();
     for (key, value) in env {
@@ -339,8 +402,7 @@ fn collect_profile_env(
         let normalized = normalize_env_key_for_platform(key);
         if let Some(previous) = seen.insert(normalized, key.clone()) {
             return Err(format!(
-                "{}: duplicate env keys '{}' and '{}'",
-                context, previous, key
+                "{context}: duplicate env keys '{previous}' and '{key}'"
             ));
         }
         let strict_path = is_codex_home_key(key);
@@ -490,10 +552,7 @@ fn compute_codex_home(
                 })
             }
             Err(e) => {
-                log::warn!(
-                    "[codex-home] {}. Removing inherited CODEX_HOME for child.",
-                    e
-                );
+                log::warn!("[codex-home] {e}. Removing inherited CODEX_HOME for child.");
                 env_remove_keys.push("CODEX_HOME".to_string());
             }
         }
@@ -520,7 +579,7 @@ enum OpencodeConfigDirOutcome {
     Failed,
 }
 
-/// Executable file_name forms that count as opencode when found among the
+/// Executable `file_name` forms that count as opencode when found among the
 /// command ARGS. The bare `opencode` covers the `cmd /c opencode` wrapper; the
 /// `.exe`/`.cmd`/`.bat` forms cover a direct path or an npm-style shim.
 const OPENCODE_ARG_FORMS: [&str; 4] = ["opencode", "opencode.exe", "opencode.cmd", "opencode.bat"];
@@ -601,8 +660,7 @@ fn ensure_opencode_config_dir(
     let path = PathBuf::from(value);
     if !path.is_absolute() {
         log::debug!(
-            "[opencode] OPENCODE_CONFIG_DIR '{}' is not an absolute path; not creating it.",
-            value
+            "[opencode] OPENCODE_CONFIG_DIR '{value}' is not an absolute path; not creating it."
         );
         return OpencodeConfigDirOutcome::Skipped;
     }
@@ -757,7 +815,7 @@ pub(crate) fn resolve_agent_spawn_command(
         .agents
         .iter()
         .find(|agent| agent.id == agent_id)
-        .ok_or_else(|| format!("Agent '{}' is not configured", agent_id))?;
+        .ok_or_else(|| format!("Agent '{agent_id}' is not configured"))?;
     let profile_resolution = resolve_profile(
         settings,
         ProfileResolutionRequest {
@@ -769,7 +827,7 @@ pub(crate) fn resolve_agent_spawn_command(
         },
     );
     for warning in &profile_resolution.warnings {
-        log::warn!("[profiles] {}", warning);
+        log::warn!("[profiles] {warning}");
     }
 
     // #598 - active config-folder seed for this agent (resolved below).
@@ -804,6 +862,13 @@ pub(crate) fn resolve_agent_spawn_command(
         launch_path,
         seed_choice.is_some(),
     )?;
+    // #3516 - no `?`: read-only callers share this builder (P01 contract).
+    let preflight_stages = resolve_preflight_stages(
+        agent,
+        &profile_resolution,
+        launch_path,
+        placeholder_context.as_ref(),
+    );
 
     let agent_env = collect_agent_env(agent, placeholder_context.as_ref())?;
     let profile_env = collect_profile_env(
@@ -854,13 +919,14 @@ pub(crate) fn resolve_agent_spawn_command(
         backend: agent.backend.clone(),
         isolated_codex_home_to_prepare: computed_codex_home.isolated_home_to_prepare,
         seed,
+        preflight_stages,
         match_tier: None,
         original_profile_letter: None,
     })
 }
 
 /// Perform the filesystem preparation carried by a read-only spawn resolution.
-/// Isolated CODEX_HOME creation is required; OpenCode configuration-directory
+/// Isolated `CODEX_HOME` creation is required; `OpenCode` configuration-directory
 /// creation preserves its existing best-effort policy.
 pub(crate) fn prepare_agent_spawn_command(command: &AgentSpawnCommand) -> Result<(), String> {
     if let Some(home) = command.isolated_codex_home_to_prepare.as_ref() {

@@ -291,12 +291,12 @@ fn perform_reclaims_leaked_scratch_from_other_session_ids() {
 
 /// grinch HIGH-1 characterization: proves WHY `perform_config_seed` must be
 /// serialized for all dests. We reconstruct the exact mid-swap state of a
-/// concurrent spawn A (dest already renamed to trash_A, staged temp_A
+/// concurrent spawn A (dest already renamed to `trash_A`, staged `temp_A`
 /// present) and run what spawn B's step-2 cleanup does for the SAME dest with
 /// a DIFFERENT session id. The prefix-sweep deletes BOTH of A's in-flight
 /// dirs, after which A can neither install (temp gone) nor restore (trash
 /// gone) -> config lost. This is the data-loss the session chokepoint's
-/// ConfigSeedLockState serialization (held across the seed for ALL dests)
+/// `ConfigSeedLockState` serialization (held across the seed for ALL dests)
 /// prevents; a regression that drops or narrows that lock re-opens it.
 #[test]
 fn unserialized_prefix_sweep_would_destroy_a_concurrent_inflight_swap() {
@@ -332,7 +332,7 @@ fn unserialized_prefix_sweep_would_destroy_a_concurrent_inflight_swap() {
 
 // ---- CatalogDefault tier (#769 P2: absent-only + non-empty) ------------
 
-/// Append the absent-only CatalogDefault candidate LAST, exactly as the spawn
+/// Append the absent-only `CatalogDefault` candidate LAST, exactly as the spawn
 /// caller (`build_agent_spawn_command`) does.
 fn with_catalog_default(mut resolved: ResolvedConfigSeed, master: &Path) -> ResolvedConfigSeed {
     resolved.candidates.push(ConfigSeedCandidate {

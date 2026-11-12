@@ -27,7 +27,8 @@ export function qualified(scan, tokens, i, relevantPath) {
 const itemIdentities = new WeakMap();
 export function occurrenceIdentity(scan, token, declaration) {
   const item = scan.items.filter(i => !['mod', 'impl', 'trait'].includes(i.kind) &&
-    i.start <= token.start && token.start < i.end).sort((a,b) => (a.end-a.start)-(b.end-b.start))[0];
+    i.start <= token.start &&
+    token.start < i.end).sort((a,b) => (a.end-a.start)-(b.end-b.start))[0];
   if (!item && declaration) return tokenIdentity(scan,declaration,token);
   if (!item) return undefined;
   if (!itemIdentities.has(item)) {
@@ -45,23 +46,31 @@ function transferredSites(byPath, rules) {
   const moved = new Set();
   for (const rule of rules) {
     const removed = new Map(), added = [];
-    for (const path of new Set([...byPath[0].keys(), ...byPath[1].keys()])) {
-      const available = new Map();
-      for (const site of byPath[0].get(path)?.sites[rule] ?? []) if (site.identity)
-        available.set(site.identity, (available.get(site.identity) ?? 0) + 1);
-      for (const site of byPath[1].get(path)?.sites[rule] ?? []) {
-        const n = available.get(site.identity) ?? 0;
-        if (n) available.set(site.identity, n - 1);
-        else added.push(site);
-      }
-      for (const [id,n] of available) removed.set(id, (removed.get(id) ?? 0) + n);
-    }
-    for (const site of added) {
-      const n = removed.get(site.identity) ?? 0;
-      if (n) { moved.add(site); removed.set(site.identity, n - 1); }
-    }
+    for (const path of new Set([...byPath[0].keys(), ...byPath[1].keys()]))
+      subtractRetained(byPath[0].get(path)?.sites[rule] ?? [],
+        byPath[1].get(path)?.sites[rule] ?? [], removed, added);
+    creditRemoved(added, removed, moved);
   }
   return moved;
+}
+
+function subtractRetained(oldSites, newSites, removed, added) {
+  const available = new Map();
+  for (const site of oldSites) if (site.identity)
+    available.set(site.identity, (available.get(site.identity) ?? 0) + 1);
+  for (const site of newSites) {
+    const n = available.get(site.identity) ?? 0;
+    if (n) available.set(site.identity, n - 1);
+    else added.push(site);
+  }
+  for (const [id,n] of available) removed.set(id, (removed.get(id) ?? 0) + n);
+}
+
+function creditRemoved(added, removed, moved) {
+  for (const site of added) {
+    const n = removed.get(site.identity) ?? 0;
+    if (n) { moved.add(site); removed.set(site.identity, n - 1); }
+  }
 }
 
 function tokenHash(scan, tokens) {
@@ -91,44 +100,64 @@ export function hit(m, rule, line, identity) {
 }
 
 export function warning(m, path, line, resolved) {
-  if (resolved.ambiguous) m.warnings.push({ path, line, reason: resolved.reason ?? 'ambiguous relevant alias',
+  if (resolved.ambiguous) m.warnings.push({ path, line,
+    reason: resolved.reason ?? 'ambiguous relevant alias',
     remedy: 'use an explicit unambiguous import; signal counted conservatively' });
 }
 
-export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure, extraChecks, recognizeMoves = false }) {
+export function runMeasuredGate(snapshot, { gate, rules, newFileRules, inUniverse, measure,
+  extraChecks, recognizeMoves = false }) {
   const diagnostics = [], measurements = { base: [], head: [] };
   try {
-    const trees = [snapshot.baseTree, snapshot.headTree], totals = [{}, {}], byPath = [new Map(), new Map()];
-    for (const [side, tree] of trees.entries()) {
+    const trees = [snapshot.baseTree, snapshot.headTree], totals = [{}, {}], byPath = [new Map(),
+      new Map()];
+    const measureSide = (side, tree) => {
       const scan = createRustScanner(tree, snapshot.readBlob);
       for (const path of [...tree.keys()].filter(path => inUniverse(path)).sort(codeOrder)) {
-        const m = measure(path, scan(path));
+        // Additive third argument: this side's tree and scan lookup, for receiver proofs.
+        const m = measure(path, scan(path), { tree, scan });
         byPath[side].set(path, m);
-        for (const rule of rules) totals[side][rule] = (totals[side][rule] ?? 0) + (m.counts[rule] ?? 0);
+        for (const rule of rules) totals[side][rule] =
+          (totals[side][rule] ?? 0) + (m.counts[rule] ?? 0);
         measurements[side ? 'head' : 'base'].push({ path, counts: m.counts, sites: m.sites });
         if (side) diagnostics.push(...m.warnings.map(d => ({ gate, status: 'WARN', ...d })));
       }
-    }
-    const violation = (rule, path, line, base, head, reason) => diagnostics.push({ gate, status: 'FAIL', rule, path, line,
+    };
+    for (const [side, tree] of trees.entries()) measureSide(side, tree);
+    const violation = (rule, path, line, base, head, reason) => diagnostics.push({ gate,
+      status: 'FAIL', rule, path, line,
       base, head, baseOid: snapshot.baseOid, headOid: snapshot.headOid, reason,
       remedy: 'remove the new signal or use the source-defined owner; do not raise the baseline' });
-    for (const rule of rules) if ((totals[1][rule] ?? 0) > (totals[0][rule] ?? 0)) {
-      const source = [...byPath[1]].find(([p,m]) => (m.counts[rule] ?? 0) > (byPath[0].get(p)?.counts[rule] ?? 0));
-      violation(rule, source?.[0] ?? '<universe>', source?.[1].sites[rule]?.[0]?.line ?? 1,
-        totals[0][rule] ?? 0, totals[1][rule], 'global subrule debt increased');
-    }
+    const globalDebt = () => {
+      for (const rule of rules) if ((totals[1][rule] ?? 0) > (totals[0][rule] ?? 0)) {
+        const source = [...byPath[1]].find(([p,m]) =>
+          (m.counts[rule] ?? 0) > (byPath[0].get(p)?.counts[rule] ?? 0));
+        violation(rule, source?.[0] ?? '<universe>', source?.[1].sites[rule]?.[0]?.line ?? 1,
+          totals[0][rule] ?? 0, totals[1][rule], 'global subrule debt increased');
+      }
+    };
+    globalDebt();
     const moved = recognizeMoves ? transferredSites(byPath, rules) : new Set();
+    const newFileDebt = (path, m) => {
+      if (snapshot.baseTree.has(path)) return;
+      for (const rule of newFileRules) if (m.sites[rule]?.some(site => !moved.has(site)))
+        violation(rule, path, m.sites[rule].find(site => !moved.has(site)).line, 0, m.counts[rule],
+          'new file must satisfy this subrule even with compensated totals');
+    };
     for (const [path, m] of byPath[1]) {
-      if (!snapshot.baseTree.has(path)) for (const rule of newFileRules) if (m.sites[rule]?.some(site => !moved.has(site)))
-        violation(rule, path, m.sites[rule].find(site => !moved.has(site)).line, 0, m.counts[rule], 'new file must satisfy this subrule even with compensated totals');
+      newFileDebt(path, m);
       extraChecks(path, m, byPath[0].get(path), violation, moved);
     }
     snapshot.assertStableHead();
     const fail = diagnostics.some(d => d.status === 'FAIL');
-    return { gate, status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0, requestedRef: snapshot.requestedRef,
-      refOid: snapshot.refOid, baseOid: snapshot.baseOid, headOid: snapshot.headOid, totals, measurements, diagnostics };
+    return { gate, status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0,
+      requestedRef: snapshot.requestedRef,
+      refOid: snapshot.refOid, baseOid: snapshot.baseOid, headOid: snapshot.headOid, totals,
+        measurements, diagnostics };
   } catch (e) {
-    return { gate, status: 'ERROR', exit: e.exit ?? 3, baseOid: snapshot.baseOid, headOid: snapshot.headOid,
-      diagnostics: [...diagnostics, { gate, reason: e.message, remedy: 'repair inputs and rerun; no verdict available' }] };
+    return { gate, status: 'ERROR', exit: e.exit ?? 3, baseOid: snapshot.baseOid,
+      headOid: snapshot.headOid,
+      diagnostics: [...diagnostics, { gate, reason: e.message,
+        remedy: 'repair inputs and rerun; no verdict available' }] };
   }
 }

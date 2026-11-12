@@ -236,7 +236,7 @@ impl ResponseEffectOwner {
     }
 
     pub(crate) fn kill_failed(&self) -> bool {
-        self.record.lock().ok().is_some_and(|record| {
+        self.record.lock().is_ok_and(|record| {
             record.stages.iter().any(|(name, stage)| {
                 *name == "kill" && matches!(stage, ResponseEffectState::Completed(Err(_)))
             })
@@ -342,7 +342,9 @@ impl ResponseEffectOwner {
                 let (stored, veto) = match outcome {
                     Ok(result) => (Ok(result), None),
                     Err(CleanupFailure::Ordinary(error)) => {
-                        log::warn!("[session] resource cleanup failed session={id}: {error}");
+                        log::warn!(
+                            "[session] resource cleanup failed session={id} source=ResponseClose: \n                             {error}"
+                        );
                         (Err(error), None)
                     }
                     Err(error @ CleanupFailure::EvidenceVeto { .. }) => {
@@ -360,9 +362,8 @@ impl ResponseEffectOwner {
                 record.group = Some(ResponseEffectState::Ambiguous);
                 let _ = record.group_worker.take();
                 log::warn!(
-                    "[session] resource cleanup task failed session={} source=ResponseClose: {}",
-                    id,
-                    error
+                    "[session] resource cleanup task failed session={id} source=ResponseClose: \
+            {error}"
                 );
                 std::task::Poll::Ready(Ok(None))
             }

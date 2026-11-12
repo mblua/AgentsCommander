@@ -27,14 +27,14 @@ impl MessageStore {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let row = tx
             .query_row(
-                r#"SELECT payload,payload_sha256,payload_bytes,version,enter_mode,source_plane,
+                r"SELECT payload,payload_sha256,payload_bytes,version,enter_mode,source_plane,
                           nonce_sha256,request_fingerprint,sender_incarnation_fingerprint,
                           sender_identity_fingerprint,target_identity_fingerprint,
                           authority_session_id,authority_client_id,authority_client_generation,
                           issued_at,expires_at
                    FROM pty_input_operations
                    WHERE injection_id=?1 AND status='preparing' AND lease_owner=?2
-                     AND lease_until > ?3 AND expires_at > ?3"#,
+                     AND lease_until > ?3 AND expires_at > ?3",
                 params![injection_id, lease_owner, now_s],
                 actuating_row_from_row,
             )
@@ -46,14 +46,14 @@ impl MessageStore {
         crate::pty::inject::validate_pty_input_text(text)
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let changed = tx.execute(
-            r#"UPDATE pty_input_operations
+            r"UPDATE pty_input_operations
                SET status='actuating',actuating_at=?1,updated_at=?1,
                    selected_session_id=?2,selected_backend=?3,payload=NULL,
                    requested_agent_id=NULL,sender_identity_fingerprint=NULL,
                    target_identity_fingerprint=NULL,authority_session_id=NULL,
                    authority_client_id=NULL,authority_client_generation=NULL,
                    lease_owner=NULL,lease_until=NULL,reason_code=NULL,reason_detail=NULL
-               WHERE injection_id=?4 AND status='preparing' AND lease_owner=?5"#,
+               WHERE injection_id=?4 AND status='preparing' AND lease_owner=?5",
             params![
                 now_s,
                 selected_session_id,
@@ -72,7 +72,7 @@ impl MessageStore {
                 let mut faults = self
                     .test_faults
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 std::mem::take(&mut faults.actuation_commit_ambiguous)
             };
             if inject_ambiguous {
@@ -138,10 +138,10 @@ impl MessageStore {
         let next =
             crate::phone::types::canonical_pty_timestamp(now + chrono::Duration::seconds(delay));
         let changed = tx.execute(
-            r#"UPDATE pty_input_operations SET status='retry',next_attempt_at=?1,
+            r"UPDATE pty_input_operations SET status='retry',next_attempt_at=?1,
                    lease_owner=NULL,lease_until=NULL,updated_at=?2,
                    reason_code=?3,reason_detail=?4
-               WHERE injection_id=?5 AND status='preparing' AND lease_owner=?6"#,
+               WHERE injection_id=?5 AND status='preparing' AND lease_owner=?6",
             params![
                 next,
                 now_s,
@@ -212,10 +212,10 @@ impl MessageStore {
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         Ok(conn
             .query_row(
-                r#"SELECT confirmation_tag FROM pty_input_operations WHERE injection_id=?1
+                r"SELECT confirmation_tag FROM pty_input_operations WHERE injection_id=?1
                    UNION ALL
                    SELECT confirmation_tag FROM pty_input_tombstones WHERE injection_id=?1
-                   LIMIT 1"#,
+                   LIMIT 1",
                 [injection_id],
                 |row| row.get::<_, Option<String>>(0),
             )
@@ -268,12 +268,12 @@ impl MessageStore {
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let id = conn
             .query_row(
-                r#"SELECT injection_id,sender_incarnation_fingerprint
+                r"SELECT injection_id,sender_incarnation_fingerprint
                    FROM pty_input_operations WHERE sender_fqn=?1 AND op_id=?2
                    UNION ALL
                    SELECT injection_id,sender_incarnation_fingerprint
                    FROM pty_input_tombstones WHERE sender_fqn=?1 AND op_id=?2
-                   LIMIT 1"#,
+                   LIMIT 1",
                 params![sender_fqn, op_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
@@ -307,17 +307,16 @@ impl MessageStore {
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id,terminal_at FROM pty_input_operations
+                r"SELECT injection_id,terminal_at FROM pty_input_operations
                    WHERE status IN ('injected','rejected','indeterminate')
                      AND terminal_at < ?1
                      AND (?2 IS NULL OR terminal_at > ?2
                        OR (terminal_at = ?2 AND injection_id > ?3))
-                   ORDER BY terminal_at,injection_id LIMIT ?4"#,
+                   ORDER BY terminal_at,injection_id LIMIT ?4",
             )?;
-            let (cursor_at, cursor_id) = cursor
-                .as_ref()
-                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
-                .unwrap_or((None, None));
+            let (cursor_at, cursor_id) = cursor.as_ref().map_or((None, None), |(at, id)| {
+                (Some(at.as_str()), Some(id.as_str()))
+            });
             let rows = statement
                 .query_map(params![cutoff, cursor_at, cursor_id, limit], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -348,9 +347,9 @@ impl MessageStore {
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let eligible: bool = tx.query_row(
-                r#"SELECT EXISTS(SELECT 1 FROM pty_input_operations
+                r"SELECT EXISTS(SELECT 1 FROM pty_input_operations
                    WHERE injection_id=?1 AND status IN ('injected','rejected','indeterminate')
-                     AND terminal_at < ?2)"#,
+                     AND terminal_at < ?2)",
                 params![injection_id, cutoff],
                 |row| row.get(0),
             )?;
@@ -362,9 +361,9 @@ impl MessageStore {
                 return Err(MessageStoreError::StoreCorrupt);
             }
             let changed = tx.execute(
-                r#"DELETE FROM pty_input_operations
+                r"DELETE FROM pty_input_operations
                    WHERE injection_id=?1 AND status IN ('injected','rejected','indeterminate')
-                     AND terminal_at < ?2"#,
+                     AND terminal_at < ?2",
                 params![injection_id, cutoff],
             )?;
             if changed != 1 {
@@ -399,7 +398,7 @@ impl MessageStore {
                 .lock()
                 .map_err(|_| MessageStoreError::StoreCorrupt)?;
             let mut statement = conn.prepare(
-                r#"SELECT injection_id,terminal_at FROM pty_input_operations
+                r"SELECT injection_id,terminal_at FROM pty_input_operations
                    WHERE status IN ('injected','rejected','indeterminate')
                      AND ((source_plane!='host_cli' AND terminal_at < ?1)
                        OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at
@@ -408,12 +407,11 @@ impl MessageStore {
                            ?2))
                      AND (?3 IS NULL OR terminal_at > ?3
                        OR (terminal_at = ?3 AND injection_id > ?4))
-                   ORDER BY terminal_at,injection_id LIMIT ?5"#,
+                   ORDER BY terminal_at,injection_id LIMIT ?5",
             )?;
-            let (cursor_at, cursor_id) = cursor
-                .as_ref()
-                .map(|(at, id)| (Some(at.as_str()), Some(id.as_str())))
-                .unwrap_or((None, None));
+            let (cursor_at, cursor_id) = cursor.as_ref().map_or((None, None), |(at, id)| {
+                (Some(at.as_str()), Some(id.as_str()))
+            });
             let rows = statement.query_map(
                 params![normal_cutoff, unclaimed_cutoff, cursor_at, cursor_id, limit],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
@@ -447,13 +445,13 @@ impl MessageStore {
                 return Err(MessageStoreError::StoreCorrupt);
             }
             let deleted = tx.execute(
-                r#"DELETE FROM pty_input_operations
+                r"DELETE FROM pty_input_operations
                    WHERE injection_id=?1 AND status IN ('injected','rejected','indeterminate')
                      AND ((source_plane!='host_cli' AND terminal_at < ?2)
                        OR (source_plane='host_cli' AND host_artifact_at IS NOT NULL AND terminal_at
                            < ?2)
                        OR (source_plane='host_cli' AND host_artifact_at IS NULL AND terminal_at <
-                           ?3))"#,
+                           ?3))",
                 params![injection_id, normal_cutoff, unclaimed_cutoff],
             )?;
             if deleted != 1 {

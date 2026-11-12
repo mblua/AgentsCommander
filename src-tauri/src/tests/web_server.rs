@@ -620,7 +620,7 @@ fn server_task_and_supervisor_spawn_without_ambient_runtime() {
         let (sent, received) = std::sync::mpsc::channel();
         let task =
             crate::web_server::ServerTask::from_native(tauri::async_runtime::spawn(async move {
-                sent.send(()).unwrap()
+                sent.send(()).unwrap();
             }));
         received
             .recv_timeout(Duration::from_secs(2))
