@@ -27,6 +27,15 @@
 //!     `redact()`'s inline note and the
 //!     `redacts_short_query_key_values_intentionally` test.
 //!
+//! * **AgentsCommander credentials** (#4319):
+//!   - container API tokens `ac-container-<uuid>-<uuid>` are always masked
+//!     (`pty/container_tokens.rs` mints them with that prefix);
+//!   - a bare UUID is masked only right after a secret context:
+//!     `AGENTSCOMMANDER_TOKEN=`, `AGENTSCOMMANDER_API_TOKEN=`,
+//!     `--token <x>`, `--token=<x>` or `Bearer <x>`. Session, message,
+//!     client and op ids are UUIDs too and stay visible elsewhere.
+//!   - Known gap: a secret UUID logged with no context is not masked.
+//!
 //! Implementation notes:
 //!
 //! * Regex-free, allocation-light, single-pass scan.
@@ -58,7 +67,11 @@ pub fn redact(input: &str) -> String {
     // Fast path: no secret-bearing substrings present.
     let has_bot = input.contains("/bot");
     let has_key = input.contains("key=");
-    if !has_bot && !has_key {
+    let has_ac = input.contains(CONTAINER_PREFIX)
+        || input.contains("TOKEN=")
+        || input.contains("--token")
+        || input.contains("Bearer ");
+    if !has_bot && !has_key && !has_ac {
         return input.to_string();
     }
 
@@ -110,6 +123,17 @@ pub fn redact(input: &str) -> String {
             }
         }
 
+        // AgentsCommander credentials (#4319). Keep the context prefix,
+        // replace only the secret.
+        if has_ac {
+            if let Some((keep, end)) = match_ac_credential(bytes, i) {
+                out.push_str(&input[i..keep]);
+                out.push_str("***");
+                i = end;
+                continue;
+            }
+        }
+
         // No match at this position — copy a full UTF-8 char. Casting
         // `bytes[i] as char` is UNSAFE for multi-byte chars: a continuation
         // byte (e.g. 0xC3 0xA9 for "é") would each map to a different
@@ -125,6 +149,80 @@ pub fn redact(input: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+const CONTAINER_PREFIX: &str = "ac-container-";
+
+/// Contexts after which a UUID is a secret. The bool says whether one or
+/// more spaces must separate the context from the value.
+const SECRET_CONTEXTS: [(&str, bool); 5] = [
+    ("AGENTSCOMMANDER_TOKEN=", false),
+    ("AGENTSCOMMANDER_API_TOKEN=", false),
+    ("--token=", false),
+    ("--token", true),
+    ("Bearer", true),
+];
+
+/// If an AgentsCommander credential starts at `i`, return
+/// `(keep_end, secret_end)`: bytes `i..keep_end` stay verbatim and
+/// `keep_end..secret_end` is the secret to mask.
+fn match_ac_credential(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    let prefix = CONTAINER_PREFIX.as_bytes();
+    if bytes[i..].starts_with(prefix) {
+        let first = i + prefix.len();
+        if let Some(mid) = uuid_end(bytes, first) {
+            if mid < bytes.len() && bytes[mid] == b'-' {
+                if let Some(end) = uuid_end(bytes, mid + 1) {
+                    return Some((first, end));
+                }
+            }
+        }
+    }
+    for (ctx, spaced) in SECRET_CONTEXTS {
+        if !bytes[i..].starts_with(ctx.as_bytes()) {
+            continue;
+        }
+        let mut start = i + ctx.len();
+        if spaced {
+            let after = scan_while(bytes, start, |b| b == b' ');
+            if after == start {
+                continue;
+            }
+            start = after;
+        }
+        // Optional opening quote, kept verbatim.
+        if start < bytes.len() && (bytes[start] == b'"' || bytes[start] == b'\'') {
+            start += 1;
+        }
+        if let Some(end) = uuid_end(bytes, start) {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
+/// End of a canonical hyphenated UUID starting at `start`, if one is there
+/// and is not glued to more alphanumeric or `_` chars.
+fn uuid_end(bytes: &[u8], start: usize) -> Option<usize> {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let mut i = start;
+    for (n, len) in GROUPS.into_iter().enumerate() {
+        if n > 0 {
+            if i >= bytes.len() || bytes[i] != b'-' {
+                return None;
+            }
+            i += 1;
+        }
+        let end = i + len;
+        if end > bytes.len() || !bytes[i..end].iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        i = end;
+    }
+    if i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        return None;
+    }
+    Some(i)
 }
 
 #[inline]
