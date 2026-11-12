@@ -25,7 +25,7 @@ function stampCoordinators(wg: AcWorkgroup): void {
 
 /** A room gone from the store drops its key without stamping. */
 function pruneGone(seen: Set<string>): void {
-  for (const key of [...previous.keys()]) if (!seen.has(key)) previous.delete(key);
+  for (const key of previous.keys()) if (!seen.has(key)) previous.delete(key);
 }
 
 /** #2202 - stamps `lastActivityBySessionId` on a room's CI falling edge, so a room
