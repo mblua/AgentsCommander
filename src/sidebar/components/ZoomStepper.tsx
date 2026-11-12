@@ -36,7 +36,12 @@ const ZoomStepper: Component = () => {
       >
         -
       </button>
-      <span class="titlebar-zoom-value" aria-live="polite" data-ac-testid="titlebar.zoom.value">
+      <span
+        class="titlebar-zoom-value"
+        aria-live="polite"
+        data-ac-testid="titlebar.zoom.value"
+        data-ac-role="status"
+      >
         {percent()}
       </span>
       <button
