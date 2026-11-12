@@ -374,7 +374,7 @@ function selfTest() {
     const REFUSED = [
       ['a `..` segment', path.join(root, '..', 'outside.test.ts')],
       ['a POSIX absolute path', '/etc/passwd.test.ts'],
-      ['a Windows drive path replayed as data', 'C:\\Users\\maria\\outside.test.ts'],
+      ['a Windows drive path replayed as data', String.raw`C:\Users\maria\outside.test.ts`],
       ['the report root itself', root],
       ['an empty name', ''],
     ];

@@ -60,6 +60,8 @@ async fn mark_idle_on_a_working_session_yields_exactly_one_idle_record() {
     assert_eq!(records[0]["event"], "idle");
     assert_eq!(records[0]["reason"], "mark_idle");
     assert_eq!(records[0]["sessionId"], subject.id.to_string());
+    assert_ne!(subject.name, subject.working_directory);
+    assert_eq!(records[0]["name"], subject.name);
     assert_eq!(records[0]["cwd"], "C:\\subject");
     assert_eq!(records[0]["idleThresholdMs"], serde_json::json!(2_500));
 }
@@ -93,6 +95,9 @@ async fn mark_busy_on_an_idle_session_yields_exactly_one_busy_record() {
     assert_eq!(records[0]["event"], "busy");
     assert_eq!(records[0]["reason"], "mark_busy");
     assert_eq!(records[0]["sessionId"], subject.id.to_string());
+    assert_ne!(subject.name, subject.working_directory);
+    assert_eq!(records[0]["name"], subject.name);
+    assert_eq!(records[0]["cwd"], subject.working_directory);
     assert_eq!(
         records[0]["continuesBlock"],
         serde_json::json!(true),
@@ -213,7 +218,9 @@ async fn idle_record_carries_the_same_threshold_the_detector_registered() {
         session.agent_kind = kind;
         let record = activity_json(&crate::config::activity_log::build_idle(
             session.id,
-            &session,
+            &session.name,
+            &session.working_directory,
+            session.agent_kind,
             crate::config::activity_log::IdleReason::MarkIdle,
             &manager.activity,
         ));
@@ -370,6 +377,8 @@ async fn finalize_live_yields_exactly_one_session_start_busy_record() {
     assert_eq!(record["event"], "busy");
     assert_eq!(record["reason"], "session_start");
     assert_eq!(record["sessionId"], pending.id.to_string());
+    assert_ne!(pending.name, pending.working_directory);
+    assert_eq!(record["name"], pending.name);
     assert_eq!(record["cwd"], "C:/work");
     assert_eq!(record["continuesBlock"], serde_json::json!(false));
     assert!(record.get("gapMs").is_none());
