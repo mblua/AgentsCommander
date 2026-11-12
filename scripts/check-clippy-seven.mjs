@@ -24,7 +24,10 @@ const OWNER = [BASELINE, 'scripts/check-clippy-seven.mjs',
   'docs/quality/clippy-seven-gate.md'];
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const order = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const order = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 export class InputError extends Error { constructor(m) { super(m); this.exit = 2; } }
 const need = (ok, m) => { if (!ok) throw new InputError(m); };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

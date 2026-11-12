@@ -17,7 +17,9 @@ interface ArchivedProjectsModalProps {
 }
 
 function errorMessage(error: unknown): string {
-  return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 const archiveRowId = (path: string) => automationIdPart(path);

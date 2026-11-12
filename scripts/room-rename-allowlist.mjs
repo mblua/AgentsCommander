@@ -213,7 +213,7 @@ const STR_EXCEPTIONS = {
 // Plan 3.14 / 6.1: both terminal-snapshot test files are Rule P2 in whole.
 // Their purpose is to represent a legacy Workgroup, so no production line moves
 // and section 9.1 adds room- twins beside the existing literals.
-const P2_FILES = [
+const P2_FILES = new Set([
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance.rs",
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_cancellation.rs",
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/api_support.rs",
@@ -224,7 +224,7 @@ const P2_FILES = [
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/leakage.rs",
   "src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs",
   "src-tauri/src/pty/terminal_snapshot/tests/resource.rs",
-];
+]);
 
 // Plan 3.8 / 9.4 AC1 point 8: the 63 frontend lines this plan moves.
 // 55 Rule R (3.8 classes a-d) + 3 R1 resolvers + 5 section 5.4 predicates.
@@ -348,7 +348,7 @@ function analyze(text) {
 function testItemLines(lines, code) {
   const inTest = new Set();
   for (let i = 0; i < lines.length; i++) {
-    if (!/^#\[cfg\(test\)\]/.test(lines[i])) continue;
+    if (!lines[i].startsWith("#[cfg(test)]")) continue;
     let j = i + 1;
     while (j < lines.length && /^\s*(#\[|\/\/)/.test(lines[j])) j++;
     const k = testItemEnd(lines, code, j);
@@ -521,7 +521,7 @@ function classifyRustListed(r) {
   if (has(TEST_EDITS, r.path, r.lineno)) return "MOVE";
   const ex = STR_EXCEPTIONS[r.path]?.[r.lineno];
   if (ex) return ex;
-  if (P2_FILES.includes(r.path)) return "P2-fixture";
+  if (P2_FILES.has(r.path)) return "P2-fixture";
   if (inRanges(FROZEN[r.path], r.lineno)) return "P3-frozen";
   return undefined;
 }

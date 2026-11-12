@@ -9,7 +9,7 @@ const writerPath = new RegExp('^(?:(?:std|tokio)::fs::(?:write|File::create|Open
   '(?:fs::)?write|(?:File::create|OpenOptions::new))$');
 const rustSource = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 const validPath = p => typeof p === 'string' && p.startsWith('src-tauri/src/') &&
-  !p.includes('..') && !p.includes(String.fromCharCode(92)) &&
+  !p.includes('..') && !p.includes(String.fromCodePoint(92)) &&
   !p.includes('//') && !p.split('/').includes('.');
 export function parseRegistry(text) {
   let doc;
@@ -397,7 +397,7 @@ function literalIdentity(value) {
   const literal = value.replaceAll(String.fromCodePoint(92), '/');
   const relative = literal.replace(/^(?:[A-Za-z]:)?\//, '');
   const segments = relative.split('/');
-  const segment = /^(?:[A-Za-z0-9_.*-]|\{(?:[A-Za-z_][A-Za-z0-9_]*)?\})+$/;
+  const segment = /^(?:[\w.*-]|\{(?:[A-Za-z_]\w*)?\})+$/;
   if (segments.some(s => !s || s === '.' || s === '..' ||
       !segment.test(s))) return null;
   return /^.+\.(?:jsonl?|toml|ya?ml|db|sqlite3?|lock|md|txt)$/.test(segments.at(-1))

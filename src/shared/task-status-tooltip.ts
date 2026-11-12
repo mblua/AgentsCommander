@@ -79,7 +79,10 @@ export function createTaskStatusTooltip(options: {
     }
   };
   const tooltipKeyDown = (event: KeyboardEvent, dismissAllowed: boolean) => {
-    if (event.key === "Escape") { if (dismissAllowed) dismissTooltip(event); return; }
+    if (event.key === "Escape") {
+      if (dismissAllowed) dismissTooltip(event);
+      return;
+    }
     const element = options.tooltipElement();
     if (!tooltipOpen() || !element || element.scrollHeight <= element.clientHeight) return;
     const targets: Record<string, number> = {
