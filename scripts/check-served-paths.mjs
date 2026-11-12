@@ -34,7 +34,7 @@ Other concat! expressions emit warnings and retain the original literal scan.
 function lineOf(source, index) {
   let line = 1;
   for (let i = 0; i < index && i < source.length; i += 1) {
-    if (source.charCodeAt(i) === 10) line += 1;
+    if (source.codePointAt(i) === 10) line += 1;
   }
   return line;
 }
@@ -63,7 +63,7 @@ function rustToken(source, index) {
       if (escape in simple) return simple[escape];
       if (escape.startsWith('\\x')) return String.fromCharCode(parseInt(escape.slice(2), 16));
       if (escape.startsWith(String.raw`\u{`)) {
-        const code = parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
+        const code = Number.parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);
         if (code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff))
           return String.fromCodePoint(code);
       }
@@ -417,7 +417,7 @@ function selfTestCases() {
       expectError(result, 'has no row');
     }],
     ['case 12: CRLF inventory and source behave like case 1', () => {
-      const crlf = (text) => text.replace(/\n/g, '\r\n');
+      const crlf = (text) => text.replaceAll('\n', '\r\n');
       const baseline = runServedPathsFixture();
       const result = runServedPathsFixture({
         inventoryText: crlf(SELF_TEST_GOOD_INVENTORY),
