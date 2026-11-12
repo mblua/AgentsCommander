@@ -411,18 +411,18 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     return "No active session";
   });
 
+  const layoutState = () => {
+    if (terminalStore.activeSessionId) return "active";
+    if (terminalStore.selectionMode === "dormant") return "dormant";
+    return terminalStore.bindingState;
+  };
+
   return (
     <div
       class="terminal-layout"
       data-ac-testid="terminal.root"
       data-ac-role="surface"
-      data-ac-state={
-        terminalStore.activeSessionId
-          ? "active"
-          : terminalStore.selectionMode === "dormant"
-            ? "dormant"
-            : terminalStore.bindingState
-      }
+      data-ac-state={layoutState()}
     >
       <Show when={!props.embedded}>
         <Titlebar detached={props.detached} lockedSessionId={props.lockedSessionId} />

@@ -80,7 +80,7 @@ const BindOption: Component<BindOptionProps> = (props) => (
         </span>
       </span>
       <Show when={props.note}>
-        <span class={`webserver-bind-note${props.noteClass ? ` ${props.noteClass}` : ""}`}>
+        <span class={["webserver-bind-note", props.noteClass].filter(Boolean).join(" ")}>
           {props.note}
         </span>
       </Show>
