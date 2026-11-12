@@ -1200,7 +1200,7 @@ const MainApp: Component = () => {
     if (round.ended || activeQuitRound !== round) return;
     // Ignore starts for settled or superseded attempts.
     if (round.attemptId !== attemptId) return;
-    if (!payload || payload.attemptId !== attemptId) return;
+    if (payload?.attemptId !== attemptId) return;
     bindQuitEpoch(round, payload.epoch);
   };
 

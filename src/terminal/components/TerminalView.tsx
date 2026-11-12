@@ -542,7 +542,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     rows: number,
   ): Promise<"sent" | "deduplicated" | "failed"> => {
     const previous = entry.lastSentViewport;
-    if (previous && previous.cols === cols && previous.rows === rows) {
+    if (previous?.cols === cols && previous.rows === rows) {
       return "deduplicated";
     }
 
@@ -558,7 +558,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const pending = pendingPtyResizeAttempts
       .get(entry)
       ?.get(ptyResizeAttemptKey(cols, rows));
-    if (pending && pending.cols === cols && pending.rows === rows) {
+    if (pending?.cols === cols && pending.rows === rows) {
       return pending.completion;
     }
     return startPtyResizeAttempt(sessionId, entry, cols, rows);
