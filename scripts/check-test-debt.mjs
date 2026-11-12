@@ -42,7 +42,7 @@ function blankPreserveNewlines(text) {
 }
 
 function isIdentifierChar(ch) {
-  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+  return ch !== undefined && /\w/.test(ch);
 }
 
 function isTokenBoundary(source, index) {
@@ -246,7 +246,7 @@ function discoverFiles(root) {
 
 function moduleRanges(masked) {
   const ranges = [];
-  const modRe = /\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/g;
+  const modRe = /\bmod\s+([A-Za-z_]\w*)\s*\{/g;
   let match;
   while ((match = modRe.exec(masked)) !== null) {
     const open = masked.indexOf('{', match.index);
@@ -280,11 +280,11 @@ function hasExecutableRustBody(originalBody, strippedBody) {
     withoutComments)) return true;
   if (/\?/.test(withoutComments)) return true;
   if (/\.(?:unwrap|expect)\s*\(/.test(withoutComments)) return true;
-  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*!\s*[\(\[]/.test(
+  if (/(^|\W)(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*!\s*[([]/.test(
     withoutComments)) return true;
-  if (/(^|[^A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(
+  if (/(^|\W)(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*\s*\(/.test(
     withoutComments)) return true;
-  if (/\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(withoutComments)) return true;
+  if (/\.[A-Za-z_]\w*\s*\(/.test(withoutComments)) return true;
   return false;
 }
 
@@ -342,7 +342,7 @@ function rustFindFnHeader(source, from, memo) {
   RUST_FN_CANDIDATE.lastIndex = from;
   for (let hit = RUST_FN_CANDIDATE.exec(source); hit !== null; hit = RUST_FN_CANDIDATE.exec(
     source)) {
-    const simple = hit[0][0] !== 'p' && hit[0].endsWith('(');
+    const simple = !hit[0].startsWith('p') && hit[0].endsWith('(');
     const header = simple ? null : rustFnHeaderAt(source, hit.index, memo);
     if (simple || header !== null) {
       memo.headerIndex = hit.index;
@@ -726,7 +726,7 @@ function loadAllowlist(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const parsed = JSON.parse(raw);
   const errors = [];
-  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+  if (parsed?.version !== 1 || !Array.isArray(parsed.entries)) {
     errors.push('allowlist must be an object with version 1 and entries array');
     return { entries: [], errors };
   }
