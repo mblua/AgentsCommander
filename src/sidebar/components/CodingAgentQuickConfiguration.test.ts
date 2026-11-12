@@ -2162,7 +2162,7 @@ describe("CodingAgentQuickConfiguration", () => {
       const box = outputBox("codex")!;
       expect(box.textContent).toBe(`$ ${CODEX_CMD}\n${stderr}\nexit code: 1 (exit code 1)`);
       expect(box.querySelector("img")).toBeNull();
-      expect(box.children.length).toBe(0);
+      expect(box.children).toHaveLength(0);
 
       dispose();
     });

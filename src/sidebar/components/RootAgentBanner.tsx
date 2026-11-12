@@ -355,8 +355,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     const r = rootSession();
     const choices = menuTelegramBots();
     if (
-      !choices ||
-      choices.epoch !== menuEpoch ||
+      choices?.epoch !== menuEpoch ||
       menuPos() === null ||
       !r ||
       !hasLivePty() ||
