@@ -98,7 +98,6 @@ use uuid::Uuid;
 use crate::filesystem::activity_log as activity_io;
 
 use crate::session::profile::{idle_tuning_for, CodingAgentKind};
-use crate::session::session::Session;
 
 /// Schema version stamped on every record as `v`.
 const SCHEMA_VERSION: u32 = 1;
@@ -362,7 +361,7 @@ fn metrics_declaration() -> MetricsDeclaration {
     }
 }
 
-/// Build the opening edge for `session`, stamping `at` and deciding the block
+/// Build the opening edge for supplied session fields, stamping `at` and deciding the block
 /// annotation in the same breath.
 ///
 /// Contains no `log::*` call, deliberately: every production caller runs inside
@@ -371,7 +370,9 @@ fn metrics_declaration() -> MetricsDeclaration {
 /// logs after releasing.
 pub fn build_busy(
     id: Uuid,
-    session: &Session,
+    name: &str,
+    cwd: &str,
+    agent_kind: Option<CodingAgentKind>,
     reason: BusyReason,
     owner: &ActivityCoalescer,
 ) -> ActivityRecord {
@@ -395,9 +396,9 @@ pub fn build_busy(
         run_id: run_id(owner),
         payload: ActivityPayload::Busy {
             session_id: id,
-            name: session.name.clone(),
-            cwd: session.working_directory.clone(),
-            agent_kind: session.agent_kind,
+            name: name.to_owned(),
+            cwd: cwd.to_owned(),
+            agent_kind,
             reason,
             continues_block: gap_ms.is_some(),
             gap_ms,
@@ -405,13 +406,15 @@ pub fn build_busy(
     }
 }
 
-/// Build the closing edge for `session` and record `last_idle_at` so the next
+/// Build the closing edge for supplied session fields and record `last_idle_at` so the next
 /// opening edge can annotate its block.
 ///
 /// Contains no `log::*` call; see [`build_busy`].
 pub fn build_idle(
     id: Uuid,
-    session: &Session,
+    name: &str,
+    cwd: &str,
+    agent_kind: Option<CodingAgentKind>,
     reason: IdleReason,
     owner: &ActivityCoalescer,
 ) -> ActivityRecord {
@@ -424,16 +427,14 @@ pub fn build_idle(
         run_id: run_id(owner),
         payload: ActivityPayload::Idle {
             session_id: id,
-            name: session.name.clone(),
-            cwd: session.working_directory.clone(),
-            agent_kind: session.agent_kind,
+            name: name.to_owned(),
+            cwd: cwd.to_owned(),
+            agent_kind,
             reason,
             idle_threshold_ms: match reason {
-                IdleReason::MarkIdle => Some(
-                    idle_tuning_for(session.agent_kind)
-                        .idle_threshold
-                        .as_millis() as u64,
-                ),
+                IdleReason::MarkIdle => {
+                    Some(idle_tuning_for(agent_kind).idle_threshold.as_millis() as u64)
+                }
                 IdleReason::AppStop => None,
             },
         },
