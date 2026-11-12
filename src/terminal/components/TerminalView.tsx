@@ -246,7 +246,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const replayStatus = document.createElement("div");
     replayStatus.className = "terminal-replay-status";
     replayStatus.hidden = true;
-    replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
+    replayStatus.dataset.acTestid = `terminal.replay-status.${sessionId}`;
     container.appendChild(replayStatus);
 
     // #1682 - the top-right status strip. The stamp sits immediately LEFT of the
@@ -272,7 +272,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // user-agent `[hidden] { display: none }` rule. While hidden it is not a
     // flex item, so the strip's `gap` does not show either.
     const agentMessageStatus = document.createElement("div");
-    agentMessageStatus.setAttribute("data-testid", `terminal-agent-message-${sessionId}`);
+    agentMessageStatus.dataset.testid = `terminal-agent-message-${sessionId}`;
     agentMessageStatus.setAttribute("aria-label", "Last coding agent message time");
     agentMessageStatus.style.color = "var(--statusbar-fg)";
     agentMessageStatus.style.fontFamily = "var(--font-mono)";
@@ -283,7 +283,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     const gridStatus = document.createElement("div");
     gridStatus.className = "terminal-grid-status";
-    gridStatus.setAttribute("data-testid", `terminal-grid-size-${sessionId}`);
+    gridStatus.dataset.testid = `terminal-grid-size-${sessionId}`;
     gridStatus.setAttribute("aria-label", "Terminal grid size");
     gridStatus.style.color = "var(--statusbar-fg)";
     gridStatus.style.fontFamily = "var(--font-mono)";
@@ -328,7 +328,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
             .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
           return false;
         }
-        return terminal.hasSelection() ? false : true;
+        return !terminal.hasSelection();
       }
 
       if (isCtrlShift && key === "v") {
@@ -1072,8 +1072,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   onCleanup(
     registerUiTerminalController(({ element, sessionId, operation }) => {
       if (
-        element.getAttribute("data-ac-testid") !== `terminal.session.${sessionId}` ||
-        element.getAttribute("data-ac-session-id") !== sessionId
+        element.dataset.acTestid !== `terminal.session.${sessionId}` ||
+        element.dataset.acSessionId !== sessionId
       ) {
         return {
           ok: false,
