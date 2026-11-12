@@ -377,6 +377,10 @@ pub(crate) fn remote_sweeper_seams() -> crate::pty::remote_watcher::RemoteSweepe
 // two sides therefore stay symmetric and no false "sent but never
 // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
 // this in every record block.
+//
+// rustfmt::skip keeps two short commands on one line: the Length gate
+// (too-many-lines.baseline.json) caps this body at 195 counted lines.
+#[rustfmt::skip]
 fn invoke_handler(
     observer: Arc<crate::loops::ipc_observer::IpcObserver>,
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
@@ -393,8 +397,7 @@ fn invoke_handler(
         commands::session::get_active_session,
         commands::session::get_last_agent_message,
         commands::session_warnings::drain_session_warnings,
-        quit_gate_register,
-        quit_gate_unregister,
+        quit_gate_register, quit_gate_unregister,
         quit_gate_resolve,
         quit_gate_progress,
         quit_application,
