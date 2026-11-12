@@ -12,7 +12,7 @@ const RestartPromptModal: Component<{
 }> = (props) => {
   return (
     <div
-      class="modal-overlay"
+      class="modal-overlay" role="presentation"
       onClick={props.onLater}
       // #2655 - Escape = backdrop click; the dialog takes focus on mount so keys reach here.
       onKeyDown={(e) => {

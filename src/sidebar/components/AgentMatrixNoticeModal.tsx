@@ -25,7 +25,7 @@ const AgentMatrixNoticeModal: Component<{
 
   return (
     <div
-      class="modal-overlay"
+      class="modal-overlay" role="presentation"
       onClick={props.onClose}
       {...automationAttrs("agentMatrixNotice.overlay", "overlay")}
     >

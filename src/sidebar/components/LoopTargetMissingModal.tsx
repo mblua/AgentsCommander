@@ -33,7 +33,7 @@ const LoopTargetMissingModal: Component<{
 
   return (
     <div
-      class="modal-overlay"
+      class="modal-overlay" role="presentation"
       onClick={props.onDismiss}
       onKeyDown={dismissOnEscape}
       {...automationAttrs("loopTargetMissing.overlay", "overlay")}
