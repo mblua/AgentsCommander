@@ -897,16 +897,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // parse into the fresh buffer ahead of the newer snapshot and duplicate
     // it (the issue's own straddle class).
     const drain = attachDrains.get(entry);
-    const releaseDrain = () => {
-      if (!drain) {
-        return;
-      }
-      drain.inFlight -= 1;
-      if (drain.inFlight === 0 && drain.resolve) {
-        drain.resolve();
-        drain.resolve = null;
-      }
-    };
+    const releaseDrain = () => releaseAttachDrain(drain);
     for (let index = 0; index < kept.length; index += 1) {
       const isLast = index === kept.length - 1;
       if (drain) {
@@ -1066,6 +1057,17 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
   const attachGenerations = new WeakMap<SessionTerminalEntry, number>();
   const attachDrains = new WeakMap<SessionTerminalEntry, AttachDrain>();
+
+  function releaseAttachDrain(drain: AttachDrain | undefined) {
+    if (!drain) {
+      return;
+    }
+    drain.inFlight -= 1;
+    if (drain.inFlight === 0 && drain.resolve) {
+      drain.resolve();
+      drain.resolve = null;
+    }
+  }
 
   onCleanup(
     registerUiTerminalController(({ element, sessionId, operation }) => {
@@ -1267,16 +1269,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     //    stops this generation's pipeline - never an unhandled rejection
     //    (live output continues; the next attach re-seeds).
     const drain = attachDrains.get(entry);
-    const releaseDrain = () => {
-      if (!drain) {
-        return;
-      }
-      drain.inFlight -= 1;
-      if (drain.inFlight === 0 && drain.resolve) {
-        drain.resolve();
-        drain.resolve = null;
-      }
-    };
+    const releaseDrain = () => releaseAttachDrain(drain);
     if (drain) {
       if (drain.inFlight === 0) {
         drain.promise = new Promise<void>((resolve) => {
