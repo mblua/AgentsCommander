@@ -467,7 +467,7 @@ function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfile
 }
 
 function decodeSettings(input: SettingsSnapshotWireInput): SettingsSnapshotProjection {
-  const agents = input.agents && input.agents.map(decodeBaseCommand);
+  const agents = input.agents?.map(decodeBaseCommand);
   const agentsChanged = agents?.some((agent, index) => agent !== input.agents![index]);
   const codingAgentProfiles = input.codingAgentProfiles && decodeProfiles(input.codingAgentProfiles);
   if (!agentsChanged && codingAgentProfiles === input.codingAgentProfiles) {
