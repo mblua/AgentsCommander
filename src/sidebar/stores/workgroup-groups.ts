@@ -241,7 +241,7 @@ export function appendExactGroupToken(regex: string, wgName: string): string | n
   } catch {
     return null;
   }
-  const generated = pattern.match(/^\^\((.*)\)\$$/);
+  const generated = /^\^\((.*)\)\$$/.exec(pattern);
   if (generated) return `^(${generated[1]}|${token})$`;
   return `(?:${pattern})|^(${token})$`;
 }
@@ -285,7 +285,7 @@ function splitGeneratedAppend(pattern: string): { inner: string; token: string }
 function removeExactGroupTokenUnchecked(regex: string, wgName: string): string | null {
   const pattern = regex.trim();
   const token = escapeRegexLiteral(wgName);
-  const generated = pattern.match(/^\^\((.*)\)\$$/);
+  const generated = /^\^\((.*)\)\$$/.exec(pattern);
   if (generated) {
     const alternatives = splitEscapedAlternatives(generated[1]);
     if (!alternatives.includes(token)) return null;
