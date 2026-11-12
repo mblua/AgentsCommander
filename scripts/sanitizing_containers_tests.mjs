@@ -378,7 +378,10 @@ test('04 settings immutable git and errors', t => {
     const policy = structuredClone(c); mutate(policy);
     control(t, 'malformed policy', {}, 3, undefined, policy);
   }
-  const unstable = settingsTree(); unstable.assertStableHead = () => { throw new Error('HEAD drift'); };
+  const unstable = settingsTree();
+  unstable.assertStableHead = () => {
+    throw new Error('HEAD drift');
+  };
   assert.equal(containersGate(unstable).exit, 3);
   const f = gitFixture(t), fixture = settingsTree();
   for (const [p, entry] of fixture.headTree) f.write(p, fixture.readBlob(entry));
