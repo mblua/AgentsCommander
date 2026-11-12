@@ -11,7 +11,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = 'too-many-lines.baseline.json';
 const PLATFORMS = ['linux', 'macos', 'windows'];
 const SHA = /^[a-f0-9]{40}$/;
-const NAME = /^(?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*$/u;
+const NAME = /^(?:r#)?[\p{ID_Start}_]\p{ID_Continue}*$/u;
 const key = e => `${e.id}\0${e.anchor}`;
 const pair = e => `${e.name}\0${e.anchor}`;
 const order = (a, b) => {
@@ -60,7 +60,7 @@ export function parseCapture(text, exit, render = () => {}) {
   return records.filter(r => r.reason === 'compiler-message' &&
     r.message?.code?.code === 'clippy::too_many_lines').map(r => {
     const m = /^this function has too many lines \((\d+)\/(\d+)\)$/.exec(r.message.message);
-    requireInput(m && m[2] === '100' && Number.isSafeInteger(+m[1]) && +m[1] > 100,
+    requireInput(m?.[2] === '100' && Number.isSafeInteger(+m[1]) && +m[1] > 100,
       `invalid length diagnostic: ${r.message.message}`);
     const spans = r.message.spans?.filter(s => s.is_primary === true);
     requireInput(spans?.length === 1, 'length diagnostic needs one primary span');
@@ -115,7 +115,7 @@ export function observations(diagnostics, root, readSource) {
     requireInput(end > start, `invalid span in ${file}`);
     // Clippy 1.98.1 highlights the header from its qualifiers through the return type.
     const header = source.slice(start, end);
-    const names = [...header.matchAll(/\bfn\s+((?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*)/gu)];
+    const names = [...header.matchAll(/\bfn\s+((?:r#)?[\p{ID_Start}_]\p{ID_Continue}*)/gu)];
     requireInput(names.length === 1, `ambiguous/unresolved function in ${file}:${s.line_start}`);
     const name = names[0][1], at = start + names[0].index + names[0][0].length - name.length;
     const [line, column] = position(source, at);
@@ -254,7 +254,7 @@ function macroTokens(source) {
     if (trivia !== null) { i = trivia; continue; }
     const literal = donorLiteralEnd(source, i);
     if (literal !== null) { i = literal; continue; }
-    const name = /^(?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*/u.exec(source.slice(i));
+    const name = /^(?:r#)?[\p{ID_Start}_]\p{ID_Continue}*/u.exec(source.slice(i));
     if (name) { tokens.push(name[0]); i += name[0].length; }
     else tokens.push(source[i++]);
   }
@@ -295,7 +295,10 @@ function macroMayCarry(source, name) {
 export function originalAbsent(entry, { readSource, stat = fs.statSync, root = ROOT }) {
   const file = entry.id.slice(5).split('::')[0];
   try { stat(path.join(root, file)); }
-  catch (e) { if (e.code === 'ENOENT') return true; throw e; }
+  catch (e) {
+    if (e.code === 'ENOENT') return true;
+    throw e;
+  }
   requireInput(!macroMayCarry(readSource(file), entry.name),
     `macro donor identity unsupported in ${file}`);
   const frames = lexFile(file, readSource);

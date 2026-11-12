@@ -60,7 +60,8 @@ export function lexRust(path, text) {
         else if (text.startsWith('*/', i)) { depth--; advance(i + 2); }
         else advance(i + 1);
       }
-      if (depth) error(path, tokenLine, 'unclosed block comment'); continue;
+      if (depth) error(path, tokenLine, 'unclosed block comment');
+      continue;
     }
     const raw = /^(?:br|r)(#*)"/.exec(text.slice(i));
     if (raw) {
@@ -142,7 +143,8 @@ function splitTop(tokens, separator = ',') {
     else if (tokens[i].text === separator) { if (i > start) result.push(tokens.slice(start, i));
       start = i + 1; }
   }
-  if (start < tokens.length) result.push(tokens.slice(start)); return result;
+  if (start < tokens.length) result.push(tokens.slice(start));
+  return result;
 }
 export function parseMeta(tokens) {
   let i = 0;
@@ -160,7 +162,8 @@ export function parseMeta(tokens) {
       while (i < tokens.length && ![',', ')'].includes(tokens[i].text)) {
         if (opens[tokens[i].text]) {
           const end = tokens.findIndex(t => t.index === tokens[i].mate);
-          if (end < i) fail(); i = end + 1;
+          if (end < i) fail();
+          i = end + 1;
         } else i++;
       }
       if (begin === i) fail();
@@ -181,7 +184,9 @@ export function parseMeta(tokens) {
     }
     return node;
   }
-  const meta = parse(); if (i !== tokens.length) fail(); return meta;
+  const meta = parse();
+  if (i !== tokens.length) fail();
+  return meta;
 }
 export function impliesTest(meta) {
   if (meta.name === 'test' && meta.args === null && meta.value === undefined) return true;
@@ -498,7 +503,7 @@ return sinks.map(site=>({...site,
 function ordinaryManifest(cargo, external = false, path, tree) {
   const gap = String.raw`(?:[ \t\r\n]|#[^\r\n]*(?![^\r\n]))*`;
   const string = String.raw`(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')`;
-  const scalar = String.raw`(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
+  const scalar = `(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
   const array = String.raw`\[${gap}(?:${scalar}${gap}(?:,${gap}${scalar}${gap})*,?${gap})?\]`;
   const pair = String.raw`[A-Za-z0-9_-]+[ \t]*=[ \t]*(?:${scalar}|${array})`;
   const inline = String.raw`\{[ \t]*${pair}(?:[ \t]*,[ \t]*${pair})*[ \t]*\}`;
@@ -519,7 +524,7 @@ function ordinaryManifest(cargo, external = false, path, tree) {
       cargo = cargo.slice(arrayHeader[0].length);
       continue;
     }
-    const header = /^\[[ \t]*([^\[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
+    const header = /^\[[ \t]*([^[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
       .exec(cargo);
     if (header) {
       section = header[1].trim();
