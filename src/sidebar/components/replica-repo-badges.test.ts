@@ -259,7 +259,7 @@ describe("#1028 per-repo dirty is merged BY PATH", () => {
 
     const [clean, unknown] = badgesFor([REPO_A, REPO_C]);
     expect(clean.dirty).toBe(false);
-    expect(unknown.dirty).toBe(null);
+    expect(unknown.dirty).toBeNull();
     // Both render violet, so the ONLY user-visible difference is the tooltip. This
     // pair is what makes a `?? null` -> `|| null` regression observable at all.
     expect(formatReplicaRepoBadgeTitle(clean)).toBe(REPO_A);
