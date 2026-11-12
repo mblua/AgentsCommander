@@ -126,9 +126,9 @@ test('original definition scan sees shortened, cfg-inactive and changed-header o
 });
 test('missing donor only ENOENT; IO, unreadable and ambiguous macro fail closed', () => {
   assert.equal(originalAbsent(entry(), { stat: () => { throw { code: 'ENOENT' }; } }), true);
-  assert.throws(() => originalAbsent(entry(), { stat: () => { throw Error('EACCES'); } }));
+  assert.throws(() => originalAbsent(entry(), { stat: () => { throw new Error('EACCES'); } }));
   assert.throws(() => originalAbsent(entry(), { stat: () => ({}),
-    readSource: () => { throw Error('unreadable'); } }));
+    readSource: () => { throw new Error('unreadable'); } }));
   assert.throws(() => originalAbsent(entry(), { stat: () => ({}),
     readSource: () => 'macro_rules! m { () => { fn heavy() {} } }' }));
 });
@@ -145,7 +145,7 @@ test('macro expansion, invalid spans, unreadable source and indistinguishable ke
   const broken = diagnostic(); broken.message.spans[0].line_start = 99;
   assert.throws(() => observations(parseCapture(jsonl([broken, end]), 0), '/repo', () => ''));
   assert.throws(() => observations(parseCapture(jsonl([diagnostic(), end]), 0), '/repo',
-    () => { throw Error('IO'); }));
+    () => { throw new Error('IO'); }));
   const source = 'fn heavy() {}\nfn heavy() {}';
   assert.throws(() => observations(parseCapture(jsonl([
     diagnostic(source), diagnostic(source, 150, 'src/a.rs', 2), end]), 0), '/repo', () => source));
