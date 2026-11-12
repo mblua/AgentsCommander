@@ -146,7 +146,10 @@ function control(t, label, files, expected, site, policy) {
   t.diagnostic(JSON.stringify({ control: label, status: result.status, exit: result.exit,
     sites: result.diagnostics.filter(d => d.identity === 'Instance/Settings') }));
   assert.equal(result.exit, expected, label + ': ' + JSON.stringify(result.diagnostics));
-  assert.equal(result.status, expected === 0 ? 'PASS' : expected === 1 ? 'FAIL' : 'ERROR');
+  let expectedStatus = 'ERROR';
+  if (expected === 0) expectedStatus = 'PASS';
+  else if (expected === 1) expectedStatus = 'FAIL';
+  assert.equal(result.status, expectedStatus);
   if (site) assert.ok(result.diagnostics.some(d => d.status === 'FAIL' &&
     d.identity === 'Instance/Settings' && d.path === site.path && d.line === site.line), label);
   return result;
@@ -858,9 +861,11 @@ test('04 real default snapshot exposes debt and rejects exact memory injection',
         for (const witness of witnesses) assert.ok(debt.sites.some(site =>
           site.path === witness.path && site.line === witness.line), JSON.stringify(witness));
       }
+      let reason = 'example absent from source';
+      if (excluded.length) reason = 'scoped registered name';
+      else if (witnesses.length) reason = 'direct source occurrences checked';
       t.diagnostic(JSON.stringify({ control: 'direct-source witnesses', side, literal,
-        witnesses, excluded, reason: excluded.length ? 'scoped registered name' :
-          witnesses.length ? 'direct source occurrences checked' : 'example absent from source' }));
+        witnesses, excluded, reason }));
     }
   }
   const existing = before.unregistered.head.entries[0];

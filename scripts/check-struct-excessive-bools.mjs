@@ -60,7 +60,10 @@ export const SEED = Object.freeze([
 export class InputError extends Error { constructor(m) { super(m); this.exit = 2; } }
 export class PolicyError extends Error { constructor(m) { super(m); this.exit = 1; } }
 const need = (ok, m) => { if (!ok) throw new InputError(m); };
-const order = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const order = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const sortedUnique = list => list.every((v, i) => !i || order(list[i - 1], v) < 0);
 // Imported helpers throw their own error classes; every one of them is invalid input here.
