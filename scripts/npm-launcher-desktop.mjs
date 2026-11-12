@@ -26,7 +26,8 @@ export function runShortcutChecks(requireFromWork, desktopContext) {
   });
 
   test('S2', () => {
-    const r = shortcutMod.createStartMenuShortcut(String.raw`C:\x\agentscommander.exe`, { platform: 'win32',
+    const r = shortcutMod.createStartMenuShortcut(String.raw`C:\x\agentscommander.exe`, {
+      platform: 'win32',
       env: { APPDATA: 'x' } });
     expectEqual(r.created, false, 'S2 created');
     assert(!fs.existsSync(path.join(workDir, 'appdata')), 'S2: a skipped call must write nothing');
