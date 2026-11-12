@@ -337,16 +337,8 @@ const EditTeamModal: Component<{
               </Show>
               <Show when={allAgents().length > 0}>
                 <div class="wizard-search-row">
-                  <svg
-                    aria-hidden="true"
-                    class="wizard-search-icon"
-                    viewBox="0 0 16 16"
-                    width="14"
-                    height="14"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                  >
+                  <svg aria-hidden="true" class="wizard-search-icon" viewBox="0 0 16 16"
+                    width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
                     <circle cx="6.5" cy="6.5" r="5" />
                     <line x1="10" y1="10" x2="14.5" y2="14.5" />
                   </svg>
