@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "8ded2f76f00fe964",
+      "id": "0c5bfdf0a028143f",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -55,7 +55,6 @@
         "agentscommander_lib::commands::config::profile_selection::lock_removal",
         "agentscommander_lib::commands::config::profile_selection::selection_default",
         "agentscommander_lib::commands::config::profile_selection::target",
-        "agentscommander_lib::commands::config::profile_selection::wire",
         "agentscommander_lib::commands::config::settings_snapshot",
         "agentscommander_lib::commands::config::settings_update",
         "agentscommander_lib::commands::config::web_server",
@@ -215,7 +214,6 @@
         "agentscommander_lib::config::settings::owner::lease",
         "agentscommander_lib::config::settings::project_path",
         "agentscommander_lib::config::settings::project_path::migration",
-        "agentscommander_lib::config::settings::project_path::resolution",
         "agentscommander_lib::config::settings::project_path::transaction",
         "agentscommander_lib::config::settings::save",
         "agentscommander_lib::config::settings::save::disk",
@@ -320,13 +318,11 @@
         "agentscommander_lib::session::selection::authority",
         "agentscommander_lib::session::selection::coordinator_runtime",
         "agentscommander_lib::session::selection::envelope",
-        "agentscommander_lib::session::selection::payload",
         "agentscommander_lib::session::selection::replacement",
         "agentscommander_lib::session::selection::response_close",
         "agentscommander_lib::session::selection::shutdown_cleanup",
         "agentscommander_lib::session::selection::tickets",
         "agentscommander_lib::session::selection::transaction",
-        "agentscommander_lib::session::selection::turn",
         "agentscommander_lib::session::session",
         "agentscommander_lib::telegram::bridge",
         "agentscommander_lib::telegram::bridge::poll",
