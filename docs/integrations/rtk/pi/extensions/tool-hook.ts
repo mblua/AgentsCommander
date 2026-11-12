@@ -68,7 +68,7 @@ const WRAPPER = path.join(
   "..",
   "rtk",
   "ac-rtk.sh",
-).replace(/\\/g, "/");
+).replaceAll("\\", "/");
 const RTK_CMD = fs.existsSync(WRAPPER) ? WRAPPER : "rtk";
 
 // `rtk rewrite` emits one `rtk <sub> ...` per rewritten segment; route every
@@ -261,7 +261,7 @@ const RULE = configuredShell() === "powershell"
   ? { decide: decidePwsh, tool: "PowerShell" }
   : { decide: decideBash, tool: "Bash" };
 
-export default function (pi: ExtensionAPI) {
+export default function rtkToolHook(pi: ExtensionAPI) {
   pi.on("tool_call", (event) => {
     if (event.toolName === "read") {
       const p = (event.input as { path?: unknown }).path;
