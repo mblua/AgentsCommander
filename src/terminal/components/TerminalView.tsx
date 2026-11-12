@@ -830,9 +830,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // entry's queued writes for the next generation, and the write path's
   // `snapshotReplayPending` gate already prevents any post-close registration.
   const closeSnapshotReconcile = (entry: SessionTerminalEntry) => {
-    entry.snapshotReplayPending = false;
-    entry.pendingSnapshotEvents = [];
-    entry.pendingSnapshotBytes = 0;
+    abandonSnapshotReconcile(entry);
   };
 
   // #1489: awaits parse completion of every live write queued since the
