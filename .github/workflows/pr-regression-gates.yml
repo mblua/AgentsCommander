@@ -788,7 +788,8 @@ jobs:
   # their release compile runs in parallel with the debug suite instead of
   # after it; the steps and assertions are unchanged. It restores gate-release,
   # the release dependency cache cache-warm.yml saves on main, so it installs
-  # the same floating stable toolchain as that cache and as release.yml.
+  # the same pinned Rust 1.98.1 as that cache (#4419). release.yml still uses
+  # floating stable.
   issue-1850-release-windows:
     name: issue-1850-release-windows
     # Skip branch-deletion push events while still requiring pull request validation.
