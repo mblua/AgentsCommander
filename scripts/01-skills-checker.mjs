@@ -88,8 +88,8 @@ function trimYamlValue(value) {
 function asciiLower(value) {
   let out = '';
   for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    out += code >= 0x41 && code <= 0x5a ? String.fromCharCode(code + 0x20) : value[i];
+    const code = value.codePointAt(i);
+    out += code >= 0x41 && code <= 0x5a ? String.fromCodePoint(code + 0x20) : value[i];
   }
   return out;
 }
@@ -571,7 +571,7 @@ function decodeEscape(text, i) {
     if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
       return { ok: false, reason: String.raw`a double-quoted scalar with a malformed \u escape` };
     }
-    return { ok: true, value: String.fromCharCode(Number.parseInt(hex, 16)), width: 6 };
+    return { ok: true, value: String.fromCodePoint(Number.parseInt(hex, 16)), width: 6 };
   }
   return { ok: false,
     reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
@@ -2455,10 +2455,11 @@ function selfTest(out) {
       try {
         // No `description` and a non-string `when_to_use`, so both field-layer findings
         // WOULD fire if validation did not stop at the name failure.
+        const nameValue = value === '' ? '' : ` ${value}`;
         writeFixture(
           inner,
           '_agent_x/skills/x/SKILL.md',
-          `---\nname:${value === '' ? '' : ` ${value}`}\nwhen_to_use: 9\n---\n`,
+          `---\nname:${nameValue}\nwhen_to_use: 9\n---\n`,
         );
         const report = runCheck(inner);
         assertSelf(hasCode(report, 'E-NAME-NOT-STRING'),

@@ -256,7 +256,7 @@ export function registerTauriEdgeTests({ trees, control }) {
     assert.deepEqual(states(result), [expected, expected], x);
     assert.equal(stateSites(result).length, expected, x);
     assert.ok(stateSites(result).every(s => s.path === R + 'x.rs' && s.line > 0), x);
-    const withoutCalls = run(crate(x.replace(/.(?:state|try_state)()/g, '.unrelated()'), extra));
+    const withoutCalls = run(crate(x.replace(/.(?:state|try_state)/g, '.unrelated()'), extra));
     assert.deepEqual(result.diagnostics.filter(d => d.status === 'WARN'),
       withoutCalls.diagnostics.filter(d => d.status === 'WARN'),
       'inferred calls add no warning: ' + x);

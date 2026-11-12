@@ -32,7 +32,7 @@ function relPath(root, filePath) {
 function lineOf(source, index) {
   let line = 1;
   for (let i = 0; i < index && i < source.length; i += 1) {
-    if (source.charCodeAt(i) === 10) line += 1;
+    if (source.codePointAt(i) === 10) line += 1;
   }
   return line;
 }
@@ -596,7 +596,7 @@ function addFrontendSkippedFindings(source, rel, ranges, findings) {
   while ((eachSkip = eachSkipRe.exec(masked)) !== null) {
     const eachClose = findMatchingParen(masked, eachSkipRe.lastIndex - 1);
     if (eachClose === -1) continue;
-    const suffix = masked.slice(eachClose + 1).match(/^\s*\.\s*(?:skip|todo)\s*\(/);
+    const suffix = /^\s*\.\s*(?:skip|todo)\s*\(/.exec(masked.slice(eachClose + 1));
     if (suffix) {
       addFrontendFinding(
         findings,
