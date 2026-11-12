@@ -226,13 +226,10 @@ function timelineNodeView(
       cancellable: false,
     };
   }
-  const state: NodeState = cancelling.has(command)
-    ? "cancelling"
-    : verifying.some((ref) => ref.command === command)
-      ? "verifying"
-      : running.some((ref) => ref.command === command)
-        ? "updating"
-        : "pending";
+  let state: NodeState = "pending";
+  if (cancelling.has(command)) state = "cancelling";
+  else if (verifying.some((ref) => ref.command === command)) state = "verifying";
+  else if (running.some((ref) => ref.command === command)) state = "updating";
   return {
     command,
     label,

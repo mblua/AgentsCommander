@@ -155,7 +155,7 @@ function sourceBytesReader(root, tracked, readBytes) {
 
 function primarySpan(message, root, source) {
   need(Array.isArray(message.spans), 'missing diagnostic spans');
-  const primaries = message.spans.filter(s => s && s.is_primary === true);
+  const primaries = message.spans.filter(s => s?.is_primary === true);
   need(primaries.length === 1, 'selected diagnostic needs exactly one primary span');
   const s = primaries[0];
   need(!s.expansion, 'primary span from macro expansion unsupported');

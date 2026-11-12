@@ -321,7 +321,8 @@ function printTextReport(apply, repoRoots, reclaimable, skipped, totalBytes) {
     console.log(`${TAG} no target/src-tauri/target artifacts found. Nothing to reclaim.`);
   }
   for (const r of reclaimable) {
-    const verb = apply ? (r.removed ? 'removed' : `FAILED (${r.error})`) : 'would remove';
+    let verb = 'would remove';
+    if (apply) verb = r.removed ? 'removed' : `FAILED (${r.error})`;
     console.log(`${TAG}   ${verb}: ${r.path}  (${humanBytes(r.bytes)})`);
   }
   for (const s of skipped) {

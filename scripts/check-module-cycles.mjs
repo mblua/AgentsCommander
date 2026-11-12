@@ -117,7 +117,7 @@ function parseReport(stdout, stderr) {
     throw unusable(`stdout is not JSON: ${err.message}`, stderr);
   }
   const version = report?.tool?.version;
-  if (!report || report.schemaVersion !== 1) throw unusable(
+  if (report?.schemaVersion !== 1) throw unusable(
     `schemaVersion is ${JSON.stringify(report?.schemaVersion)}`, stderr);
   if (version !== EXPECTED_TOOL_VERSION) {
     throw unusable(
