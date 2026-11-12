@@ -362,7 +362,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(Path::parent)
+                        .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -413,7 +413,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(Path::parent)
+                        .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -466,7 +466,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(Path::parent)
+                        .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -514,7 +514,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(Path::parent)
+                        .and_then(|p| p.parent())
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
