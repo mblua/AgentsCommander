@@ -3,7 +3,7 @@ import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
   resolveAlias as resolveGateAlias,
   qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
-const relevantPath = new RegExp("^(?:(?:std|tokio)::process::Command::new|Command::new|(?:std::)?env::(?:var|var_os|set_var|remove_var))$");
+const relevantPath = /^(?:(?:std|tokio)::process::Command::new|Command::new|(?:std::)?env::(?:var|var_os|set_var|remove_var))$/;
 function resolveAlias(scan, input, scope) {
   return resolveGateAlias(scan, input, scope, relevantPath);
 }
