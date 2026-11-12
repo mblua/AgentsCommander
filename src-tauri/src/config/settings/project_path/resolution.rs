@@ -5,7 +5,19 @@ use super::identity::{
     compare_dirs, display_canonical, CandidateResolver, DirectoryIdentity, SameDir, SideOutcome,
     SideStatus,
 };
-use super::normalize_for_compare;
+/// Mirrors the frontend `normalizePath` at
+/// `src/sidebar/stores/project.ts:17-19`. Comparison only — the persisted
+/// entry retains the original byte sequence.
+pub(crate) fn normalize_for_compare(s: &str) -> String {
+    let s = crate::path_utils::normalize_windows_verbatim_path(s);
+    // Slashes normalised, lowercased, trailing `/` stripped. The trailing
+    // strip closes Round-1 IR.3.2 (shell tab-completion appends `\` on dirs;
+    // without trim, `C:\foo\` and `C:\foo` would become DIFFERENT entries).
+    s.replace('\\', "/")
+        .to_lowercase()
+        .trim_end_matches('/')
+        .to_string()
+}
 
 // ── #1077 resolution matrix, merge, quarantine, dedup (§3.4-§3.7) ───────────
 
