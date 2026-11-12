@@ -128,7 +128,12 @@ async function refreshTaskSnapshotAttempt(path: string, aggregate?: SnapshotAggr
     if (operation) endOperation(operation, "snapshot-end", outcome, outcome === "applied" ? 1 : 0);
     if (aggregate) {
       if (outcome === "applied") aggregate.changedCount++;
-      const rank = (value: string) => value === "error" ? 3 : value === "stale" ? 2 : value === "applied" ? 1 : 0;
+      const rank = (value: string) => {
+        if (value === "error") return 3;
+        if (value === "stale") return 2;
+        if (value === "applied") return 1;
+        return 0;
+      };
       if (rank(outcome) > rank(aggregate.outcome)) aggregate.outcome = outcome;
     }
   }
@@ -727,7 +732,8 @@ export const projectStore = {
                 refreshTaskSnapshots();
               }
             });
-            outcome = !loaded ? "unloaded" : previous === projects() ? "unchanged" : "applied";
+            if (!loaded) outcome = "unloaded";
+            else outcome = previous === projects() ? "unchanged" : "applied";
             reloadOutcome = outcome;
           } catch (e) {
             reloadOutcome = "error";

@@ -118,6 +118,12 @@ function matchesCurrentSelection(
   );
 }
 
+// A fresh task read: a pending Clean wins, then a cached snapshot means refreshing.
+function nextTaskReadState(cleanPending: boolean): TaskReadState {
+  if (cleanPending) return "committedCleanPending";
+  return activeTaskSnapshot() ? "refreshing" : "loading";
+}
+
 export const terminalStore = {
   get selectionId() {
     return selectionId();
@@ -181,13 +187,13 @@ export const terminalStore = {
       if (!cwdUnderWorkgroupRoot(activeWorkingDirectory(), root)) return;
     }
     taskRequestGeneration += 1;
-    setTaskReadState(this.cleanPending ? "committedCleanPending" : activeTaskSnapshot() ? "refreshing" : "loading");
+    setTaskReadState(nextTaskReadState(this.cleanPending));
     setTaskInvalidation(value => value + 1);
   },
 
   beginTaskRead(): number {
     taskRequestGeneration += 1;
-    setTaskReadState(this.cleanPending ? "committedCleanPending" : activeTaskSnapshot() ? "refreshing" : "loading");
+    setTaskReadState(nextTaskReadState(this.cleanPending));
     return taskRequestGeneration;
   },
 
@@ -221,7 +227,7 @@ export const terminalStore = {
     lastLocalTaskWrite = { workgroupRoot, seq: taskWriteSeq };
     taskRequestGeneration += 1;
     if (cwdUnderWorkgroupRoot(activeWorkingDirectory(), workgroupRoot)) {
-      setTaskReadState(this.cleanPending ? "committedCleanPending" : activeTaskSnapshot() ? "refreshing" : "loading");
+      setTaskReadState(nextTaskReadState(this.cleanPending));
     }
   },
 

@@ -80,41 +80,22 @@ describe("WorkgroupTask, F6 dual-prefix gate (#1614)", () => {
     }
   });
 
-  it("stays disabled for an uppercase ROOM- directory, matching the byte-exact backend", async () => {
-    const rendered = await renderWithCwd("C:\\P\\.ac\\ROOM-1-t\\__agent_x");
-    try {
-      for (const button of actionButtons()) {
-        expect(button.disabled).toBe(true);
-      }
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("stays disabled for an uppercase WG- directory, exactly as it does today", async () => {
-    const rendered = await renderWithCwd("C:\\P\\.ac\\WG-1-t\\__agent_x");
-    try {
-      for (const button of actionButtons()) {
-        expect(button.disabled).toBe(true);
-      }
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("stays disabled outside any entity directory", async () => {
-    const rendered = await renderWithCwd("C:\\P\\some\\other\\place");
-    try {
-      for (const button of actionButtons()) {
-        expect(button.disabled).toBe(true);
-      }
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("is not fooled by a directory that merely starts with the prefix letters", async () => {
-    const rendered = await renderWithCwd("C:\\P\\.ac\\roomy-1-t\\__agent_x");
+  it.each([
+    [
+      "stays disabled for an uppercase ROOM- directory, matching the byte-exact backend",
+      "C:\\P\\.ac\\ROOM-1-t\\__agent_x",
+    ],
+    [
+      "stays disabled for an uppercase WG- directory, exactly as it does today",
+      "C:\\P\\.ac\\WG-1-t\\__agent_x",
+    ],
+    ["stays disabled outside any entity directory", "C:\\P\\some\\other\\place"],
+    [
+      "is not fooled by a directory that merely starts with the prefix letters",
+      "C:\\P\\.ac\\roomy-1-t\\__agent_x",
+    ],
+  ])("%s", async (_name, cwd) => {
+    const rendered = await renderWithCwd(cwd);
     try {
       for (const button of actionButtons()) {
         expect(button.disabled).toBe(true);

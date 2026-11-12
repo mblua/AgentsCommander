@@ -241,10 +241,12 @@ export function createHistoryState(
       if (same) return;
       setWindowsSignal(list);
       const selected = filters().sessionCount;
-      const sessionCount =
-        list === null ? null : selected !== null && list.includes(selected)
+      let sessionCount: number | null = null;
+      if (list !== null) {
+        sessionCount = selected !== null && list.includes(selected)
           ? selected
           : list[list.length - 1];
+      }
       setFiltersSignal({ ...filters(), sessionCount });
       resetAll();
     },

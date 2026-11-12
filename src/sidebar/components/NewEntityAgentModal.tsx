@@ -80,12 +80,11 @@ const NewEntityAgentModal: Component<{
     }
   };
 
-  const errorMessage = (err: unknown, fallback: string) =>
-    typeof err === "string"
-      ? err
-      : err instanceof Error
-        ? err.message
-        : fallback;
+  const errorMessage = (err: unknown, fallback: string) => {
+    if (typeof err === "string") return err;
+    if (err instanceof Error) return err.message;
+    return fallback;
+  };
 
   const handleInstallAgencyTemplates = async (e: MouseEvent) => {
     e.preventDefault();
@@ -158,12 +157,9 @@ const NewEntityAgentModal: Component<{
     if (rows.length === 0) return;
     const active = document.activeElement as HTMLElement | null;
     const currentIndex = active ? rows.indexOf(active as HTMLButtonElement) : -1;
-    const nextIndex =
-      currentIndex < 0
-        ? offset > 0
-          ? 0
-          : rows.length - 1
-        : (currentIndex + offset + rows.length) % rows.length;
+    let nextIndex: number;
+    if (currentIndex < 0) nextIndex = offset > 0 ? 0 : rows.length - 1;
+    else nextIndex = (currentIndex + offset + rows.length) % rows.length;
     e.preventDefault();
     rows[nextIndex].focus();
   };
