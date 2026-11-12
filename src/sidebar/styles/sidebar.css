@@ -4709,9 +4709,10 @@ html.light-theme .settings-hint-error {
       moved into a tooltip or ellipsised. */
 .agent-picker-modal .selection-lock-bar {
   padding: 4px 12px;
-}
-.agent-picker-modal .selection-lock-future {
-  padding: 4px 12px 5px;
+  /* 4. Order-dependent separators: layout A is body -> lock bar -> Matrix default
+        -> Apply-to area + action bar, so the lock bar gains a top border and the
+        botonera drops the one that would double the Matrix default's. */
+  border-top: 1px solid var(--sidebar-border);
 }
 .agent-picker-modal .selection-lock-pair,
 .agent-picker-modal .selection-lock-hint {
@@ -4725,12 +4726,6 @@ html.light-theme .settings-hint-error {
   row-gap: 2px;
 }
 
-/* 4. Order-dependent separators: layout A is body -> lock bar -> Matrix default
-      -> Apply-to area + action bar, so the lock bar gains a top border and the
-      botonera drops the one that would double the Matrix default's. */
-.agent-picker-modal .selection-lock-bar {
-  border-top: 1px solid var(--sidebar-border);
-}
 .agent-picker-modal .agent-picker-botonera {
   border-top: 0;
 }
@@ -4762,6 +4757,7 @@ html.light-theme .settings-hint-error {
 /* 6. Matrix default: heading, stored pair and "Save default" share the first
       line; the complete inheritance note keeps its own line underneath. */
 .agent-picker-modal .selection-lock-future {
+  padding: 4px 12px 5px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
   align-items: center;
@@ -8321,9 +8317,6 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
   border-radius: 4px;
   margin: 1px 4px;
   transition: background 200ms, box-shadow 200ms, border-color 200ms;
-}
-
-[data-sidebar-style="deep-space"] .replica-item {
   color: rgba(200, 215, 240, 0.9);
 }
 
