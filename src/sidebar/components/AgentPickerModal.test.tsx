@@ -776,6 +776,8 @@ describe("AgentPickerModal", () => {
     expect(text("agentPicker.scope.replica")).toContain("1 replica");
     expect(text("agentPicker.scope.kind")).toContain("3 replicas");
     expect(text("agentPicker.scope.workgroup")).toContain("4 replicas");
+    // Sonar S6772: the radio label text stays glued to the input and the count chip.
+    expect(target("agentPicker.scope.replica").textContent).toBe("This replica 1 replica");
     // Replica scope is safe → apply enabled immediately.
     expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(false);
 
