@@ -227,7 +227,7 @@ const EditTeamModal: Component<{
   };
 
   const repoDisplayName = (url: string): string => {
-    const match = url.match(/\/([^/]+?)(?:\.git)?$/);
+    const match = /\/([^/]+?)(?:\.git)?$/.exec(url);
     return match ? match[1] : url;
   };
 
