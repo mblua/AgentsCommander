@@ -47,7 +47,9 @@ describe("rail diagnostics immediate private client", () => {
     fake.reject("append_rail_diagnostic", "private failure");
     emitRailDiagnostic("sidebar", "click");
     await Promise.resolve(); await Promise.resolve();
-    vi.spyOn(DebugAPI, "appendRailDiagnostic").mockImplementation(() => { throw Error("private"); });
+    vi.spyOn(DebugAPI, "appendRailDiagnostic").mockImplementation(() => {
+      throw new Error("private");
+    });
     expect(() => emitRailDiagnostic("sidebar", "click")).not.toThrow();
     expect(debug).not.toHaveBeenCalled(); expect(error).not.toHaveBeenCalled();
   });
