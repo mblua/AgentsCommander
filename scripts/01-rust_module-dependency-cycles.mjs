@@ -91,6 +91,16 @@ const NON_CALL_WORDS = new Set([
 const CFG_ANY_RE = /\bcfg\s*\(/;
 
 class UsageError extends Error {}
+
+function rejectsUsage(h, extra) {
+  try {
+    h.run(extra);
+    return false;
+  } catch (err) {
+    return err instanceof UsageError;
+  }
+}
+
 class AnalysisError extends Error {}
 
 /* ------------------------------------------------------------------ *
@@ -1440,7 +1450,7 @@ const USE_TREE_DEPTH_CAP = 16;
 function expandUseTree(masked, bodyStart, bodyEnd, ctx, file) {
   const leaves = [];
   const capHits = { count: 0 };
-  parseUseNode(masked, bodyStart, bodyEnd, [], false, leaves, 0, capHits);
+  parseUseNode(masked, bodyStart, bodyEnd, [], false, { out: leaves, capHits }, 0);
   if (capHits.count > 0) {
     ctx.diagnostics.push({
       // error, not warn: dropping a `use` can erase an edge, delete the cycle
@@ -1457,7 +1467,8 @@ function expandUseTree(masked, bodyStart, bodyEnd, ctx, file) {
   return leaves;
 }
 
-function parseUseNode(masked, from, to, prefix, leadingColons, out, depth, capHits) {
+function parseUseNode(masked, from, to, prefix, leadingColons, sink, depth) {
+  const { out, capHits } = sink;
   // Same rule as SCAN_DEPTH_CAP: the branch below this depth is dropped, and
   // dropping a `use` can erase an edge and flip the gate, so the caller reports
   // every hit rather than letting the reference vanish quietly.
@@ -1483,7 +1494,7 @@ function parseUseNode(masked, from, to, prefix, leadingColons, out, depth, capHi
       const e = matchDelimiter(masked, i);
       if (e < 0 || e > to) return;
       for (const [s, t] of splitTopLevel(masked, i + 1, e, ',')) {
-        parseUseNode(masked, s, t, segments, leading, out, depth + 1, capHits);
+        parseUseNode(masked, s, t, segments, leading, sink, depth + 1);
       }
       return;
     }
@@ -1820,7 +1831,8 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   let base = null;
   let rest = null;
 
-  if (first === 'crate') {
+  if (first === 'crate' || (target.kind !== 'lib'
+    && (first === target.libName || first === target.pkgIdent))) {
     base = [];
     rest = segments.slice(1);
   } else if (first === 'self') {
@@ -1839,9 +1851,6 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
     }
     base = up;
     rest = segments.slice(k);
-  } else if (target.kind !== 'lib' && (first === target.libName || first === target.pkgIdent)) {
-    base = [];
-    rest = segments.slice(1);
   } else if (contextSegments.length > 0
     && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
     // Rust 2018 resolves a relative first segment in the current module before
@@ -3776,14 +3785,7 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      const rejects = (extra) => {
-        try {
-          h.run(extra);
-          return false;
-        } catch (err) {
-          return err instanceof UsageError;
-        }
-      };
+      const rejects = (extra) => rejectsUsage(h, extra);
       h.yes(rejects(['--write-baseline=']), '--write-baseline= rejected');
       h.yes(rejects(['--baseline=']), '--baseline= rejected');
       h.yes(rejects(['--baseline=', '--write-baseline=x']),
@@ -3993,14 +3995,7 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      const rejects = (extra) => {
-        try {
-          h.run(extra);
-          return false;
-        } catch (err) {
-          return err instanceof UsageError;
-        }
-      };
+      const rejects = (extra) => rejectsUsage(h, extra);
       h.yes(
         rejects(['--emit-graph=g.json', '--write-baseline=b.json']),
         '--emit-graph with --write-baseline rejected',
