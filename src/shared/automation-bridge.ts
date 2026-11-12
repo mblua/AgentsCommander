@@ -321,8 +321,8 @@ function runTerminalAction(
   if (
     sessionId === null ||
     !validUiTerminalSessionId(sessionId) ||
-    element.getAttribute("data-ac-testid") !== request.selector ||
-    element.getAttribute("data-ac-session-id") !== sessionId
+    element.dataset.acTestid !== request.selector ||
+    element.dataset.acSessionId !== sessionId
   ) {
     return errorResponse(
       windowLabel,
@@ -647,9 +647,9 @@ function cssEscape(value: string): string {
 
 function snapshotTarget(element: HTMLElement): UiAutomationTarget {
   return {
-    testId: element.getAttribute("data-ac-testid") ?? "",
-    role: element.getAttribute("data-ac-role") ?? element.getAttribute("role"),
-    state: element.getAttribute("data-ac-state"),
+    testId: element.dataset.acTestid ?? "",
+    role: element.dataset.acRole ?? element.getAttribute("role"),
+    state: element.dataset.acState ?? null,
     metadata: snapshotMetadata(element),
     tag: element.tagName.toLowerCase(),
     text: snapshotText(element),
@@ -687,11 +687,11 @@ function snapshotText(element: HTMLElement): string {
     return "";
   }
 
-  if (element.hasAttribute("data-ac-value") || element.hasAttribute("data-ac-token")) {
+  if ("acValue" in element.dataset || "acToken" in element.dataset) {
     return "";
   }
 
-  const role = element.getAttribute("data-ac-role") ?? element.getAttribute("role") ?? "";
+  const role = element.dataset.acRole ?? element.getAttribute("role") ?? "";
   const allowText =
     role === "agent-preset" ||
     role === "button" ||
@@ -751,7 +751,7 @@ function isElementDisabled(element: HTMLElement): boolean {
   }
 
   return element.getAttribute("aria-disabled") === "true" ||
-    element.getAttribute("data-ac-state") === "disabled";
+    element.dataset.acState === "disabled";
 }
 
 function isElementVisible(element: HTMLElement): boolean {
@@ -951,7 +951,7 @@ function takeUntil(chain: HTMLElement[], stop: HTMLElement | null): HTMLElement[
 }
 
 function testIdOf(element: HTMLElement | null): string | null {
-  return element?.getAttribute("data-ac-testid") ?? null;
+  return element?.dataset.acTestid ?? null;
 }
 
 function emptyHoverTarget(): UiAutomationTarget {
