@@ -450,7 +450,7 @@ function parseAttribute(tokens, openIndex, source, file, hits) {
       continue;
     }
     if (token.type === 'punct' && CLOSE_BRACKETS.has(token.value)) {
-      if (stack[stack.length - 1] !== CLOSE_BRACKETS.get(token.value)) {
+      if (stack.at(-1) !== CLOSE_BRACKETS.get(token.value)) {
         throw new RustSourceError(`unbalanced ${JSON.stringify(token.value)} in attribute`,
           token.start);
       }
@@ -682,7 +682,7 @@ function parsePlatform(argv, i) {
 
 function parseIntFlag(argv, i, name) {
   const raw = requireValue(argv, i, name);
-  if (!/^-?[0-9]+$/.test(raw)) {
+  if (!/^-?\d+$/.test(raw)) {
     throw new UsageError(`${name} must be an integer, got ${JSON.stringify(raw)}`);
   }
   return Number(raw);
@@ -944,7 +944,7 @@ const ITEM_KEYWORDS = new Set(['fn', 'impl', 'trait', 'mod']);
 const ITEM_PREFIX_WORDS = new Set([
   'pub', 'pub(...)', 'unsafe', 'default', 'async', 'const', 'extern', 'extern-string',
 ]);
-const NAME_RE = /^(r#)?[A-Za-z_][A-Za-z0-9_]*$/;
+const NAME_RE = /^(r#)?[A-Za-z_]\w*$/;
 const ANCHOR_CAP = 400;
 
 /** The error class phase 3 turns into a failed run. */
@@ -1712,7 +1712,7 @@ export function runCapture(options, io = {}) {
   }
   // A terminal build-finished is what makes the capture a complete record:
   // records after it mean a second run was truncated into the same file.
-  const finished = records[records.length - 1];
+  const finished = records.at(-1);
   if (finished?.reason !== 'build-finished') {
     throw new CaptureError(`${options.captureFile} has no terminal build-finished record`);
   }
@@ -1781,7 +1781,7 @@ export function runCapture(options, io = {}) {
   for (const record of cognitiveRecords) {
     const message = record.message?.message;
     const match = typeof message === 'string' ? COGNITIVE_MESSAGE_RE.exec(message) : null;
-    if (match === null || match[2] !== '25') {
+    if (match?.[2] !== '25') {
       throw new ThresholdError(
         `cognitive-complexity message does not carry the pinned denominator 25: ${JSON.stringify(message)}`,
       );
@@ -2040,7 +2040,7 @@ function compareToolchainVersions(base, head) {
   const baseParts = base.split('.');
   const headParts = head.split('.');
   for (const part of [...baseParts, ...headParts]) {
-    if (!/^[0-9]+$/.test(part)) {
+    if (!/^\d+$/.test(part)) {
       throw new ConfigError(
         `toolchain versions must be numeric, component by component: ${JSON.stringify(base)} versus ${JSON.stringify(head)}`,
       );
@@ -2070,8 +2070,10 @@ function gitExecutableCandidates() {
   const candidates = [];
   for (const [name, fallback] of WINDOWS_GIT_ROOTS) {
     const root = process.env[name] || fallback;
-    candidates.push(path.join(root, 'Git', 'cmd', 'git.exe'));
-    candidates.push(path.join(root, 'Git', 'bin', 'git.exe'));
+    candidates.push(
+      path.join(root, 'Git', 'cmd', 'git.exe'),
+      path.join(root, 'Git', 'bin', 'git.exe'),
+    );
   }
   return candidates;
 }
@@ -2288,7 +2290,7 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
 // holds the function. `mod x;` items are resolved to their out-of-line files
 // so a removal is credited when the pull request touched the real file.
 const OUT_OF_LINE_MOD_RE =
-  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;/g;
 const PATH_ATTRIBUTE_RE = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
 
 function stripRustComments(source) {
@@ -2518,7 +2520,7 @@ function readThresholdFromClippyToml(readWorkspaceBytes) {
   }
   const problem = validateRootClippyToml(text);
   if (problem !== null) throw new ConfigError(problem.message);
-  const match = /cognitive-complexity-threshold\s*=\s*([0-9]+)/.exec(text);
+  const match = /cognitive-complexity-threshold\s*=\s*(\d+)/.exec(text);
   if (match === null) {
     throw new ConfigError('root clippy.toml must assign cognitive-complexity-threshold');
   }
@@ -2635,7 +2637,7 @@ export function runMerge(options, io = {}) {
 // ---------------------------------------------------------------------------
 
 const RUSTC_HISTOGRAM_KEY = '<rustc>';
-const RUSTC_CODE_RE = /^E[0-9]{4}$/;
+const RUSTC_CODE_RE = /^E\d{4}$/;
 
 /** The `--classify-probe` mode, in the order of phase 4 section 5. */
 export function runClassifyProbe(options, io = {}) {
@@ -2668,7 +2670,7 @@ export function runClassifyProbe(options, io = {}) {
     if (parseError !== null) {
       stopReason =
         `${options.probeFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`;
-    } else if (records[records.length - 1]?.reason !== 'build-finished') {
+    } else if (records.at(-1)?.reason !== 'build-finished') {
       stopReason = `${options.probeFile} has no terminal build-finished record`;
     }
   }
@@ -2691,7 +2693,7 @@ export function runClassifyProbe(options, io = {}) {
     stdout(`STOP: ${stopReason}`);
     return 1;
   }
-  const finished = records[records.length - 1];
+  const finished = records.at(-1);
   const success = finished.success;
   const exit = options.probeExit;
   if (exit === 0 && success === false) {
@@ -3608,8 +3610,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(containers[2], 'impl:Tr for [u8; 4]::fn:m', 'impl method container');
       if (new Set(ids).size !== 3) throw new Error(
         `expected three distinct ids, got ${JSON.stringify(ids)}`);
-      if (containers.some((container) => container ===
-        '')) throw new Error('a frame was lost to the array semicolon');
+      if (containers.includes('')) throw new Error('a frame was lost to the array semicolon');
     }],
     ['case 72: a body edit leaves the anchor, a signature edit moves it', () => {
       const before = fixture('src/edit.rs', 'fn f() { let a = 1; }\n');
@@ -3644,7 +3645,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src\\a.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: String.raw`src\a.rs`, line: 1, column: 1, slice: 'heavy' }),
           cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
           buildFinished(),
         ),
@@ -4190,7 +4191,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 25: an absolute path inside the root is relativised, outside it is CAPTURE', () => {
       const inside = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'C:\\ws\\src\\a.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: String.raw`C:\ws\src\a.rs`, line: 1, column: 1, slice: 'heavy' }),
           buildFinished(),
         ),
         workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },

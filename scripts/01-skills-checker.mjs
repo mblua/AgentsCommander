@@ -214,7 +214,7 @@ function createCollector(root) {
         seq: seq++,
         code,
         severity: severityOf(code),
-        rule: Object.prototype.hasOwnProperty.call(RULE_OF, code) ? RULE_OF[code] : null,
+        rule: Object.hasOwn(RULE_OF, code) ? RULE_OF[code] : null,
         path: relativeTo(root, absolutePath),
         absolutePath,
         skillDirectory:
@@ -391,7 +391,7 @@ function createByteReader(fd) {
 }
 
 function appendBytes(target, bytes) {
-  for (let i = 0; i < bytes.length; i += 1) target.push(bytes[i]);
+  for (const byte of bytes) target.push(byte);
 }
 
 function checkLineSize(st) {
@@ -569,7 +569,7 @@ function decodeEscape(text, i) {
   if (esc === 'u') {
     const hex = text.slice(i + 2, i + 6);
     if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
-      return { ok: false, reason: 'a double-quoted scalar with a malformed \\u escape' };
+      return { ok: false, reason: String.raw`a double-quoted scalar with a malformed \u escape` };
     }
     return { ok: true, value: String.fromCharCode(Number.parseInt(hex, 16)), width: 6 };
   }
@@ -635,7 +635,7 @@ function splitPlainKey(body) {
 
 // The block-scalar header at the start of a value, or null when it is not one.
 function blockScalarHeader(value) {
-  const header = /^([|>])([0-9]*)([-+]?)([0-9]*)[ \t]*(?:#.*)?$/.exec(value);
+  const header = /^([|>])(\d*)([-+]?)(\d*)[ \t]*(?:#.*)?$/.exec(value);
   if (!header) return null;
   const explicit = header[2] || header[4];
   const blockIndent = explicit === '' ? null : Number(explicit);
@@ -688,7 +688,7 @@ function collectBlockLines(lines, startIndex, indent) {
     content.push(line.slice(indent));
     i += 1;
   }
-  while (content.length > 0 && content[content.length - 1] === '') content.pop();
+  while (content.length > 0 && content.at(-1) === '') content.pop();
   return { endIndex: i, content };
 }
 
@@ -757,11 +757,11 @@ function classifyPlainScalar(plain, value) {
   if (plain === 'null' || plain === 'Null' || plain === 'NULL' || plain === '~') {
     return { kind: 'null', value: null, raw: value };
   }
-  if (/^[-+]?[0-9]+$/.test(plain) || /^0x[0-9a-fA-F]+$/.test(plain) || /^0o[0-7]+$/.test(plain)) {
+  if (/^[-+]?\d+$/.test(plain) || /^0x[0-9a-fA-F]+$/.test(plain) || /^0o[0-7]+$/.test(plain)) {
     return { kind: 'number', value: null, raw: value };
   }
   if (
-    /^[-+]?[0-9]*\.[0-9]*([eE][-+]?[0-9]+)?$/.test(plain) ||
+    /^[-+]?\d*\.\d*([eE][-+]?\d+)?$/.test(plain) ||
     /^[-+]?\.(inf|Inf|INF)$/.test(plain) ||
     /^\.(nan|NaN|NAN)$/.test(plain)
   ) {
@@ -1210,7 +1210,6 @@ function resolveNameField(candidate, nameEntry, folder, fileLine, collector) {
     // :652 uses folder_name.clone() straight from the directory entry. The folder
     // fallback is NEVER trimmed; trimming it would hide a directory named " x ".
     resolvedName = folder;
-    nameSource = 'folder';
     nameResolved = true;
   } else if (nameEntry.kind === 'undecidable') {
     // 6.5.2/6.6.1 step 3. W-YAML-UNDECIDABLE is already emitted. Run the charset check
@@ -1245,7 +1244,6 @@ function resolveNameField(candidate, nameEntry, folder, fileLine, collector) {
     const trimmed = trimYamlValue(nameEntry.value);
     if (trimmed === '') {
       resolvedName = folder;
-      nameSource = 'folder';
     } else {
       resolvedName = trimmed;
       nameSource = 'key';
@@ -2410,7 +2408,7 @@ function selfTest(out) {
   run('35f', (root) => {
     const report = fm(root, '\v---\v\nname: ok-name\n---\n');
     assertSelf(hasCode(report, 'E-FM-NO-OPEN'),
-      '\\x0B is not ASCII whitespace in Rust, so the fence is rejected');
+      String.raw`\x0B is not ASCII whitespace in Rust, so the fence is rejected`);
   });
 
   // ---- YAML (6.5) ----
@@ -2902,7 +2900,7 @@ function selfTest(out) {
     writeFixture(root, '__agent_x/skills/y/SKILL.md', validSkillMd('y'));
     const report = runCheck(root);
     const finding = report.findings.find((f) => f.code === 'I-NOT-INDEXABLE');
-    assertSelf(finding !== undefined && finding.reason === 'replica-root',
+    assertSelf(finding?.reason === 'replica-root',
       'a replica root is never scanned');
     assertSelf(report.exitCode === 0, 'and it is a note only');
   });
@@ -2998,7 +2996,7 @@ function selfTest(out) {
     const lines = [];
     const code = runCli([root], (line) => lines.push(line), () => {});
     assertSelf(code === 0, 'a clean tree exits 0');
-    assertSelf(lines[lines.length - 1].includes('OK:'), 'and the human report ends with OK:');
+    assertSelf(lines.at(-1).includes('OK:'), 'and the human report ends with OK:');
   });
   run('74', (root) => {
     writeFixture(root, '_agent_x/skills/x/SKILL.md', '---\nname: ok-name\n---\n');
@@ -3018,7 +3016,7 @@ function selfTest(out) {
     const lines = [];
     const code = runCli([root], (line) => lines.push(line), () => {});
     assertSelf(code === 1, 'a `skills` file is a hard error');
-    const last = lines[lines.length - 1];
+    const last = lines.at(-1);
     assertSelf(last.includes('no entrypoint implicated'),
       'the FAIL line must say no entrypoint is implicated');
     assertSelf(!last.includes('FAIL: 0 skills'),
