@@ -923,7 +923,10 @@ const AgentPickerModal: Component<{
     const wg = props.scopeContext?.workgroupName;
     let base: string;
     if (scope === "kind") base = `Overwrite ${count} of this kind`;
-    else base = `Overwrite ${count}${wg ? ` in ${wg}` : " in this room"}`;
+    else {
+      const where = wg ? ` in ${wg}` : " in this room";
+      base = `Overwrite ${count}${where}`;
+    }
     // The label states the policy: never a silent upgrade to lock or downgrade.
     return withLock ? `${base} + lock` : base;
   });
