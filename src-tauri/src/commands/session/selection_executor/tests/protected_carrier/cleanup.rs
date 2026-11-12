@@ -463,14 +463,33 @@ async fn issue_3530_response_veto_accounting_generation_failure() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn issue_3530_response_ordinary_and_success_preserve_flow() {
-    let name = format!("{PREFIX}issue_3530_response_ordinary_and_success_preserve_flow");
+    for leaf in [
+        "issue_4274_response_success_preserve_flow_isolated",
+        "issue_4274_response_ordinary_preserve_flow_isolated",
+    ] {
+        let name = format!("{PREFIX}{leaf}");
+        run_isolated(&name, std::future::ready(())).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn issue_4274_response_success_preserve_flow_isolated() {
+    let name = format!("{PREFIX}issue_4274_response_success_preserve_flow_isolated");
     run_isolated(&name, async {
         tokio::task::LocalSet::new()
-            .run_until(async {
-                for ordinary in [false, true] {
-                    positive_case(ordinary).await;
-                }
-            })
+            .run_until(positive_case(false))
+            .await;
+        complete_isolated(&name);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn issue_4274_response_ordinary_preserve_flow_isolated() {
+    let name = format!("{PREFIX}issue_4274_response_ordinary_preserve_flow_isolated");
+    run_isolated(&name, async {
+        tokio::task::LocalSet::new()
+            .run_until(positive_case(true))
             .await;
         complete_isolated(&name);
     })
