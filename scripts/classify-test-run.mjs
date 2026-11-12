@@ -71,7 +71,7 @@ const ASSERTION_STATUSES = ['passed', 'failed', 'skipped', 'todo'];
 // JSON reporter computes it as a ternary,
 //   status: file.result?.state === "fail" || hasFailedTests ? "failed" : "passed"
 // so exactly two values are reachable and `passed` is the only tolerated one.
-const ENTRY_STATUSES = ['passed', 'failed'];
+const ENTRY_STATUSES = new Set(['passed', 'failed']);
 
 // Vitest's JSON reporter is Jest-compatible, so `skipped` is declared as
 // `numPendingTests` and `todo` as `numTodoTests`. There is no `numSkippedTests`.
@@ -145,13 +145,13 @@ function checkAssertionShape(assertion) {
 // zero assertions and no failed assertion, so every assertion identity holds.
 function checkEntryStatus(report) {
   for (const suite of report.testResults) {
-    if (!Object.prototype.hasOwnProperty.call(suite, 'status')) {
+    if (!Object.hasOwn(suite, 'status')) {
       return 'a testResults entry declares no status';
     }
     if (typeof suite.status !== 'string') {
       return `a testResults entry carries a non-string status ${JSON.stringify(suite.status)}`;
     }
-    if (!ENTRY_STATUSES.includes(suite.status)) {
+    if (!ENTRY_STATUSES.has(suite.status)) {
       return `a testResults entry carries an unknown status ${JSON.stringify(suite.status)}`;
     }
     if (suite.status !== 'passed') {
@@ -164,7 +164,7 @@ function checkEntryStatus(report) {
 // A3: count fields, all required and all non-negative integers.
 function checkCountFields(report) {
   for (const field of COUNT_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(report, field)) {
+    if (!Object.hasOwn(report, field)) {
       return `${field} is absent`;
     }
     if (!Number.isInteger(report[field]) || report[field] < 0) {

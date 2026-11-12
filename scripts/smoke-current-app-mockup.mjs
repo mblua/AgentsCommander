@@ -33,7 +33,7 @@ const dom = new JSDOM(html, {
 const documentText = () => dom.window.document.body.textContent ?? '';
 const cssBlockFor = (selector) => {
   const blockPattern = new RegExp(
-    String.raw`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\s*\{(?<body>[^}]*)\}`);
+    String.raw`${selector.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}\s*\{(?<body>[^}]*)\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
 const cssBlockForInMedia = (mediaQuery, selector) => {
@@ -101,7 +101,7 @@ const topClickableElementAt = (x, y) => {
     ...dom.window.document.querySelectorAll('.profile-modal-overlay.open, .profile-modal, .profile-modal-controls, .modal-variant-switcher, [data-modal-variant]'),
   ].filter((element) => isBrowserVisible(element) && containsPoint(element.getBoundingClientRect(),
     x, y));
-  return candidates.sort((left, right) => modalStackRank(right) - modalStackRank(left))[0] ?? null;
+  return candidates.toSorted((left, right) => modalStackRank(right) - modalStackRank(left))[0] ?? null;
 };
 const clickVisibleModalVariant = (variant) => {
   const overlay = dom.window.document.getElementById('codingAgentProfileModal');
@@ -503,7 +503,7 @@ assert.deepEqual(modalActionLabels, [
 assert.match(dom.window.document.querySelector('#profileDefaultButton')?.textContent ?? '',
   /AgentsCommander_ac:architect/);
 assert.equal(
-  dom.window.document.querySelector('#profileDefaultButton')?.getAttribute('data-component'),
+  dom.window.document.querySelector('#profileDefaultButton')?.dataset.component,
   'Set selected Coding Agent profile as default for AgentsCommander_ac:architect'
 );
 
