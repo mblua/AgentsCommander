@@ -63,8 +63,9 @@ let lastLocalTaskWrite: { workgroupRoot: string; seq: number } | null = null;
 // uses at src/terminal/App.tsx:326-347; the two must stay in agreement.
 function normalizeTaskPath(path: string): string {
   let normalized = path;
-  if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
-  else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+  if (normalized.startsWith("\\\\?\\") || normalized.startsWith("//?/")) {
+    normalized = normalized.slice(4);
+  }
   return normalized.replaceAll("\\", "/").toLowerCase();
 }
 

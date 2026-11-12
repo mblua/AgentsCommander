@@ -238,7 +238,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (now - lastRaiseTime < 500) return;
     lastRaiseTime = now;
     try {
-      await WindowAPI.ensureTerminal();
+      await WindowAPI.focusMain();
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setFocus();
     } catch {}
