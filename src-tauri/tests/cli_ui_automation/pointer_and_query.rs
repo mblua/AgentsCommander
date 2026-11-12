@@ -477,6 +477,154 @@ fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_std
     assert_eq!(parsed["error"], "automation_not_enabled");
 }
 
+/// #4255 startup anchor: a stale `session.json` with a live daemon; the good session is
+/// published only after the CLI deletes the stale one (poll 1 got the retryable error).
+fn startup_race_fixture(name: &str) -> Option<(Tmp, PathBuf, thread::JoinHandle<()>)> {
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return None;
+    };
+    let tmp = Tmp::new(name);
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_daemon_pid(&bin, pid);
+    let dir = config_dir_for(&bin).join("ui-automation");
+    write_session(&bin, pid, &["main"]);
+    std::fs::rename(dir.join("session.json"), dir.join("session.json.staged")).unwrap();
+    write_session(&bin, u32::MAX, &["main"]);
+    let writer_dir = dir.clone();
+    let writer = thread::spawn(move || {
+        let cap = Instant::now() + Duration::from_secs(20);
+        while writer_dir.join("session.json").exists() {
+            assert!(
+                Instant::now() < cap,
+                "CLI never removed the stale session.json"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::rename(
+            writer_dir.join("session.json.staged"),
+            writer_dir.join("session.json"),
+        )
+        .unwrap();
+    });
+    Some((tmp, bin, writer))
+}
+
+fn ui_wait_zoom(bin: &Path, timeout_ms: &str) -> (Option<i32>, String, String, Duration) {
+    let started = Instant::now();
+    let (code, stdout, stderr) = run(
+        bin,
+        &[
+            "ui-wait",
+            "--window",
+            "main",
+            "--selector",
+            "titlebar.zoom",
+            "--timeout-ms",
+            timeout_ms,
+        ],
+    );
+    (code, stdout, stderr, started.elapsed())
+}
+
+#[test]
+fn ui_wait_waits_through_startup_until_session_appears() {
+    let _guard = test_lock();
+    let Some((_tmp, bin, writer)) = startup_race_fixture("ui-wait-startup-race") else {
+        return;
+    };
+    let responder = spawn_fake_responder(&bin, |request| {
+        assert_eq!(request["action"], "query");
+        json!({
+            "ok": true, "requestId": request["requestId"], "window": "main",
+            "action": "query", "selector": "titlebar.zoom",
+            "target": { "testId": "titlebar.zoom", "role": "group", "state": "ready",
+                "tag": "div", "visible": true, "disabled": false, "checked": null,
+                "selected": null, "pressed": null, "expanded": null, "rect": null }
+        })
+    });
+    let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "5000");
+    writer.join().unwrap();
+    assert_eq!(
+        code,
+        Some(0),
+        "elapsed: {elapsed:?}\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["ok"], true, "elapsed: {elapsed:?}");
+    assert_eq!(parsed["target"]["testId"], "titlebar.zoom");
+    responder.finish();
+}
+
+#[test]
+fn ui_wait_condition_timeout_clears_startup_diagnostic() {
+    let _guard = test_lock();
+    let Some((_tmp, bin, writer)) = startup_race_fixture("ui-wait-startup-then-condition") else {
+        return;
+    };
+    let responder = spawn_fake_responder(&bin, |request| {
+        assert_eq!(request["action"], "query");
+        json!({
+            "ok": false, "requestId": request["requestId"], "window": "main",
+            "action": "query", "selector": "titlebar.zoom",
+            "error": "selector_not_found", "message": "No element matched the selector."
+        })
+    });
+    let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "3000");
+    writer.join().unwrap();
+    assert_eq!(
+        code,
+        Some(1),
+        "elapsed: {elapsed:?}\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["ok"], false);
+    assert_eq!(parsed["error"], "timeout", "elapsed: {elapsed:?}");
+    assert_eq!(parsed["phase"], "wait_condition_not_met");
+    assert_eq!(parsed["timeoutMs"], 3000);
+    responder.finish();
+}
+
+#[test]
+fn ui_wait_timeout_reports_last_startup_diagnostic() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-wait-no-gui");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "300");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["ok"], false);
+    assert_eq!(parsed["error"], "automation_session_missing");
+    assert_eq!(parsed["timeoutMs"], 300);
+    assert_eq!(parsed["phase"], "wait_startup_timeout");
+    assert!(
+        elapsed >= Duration::from_millis(300),
+        "elapsed: {elapsed:?}"
+    );
+}
+
+#[test]
+fn ui_wait_does_not_retry_stale_session_without_daemon() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-wait-stale-no-daemon");
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, u32::MAX, &["main"]);
+    let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "5000");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    let parsed = first_json(&stdout);
+    assert_eq!(parsed["error"], "automation_session_stale");
+    assert!(parsed.get("phase").is_none(), "stdout: {stdout}");
+    assert!(parsed.get("timeoutMs").is_none(), "stdout: {stdout}");
+    assert!(
+        elapsed < Duration::from_millis(4500),
+        "elapsed: {elapsed:?}"
+    );
+}
+
 /// #1773: the guard must kill and reap the child on the panic path. The child is the
 /// real binary running `ui-query` with no responder: it writes its request file
 /// (`ui_automation.rs:1399`) and then polls for a response for the whole
