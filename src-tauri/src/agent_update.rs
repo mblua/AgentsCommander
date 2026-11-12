@@ -252,14 +252,7 @@ pub struct AgentUpdatePrompt {
     pub label: String,
 }
 
-/// #1551 - the identity of one command of this boot's pass, carried by the
-/// closure, skip, and running-set payloads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUpdateCommandRef {
-    pub command: String,
-    pub label: String,
-}
+pub use target::AgentUpdateCommandRef;
 
 /// #1551 - one agent of this boot's pass in pass order; `install_before` is the
 /// pre-update probe result once it ran (never cached, seq 0).
