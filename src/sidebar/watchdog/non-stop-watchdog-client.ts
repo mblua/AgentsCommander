@@ -15,7 +15,7 @@ export function buildSnapshot(): NonStopReport[] {
   for (const project of projectStore.projects) {
     void workgroupGroupsStore.ensureLoaded(project.path);
     const ns = workgroupGroupsStore.config(project.path).nonStop;
-    if (!ns || !ns.show) continue;
+    if (!ns?.show) continue;
     const measuresOn = ns.telegram.enabled || ns.sound.enabled;
     if (!measuresOn) continue; // nothing to fire, do not report (show-on-zero-measures is silent by design)
     const members = project.workgroups.filter((wg) => nonStopMatchesWorkgroup(ns, wg));
