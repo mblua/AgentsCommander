@@ -2,13 +2,13 @@
 
 In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the room replica that owns the session you are working with, with the saved path already on your clipboard.
 
-Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture works on Windows, macOS and Linux under X11. A Linux Wayland session is not supported: AgentsCommander detects it and says so instead of failing silently. Every other target compiles a stub that reports the feature as unsupported and never registers the hotkey.
+Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture works on Windows, macOS, Linux under X11, and Linux under Wayland through xdg-desktop-portal. On Wayland the desktop's own area selector replaces the AgentsCommander overlay. Every other target compiles a stub that reports the feature as unsupported and never registers the hotkey.
 
 ## Before you start
 
 You need:
 
-- AgentsCommander running on Windows, on macOS, or on Linux in an X11 session (not Wayland); see [Linux: X11 only](#linux-x11-only) to check which one you are in;
+- AgentsCommander running on Windows, on macOS, or on Linux in an X11 or Wayland session; on Wayland you also need your desktop's portal backend (on Hyprland, `xdg-desktop-portal-hyprland`); see [Linux: X11 and Wayland](#linux-x11-and-wayland) to check which session you are in;
 - on macOS, the Screen Recording permission, which macOS asks for on the first capture; see [macOS: Screen Recording permission](#macos-screen-recording-permission);
 - a session selected in the app and displayable, because the screenshot belongs to that session; and
 - that session's working directory inside a room replica (an `__agent_*` directory), because the replica root is the destination.
@@ -18,7 +18,7 @@ A screenshot records whatever is on your monitors, including passwords, tokens, 
 ## Capture a screenshot
 
 1. Select the session the screenshot belongs to.
-2. Press the capture hotkey (`Ctrl+Q` by default; on macOS, `Ctrl` is the Control key, not Command).
+2. Press the capture hotkey (`Ctrl+Q` by default; on macOS, `Ctrl` is the Control key, not Command), or click the camera chip in the titlebar. Clicking the chip captures exactly like the key.
    AgentsCommander captures every monitor and opens one overlay window per monitor. Each overlay shows a frozen image of that monitor, not a live view, so the screen you are photographing cannot change under you.
 3. Drag a rectangle over the area you want. A magnifier follows the pointer while you hover and while you drag, so you can place the edges precisely.
 4. Release the pointer.
@@ -29,7 +29,7 @@ To abandon the capture, press `Escape` or close the overlay. Nothing is written.
 Two behaviors are deliberate and are not failures:
 
 - Releasing on a selection thinner than 2 pixels in either direction discards that selection and leaves the overlay open, so you can drag again. Both the width and the height must reach 2 pixels, so a 1 by 500 pixel drag is rejected.
-- Pressing the hotkey while a capture is already in flight does nothing on Windows: the second press is ignored so you cannot photograph your own overlays or start two captures at once. On Linux and macOS a second press cancels the capture instead; see [Linux: two behaviors that differ from Windows](#linux-two-behaviors-that-differ-from-windows) and [macOS: behaviors that differ from Windows](#macos-behaviors-that-differ-from-windows).
+- Pressing the hotkey while a capture is already in flight does nothing on Windows: the second press is ignored so you cannot photograph your own overlays or start two captures at once. On Linux X11 and macOS a second press cancels the capture instead; on Wayland a second press (or chip click) does nothing while the desktop's selector is open. See [Linux X11: two behaviors that differ from Windows](#linux-x11-two-behaviors-that-differ-from-windows) and [macOS: behaviors that differ from Windows](#macos-behaviors-that-differ-from-windows).
 
 ## Where the file goes
 
@@ -53,12 +53,12 @@ The app log records one line per successful capture:
 
 If a write fails after the file is created, AgentsCommander deletes the partial file, closes the overlays, and reports the failure.
 
-## Linux: X11 only
+## Linux: X11 and Wayland
 
-Screenshot capture works in an X11 session and not in a Wayland one. Two independent reasons:
+Screenshot capture works in both session types, in different ways:
 
-- The global hotkey mechanism is X11-only. In a Wayland session it would register and then never fire, so AgentsCommander refuses before it registers anything.
-- Wayland does not let an application place a window at a chosen screen position, which the per-monitor overlay needs.
+- **X11** uses the flow described above: frozen per-monitor overlays, the magnifier, and the global hotkey.
+- **Wayland** goes through xdg-desktop-portal. It needs your desktop's portal backend, with the Screenshot and GlobalShortcuts portals (on Hyprland, `xdg-desktop-portal-hyprland`).
 
 To check which session you are in, run:
 
@@ -66,13 +66,25 @@ To check which session you are in, run:
 echo $XDG_SESSION_TYPE
 ```
 
-The command prints what your shell inherited: usually `x11` or `wayland`, but it can be empty or hold another value, and a graphical session can run without it. Treat the output as a hint, not the decision: the value is inherited and can be stale. AgentsCommander makes its own detection from more than this variable, and its verdict decides. When it detects Wayland it refuses and shows the toast below.
+The command prints what your shell inherited: usually `x11` or `wayland`, but it can be empty or hold another value, and a graphical session can run without it. Treat the output as a hint, not the decision: the value is inherited and can be stale. AgentsCommander makes its own detection from more than this variable, and its verdict decides.
 
-If the command prints `wayland`, or if AgentsCommander refuses and you are not already on X11, log out, choose the Xorg session at the login screen (on Ubuntu, "Ubuntu on Xorg"), and start AgentsCommander again. If you are already on Xorg and AgentsCommander still refuses, a Wayland setting or socket left over from an earlier session caused it: start AgentsCommander from a fresh login shell, not from a terminal multiplexer or a service that was started under Wayland.
+### Capture on Wayland
 
-In a Wayland session the hotkey is not registered. The sticky error toast that [Check that the shortcut is active](#check-that-the-shortcut-is-active) describes names the configured hotkey and the reason, which starts `Screenshot capture needs an X11 session, and this one was detected as Wayland, so the hotkey was not registered.` Nothing fails silently.
+When you press the key or click the chip, the desktop's own area selector opens. There is no AgentsCommander overlay and no magnifier.
 
-## Linux: two behaviors that differ from Windows
+- Drag a rectangle to save. The PNG goes to the same replica folder as on other systems, the path is copied to the clipboard, and the same success toast appears.
+- Press `Escape` to cancel. Nothing is written and no message appears.
+- A second press, or a chip click, while the selector is open does nothing.
+- If the selector never answers, restart AgentsCommander.
+- Some portals also keep their own copy of the image (GNOME, for example, in `~/Pictures`). AgentsCommander never deletes it.
+
+The path is copied to the clipboard. Whether it survives after AgentsCommander quits was not verified on Wayland.
+
+### The shortcut on Wayland
+
+AgentsCommander registers one portal shortcut per instance, with its own id `agentscommander:screenshot-<8 hex>`. Each AgentsCommander configuration directory has its own id. On KDE and GNOME the desktop asks you for the key the first time AgentsCommander registers the shortcut, and owns that key after that. Hyprland needs a key binding instead; see [Wayland: the key binding on Hyprland](#wayland-the-key-binding-on-hyprland).
+
+## Linux X11: two behaviors that differ from Windows
 
 **The copied path may not survive closing AgentsCommander.** On X11 the clipboard is usually served by the running application, so when AgentsCommander exits the path is normally gone. A clipboard manager can change that: if one is running (KDE's Klipper, for example), it can take over the clipboard before the app exits and keep the path available. Without one, expect to lose it. The PNG file is unaffected either way. Paste the path before you quit. This is how X11 works, not a defect.
 
@@ -99,11 +111,47 @@ If you start AgentsCommander from a terminal instead of Finder, macOS may ask fo
 
 ## macOS: behaviors that differ from Windows
 
-**Pressing the hotkey a second time cancels the capture.** As on Linux, a second press while a capture is in flight closes the overlays and cancels the capture. macOS does not guarantee keyboard focus for the overlay, so `Escape` may not reach it; the hotkey always does. Only Windows ignores the second press.
+**Pressing the hotkey a second time cancels the capture.** As on Linux X11, a second press while a capture is in flight closes the overlays and cancels the capture. macOS does not guarantee keyboard focus for the overlay, so `Escape` may not reach it; the hotkey always does. Only Windows ignores the second press.
 
 **The copied path survives quitting AgentsCommander.** macOS keeps clipboard contents after an application quits, so the path stays pasteable; on X11 it is usually lost. This was not verified on a real Mac.
 
 **Two behaviors remain unverified on a real Mac:** whether the menu bar and the Dock draw above the overlay, and whether the overlay appears over an app that is fullscreen in its own Space.
+
+## Wayland: the key binding on Hyprland
+
+Hyprland binds the portal shortcut only through a key binding in its config. AgentsCommander can add it for you, or tell you the line to paste.
+
+### Let AgentsCommander add it
+
+Turn on **Add the screenshot shortcut to Hyprland for me** in Settings > Hotkeys (`screenshotHyprlandBind`, off by default). It works only with the Omarchy layout: a regular `~/.config/hypr/bindings.lua` loaded by `hyprland.lua`.
+
+AgentsCommander then writes its own marked block in `bindings.lua`. For an instance with the token `1a2b3c4d` and the key `Ctrl+Q`:
+
+```lua
+-- >>> AgentsCommander screenshot shortcut 1a2b3c4d (managed by AgentsCommander) >>>
+hl.bind("CTRL + Q", hl.dsp.global("agentscommander:screenshot-1a2b3c4d"), { description = "AgentsCommander screenshot 1a2b3c4d" })
+-- <<< AgentsCommander screenshot shortcut 1a2b3c4d <<<
+```
+
+- When you change the key, AgentsCommander updates the block.
+- When you turn the setting off, it removes the block.
+- After each write it checks `hyprctl configerrors`. If Hyprland reports a new error, AgentsCommander restores the file.
+- It touches only its own block. Blocks written by other AgentsCommander instances stay as they are.
+
+### Paste the line yourself
+
+When the setting is off, or your config is not the Omarchy layout, one sticky toast shows the line to paste, in both forms:
+
+```text
+hl.bind("CTRL + Q", hl.dsp.global("agentscommander:screenshot-1a2b3c4d"), { description = "AgentsCommander screenshot 1a2b3c4d" })
+bindd = CTRL, Q, AgentsCommander screenshot 1a2b3c4d, global, agentscommander:screenshot-1a2b3c4d
+```
+
+The first line is for `bindings.lua`, the second for `hyprland.conf`. Copy the line from your own toast: the token is different for each instance. AgentsCommander finds a pasted line through `hyprctl binds` by its description, so keep the `description` as it is.
+
+### The key belongs to the whole desktop
+
+While the binding is in place, Hyprland takes that key for the whole desktop: other applications no longer receive it (for example `Ctrl+Q`). To give the key back, pick another key or turn the setting off.
 
 ## Configure the hotkey
 
@@ -149,11 +197,13 @@ The two ways a save can go wrong behave differently:
 - **The syntax is invalid.** The save is rejected before anything is written to disk, and your previous hotkey stays registered and keeps working. You rarely reach this path, because the Settings dialog refuses the value first.
 - **The syntax is valid but the operating system refuses the combination**, usually because another application already owns it. The save succeeds and the new value is persisted; only the registration fails. AgentsCommander raises an error toast reading `Screenshot hotkey was saved but could not be registered: <error>`, and keeps the previously registered shortcut alive as a fallback. So the configured value is the new combination, the key that actually fires is still the old one, and the status for the configured value reports it as not registered. Pick another combination and save again.
 
+On Wayland the save succeeds and the result arrives a moment later. The `Screenshot hotkey was saved but could not be registered: <error>` toast does not appear on Wayland. A failure shows `Screenshot hotkey <key> is not active: <reason>` instead, once per distinct reason. On Hyprland with **Add the screenshot shortcut to Hyprland for me** on, when the new block cannot be written, or Hyprland rejects it or does not load it, `bindings.lua` keeps (or gets back) the previous block. The previous key then keeps capturing until you fix the problem.
+
 ## Check that the shortcut is active
 
-When the hotkey is registered, the titlebar shows a chip with a camera glyph and the shortcut, for example `Ctrl + Q`. Its tooltip and accessible name are `Screenshot capture shortcut: <hotkey>`.
+The titlebar always shows a camera chip. When the shortcut is active, the chip also shows the key, for example `Ctrl + Q`, and its tooltip and accessible name are `Take a screenshot (<hotkey>)`. Clicking the chip captures, like the key.
 
-**An absent chip means the shortcut is not active.** The most common cause is another application already owning that combination at the OS level. At startup AgentsCommander checks the registration and raises an error toast reading `Screenshot hotkey <configured> is not active: <error>` when the configured shortcut failed to register, so a conflict detected at launch reaches you even if you never look at the titlebar. Pick a different combination in Settings and save; the new shortcut registers at once.
+**A chip with only the camera means the shortcut is not active.** Its tooltip and accessible name are then `Take a screenshot`, and clicking it still captures. The most common cause is another application already owning that combination at the OS level. AgentsCommander raises an error toast reading `Screenshot hotkey <configured> is not active: <error>` once per distinct reason, not on every Settings save, so a conflict reaches you even if you never look at the titlebar. Pick a different combination in Settings and save; the key appears in the chip without a restart.
 
 Registration is also written to the app log:
 
@@ -162,9 +212,20 @@ Registration is also written to the app log:
 [screenshot] global hotkey registration failed: <error>
 ```
 
+On Wayland, two more lines report the result:
+
+```text
+[screenshot] Wayland shortcut active '<key>'
+[screenshot] Wayland shortcut not active: <error>
+```
+
+On Wayland, the `global hotkey registered` line only means the request to the portal started.
+
 ## Availability right after startup
 
 The shortcut is active as soon as the app finishes starting, without waiting for session restore. It is not active at process start: the global hotkey is registered on the main thread, so the registration completes only once the app's event loop is running. This is by design. Forcing that work to complete earlier would block the main thread, which is exactly what starves the WebView and prevents dialogs such as the update prompt from rendering.
+
+On Wayland the shortcut status arrives a moment after startup, once the portal answers.
 
 Presses inside that window are queued by the OS, not lost. They are serviced in a burst as soon as the event loop drains, so a press made while AgentsCommander is still restoring sessions still runs.
 
@@ -184,6 +245,22 @@ AgentsCommander reports every failure as an error toast carrying the backend mes
 | `saved file escaped the replica root` | The destination resolved outside the replica root between validation and write. | Do not link or redirect the replica root. Retry from a plain directory. |
 
 AgentsCommander also refuses a replica root that is a link or reparse point, and validates the replica's identity before writing. A replica that fails those checks reports a failure instead of writing outside its owner.
+
+### Wayland and Hyprland messages
+
+These messages appear as the reason in `Screenshot hotkey <key> is not active: <reason>`.
+
+| Message | Cause | Recovery |
+|---|---|---|
+| `Screenshot capture on Wayland needs xdg-desktop-portal with the Screenshot and GlobalShortcuts portals, and the screenshot shortcut could not be registered there. Install your desktop's portal backend (on Hyprland: xdg-desktop-portal-hyprland) and restart AgentsCommander, or log in with an Xorg session. Details: <error>` | The portal is unreachable, or it would not bind the shortcut. | Install or fix the portal backend, then restart AgentsCommander. A failed portal host registration is kept until AgentsCommander or the desktop portal restarts. |
+| `The desktop portal stopped the screenshot shortcut. Save Settings or restart AgentsCommander to bind it again.` | The portal restarted or closed the session. | Save Settings once. That binds the key again, also after a portal restart. |
+| `The AgentsCommander lines in bindings.lua are damaged; delete them and save Settings again.` | The block markers in `bindings.lua` are broken. | Delete the AgentsCommander lines and save Settings. |
+| `bindings.lua changed while AgentsCommander was updating it; nothing was written.` | Something else edited the file during the update. | Save Settings again. |
+| `Hyprland rejected the AgentsCommander binding (<error>); bindings.lua was restored.` | Hyprland reported a new config error after the write. | Fix the error shown, then save Settings again. |
+| `Hyprland did not load the AgentsCommander binding from bindings.lua; the change was undone.` | The block was written but Hyprland did not load it. | Check your Hyprland config, then save Settings again. |
+| ``bindings.lua has the AgentsCommander binding, but Hyprland has not loaded it. Fix the errors that `hyprctl configerrors` lists, then save Settings again.`` | The block is present but not loaded. | Fix what `hyprctl configerrors` lists, then save Settings. |
+
+When the automatic binding fails, the toast also shows the line to paste instead.
 
 ## See also
 
