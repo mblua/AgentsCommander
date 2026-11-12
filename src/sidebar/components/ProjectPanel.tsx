@@ -316,7 +316,7 @@ function pushPathSegment(segments: string[], segment: string, hasRoot: boolean):
 function normalizePath(path: string, separator: "\\" | "/"): string {
   const trimmed = path.trim();
   const driveMatch = /^([A-Za-z]:)[\\/]+(.*)$/.exec(trimmed);
-  const uncMatch = driveMatch ? null : /^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/.exec(trimmed);
+  const uncMatch = driveMatch ? null : trimmed.match(/^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/);
   let root = "";
   let rest = trimmed;
 
