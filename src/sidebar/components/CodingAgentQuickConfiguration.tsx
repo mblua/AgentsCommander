@@ -730,7 +730,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
             <Show when={isCustom()}>
               <div class="onboarding-custom-fields">
                 <label class="onboarding-field-label">
-                  Agent name
+                  {"Agent name"}
                   <input
                     class="onboarding-field-input"
                     type="text"
@@ -742,7 +742,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                   />
                 </label>
                 <label class="onboarding-field-label">
-                  Command
+                  {"Command"}
                   <input
                     class="onboarding-field-input"
                     type="text"

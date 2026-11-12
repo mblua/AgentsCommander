@@ -916,7 +916,7 @@ export interface RailDiagnosticRecord {
   selectionProjectId?: number;
   selectionGroupId?: number;
   kind?: "custom" | "system" | "nonstop" | "ungrouped" | "project" | "favorites";
-  selectionKind?: RailDiagnosticRecord["kind"];
+  selectionKind?: NonNullable<RailDiagnosticRecord["kind"]>;
   phase?: "arming" | "dragging" | "saving" | "idle";
   outcome?: "applied" | "unchanged" | "stale" | "error" | "disconnected" | "unloaded" |
     "queued" | "discarded" | "suppressed" | "overflow" | "no-press";
@@ -929,7 +929,7 @@ export interface RailDiagnosticRecord {
   captured?: boolean;
   documentFocused?: boolean;
   targetTag?: "button" | "span" | "svg" | "path" | "aside" | "body" | "input" | "textarea" | "other" | "none";
-  activeTag?: RailDiagnosticRecord["targetTag"];
+  activeTag?: NonNullable<RailDiagnosticRecord["targetTag"]>;
   count?: number;
   changedCount?: number;
   durationMs?: number;
