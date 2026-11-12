@@ -42,7 +42,9 @@ interface RailObservation {
 }
 
 function selectionKind(selection: WorkgroupGroupSelection): NonNullable<RailFields["kind"]> {
-  return selection.kind === "group" ? "custom" : selection.kind === "all" ? "system" : selection.kind;
+  if (selection.kind === "group") return "custom";
+  if (selection.kind === "all") return "system";
+  return selection.kind;
 }
 
 function sameSelection(a: RailFields, b: RailFields): boolean {
