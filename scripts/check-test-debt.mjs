@@ -269,11 +269,17 @@ function rustTestId(rel, modules, fnName) {
   return `rust:${parts.join('::')}`;
 }
 
+const PLACEHOLDER_BODY_RES = [
+  /^todo!\s*\(\s*\)\s*;?$/,
+  /^unimplemented!\s*\(\s*\)\s*;?$/,
+  /^panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\)\s*;?$/,
+];
+
 function hasExecutableRustBody(originalBody, strippedBody) {
   const withoutComments = strippedBody.trim().replaceAll(';', '').trim();
   if (withoutComments.length === 0) return false;
   const compact = maskComments(originalBody).trim();
-  if (/^(todo!\s*\(\s*\)|unimplemented!\s*\(\s*\)|panic!\s*\(\s*["'`]TODO[\s\S]*["'`]\s*\))\s*;?$/.test(compact)) {
+  if (PLACEHOLDER_BODY_RES.some((re) => re.test(compact))) {
     return false;
   }
   if (/\b(?:assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(/.test(
