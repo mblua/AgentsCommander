@@ -66,6 +66,7 @@ type Shared = Rc<RefCell<Harness>>;
 
 // Builds the app and its own two (or one, for probes) WebViews, then runs the
 // GTK loop until finish() ends it. Returns the process exit code.
+#[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
 pub fn run(mut receipt: Receipt, spec: RunSpec) -> u8 {
     receipt.set("tauriVersion", json!(tauri::VERSION));
     let app = match tauri::Builder::default().build(tauri::generate_context!()) {
@@ -349,8 +350,8 @@ fn surface_to_rgba(surface: cairo::Surface) -> Result<Converted, String> {
     image
         .with_data(|bytes| {
             for row in bytes.chunks(stride).take(height as usize) {
-                for chunk in row.chunks_exact(4).take(width as usize) {
-                    let value = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                for chunk in row.as_chunks::<4>().0.iter().take(width as usize) {
+                    let value = u32::from_ne_bytes(*chunk);
                     let alpha = if opaque { 255 } else { (value >> 24) as u8 };
                     let rgb = [(value >> 16) as u8, (value >> 8) as u8, value as u8];
                     data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha]);
