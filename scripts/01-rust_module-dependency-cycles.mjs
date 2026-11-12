@@ -91,6 +91,16 @@ const NON_CALL_WORDS = new Set([
 const CFG_ANY_RE = /\bcfg\s*\(/;
 
 class UsageError extends Error {}
+
+function rejectsUsage(h, extra) {
+  try {
+    h.run(extra);
+    return false;
+  } catch (err) {
+    return err instanceof UsageError;
+  }
+}
+
 class AnalysisError extends Error {}
 
 /* ------------------------------------------------------------------ *
@@ -1820,7 +1830,8 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   let base = null;
   let rest = null;
 
-  if (first === 'crate') {
+  if (first === 'crate' || (target.kind !== 'lib'
+    && (first === target.libName || first === target.pkgIdent))) {
     base = [];
     rest = segments.slice(1);
   } else if (first === 'self') {
@@ -1839,9 +1850,6 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
     }
     base = up;
     rest = segments.slice(k);
-  } else if (target.kind !== 'lib' && (first === target.libName || first === target.pkgIdent)) {
-    base = [];
-    rest = segments.slice(1);
   } else if (contextSegments.length > 0
     && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
     // Rust 2018 resolves a relative first segment in the current module before
@@ -3776,14 +3784,7 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      const rejects = (extra) => {
-        try {
-          h.run(extra);
-          return false;
-        } catch (err) {
-          return err instanceof UsageError;
-        }
-      };
+      const rejects = (extra) => rejectsUsage(h, extra);
       h.yes(rejects(['--write-baseline=']), '--write-baseline= rejected');
       h.yes(rejects(['--baseline=']), '--baseline= rejected');
       h.yes(rejects(['--baseline=', '--write-baseline=x']),
@@ -3993,14 +3994,7 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      const rejects = (extra) => {
-        try {
-          h.run(extra);
-          return false;
-        } catch (err) {
-          return err instanceof UsageError;
-        }
-      };
+      const rejects = (extra) => rejectsUsage(h, extra);
       h.yes(
         rejects(['--emit-graph=g.json', '--write-baseline=b.json']),
         '--emit-graph with --write-baseline rejected',
