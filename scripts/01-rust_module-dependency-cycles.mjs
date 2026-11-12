@@ -1450,7 +1450,7 @@ const USE_TREE_DEPTH_CAP = 16;
 function expandUseTree(masked, bodyStart, bodyEnd, ctx, file) {
   const leaves = [];
   const capHits = { count: 0 };
-  parseUseNode(masked, bodyStart, bodyEnd, [], false, { out: leaves, capHits }, 0);
+  parseUseNode(masked, bodyStart, bodyEnd, [], false, leaves, 0, capHits);
   if (capHits.count > 0) {
     ctx.diagnostics.push({
       // error, not warn: dropping a `use` can erase an edge, delete the cycle
@@ -1467,8 +1467,7 @@ function expandUseTree(masked, bodyStart, bodyEnd, ctx, file) {
   return leaves;
 }
 
-function parseUseNode(masked, from, to, prefix, leadingColons, sink, depth) {
-  const { out, capHits } = sink;
+function parseUseNode(masked, from, to, prefix, leadingColons, out, depth, capHits) {
   // Same rule as SCAN_DEPTH_CAP: the branch below this depth is dropped, and
   // dropping a `use` can erase an edge and flip the gate, so the caller reports
   // every hit rather than letting the reference vanish quietly.
@@ -1494,7 +1493,7 @@ function parseUseNode(masked, from, to, prefix, leadingColons, sink, depth) {
       const e = matchDelimiter(masked, i);
       if (e < 0 || e > to) return;
       for (const [s, t] of splitTopLevel(masked, i + 1, e, ',')) {
-        parseUseNode(masked, s, t, segments, leading, sink, depth + 1);
+        parseUseNode(masked, s, t, segments, leading, out, depth + 1, capHits);
       }
       return;
     }
