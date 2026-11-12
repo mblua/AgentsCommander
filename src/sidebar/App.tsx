@@ -1,8 +1,7 @@
 import { acquireRoomActivityObserver } from "./stores/room-activity";
 import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, untrack, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
-import type { UnlistenFn } from "../shared/transport";
-import type { TransportConnectionState } from "../shared/transport";
+import type { UnlistenFn, TransportConnectionState } from "../shared/transport";
 import type {
   SessionStatus,
   ContextTemplateUpdate,
