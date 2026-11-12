@@ -11,7 +11,7 @@ You need:
 - AgentsCommander running on Windows, on macOS, or on Linux in an X11 or Wayland session; on Wayland you also need your desktop's portal backend (on Hyprland, `xdg-desktop-portal-hyprland`); see [Linux: X11 and Wayland](#linux-x11-and-wayland) to check which session you are in;
 - on macOS, the Screen Recording permission, which macOS asks for on the first capture; see [macOS: Screen Recording permission](#macos-screen-recording-permission);
 - a session selected in the app and displayable, because the screenshot belongs to that session; and
-- that session's working directory inside a room replica (an `__agent_*` directory), because the replica root is the destination.
+- that session's working directory inside a room replica (an `__agent_*` directory), because the destination is the `screenshots` folder in the replica root.
 
 A screenshot records whatever is on your monitors, including passwords, tokens, source code, and personal data. AgentsCommander saves the exact cropped pixels with no redaction, and it copies the file path to your clipboard.
 
@@ -33,12 +33,12 @@ Two behaviors are deliberate and are not failures:
 
 ## Where the file goes
 
-AgentsCommander walks up from the active session's working directory to its `__agent_*` replica root and writes the file directly in that root:
+AgentsCommander walks up from the active session's working directory to its `__agent_*` replica root and writes the file in the `screenshots` folder directly inside that root. AgentsCommander creates the folder on the first capture:
 
 ```text
-Windows:  <room-replica-root>\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
-Linux:    <room-replica-root>/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
-macOS:    <room-replica-root>/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+Windows:  <room-replica-root>\screenshots\agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+Linux:    <room-replica-root>/screenshots/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
+macOS:    <room-replica-root>/screenshots/agentscommander-screenshot-<YYYYMMDD>-<HHMMSS>-<session-id-prefix>.png
 ```
 
 The timestamp is local time. The last segment is the first 8 hexadecimal characters of the session id, so two sessions capturing in the same second still get distinct names.
