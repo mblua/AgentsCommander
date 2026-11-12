@@ -5,12 +5,16 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+#[cfg(target_os = "linux")]
+use crate::filesystem::screenshot_files::read_portal_screenshot;
 use crate::filesystem::screenshot_files::{
     create_png_file, ensure_screenshots_directory, remove_partial_screenshot,
     validate_saved_screenshot,
 };
 use crate::screenshot::ScreenshotHost;
 
+#[cfg(target_os = "linux")]
+use super::ScreenshotCaptureStarting;
 use super::{
     destroy_overlays_for_capture, revalidate_replica_target, ActiveScreenshotCapture,
     ScreenshotCaptureEvent, ScreenshotCaptureLifecycle, ScreenshotCaptureResult,
@@ -128,48 +132,98 @@ pub(super) async fn save_selection(
 
     let saved_path =
         tokio::task::spawn_blocking(move || -> Result<PathBuf, (Option<PathBuf>, String)> {
-            // Revalidate the destination immediately before creating the file.
-            revalidate_replica_target(&target).map_err(|e| (None, e))?;
-            let screenshots = prepare_screenshots_directory(&target).map_err(|e| (None, e))?;
-            let (path, file) = create_png_file(&screenshots, &filename).map_err(|e| (None, e))?;
-
             let cropped = image::imageops::crop_imm(&image, sx, sy, sw, sh).to_image();
-            let mut writer = std::io::BufWriter::new(file);
-            if let Err(e) = image::DynamicImage::ImageRgba8(cropped)
-                .write_to(&mut writer, image::ImageFormat::Png)
-            {
-                return Err((Some(path), format!("PNG encode/write failed: {e}")));
-            }
-            if let Err(e) = writer.flush() {
-                return Err((Some(path), format!("PNG flush failed: {e}")));
-            }
-            drop(writer);
-
-            // Recheck root identity and the real child after writing. These path-based
-            // guards retain the existing non-atomic replacement limitation.
-            revalidate_replica_target(&target).map_err(|e| (Some(path.clone()), e))?;
-            validate_saved_screenshot(&target, &screenshots, &path)
-                .map_err(|e| (Some(path.clone()), e))
+            write_png_into_replica(&target, &filename, cropped)
         })
         .await
         .map_err(|e| (None, format!("save task panicked: {e}")))??;
 
-    // `saved_path` is canonical (verbatim `\\?\` on Windows). Every containment
+    Ok(saved_result(
+        &saved_path,
+        capture.target_session_id,
+        capture.target_session_name,
+    ))
+}
+
+/// Write `image` as a new PNG under `<target>/screenshots/`. Blocking.
+fn write_png_into_replica(
+    target: &Path,
+    filename: &str,
+    image: image::RgbaImage,
+) -> Result<PathBuf, (Option<PathBuf>, String)> {
+    // Revalidate the destination immediately before creating the file.
+    revalidate_replica_target(target).map_err(|e| (None, e))?;
+    let screenshots = prepare_screenshots_directory(target).map_err(|e| (None, e))?;
+    let (path, file) = create_png_file(&screenshots, filename).map_err(|e| (None, e))?;
+
+    let mut writer = std::io::BufWriter::new(file);
+    if let Err(e) =
+        image::DynamicImage::ImageRgba8(image).write_to(&mut writer, image::ImageFormat::Png)
+    {
+        return Err((Some(path), format!("PNG encode/write failed: {e}")));
+    }
+    if let Err(e) = writer.flush() {
+        return Err((Some(path), format!("PNG flush failed: {e}")));
+    }
+    drop(writer);
+
+    // Recheck root identity and the real child after writing. These path-based
+    // guards retain the existing non-atomic replacement limitation.
+    revalidate_replica_target(target).map_err(|e| (Some(path.clone()), e))?;
+    validate_saved_screenshot(target, &screenshots, &path).map_err(|e| (Some(path.clone()), e))
+}
+
+fn saved_result(path: &Path, session_id: Uuid, session_name: String) -> ScreenshotCaptureResult {
+    // `path` is canonical (verbatim `\\?\` on Windows). Every containment
     // check above ran on the raw canonical PathBuf; only the user-facing string
     // (clipboard, saved event, result payload, log) is normalized via the shared
     // #730 helper so it matches the clean paths the rest of the app now emits.
-    let path_string =
-        crate::path_utils::path_to_string_without_windows_verbatim_prefix(&saved_path);
-    log::info!(
-        "[screenshot] saved {} for session '{}'",
-        path_string,
-        capture.target_session_name
-    );
-    Ok(ScreenshotCaptureResult {
+    let path_string = crate::path_utils::path_to_string_without_windows_verbatim_prefix(path);
+    log::info!("[screenshot] saved {path_string} for session '{session_name}'");
+    ScreenshotCaptureResult {
         path: path_string,
-        session_id: capture.target_session_id.to_string(),
-        session_name: capture.target_session_name,
-    })
+        session_id: session_id.to_string(),
+        session_name,
+    }
+}
+
+/// #2774 Largest portal screenshot we read.
+#[cfg(target_os = "linux")]
+pub(super) const PORTAL_SCREENSHOT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// #2774 Copy the portal's PNG into the replica. The portal's file is never
+/// modified or deleted.
+#[cfg(target_os = "linux")]
+pub(super) async fn save_portal_png(
+    capture: ScreenshotCaptureStarting,
+    source: PathBuf,
+    max_bytes: u64,
+) -> Result<ScreenshotCaptureResult, (Option<PathBuf>, String)> {
+    let target = capture.target_directory.clone();
+    let filename = build_filename(capture.target_session_id);
+    let saved_path =
+        tokio::task::spawn_blocking(move || -> Result<PathBuf, (Option<PathBuf>, String)> {
+            let bytes = read_portal_screenshot(&source, max_bytes).map_err(|e| (None, e))?;
+            let img = image::load_from_memory(&bytes)
+                .map_err(|e| {
+                    (
+                        None,
+                        format!("portal screenshot is not a readable image: {e}"),
+                    )
+                })?
+                .to_rgba8();
+            if img.width() < 2 || img.height() < 2 {
+                return Err((None, "Selection is too small".to_string()));
+            }
+            write_png_into_replica(&target, &filename, img)
+        })
+        .await
+        .map_err(|e| (None, format!("save task panicked: {e}")))??;
+    Ok(saved_result(
+        &saved_path,
+        capture.target_session_id,
+        capture.target_session_name,
+    ))
 }
 
 /// Lazily create only the direct child of the already validated canonical root.
