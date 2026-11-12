@@ -59,6 +59,7 @@ pub(crate) async fn hyprctl(args: &[&str]) -> Result<String, String> {
     cmd.args(args)
         .stdin(process::Stdio::null())
         .kill_on_drop(true);
+    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
     let timeout = std::time::Duration::from_secs(5);
     let output = match tokio::time::timeout(timeout, cmd.output()).await {
         Err(_) => return Err("hyprctl timed out".to_string()),

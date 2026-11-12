@@ -53,3 +53,13 @@ fn replace_keeps_permissions() {
     let mode = fs::metadata(&bindings).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o640);
 }
+
+#[test]
+fn symlinked_bindings_are_not_the_omarchy_layout() {
+    // User-granted exception (#2774 P04 only, P12): a symlinked bindings.lua.
+    let (dir, bindings) = layout(Some(MAIN));
+    let real = dir.path().join("real-bindings.lua");
+    fs::rename(&bindings, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &bindings).unwrap();
+    assert_eq!(omarchy_bindings_path(dir.path()), None);
+}
