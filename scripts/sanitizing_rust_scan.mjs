@@ -482,7 +482,8 @@ function mask(s){let a=s.split(''),i=0;const blank=(b,e)=>{for(let j=b;j<e;j++)i
   0].length);i=e<0?s.length:e+end.length;blank(b,i);}else if(s[i]=='"'){i++;while(i<s.length){if(
   s.codePointAt(i)==92){i+=2;continue;}
   if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+
-  1;if(s.codePointAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);k=close<0?
+  1;if(s.codePointAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);
+  k=close<0?
   k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;
   if(s[k]=="'"){i=k+
   1;blank(b,i);}else i++;}else i++;}}return a.join('');}
