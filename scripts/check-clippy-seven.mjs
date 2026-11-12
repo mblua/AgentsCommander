@@ -24,7 +24,10 @@ const OWNER = [BASELINE, 'scripts/check-clippy-seven.mjs',
   'docs/quality/clippy-seven-gate.md'];
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const order = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const order = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 export class InputError extends Error { constructor(m) { super(m); this.exit = 2; } }
 const need = (ok, m) => { if (!ok) throw new InputError(m); };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -277,7 +280,7 @@ function environment(root, output) {
         .test(value.replaceAll(String.fromCharCode(31), ' ')), `unexplained lint override ${key}`);
     } else if (/WRAPPER/.test(key)) {
       need(/^sccache(?:\.exe)?$/.test(path.basename(value)), `unknown wrapper ${key}`);
-    } else if (/RUSTC$/.test(key)) {
+    } else if (key.endsWith('RUSTC')) {
       need(/^rustc(?:\.exe)?$/.test(path.basename(value)), `unknown compiler ${key}`);
     } else if (key === 'CARGO_MANIFEST_DIR') {
       need(normalizeFile(path.resolve(value), root) !== '', 'unknown Cargo selector');

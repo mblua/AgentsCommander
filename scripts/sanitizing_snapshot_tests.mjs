@@ -8,6 +8,7 @@ import { applyAllowlist, formatWarning } from './sanitizing_baseline.mjs';
 import { runGate as containersGate, parseRegistry,
     measureSource } from './sanitizing_containers.mjs';
 import { runGate as diskGate } from './sanitizing_disk_access.mjs';
+import { runMeasuredGate, metric, hit } from './sanitizing_gate_support.mjs';
 
 // Batch 7: occurrence totals are invariant under splits, with one-use transfer credit.
 export function registerSnapshotTransferTests({trees, rustRoot, allow}) {
@@ -79,6 +80,25 @@ export function registerSnapshotTransferTests({trees, rustRoot, allow}) {
     assert.equal(applyAllowlist(result,[allow('09','env_read_files',p)]).exit,0);
     const unlisted=processGate(trees({[p]:code},{[p]:code,[q]:code}));
     assert.equal(applyAllowlist(unlisted,[allow('09','env_read_files',p)]).exit,1);
+  });
+  test('transfer credit never crosses rule boundaries', () => {
+    const p=rustRoot+'old.rs', a=rustRoot+'a.rs';
+    const measure=path => {
+      const m=metric();
+      if (path===p) { hit(m,'R',1,'x'); hit(m,'R',2,'x'); }
+      else { hit(m,'R',3,'x'); hit(m,'S',4,'x'); }
+      return m;
+    };
+    const result=runMeasuredGate(trees({[p]:'fn f() {}'},{[a]:'fn f() {}'}),{gate:'proof',
+      rules:['R','S'], newFileRules:['R','S'], inUniverse:path=>[p,a].includes(path), measure,
+      extraChecks:() => {}, recognizeMoves:true});
+    assert.equal(result.status,'FAIL'); assert.equal(result.exit,1);
+    assert.deepEqual(result.totals,[{R:2,S:0},{R:1,S:1}]);
+    const rows=result.diagnostics.map(d=>[d.status,d.rule,d.path,d.line,d.base,d.head,d.reason]);
+    assert.deepEqual(rows,[
+      ['FAIL','S',a,4,0,1,'global subrule debt increased'],
+      ['FAIL','S',a,4,0,1,'new file must satisfy this subrule even with compensated totals'],
+    ]);
   });
 }
 
@@ -250,7 +270,39 @@ export function registerSnapshotBoundaryTests({trees, control, fixture, rustRoot
     f.write('next', 'next'); f.commit();
     assert.equal(diskGate(snapshot).exit, 3);
     const broken = trees({}, {[p]:'x'});
-    broken.readBlob = () => { throw Error('missing blob'); };
+    broken.readBlob = () => { throw new Error('missing blob'); };
     assert.equal(diskGate(broken).status, 'ERROR');
+  });
+
+  test('late gate errors retain earlier warning and failure diagnostics', () => {
+    const p=rustRoot+'old.rs';
+    const run=extraChecks => {
+      const snapshot=trees({[p]:'fn f() {}'});
+      const measure=(path,scan,{tree}) => {
+        const m=metric();
+        if (tree===snapshot.headTree) {
+          hit(m,'R',9,'x'); m.warnings.push({path:p,line:8,reason:'head',remedy:'head-fix'});
+        }
+        return m;
+      };
+      const result=runMeasuredGate(snapshot,{gate:'proof',rules:['R','S'],newFileRules:['R','S'],
+        inUniverse:path=>[p].includes(path), measure, extraChecks, recognizeMoves:true});
+      return {snapshot,result};
+    };
+    const earlier=s => [
+      {gate:'proof',status:'WARN',path:p,line:8,reason:'head',remedy:'head-fix'},
+      {gate:'proof',status:'FAIL',rule:'R',path:p,line:9,base:0,head:1,
+        baseOid:s.baseOid,headOid:s.headOid,reason:'global subrule debt increased',
+        remedy:'remove the new signal or use the source-defined owner; do not raise the baseline'},
+    ];
+    const late=run(() => { throw new Error('late'); });
+    assert.equal(late.result.status,'ERROR'); assert.equal(late.result.exit,3);
+    assert.equal(late.result.baseOid,late.snapshot.baseOid);
+    assert.equal(late.result.headOid,late.snapshot.headOid);
+    assert.deepEqual(late.result.diagnostics,[...earlier(late.snapshot),
+      {gate:'proof',reason:'late',remedy:'repair inputs and rerun; no verdict available'}]);
+    const plain=run(() => {});
+    assert.equal(plain.result.status,'FAIL'); assert.equal(plain.result.exit,1);
+    assert.deepEqual(plain.result.diagnostics,earlier(plain.snapshot));
   });
 }

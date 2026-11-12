@@ -53,7 +53,7 @@ if (!isTauri) {
   // `watchers_scope_request` event instead.
   render(() => <WatchersApp initialSessionId={params.get("sessionId") || undefined} />, root);
 } else if (windowType === "screenshot-overlay") {
-  document.documentElement.setAttribute("data-window", "screenshot-overlay");
+  document.documentElement.dataset.window = "screenshot-overlay";
   render(() => <ScreenshotOverlayApp />, root);
 } else if (windowType === "spec-board") {
   render(() => <SpecBoardApp />, root);

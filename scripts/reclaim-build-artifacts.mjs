@@ -135,12 +135,12 @@ function discoverRepoRoots(scanRoot) {
   if (isRepoRoot(scanRoot)) found.add(scanRoot);
   for (const name of childDirs(scanRoot)) {
     const child = join(scanRoot, name);
-    if (/^repo-/.test(name) && isRepoRoot(child)) {
+    if (name.startsWith('repo-') && isRepoRoot(child)) {
       found.add(child);
     } else if (/^(?:room|wg)-/.test(name)) {
       for (const gname of childDirs(child)) {
         const g = join(child, gname);
-        if (/^repo-/.test(gname) && isRepoRoot(g)) found.add(g);
+        if (gname.startsWith('repo-') && isRepoRoot(g)) found.add(g);
       }
     }
   }
@@ -321,7 +321,8 @@ function printTextReport(apply, repoRoots, reclaimable, skipped, totalBytes) {
     console.log(`${TAG} no target/src-tauri/target artifacts found. Nothing to reclaim.`);
   }
   for (const r of reclaimable) {
-    const verb = apply ? (r.removed ? 'removed' : `FAILED (${r.error})`) : 'would remove';
+    let verb = 'would remove';
+    if (apply) verb = r.removed ? 'removed' : `FAILED (${r.error})`;
     console.log(`${TAG}   ${verb}: ${r.path}  (${humanBytes(r.bytes)})`);
   }
   for (const s of skipped) {

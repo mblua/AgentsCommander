@@ -26,7 +26,7 @@ const UNRESOLVED_AGENT_FIX =
 export function launchErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
   if (raw.startsWith(CAP_PREFIX)) {
-    const counts = raw.match(/(\d+)\s*\/\s*(\d+)/);
+    const counts = /(\d+)\s*\/\s*(\d+)/.exec(raw);
     const ratio = counts ? `${counts[1]}/${counts[2]}` : null;
     const head = ratio
       ? `Resource Monitor cap reached (${ratio}).`
@@ -34,7 +34,7 @@ export function launchErrorMessage(err: unknown): string {
     return `${head} Close an agent or raise the limit in Settings > Resources.`;
   }
   if (raw.startsWith(UNRESOLVED_AGENT_PREFIX)) {
-    const id = raw.match(UNRESOLVED_AGENT_RE)?.[1];
+    const id = UNRESOLVED_AGENT_RE.exec(raw)?.[1];
     const agent = id ? `its coding agent '${id}'` : "its coding agent";
     return `Can't restart this session: ${agent} is no longer in Settings. ${UNRESOLVED_AGENT_FIX}`;
   }

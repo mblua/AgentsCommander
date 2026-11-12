@@ -46,7 +46,8 @@ const cssBlockForInMedia = (mediaQuery, selector) => {
 const cssSelectorListBlockForInMedia = (mediaQuery, selector) => {
   const escapedMediaQuery = mediaQuery.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
-  const blockPattern = new RegExp(`@media\\s*${escapedMediaQuery}\\s*\\{[\\s\\S]*?[^{}]*${escapedSelector}[^{}]*\\{(?<body>[^}]*)\\}`);
+  const blockPattern = new RegExp(
+    String.raw`@media\s*${escapedMediaQuery}\s*\{[\s\S]*?[^{}]*${escapedSelector}[^{}]*\{(?<body>[^}]*)\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
 const assertNoRuntimeErrors = () => {

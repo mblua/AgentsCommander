@@ -65,6 +65,9 @@ vi.mock("../../shared/ipc", () => ({
     setThemeLight: vi.fn(() => Promise.resolve()),
     setMainResourceMonitorAttached: vi.fn(() => Promise.resolve()),
   },
+  ResourceMonitorAPI: {
+    snapshot: vi.fn(() => Promise.resolve(null)),
+  },
   SpecBoardAPI: {
     open: vi.fn(),
   },

@@ -25,7 +25,7 @@ const message = (spans = [span()], code = CODES[0]) => ({ reason: 'compiler-mess
 const end = { reason: 'build-finished', success: true };
 const stream = (messages = []) => [...messages, end].map(v => JSON.stringify(v)).join('\n') + '\n';
 const parse = (messages, readSource = f => {
-  if (!f.startsWith('src-tauri/') && !f.startsWith('crates/')) throw Error('untracked source');
+  if (!f.startsWith('src-tauri/') && !f.startsWith('crates/')) throw new Error('untracked source');
   return source;
 }) => parseCapture(stream(messages), 0, { root, readSource });
 const observation = (locations, platform = 'linux') => ({ version: 1, sourceCommit: sha,
@@ -90,7 +90,7 @@ test('bad spans, expansion, source mismatch and unresolved data fail', () => {
   }
   fail(() => parse([message([])]));
   fail(() => parse([message([{ ...span(), is_primary: false }])]));
-  assert.throws(() => parse([message()], () => { throw Error('untracked/generated'); }));
+  assert.throws(() => parse([message()], () => { throw new Error('untracked/generated'); }));
 });
 test('moves/splits/rename/reorder retain capacity; distinct copies consume capacity', () => {
   const b = baseline(5);

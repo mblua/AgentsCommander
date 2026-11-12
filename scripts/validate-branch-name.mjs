@@ -44,7 +44,7 @@ function die(msg) {
 
 function printable(s) {
   return String(s).replace(/[\u0000-\u001f\u007f]/g, (c) =>
-    String.raw`\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+    String.raw`\x${c.codePointAt(0).toString(16).padStart(2, '0')}`);
 }
 
 function git(args) {

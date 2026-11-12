@@ -25,7 +25,7 @@ function toastItem(): HTMLElement | null {
 
 async function expectPlainErrorToast(): Promise<void> {
   await waitFor(() => expect(toastItem()).toBeTruthy());
-  expect(toastItem()?.getAttribute("data-ac-kind")).toBe("error");
+  expect(toastItem()?.dataset.acKind).toBe("error");
   const text = toastItem()?.textContent ?? "";
   expect(text).toContain(UNRESOLVED_TEXT);
   expect(text).not.toContain("unresolved_coding_agent_reference");

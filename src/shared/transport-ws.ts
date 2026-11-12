@@ -257,12 +257,12 @@ export class WsTransport implements Transport {
 
   /** Wait for WebSocket to be connected, with timeout. */
   private waitForConnection(timeoutMs = 5000): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
       const interval = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws?.readyState === WebSocket.OPEN) {
           clearInterval(interval);
           clearTimeout(timeout);
           resolve();
@@ -338,7 +338,7 @@ export class WsTransport implements Transport {
   }
 
   writePtyBinary(sessionId: string, data: Uint8Array): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
 
     // Binary frame: 36-byte UUID ASCII + raw bytes
     const idBytes = new TextEncoder().encode(sessionId.padEnd(36));

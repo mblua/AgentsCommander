@@ -115,7 +115,6 @@ const ExternalLinkConfirm: Component = () => {
           e.preventDefault();
           focusables[0].focus();
         }
-        return;
       }
     };
 

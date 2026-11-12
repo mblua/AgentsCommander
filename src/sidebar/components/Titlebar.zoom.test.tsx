@@ -304,6 +304,7 @@ describe("Titlebar zoom stepper", () => {
       expect(tauriMocks.setZoom).toHaveBeenLastCalledWith(1.1);
       expect(byTestId("titlebar.zoom.value").textContent).toBe("110%");
     });
+    expect(byTestId("titlebar.zoom.value").getAttribute("data-ac-role")).toBe("status");
 
     await new Promise((resolve) => setTimeout(resolve, 550));
 

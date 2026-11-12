@@ -21,7 +21,9 @@ pub(super) fn append_finalized_live_activity(
                     .activity
                     .push(crate::config::activity_log::build_busy(
                         id,
-                        record,
+                        &record.name,
+                        &record.working_directory,
+                        record.agent_kind,
                         crate::config::activity_log::BusyReason::SessionStart,
                         owner,
                     ));

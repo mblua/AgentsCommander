@@ -34,15 +34,19 @@ function tokenValue(body: string, token: string): string | null {
 }
 
 describe("#1708/#1731 context-menu icon colours", () => {
-  it("colours the detach icon with --sidebar-accent, never a hex literal", () => {
-    const body = blockBody(CSS, ".session-context-detach-icon");
-    expect(body).toContain("color: var(--sidebar-accent);");
-    expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}/);
-  });
-
-  it("colours the TASK-title pencil with --status-pending, never a hex literal", () => {
-    const body = blockBody(CSS, ".session-context-task-icon");
-    expect(body).toContain("color: var(--status-pending);");
+  it.each([
+    ["the detach icon", "--sidebar-accent", ".session-context-detach-icon"],
+    ["the TASK-title pencil", "--status-pending", ".session-context-task-icon"],
+    // #1731 - the Add to Group user-plus SVG. #22c55e is only the dark value of
+    // --status-waiting: hard-coded it renders at contrast 1.92 on the light
+    // #ebebf0, worse than the light value #16a34a at 2.77, which is itself short
+    // of the 3:1 non-text minimum. Hard-coding a darker green at the call site
+    // would hide that instead of fixing the token, and is the exact failure this
+    // case blocks.
+    ["the Add to Group user-plus icon", "--status-waiting", ".session-context-group-add-icon"],
+  ])("colours %s with %s, never a hex literal", (_icon, token, selector) => {
+    const body = blockBody(CSS, selector);
+    expect(body).toContain(`color: var(${token});`);
     expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}/);
   });
 
@@ -61,17 +65,5 @@ describe("#1708/#1731 context-menu icon colours", () => {
       return `${token}: ok`;
     });
     expect(report).toEqual(["--sidebar-accent: ok", "--status-pending: ok", "--status-waiting: ok"]);
-  });
-
-  // #1731 - the Add to Group user-plus SVG. #22c55e is only the dark value of
-  // --status-waiting: hard-coded it renders at contrast 1.92 on the light
-  // #ebebf0, worse than the light value #16a34a at 2.77, which is itself short
-  // of the 3:1 non-text minimum. Hard-coding a darker green at the call site
-  // would hide that instead of fixing the token, and is the exact failure this
-  // case blocks.
-  it("colours the Add to Group user-plus icon with --status-waiting, never a hex literal", () => {
-    const body = blockBody(CSS, ".session-context-group-add-icon");
-    expect(body).toContain("color: var(--status-waiting);");
-    expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}/);
   });
 });

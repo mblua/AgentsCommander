@@ -52,7 +52,9 @@ const NewWorkgroupModal: Component<{
       e.preventDefault();
       setListOpen(true);
       const count = filteredTeams().length;
-      const next = activeIndex() < 0 ? 0 : activeIndex() + (e.key === "ArrowDown" ? 1 : -1);
+      let next: number;
+      if (activeIndex() < 0) next = 0;
+      else next = activeIndex() + (e.key === "ArrowDown" ? 1 : -1);
       const index = count === 0 ? -1 : Math.max(0, Math.min(count - 1, next));
       setActiveIndex(index);
       if (index >= 0) listElement.children[index]?.scrollIntoView({ block: "nearest" });

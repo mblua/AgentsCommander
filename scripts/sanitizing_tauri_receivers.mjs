@@ -402,7 +402,7 @@ export function createReceiverClassifier(context) {
       return { trait: traitAt({ ...module, name: text }) };
     }
     if (MARKERS.has(text)) return { marker: MARKERS.get(text) };
-    if (/^tauri::/.test(text)) return { tauri: text };
+    if (text.startsWith('tauri::')) return { tauri: text };
     if (ARC.includes(text)) return { arc: true };
     if (/^(?:crate|self|super)::/.test(text)) return { trait: traitAt(canonical(text, module)) };
     return unknown('unresolved type path: ' + text);

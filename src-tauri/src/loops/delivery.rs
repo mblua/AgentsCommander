@@ -808,11 +808,10 @@ async fn resolve_loop_agent_command<H: LoopDeliveryHost + ?Sized>(
     let replica_dir = replica_dir.as_path();
     let settings = {
         let settings_state = app.settings_owner();
-        let settings = settings_state
+        settings_state
             .current_snapshot()
             .await
-            .map_err(|error| error.to_string())?;
-        settings
+            .map_err(|error| error.to_string())?
     };
 
     resolve_loop_agent_command_from_settings(&settings, replica_dir, persisted_agent)
