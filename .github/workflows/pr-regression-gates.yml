@@ -3874,19 +3874,19 @@ jobs:
           & cargo @cargoArgs 2>&1 | Tee-Object -FilePath $log
           $cargoExit = $LASTEXITCODE
 
-          function Fail([string]$why) {
+          function fail([string]$why) {
             Write-Host "::error::IS #1850 ($mode): $why"
             exit 1
           }
-          if (-not (Test-Path -LiteralPath $log)) { Fail 'the task log was not written' }
+          if (-not (Test-Path -LiteralPath $log)) { fail 'the task log was not written' }
           $text = Get-Content -LiteralPath $log -Raw
           if ($null -eq $text) { $text = '' }
 
-          if ($cargoExit -ne 0) { Fail "cargo test exited $cargoExit" }
+          if ($cargoExit -ne 0) { fail "cargo test exited $cargoExit" }
           foreach ($name in @('issue_1850_admission_gate_table', 'issue_1850_default_root_acceptance')) {
-            if ($text -notmatch ('test ' + [regex]::Escape($name) + ' \.\.\. ')) { Fail "$name never ran" }
+            if ($text -notmatch ('test ' + [regex]::Escape($name) + ' \.\.\. ')) { fail "$name never ran" }
           }
-          if ($text -notmatch '(?m)^ISSUE1850_MECHANISM_OK') { Fail 'the copied-binary mechanism control did not report success' }
+          if ($text -notmatch '(?m)^ISSUE1850_MECHANISM_OK') { fail 'the copied-binary mechanism control did not report success' }
           $cases = @(
             'adjacent-legacy-alone',
             'home-new-alone',
@@ -3898,15 +3898,15 @@ jobs:
           )
           foreach ($case in $cases) {
             $pattern = '(?m)^ISSUE1850_CASE_OK case=' + [regex]::Escape($case) + '\s*$'
-            if ($text -notmatch $pattern) { Fail "missing case-success record for $case" }
+            if ($text -notmatch $pattern) { fail "missing case-success record for $case" }
           }
           $unique = @([regex]::Matches($text, '(?m)^ISSUE1850_CASE_OK case=(\S+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-          if ($unique.Count -ne 7) { Fail "expected 7 unique case-success records, found $($unique.Count)" }
-          if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=7\s*$') { Fail 'the final profile-proof record is missing' }
-          if ($text -notmatch '(?m)^test result: ok\. 2 passed; 0 failed') { Fail 'expected exactly two passing tests' }
-          if ($text -match 'ISSUE1850_REFUSAL_ONLY') { Fail 'a refusal-only record is present; the real-profile route was not taken' }
-          if ($text -notmatch '(?m)^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3\s*$') { Fail 'the refusal census self-control did not report success' }
-          if ($text -match 'ISSUE1850_REFUSAL_OCCUPIED') { Fail 'an occupied refusal record is present; the real-profile route was not taken' }
+          if ($unique.Count -ne 7) { fail "expected 7 unique case-success records, found $($unique.Count)" }
+          if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=7\s*$') { fail 'the final profile-proof record is missing' }
+          if ($text -notmatch '(?m)^test result: ok\. 2 passed; 0 failed') { fail 'expected exactly two passing tests' }
+          if ($text -match 'ISSUE1850_REFUSAL_ONLY') { fail 'a refusal-only record is present; the real-profile route was not taken' }
+          if ($text -notmatch '(?m)^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3\s*$') { fail 'the refusal census self-control did not report success' }
+          if ($text -match 'ISSUE1850_REFUSAL_OCCUPIED') { fail 'an occupied refusal record is present; the real-profile route was not taken' }
           Write-Host "IS #1850 ($mode): real-profile proof verified, 7 cases"
 
       - name: "Upload IS #1850 profile-proof logs"
