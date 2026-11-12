@@ -139,7 +139,7 @@ test('Git failures/spawn/signal/timeout/maxBuffer and missing object cannot give
     assert.throws(() => f.snapshot(f.base, () => ({stdout:Buffer.from('partial'),
         stderr:Buffer.from('failed'),...failure})), e => e.exit === 3);
   }
-  assert.throws(() => f.snapshot(f.base, () => {throw Error('spawn');}), e => e.exit === 3);
+  assert.throws(() => f.snapshot(f.base, () => {throw new Error('spawn');}), e => e.exit === 3);
   const runner = (args, opts) => args[0] === 'cat-file' ? {status:1,stdout:Buffer.from('partial'),
       stderr:Buffer.from('missing object')} : gitRunner(args, opts);
   assert.equal(lengthGate(f.snapshot(f.base,runner)).exit,3);
@@ -756,12 +756,12 @@ test('P02 actual Git OID mutation/reversion and ERROR precedence for every detec
     [globalsGate,'global.rs','static X: Mutex<X> = init();'],[processGate,'env.rs',
         'fn f() { env::var("x"); }']]) {
     sequence(f,gate,rustRoot+p,'',code);
-    const s=f.snapshot(); s.assertStableHead=()=>{throw Error('HEAD drift');};
+    const s=f.snapshot(); s.assertStableHead=()=>{throw new Error('HEAD drift');};
     assert.equal(gate(s).exit,3);
     const malformed=trees({}, {[rustRoot+p]:'#[cfg(test,unix)] fn f() {}'});
     assert.equal(gate(malformed).exit,3);
     const broken=trees({}, {[rustRoot+p]:''});broken.readBlob=()=>
-        {throw Error('invalid UTF8/mode/blob');};
+        {throw new Error('invalid UTF8/mode/blob');};
     assert.equal(gate(broken).exit,3);
   }
 });
