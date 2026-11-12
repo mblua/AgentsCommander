@@ -66,11 +66,10 @@ pub(crate) fn resolve_root_agent_command(
                 Some(agent.id.clone()),
                 Some(agent.label.clone()),
             ));
-        } else {
-            log::warn!(
-                "[root-agent] Requested coding agent '{agent_id}' no longer exists; falling back"
-            );
         }
+        log::warn!(
+            "[root-agent] Requested coding agent '{agent_id}' no longer exists; falling back"
+        );
     }
 
     if let Some(agent_id) = last_coding_agent {
@@ -83,9 +82,8 @@ pub(crate) fn resolve_root_agent_command(
                 Some(agent.id.clone()),
                 Some(agent.label.clone()),
             ));
-        } else {
-            log::warn!("[root-agent] lastCodingAgent '{agent_id}' no longer exists; falling back");
         }
+        log::warn!("[root-agent] lastCodingAgent '{agent_id}' no longer exists; falling back");
     }
 
     if let Some(agent) = settings.agents.first() {

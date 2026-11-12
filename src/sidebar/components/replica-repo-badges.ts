@@ -60,11 +60,9 @@ export function configuredReplicaRepoBadges(
   workgroup: Pick<AcWorkgroup, "repoPath">
 ): SessionRepo[] {
   const repoPaths = replica.repoPaths ?? [];
-  const sourcePaths = repoPaths.length > 0
-    ? repoPaths
-    : workgroup.repoPath
-      ? [workgroup.repoPath]
-      : [];
+  let sourcePaths: string[] = [];
+  if (repoPaths.length > 0) sourcePaths = repoPaths;
+  else if (workgroup.repoPath) sourcePaths = [workgroup.repoPath];
   const singleRepoBranch = sourcePaths.length === 1 ? replica.repoBranch ?? null : null;
   const byPath = replica.repoBranchByPath;
   const dirtyByPath = replica.repoDirtyByPath;

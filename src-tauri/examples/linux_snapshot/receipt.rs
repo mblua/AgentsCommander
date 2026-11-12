@@ -20,7 +20,7 @@ pub enum Probe {
 }
 
 impl Probe {
-    pub const ALL: [(&'static str, Self); 4] = [
+    pub const ALL: [(&str, Self); 4] = [
         ("none", Self::None),
         ("blank", Self::Blank),
         ("stale", Self::Stale),
