@@ -334,7 +334,8 @@ two tiers, decided by its `ci-tier` job:
 
 - **Light tier, on every event:** `test-debt` (suppression scan and baseline ratchet),
   `rust-regression-windows` (Windows leg), `clippy-linux` (Linux leg), `rust-fmt`,
-  `rust-slow-test-windows` and `issue-1850-release-windows` (no clippy, so no leg).
+  `rust-slow-test-windows`, `issue-1850-release-windows` (no clippy, so no leg),
+  and `frontend-regression`.
 - **Full tier, only when `ci-tier` sets `full=true`:** everything else, including
   `rust-regression-macos` (macOS leg). `rust-regression-linux` is also full-tier only, but it no
   longer carries the gate; the Linux leg is `clippy-linux`.
