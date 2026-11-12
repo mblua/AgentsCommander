@@ -177,7 +177,6 @@ const NewEntityAgentModal: Component<{
     }
     if (e.key === "ArrowUp") {
       focusRowByOffset(e, -1);
-      return;
     }
   };
 
@@ -192,7 +191,6 @@ const NewEntityAgentModal: Component<{
     if (e.key === "ArrowDown") {
       // Jump from the search input down into the list.
       focusRowByOffset(e, 1);
-      return;
     }
   };
 
