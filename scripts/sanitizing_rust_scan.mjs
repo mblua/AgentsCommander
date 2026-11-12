@@ -21,7 +21,7 @@ export function decodeRustString(raw, byte = false) {
     else if (e === 'x') {
       const hex = source.slice(i + 1, i + 3);
       if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
-      const code = parseInt(hex, 16);
+      const code = Number.parseInt(hex, 16);
       if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
       if (byte && code > 127) opaque = true; // Still validate all remaining escapes.
       value += String.fromCharCode(code); i += 2;
@@ -29,7 +29,7 @@ export function decodeRustString(raw, byte = false) {
       const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
       if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
         'invalid Rust Unicode escape');
-      const code = parseInt(hex, 16);
+      const code = Number.parseInt(hex, 16);
       if (code > 0x10ffff || code >= 0xd800 &&
         code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
       value += String.fromCodePoint(code); i = end;

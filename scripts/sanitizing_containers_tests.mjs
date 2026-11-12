@@ -240,7 +240,7 @@ test('04 settings canonical references', t => {
 });
 function aliasClassControls(t) {
   const expand = s => s.replace(/\bIA\b/g, 'crate::config::instance_artifacts')
-    .replace(/\bX\b/g, 'SETTINGS_FILE_NAME').replace(/ fn f/g, '\nfn f');
+    .replace(/\bX\b/g, 'SETTINGS_FILE_NAME').replaceAll(' fn f', '\nfn f');
   const cases = [
     ['R0', 'use IA as a; fn f(){ let _ = self::a::X; }'],
     ['R1', 'mod m { use IA as a; fn f(){ let _ = self::a::X; } }'],

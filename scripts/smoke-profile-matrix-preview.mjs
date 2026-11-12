@@ -79,15 +79,15 @@ assert.equal(dom.window.document.getElementById('fallbackInput'), null);
 assert.ok(!documentText().includes('Priority'));
 
 const text = preview.textContent ?? '';
-const expectedAcRoot = 'C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac';
-const expectedConfigPath = `${expectedAcRoot}\\coding-agent-profiles.json`;
-const expectedEscapedAcRoot = 'C:\\\\Users\\\\maria\\\\0_repos\\\\AgentsCommander_ac\\\\.ac';
+const expectedAcRoot = String.raw`C:\Users\maria\0_repos\AgentsCommander_ac\.ac`;
+const expectedConfigPath = String.raw`${expectedAcRoot}\coding-agent-profiles.json`;
+const expectedEscapedAcRoot = String.raw`C:\\Users\\maria\\0_repos\\AgentsCommander_ac\\.ac`;
 
 assert.ok(
   text.includes(expectedEscapedAcRoot),
   'serialized JSON preview should show the escaped Windows AC root path'
 );
-assert.ok(!text.includes('\\u0000'),
+assert.ok(!text.includes(String.raw`\u0000`),
   'serialized JSON preview should not contain escaped NUL bytes');
 assert.ok(!text.includes('C:Usersmaria'),
   'serialized JSON preview should not collapse path separators');

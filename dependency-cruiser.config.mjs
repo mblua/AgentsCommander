@@ -32,10 +32,10 @@ export default {
         path: "^(src/terminal/components|scripts/fixtures/frontend-dependency-cycle/seams)/(terminal-session-registry|terminal-output-admission)\\.ts$",
       },
       to: {
-        path: "([/\\\\]TerminalView\\.tsx$" +
+        path: String.raw`([/\\]TerminalView\.tsx$` +
           "|^src/(sidebar|browser|main|resource-monitor|screenshot-overlay|spec-board|watchers)/" +
           "|^src/terminal/(components|stores)/" +
-          "|^src/shared/ipc\\.ts$" +
+          String.raw`|^src/shared/ipc\.ts$` +
           "|^scripts/fixtures/frontend-dependency-cycle/seams/(terminal-session-registry|terminal-output-admission|sidebar|ipc)\\.ts$" +
           "|^node_modules/@tauri-apps/api/)",
       },

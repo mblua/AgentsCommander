@@ -194,7 +194,7 @@ async function discoverAndAppendIfCurrent(path: string, key: string): Promise<vo
 }
 
 function appendDiscoveredProject(regPath: string, result: AcDiscoveryResult) {
-  const folderName = regPath.replace(/\\/g, "/").split("/").pop() ?? "unknown";
+  const folderName = regPath.replaceAll("\\", "/").split("/").pop() ?? "unknown";
   const normalizedReg = normalizePath(regPath);
   batch(() => {
     let appended = false;

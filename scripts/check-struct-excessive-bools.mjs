@@ -198,7 +198,7 @@ export function parseCapture(text, exit, { root, source }) {
 // ---- whole-item declaration prefix ----
 
 const isIdentStart = ch => /^[A-Za-z_]$/.test(ch ?? '');
-const isIdentContinue = ch => /^[A-Za-z0-9_]$/.test(ch ?? '');
+const isIdentContinue = ch => /^\w$/.test(ch ?? '');
 
 function declarationBlockCommentEnd(text, i, limit) {
   let depth = 0;
