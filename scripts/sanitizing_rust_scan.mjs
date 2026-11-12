@@ -115,9 +115,9 @@ export function lexRust(path, text) {
     }
     if (/\d/.test(c)) {
       // A tuple index cannot absorb the following projection, call or range.
-      const numeric = tokens.at(-1)?.text === '.' ? /^\d[\d_]*/ :
-        /^(?:0(?:x[\da-fA-F_]+|o[0-7_]+|b[01_]+)|\d[\d_]*(?:\.(?!\.|[_\p{ID_Start}])[\d_]*)?(?:[eE][+-]?[\d_]+)?)(?:[_\p{ID_Start}][\p{ID_Continue}_]*)?/u;
-      advance(i + numeric.exec(text.slice(i))[0].length);
+      const rest = text.slice(i);
+      advance(i + (tokens.at(-1)?.text === '.' ? /^\d[\d_]*/.exec(rest)[0].length
+        : rustNumberLength(rest)));
       add('number', start, i, tokenLine); continue;
     }
     const punctuation = ['::', '=>', '->', '==', '!=', '+=', '-=', '*=', '/=', '..=', '..', '&&',
@@ -134,6 +134,14 @@ export function lexRust(path, text) {
   }
   if (stack.length) error(path, tokens[stack.at(-1)].line, 'unclosed delimiter');
   return { tokens, groups };
+}
+// Rust numeric literal: radix or decimal head, then an optional type suffix.
+const RUST_RADIX_INT = /^0(?:x[\da-fA-F_]+|o[0-7_]+|b[01_]+)/;
+const RUST_DECIMAL = /^\d[\d_]*(?:\.(?!\.|[_\p{ID_Start}])[\d_]*)?(?:[eE][+-]?[\d_]+)?/u;
+const RUST_SUFFIX = /^[_\p{ID_Start}][\p{ID_Continue}_]*/u;
+function rustNumberLength(text) {
+  const head = (RUST_RADIX_INT.exec(text) ?? RUST_DECIMAL.exec(text))[0];
+  return head.length + (RUST_SUFFIX.exec(text.slice(head.length))?.[0].length ?? 0);
 }
 function splitTop(tokens, separator = ',') {
   const result = []; let start = 0;
