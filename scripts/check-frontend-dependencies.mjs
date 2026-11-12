@@ -104,9 +104,9 @@ function violationsFor(result, fromPath) {
 
 function classifySeamTarget(to) {
   const normalized = normalize(to);
-  if (/TerminalView\.tsx$/.test(normalized)) return "view";
-  if (/\/sidebar\.ts$/.test(normalized)) return "sidebar";
-  if (/\/ipc\.ts$/.test(normalized)) return "ipc";
+  if (normalized.endsWith("TerminalView.tsx")) return "view";
+  if (normalized.endsWith("/sidebar.ts")) return "sidebar";
+  if (normalized.endsWith("/ipc.ts")) return "ipc";
   if (normalized.includes("@tauri-apps/api")) return "tauri";
   if (/\/terminal-(session-registry|output-admission)\.ts$/.test(normalized)) {
     return "opposite-helper";
@@ -271,7 +271,7 @@ function verifyFullRoot(result) {
       .filter((file) => /^src\/.*\.(ts|tsx)$/.test(file)),
   );
   const moduleSources = new Set(
-    result.modules.filter((m) => /^src\//.test(normalize(m.source))).map((m) => normalize(
+    result.modules.filter((m) => normalize(m.source).startsWith("src/")).map((m) => normalize(
       m.source)),
   );
   const missing = [...tracked].filter((file) => !moduleSources.has(file));

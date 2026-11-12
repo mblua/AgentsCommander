@@ -277,7 +277,7 @@ function environment(root, output) {
         .test(value.replaceAll(String.fromCharCode(31), ' ')), `unexplained lint override ${key}`);
     } else if (/WRAPPER/.test(key)) {
       need(/^sccache(?:\.exe)?$/.test(path.basename(value)), `unknown wrapper ${key}`);
-    } else if (/RUSTC$/.test(key)) {
+    } else if (key.endsWith('RUSTC')) {
       need(/^rustc(?:\.exe)?$/.test(path.basename(value)), `unknown compiler ${key}`);
     } else if (key === 'CARGO_MANIFEST_DIR') {
       need(normalizeFile(path.resolve(value), root) !== '', 'unknown Cargo selector');

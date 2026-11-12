@@ -135,12 +135,12 @@ function discoverRepoRoots(scanRoot) {
   if (isRepoRoot(scanRoot)) found.add(scanRoot);
   for (const name of childDirs(scanRoot)) {
     const child = join(scanRoot, name);
-    if (/^repo-/.test(name) && isRepoRoot(child)) {
+    if (name.startsWith('repo-') && isRepoRoot(child)) {
       found.add(child);
     } else if (/^(?:room|wg)-/.test(name)) {
       for (const gname of childDirs(child)) {
         const g = join(child, gname);
-        if (/^repo-/.test(gname) && isRepoRoot(g)) found.add(g);
+        if (gname.startsWith('repo-') && isRepoRoot(g)) found.add(g);
       }
     }
   }
