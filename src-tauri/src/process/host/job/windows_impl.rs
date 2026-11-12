@@ -347,6 +347,40 @@ async fn settle_rejected_spawn(
     if let Err(error) = child.start_kill() {
         defects.push(format!("kill: {error}"));
     }
+    settle_direct_child(&mut child, job.as_ref(), &mut attempt, &mut defects).await;
+    // Dropping the Child here releases Tokio's direct process handle before
+    // the first query that is eligible to prove ActiveProcesses == 0.
+    drop(child);
+
+    #[cfg(test)]
+    if let Some(hook) = hook.as_mut() {
+        await_rejected_spawn_proof_barrier(hook, &mut attempt, &mut defects).await;
+    }
+
+    let stdout_settled = drain_failed_spawn_pipe(stdout, &mut attempt, &mut defects).await;
+    let stderr_settled = drain_failed_spawn_pipe(stderr, &mut attempt, &mut defects).await;
+    if !stdout_settled || !stderr_settled {
+        defects.push("reader drain required abort".to_string());
+    }
+
+    if let Some(job) = job.as_ref() {
+        settle_job_accounting(job, &mut attempt, &mut defects).await;
+    }
+    drop(job);
+
+    if defects.is_empty() {
+        ContainedSpawnError::Containment(reason)
+    } else {
+        ContainedSpawnError::Cleanup(format!("{reason}: {}", defects.join("; ")))
+    }
+}
+
+async fn settle_direct_child(
+    child: &mut tokio::process::Child,
+    job: Option<&JobObject>,
+    attempt: &mut SettlementAttempt,
+    defects: &mut Vec<String>,
+) {
     let mut wait_defect_recorded = false;
     loop {
         match child.try_wait() {
@@ -360,8 +394,8 @@ async fn settle_rejected_spawn(
             }
         }
         if attempt.expired() {
-            record_attempt_expiry(&mut defects, "direct-child settlement");
-            if let Some(job) = job.as_ref() {
+            record_attempt_expiry(defects, "direct-child settlement");
+            if let Some(job) = job {
                 let _ = job.terminate_checked();
             }
             let _ = child.start_kill();
@@ -369,65 +403,57 @@ async fn settle_rejected_spawn(
         }
         tokio::time::sleep(SETTLEMENT_POLL.min(attempt.remaining())).await;
     }
-    // Dropping the Child here releases Tokio's direct process handle before
-    // the first query that is eligible to prove ActiveProcesses == 0.
-    drop(child);
+}
 
-    #[cfg(test)]
-    if let Some(hook) = hook.as_mut() {
-        if let Some(tx) = hook.after_reap.take() {
-            let _ = tx.send(());
-        }
-        if let Some(mut rx) = hook.release_query.take() {
-            loop {
-                if attempt.expired() {
-                    record_attempt_expiry(&mut defects, "rejected-spawn proof barrier");
-                    attempt.restart();
-                }
-                match tokio::time::timeout(attempt.remaining(), &mut rx).await {
-                    Ok(_) => break,
-                    Err(_) => {
-                        record_attempt_expiry(&mut defects, "rejected-spawn proof barrier");
-                        attempt.restart();
-                    }
-                }
-            }
-        }
+#[cfg(test)]
+async fn await_rejected_spawn_proof_barrier(
+    hook: &mut SpawnTestHook,
+    attempt: &mut SettlementAttempt,
+    defects: &mut Vec<String>,
+) {
+    if let Some(tx) = hook.after_reap.take() {
+        let _ = tx.send(());
     }
-
-    let stdout_settled = drain_failed_spawn_pipe(stdout, &mut attempt, &mut defects).await;
-    let stderr_settled = drain_failed_spawn_pipe(stderr, &mut attempt, &mut defects).await;
-    if !stdout_settled || !stderr_settled {
-        defects.push("reader drain required abort".to_string());
-    }
-
-    if let Some(job) = job.as_ref() {
-        let mut query_defect_recorded = false;
+    if let Some(mut rx) = hook.release_query.take() {
         loop {
-            match job.active_processes() {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(error) => {
-                    if !query_defect_recorded {
-                        defects.push(format!("accounting: {error}"));
-                        query_defect_recorded = true;
-                    }
-                }
-            }
             if attempt.expired() {
-                record_attempt_expiry(&mut defects, "job accounting proof");
-                let _ = job.terminate_checked();
+                record_attempt_expiry(defects, "rejected-spawn proof barrier");
                 attempt.restart();
             }
-            tokio::time::sleep(SETTLEMENT_POLL.min(attempt.remaining())).await;
+            match tokio::time::timeout(attempt.remaining(), &mut rx).await {
+                Ok(_) => break,
+                Err(_) => {
+                    record_attempt_expiry(defects, "rejected-spawn proof barrier");
+                    attempt.restart();
+                }
+            }
         }
     }
-    drop(job);
+}
 
-    if defects.is_empty() {
-        ContainedSpawnError::Containment(reason)
-    } else {
-        ContainedSpawnError::Cleanup(format!("{reason}: {}", defects.join("; ")))
+async fn settle_job_accounting(
+    job: &JobObject,
+    attempt: &mut SettlementAttempt,
+    defects: &mut Vec<String>,
+) {
+    let mut query_defect_recorded = false;
+    loop {
+        match job.active_processes() {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) => {
+                if !query_defect_recorded {
+                    defects.push(format!("accounting: {error}"));
+                    query_defect_recorded = true;
+                }
+            }
+        }
+        if attempt.expired() {
+            record_attempt_expiry(defects, "job accounting proof");
+            let _ = job.terminate_checked();
+            attempt.restart();
+        }
+        tokio::time::sleep(SETTLEMENT_POLL.min(attempt.remaining())).await;
     }
 }
 
