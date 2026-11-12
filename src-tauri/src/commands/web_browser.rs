@@ -31,6 +31,9 @@ pub(crate) const WEB_BROWSER_WINDOW_LABEL: &str = "web-browser";
 const MAIN_WINDOW_LABEL: &str = "main";
 const DEFAULT_URL: &str = "about:blank";
 
+/// Hosts of Tauri's own protocols. Add new registered schemes here and below.
+const APP_PROTOCOL_HOSTS: [&str; 3] = ["tauri.localhost", "ipc.localhost", "asset.localhost"];
+
 /// Emitted to the frontend whenever the URL, title, loading or visibility
 /// changes.
 const STATE_EVENT: &str = "web_browser_state";
@@ -114,6 +117,34 @@ pub(crate) fn normalize_url(input: &str) -> Result<Url, String> {
         return Err(format!("unsupported url: {input}"));
     };
     Url::parse(&format!("{scheme}://{input}")).map_err(|_| format!("unsupported url: {input}"))
+}
+
+/// Whether a page reaches this app's frontend or IPC endpoint without the ACL.
+pub(crate) fn is_app_origin(url: &Url, dev_url: Option<&Url>) -> bool {
+    if matches!(url.scheme(), "tauri" | "ipc" | "asset") {
+        return true;
+    }
+    let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+    if matches!(url.scheme(), "http" | "https") && APP_PROTOCOL_HOSTS.contains(&host) {
+        return true;
+    }
+    dev_url.is_some_and(|dev| dev.origin() == url.origin())
+}
+
+/// The dev server URL is an app origin in dev builds only.
+fn dev_url<R: Runtime>(app: &AppHandle<R>) -> Option<Url> {
+    tauri::is_dev()
+        .then(|| app.config().build.dev_url.clone())
+        .flatten()
+}
+
+/// Normalize a browser URL while refusing the app's own origins.
+fn browser_url<R: Runtime>(app: &AppHandle<R>, input: &str) -> Result<Url, String> {
+    let url = normalize_url(input)?;
+    if is_app_origin(&url, dev_url(app).as_ref()) {
+        return Err(format!("refused: {url} is the app's own origin"));
+    }
+    Ok(url)
 }
 
 /// Physical screen rectangle of the pane given the main client-area origin.
@@ -207,7 +238,9 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, Str
         .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main window is not available".to_string())?;
     let url = state(app).with(|model| model.url.clone());
-    let url = normalize_url(url.as_deref().unwrap_or(DEFAULT_URL))?;
+    let url = browser_url(app, url.as_deref().unwrap_or(DEFAULT_URL))?;
+    let dev = dev_url(app);
+    let nav_dev = dev.clone();
     let (load_app, title_app, popup_app) = (app.clone(), app.clone(), app.clone());
     let window =
         WebviewWindowBuilder::new(app, WEB_BROWSER_WINDOW_LABEL, WebviewUrl::External(url))
@@ -224,9 +257,13 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, Str
                 record_page_load(&load_app, payload.url(), payload.event());
             })
             .on_document_title_changed(move |_, title| record_title(&title_app, title))
+            // #4289: never load the app's own origin, whatever the page does.
+            .on_navigation(move |url| !is_app_origin(url, nav_dev.as_ref()))
             // Links that open a new window load in place: one browser, one page.
             .on_new_window(move |url, _| {
-                if let Some(window) = browser_window(&popup_app) {
+                if is_app_origin(&url, dev.as_ref()) {
+                    log::warn!("[web-browser] refused window.open to {url}");
+                } else if let Some(window) = browser_window(&popup_app) {
                     let _ = window.navigate(url);
                 }
                 NewWindowResponse::Deny
@@ -243,7 +280,7 @@ pub(crate) fn navigate_to<R: Runtime>(
     app: &AppHandle<R>,
     input: &str,
 ) -> Result<WebBrowserSnapshot, String> {
-    let url = normalize_url(input)?;
+    let url = browser_url(app, input)?;
     state(app).with(|model| {
         model.url = Some(url.to_string());
         model.title.clear();
