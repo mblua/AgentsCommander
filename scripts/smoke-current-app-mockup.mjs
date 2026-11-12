@@ -102,7 +102,8 @@ const topClickableElementAt = (x, y) => {
     ...dom.window.document.querySelectorAll('.profile-modal-overlay.open, .profile-modal, .profile-modal-controls, .modal-variant-switcher, [data-modal-variant]'),
   ].filter((element) => isBrowserVisible(element) && containsPoint(element.getBoundingClientRect(),
     x, y));
-  return candidates.toSorted((left, right) => modalStackRank(right) - modalStackRank(left))[0] ?? null;
+  return candidates
+    .toSorted((left, right) => modalStackRank(right) - modalStackRank(left))[0] ?? null;
 };
 const clickVisibleModalVariant = (variant) => {
   const overlay = dom.window.document.getElementById('codingAgentProfileModal');
