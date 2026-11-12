@@ -112,7 +112,7 @@ function tooltipFor(folderName: string, rooms: AcWorkgroup[]): string {
     }
     if (roomCiRunning(room)) entries.push({ room, replica: null });
   }
-  const rows = entries
+  const rows = [...entries]
     .sort((a, b) => {
       const roomDelta = roomNumber(a.room.name) - roomNumber(b.room.name);
       if (roomDelta !== 0) return roomDelta;

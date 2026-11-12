@@ -3,11 +3,8 @@ import { emitRailDiagnostic, railToken, railEntity, reconcileRailProjects, type 
 import type {
   TaskSnapshot,
   AcWorkgroup,
-  AcAgentMatrix,
   AcDiscoveryResult,
-  AcTeam,
   AcLoopSummary,
-  ContextTemplateUpdate,
   ProjectArchiveChanged,
   ProjectPathConflictIssue,
   ProjectPathIssue,
@@ -434,7 +431,7 @@ function escapeControlAndBidi(text: string): string {
       (cp >= 0x202a && cp <= 0x202e) ||
       (cp >= 0x2066 && cp <= 0x2069);
     out += escape
-      ? `\\u{${cp.toString(16).toUpperCase().padStart(4, "0")}}`
+      ? String.raw`\u{${cp.toString(16).toUpperCase().padStart(4, "0")}}`
       : ch;
   }
   return out;
