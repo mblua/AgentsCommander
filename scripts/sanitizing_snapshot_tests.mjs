@@ -270,7 +270,7 @@ export function registerSnapshotBoundaryTests({trees, control, fixture, rustRoot
     f.write('next', 'next'); f.commit();
     assert.equal(diskGate(snapshot).exit, 3);
     const broken = trees({}, {[p]:'x'});
-    broken.readBlob = () => { throw Error('missing blob'); };
+    broken.readBlob = () => { throw new Error('missing blob'); };
     assert.equal(diskGate(broken).status, 'ERROR');
   });
 
@@ -295,7 +295,7 @@ export function registerSnapshotBoundaryTests({trees, control, fixture, rustRoot
         baseOid:s.baseOid,headOid:s.headOid,reason:'global subrule debt increased',
         remedy:'remove the new signal or use the source-defined owner; do not raise the baseline'},
     ];
-    const late=run(() => { throw Error('late'); });
+    const late=run(() => { throw new Error('late'); });
     assert.equal(late.result.status,'ERROR'); assert.equal(late.result.exit,3);
     assert.equal(late.result.baseOid,late.snapshot.baseOid);
     assert.equal(late.result.headOid,late.snapshot.headOid);
