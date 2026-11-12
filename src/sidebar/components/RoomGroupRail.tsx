@@ -625,7 +625,7 @@ const ProjectRailSection: Component<{
 
   const movePress = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId) return;
+    if (current?.pointerId !== event.pointerId) return;
 
     if (current.phase === "arming") {
       const dx = event.clientX - current.startX;
@@ -642,7 +642,7 @@ const ProjectRailSection: Component<{
 
   const finishPress = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId) return;
+    if (current?.pointerId !== event.pointerId) return;
 
     if (current.phase === "arming") {
       cancelReorder(false);
@@ -673,7 +673,7 @@ const ProjectRailSection: Component<{
 
   const cancelPress = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId || current.phase === "saving") return;
+    if (current?.pointerId !== event.pointerId || current.phase === "saving") return;
     cancelReorder(current.phase !== "arming");
   };
 
@@ -685,7 +685,7 @@ const ProjectRailSection: Component<{
 
   const onWindowPointerUp = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId) return;
+    if (current?.pointerId !== event.pointerId) return;
     finishPress(event);
   };
 
