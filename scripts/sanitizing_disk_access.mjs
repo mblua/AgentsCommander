@@ -45,8 +45,9 @@ function declarationOpen(T, item) {
 }
 
 function typedPath(scan, tokens) {
-  if (!tokens.length || !tokens.every((t, n) =>
-    (n + (tokens[0].text === '::' ? 1 : 0)) % 2 ? t.text === '::' : t.kind === 'ident'))
+  if (!tokens.length) return null;
+  const lead = tokens[0].text === '::' ? 1 : 0;
+  if (!tokens.every((t, n) => (n + lead) % 2 ? t.text === '::' : t.kind === 'ident'))
     return null;
   const r = scan.resolvePath(tokens, tokens[0].scope);
   return !r.ambiguous && stdPaths.has(r.path) ? r.path : null;
