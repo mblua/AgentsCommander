@@ -87,7 +87,7 @@ function cellForLetter(
   letter: string,
 ): ProfileCellConfig | null {
   const cell = profiles.profilesByAgent[agentId]?.[letter] ?? null;
-  if (!cell || !cell.enabled) return null;
+  if (!cell?.enabled) return null;
   return cell;
 }
 
