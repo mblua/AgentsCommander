@@ -137,11 +137,11 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
   // Rule 3: exactly two booleans, each a memo so only a real change reclamps.
   const botsShown = createMemo(() => {
     const telegram = props.caps.telegram;
-    return !!telegram?.bots;
+    return !!(telegram && telegram.bots);
   });
   const editorShown = createMemo(() => {
     const editor = props.caps.editTaskTitle;
-    return !!editor?.editing;
+    return !!(editor && editor.editing);
   });
   createEffect(on([botsShown, editorShown], () => props.surface.reclamp(), { defer: true }));
 
