@@ -272,14 +272,14 @@ function environment(root, output) {
   fs.writeFileSync(output, json({ environment: values, configs,
     externalConfiguration: 'standard CI runner; no external config attestation' }));
   for (const c of configs) {
-    need(!/\[env(?:\.|\])|(?:rustflags|rustc(?:-wrapper|-workspace-wrapper)?)\s*=/
+    need(!/\[env[.\]]|(?:rustflags|rustc(?:-wrapper|-workspace-wrapper)?)\s*=/
       .test(c.text), `unexplained Cargo configuration ${c.file}`);
   }
   need(values.CLIPPY_CONF_DIR === null, 'CLIPPY_CONF_DIR must be absent');
   for (const [key, value] of Object.entries(values)) {
     if (!value) continue;
     if (/FLAGS|CLIPPY_ARGS/.test(key)) {
-      need(!/cap-lints|clippy|(?:^|\s)-(?:A|W|D|F)|--(?:allow|warn|deny|forbid)/
+      need(!/cap-lints|clippy|(?:^|\s)-[ADFW]|--(?:allow|warn|deny|forbid)/
         .test(value.replaceAll(String.fromCodePoint(31), ' ')), `unexplained lint override ${key}`);
     } else if (/WRAPPER/.test(key)) {
       need(/^sccache(?:\.exe)?$/.test(path.basename(value)), `unknown wrapper ${key}`);
