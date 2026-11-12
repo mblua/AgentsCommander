@@ -113,8 +113,8 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
       ? document.activeElement.closest(".onboarding-card-row")
       : null;
     const focusedKey = focusedRow
-      ?.querySelector('[data-ac-role="agent-preset"]')
-      ?.getAttribute("data-ac-agent-key");
+      ?.querySelector<HTMLElement>('[data-ac-role="agent-preset"]')
+      ?.dataset.acAgentKey;
     setWelcomeStatus(rows);
     if (!focusedKey || !modalRef || modalRef.contains(document.activeElement)) return;
     const card = modalRef.querySelector<HTMLElement>(

@@ -444,7 +444,7 @@ const Titlebar: Component = () => {
               {/* U+2750 = restore glyph (shown when maximized), U+25A1 = maximize
                   glyph. Built from char codes so the source stays ASCII-only,
                   avoiding a literal glyph or \u escape that tooling can mangle. */}
-              {maximized() ? String.fromCharCode(0x2750) : String.fromCharCode(0x25A1)}
+              {maximized() ? String.fromCodePoint(0x2750) : String.fromCodePoint(0x25A1)}
             </span>
           </button>
           <button
@@ -691,7 +691,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     //    matching is dropped and is NOT reinserted: reinsertion only ever
     //    repositions a row already present in the sorted list.
     const present = new Set(sorted.map((g) => g.sessionId));
-    for (const sessionId of [...pinnedIndex.keys()]) {
+    for (const sessionId of pinnedIndex.keys()) {
       if (!present.has(sessionId) || !expanded.has(sessionId)) {
         pinnedIndex.delete(sessionId);
       }
@@ -867,6 +867,16 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     groups().reduce((sum, group) => sum + group.processCount, 0)
   );
 
+  const emptyStateKind = () => {
+    if (resourceMonitorStore.loading && groups().length === 0) return "loading";
+    return groups().length === 0 ? "empty" : "filtered-empty";
+  };
+  const killConfirmText = (target: { state: ResourceGroupState }) => {
+    if (killInFlight()) return "Verifying...";
+    if (killResult()) return "Retry";
+    return target.state === "quarantined" ? "Force-kill" : "Kill Agent";
+  };
+
   const emptyStateText = createMemo(() => {
     let text: string;
     if (resourceMonitorStore.loading && groups().length === 0) {
@@ -972,12 +982,13 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     }
     const active = document.activeElement as HTMLElement | null;
     const index = active ? items.indexOf(active) : -1;
-    const next =
-      index === -1
-        ? event.shiftKey
-          ? items.length - 1
-          : 0
-        : (index + (event.shiftKey ? -1 : 1) + items.length) % items.length;
+    let next: number;
+    if (index === -1) {
+      next = event.shiftKey ? items.length - 1 : 0;
+    } else {
+      const direction = event.shiftKey ? -1 : 1;
+      next = (index + direction + items.length) % items.length;
+    }
     items[next].focus();
   };
 
@@ -1570,13 +1581,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 class="rm-empty"
                 data-ac-testid="resourceMonitor.empty"
                 data-ac-role="status"
-                data-ac-state={
-                  resourceMonitorStore.loading && groups().length === 0
-                    ? "loading"
-                    : groups().length === 0
-                      ? "empty"
-                      : "filtered-empty"
-                }
+                data-ac-state={emptyStateKind()}
               >
                 {emptyStateText()}
               </div>
@@ -1971,13 +1976,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                   data-ac-testid="resourceMonitor.killConfirm.confirm"
                   data-ac-role="button"
                 >
-                  {killInFlight()
-                    ? "Verifying..."
-                    : killResult()
-                      ? "Retry"
-                      : target.state === "quarantined"
-                        ? "Force-kill"
-                        : "Kill Agent"}
+                  {killConfirmText(target)}
                 </button>
               </div>
             </div>

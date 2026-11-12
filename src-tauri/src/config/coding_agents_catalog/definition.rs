@@ -464,7 +464,7 @@ fn populate_catalog_profile_hashes(catalog: &mut CodingAgentCatalogSchema2) {
             .coding_agent_profiles
             .get_mut(&agent.key)
             .into_iter()
-            .flat_map(|cells| cells.values_mut())
+            .flat_map(std::collections::BTreeMap::values_mut)
         {
             cell.id_hash = Some(crate::config::settings::pair_identity(
                 &agent.command,

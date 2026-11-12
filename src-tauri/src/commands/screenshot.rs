@@ -44,6 +44,13 @@ pub async fn screenshot_cancel_capture(
     crate::screenshot::cancel_capture(&app, state.inner(), &capture_id).await
 }
 
+/// #2774 Start a capture from the UI (titlebar camera). Same entry as a shortcut press:
+/// the busy gate, repeat-press rules and failure toast all apply unchanged.
+#[tauri::command]
+pub fn screenshot_start_capture(app: AppHandle) {
+    crate::screenshot::begin_capture_from_hotkey(app);
+}
+
 /// Current global-hotkey registration status (configured combo + whether the OS
 /// accepted it + any conflict error). The sidebar reads this on mount.
 #[tauri::command]
@@ -61,15 +68,19 @@ pub async fn screenshot_reload_hotkey(
     app: AppHandle,
     settings: State<'_, SettingsState>,
 ) -> Result<ScreenshotHotkeyStatus, String> {
-    let configured = settings
-        .current_read()
-        .await
-        .map_err(|error| error.to_string())?
-        .screenshot_capture_hotkey
-        .clone();
+    let (configured, hyprland_bind) = {
+        let current = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
+        (
+            current.screenshot_capture_hotkey.clone(),
+            current.screenshot_hyprland_bind,
+        )
+    };
     // Ignore the Err: an OS conflict is captured in the status below; settings
     // validation already rejected any syntactically invalid value.
-    let _ = crate::screenshot::register_configured_hotkey(&app, &configured);
+    let _ = crate::screenshot::register_configured_hotkey(&app, &configured, hyprland_bind);
     let status = app
         .state::<ScreenshotHotkeyState>()
         .lock()

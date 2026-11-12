@@ -9,7 +9,7 @@ import type {
 import { isEntityDirName } from "./entity-prefix";
 
 export const PROFILE_LETTERS = Array.from({ length: 26 }, (_, index) =>
-  String.fromCharCode("A".charCodeAt(0) + index)
+  String.fromCodePoint("A".codePointAt(0)! + index)
 );
 
 export interface ProfileResolutionPreview {
@@ -123,7 +123,7 @@ export function deriveMatrixRoot(replicaPath: string | null | undefined): string
   const parts = replicaPath.replaceAll("\\", "/").replace(/\/+$/, "").split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
-  if (!/^__agent_/.test(leaf) || !isEntityDirName(parent)) return null;
+  if (!leaf.startsWith("__agent_") || !isEntityDirName(parent)) return null;
   const name = leaf.replace(/^__agent_/, "");
   const sep = replicaPath.includes("\\") ? "\\" : "/";
   return `${acRoot}${sep}_agent_${name}`;
@@ -152,11 +152,11 @@ export function resolveProfilePreview(
   let effectiveProfile = "A";
 
   for (
-    let code = requestedProfile.charCodeAt(0);
-    code >= "A".charCodeAt(0);
+    let code = requestedProfile.codePointAt(0)!;
+    code >= "A".codePointAt(0)!;
     code -= 1
   ) {
-    const letter = String.fromCharCode(code);
+    const letter = String.fromCodePoint(code);
     fallbackChain.push(letter);
     if (letter === "A" || cellForLetter(profiles, agentId, letter)) {
       effectiveProfile = letter;
@@ -573,7 +573,7 @@ export function isWgReplicaPath(path: string | null | undefined): boolean {
   const parts = path.replaceAll("\\", "/").replace(/\/+$/, "").split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
-  return parts.includes(".ac") && /^__agent_/.test(leaf) && isEntityDirName(parent);
+  return parts.includes(".ac") && leaf.startsWith("__agent_") && isEntityDirName(parent);
 }
 
 export function shouldOfferRestartAfterAssign(

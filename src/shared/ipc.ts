@@ -1066,6 +1066,7 @@ export const ScreenshotAPI = {
     }),
   cancel: (captureId: string) =>
     transport.invoke<void>("screenshot_cancel_capture", { captureId }),
+  startCapture: () => transport.invoke<void>("screenshot_start_capture"),
   getHotkeyStatus: () =>
     transport.invoke<ScreenshotHotkeyStatus>("screenshot_get_hotkey_status"),
   reloadHotkey: () =>
@@ -1883,6 +1884,16 @@ export function onScreenshotCaptureFailed(
 ): Promise<UnlistenFn> {
   return transport.listen<ScreenshotCaptureFailedEvent>(
     "screenshot_capture_failed",
+    callback
+  );
+}
+
+/** #2774 Final Wayland hotkey status (after startup and after each Settings save). */
+export function onScreenshotHotkeyStatusChanged(
+  callback: (status: ScreenshotHotkeyStatus) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ScreenshotHotkeyStatus>(
+    "screenshot_hotkey_status_changed",
     callback
   );
 }

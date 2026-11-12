@@ -3100,6 +3100,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-testid="settings.general.screenshotCaptureHotkey"
                 />
               </label>
+              <label data-ac-setting="screenshotHyprlandBind" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.screenshotHyprlandBind ?? false}
+                  onChange={(e) =>
+                    updateField("screenshotHyprlandBind", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.screenshotHyprlandBind"
+                />
+                <span class="settings-label">Add the screenshot shortcut to Hyprland for me</span>
+              </label>
+              <div class="settings-hint">
+                Linux with Hyprland (Omarchy): AgentsCommander writes its own marked lines in
+                ~/.config/hypr/bindings.lua and keeps them in step with the key above. Turn off
+                to remove them.
+              </div>
               <label data-ac-setting="sidebarCompactHotkey" class="settings-field">
                 <span class="settings-label">Compact sidebar hotkey</span>
                 <input

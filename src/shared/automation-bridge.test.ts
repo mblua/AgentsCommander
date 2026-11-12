@@ -198,6 +198,19 @@ describe("automation bridge", () => {
     });
   });
 
+  it("reports a null state when data-ac-state is missing", async () => {
+    addTarget("button", "onboarding.noState", "No state");
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("query", "onboarding.noState"),
+    );
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) throw new Error(response.message);
+    expect(response.target.state).toBeNull();
+  });
+
   it("clicks a visible enabled target", async () => {
     const button = addTarget("button", "onboarding.agentPreset.codex", "Codex");
     topmostElement = button;

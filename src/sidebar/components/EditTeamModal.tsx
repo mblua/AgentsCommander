@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import type { Component } from "solid-js";
 import { CANONICAL_AC_ROOT_DIR } from "../../shared/constants";
 import { EntityAPI } from "../../shared/ipc";
+import { repoDisplayName } from "../../shared/repo-display-name";
 import type {
   TeamWizardAgentEntry,
   TeamWizardRepoEntry,
@@ -224,11 +225,6 @@ const EditTeamModal: Component<{
         return { ...repo, agents: nextAgents };
       }),
     );
-  };
-
-  const repoDisplayName = (url: string): string => {
-    const match = /\/([^/]+?)(?:\.git)?$/.exec(url);
-    return match ? match[1] : url;
   };
 
   const handleSave = async () => {

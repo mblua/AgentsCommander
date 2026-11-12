@@ -98,10 +98,18 @@ html, body, #root {
   align-items: center;
   gap: 4px;
   padding: 0 6px;
+  border: none;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.screenshot-hotkey-status:hover {
+  background: var(--titlebar-btn-hover);
 }
 
 .screenshot-hotkey-status-icon {
