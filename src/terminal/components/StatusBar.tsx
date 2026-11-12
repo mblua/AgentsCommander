@@ -18,6 +18,11 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
 
   const isRecording = () => !!voiceRecorder.recordingSessionId();
   const isProcessing = () => !!voiceRecorder.processingSessionId();
+  const micTitle = () => {
+    if (!settingsStore.voiceEnabled) return MIC_DISABLED_TITLE;
+    if (isRecording()) return "Release to stop";
+    return isProcessing() ? "Transcribing..." : "Hold to record (Ctrl+Shift+R)";
+  };
 
   const fullCommand = createMemo(() => {
     const shell = terminalStore.activeShell;
@@ -227,15 +232,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
           <button
             class={`status-bar-btn status-bar-btn-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${!settingsStore.voiceEnabled ? "disabled" : ""}`}
             onMouseDown={handleMicDown}
-            title={
-              !settingsStore.voiceEnabled
-                ? MIC_DISABLED_TITLE
-                : isRecording()
-                  ? "Release to stop"
-                  : isProcessing()
-                    ? "Transcribing..."
-                    : "Hold to record (Ctrl+Shift+R)"
-            }
+            title={micTitle()}
             disabled={isProcessing()}
           >
             &#x1F399;
