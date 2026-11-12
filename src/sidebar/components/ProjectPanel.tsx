@@ -1472,8 +1472,7 @@ const ProjectPanel: Component = () => {
               row: { left: rect.left - left, top: rect.top - top, width: rect.width, height: rect.height },
             };
             setHaloBox((previous) =>
-              previous &&
-              previous.clip.left === next.clip.left && previous.clip.top === next.clip.top &&
+              previous?.clip.left === next.clip.left && previous.clip.top === next.clip.top &&
               previous.clip.width === next.clip.width && previous.clip.height === next.clip.height &&
               previous.row.left === next.row.left && previous.row.top === next.row.top &&
               previous.row.width === next.row.width && previous.row.height === next.row.height
@@ -1745,11 +1744,11 @@ const ProjectPanel: Component = () => {
 
         const activeReplicaMenu = () => {
           const m = replicaCtxMenu();
-          return m && m.kind === "active" ? m : null;
+          return m?.kind === "active" ? m : null;
         };
         const inactiveReplicaMenu = () => {
           const m = replicaCtxMenu();
-          return m && m.kind === "inactive" ? m : null;
+          return m?.kind === "inactive" ? m : null;
         };
         // #2408 - per-room Co-managed enablement lives in the orchestrator's
         // replica menu. `co_managed_get` reads the stored flag;
@@ -1908,7 +1907,7 @@ const ProjectPanel: Component = () => {
         ): Session | null => {
           if (!token.startedLive || replicaCtxMenuEpoch !== token.epoch) return null;
           const menu = activeReplicaMenu();
-          if (!menu || menu.sessionId !== token.sessionId) return null;
+          if (menu?.sessionId !== token.sessionId) return null;
           const session = sessionsStore.sessions.find(
             (candidate) => candidate.id === token.sessionId,
           );
@@ -1981,10 +1980,8 @@ const ProjectPanel: Component = () => {
           const session = sessionsStore.sessions.find((candidate) => candidate.id === sessionId);
           if (
             replicaCtxMenuEpoch !== epoch ||
-            !menu ||
-            menu.sessionId !== sessionId ||
-            !choices ||
-            choices.epoch !== epoch ||
+            menu?.sessionId !== sessionId ||
+            choices?.epoch !== epoch ||
             choices.sessionId !== sessionId ||
             !session ||
             !isSessionLive(session) ||
@@ -4459,8 +4456,7 @@ const ProjectPanel: Component = () => {
                         const session = liveTelegramSession();
                         const currentMenu = activeReplicaMenu();
                         if (
-                          !choices ||
-                          choices.epoch !== replicaCtxMenuEpoch ||
+                          choices?.epoch !== replicaCtxMenuEpoch ||
                           choices.sessionId !== menu().sessionId ||
                           currentMenu?.sessionId !== choices.sessionId ||
                           !session ||
