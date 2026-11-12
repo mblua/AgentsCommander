@@ -122,13 +122,13 @@ const SpecBoardApp: Component = () => {
       await ensureQuitListeners();
       const result = await QuitAPI.registerGate();
       if (disposed || generation !== registerGeneration) return;
-      if (result && result.status === "Registered") {
+      if (result?.status === "Registered") {
         blockedEpoch = null;
         registerAttempts = 0;
         setGateState("registered");
         return;
       }
-      if (result && result.status === "InFlight" && isLiveEpoch(result.epoch)) {
+      if (result?.status === "InFlight" && isLiveEpoch(result.epoch)) {
         // The snapshot is atomic: a late registrant would be silently ungated,
         // so editing stays disabled until the active round terminates.
         blockedEpoch = result.epoch;
@@ -420,6 +420,14 @@ const SpecBoardApp: Component = () => {
   };
 
   const gateLocked = (): boolean => gateState() !== "registered";
+  const gateStatusText = (): string => {
+    if (gateState() === "registering") return "Preparing Spec Board for quit handling...";
+    if (gateState() === "blocked") {
+      return "Waiting for the active quit round to finish before enabling editing...";
+    }
+    const detail = gateError() ? `: ${gateError()}` : ".";
+    return `Spec Board quit registration failed${detail}`;
+  };
 
   // Set the native attribute rather than Solid's boolean property binding:
   // the attribute is what the webview's inert behavior keys off, and jsdom
@@ -438,11 +446,7 @@ const SpecBoardApp: Component = () => {
       <Show when={gateLocked()}>
         <div class="spec-board-gate-status" role="status">
           <span>
-            {gateState() === "registering"
-              ? "Preparing Spec Board for quit handling..."
-              : gateState() === "blocked"
-                ? "Waiting for the active quit round to finish before enabling editing..."
-                : `Spec Board quit registration failed${gateError() ? `: ${gateError()}` : "."}`}
+            {gateStatusText()}
           </span>
           <Show when={gateState() === "failed" || gateState() === "blocked"}>
             <button onClick={retryGateRegistration} type="button">Retry</button>

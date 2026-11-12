@@ -224,11 +224,12 @@ function selectionLockChipTitle(replica: AcAgentReplica, settings: AppSettings |
     ? agents.find((a) => a.id === saved.codingAgentId)?.label ?? saved.codingAgentId
     : null;
   const profiles = settings?.codingAgentProfiles;
-  const profile = saved?.requestedProfile
-    ? profiles
+  let profile: string | null = null;
+  if (saved?.requestedProfile) {
+    profile = profiles
       ? profileDisplayLabel(profiles, agents, saved.codingAgentId, saved.requestedProfile)
-      : saved.requestedProfile
-    : null;
+      : saved.requestedProfile;
+  }
   const pair = [provider, profile ? `Profile ${profile}` : null].filter(Boolean).join(" · ");
   return `Protected from bulk changes · ${pair || "saved pair unavailable"}`;
 }
@@ -246,7 +247,7 @@ function deriveScopeContextFromSession(
       currentProfile: session.requestedProfile,
     };
   }
-  const dirMatch = replicaPath.match(/^(.*)[\\/][^\\/]+[\\/]?$/);
+  const dirMatch = /^(.*)[\\/][^\\/]+[\\/]?$/.exec(replicaPath);
   const slash = sessionName.indexOf("/");
   const wgName = slash >= 0 ? sessionName.slice(0, slash) : "";
   const replicaName = slash >= 0 ? sessionName.slice(slash + 1) : sessionName;
@@ -345,7 +346,7 @@ function matrixFolderFromIdentityPath(replicaPath: string, identityPath: string 
   if (!path) return null;
 
   const separator = pathSeparatorFor(replicaPath || path);
-  const identityTarget = path.match(/(^|[\\/])identity\.json$/i)
+  const identityTarget = /(^|[\\/])identity\.json$/i.exec(path)
     ? path.replace(/[\\/][^\\/]+$/, "")
     : path;
   const absoluteTarget = isAbsolutePath(identityTarget)
@@ -804,6 +805,11 @@ const ProjectPanel: Component = () => {
     setAgentMatrixNotice({ name: agent.name, path: agent.path });
   };
 
+  const projectLoadState = () => {
+    if (projectStore.isLoading) return "loading";
+    return projectStore.lastLoadError ? "error" : "empty";
+  };
+
   return (
     <>
     {/* Empty-tree status: visible to the user (deferred Round-1 G11 chip) and
@@ -815,9 +821,7 @@ const ProjectPanel: Component = () => {
         class="project-load-status"
         data-ac-testid="project.loadStatus"
         data-ac-role="status"
-        data-ac-state={
-          projectStore.isLoading ? "loading" : projectStore.lastLoadError ? "error" : "empty"
-        }
+        data-ac-state={projectLoadState()}
         data-ac-detail={
           `init:${projectStore.initState.attempted ? projectStore.initState.pathCount : "no"}` +
           ` err:${projectStore.lastLoadError ?? "none"}`
@@ -1305,11 +1309,9 @@ const ProjectPanel: Component = () => {
           workgroupOwnMatches(wg, sectionLabel) ||
           wg.agents.some((replica) => replicaMatches(replica, wg));
         const filteredReplicasForWorkgroup = (wg: AcWorkgroup, rowContext: string) => {
-          const sectionLabel = rowContext === "selected"
-            ? "Selected Room"
-            : rowContext === "workgroups"
-              ? "Rooms"
-              : undefined;
+          let sectionLabel: string | undefined;
+          if (rowContext === "selected") sectionLabel = "Selected Room";
+          else if (rowContext === "workgroups") sectionLabel = "Rooms";
           if (!filterActive() || matchesFilterText(sectionLabel) || workgroupOwnMatches(wg, sectionLabel)) {
             return wg.agents;
           }
@@ -2682,7 +2684,7 @@ const ProjectPanel: Component = () => {
             }
           }
           if (!prev) return null;
-            return proj.workgroups.find(w => w.name === prev.name) ?? null;
+          return proj.workgroups.find(w => w.name === prev.name) ?? null;
         });
 
         const filteredCoordinatorItems = createMemo(() => {
@@ -2731,7 +2733,10 @@ const ProjectPanel: Component = () => {
             setDeletingLoop(null);
           } catch (e: unknown) {
             console.error("delete_loop failed:", e);
-            setLoopDeleteError(typeof e === "string" ? e : e instanceof Error ? e.message : "Failed to delete Loop");
+            let message = "Failed to delete Loop";
+            if (typeof e === "string") message = e;
+            else if (e instanceof Error) message = e.message;
+            setLoopDeleteError(message);
           } finally {
             setLoopActionInProgress(null);
           }
