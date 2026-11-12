@@ -378,7 +378,7 @@ async fn assert_veto(
             assert!(Arc::ptr_eq(&owners(f)[0], owner));
             assert!(crate::session::selection::response_close_registration(n.source).is_some());
         } else {
-            assert!(owners(&f).is_empty());
+            assert!(owners(f).is_empty());
             assert!(crate::session::selection::response_close_registration(n.source).is_none());
         }
     }
@@ -555,8 +555,52 @@ async fn issue_3530_waiter_cancel_does_not_forge_result() {
         }) if actual == operation_id));
         assert_eq!(d.backend.calls.load(Ordering::SeqCst), 0);
         assert_eq!(f.native.backend.kill_count(id), 0);
+        assert_legacy_group_compatibility(&original, id).await;
         f.native.coordinator.close_and_join().await;
         complete_isolated(&name);
     })
     .await;
+}
+
+async fn assert_legacy_group_compatibility(original: &ResponseEffectOwner, id: Uuid) {
+    use crate::resource_monitor::registry::termination::CleanupFailure;
+    use crate::resource_monitor::types::ResourceKillResult;
+    let backend = original
+        .backend()
+        .as_any()
+        .downcast_ref::<super::super::native_fixture::PortTestBackend>()
+        .unwrap();
+    let kills = backend.kill_count(id);
+    assert!(std::mem::size_of::<CleanupFailure>() <= 128);
+    for result in [
+        Ok(ResourceKillResult {
+            session_id: id.to_string(),
+            state: ResourceGroupState::Terminated,
+            killed_processes: Vec::new(),
+            quarantined: false,
+            message: "legacy completion".into(),
+            blocked_by_security: false,
+            finalized: false,
+        }),
+        Err("ordinary legacy error".to_string()),
+    ] {
+        let owner = ResponseEffectOwner::new(
+            original.ticket().clone(),
+            original.registration().clone(),
+            original.backend().clone(),
+        );
+        owner
+            .start_group(|| tokio::spawn(async move { result }))
+            .unwrap();
+        let completed = tokio::time::timeout(
+            Duration::from_secs(10),
+            std::future::poll_fn(|cx| owner.poll_group(cx, id)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(completed, Some(()));
+        owner.seal().unwrap();
+        assert!(owner.terminal());
+        assert_eq!(backend.kill_count(id), kills);
+    }
 }

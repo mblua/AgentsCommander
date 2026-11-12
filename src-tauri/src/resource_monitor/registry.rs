@@ -18,7 +18,17 @@ mod snapshot;
 pub(crate) mod termination;
 
 use crate::cleanup_diagnostics::{operation::Operation, schema, store::Diagnostics};
-use termination::DiagnosticTerminationError;
+#[derive(Debug)]
+pub(crate) enum DiagnosticTerminationError {
+    Ordinary(ResourceError),
+    Evidence(schema::EvidenceError),
+}
+
+impl From<schema::EvidenceError> for DiagnosticTerminationError {
+    fn from(error: schema::EvidenceError) -> Self {
+        Self::Evidence(error)
+    }
+}
 
 use snapshot::{build_snapshot, disabled_snapshot};
 

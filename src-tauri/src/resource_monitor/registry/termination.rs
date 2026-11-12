@@ -19,17 +19,7 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 use uuid::Uuid;
 
-#[derive(Debug)]
-pub(crate) enum DiagnosticTerminationError {
-    Ordinary(super::ResourceError),
-    Evidence(schema::EvidenceError),
-}
-
-impl From<schema::EvidenceError> for DiagnosticTerminationError {
-    fn from(error: schema::EvidenceError) -> Self {
-        Self::Evidence(error)
-    }
-}
+pub(crate) use super::DiagnosticTerminationError;
 
 #[derive(Debug)]
 // P04 consumes the metadata; P02's compatible adapter only needs the result.
@@ -37,7 +27,7 @@ impl From<schema::EvidenceError> for DiagnosticTerminationError {
 pub(crate) enum CleanupFailure {
     Ordinary(String),
     EvidenceVeto {
-        result: ResourceKillResult,
+        result: Box<ResourceKillResult>,
         operation_id: Uuid,
         stage: String,
         effects_started: bool,
@@ -62,7 +52,7 @@ impl CleanupFailure {
     fn compatible(self) -> Result<ResourceKillResult, String> {
         match self {
             Self::Ordinary(error) => Err(error),
-            Self::EvidenceVeto { result, .. } => Ok(result),
+            Self::EvidenceVeto { result, .. } => Ok(*result),
         }
     }
 }
@@ -87,8 +77,6 @@ impl ResourceMonitorState {
         }
     }
 
-    // Preserve the specified typed veto envelope, including accounting failure facts.
-    #[allow(clippy::result_large_err)]
     pub(crate) fn kill_group_diagnostic(
         &self,
         session_id: Uuid,
@@ -199,7 +187,6 @@ impl ResourceMonitorState {
     /// may act on. It is checked inside the SAME critical section that flips the group to
     /// `Terminating`, so a stale watchdog sample cannot act on a replacement row. Like
     /// `fresh_targets_only` it never weakens verification; it can only refuse to start.
-    #[allow(clippy::result_large_err)]
     fn kill_group_diagnostic_inner(
         &self,
         session_id: Uuid,
@@ -312,7 +299,6 @@ impl ResourceMonitorState {
         )
     }
 
-    #[allow(clippy::result_large_err)]
     fn execute_group_cleanup(
         &self,
         session_id: Uuid,
@@ -769,7 +755,7 @@ impl ResourceMonitorState {
             Err(error) => ("unknown".into(), Some(error)),
         };
         CleanupFailure::EvidenceVeto {
-            result: ResourceKillResult {
+            result: Box::new(ResourceKillResult {
                 session_id: pass.binding.session_id.to_string(),
                 state: ResourceGroupState::Quarantined,
                 killed_processes,
@@ -779,7 +765,7 @@ impl ResourceMonitorState {
                 ),
                 blocked_by_security: false,
                 finalized: false,
-            },
+            }),
             operation_id,
             stage: error.stage,
             effects_started: error.effects_started,

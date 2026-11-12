@@ -140,7 +140,7 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
     .await
     {
         Ok(result) => result,
-        Err(CleanupFailure::EvidenceVeto { result, .. }) => return Ok(result),
+        Err(CleanupFailure::EvidenceVeto { result, .. }) => return Ok(*result),
         Err(CleanupFailure::Ordinary(error)) => return Err(error),
     };
 

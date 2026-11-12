@@ -274,7 +274,7 @@ impl Fixture {
                 )
                 .await;
                 if veto {
-                    let error = result.err().expect("veto must stop replacement");
+                    let error = result.expect_err("veto must stop replacement");
                     assert!(!error.old_lost);
                     assert!(error.message.contains("evidence_gap"));
                     if self.expect_unknown {
