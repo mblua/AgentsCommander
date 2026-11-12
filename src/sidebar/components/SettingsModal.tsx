@@ -5492,7 +5492,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 value={settings.data!.voiceAutoExecuteDelay}
                 onInput={(e) => {
                   const v = Number.parseInt(e.currentTarget.value, 10);
-                  if (!isNaN(v)) updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
+                  if (!Number.isNaN(v)) {
+                    updateField("voiceAutoExecuteDelay", Math.max(1, Math.min(120, v)));
+                  }
                 }}
               />
             </label>

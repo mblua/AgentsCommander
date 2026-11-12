@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EXTERNAL_LINK_REQUEST_EVENT } from "../../shared/external-links";
 import { createTerminalOptions } from "./terminal-options";
 
@@ -36,5 +36,25 @@ describe("createTerminalOptions", () => {
     );
 
     document.removeEventListener(EXTERNAL_LINK_REQUEST_EVENT, listener);
+  });
+});
+
+const INSTALLED = new Set(["JetBrains Mono"]);
+const fakeWidth = (font: string, text: string): number => {
+  for (const family of INSTALLED) if (font.includes(`'${family}'`)) return 8.4;
+  return text === "l" || text === "i" ? 3.11 : 13.21;
+};
+
+describe("createTerminalOptions fontFamily (#4244)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("drops preferred fonts that do not measure monospace", () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      font: "",
+      measureText(this: { font: string }, t: string) {
+        return { width: fakeWidth(this.font, t) };
+      },
+    } as unknown as CanvasRenderingContext2D);
+    expect(createTerminalOptions(false).fontFamily).toBe("'JetBrains Mono', monospace");
   });
 });

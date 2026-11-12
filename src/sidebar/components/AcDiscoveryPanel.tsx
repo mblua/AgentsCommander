@@ -321,7 +321,10 @@ const AcDiscoveryPanel: Component = () => {
                                   <Show when={replica.repoPaths.length === 1 && replica.repoBranch}>
                                     <span class="ac-discovery-badge branch">
                                       {(() => {
-                                        const dir = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
+                                        const dir = replica.repoPaths[0]
+                                          .replaceAll("\\", "/")
+                                          .split("/")
+                                          .pop() ?? "";
                                         const label = dir.startsWith("repo-") ? dir.slice(5) : dir;
                                         return `${label}/${replica.repoBranch}`;
                                       })()}

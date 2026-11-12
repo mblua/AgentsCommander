@@ -51,14 +51,6 @@ pub(crate) fn write_loop_bytes(path: &Path, content: impl AsRef<[u8]>) -> io::Re
     std::fs::write(path, content)
 }
 
-pub(crate) fn append_loop_ignore_rows(path: &Path, content: &str) -> io::Result<()> {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(content.as_bytes()))
-}
-
 pub(crate) fn append_loop_audit_line(path: &Path, line: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)

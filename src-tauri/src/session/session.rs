@@ -236,14 +236,7 @@ pub struct Session {
     pub context_percent: Option<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum SessionStatus {
-    Active,
-    Running,
-    Idle,
-    Exited(i32),
-}
+pub use crate::session::status::SessionStatus;
 
 /// Backend "working" predicate. Identical to `cli/list_peers.rs`'s documented
 /// `working` field and to `isWorkingActivity` in shared/session-activity.ts.
