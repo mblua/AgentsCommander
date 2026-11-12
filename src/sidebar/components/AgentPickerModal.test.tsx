@@ -3065,7 +3065,7 @@ describe("AgentPickerModal", () => {
       ];
       expect(wraps).toHaveLength(5);
       for (const wrap of wraps) {
-        expect(wrap.children.length).toBe(2);
+        expect(wrap.children).toHaveLength(2);
         const id = wrap.children[1].getAttribute("data-ac-testid")?.replace(/^agentPicker\.provider\./, "");
         expect(id).toBeTruthy();
         expect(wrap.children[0]).toBe(grip(id as string));
