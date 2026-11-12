@@ -58,6 +58,21 @@ pub(crate) fn wayland_socket() -> Result<String, std::env::VarError> {
     std::env::var("WAYLAND_SOCKET")
 }
 
+/// #2774 Set only inside a Hyprland session; empty counts as unset.
+#[cfg(target_os = "linux")]
+pub(crate) fn hyprland_instance_signature() -> Option<std::ffi::OsString> {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").filter(|v| !v.is_empty())
+}
+
+/// #2774 `XDG_CONFIG_HOME`, else `$HOME/.config`; empty values count as unset.
+#[cfg(target_os = "linux")]
+pub(crate) fn hypr_config_home() -> Option<std::path::PathBuf> {
+    let non_empty = |key| std::env::var_os(key).filter(|v| !v.is_empty());
+    non_empty("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| non_empty("HOME").map(|home| std::path::Path::new(&home).join(".config")))
+}
+
 #[cfg(windows)]
 pub(crate) fn inherited_path() -> Option<std::ffi::OsString> {
     std::env::var_os("PATH")

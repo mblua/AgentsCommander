@@ -40,6 +40,8 @@ use crate::filesystem::screenshot_files::create_png_file;
 use crate::screenshot::{MonitorGeometry, PlacementFrame};
 
 mod confirm;
+#[cfg(target_os = "linux")]
+mod hyprland_bind;
 mod key_code;
 #[cfg(target_os = "linux")]
 mod linux_display;
@@ -556,6 +558,12 @@ pub(crate) trait WaylandBackend: Clone + Send + Sync + 'static {
         ids: &ShortcutIds,
         trigger: &str,
     ) -> impl std::future::Future<Output = Result<portal::Presses, String>> + Send;
+    fn apply_hyprland(
+        &self,
+        enabled: bool,
+        key: char,
+        ids: &ShortcutIds,
+    ) -> impl std::future::Future<Output = hyprland_bind::BindOutcome> + Send;
 }
 
 #[cfg(target_os = "linux")]
@@ -577,6 +585,28 @@ impl WaylandBackend for SystemWayland {
     ) -> Result<portal::Presses, String> {
         let (id, description) = (&ids.shortcut_id, &ids.description);
         portal::bind_shortcut(&self.host, PORTAL_APP_ID, id, description, trigger).await
+    }
+
+    async fn apply_hyprland(
+        &self,
+        enabled: bool,
+        key: char,
+        ids: &ShortcutIds,
+    ) -> hyprland_bind::BindOutcome {
+        use crate::config::environment;
+        let hyprland = environment::hyprland_instance_signature().is_some();
+        let home = environment::hypr_config_home();
+        let ctl = &hyprland_bind::SystemHyprctl;
+        hyprland_bind::apply(ctl, hyprland, home.as_deref(), enabled, key, &bind_ids(ids)).await
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bind_ids(ids: &ShortcutIds) -> hyprland_bind::BindIds<'_> {
+    hyprland_bind::BindIds {
+        token: &ids.token,
+        global: &ids.global,
+        description: &ids.description,
     }
 }
 
@@ -640,7 +670,6 @@ async fn register_wayland<H: ScreenshotHost, B: WaylandBackend>(
     key: char,
     enabled: bool,
 ) {
-    let _ = enabled; // #2774 P04 reads it
     let portal = app.hotkey_state().lock().unwrap().wayland.clone();
     // Taken BEFORE the portal bind and held to the end.
     let mut st = portal.lock().await;
@@ -669,7 +698,13 @@ async fn register_wayland<H: ScreenshotHost, B: WaylandBackend>(
             }
         }
     }
-    store_wayland_status(&app, generation, &configured, Ok(()));
+    // Check C: a stale request never writes bindings.lua (its portal binding stays).
+    if !is_latest(&app, generation) {
+        return;
+    }
+    let outcome = backend.apply_hyprland(enabled, key, &ids).await;
+    let result = hyprland_bind::status_result(&outcome, key, &bind_ids(&ids));
+    store_wayland_status(&app, generation, &configured, result);
 }
 
 /// Forward presses; when the portal ends binding `binding`, report it (if still live).

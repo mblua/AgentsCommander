@@ -52,5 +52,29 @@ pub(crate) fn is_running(pid: u32) -> bool {
     pid == process::id()
 }
 
+/// #2774 Run `hyprctl <args>`; stdout on success. 5 s timeout, no stdin, killed on drop.
+#[cfg(target_os = "linux")]
+pub(crate) async fn hyprctl(args: &[&str]) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new("hyprctl");
+    cmd.args(args)
+        .stdin(process::Stdio::null())
+        .kill_on_drop(true);
+    let timeout = std::time::Duration::from_secs(5);
+    let output = match tokio::time::timeout(timeout, cmd.output()).await {
+        Err(_) => return Err("hyprctl timed out".to_string()),
+        Ok(Err(e)) => return Err(format!("could not run hyprctl: {e}")),
+        Ok(Ok(output)) => output,
+    };
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err(format!("hyprctl exited with {}", output.status))
+    } else {
+        Err(stderr)
+    }
+}
+
 #[cfg(test)]
 mod tests;

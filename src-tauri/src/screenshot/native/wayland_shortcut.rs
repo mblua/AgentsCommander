@@ -22,6 +22,8 @@ pub(super) fn press_may_cancel(wayland: bool, cancellable: Option<Uuid>) -> Opti
 pub(crate) struct ShortcutIds {
     pub(super) shortcut_id: String,
     pub(super) description: String,
+    pub(super) token: String,
+    pub(super) global: String,
 }
 
 /// One token per AC configuration directory (= per AC instance): the first 8 lowercase
@@ -39,6 +41,8 @@ pub(super) fn shortcut_ids(token: &str) -> ShortcutIds {
     ShortcutIds {
         shortcut_id: format!("screenshot-{token}"),
         description: format!("AgentsCommander screenshot {token}"),
+        token: token.to_string(),
+        global: format!("{PORTAL_APP_ID}:screenshot-{token}"),
     }
 }
 

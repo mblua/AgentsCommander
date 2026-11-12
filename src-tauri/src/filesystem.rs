@@ -32,6 +32,8 @@ pub(crate) mod debug_logs;
 pub(crate) mod directories;
 pub(crate) mod documents;
 pub(crate) mod experiment_replica_role;
+#[cfg(target_os = "linux")]
+pub(crate) mod hyprland_bindings;
 pub(crate) mod injected_documents;
 pub(crate) mod instance_ignore;
 pub(crate) mod local_config;

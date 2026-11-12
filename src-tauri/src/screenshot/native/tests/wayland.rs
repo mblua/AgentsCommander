@@ -343,6 +343,10 @@ struct FakeBackend {
     binds: Arc<AtomicUsize>,
     bind_entered: Arc<tokio::sync::Notify>,
     bind_gate: Option<tokio::sync::watch::Receiver<bool>>,
+    outcomes: Arc<Mutex<VecDeque<hyprland_bind::BindOutcome>>>,
+    applies: Arc<Mutex<Vec<(bool, char)>>>,
+    apply_entered: Arc<tokio::sync::Notify>,
+    apply_gate: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl FakeBackend {
@@ -359,6 +363,10 @@ impl FakeBackend {
 
     fn binds(&self) -> usize {
         self.binds.load(Ordering::SeqCst)
+    }
+
+    fn applies(&self) -> Vec<(bool, char)> {
+        self.applies.lock().unwrap().clone()
     }
 }
 
@@ -377,6 +385,23 @@ impl WaylandBackend for FakeBackend {
         let next = self.results.lock().unwrap().pop_front();
         next.expect("unscripted bind_shortcut")
     }
+
+    /// Unscripted -> `NotHyprland` (P03 behavior).
+    async fn apply_hyprland(
+        &self,
+        enabled: bool,
+        key: char,
+        _ids: &ShortcutIds,
+    ) -> hyprland_bind::BindOutcome {
+        self.apply_entered.notify_one();
+        if let Some(gate) = &self.apply_gate {
+            let mut gate = gate.clone();
+            let _ = gate.wait_for(|open| *open).await;
+        }
+        self.applies.lock().unwrap().push((enabled, key));
+        let next = self.outcomes.lock().unwrap().pop_front();
+        next.unwrap_or(hyprland_bind::BindOutcome::NotHyprland)
+    }
 }
 
 fn idle_wayland_host() -> WaylandHost {
@@ -384,9 +409,13 @@ fn idle_wayland_host() -> WaylandHost {
 }
 
 async fn register(host: &WaylandHost, backend: &FakeBackend, generation: u64) {
+    register_enabled(host, backend, generation, false).await;
+}
+
+async fn register_enabled(host: &WaylandHost, backend: &FakeBackend, gen: u64, on: bool) {
     let token = "1a2b3c4d".to_string();
     let (h, b) = (host.clone(), backend.clone());
-    register_wayland(h, b, generation, token, "Ctrl+Q".into(), 'Q', false).await;
+    register_wayland(h, b, gen, token, "Ctrl+Q".into(), 'Q', on).await;
 }
 
 async fn binding(host: &WaylandHost) -> u64 {
@@ -480,7 +509,7 @@ async fn older_task_holding_the_lock_loses() {
         let _tx2 = backend.script_ok();
         let g1 = begin_wayland_registration(&host);
         let (h, b) = (host.clone(), backend.clone());
-        let first = tokio::spawn(async move { register(&h, &b, g1).await });
+        let first = tokio::spawn(async move { register_enabled(&h, &b, g1, true).await });
         backend.bind_entered.notified().await;
         let g2 = begin_wayland_registration(&host);
         let (h, b) = (host.clone(), backend.clone());
@@ -491,9 +520,64 @@ async fn older_task_holding_the_lock_loses() {
         second.await.unwrap();
         assert_eq!(backend.binds(), 1);
         assert_eq!(host.log(), ["status:true:"]);
+        assert_eq!(backend.applies(), [(false, 'Q')]);
     })
     .await
     .expect("ordering test hung");
+}
+
+#[tokio::test]
+async fn older_task_in_apply_loses() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let host = idle_wayland_host();
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let backend = FakeBackend {
+            apply_gate: Some(gate_rx),
+            ..FakeBackend::default()
+        };
+        let _tx = backend.script_ok();
+        let g1 = begin_wayland_registration(&host);
+        let (h, b) = (host.clone(), backend.clone());
+        let first = tokio::spawn(async move { register_enabled(&h, &b, g1, true).await });
+        backend.apply_entered.notified().await;
+        let g2 = begin_wayland_registration(&host);
+        let (h, b) = (host.clone(), backend.clone());
+        let second = tokio::spawn(async move { register(&h, &b, g2).await });
+        tokio::task::yield_now().await;
+        gate_tx.send(true).unwrap();
+        first.await.unwrap();
+        second.await.unwrap();
+        assert_eq!(backend.applies(), [(true, 'Q'), (false, 'Q')]);
+        assert_eq!(backend.binds(), 1);
+        assert_eq!(host.log(), ["status:true:"]);
+    })
+    .await
+    .expect("ordering test hung");
+}
+
+async fn register_with(outcome: hyprland_bind::BindOutcome) -> ScreenshotHotkeyStatus {
+    let (host, backend) = (idle_wayland_host(), FakeBackend::default());
+    let _tx = backend.script_ok();
+    backend.outcomes.lock().unwrap().push_back(outcome);
+    let generation = begin_wayland_registration(&host);
+    register(&host, &backend, generation).await;
+    status(&host)
+}
+
+#[tokio::test]
+async fn manual_outcome_shows_the_lua_line() {
+    let outcome = hyprland_bind::BindOutcome::Manual { reason: None };
+    let error = register_with(outcome).await.error.expect("an error status");
+    let ids = shortcut_ids("1a2b3c4d");
+    let lua = hyprland_bind::lua_line('Q', &bind_ids(&ids));
+    assert!(error.contains(&lua), "{error}");
+}
+
+#[tokio::test]
+async fn applied_outcome_registers() {
+    let st = register_with(hyprland_bind::BindOutcome::Applied).await;
+    assert!(st.registered);
+    assert_eq!(st.error, None);
 }
 
 #[tokio::test]
@@ -559,6 +643,8 @@ fn instance_token_is_stable_and_distinct() {
     );
     assert!(is_hex8(&instance_token(None)));
     assert_eq!(shortcut_ids("1a2b3c4d").shortcut_id, "screenshot-1a2b3c4d");
+    let global = shortcut_ids("1a2b3c4d").global;
+    assert_eq!(global, "agentscommander:screenshot-1a2b3c4d");
 }
 
 #[tokio::test]
