@@ -343,7 +343,8 @@ impl ResponseEffectOwner {
                     Ok(result) => (Ok(result), None),
                     Err(CleanupFailure::Ordinary(error)) => {
                         log::warn!(
-                            "[session] resource cleanup failed session={id} source=ResponseClose: \n                             {error}"
+                            "[session] resource cleanup failed session={id} source=ResponseClose: \
+                             {error}"
                         );
                         (Err(error), None)
                     }
