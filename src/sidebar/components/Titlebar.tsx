@@ -80,7 +80,7 @@ const ScreenshotHotkeyStatusChip: Component = () => {
           // `registered: false` with `error: null` is the pre-registration
           // default, the only genuinely transient state. A non-null error is a
           // decided refusal and must never be retried.
-          if ((status === null || status.error === null) && remaining > 0) {
+          if ((status?.error ?? null) === null && remaining > 0) {
             retryTimer = setTimeout(
               () => attempt(remaining - 1),
               HOTKEY_STATUS_RETRY_DELAY_MS,
