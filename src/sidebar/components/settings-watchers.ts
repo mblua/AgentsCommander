@@ -20,7 +20,8 @@ import type {
 export const WATCHER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 const WATCHER_MODES: ReadonlySet<WatcherMode> = new Set<WatcherMode>(["state", "occurrence"]);
-const WATCHER_DEDUPES: ReadonlySet<WatcherDedupe> = new Set<WatcherDedupe>(["row", "capture", "none"]);
+const WATCHER_DEDUPES: ReadonlySet<WatcherDedupe> =
+  new Set<WatcherDedupe>(["row", "capture", "none"]);
 
 /**
  * Whether an entry of the root `watchers` map is one this build understands.
