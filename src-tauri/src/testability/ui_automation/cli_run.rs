@@ -192,6 +192,23 @@ pub(super) fn automation_not_enabled_error() -> Value {
     )
 }
 
+/// Preflight errors that mean "GUI not ready yet" while ui-wait is polling.
+pub(super) fn is_wait_retryable_error(error: &Value) -> bool {
+    matches!(
+        error.get("error").and_then(Value::as_str),
+        Some("automation_not_enabled") | Some("automation_session_missing")
+    )
+}
+
+/// Last diagnostic printed when ui-wait times out on a retryable preflight error.
+pub(super) fn wait_timeout_error(mut last: Value, timeout_ms: u64) -> Value {
+    if let Some(obj) = last.as_object_mut() {
+        obj.insert("timeoutMs".to_string(), json!(timeout_ms));
+        obj.insert("phase".to_string(), json!("wait_startup_timeout"));
+    }
+    last
+}
+
 pub(super) fn load_session_for_cli(
     path: &Path,
     requested_window: &str,
