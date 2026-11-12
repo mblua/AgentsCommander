@@ -11,18 +11,12 @@ describe('stripFrontmatter', () => {
     expect(stripFrontmatter(body)).toBe(body);
   });
 
-  it('strips_basic_frontmatter', () => {
-    const input = "---\ntitle: 'Foo'\n---\n\nBody text";
-    expect(stripFrontmatter(input)).toBe('Body text');
-  });
-
-  it('strips_multiline_frontmatter', () => {
-    const input = "---\ntitle: 'Foo'\nstatus: active\nowner: alice\n---\n\nBody text";
-    expect(stripFrontmatter(input)).toBe('Body text');
-  });
-
-  it('handles_crlf_line_endings', () => {
-    const input = "---\r\ntitle: 'Foo'\r\n---\r\n\r\nBody text";
+  it.each([
+    ['strips_basic_frontmatter', "---\ntitle: 'Foo'\n---\n\nBody text"],
+    ['strips_multiline_frontmatter',
+      "---\ntitle: 'Foo'\nstatus: active\nowner: alice\n---\n\nBody text"],
+    ['handles_crlf_line_endings', "---\r\ntitle: 'Foo'\r\n---\r\n\r\nBody text"],
+  ])('%s', (_name, input) => {
     expect(stripFrontmatter(input)).toBe('Body text');
   });
 
