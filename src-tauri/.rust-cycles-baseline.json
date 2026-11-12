@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "0d2876114eb2b6a2",
+      "id": "0c5bfdf0a028143f",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -214,7 +214,6 @@
         "agentscommander_lib::config::settings::owner::lease",
         "agentscommander_lib::config::settings::project_path",
         "agentscommander_lib::config::settings::project_path::migration",
-        "agentscommander_lib::config::settings::project_path::resolution",
         "agentscommander_lib::config::settings::project_path::transaction",
         "agentscommander_lib::config::settings::save",
         "agentscommander_lib::config::settings::save::disk",
