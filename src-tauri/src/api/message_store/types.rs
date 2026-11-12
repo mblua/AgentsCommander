@@ -1,5 +1,3 @@
-use super::sha256_hex;
-
 #[derive(Debug, Clone)]
 pub struct EnqueueRequest {
     pub sender_fqn: String,
@@ -57,21 +55,6 @@ pub struct PtyInputEnqueueRequest {
     pub authority_client_generation: Option<String>,
     pub issued_at: String,
     pub expires_at: String,
-}
-
-impl std::fmt::Debug for PtyInputEnqueueRequest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PtyInputEnqueueRequest")
-            .field("injection_id", &self.injection_id)
-            .field("sender_fqn", &self.sender_fqn)
-            .field("target_fqn", &self.target_fqn)
-            .field("op_id", &self.op_id)
-            .field("payload_bytes", &self.payload.len())
-            .field("payload_sha256", &sha256_hex(&self.payload))
-            .field("source_plane", &self.source_plane)
-            .finish()
-    }
 }
 
 pub struct HostPtyInputRejectionRequest {
