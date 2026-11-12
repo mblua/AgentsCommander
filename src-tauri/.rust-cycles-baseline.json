@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "0c5bfdf0a028143f",
+      "id": "d8baa12cedb55cea",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -25,7 +25,6 @@
         "agentscommander_lib::api::message_store",
         "agentscommander_lib::api::message_store::locks",
         "agentscommander_lib::api::message_store::rows",
-        "agentscommander_lib::api::message_store::types",
         "agentscommander_lib::app_state",
         "agentscommander_lib::cli::terminal_snapshot",
         "agentscommander_lib::co_managed",
