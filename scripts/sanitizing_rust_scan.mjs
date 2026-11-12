@@ -198,10 +198,10 @@ const itemKinds = new Set(['fn', 'mod', 'struct', 'enum', 'union', 'trait', 'imp
   'static', 'type', 'use', 'extern', 'macro_rules']);
 const simplePath = tokens => {
   const absolute = tokens[0]?.text === '::', parts = absolute ? tokens.slice(1) : tokens;
-  return parts.length > 0 && parts.length % 2 === 1 && parts.every((t,
-    i) => i % 2 === 0 ? t.kind === 'ident' : t.text === '::')
-    ? (absolute ? '::' : '') + parts.filter(t => t.kind === 'ident').map(t =>
-      t.name).join('::') : null;
+  if (!(parts.length > 0 && parts.length % 2 === 1 && parts.every((t,
+    i) => i % 2 === 0 ? t.kind === 'ident' : t.text === '::'))) return null;
+  return (absolute ? '::' : '') + parts.filter(t => t.kind === 'ident').map(t =>
+    t.name).join('::');
 };
 function imports(tokens, prefix = []) {
   if (tokens[0]?.text === '::') tokens = tokens.slice(1);
@@ -357,7 +357,8 @@ export function scanRust(path, text) {
     const attached = [];
     while (attrEnds.has(first - 1) && !attrEnds.get(first - 1).inner) { const a =
       attrEnds.get(first - 1); attached.unshift(a); first = a.first; }
-    const name = ['impl', 'use', 'extern'].includes(kind) ? null : tokens[i + (tokens[i +
+    let name = null;
+    if (!['impl', 'use', 'extern'].includes(kind)) name = tokens[i + (tokens[i +
       1]?.name === 'mut' || tokens[i + 1]?.text === '!' ? 2 : 1)]?.name;
     const bodyScope = body === null ? null : scopes.find(s => s.open === body);
     const item = { kind, name, start: tokens[first].start, end: tokens[end].end, line: token.line,
