@@ -319,13 +319,13 @@ impl SpawnRecord {
         // the URL-shape redactor AC already applies to error text, so a key smuggled
         // inside a URL the child printed (`?key=...`, `/bot<token>/`) does not walk out
         // through `head=` either.
-        let mut text = text.to_string();
+        let mut text = crate::telegram::redact::redact(text);
         for secret in &self.redact {
             if text.contains(secret.as_str()) {
                 text = text.replace(secret.as_str(), "<redacted>");
             }
         }
-        crate::telegram::redact::redact(&text)
+        text
     }
 
     fn argv_log(&self) -> String {

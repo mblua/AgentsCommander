@@ -661,10 +661,10 @@ fn credentials_are_scrubbed_from_echoed_output() {
         ..test_init(Some(CodingAgentKind::Codex))
     });
     record.note_output(format!("AGENTSCOMMANDER_TOKEN={token}\r\n").as_bytes());
-
-    assert!(record.head_log().contains("<redacted>"));
+    let masked = |log: String| log.contains("<redacted>") || log.contains("***");
+    assert!(masked(record.head_log()));
     assert!(!record.head_log().contains(token));
-    assert!(record.argv_log().contains("<redacted>"));
+    assert!(masked(record.argv_log()));
     assert!(!record.argv_log().contains(token));
     assert!(
         record.head_log().contains("AGENTSCOMMANDER_TOKEN"),
