@@ -151,21 +151,34 @@ function propertyName(name: ts.PropertyName): string | null {
   return literal ? name.text : null;
 }
 
+function byText(a: string, b: string): number {
+  return a.localeCompare(b);
+}
+
+// Conditional spread: keys of both object-literal branches are optional (F5).
+function collectSpread(spread: ts.SpreadAssignment, opt: string[]): boolean {
+  const expr = unwrap(spread.expression);
+  if (!ts.isConditionalExpression(expr)) return false;
+  return [expr.whenTrue, expr.whenFalse].every((branch) => {
+    const side = unwrap(branch);
+    return ts.isObjectLiteralExpression(side) && collectKeys(side, opt, opt);
+  });
+}
+
+function keyName(prop: ts.ObjectLiteralElementLike): string | null {
+  const named = ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) ||
+    ts.isMethodDeclaration(prop);
+  return named ? propertyName(prop.name) : null;
+}
+
 // Returns false when the literal cannot be analysed (F5).
 function collectKeys(lit: ts.ObjectLiteralExpression, keys: string[], opt: string[]): boolean {
   for (const prop of lit.properties) {
     if (ts.isSpreadAssignment(prop)) {
-      const expr = unwrap(prop.expression);
-      if (!ts.isConditionalExpression(expr)) return false;
-      const sides = [unwrap(expr.whenTrue), unwrap(expr.whenFalse)];
-      for (const side of sides) {
-        if (!ts.isObjectLiteralExpression(side) || !collectKeys(side, opt, opt)) return false;
-      }
+      if (!collectSpread(prop, opt)) return false;
       continue;
     }
-    const named = ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) ||
-      ts.isMethodDeclaration(prop);
-    const name = named ? propertyName(prop.name) : null;
+    const name = keyName(prop);
     if (name === null) return false;
     keys.push(name);
   }
@@ -288,5 +301,7 @@ export function checkContract(
   const called = new Set(calls.map((c) => c.cmd));
   failures.push(...checkWsOnly(scan, called, opts), ...checkCalls(scan, calls, opts));
   const uncalled = [...scan.registered].filter((name) => !called.has(name));
-  return { failures: failures.sort(), uncalled: uncalled.sort() };
+  failures.sort(byText);
+  uncalled.sort(byText);
+  return { failures, uncalled };
 }
