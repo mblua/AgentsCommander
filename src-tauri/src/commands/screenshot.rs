@@ -44,6 +44,13 @@ pub async fn screenshot_cancel_capture(
     crate::screenshot::cancel_capture(&app, state.inner(), &capture_id).await
 }
 
+/// #2774 Start a capture from the UI (titlebar camera). Same entry as a shortcut press:
+/// the busy gate, repeat-press rules and failure toast all apply unchanged.
+#[tauri::command]
+pub fn screenshot_start_capture(app: AppHandle) {
+    crate::screenshot::begin_capture_from_hotkey(app);
+}
+
 /// Current global-hotkey registration status (configured combo + whether the OS
 /// accepted it + any conflict error). The sidebar reads this on mount.
 #[tauri::command]

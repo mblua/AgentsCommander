@@ -572,6 +572,7 @@ fn invoke_handler(
         commands::screenshot::screenshot_get_overlay_state,
         commands::screenshot::screenshot_confirm_selection,
         commands::screenshot::screenshot_cancel_capture,
+        commands::screenshot::screenshot_start_capture,
         commands::screenshot::screenshot_get_hotkey_status,
         commands::screenshot::screenshot_reload_hotkey,
     ])
