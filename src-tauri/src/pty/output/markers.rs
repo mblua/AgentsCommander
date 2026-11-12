@@ -1,6 +1,8 @@
 use crate::filesystem::{directories, documents};
 
 use std::collections::HashMap;
+use std::iter::Peekable;
+use std::str::Chars;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -47,6 +49,50 @@ pub(super) fn screen_shows_visible_content(screen: &vt100::Screen) -> bool {
     screen.contents().chars().any(|c| !c.is_whitespace())
 }
 
+fn skip_csi(chars: &mut Peekable<Chars<'_>>) {
+    chars.next();
+    while let Some(&next) = chars.peek() {
+        chars.next();
+        if ('@'..='~').contains(&next) {
+            break;
+        }
+    }
+}
+
+fn skip_osc(chars: &mut Peekable<Chars<'_>>) {
+    chars.next();
+    while let Some(&ch) = chars.peek() {
+        if ch == '\x07' {
+            chars.next();
+            break;
+        }
+        if ch == '\x1b' {
+            chars.next();
+            if chars.peek() == Some(&'\\') {
+                chars.next();
+                break;
+            }
+            continue;
+        }
+        chars.next();
+    }
+}
+
+fn skip_dcs(chars: &mut Peekable<Chars<'_>>) {
+    chars.next();
+    while let Some(&ch) = chars.peek() {
+        if ch == '\x1b' {
+            chars.next();
+            if chars.peek() == Some(&'\\') {
+                chars.next();
+                break;
+            }
+            continue;
+        }
+        chars.next();
+    }
+}
+
 /// Strip ANSI escape sequences so marker detection ignores color, cursor,
 /// title, hyperlink, shell-integration, and device-control noise.
 ///
@@ -60,47 +106,9 @@ pub(crate) fn strip_ansi_csi(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\x1b' {
             match chars.peek() {
-                Some(&'[') => {
-                    chars.next();
-                    while let Some(&next) = chars.peek() {
-                        chars.next();
-                        if ('@'..='~').contains(&next) {
-                            break;
-                        }
-                    }
-                }
-                Some(&']') => {
-                    chars.next();
-                    while let Some(&ch) = chars.peek() {
-                        if ch == '\x07' {
-                            chars.next();
-                            break;
-                        }
-                        if ch == '\x1b' {
-                            chars.next();
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                                break;
-                            }
-                            continue;
-                        }
-                        chars.next();
-                    }
-                }
-                Some(&'P') => {
-                    chars.next();
-                    while let Some(&ch) = chars.peek() {
-                        if ch == '\x1b' {
-                            chars.next();
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                                break;
-                            }
-                            continue;
-                        }
-                        chars.next();
-                    }
-                }
+                Some(&'[') => skip_csi(&mut chars),
+                Some(&']') => skip_osc(&mut chars),
+                Some(&'P') => skip_dcs(&mut chars),
                 Some(_) => {
                     chars.next();
                 }
