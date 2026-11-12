@@ -165,10 +165,12 @@ function printHelp() {
   for (let i = 0; i < LIMITATIONS.length; i++) {
     lines.push(`  ${i + 1}. ${LIMITATIONS[i]}`);
   }
-  lines.push('');
-  lines.push('  The BLIND SPOTS block is printed always, including when every count is');
-  lines.push('  zero and zero cycles were found. Only --quiet suppresses it.');
-  lines.push('');
+  lines.push(
+    '',
+    '  The BLIND SPOTS block is printed always, including when every count is',
+    '  zero and zero cycles were found. Only --quiet suppresses it.',
+    '',
+  );
   return lines.join('\n') + '\n';
 }
 
@@ -517,7 +519,7 @@ function hasRequiredTestCfg(attribute) {
   const close = matchDelimiter(m, i);
   if (close < 0 || skipWs(m, close + 1, n) !== n) return false;
   const kw = readIdent(m, skipWs(m, i + 1, close), close);
-  if (!kw || kw.name !== 'cfg' || kw.end - kw.start !== 3) return false;
+  if (kw?.name !== 'cfg' || kw.end - kw.start !== 3) return false;
   const open = skipWs(m, kw.end, close);
   if (m[open] !== '(') return false;
   const end = matchDelimiter(m, open);
@@ -625,7 +627,7 @@ function relPath(root, abs) {
 }
 
 function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return s.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
 function compileExcludes(patterns) {
@@ -938,8 +940,8 @@ function discoverTargets(rootAbs, manifests, opts, ctx) {
     for (const dep of collectDependencyNames(tables)) externCrates.add(identify(dep));
 
     const lib = tables.get('lib');
-    const libName = lib && lib.get('name') ? lib.get('name') : pkgIdent;
-    const libPath = lib && lib.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
+    const libName = lib?.get('name') ? lib.get('name') : pkgIdent;
+    const libPath = lib?.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
       'src', 'lib.rs');
 
     const common = {
@@ -1112,7 +1114,7 @@ function parseImplSelfType(header) {
   if (forIdx >= 0) h = h.slice(forIdx);
 
   h = h.trim();
-  h = h.replace(/^(?:&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s*)?(?:mut\s+)?)+/, '');
+  h = h.replace(/^(?:&\s*(?:'[A-Za-z_]\w*\s*)?(?:mut\s+)?)+/, '');
   h = h.replace(/^\(\s*/, '').replace(/\s*\)\s*$/, '');
   const lt = h.indexOf('<');
   if (lt >= 0) h = h.slice(0, lt);
@@ -1120,7 +1122,7 @@ function parseImplSelfType(header) {
 
   const segments = h.split('::').map((s) => s.trim()).filter(Boolean);
   const last = segments.length > 0 ? segments[segments.length - 1] : '';
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(last) ? last : null;
+  return /^[A-Za-z_]\w*$/.test(last) ? last : null;
 }
 
 function newItems() {
@@ -1524,7 +1526,7 @@ function parseUseNode(masked, from, to, prefix, leadingColons, out, depth, capHi
 function readTrailingAlias(masked, i, to) {
   const k = skipWs(masked, i, to);
   const asId = readIdent(masked, k, to);
-  if (!asId || asId.name !== 'as') return null;
+  if (asId?.name !== 'as') return null;
   const aliasId = readIdent(masked, skipWs(masked, asId.end, to), to);
   return aliasId ? aliasId.name : null;
 }
@@ -1627,7 +1629,7 @@ function buildModuleTree(target, opts, ctx) {
     if (cur.segments.length > 0) {
       const parentId = moduleIdFor(target, cur.segments.slice(0, -1));
       const parent = modules.get(parentId);
-      if (parent) parent.children.set(cur.segments[cur.segments.length - 1], id);
+      if (parent) parent.children.set(cur.segments.at(-1), id);
     }
 
     const fc = getFile(fileAbs, ctx);
@@ -2037,14 +2039,14 @@ function sortedModules(tree) {
  * 17. Function graph
  * ------------------------------------------------------------------ */
 
-const MACRO_INVOCATION_RE = /\b([A-Za-z_][A-Za-z0-9_]*)\s*!\s*[([{]/g;
+const MACRO_INVOCATION_RE = /\b([A-Za-z_]\w*)\s*!\s*[([{]/g;
 const METHOD_CALL_RE =
-  /[A-Za-z0-9_)\]]\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
+  /[\w)\]]\s*\.\s*([A-Za-z_]\w*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
 // The lookbehind keeps this to a bare first segment. `std::fs::File::open(`
 // must not read as `File::open(` on a locally defined `File`: without type
 // information that is a guess, and a guess is how an invented edge happens.
 const TYPE_CALL_RE = /(?<![.:\w])([A-Za-z_][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
-const BARE_CALL_RE = /(?<![.:\w])([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
+const BARE_CALL_RE = /(?<![.:\w])([A-Za-z_]\w*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
 
 /** Argument groups of top-level macro invocations, which are skipped wholesale. */
 function macroInvocationRanges(masked, skip, ctx) {
@@ -2292,11 +2294,11 @@ function buildCallGraph(targets, trees, opts, ctx) {
           if (owner) toId = `${mod.id}::${owner}::${method}`;
         } else {
           const imported = importMap.get(typeName);
-          if (imported && imported.moduleId) {
+          if (imported?.moduleId) {
             toId = `${imported.moduleId}::${typeName}::${method}`;
           }
           const localTypes = index.typesByModule.get(mod.id);
-          if ((!toId || !nodes.has(toId)) && localTypes && localTypes.has(typeName)) {
+          if ((!toId || !nodes.has(toId)) && localTypes?.has(typeName)) {
             toId = `${mod.id}::${typeName}::${method}`;
           }
         }
@@ -2317,7 +2319,7 @@ function buildCallGraph(targets, trees, opts, ctx) {
         let toId = index.freeFns.get(`${mod.id}::${name}`) || null;
         if (!toId) {
           const imported = importMap.get(name);
-          if (imported && imported.moduleId) toId = `${imported.moduleId}::${imported.name}`;
+          if (imported?.moduleId) toId = `${imported.moduleId}::${imported.name}`;
         }
         if (!emit(from, toId, offset, 'call')) ctx.blindSpots.unresolvedBareCalls++;
       }
@@ -2417,7 +2419,7 @@ function tarjan(nodeIds, adjacency) {
     onStack.add(root);
 
     while (work.length > 0) {
-      const frame = work[work.length - 1];
+      const frame = work.at(-1);
       const list = neighbours.get(frame.node) || [];
       if (frame.edge < list.length) {
         const next = list[frame.edge];
@@ -2437,7 +2439,7 @@ function tarjan(nodeIds, adjacency) {
 
       work.pop();
       if (work.length > 0) {
-        const parent = work[work.length - 1].node;
+        const parent = work.at(-1).node;
         lowlink.set(parent, Math.min(lowlink.get(parent), lowlink.get(frame.node)));
       }
       if (lowlink.get(frame.node) === index.get(frame.node)) {
@@ -2870,7 +2872,7 @@ function computeExitCode(result, baselineInfo, opts) {
   if (result.ctx.diagnostics.some((d) => d.level === 'error')) return 3;
   if (opts.failOn === 'none') return 0;
 
-  const usingBaseline = baselineInfo && baselineInfo.used;
+  const usingBaseline = baselineInfo?.used;
   const gates = (cycle) => !usingBaseline || cycle.status === 'new';
 
   let gating = result.moduleCycles.filter(gates).length;
@@ -3050,8 +3052,8 @@ function buildGraphPayload(result) {
  */
 function checkGraphIntegrity(payload) {
   const problems = [];
-  const hasModules = Object.prototype.hasOwnProperty.call(payload, 'modules');
-  const hasFunctions = Object.prototype.hasOwnProperty.call(payload, 'functions');
+  const hasModules = Object.hasOwn(payload, 'modules');
+  const hasFunctions = Object.hasOwn(payload, 'functions');
   const moduleIdSet = hasModules ? new Set(payload.modules.map((m) => m.id)) : null;
   const functionIdSet = hasFunctions ? new Set(payload.functions.map((f) => f.id)) : null;
 
