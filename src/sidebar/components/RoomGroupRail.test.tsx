@@ -593,7 +593,7 @@ describe("RoomGroupRail", () => {
       });
 
       setProjects([]);
-      await waitFor(() => expect(workgroupGroupsStore.activeProjectPath()).toBe(null));
+      await waitFor(() => expect(workgroupGroupsStore.activeProjectPath()).toBeNull());
     } finally {
       rendered.cleanup();
     }
