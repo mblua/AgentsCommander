@@ -294,8 +294,8 @@ function workflowContract(workflow, warm) {
     "github.event.after != '0000000000000000000000000000000000000000')";
   const full = new Set(['rust-regression-linux', 'rust-release-parity-linux',
     'rust-regression-macos', 'issue-1850-release-macos', 'terminal-snapshot-portable',
-    'release-cli-smoke-windows', 'issue-1850-profile-windows', 'frontend-regression']);
-  const expectedJobs = ['ci-tier', 'test-debt', 'rust-regression-windows',
+    'release-cli-smoke-windows', 'issue-1850-profile-windows']);
+  const expectedJobs = ['ci-tier', 'test-debt', 'frontend-regression', 'rust-regression-windows',
     'rust-slow-test-windows', 'issue-1850-release-windows', 'clippy-linux', 'rust-fmt',
     'tml-adoption', ...full];
   assert.deepEqual([...parsed.keys()].sort(), expectedJobs.sort(), 'unknown/missing job layout');
