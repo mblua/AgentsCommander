@@ -303,6 +303,17 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     return isCatalogSelectionCurrent();
   };
 
+  const installState = (key: string) => {
+    if (installing().has(key)) return "installing";
+    if (installBlocked()) return "blocked";
+    return installReady() ? "idle" : "pending";
+  };
+
+  const confirmState = () => {
+    if (saving()) return "saving";
+    return canConfirm() ? "ready" : "disabled";
+  };
+
   const handleSelect = (key: string) => {
     if (key === selectedPreset()) {
       setSelectedPreset(null);
@@ -655,15 +666,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                           aria-disabled={installing().has(preset.key) || !installReady()}
                           data-ac-testid={`onboarding.agentPreset.${preset.key}.install`}
                           data-ac-role="button"
-                          data-ac-state={
-                            installing().has(preset.key)
-                              ? "installing"
-                              : installBlocked()
-                                ? "blocked"
-                                : installReady()
-                                  ? "idle"
-                                  : "pending"
-                          }
+                          data-ac-state={installState(preset.key)}
                           onClick={() => void runInstall(preset.key)}
                         >
                           {installing().has(preset.key) ? "Installing..." : "Install"}
@@ -774,7 +777,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                 onClick={handleConfirm}
                 data-ac-testid="onboarding.confirm"
                 data-ac-role="button"
-                data-ac-state={saving() ? "saving" : canConfirm() ? "ready" : "disabled"}
+                data-ac-state={confirmState()}
               >
                 {saving() ? "Setting up..." : "Set up Coding Agent"}
               </button>

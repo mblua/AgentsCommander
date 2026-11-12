@@ -466,8 +466,11 @@ const AgentPickerModal: Component<{
     preview.fallbackApplied
       ? `${profileLabel(preview.requestedProfile, agentId)} → ${profileLabel(preview.effectiveProfile, agentId)} (fallback)`
       : `${profileLabel(preview.requestedProfile, agentId)} direct`;
-  const comparisonStatusLabel = (status: string) =>
-    status === "direct" ? "direct" : status === "fallback" ? "fallback" : "missing";
+  const comparisonStatusLabel = (status: string) => {
+    if (status === "direct") return "direct";
+    if (status === "fallback") return "fallback";
+    return "missing";
+  };
   const comparisonRows = createMemo(() => {
     const current = settings();
     if (!current) return [];
@@ -478,11 +481,9 @@ const AgentPickerModal: Component<{
         composeEffectiveCommand(agent.command, profileCellCommandText(cell)),
         replicaRoot(),
       );
-      const status = command.trim().length === 0
-        ? "missing"
-        : preview.fallbackApplied
-        ? "fallback"
-        : "direct";
+      let status = "direct";
+      if (command.trim().length === 0) status = "missing";
+      else if (preview.fallbackApplied) status = "fallback";
       return {
         agent,
         index,
@@ -513,12 +514,15 @@ const AgentPickerModal: Component<{
   };
   const visibleAgentCount = createMemo(() => orderedAgents().filter(matchesFilter).length);
   // The filter status line under the agent list: the total, a no-match hint, or the match count.
-  const agentFilterStatusText = () =>
-    filterQuery() === ""
-      ? `${orderedAgents().length} agents`
-      : visibleAgentCount() === 0
-      ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${orderedAgents().length}.`
-      : `${visibleAgentCount()} of ${orderedAgents().length} agents match "${agentFilter().trim()}".`;
+  const agentFilterStatusText = () => {
+    if (filterQuery() === "") return `${orderedAgents().length} agents`;
+    if (visibleAgentCount() === 0) {
+      return `No coding agent matches "${agentFilter().trim()}". ` +
+        `Clear the filter to see all ${orderedAgents().length}.`;
+    }
+    const all = orderedAgents().length;
+    return `${visibleAgentCount()} of ${all} agents match "${agentFilter().trim()}".`;
+  };
   const comparisonSummary = createMemo(() => ({
     direct: comparisonRows().filter((row) => row.status === "direct").length,
     fallback: comparisonRows().filter((row) => row.status === "fallback").length,
@@ -917,10 +921,9 @@ const AgentPickerModal: Component<{
     }
     const count = scopePreview()?.targetCount ?? 0;
     const wg = props.scopeContext?.workgroupName;
-    const base =
-      scope === "kind"
-        ? `Overwrite ${count} of this kind`
-        : `Overwrite ${count}${wg ? ` in ${wg}` : " in this room"}`;
+    let base: string;
+    if (scope === "kind") base = `Overwrite ${count} of this kind`;
+    else base = `Overwrite ${count}${wg ? ` in ${wg}` : " in this room"}`;
     // The label states the policy: never a silent upgrade to lock or downgrade.
     return withLock ? `${base} + lock` : base;
   });
@@ -1696,6 +1699,11 @@ const AgentPickerModal: Component<{
                       if (!current || !agent) return letter === "A" ? "match" : "fallback";
                       return profileBadgeKind(current.codingAgentProfiles, agent.id, letter);
                     };
+                    const cardState = () => {
+                      if (selected()) return "active";
+                      if (!configured()) return "missing";
+                      return configuredDefault() === letter ? "default" : "available";
+                    };
                     return (
                       <button
                         type="button"
@@ -1714,13 +1722,7 @@ const AgentPickerModal: Component<{
                         {...automationAttrs(
                           `agentPicker.profile.${letter}`,
                           "button",
-                          selected()
-                            ? "active"
-                            : !configured()
-                            ? "missing"
-                            : configuredDefault() === letter
-                            ? "default"
-                            : "available"
+                          cardState()
                         )}
                       >
                         <span class="agent-profile-card-head">
