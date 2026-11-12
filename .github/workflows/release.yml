@@ -991,7 +991,8 @@ jobs:
           ' < "$tag_bytes" > "$tag_payload"
           cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
           file_sha256() {
-            perl -MDigest::SHA -e 'print Digest::SHA->new(256)->addfile($ARGV[0], "b")->hexdigest' -- "$1"
+            local file_path="$1"
+            perl -MDigest::SHA -e 'print Digest::SHA->new(256)->addfile($ARGV[0], "b")->hexdigest' -- "$file_path"
           }
           test "$(file_sha256 "$RELEASE_DIR/release-authority-v1.txt")" = "$EXPECTED_AUTHORITY_SHA256"
           test "$(file_sha256 "$tag_payload")" = "$EXPECTED_AUTHORITY_SHA256"
@@ -1176,7 +1177,8 @@ jobs:
         run: |
           set -euo pipefail
           ledger_asset() {
-            node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$1" <<'NODE'
+            local kind="$1"
+            node - "$RELEASE_DIR/candidate-assets.v1.json" "$PRODUCER" "$kind" <<'NODE'
             const assert = require('node:assert/strict');
             const fs = require('node:fs');
             const [ledgerPath, producer, kind] = process.argv.slice(2);
