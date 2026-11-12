@@ -129,17 +129,17 @@ fn bench_adversarial_parser_memory_stays_bounded() {
     };
 
     // (label, bytes, expect_ok)
-    let mut cases: Vec<(&str, String, bool)> = Vec::new();
-
-    // Valid near-cap manifest at the row cap with padded paths.
-    cases.push(("valid-near-cap", valid_near_cap_manifest(target), true));
-    // Adversarial invalid shapes: all must return a typed error, never abort.
-    cases.push(("many-tiny-tables", many_tiny_tables(target), false));
-    cases.push(("huge-escaped-string", huge_escaped_string(target), false));
-    cases.push(("deep-array", deep_array(target), false));
-    cases.push(("duplicate-headers", duplicate_headers(target), false));
-    cases.push(("early-syntax-error", early_syntax_error(target), false));
-    cases.push(("late-syntax-error", late_syntax_error(target), false));
+    let cases: Vec<(&str, String, bool)> = vec![
+        // Valid near-cap manifest at the row cap with padded paths.
+        ("valid-near-cap", valid_near_cap_manifest(target), true),
+        // Adversarial invalid shapes: all must return a typed error, never abort.
+        ("many-tiny-tables", many_tiny_tables(target), false),
+        ("huge-escaped-string", huge_escaped_string(target), false),
+        ("deep-array", deep_array(target), false),
+        ("duplicate-headers", duplicate_headers(target), false),
+        ("early-syntax-error", early_syntax_error(target), false),
+        ("late-syntax-error", late_syntax_error(target), false),
+    ];
 
     for (label, bytes, expect_ok) in cases {
         let input_len = bytes.len();
