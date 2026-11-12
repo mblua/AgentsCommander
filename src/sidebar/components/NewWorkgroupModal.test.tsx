@@ -132,6 +132,11 @@ describe("New Room focused button Enter (#2809)", () => {
     });
   });
 
+  it("the overlay is role=presentation (S6848)", () => {
+    mount(["Alpha"]);
+    expect(document.querySelector(".modal-overlay")?.getAttribute("role")).toBe("presentation");
+  });
+
   it("disabled Cancel stays inert during pending creation", async () => {
     const { fake, onClose } = mount(["Alpha"]);
     let resolve!: () => void;

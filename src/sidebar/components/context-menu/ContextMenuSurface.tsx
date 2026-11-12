@@ -242,6 +242,7 @@ const ContextMenuSurface: Component<ContextMenuSurfaceProps> = (props) => {
       <Portal>
         <div
           class="session-context-menu"
+          role="presentation"
           ref={menuEl}
           style={{ left: `${pos().x}px`, top: `${pos().y}px` }}
           onClick={(e) => e.stopPropagation()}

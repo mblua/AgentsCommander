@@ -351,6 +351,7 @@ const AcDiscoveryPanel: Component = () => {
         <Portal>
           <div
             class="session-context-menu"
+            role="presentation"
             style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -422,8 +423,12 @@ const AcDiscoveryPanel: Component = () => {
       {/* Context files panel */}
       {ctxFilesReplica() && (
         <Portal>
-          <div class="ctx-files-overlay" onClick={closeContextFilesPanel}>
-            <div class="ctx-files-panel" onClick={(e) => e.stopPropagation()}>
+          <div class="ctx-files-overlay" role="presentation" onClick={closeContextFilesPanel}>
+            <div
+              class="ctx-files-panel"
+              role="presentation"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div class="ctx-files-header">
                 <span class="ctx-files-title">
                   Context Files — {ctxFilesReplica()!.name}

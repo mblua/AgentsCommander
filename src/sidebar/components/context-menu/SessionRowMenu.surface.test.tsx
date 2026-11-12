@@ -271,6 +271,12 @@ describe("#1871 SessionRowMenu surface mechanics", () => {
     expect(q("rootAgent.menu")).toBeNull();
   });
 
+  it("the open menu surface is role=presentation (S6848)", async () => {
+    mountHost();
+    await openMenu();
+    expect(q("rootAgent.menu")?.getAttribute("role")).toBe("presentation");
+  });
+
   // 3.
   it("unmounting while open removes all three listeners, and they are proved present first", async () => {
     const h = mountHost();

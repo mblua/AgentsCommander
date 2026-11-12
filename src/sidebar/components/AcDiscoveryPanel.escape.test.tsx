@@ -69,6 +69,16 @@ describe("AcDiscoveryPanel context files overlay keyboard (#2660)", () => {
     }
   });
 
+  it("context menu, files overlay and panel are role=presentation (S6848)", async () => {
+    await waitFor(() => expect(rendered.root.querySelector(".replica-item")).not.toBeNull());
+    contextMenu(rendered.root.querySelector(".replica-item")!);
+    const menu = document.body.querySelector(".session-context-menu");
+    expect(menu?.getAttribute("role")).toBe("presentation");
+    await openPanel();
+    expect(overlay()?.getAttribute("role")).toBe("presentation");
+    expect(panel().getAttribute("role")).toBe("presentation");
+  });
+
   it("removes the Escape listener once the panel is closed", async () => {
     await openPanel();
     const removeSpy = vi.spyOn(document, "removeEventListener");

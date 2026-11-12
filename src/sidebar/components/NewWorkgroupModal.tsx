@@ -130,7 +130,7 @@ const NewWorkgroupModal: Component<{
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" role="presentation" onKeyDown={handleKeyDown}>
       <div class="agent-modal new-room-modal" data-ac-testid="newRoom.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Room</span>
