@@ -4,7 +4,6 @@ import {
   measurePtyViewport,
   rememberSpawnViewport,
   resetUiTerminalControllerForTests,
-  type UiTerminalOperation,
 } from "./terminal-viewport";
 import type {
   ListenOptions,
@@ -156,7 +155,7 @@ import type {
 import { createPreflightTestAPI } from "./preflightTestApi";
 import { decodeSessionSelection } from "./session-selection";
 
-export type { UiTerminalOperation };
+export type { UiTerminalOperation } from "./terminal-viewport";
 
 export interface SessionRepoInput {
   label: string;
