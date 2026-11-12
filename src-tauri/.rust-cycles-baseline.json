@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "0d2876114eb2b6a2",
+      "id": "4bfba7ff2d7edccb",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -25,7 +25,6 @@
         "agentscommander_lib::api::message_store",
         "agentscommander_lib::api::message_store::locks",
         "agentscommander_lib::api::message_store::rows",
-        "agentscommander_lib::api::message_store::types",
         "agentscommander_lib::app_state",
         "agentscommander_lib::cli::terminal_snapshot",
         "agentscommander_lib::co_managed",
@@ -104,7 +103,6 @@
         "agentscommander_lib::commands::wg_delete_diagnostic",
         "agentscommander_lib::commands::wg_delete_diagnostic::cwd",
         "agentscommander_lib::commands::wg_delete_diagnostic::restart_manager",
-        "agentscommander_lib::config::activity_log",
         "agentscommander_lib::config::agency_cache",
         "agentscommander_lib::config::agent_command",
         "agentscommander_lib::config::agent_command::instructions",
@@ -214,7 +212,6 @@
         "agentscommander_lib::config::settings::owner::lease",
         "agentscommander_lib::config::settings::project_path",
         "agentscommander_lib::config::settings::project_path::migration",
-        "agentscommander_lib::config::settings::project_path::resolution",
         "agentscommander_lib::config::settings::project_path::transaction",
         "agentscommander_lib::config::settings::save",
         "agentscommander_lib::config::settings::save::disk",
@@ -260,7 +257,6 @@
         "agentscommander_lib::pty::container_backend::start_request",
         "agentscommander_lib::pty::container_tokens",
         "agentscommander_lib::pty::git_watcher",
-        "agentscommander_lib::pty::idle_detector",
         "agentscommander_lib::pty::inject",
         "agentscommander_lib::pty::inject::host",
         "agentscommander_lib::pty::input_route",
@@ -274,7 +270,6 @@
         "agentscommander_lib::pty::output",
         "agentscommander_lib::pty::output::attachments",
         "agentscommander_lib::pty::output::capture",
-        "agentscommander_lib::pty::output::markers",
         "agentscommander_lib::pty::remote_watcher",
         "agentscommander_lib::pty::remote_watcher::ci_parse",
         "agentscommander_lib::pty::remote_watcher::outcome",
