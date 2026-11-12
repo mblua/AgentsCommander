@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "152f0ecb8713fbcd",
+      "id": "751078ae37ba8ab2",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -281,7 +281,6 @@
         "agentscommander_lib::pty::terminal_snapshot::audit",
         "agentscommander_lib::pty::terminal_snapshot::authority",
         "agentscommander_lib::pty::terminal_snapshot::finalization",
-        "agentscommander_lib::pty::terminal_snapshot::limiter",
         "agentscommander_lib::pty::watchers",
         "agentscommander_lib::pty::watchers::evaluation",
         "agentscommander_lib::pty::watchers::frame",
