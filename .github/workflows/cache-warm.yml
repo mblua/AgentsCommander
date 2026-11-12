@@ -98,7 +98,8 @@ jobs:
 
       - name: Assert Rust 1.98.1
         shell: bash
-        run: test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
+        run: |
+          test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
 
       - name: Record toolchain identity
         run: rustc -vV
