@@ -33,7 +33,7 @@ const dom = new JSDOM(html, {
 const documentText = () => dom.window.document.body.textContent ?? '';
 const cssBlockFor = (selector) => {
   const blockPattern = new RegExp(
-    String.raw`${selector.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}\s*\{(?<body>[^}]*)\}`);
+    String.raw`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\s*\{(?<body>[^}]*)\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
 const cssBlockForInMedia = (mediaQuery, selector) => {
