@@ -234,3 +234,7 @@ pub struct ResourceLaunchMetadata {
     /// #566 - project folder name derived from the spawn cwd, or `None`.
     pub project: Option<String>,
 }
+#[cfg(test)]
+pub(crate) use tests::observed_tree_for_test;
+#[cfg(test)]
+mod tests;

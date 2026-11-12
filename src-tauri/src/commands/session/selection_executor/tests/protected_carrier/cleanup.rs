@@ -85,24 +85,11 @@ impl ProcessTreeBackend for Backend {
     }
     fn observe_tree(&self, _: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError> {
         self.samples.fetch_add(1, Ordering::SeqCst);
-        Ok(ObservedProcessTree {
-            processes: if self.alive.load(Ordering::SeqCst) {
-                vec![ObservedProcess {
-                    identity: self.root,
-                    parent_pid: None,
-                    parent_identity: None,
-                    exe_name: "response-fake".into(),
-                    depth: 0,
-                    private_bytes: None,
-                    working_set_bytes: None,
-                    cpu_percent: None,
-                    kill_allowed: true,
-                }]
-            } else {
-                Vec::new()
-            },
-            errors: Vec::new(),
-        })
+        Ok(crate::resource_monitor::types::observed_tree_for_test(
+            self.root,
+            self.alive.load(Ordering::SeqCst),
+            "response-fake",
+        ))
     }
     fn terminate_verified(&self, _: &ObservedProcess) -> Result<TerminateOutcome, ResourceError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
