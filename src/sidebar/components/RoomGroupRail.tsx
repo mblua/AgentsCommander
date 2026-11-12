@@ -42,7 +42,9 @@ interface RailObservation {
 }
 
 function selectionKind(selection: WorkgroupGroupSelection): NonNullable<RailFields["kind"]> {
-  return selection.kind === "group" ? "custom" : selection.kind === "all" ? "system" : selection.kind;
+  if (selection.kind === "group") return "custom";
+  if (selection.kind === "all") return "system";
+  return selection.kind;
 }
 
 function sameSelection(a: RailFields, b: RailFields): boolean {
@@ -110,7 +112,7 @@ function tooltipFor(folderName: string, rooms: AcWorkgroup[]): string {
     }
     if (roomCiRunning(room)) entries.push({ room, replica: null });
   }
-  const rows = entries
+  const rows = [...entries]
     .sort((a, b) => {
       const roomDelta = roomNumber(a.room.name) - roomNumber(b.room.name);
       if (roomDelta !== 0) return roomDelta;
@@ -625,7 +627,7 @@ const ProjectRailSection: Component<{
 
   const movePress = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId) return;
+    if (current?.pointerId !== event.pointerId) return;
 
     if (current.phase === "arming") {
       const dx = event.clientX - current.startX;
@@ -642,7 +644,7 @@ const ProjectRailSection: Component<{
 
   const finishPress = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId) return;
+    if (current?.pointerId !== event.pointerId) return;
 
     if (current.phase === "arming") {
       cancelReorder(false);
@@ -673,7 +675,7 @@ const ProjectRailSection: Component<{
 
   const cancelPress = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId || current.phase === "saving") return;
+    if (current?.pointerId !== event.pointerId || current.phase === "saving") return;
     cancelReorder(current.phase !== "arming");
   };
 
@@ -685,7 +687,7 @@ const ProjectRailSection: Component<{
 
   const onWindowPointerUp = (event: PointerEvent) => {
     const current = reorderState();
-    if (!current || current.pointerId !== event.pointerId) return;
+    if (current?.pointerId !== event.pointerId) return;
     finishPress(event);
   };
 

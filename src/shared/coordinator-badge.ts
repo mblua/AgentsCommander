@@ -21,7 +21,8 @@ export function coordinatorIdleBadge(
   const minutes = Math.max(0, Math.floor((nowMs - then) / 60_000));
   const yellow = settings?.coordinatorIdleBadgeYellowMinutes ?? 30;
   const red = settings?.coordinatorIdleBadgeRedMinutes ?? 60;
-  const level: CoordinatorIdleLevel =
-    minutes >= red ? "stale" : minutes >= yellow ? "warn" : "ok";
+  let level: CoordinatorIdleLevel = "ok";
+  if (minutes >= red) level = "stale";
+  else if (minutes >= yellow) level = "warn";
   return { label: `${minutes}m`, level };
 }

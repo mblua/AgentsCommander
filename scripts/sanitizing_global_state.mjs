@@ -93,8 +93,8 @@ function readonlyRegex(scan, item, type, init) {
   const ts = scan.tokens;
   if (ts.filter(t => t.start >= item.start &&
     t.index < item.first).some(t => t.name === 'pub')) return false;
-  const fn = scan.items.filter(i => i.kind === 'fn' && i.bodyStart < item.start &&
-    i.end > item.end).at(-1);
+  const fn = scan.items.findLast(i => i.kind === 'fn' && i.bodyStart < item.start &&
+    i.end > item.end);
   if (!fn) return false;
   const refs = ts.filter(t => t.start > fn.bodyStart && t.start < fn.end && t.name === item.name &&
     !(t.index >= item.first && t.index <= item.last));

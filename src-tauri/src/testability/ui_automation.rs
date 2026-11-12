@@ -35,8 +35,8 @@ pub use cli_run::{
     resolve_enabled_from_cli_or_env,
 };
 use cli_run::{
-    expired_response_for_request, is_backend_automation_window, preflight_error, print_stdout_json,
-    request_expired, run_cli_request,
+    expired_response_for_request, is_backend_automation_window, is_wait_retryable_error,
+    preflight_error, print_stdout_json, request_expired, run_cli_request, wait_timeout_error,
 };
 #[cfg(test)]
 use files::read_session_file_with_retry;
@@ -865,12 +865,17 @@ pub fn execute_backend(args: UiBackendArgs) -> i32 {
 pub fn execute_wait(args: UiWaitArgs) -> i32 {
     let deadline = Instant::now() + Duration::from_millis(args.timeout_ms);
     let mut last_response: Option<UiAutomationResponse> = None;
+    let mut last_error: Option<Value> = None;
 
     loop {
         let remaining_ms = deadline
             .checked_duration_since(Instant::now())
             .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64);
         if remaining_ms == 0 {
+            if let Some(error) = last_error.take() {
+                print_stdout_json(&wait_timeout_error(error, args.timeout_ms));
+                return 1;
+            }
             let timeout = last_response.unwrap_or_else(|| {
                 UiAutomationResponse::minimal_error(
                     &Uuid::new_v4().to_string(),
@@ -907,6 +912,10 @@ pub fn execute_wait(args: UiWaitArgs) -> i32 {
             }
             Ok(response) => {
                 last_response = Some(response);
+                last_error = None;
+            }
+            Err(error) if is_wait_retryable_error(&error) => {
+                last_error = Some(error);
             }
             Err(error) => {
                 print_stdout_json(&error);

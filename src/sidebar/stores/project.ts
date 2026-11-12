@@ -3,11 +3,8 @@ import { emitRailDiagnostic, railToken, railEntity, reconcileRailProjects, type 
 import type {
   TaskSnapshot,
   AcWorkgroup,
-  AcAgentMatrix,
   AcDiscoveryResult,
-  AcTeam,
   AcLoopSummary,
-  ContextTemplateUpdate,
   ProjectArchiveChanged,
   ProjectPathConflictIssue,
   ProjectPathIssue,
@@ -128,7 +125,12 @@ async function refreshTaskSnapshotAttempt(path: string, aggregate?: SnapshotAggr
     if (operation) endOperation(operation, "snapshot-end", outcome, outcome === "applied" ? 1 : 0);
     if (aggregate) {
       if (outcome === "applied") aggregate.changedCount++;
-      const rank = (value: string) => value === "error" ? 3 : value === "stale" ? 2 : value === "applied" ? 1 : 0;
+      const rank = (value: string) => {
+        if (value === "error") return 3;
+        if (value === "stale") return 2;
+        if (value === "applied") return 1;
+        return 0;
+      };
       if (rank(outcome) > rank(aggregate.outcome)) aggregate.outcome = outcome;
     }
   }
@@ -429,7 +431,7 @@ function escapeControlAndBidi(text: string): string {
       (cp >= 0x202a && cp <= 0x202e) ||
       (cp >= 0x2066 && cp <= 0x2069);
     out += escape
-      ? `\\u{${cp.toString(16).toUpperCase().padStart(4, "0")}}`
+      ? String.raw`\u{${cp.toString(16).toUpperCase().padStart(4, "0")}}`
       : ch;
   }
   return out;
@@ -727,7 +729,8 @@ export const projectStore = {
                 refreshTaskSnapshots();
               }
             });
-            outcome = !loaded ? "unloaded" : previous === projects() ? "unchanged" : "applied";
+            if (!loaded) outcome = "unloaded";
+            else outcome = previous === projects() ? "unchanged" : "applied";
             reloadOutcome = outcome;
           } catch (e) {
             reloadOutcome = "error";

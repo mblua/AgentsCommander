@@ -17,7 +17,7 @@ function normalizeAgentConfigSeed(agent: AgentConfig): AgentConfig {
 }
 
 function normalizeAgentContextRegex(agent: AgentConfig): AgentConfig {
-  if (agent.contextRegex && agent.contextRegex.trim()) return agent; // kept BYTE-FOR-BYTE
+  if (agent.contextRegex?.trim()) return agent; // kept BYTE-FOR-BYTE
   const { contextRegex: _drop, ...rest } = agent;
   return rest;
 }

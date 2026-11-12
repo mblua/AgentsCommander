@@ -473,3 +473,36 @@ fn issue_3355_automation_ports_preserve_native_results() {
     dirs::remove_ui_automation_directory(&resolved).unwrap();
     assert!(!directory.exists());
 }
+
+#[test]
+fn wait_retryable_errors_are_only_startup_preflight_errors() {
+    assert!(is_wait_retryable_error(&preflight_error(
+        "automation_not_enabled",
+        "not enabled",
+        None
+    )));
+    assert!(is_wait_retryable_error(&preflight_error(
+        "automation_session_missing",
+        "missing",
+        None
+    )));
+    for code in [
+        "automation_filesystem_error",
+        "automation_session_stale",
+        "window_unavailable",
+    ] {
+        assert!(!is_wait_retryable_error(&preflight_error(code, "x", None)));
+    }
+    assert!(!is_wait_retryable_error(&json!({})));
+}
+
+#[test]
+fn wait_timeout_error_keeps_diagnostic_and_adds_timeout_fields() {
+    let error = preflight_error("automation_not_enabled", "not enabled", None);
+    let timed_out = wait_timeout_error(error, 1234);
+    assert_eq!(timed_out["ok"], false);
+    assert_eq!(timed_out["error"], "automation_not_enabled");
+    assert_eq!(timed_out["message"], "not enabled");
+    assert_eq!(timed_out["timeoutMs"], 1234);
+    assert_eq!(timed_out["phase"], "wait_startup_timeout");
+}

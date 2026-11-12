@@ -27,5 +27,5 @@ export function entityShortLabel(name: string): string | null {
 
 /** Case-sensitive: does this path contain a Room or legacy Workgroup directory segment? */
 export function pathHasEntityDirSegment(path: string): boolean {
-  return /[\/\\](?:room|wg)-/.test(path);
+  return /[/\\](?:room|wg)-/.test(path);
 }

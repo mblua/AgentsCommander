@@ -111,8 +111,10 @@ const AgentUpdateOverlay: Component = () => {
   const anyUnfinished = createMemo(() => nodeViews().some((view) => !view.terminal));
   const title = () =>
     state.summary === "shown" ? "Coding agent updates complete" : "Updating coding agents...";
-  const overlayState = () =>
-    state.prompt ? "prompt" : state.summary === "shown" ? "summary" : "pass";
+  const overlayState = () => {
+    if (state.prompt) return "prompt";
+    return state.summary === "shown" ? "summary" : "pass";
+  };
 
   const answer = async (enabled: boolean) => {
     const prompt = state.prompt;

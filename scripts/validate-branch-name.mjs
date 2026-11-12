@@ -44,7 +44,7 @@ function die(msg) {
 
 function printable(s) {
   return String(s).replace(/[\u0000-\u001f\u007f]/g, (c) =>
-    String.raw`\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+    String.raw`\x${c.codePointAt(0).toString(16).padStart(2, '0')}`);
 }
 
 function git(args) {
@@ -138,23 +138,21 @@ async function verifyIssueOpen(issue) {
     `Issue #${issue} is ${printable(data.state)}. Branch must reference an OPEN issue.`);
 }
 
-void (async () => {
-  try {
-    const args   = parseArgs(process.argv.slice(2));
-    try { resolveGit(); } catch (e) { die(printable(e.message)); }
-    const branch = args.branch || resolveBranch();
+try {
+  const args   = parseArgs(process.argv.slice(2));
+  try { resolveGit(); } catch (e) { die(printable(e.message)); }
+  const branch = args.branch || resolveBranch();
 
-    if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0);
-      }
-    if (isGrandfathered(branch)) { console.log(
-      `[branch-name] grandfathered (cut before enforcement): ${branch}`); process.exit(0); }
+  if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0);
+    }
+  if (isGrandfathered(branch)) { console.log(
+    `[branch-name] grandfathered (cut before enforcement): ${branch}`); process.exit(0); }
 
-    const { issue } = validateFormat(branch);
-    if (args.checkIssue) await verifyIssueOpen(issue);
+  const { issue } = validateFormat(branch);
+  if (args.checkIssue) await verifyIssueOpen(issue);
 
-    console.log(`[branch-name] OK: ${branch}`);
-    process.exit(0);
-  } catch (err) {
-    die(`Unexpected error: ${printable(err?.message || err)}`);
-  }
-})();
+  console.log(`[branch-name] OK: ${branch}`);
+  process.exit(0);
+} catch (err) {
+  die(`Unexpected error: ${printable(err?.message || err)}`);
+}

@@ -7,88 +7,41 @@ import {
 } from './path-extractors';
 
 describe('path-extractors', () => {
-  it('empty_input_returns_all_null', () => {
-    const w = '';
-    expect(extractProjectName(w)).toBeNull();
-    expect(extractWorkgroupName(w)).toBeNull();
-    expect(extractAgentName(w)).toBeNull();
-  });
-
-  it('path_without_ac_root_returns_all_null', () => {
-    const w = 'C:\\foo\\bar';
-    expect(extractProjectName(w)).toBeNull();
-    expect(extractWorkgroupName(w)).toBeNull();
-    expect(extractAgentName(w)).toBeNull();
-  });
-
-  it('ac_only_returns_project_only', () => {
-    const w = 'C:\\foo\\.ac';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBeNull();
-    expect(extractAgentName(w)).toBeNull();
-  });
-
-  it('agent_in_wg_returns_all_three', () => {
-    const w = 'C:\\foo\\.ac\\wg-19-dev-team\\__agent_tech-lead';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBe('WG-19-DEV-TEAM');
-    expect(extractAgentName(w)).toBe('tech-lead');
-  });
-
-  it('repo_in_wg_returns_project_and_wg_no_agent', () => {
-    const w = 'C:\\foo\\.ac\\wg-19-dev-team\\repo-X';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBe('WG-19-DEV-TEAM');
-    expect(extractAgentName(w)).toBeNull();
-  });
-
-  it('bare_underscore_agent_returns_no_agent', () => {
-    const w = 'C:\\foo\\.ac\\wg-1\\__agent_';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBe('WG-1');
-    expect(extractAgentName(w)).toBeNull();
-  });
-
-  it('nested_ac_root_uses_innermost', () => {
-    const w = 'C:\\proj\\.ac\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice';
-    expect(extractProjectName(w)).toBe('repo-AC');
-    expect(extractWorkgroupName(w)).toBe('WG-2-INNER');
-    expect(extractAgentName(w)).toBe('alice');
-  });
-
-  it('unc_prefix_handled', () => {
-    const w = '\\\\?\\C:\\proj\\.ac\\wg-1\\__agent_x';
-    expect(extractProjectName(w)).toBe('proj');
-    expect(extractWorkgroupName(w)).toBe('WG-1');
-    expect(extractAgentName(w)).toBe('x');
-  });
-
-  it('trailing_slash_handled', () => {
-    const w = 'C:\\foo\\.ac\\wg-1\\__agent_x\\';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBe('WG-1');
-    expect(extractAgentName(w)).toBe('x');
-  });
-
-  it('lax_wg_segment_rejected_no_digits', () => {
-    const w = 'C:\\foo\\.ac\\wg-foo\\__agent_x';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBeNull();
-    expect(extractAgentName(w)).toBe('x');
-  });
-
-  it('lax_wg_segment_rejected_bare_dash', () => {
-    const w = 'C:\\foo\\.ac\\wg-\\__agent_x';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBeNull();
-    expect(extractAgentName(w)).toBe('x');
-  });
-
-  it('forward_slashes_handled', () => {
-    const w = '/foo/.ac/wg-1/__agent_x';
-    expect(extractProjectName(w)).toBe('foo');
-    expect(extractWorkgroupName(w)).toBe('WG-1');
-    expect(extractAgentName(w)).toBe('x');
+  it.each([
+    ['empty_input_returns_all_null', '', null, null, null],
+    ['path_without_ac_root_returns_all_null', 'C:\\foo\\bar', null, null, null],
+    ['ac_only_returns_project_only', 'C:\\foo\\.ac', 'foo', null, null],
+    [
+      'agent_in_wg_returns_all_three',
+      'C:\\foo\\.ac\\wg-19-dev-team\\__agent_tech-lead',
+      'foo',
+      'WG-19-DEV-TEAM',
+      'tech-lead',
+    ],
+    [
+      'repo_in_wg_returns_project_and_wg_no_agent',
+      'C:\\foo\\.ac\\wg-19-dev-team\\repo-X',
+      'foo',
+      'WG-19-DEV-TEAM',
+      null,
+    ],
+    ['bare_underscore_agent_returns_no_agent', 'C:\\foo\\.ac\\wg-1\\__agent_', 'foo', 'WG-1', null],
+    [
+      'nested_ac_root_uses_innermost',
+      'C:\\proj\\.ac\\wg-1-outer\\repo-AC\\.ac\\wg-2-inner\\__agent_alice',
+      'repo-AC',
+      'WG-2-INNER',
+      'alice',
+    ],
+    ['unc_prefix_handled', '\\\\?\\C:\\proj\\.ac\\wg-1\\__agent_x', 'proj', 'WG-1', 'x'],
+    ['trailing_slash_handled', 'C:\\foo\\.ac\\wg-1\\__agent_x\\', 'foo', 'WG-1', 'x'],
+    ['lax_wg_segment_rejected_no_digits', 'C:\\foo\\.ac\\wg-foo\\__agent_x', 'foo', null, 'x'],
+    ['lax_wg_segment_rejected_bare_dash', 'C:\\foo\\.ac\\wg-\\__agent_x', 'foo', null, 'x'],
+    ['forward_slashes_handled', '/foo/.ac/wg-1/__agent_x', 'foo', 'WG-1', 'x'],
+  ])('%s', (_name, w, project, workgroup, agent) => {
+    expect(extractProjectName(w)).toBe(project);
+    expect(extractWorkgroupName(w)).toBe(workgroup);
+    expect(extractAgentName(w)).toBe(agent);
   });
 });
 

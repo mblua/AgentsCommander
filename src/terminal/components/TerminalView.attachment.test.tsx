@@ -3037,7 +3037,7 @@ describe("TerminalView attachment (#1363)", () => {
       await waitFor(() => expect(terminal.scrollToBottomCalls).toBe(1));
       expect(terminal.buffer.active.viewportY).toBe(96);
       expect(terminal.buffer.active.baseY).toBe(96);
-      expect(terminal.buffer.active.length).toBe(120);
+      expect(terminal.buffer.active).toHaveLength(120);
 
       const settled = debug.mock.calls
         .map((call: unknown[]) => String(call[0]))

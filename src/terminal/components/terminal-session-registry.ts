@@ -202,9 +202,9 @@ export function createTerminalSessionRegistry(
       const container = document.createElement("div");
       container.className = "terminal-instance";
       container.dataset.sessionId = sessionId;
-      container.setAttribute("data-ac-testid", `terminal.session.${sessionId}`);
-      container.setAttribute("data-ac-role", "surface");
-      container.setAttribute("data-ac-session-id", sessionId);
+      container.dataset.acTestid = `terminal.session.${sessionId}`;
+      container.dataset.acRole = "surface";
+      container.dataset.acSessionId = sessionId;
       container.hidden = true;
       options.host().appendChild(container);
 

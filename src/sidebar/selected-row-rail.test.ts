@@ -96,39 +96,29 @@ describe("railWidthToCss", () => {
 });
 
 describe("applySelectedRowRail", () => {
-  it("publishes both properties when both values are valid", () => {
+  it.each([
+    ["publishes both properties when both values are valid", "9px", "#00ff5f", "9px", "#00ff5f"],
+    ["publishes a bare number as a length", "12", "#00ff5f", "12px", "#00ff5f"],
+    [
+      "leaves the width absent and the colour present when only the width is invalid",
+      "abc",
+      "#00ff5f",
+      "",
+      "#00ff5f",
+    ],
+    [
+      "leaves the colour absent and the width present when only the colour is invalid",
+      "9px",
+      "nope",
+      "9px",
+      "",
+    ],
+    ["leaves both absent when both values are invalid", "abc", "nope", "", ""],
+  ])("%s", (_name, width, color, expectedWidth, expectedColor) => {
     const el = freshElement();
-    applySelectedRowRail(el, "9px", "#00ff5f");
-    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("9px");
-    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("#00ff5f");
-  });
-
-  it("publishes a bare number as a length", () => {
-    const el = freshElement();
-    applySelectedRowRail(el, "12", "#00ff5f");
-    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("12px");
-    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("#00ff5f");
-  });
-
-  it("leaves the width absent and the colour present when only the width is invalid", () => {
-    const el = freshElement();
-    applySelectedRowRail(el, "abc", "#00ff5f");
-    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("");
-    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("#00ff5f");
-  });
-
-  it("leaves the colour absent and the width present when only the colour is invalid", () => {
-    const el = freshElement();
-    applySelectedRowRail(el, "9px", "nope");
-    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("9px");
-    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("");
-  });
-
-  it("leaves both absent when both values are invalid", () => {
-    const el = freshElement();
-    applySelectedRowRail(el, "abc", "nope");
-    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("");
-    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("");
+    applySelectedRowRail(el, width, color);
+    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe(expectedWidth);
+    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe(expectedColor);
   });
 });
 

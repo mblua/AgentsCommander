@@ -90,7 +90,7 @@ function collectFailures(report, root) {
     let failedHere = 0;
 
     for (const assertion of assertions) {
-      if (!assertion || assertion.status !== 'failed') continue;
+      if (assertion?.status !== 'failed') continue;
       failedHere += 1;
       tests.push({
         file,
@@ -136,7 +136,8 @@ function annotate(entry) {
 // writes. Defense in depth: the sentinel escaping above is what makes it safe.
 function summarize(label, entries) {
   const more = entries.length > 1 ? ` and ${entries.length - 1} more` : '';
-  return `::notice::${escapeData(`${entries.length} failing ${label}: ${entries[0].name}${more}`)}`;
+  const text = `${entries.length} failing ${label}: ${entries[0].name}${more}`;
+  return `::notice::${escapeData(text)}`;
 }
 
 function note(message) {

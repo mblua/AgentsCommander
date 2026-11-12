@@ -33,7 +33,7 @@ function arcCount(bytes) {
   for (const line of lines) {
     const pair = line.split(' -> ');
     const invalid = (id) => !id || /\s/u.test(id)
-      || id.includes(String.fromCharCode(0));
+      || id.includes(String.fromCodePoint(0));
     if (pair.length !== 2 || pair.some(invalid)) {
       throw new GateError('projection has an invalid arc');
     }
