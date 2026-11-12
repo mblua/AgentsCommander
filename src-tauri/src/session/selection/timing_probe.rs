@@ -20,7 +20,7 @@ pub(crate) struct SelectionTimingSample {
 
 pub(crate) type SelectionTimingSink = Arc<dyn Fn(&SelectionTimingSample, &str) + Send + Sync>;
 
-static SELECTION_TIMING_SINKS: Mutex<Vec<(u64, &'static str, SelectionTimingSink)>> =
+static SELECTION_TIMING_SINKS: Mutex<Vec<(u64, &str, SelectionTimingSink)>> =
     Mutex::new(Vec::new());
 static NEXT_SINK_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
