@@ -258,7 +258,14 @@ const ActionBar: Component = () => {
             data-ac-state={triState(isPendingDialog(), () => showDropdown(), ["disabled", "open", "closed"])}
           >
             New / Open
-            <svg class="action-bar-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none">
+            <svg
+              aria-hidden="true"
+              class="action-bar-chevron"
+              width="10"
+              height="6"
+              viewBox="0 0 10 6"
+              fill="none"
+            >
               <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </button>
