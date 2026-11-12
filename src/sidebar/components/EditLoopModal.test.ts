@@ -351,31 +351,15 @@ describe("EditLoopModal", () => {
     expect(scheduleResetNotice()).not.toBeNull();
   });
 
-  it("shows the schedule-reset notice when the busy policy changed", async () => {
+  it.each([
+    ["the busy policy", "loop.edit.forceInject", true],
+    ["the session start", "loop.edit.accumulate", true],
+    ["enabled", "loop.edit.enabled", false],
+  ])("shows the schedule-reset notice when %s changed", async (_change, testid, checked) => {
     renderModal();
     await settle();
 
-    setCheckbox('[data-ac-testid="loop.edit.forceInject"]', true);
-    await settle();
-
-    expect(scheduleResetNotice()).not.toBeNull();
-  });
-
-  it("shows the schedule-reset notice when the session start changed", async () => {
-    renderModal();
-    await settle();
-
-    setCheckbox('[data-ac-testid="loop.edit.accumulate"]', true);
-    await settle();
-
-    expect(scheduleResetNotice()).not.toBeNull();
-  });
-
-  it("shows the schedule-reset notice when enabled changed", async () => {
-    renderModal();
-    await settle();
-
-    setCheckbox('[data-ac-testid="loop.edit.enabled"]', false);
+    setCheckbox(`[data-ac-testid="${testid}"]`, checked);
     await settle();
 
     expect(scheduleResetNotice()).not.toBeNull();
