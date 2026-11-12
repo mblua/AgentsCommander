@@ -36,7 +36,7 @@ export function checkEnvironment(env = process.env) {
   requireInput(env.CLIPPY_CONF_DIR === undefined, 'CLIPPY_CONF_DIR must be absent');
   for (const name of ['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS']) {
     const value = (env[name] ?? '').replaceAll(String.fromCodePoint(31), ' ');
-    const override = /cap-lints|(?:^|\s)-(?:A|W|D|F)|--(?:allow|warn|deny|forbid)/;
+    const override = /cap-lints|(?:^|\s)-[ADFW]|--(?:allow|warn|deny|forbid)/;
     requireInput(!override.test(value) && !/clippy|too.many.lines/i.test(value),
       `${name} contains a lint override`);
   }
@@ -241,7 +241,7 @@ function donorLiteralEnd(source, i) {
     requireInput(end >= 0, 'unterminated donor raw string');
     return end + 1 + raw[1].length;
   }
-  const quoted = /^(?:b|c)?"/.exec(rest);
+  const quoted = /^[bc]?"/.exec(rest);
   if (quoted) return donorQuotedStringEnd(source, i + quoted[0].length);
   const character = /^(?:b)?'(?:\\(?:u\{[\da-fA-F_]+\}|.)|[^'\\\r\n])'/u.exec(rest);
   if (character) return i + character[0].length;
