@@ -161,6 +161,29 @@ describe("EditLoopModal", () => {
     vi.useRealTimers();
   });
 
+  it("associates each field label with its control and keeps checkbox text unchanged", async () => {
+    renderModal();
+    await settle();
+
+    const labels = Array.from(document.querySelectorAll<HTMLLabelElement>("label.new-agent-label"));
+    expect(labels.map((label) => [label.textContent, label.control?.id])).toEqual([
+      ["ID", "edit-loop-id"],
+      ["Name", "edit-loop-name"],
+      ["Cron", "edit-loop-cron"],
+      ["Room Orchestrator", "edit-loop-room"],
+      ["Prompt", "edit-loop-prompt"],
+    ]);
+    const checkboxText = Array.from(
+      document.querySelectorAll("label.loop-checkbox-field"),
+      (label) => label.textContent,
+    );
+    expect(checkboxText).toEqual([
+      "Enabled",
+      "Force inject even if orchestrator is busy",
+      "Continue the previous conversation each run",
+    ]);
+  });
+
   it("loads the full prompt body and sends an empty payload for a no-op save", async () => {
     renderModal();
     await settle();

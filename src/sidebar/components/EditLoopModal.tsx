@@ -190,8 +190,9 @@ const EditLoopModal: Component<{
 
         <div class="new-agent-form">
           <div class="new-agent-field">
-            <label class="new-agent-label">ID</label>
+            <label class="new-agent-label" for="edit-loop-id">ID</label>
             <input
+              id="edit-loop-id"
               type="text"
               class="entity-input"
               value={props.loop.id}
@@ -201,8 +202,9 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Name</label>
+            <label class="new-agent-label" for="edit-loop-name">Name</label>
             <input
+              id="edit-loop-name"
               type="text"
               class="entity-input"
               value={name()}
@@ -213,8 +215,9 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Cron</label>
+            <label class="new-agent-label" for="edit-loop-cron">Cron</label>
             <input
+              id="edit-loop-cron"
               type="text"
               class="entity-input"
               value={expr()}
@@ -234,8 +237,9 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Room Orchestrator</label>
+            <label class="new-agent-label" for="edit-loop-room">Room Orchestrator</label>
             <select
+              id="edit-loop-room"
               class="entity-select"
               value={selectedWorkgroup()}
               onChange={(e) => setSelectedWorkgroup(e.currentTarget.value)}
@@ -253,8 +257,9 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Prompt</label>
+            <label class="new-agent-label" for="edit-loop-prompt">Prompt</label>
             <textarea
+              id="edit-loop-prompt"
               class="entity-textarea loop-prompt-textarea"
               value={promptBody()}
               onInput={(e) => setPromptBody(e.currentTarget.value)}
@@ -273,8 +278,7 @@ const EditLoopModal: Component<{
               onChange={(e) => setEnabled(e.currentTarget.checked)}
               disabled={loading()}
               data-ac-testid="loop.edit.enabled"
-            />
-            Enabled
+            />Enabled
           </label>
 
           <label class="loop-checkbox-field">
@@ -287,8 +291,7 @@ const EditLoopModal: Component<{
               }}
               disabled={loading()}
               data-ac-testid="loop.edit.forceInject"
-            />
-            Force inject even if orchestrator is busy
+            />Force inject even if orchestrator is busy
           </label>
 
           <label class="loop-checkbox-field">
@@ -298,8 +301,7 @@ const EditLoopModal: Component<{
               onChange={(e) => setAccumulate(e.currentTarget.checked)}
               disabled={loading()}
               data-ac-testid="loop.edit.accumulate"
-            />
-            Continue the previous conversation each run
+            />Continue the previous conversation each run
           </label>
 
           <Show when={!loading() && loadedBusyPolicy() === "skip" && !forceCheckboxTouched()}>

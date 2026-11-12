@@ -137,8 +137,9 @@ const NewLoopModal: Component<{
 
         <div class="new-agent-form">
           <div class="new-agent-field">
-            <label class="new-agent-label">Name</label>
+            <label class="new-agent-label" for="new-loop-name">Name</label>
             <input
+              id="new-loop-name"
               type="text"
               class="entity-input"
               value={name()}
@@ -150,8 +151,9 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Cron</label>
+            <label class="new-agent-label" for="new-loop-cron">Cron</label>
             <input
+              id="new-loop-cron"
               type="text"
               class="entity-input"
               value={expr()}
@@ -171,8 +173,9 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Room Orchestrator</label>
+            <label class="new-agent-label" for="new-loop-room">Room Orchestrator</label>
             <select
+              id="new-loop-room"
               class="entity-select"
               value={selectedWorkgroup()}
               onChange={(e) => setSelectedWorkgroup(e.currentTarget.value)}
@@ -190,8 +193,9 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Prompt</label>
+            <label class="new-agent-label" for="new-loop-prompt">Prompt</label>
             <textarea
+              id="new-loop-prompt"
               class="entity-textarea loop-prompt-textarea"
               value={promptBody()}
               onInput={(e) => setPromptBody(e.currentTarget.value)}
@@ -209,8 +213,7 @@ const NewLoopModal: Component<{
               checked={enabled()}
               onChange={(e) => setEnabled(e.currentTarget.checked)}
               data-ac-testid="loop.new.enabled"
-            />
-            Enabled
+            />Enabled
           </label>
 
           <label class="loop-checkbox-field">
@@ -219,8 +222,7 @@ const NewLoopModal: Component<{
               checked={forceInject()}
               onChange={(e) => setForceInject(e.currentTarget.checked)}
               data-ac-testid="loop.new.forceInject"
-            />
-            Force inject even if orchestrator is busy
+            />Force inject even if orchestrator is busy
           </label>
 
           <label class="loop-checkbox-field">
@@ -229,8 +231,7 @@ const NewLoopModal: Component<{
               checked={accumulate()}
               onChange={(e) => setAccumulate(e.currentTarget.checked)}
               data-ac-testid="loop.new.accumulate"
-            />
-            Continue the previous conversation each run
+            />Continue the previous conversation each run
           </label>
 
           <div class="entity-textarea-meta">

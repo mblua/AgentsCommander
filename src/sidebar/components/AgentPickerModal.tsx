@@ -1917,7 +1917,7 @@ const AgentPickerModal: Component<{
             </div>
             <div class="selection-lock-main">
               <div class="selection-lock-title">
-                Selection lock
+                {"Selection lock"}
                 <span
                   class="selection-lock-state"
                   data-state={removeStateChip().state}
@@ -2079,8 +2079,7 @@ const AgentPickerModal: Component<{
                       "checkbox",
                       defaultDraftLocked() ? "checked" : "unchecked",
                     )}
-                  />
-                  Start locked
+                  />Start locked
                 </label>
               </div>
               <div class="selection-lock-kind-row">
@@ -2154,8 +2153,7 @@ const AgentPickerModal: Component<{
                       setAssignmentMode("ordinary");
                       setSelectedScope("replica");
                     }}
-                  />
-                  This replica <span class="agent-scope-count">{scopeCount("replica")} replica</span>
+                  />This replica <span class="agent-scope-count">{scopeCount("replica")} replica</span>
                 </label>
                 <label
                   class="agent-scope-opt"
@@ -2170,8 +2168,7 @@ const AgentPickerModal: Component<{
                       setAssignmentMode("ordinary");
                       setSelectedScope("kind");
                     }}
-                  />
-                  All replicas of this kind <span class="agent-scope-count">{scopeCount("kind")} replicas</span>
+                  />All replicas of this kind <span class="agent-scope-count">{scopeCount("kind")} replicas</span>
                 </label>
                 <label
                   class="agent-scope-opt"
@@ -2186,8 +2183,7 @@ const AgentPickerModal: Component<{
                       setAssignmentMode("ordinary");
                       setSelectedScope("workgroup");
                     }}
-                  />
-                  Entire room <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
+                  />Entire room <span class="agent-scope-count">{scopeCount("workgroup")} replicas</span>
                 </label>
               </div>
               <div class="agent-scope-picker agent-scope-picker--lock">
@@ -2234,7 +2230,7 @@ const AgentPickerModal: Component<{
             </div>
             <div class="agent-scope-live-note">
               <span class="agent-scope-live-tag">live</span>
-              Counts are read from the current room; the backend re-enumerates targets before applying.
+              {"Counts are read from the current room; the backend re-enumerates targets before applying."}
             </div>
             <div class="agent-scope-lock-assumption">
               One step: <strong>+ lock</strong> writes the pair and sets the lock on the same eligible

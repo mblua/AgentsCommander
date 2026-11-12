@@ -247,3 +247,39 @@ describe("NewLoopModal", () => {
     });
   });
 });
+
+describe("NewLoopModal accessibility attributes", () => {
+  it("associates each field label with its control and keeps checkbox text unchanged", () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () =>
+        NewLoopModal({
+          projectPath: "C:\\Project",
+          workgroups: workgroups(),
+          onClose: () => {},
+        }),
+      root,
+    );
+
+    const labels = Array.from(document.querySelectorAll<HTMLLabelElement>("label.new-agent-label"));
+    expect(labels.map((label) => [label.textContent, label.control?.id])).toEqual([
+      ["Name", "new-loop-name"],
+      ["Cron", "new-loop-cron"],
+      ["Room Orchestrator", "new-loop-room"],
+      ["Prompt", "new-loop-prompt"],
+    ]);
+    const checkboxText = Array.from(
+      document.querySelectorAll("label.loop-checkbox-field"),
+      (label) => label.textContent,
+    );
+    expect(checkboxText).toEqual([
+      "Enabled",
+      "Force inject even if orchestrator is busy",
+      "Continue the previous conversation each run",
+    ]);
+
+    dispose();
+    root.remove();
+  });
+});
