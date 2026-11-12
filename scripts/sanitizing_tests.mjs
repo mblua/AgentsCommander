@@ -275,7 +275,7 @@ test('one-hop path aliases, destructuring/glob/reassignment/cyclic constants ret
       'fs::write').ambiguous,true);
 });
 test('literals comments raw IDs chars/lifetimes preserve offsets and decode Rust escapes', () => {
-  const slash=String.fromCharCode(92);
+  const slash=String.fromCodePoint(92);
   const source='/* outer /* inner */ */ fn r#f<\'a>(x: &\'a str) { let a = r###"/*not comment*/"###; let b = "a'+slash+'x41'+slash+'u{1F600}"; let c = \'x\';let b = b"'+slash+'xFF"; }';
   const a=scanRust('x.rs',source);assert.ok(a.tokens.some(t=>t.kind==='lifetime'));
       assert.ok(a.tokens.some(t=>t.name==='f'));
@@ -372,7 +372,7 @@ test('ERROR dominates FAIL and exact path identity is preserved', t => {
 });
 test('opaque byte literals still validate escapes; Unicode identifiers and arbitrary raw hashes', (
   ) => {
-  const slash=String.fromCharCode(92);
+  const slash=String.fromCodePoint(92);
   assert.throws(()=>scanRust('x.rs','fn f(){let b=b"'+slash+'xFF'+slash+'q";}'),e=>e.exit===3);
   const a=scanRust('x.rs','fn 𐐀(){let s=r########"raw"########;}');
       assert.equal(a.items[0].name,'𐐀');
@@ -381,7 +381,7 @@ test('cfg_attr expression-valued metadata stays production; invalid char escape 
   const a=scanRust('x.rs','#[cfg_attr(feature="x",doc=concat!("one","two"),test)] fn f(){}');
   assert.equal(a.items[0].testOnly,false);assert.ok(a.attributes[0].signals.some(s=>
       s.name==='test'));
-  const slash=String.fromCharCode(92);assert.throws(()=>lexRust('x.rs',"fn f(){let c='"+slash+
+  const slash=String.fromCodePoint(92);assert.throws(()=>lexRust('x.rs',"fn f(){let c='"+slash+
       "q';}"),e=>e.exit===3);
 });
 

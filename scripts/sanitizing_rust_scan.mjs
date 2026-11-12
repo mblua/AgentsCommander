@@ -14,9 +14,9 @@ export function decodeRustString(raw, byte = false) {
   let value = '', opaque = false;
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
-    if (c.charCodeAt(0) !== 92) { value += c; continue; }
+    if (c.codePointAt(0) !== 92) { value += c; continue; }
     const e = source[++i], simple = { n: '\n', r: '\r', t: '\t', '0': '\0',
-      [String.fromCharCode(92)]: String.fromCharCode(92), '"': '"', "'": "'" };
+      [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
     if (Object.hasOwn(simple, e)) value += simple[e];
     else if (e === 'x') {
       const hex = source.slice(i + 1, i + 3);
@@ -24,7 +24,7 @@ export function decodeRustString(raw, byte = false) {
       const code = Number.parseInt(hex, 16);
       if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
       if (byte && code > 127) opaque = true; // Still validate all remaining escapes.
-      value += String.fromCharCode(code); i += 2;
+      value += String.fromCodePoint(code); i += 2;
     } else if (e === 'u' && source[i + 1] === '{' && !byte) {
       const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
       if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
@@ -75,7 +75,7 @@ export function lexRust(path, text) {
     if (c === '"' || c === 'b' && text[i + 1] === '"') {
       const byte = c === 'b'; advance(i + (byte ? 2 : 1)); let closed = false;
       while (i < text.length) {
-        if (text.charCodeAt(i) === 92) { advance(Math.min(i + 2, text.length)); continue; }
+        if (text.codePointAt(i) === 92) { advance(Math.min(i + 2, text.length)); continue; }
         if (text[i] === '"') { advance(i + 1); closed = true; break; }
         advance(i + 1);
       }
@@ -87,7 +87,7 @@ export function lexRust(path, text) {
     }
     if (c === "'" || c === 'b' && text[i + 1] === "'") {
       const byte = c === 'b', quote = i + (byte ? 1 : 0); let end = quote + 1;
-      if (text.charCodeAt(end) === 92) {
+      if (text.codePointAt(end) === 92) {
         end++;
         if (text[end] === 'u' && text[end + 1] === '{') { const close = text.indexOf('}', end + 2);
           end = close < 0 ? text.length : close + 1; }
@@ -480,9 +480,10 @@ function mask(s){let a=s.split(''),i=0;const blank=(b,e)=>{for(let j=b;j<e;j++)i
   i)){n++;i+=2;}else if(s.startsWith('*/',i)){n--;i+=2;}else i++;}blank(b,i);}else{const raw=
   /^(?:br|r)(#*)"/.exec(s.slice(i));if(raw){const end='"'+raw[1];let e=s.indexOf(end,i+raw[
   0].length);i=e<0?s.length:e+end.length;blank(b,i);}else if(s[i]=='"'){i++;while(i<s.length){if(
-  s.charCodeAt(i)==92){i+=2;continue;}
+  s.codePointAt(i)==92){i+=2;continue;}
   if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+
-  1;if(s.charCodeAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);k=close<0?
+  1;if(s.codePointAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);
+  k=close<0?
   k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;
   if(s[k]=="'"){i=k+
   1;blank(b,i);}else i++;}else i++;}}return a.join('');}
