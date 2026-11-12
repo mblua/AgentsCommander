@@ -32,7 +32,7 @@ function git(root, args) {
 export function checkEnvironment(env = process.env) {
   requireInput(env.CLIPPY_CONF_DIR === undefined, 'CLIPPY_CONF_DIR must be absent');
   for (const name of ['RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS']) {
-    const value = (env[name] ?? '').replaceAll(String.fromCharCode(31), ' ');
+    const value = (env[name] ?? '').replaceAll(String.fromCodePoint(31), ' ');
     const override = /cap-lints|(?:^|\s)-(?:A|W|D|F)|--(?:allow|warn|deny|forbid)/;
     requireInput(!override.test(value) && !/clippy|too.many.lines/i.test(value),
       `${name} contains a lint override`);
