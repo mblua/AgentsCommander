@@ -591,9 +591,7 @@ const MainApp: Component = () => {
           finishPulse(owner, "cancelled", "width_changed");
           return;
         }
-        if (firstFrameTimestamp === null) {
-          firstFrameTimestamp = timestamp;
-        }
+        firstFrameTimestamp ??= timestamp;
         const elapsed = Math.max(0, timestamp - firstFrameTimestamp);
         owner.trace.dwellMs = Math.min(SIDEBAR_PULSE_REQUEST_TIMEOUT_MS, elapsed);
         if (elapsed >= SIDEBAR_PULSE_DWELL_MS) {
@@ -1074,11 +1072,9 @@ const MainApp: Component = () => {
     const titlebarClose = document.querySelector<HTMLElement>(
       '[data-ac-testid="titlebar.close"]',
     );
-    const candidate = titlebarClose?.isConnected
-      ? titlebarClose
-      : quitPreviousFocus?.isConnected
-        ? quitPreviousFocus
-        : mainRootRef;
+    let candidate: HTMLElement = mainRootRef;
+    if (titlebarClose?.isConnected) candidate = titlebarClose;
+    else if (quitPreviousFocus?.isConnected) candidate = quitPreviousFocus;
     try {
       candidate?.focus();
     } catch {
