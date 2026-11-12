@@ -4,7 +4,10 @@ import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
   resolveAlias as resolveGateAlias,
   qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
-const relevantPath = /^(?:tauri(?:::|$)|(?:(?:std|tokio)::)?fs::|(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$))/;
+const TAURI_PATH = /tauri(?:::|$)/.source;
+const FS_PATH = /(?:(?:std|tokio)::)?fs::/.source;
+const FS_ITEM = /(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$)/.source;
+const relevantPath = new RegExp(`^(?:${TAURI_PATH}|${FS_PATH}|${FS_ITEM})`);
 function resolveAlias(scan, input, scope) {
   return resolveGateAlias(scan, input, scope, relevantPath);
 }
