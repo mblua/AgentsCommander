@@ -9,6 +9,12 @@ import type {
 } from "./types";
 
 describe("shared ipc transport seam", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
   it("preserves room idle confirmation through actual get/saveDraft/update envelopes", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
@@ -56,11 +62,6 @@ describe("shared ipc transport seam", () => {
       fake.reject("append_rail_diagnostic", "invalid rail diagnostic");
       await expect(ipc.DebugAPI.appendRailDiagnostic(record)).rejects.toBe("invalid rail diagnostic");
     } finally { restore(); }
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it.each([undefined, "", "Explicit title"])("serializes optional room title %j as a string", async (taskTitle) => {
