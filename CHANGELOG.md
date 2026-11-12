@@ -6,6 +6,8 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.47.0
+
 ### Added
 
 - Coding Agents and Profiles can run a **Preflight** command before the CLI starts: first the Coding Agent's command, then the effective Profile's. The CLI starts only if every configured command exits with code 0 within its timeout (default 60 s). Container agents with a saved preflight do not launch and show an error. (#3516, #3523)
@@ -36,7 +38,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 - About 315 behavior-preserving refactor PRs resolve SonarCloud findings (nested ternaries, regex, accessibility labels, duplicated code), split complex functions and move code to single owners. (#4170, #4172, #4297, #4326, #4351, #4411)
 - CI runs the frontend regression on every PR, skips npm install scripts in workflow installs, fails on stale complexity allowlist entries and enforces gate 04 on PR trees. Text files use LF through `.gitattributes`. (#4291, #4328, #2076, #2077, #4180, #4181, #4184, #4166, #4167, #4098, #4122, #4243, #4245)
 - The testable build can be produced on Linux (`agentscommander_testeable.exe` copy of the Linux binary). (#4248, #4257)
-
 ## 0.46.0
 
 ### Added
