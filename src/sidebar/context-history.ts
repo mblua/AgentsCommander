@@ -127,7 +127,7 @@ export function refreshContextHistoryOnHover(scope: SidebarHistoryScope): void {
   if (!id) return;
   const owner = owners.get(scope.projectPath);
   const entry = owner?.keys.get(id);
-  if (!owner || !entry || entry.fetchedAtMs === null) return;
+  if (!owner || entry?.fetchedAtMs == null) return;
   if (Date.now() - entry.fetchedAtMs < REFRESH_INTERVAL_MS) return;
   enqueue(owner, id);
 }
