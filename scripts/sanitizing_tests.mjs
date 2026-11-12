@@ -12,7 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createSnapshot, parseArgs, parseTree, parseChanged,
-    gitRunner } from './sanitizing_baseline.mjs';
+    gitRunner, applyAllowlist, parseAllowlist,
+    formatWarning } from './sanitizing_baseline.mjs';
 import { lineLengths, fileMetrics } from './sanitizing_line_metrics.mjs';
 import { runGate as lengthGate } from './sanitizing_line_length.mjs';
 import { runGate as sizeGate } from './sanitizing_file_size.mjs';
@@ -827,7 +828,6 @@ test('P02 explicit aliases obey local shadowing and grouped imports', () => {
 });
 
 // #3182: sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
-import { applyAllowlist, parseAllowlist } from './sanitizing_baseline.mjs';
 const allow = (gate, rule, file) => ({ gate, rule, path: file, reason: 'moved code', issue: 3182,
     since: '2026-10-23' });
 test('allowlist: accepted, stale entry and unlisted finding', () => {
@@ -877,7 +877,6 @@ test('allowlist: schema refuses malformed and duplicate entries', () => {
 
 registerSnapshotTransferTests({trees, rustRoot, allow});
 
-import { formatWarning } from './sanitizing_baseline.mjs';
 test('05 glob ambiguity warnings are distinct from stale allowlist warnings', () => {
   const p=rustRoot+'glob.rs',result=layoutGate(trees({},
       {[p]:'use unknown::*; #[test] fn f() {}'}));
