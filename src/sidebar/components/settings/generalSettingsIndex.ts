@@ -30,6 +30,7 @@ export const GENERAL_SETTINGS_INDEX: GeneralSettingEntry[] = [
   { key: "raiseTerminalOnClick", category: "appearance", section: "Window", label: "Raise terminal when clicking sidebar", keywords: "focus bring front" },
   { key: "roomNumberMask", category: "appearance", section: "Window", label: "Room number mask", keywords: "format digits padding" },
   { key: "screenshotCaptureHotkey", category: "appearance", section: "Hotkeys", label: "Screenshot hotkey", keywords: "shortcut keyboard capture" },
+  { key: "screenshotHyprlandBind", category: "appearance", section: "Hotkeys", label: "Add screenshot shortcut to Hyprland", keywords: "wayland omarchy hyprland bind shortcut" },
   { key: "sidebarCompactHotkey", category: "appearance", section: "Hotkeys", label: "Compact sidebar hotkey", keywords: "shortcut keyboard collapse" },
   { key: "soundsEnabled", category: "appearance", section: "Notifications", label: "Enable app sounds (master switch)", keywords: "audio mute volume" },
   { key: "teamIdleBeepEnabled", category: "appearance", section: "Notifications", label: "Beep when a team finishes working (all agents idle)", keywords: "sound audio alert done" },
