@@ -90,7 +90,7 @@ function collectFailures(report, root) {
     let failedHere = 0;
 
     for (const assertion of assertions) {
-      if (!assertion || assertion.status !== 'failed') continue;
+      if (assertion?.status !== 'failed') continue;
       failedHere += 1;
       tests.push({
         file,
