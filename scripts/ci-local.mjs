@@ -98,14 +98,16 @@ function rustChecks(results) {
   const toolchains = capture('rustup toolchain list', ROOT) ?? '';
   const pinned = toolchains.split(/\r?\n/).some((line) => line.startsWith(`${pin}-`));
   if (!pinned) {
-    console.log(`\nRust ${pin} (the CI pin) is not installed; run \`rustup toolchain install ${pin} --component clippy\`.`);
+    console.log(`\nRust ${pin} (the CI pin) is not installed; `
+      + `run \`rustup toolchain install ${pin} --component clippy\`.`);
     results.push([`cargo +${pin} clippy`, { ok: false, seconds: 0 }]);
     return;
   }
   const targetDir = path.join(ROOT, 'target', `ci-local-${pin}`);
   const jsonl = path.join(os.tmpdir(), `ac-ci-local-cog-${process.pid}.jsonl`);
   const clippy = `cargo +${pin} clippy --locked --workspace --all-targets --message-format=json `
-    + `--target-dir "${targetDir}" -- -D warnings --force-warn clippy::cognitive_complexity > "${jsonl}"`;
+    + `--target-dir "${targetDir}" -- -D warnings `
+    + `--force-warn clippy::cognitive_complexity > "${jsonl}"`;
   const clippyResult = run(clippy, { cwd: srcTauri });
   // The JSON capture holds clippy's human text; the check reprints it and applies the baseline.
   const cog = `node scripts/check-cognitive-complexity.mjs --capture "${jsonl}" `

@@ -14,8 +14,10 @@
 //! the session. Matrix creation stays independent of the launch result: exit
 //! code 0 and the matrix fields are always produced.
 
+pub(crate) use crate::phone::mailbox::refresh::ProjectRefreshRequest;
+
 use clap::Args;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::cli::create_agent::session_request;
 use crate::commands::entity_creation::{create_agent_matrix_on_disk, CreateAgentMatrixDiskArgs};
@@ -85,19 +87,6 @@ enum LaunchStatus {
     Launched,
     Rejected,
     Pending,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectRefreshRequest {
-    pub id: String,
-    pub project_path: String,
-    #[serde(alias = "agentPath")]
-    pub changed_path: Option<String>,
-    #[serde(alias = "agentName")]
-    pub changed_name: Option<String>,
-    pub reason: String,
-    pub timestamp: String,
 }
 
 pub fn execute(args: CreateAgentMatrixArgs) -> i32 {

@@ -115,7 +115,8 @@ function readCurrentVersion() {
   // version (e.g., if package.json keys are reordered or an `overrides`
   // block is added).
   const m = /\r?\n\s*"name":\s*"agentscommander",\s*\r?\n\s*"version":\s*"([^"]+)"/.exec(txt);
-  if (!m) die('Cannot read current version from package.json (anchor "name": "agentscommander" not found above "version")');
+  if (!m) die('Cannot read current version from package.json '
+    + '(anchor "name": "agentscommander" not found above "version")');
   return m[1];
 }
 
@@ -153,7 +154,8 @@ function planFile(file, patches, target) {
     // Anchor-not-matched is a hard fail: it means the file was renamed or
     // restructured and our regex needs maintenance — do NOT silently skip.
     if (!p.re.test(current)) {
-      die(`${file}: anchor for "${p.label}" did not match — file may have been renamed or restructured. Update PATCHES regexes.`);
+      die(`${file}: anchor for "${p.label}" did not match — `
+        + 'file may have been renamed or restructured. Update PATCHES regexes.');
     }
     const next = current.replace(p.re, (_match, prefix) => `${prefix}"${target}"`);
     steps.push({ label: p.label, changed: next !== current });
