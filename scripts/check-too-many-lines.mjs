@@ -14,7 +14,10 @@ const SHA = /^[a-f0-9]{40}$/;
 const NAME = /^(?:r#)?[\p{ID_Start}_][\p{ID_Continue}]*$/u;
 const key = e => `${e.id}\0${e.anchor}`;
 const pair = e => `${e.name}\0${e.anchor}`;
-const order = (a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
+const order = (a, b) => {
+  if (key(a) < key(b)) return -1;
+  return key(a) > key(b) ? 1 : 0;
+};
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
 export class InputError extends Error { constructor(message) { super(message); this.exit = 2; } }
 const requireInput = (ok, message) => { if (!ok) throw new InputError(message); };
@@ -76,7 +79,8 @@ export function normalizeFile(file, root) {
   const slash = file.replaceAll('\\', '/');
   const base = root.replaceAll('\\', '/').replace(/\/$/, '');
   const absolute = slash.startsWith('/') || /^[A-Za-z]:\//.test(slash);
-  const rel = absolute ? slash.startsWith(`${base}/`) ? slash.slice(base.length + 1) : null : slash;
+  let rel = slash;
+  if (absolute) rel = slash.startsWith(`${base}/`) ? slash.slice(base.length + 1) : null;
   requireInput(rel !== null && !rel.startsWith('/') && !/^[A-Za-z]:/.test(rel),
     'path escapes root');
   const parts = [];
