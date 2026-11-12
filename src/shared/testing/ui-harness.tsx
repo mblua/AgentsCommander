@@ -34,14 +34,13 @@ import {
   setSidebarCompactHotkey,
   setSidebarCompactMode,
   type CompactHostHooks,
-  type PulseWidthSeams,
 } from "../sidebar-compact";
 
 // #2236 phase 7 — the pulse seam override is module-level state like the
 // compact signals, so tests install and clear it only through the harness.
 export { setPulseSeamOverridesForTests };
 export { baseSettings };
-export type { PulseWidthSeams };
+export type { PulseWidthSeams } from "../sidebar-compact";
 
 export function renderWithFakeTransport(
   component: () => JSX.Element,
@@ -371,7 +370,7 @@ export function installBrowserDomStubs(options: { replicaMenuGeometry?: boolean 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
-        readText: async () => "",
+        readText: () => Promise.resolve(""),
         writeText: async () => {},
       },
     });

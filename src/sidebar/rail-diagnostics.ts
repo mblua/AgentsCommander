@@ -10,10 +10,10 @@ const objects = new WeakMap<object, number>();
 const entities = new Map<string, { id?: number; groups: Map<string, number | undefined> }>();
 const kinds = ["custom", "system", "nonstop", "ungrouped", "project", "favorites"];
 const tags = ["button", "span", "svg", "path", "aside", "body", "input", "textarea", "other", "none"];
-const events = ("pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture " +
+const events = new Set(("pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture " +
   "focusin focusout window-focus window-blur handler-enter handler-end selection-change rail-mount rail-dispose " +
   "section-mount section-dispose node-mount node-dispose project-list project-buttons favorites-entries reload-start " +
-  "reload-end discover-start discover-end snapshot-start snapshot-end snapshots-start snapshots-end task-start task-end loop-start loop-end").split(" ");
+  "reload-end discover-start discover-end snapshot-start snapshot-end snapshots-start snapshots-end task-start task-end loop-start loop-end").split(" "));
 const positive = new Set("railId operationId projectId groupId entityId nodeId originalNodeId objectId selectionProjectId selectionGroupId".split(" "));
 const booleans = new Set("primary trusted connected originalConnected captured documentFocused".split(" "));
 const enums: { [key: string]: readonly string[] } = {
@@ -37,7 +37,7 @@ function validField(key: string, value: unknown): boolean {
 export function emitRailDiagnostic(surface: RailDiagnosticRecord["surface"], event: RailDiagnosticRecord["event"], fields: RailFields = {}): void {
   if (!isDebugEnabled()) return;
   try {
-    if (!["embedded", "sidebar", "store"].includes(surface) || !events.includes(event)) return;
+    if (!["embedded", "sidebar", "store"].includes(surface) || !events.has(event)) return;
     const projected: RailFields = {};
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;
@@ -85,12 +85,15 @@ export function reconcileRailProjects(paths: readonly string[]): void {
   }
 }
 
-function groupKey(kind: Kind, id: string | null): string { return `${kind}:${id === null ? "n" : `s${id}`}`; }
+function groupKey(kind: Kind, id: string | null): string {
+  const suffix = id === null ? "n" : `s${id}`;
+  return `${kind}:${suffix}`;
+}
 
 export function reconcileRailGroups(path: string, groups: readonly string[], nonstop: boolean): void {
   const entry = entities.get(path);
   if (!entry) return;
-  if (entry.id === undefined) entry.id = railToken();
+  entry.id ??= railToken();
   const live = new Set([groupKey("system", null), groupKey("ungrouped", null), ...groups.map(id => groupKey("custom", id))]);
   if (nonstop) live.add(groupKey("nonstop", null));
   for (const key of entry.groups.keys()) if (!live.has(key)) entry.groups.delete(key);

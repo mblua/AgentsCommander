@@ -19,8 +19,8 @@ import type {
 /** Ids are user-written, so they are constrained to what reads well as a chip and a map key. */
 export const WATCHER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
-const WATCHER_MODES: readonly WatcherMode[] = ["state", "occurrence"];
-const WATCHER_DEDUPES: readonly WatcherDedupe[] = ["row", "capture", "none"];
+const WATCHER_MODES: ReadonlySet<WatcherMode> = new Set<WatcherMode>(["state", "occurrence"]);
+const WATCHER_DEDUPES: ReadonlySet<WatcherDedupe> = new Set<WatcherDedupe>(["row", "capture", "none"]);
 
 /**
  * Whether an entry of the root `watchers` map is one this build understands.
@@ -48,9 +48,9 @@ export function isWatcherConfig(entry: unknown): entry is WatcherConfig {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
   const candidate = entry as Partial<WatcherConfig>;
   if (typeof candidate.enabled !== "boolean") return false;
-  if (!WATCHER_MODES.includes(candidate.mode as WatcherMode)) return false;
+  if (!WATCHER_MODES.has(candidate.mode as WatcherMode)) return false;
   if (typeof candidate.pattern !== "string") return false;
-  if (!WATCHER_DEDUPES.includes(candidate.dedupe as WatcherDedupe)) return false;
+  if (!WATCHER_DEDUPES.has(candidate.dedupe as WatcherDedupe)) return false;
   if (!isDedupeWindowMs(candidate.dedupeWindowMs)) return false;
   if (!isCommandsSelector(candidate.commands)) return false;
   return (
