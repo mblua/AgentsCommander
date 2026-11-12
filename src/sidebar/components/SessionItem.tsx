@@ -63,7 +63,8 @@ export function micButtonTitle(
 }
 
 export function repoBranchLabel(repo: { label: string; branch?: string | null }): string {
-  return `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`;
+  const branchSuffix = repo.branch ? `/${repo.branch}` : "";
+  return `${repo.label}${branchSuffix}`;
 }
 
 export function detachUi(detached: boolean): { title: string; state: string; menuLabel: string } {
