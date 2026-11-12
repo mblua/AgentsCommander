@@ -6,6 +6,37 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- Coding Agents and Profiles can run a **Preflight** command before the CLI starts: first the Coding Agent's command, then the effective Profile's. The CLI starts only if every configured command exits with code 0 within its timeout (default 60 s). Container agents with a saved preflight do not launch and show an error. (#3516, #3523)
+- **Test preflights** in Settings runs the saved preflight chain for a stopped target without starting the CLI, with live progress and cancel. An empty chain shows "Nothing to test". (#3832, #3909)
+- Context heat map: each agent's context usage is recorded locally per project and shown in a "Contexto por agente" view, a coloured sidebar badge and a card. The Root Agent is excluded. (#3532, #3921)
+- Settings > **Context Heat Map** (desktop only) turns recording on, sets how many days to keep (1 to 365, default 30) and the session windows used for colours (default 25, 100 and 300 sessions). Recording is off by default, and the sidebar CTX button is hidden until it is on. (#4049, #4078, #4091, #4097)
+- Screenshot capture works on Wayland-only Linux sessions (for example Omarchy / Hyprland) through the desktop portal. Settings > Hotkeys > **Add the screenshot shortcut to Hyprland for me** writes AgentsCommander's own key binding into the Hyprland config. (#2774, #4249)
+- The titlebar always shows a camera chip. Clicking it takes a screenshot; it shows the key only while the shortcut is active. (#2774, #4249)
+
+### Changed
+
+- The context heat map groups history by session count instead of day, week and month buckets. The old `.ac/heatmap.json` file is ignored, not migrated or deleted. (#4049, #4078, #4091, #4097)
+- Windows builds set the static VC runtime explicitly and no longer print the `STATIC_VCRUNTIME is deprecated` warning. Linking is unchanged. (#4047, #4057)
+
+### Fixed
+
+- On Linux the terminal uses a font that really renders monospace, instead of a proportional substitute with wide letter gaps. Windows is unchanged. (#4244, #4247)
+- `ui-wait` keeps waiting through app startup instead of failing at once with `automation_not_enabled` or `automation_session_missing`. On timeout it prints the last diagnostic. (#4255, #4287)
+- A container global sweep keeps its last real error when later attempts only hit the deadline. (#4151, #4156)
+
+### Security
+
+- The embedded web browser refuses to load the app's own origin, where app commands would bypass the remote access checks. External pages work as before. (#4289, #4322)
+- Frontend sources are checked for raw HTML sinks, and branch-name validator logs strip line breaks. (#4300, #4333, #4171, #4173, #4182, #4183)
+
+### Notes
+
+- About 315 behavior-preserving refactor PRs resolve SonarCloud findings (nested ternaries, regex, accessibility labels, duplicated code), split complex functions and move code to single owners. (#4170, #4172, #4297, #4326, #4351, #4411)
+- CI runs the frontend regression on every PR, skips npm install scripts in workflow installs, fails on stale complexity allowlist entries and enforces gate 04 on PR trees. Text files use LF through `.gitattributes`. (#4291, #4328, #2076, #2077, #4180, #4181, #4184, #4166, #4167, #4098, #4122, #4243, #4245)
+- The testable build can be produced on Linux (`agentscommander_testeable.exe` copy of the Linux binary). (#4248, #4257)
+
 ## 0.46.0
 
 ### Added
