@@ -8,7 +8,7 @@ const registryPath = 'scripts/containers.json';
 const writerPath = new RegExp('^(?:(?:std|tokio)::fs::(?:write|File::create|OpenOptions::new)|' +
   '(?:fs::)?write|(?:File::create|OpenOptions::new))$');
 const rustSource = p => /^src-tauri\/src\/.*\.rs$/.test(p);
-const validPath = p => typeof p === 'string' && /^src-tauri\/src\//.test(p) &&
+const validPath = p => typeof p === 'string' && p.startsWith('src-tauri/src/') &&
   !p.includes('..') && !p.includes(String.fromCharCode(92)) &&
   !p.includes('//') && !p.split('/').includes('.');
 export function parseRegistry(text) {
