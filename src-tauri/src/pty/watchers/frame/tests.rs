@@ -3,7 +3,7 @@ use crate::pty::watchers::FrameStamp;
 
 fn frame(rows: &[&str], wrapped: &[bool]) -> ScreenFrame {
     ScreenFrame {
-        rows: rows.iter().map(|r| r.to_string()).collect(),
+        rows: rows.iter().map(ToString::to_string).collect(),
         wrapped: wrapped.to_vec(),
         cursor_row: 0,
         stamp: Some(FrameStamp {
@@ -108,7 +108,7 @@ fn an_empty_frame_yields_no_logical_rows() {
 /// A frame at a given sequence, with the cursor parked where it cannot interfere.
 fn tick_frame(rows: &[&str], sequence: u64, cursor_row: u16) -> ScreenFrame {
     ScreenFrame {
-        rows: rows.iter().map(|r| r.to_string()).collect(),
+        rows: rows.iter().map(ToString::to_string).collect(),
         wrapped: vec![false; rows.len()],
         cursor_row,
         stamp: Some(FrameStamp {
@@ -120,7 +120,7 @@ fn tick_frame(rows: &[&str], sequence: u64, cursor_row: u16) -> ScreenFrame {
 }
 
 fn hashes(rows: &[&str]) -> Vec<u64> {
-    hash_rows(&rows.iter().map(|r| r.to_string()).collect::<Vec<_>>())
+    hash_rows(&rows.iter().map(ToString::to_string).collect::<Vec<_>>())
 }
 
 /// 9.4.38 - nothing moved: shift zero, everything agrees.

@@ -112,7 +112,10 @@ fn collect_replica_matches(
                 if !crate::filesystem::projects::project_path_is_dir(base) {
                     continue;
                 }
-                let base_name = base.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let base_name = base
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or("");
 
                 let mut dirs_to_check: Vec<std::path::PathBuf> = Vec::new();
                 if project_matches(base_name) {
@@ -303,7 +306,7 @@ impl MailboxPoller {
             if !is_app_outbox {
                 let outbox_relative_responses_dir = path
                     .parent()
-                    .and_then(|p| p.parent())
+                    .and_then(Path::parent)
                     .map(|ac_dir| ac_dir.join("responses"));
                 if let Some(responses_dir) = outbox_relative_responses_dir {
                     let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -359,7 +362,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(|p| p.parent())
+                        .and_then(Path::parent)
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -410,7 +413,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(|p| p.parent())
+                        .and_then(Path::parent)
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -463,7 +466,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(|p| p.parent())
+                        .and_then(Path::parent)
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
@@ -511,7 +514,7 @@ impl MailboxPoller {
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
-                        .and_then(|p| p.parent())
+                        .and_then(Path::parent)
                         .map(|ac| ac.join("responses"))
                     {
                         let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);

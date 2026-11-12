@@ -725,7 +725,10 @@ impl WatcherEngine {
         // no backend resolved, no liveness probed.
         let Some(resolved) = self.patterns.resolve().await else {
             let mut ids: Vec<(Uuid, bool)> = {
-                let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+                let registered = self
+                    .registered
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 registered
                     .iter()
                     .map(|(id, session)| (*id, session.activity.is_some()))
@@ -772,7 +775,10 @@ impl WatcherEngine {
         // Snapshot first: the loop must not mutate `registered` while iterating it. The ids
         // are the union of sessions a user watcher reaches and those with internal consumers.
         let mut ids: Vec<(Uuid, Option<String>)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            let registered = self
+                .registered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             registered
                 .iter()
                 .filter(|(_, session)| {
@@ -829,7 +835,10 @@ impl WatcherEngine {
         at: chrono::DateTime<chrono::Utc>,
     ) -> (Option<WatcherMatchBatch>, bool, ActivityDelivery) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let Some(session) = registered.get_mut(&id) else {
             return (None, false, None);
         };
