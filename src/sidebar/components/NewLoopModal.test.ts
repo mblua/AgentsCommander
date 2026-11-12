@@ -248,8 +248,8 @@ describe("NewLoopModal", () => {
   });
 });
 
-describe("NewLoopModal accessibility attributes", () => {
-  it("associates each field label with its control and keeps checkbox text unchanged", () => {
+describe("NewLoopModal checkbox labels", () => {
+  it("keeps checkbox label text unchanged", () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -262,13 +262,6 @@ describe("NewLoopModal accessibility attributes", () => {
       root,
     );
 
-    const labels = Array.from(document.querySelectorAll<HTMLLabelElement>("label.new-agent-label"));
-    expect(labels.map((label) => [label.textContent, label.control?.id])).toEqual([
-      ["Name", "new-loop-name"],
-      ["Cron", "new-loop-cron"],
-      ["Room Orchestrator", "new-loop-room"],
-      ["Prompt", "new-loop-prompt"],
-    ]);
     const checkboxText = Array.from(
       document.querySelectorAll("label.loop-checkbox-field"),
       (label) => label.textContent,

@@ -137,9 +137,8 @@ const NewLoopModal: Component<{
 
         <div class="new-agent-form">
           <div class="new-agent-field">
-            <label class="new-agent-label" for="new-loop-name">Name</label>
+            <label class="new-agent-label">Name</label>
             <input
-              id="new-loop-name"
               type="text"
               class="entity-input"
               value={name()}
@@ -151,9 +150,8 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label" for="new-loop-cron">Cron</label>
+            <label class="new-agent-label">Cron</label>
             <input
-              id="new-loop-cron"
               type="text"
               class="entity-input"
               value={expr()}
@@ -173,9 +171,8 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label" for="new-loop-room">Room Orchestrator</label>
+            <label class="new-agent-label">Room Orchestrator</label>
             <select
-              id="new-loop-room"
               class="entity-select"
               value={selectedWorkgroup()}
               onChange={(e) => setSelectedWorkgroup(e.currentTarget.value)}
@@ -193,9 +190,8 @@ const NewLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label" for="new-loop-prompt">Prompt</label>
+            <label class="new-agent-label">Prompt</label>
             <textarea
-              id="new-loop-prompt"
               class="entity-textarea loop-prompt-textarea"
               value={promptBody()}
               onInput={(e) => setPromptBody(e.currentTarget.value)}
