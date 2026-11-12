@@ -141,10 +141,12 @@ pub(crate) fn resolve_claude_projects_dir_in(
     }
 
     fn looks_like_wrapper_extension(path: &Path) -> bool {
-        path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            let lc = e.to_ascii_lowercase();
-            matches!(lc.as_str(), "cmd" | "bat" | "ps1" | "sh")
-        })
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|e| {
+                let lc = e.to_ascii_lowercase();
+                matches!(lc.as_str(), "cmd" | "bat" | "ps1" | "sh")
+            })
     }
 
     // Find the first token whose basename starts with "claude" across
