@@ -32,8 +32,9 @@ const dom = new JSDOM(html, {
 
 const documentText = () => dom.window.document.body.textContent ?? '';
 const cssBlockFor = (selector) => {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
   const blockPattern = new RegExp(
-    String.raw`${selector.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}\s*\{(?<body>[^}]*)\}`);
+    String.raw`${escapedSelector}\s*\{(?<body>[^}]*)\}`);
   return html.match(blockPattern)?.groups?.body ?? '';
 };
 const cssBlockForInMedia = (mediaQuery, selector) => {

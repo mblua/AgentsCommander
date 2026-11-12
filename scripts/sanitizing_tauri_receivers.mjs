@@ -372,7 +372,9 @@ export function createReceiverClassifier(context) {
       const module = { root: location.root, segments: location.segments };
       return traitAt(canonical(binding.target, module), visited);
     }
-    const kinds = new Set(['trait', 'struct', 'enum', 'union', 'type', 'fn', 'const', 'static', 'mod']);
+    const kinds = new Set([
+      'trait', 'struct', 'enum', 'union', 'type', 'fn', 'const', 'static', 'mod',
+    ]);
     const items = scan.items.filter(i => i.name === location.name && i.scope === scan.root &&
       kinds.has(i.kind));
     need(items.length === 1 && items[0].kind === 'trait', 'name is not a unique trait');
