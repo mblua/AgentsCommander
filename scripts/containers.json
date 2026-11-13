@@ -236,6 +236,8 @@
       "name": "web-token.txt",
       "scope": "src-tauri/src/filesystem/",
       "owner": "src-tauri/src/filesystem/documents.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
         "files": 41,
