@@ -1,8 +1,11 @@
-use super::{SNAPSHOT_LIMITER_KEY_CAP, SNAPSHOT_RATE_WINDOW, SNAPSHOT_TARGET_RATE};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use terminal_snapshot_renderer::TerminalSnapshotReasonCode;
+
+pub(crate) const SNAPSHOT_TARGET_RATE: usize = 12;
+pub(crate) const SNAPSHOT_RATE_WINDOW: Duration = Duration::from_secs(60);
+pub(crate) const SNAPSHOT_LIMITER_KEY_CAP: usize = 4_096;
 
 #[derive(Default)]
 pub(crate) struct RollingState {
