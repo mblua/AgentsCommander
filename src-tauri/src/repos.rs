@@ -48,7 +48,13 @@ pub(crate) fn strip_userinfo(remote: &str) -> String {
 /// Agent detection: label + list of possible markers (files or dirs)
 /// An agent is detected if ANY of its markers exist in the repo.
 const AGENT_DETECTORS: &[(&str, &[&str])] = &[
-    ("Claude", &[".claude", "CLAUDE.md"]),
+    (
+        "Claude",
+        &[
+            ".claude",
+            crate::config::instructions_filename::CLAUDE_MD_FILE_NAME,
+        ],
+    ),
     ("Codex", &[".codex"]),
     ("OpenCode", &[".opencode", "opencode.json"]),
     ("Cursor", &[".cursor", ".cursorrules"]),
