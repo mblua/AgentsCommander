@@ -1,0 +1,62 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 1
+    labels: []
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    labels: []
+    ignore:
+      # Paired with Rust crates of the same major.minor; see I4385 plan 4.4.
+      - dependency-name: "@tauri-apps/api"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "@tauri-apps/plugin-dialog"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    labels: []
+    ignore:
+      # Deliberate exact "=" pins; moved only by a human PR. See I4385 plan 4.2.
+      - dependency-name: "portable-pty"
+      - dependency-name: "getrandom"
+      - dependency-name: "vt100"
+      - dependency-name: "webkit2gtk"
+      - dependency-name: "gio"
+      - dependency-name: "glib"
+      - dependency-name: "cairo-rs"
+      - dependency-name: "syn"
+      - dependency-name: "base64"
+      - dependency-name: "crc32fast"
+      - dependency-name: "png"
+      - dependency-name: "fontdue"
+      - dependency-name: "ashpd"
+      # Paired with npm packages of the same major.minor; see I4385 plan 4.4.
+      - dependency-name: "tauri"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "tauri-plugin-dialog"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
