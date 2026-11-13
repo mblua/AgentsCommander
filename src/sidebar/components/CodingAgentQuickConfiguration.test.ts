@@ -906,7 +906,10 @@ describe("CodingAgentQuickConfiguration", () => {
     const sheetRules = () => {
       // The variable base keeps the real file: URL (see sidebar-compact.test.ts).
       const moduleUrl = import.meta.url;
-      const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+      // sidebar.css first, then onboarding-modal.css: their load order (#4577).
+      const css = ["../styles/sidebar.css", "../styles/onboarding-modal.css"]
+        .map((p) => readFileSync(new URL(p, moduleUrl), "utf8"))
+        .join("");
       return scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
     };
     const rulesFor = (prelude: string) =>
@@ -2118,7 +2121,10 @@ describe("CodingAgentQuickConfiguration", () => {
       // jsdom cannot measure the scroll; the declarations pin the row width.
       // The variable base keeps the real file: URL (see sidebar-compact.test.ts).
       const moduleUrl = import.meta.url;
-      const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+      // sidebar.css first, then onboarding-modal.css: their load order (#4577).
+      const css = ["../styles/sidebar.css", "../styles/onboarding-modal.css"]
+        .map((p) => readFileSync(new URL(p, moduleUrl), "utf8"))
+        .join("");
       const body = soleRuleBody(
         scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " "))),
         ".onboarding-install-output",
