@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { render } from "solid-js/web";
-import type { Component } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScreenshotHotkeyStatus } from "../../shared/types";
 

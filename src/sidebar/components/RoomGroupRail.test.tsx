@@ -878,7 +878,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(groupsConfig(), fake);
     try {
-      const { projectRail, ui, rust } = await measureReorderTargets();
+      const { ui } = await measureReorderTargets();
 
       vi.useFakeTimers();
       pointer(ui, "pointerdown", { clientY: 90 });
@@ -913,7 +913,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(config, fake);
     try {
-      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
+      const { rust } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(rust, "pointerdown", { clientY: 124 });
@@ -935,7 +935,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(config, fake);
     try {
-      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
+      const { docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(docs, "pointerdown", { clientY: 158 });
@@ -960,7 +960,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(config, fake);
     try {
-      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
+      const { docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(docs, "pointerdown", { clientY: 158 });
@@ -992,7 +992,7 @@ describe("RoomGroupRail", () => {
     try {
       window.addEventListener("unhandledrejection", onUnhandled);
       ({ rendered } = mountReorderRail(groupsConfig(), fake));
-      const { projectRail, ui, rust } = await measureReorderTargets();
+      const { ui } = await measureReorderTargets();
 
       vi.useFakeTimers();
       pointer(ui, "pointerdown", { clientY: 90 });
