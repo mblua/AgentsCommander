@@ -18,7 +18,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use super::{FrameStamp, ScreenFrame};
+use crate::pty::backend::screen_frame::{FrameStamp, ScreenFrame};
 
 /// One or more physical rows, joined across the wrap flag.
 ///
