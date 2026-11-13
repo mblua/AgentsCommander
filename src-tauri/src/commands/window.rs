@@ -550,7 +550,9 @@ fn publish_terminal_attached<R: tauri::Runtime>(
 /// the sidebar frontend to hydrate its `detachedIds` store on mount (plan §A2.3.G8).
 #[tauri::command]
 pub fn list_detached_sessions(detached: State<'_, DetachedSessionsState>) -> Vec<String> {
-    let set = detached.lock().unwrap();
+    let set = detached
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     set.iter().map(std::string::ToString::to_string).collect()
 }
 

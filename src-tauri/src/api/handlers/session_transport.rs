@@ -98,7 +98,10 @@ async fn authorize_transport(
     let generation = validate_transport_client(state, ip, client, &session_id_text)?;
 
     let backend = {
-        let pty_mgr = state.pty_mgr.lock().unwrap();
+        let pty_mgr = state
+            .pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         pty_mgr.container_backend()
     };
 

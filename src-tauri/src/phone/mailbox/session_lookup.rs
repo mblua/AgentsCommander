@@ -219,7 +219,9 @@ impl MailboxPoller {
         let candidate = matches.into_iter().next()?;
 
         let id = Uuid::parse_str(&candidate.id).ok()?;
-        let pty = pty_mgr.lock().unwrap();
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let has_pty = pty.has_session(id);
         drop(pty);
 

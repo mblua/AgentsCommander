@@ -66,7 +66,10 @@ impl WebSocketAdmission {
     }
 
     pub(super) fn open(&self, shutdown: &crate::shutdown::ShutdownSignal) -> bool {
-        let mut open = self.open.lock().unwrap();
+        let mut open = self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.generation_token.is_cancelled() || shutdown.is_cancelled() {
             return false;
         }
@@ -83,13 +86,19 @@ impl WebSocketAdmission {
     }
 
     pub(super) fn close(&self) {
-        let mut open = self.open.lock().unwrap();
+        let mut open = self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *open = false;
         self.tracker.close();
     }
 
     pub(super) fn try_acquire(&self) -> Option<WebSocketAdmissionGuard> {
-        let open = self.open.lock().unwrap();
+        let open = self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !*open || self.generation_token.is_cancelled() {
             return None;
         }
@@ -254,7 +263,10 @@ impl WebServerHandle {
         let mut factory = Some(factory);
         let mut supervisor = None;
         let waiter = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match inner.current.as_ref() {
                 Some(generation) if generation.lifecycle == WebServerLifecycle::Starting => {
                     WebServerStartWaiter {
@@ -347,7 +359,10 @@ impl WebServerHandle {
     }
 
     pub(crate) fn begin_stop_with_timeout(&self, timeout: Duration) -> Option<WebServerStopWaiter> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(generation) = inner.current.as_mut() else {
             self.clear_bind_failure();
             return None;
@@ -374,7 +389,10 @@ impl WebServerHandle {
     }
 
     pub fn publish_effective_endpoint(&self, generation: u64, bind: String, port: u16) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(current) = inner.current.as_mut() else {
             return false;
         };
@@ -398,12 +416,18 @@ impl WebServerHandle {
     }
 
     pub fn snapshot(&self) -> WebServerLifecycleSnapshot {
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::snapshot_locked(&inner)
     }
 
     pub fn snapshot_is_current(&self, snapshot: &WebServerLifecycleSnapshot) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::snapshot_locked(&inner) == *snapshot
     }
 
@@ -425,7 +449,10 @@ impl WebServerHandle {
     }
 
     fn publish_running(&self, generation: u64) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(current) = inner.current.as_mut() else {
             return false;
         };
@@ -458,7 +485,10 @@ impl WebServerHandle {
     }
 
     pub(crate) fn move_generation_to_stopping(&self, generation: u64) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(current) = inner.current.as_mut() else {
             return false;
         };
@@ -482,7 +512,10 @@ impl WebServerHandle {
         generation: u64,
         result_if_starting: Result<bool, String>,
     ) -> Result<bool, String> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(current) = inner.current.as_mut() else {
             return Err(WEB_SERVER_START_CANCELLED.to_string());
         };
@@ -549,7 +582,10 @@ impl WebServerHandle {
     }
 
     pub(crate) fn finish_generation(&self, generation: u64) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(current) = inner.current.as_ref() else {
             return false;
         };
@@ -647,15 +683,24 @@ impl WebServerHandle {
     }
 
     pub fn record_bind_failure(&self, failure: StartServerError) {
-        *self.bind_failure.lock().unwrap() = Some(failure);
+        *self
+            .bind_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(failure);
     }
 
     pub fn clear_bind_failure(&self) {
-        *self.bind_failure.lock().unwrap() = None;
+        *self
+            .bind_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     pub fn last_bind_failure(&self) -> Option<StartServerError> {
-        self.bind_failure.lock().unwrap().clone()
+        self.bind_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 

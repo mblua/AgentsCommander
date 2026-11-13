@@ -280,14 +280,14 @@ impl LoopScheduler {
     pub(super) fn keep_unrecorded_delivery(&self, dir: &Path, record: UnrecordedDelivery) {
         self.unrecorded_deliveries
             .lock()
-            .expect("unrecorded deliveries")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(generation_key(dir), record);
     }
 
     pub(super) fn peek_unrecorded_delivery(&self, dir: &Path) -> Option<UnrecordedDelivery> {
         self.unrecorded_deliveries
             .lock()
-            .expect("unrecorded deliveries")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&generation_key(dir))
             .cloned()
     }
@@ -295,7 +295,7 @@ impl LoopScheduler {
     pub(super) fn take_unrecorded_delivery(&self, dir: &Path) -> Option<UnrecordedDelivery> {
         self.unrecorded_deliveries
             .lock()
-            .expect("unrecorded deliveries")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&generation_key(dir))
     }
 

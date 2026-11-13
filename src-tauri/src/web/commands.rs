@@ -278,7 +278,7 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
 
         "list_detached_sessions" => {
             let detached = operations.detached();
-            let set = detached.lock().unwrap();
+            let set = detached.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             Ok(json!(set.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()))
         }
 

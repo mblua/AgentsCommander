@@ -95,7 +95,7 @@ pub(super) async fn dispatch_session_command(
             state
                 .pty_mgr
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .resize(uuid, cols, rows)
                 .map_err(|e| e.to_string())?;
             Ok(json!(null))
@@ -107,7 +107,11 @@ pub(super) async fn dispatch_session_command(
             let session_id = require_str(args, "sessionId")?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-            let size = state.pty_mgr.lock().unwrap().get_pty_size(uuid);
+            let size = state
+                .pty_mgr
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_pty_size(uuid);
             match size {
                 Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
                 None => Err(format!("Session not found: {session_id}")),
@@ -121,7 +125,10 @@ fn subscribe_session_command(state: &WsState, args: &Value) -> Result<Value, Str
     let session_id = require_str(args, "sessionId")?;
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    let pty_mgr = state.pty_mgr.lock().unwrap();
+    let pty_mgr = state
+        .pty_mgr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot = pty_mgr.get_screen_snapshot(uuid);
     let size = snapshot
         .as_ref()

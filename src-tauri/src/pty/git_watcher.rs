@@ -490,14 +490,20 @@ impl GitWatcher {
     }
 
     pub fn remove_session(&self, id: Uuid) {
-        self.cache.lock().unwrap().remove(&id);
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
     }
 
     /// Force a re-emit on the next tick for `id`. Called by
     /// `refresh_git_repos_for_sessions` callers so their newly-written `git_repos`
     /// isn't silently skipped by a stale cache hit.
     pub fn invalidate_session_cache(&self, id: Uuid) {
-        self.cache.lock().unwrap().remove(&id);
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
     }
 
     async fn poll(&self) {
@@ -510,7 +516,10 @@ impl GitWatcher {
             if repos.is_empty() {
                 // Nothing to watch. If cache still has this id, clear it so a later
                 // "repos appeared" transition re-emits.
-                let mut cache = self.cache.lock().unwrap();
+                let mut cache = self
+                    .cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.remove(&id);
                 continue;
             }
@@ -546,7 +555,10 @@ impl GitWatcher {
                 .collect();
 
             let changed = {
-                let cache = self.cache.lock().unwrap();
+                let cache = self
+                    .cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.get(&id) != Some(&refreshed)
             };
 
@@ -563,7 +575,10 @@ impl GitWatcher {
                     if let Some(events) = &self.events {
                         events.session_git_repos(id, refreshed.clone());
                     }
-                    self.cache.lock().unwrap().insert(id, refreshed);
+                    self.cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(id, refreshed);
                 } else {
                     log::debug!(
                         "[GitWatcher] gen mismatch on session {id} — refresh landed during poll; \
@@ -571,7 +586,10 @@ impl GitWatcher {
                     );
                     // Invalidate our cache so the next tick re-evaluates against the
                     // refreshed list.
-                    self.cache.lock().unwrap().remove(&id);
+                    self.cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&id);
                 }
             }
         }

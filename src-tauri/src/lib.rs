@@ -252,7 +252,10 @@ fn remove_container_route_until(
 
 pub(crate) fn install_container_route_remover(pty_mgr: &Arc<Mutex<PtyManager>>) {
     let weak_pty_mgr = Arc::downgrade(pty_mgr);
-    let container_backend = pty_mgr.lock().unwrap().container_backend();
+    let container_backend = pty_mgr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .container_backend();
     container_backend.set_route_remover(Arc::new(move |session_id, deadline| {
         remove_container_route_until(&weak_pty_mgr, session_id, deadline)
     }));
