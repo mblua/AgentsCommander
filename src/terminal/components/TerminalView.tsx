@@ -898,7 +898,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // it (the issue's own straddle class).
     const drain = attachDrains.get(entry);
     const releaseDrain = () => releaseAttachDrain(drain);
-    for (let index = 0; index < kept.length; index += 1) {
+    for (const [index, event] of kept.entries()) {
       const isLast = index === kept.length - 1;
       if (drain) {
         if (drain.inFlight === 0) {
@@ -915,7 +915,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         }
       };
       try {
-        writeTerminalBytes(entry, new Uint8Array(kept[index].data), onWritten);
+        writeTerminalBytes(entry, new Uint8Array(event.data), onWritten);
       } catch (error) {
         // xterm's 50-MiB queue guard throws synchronously BEFORE queueing the
         // chunk: the byte was never queued, so the drain must not wait for it,
@@ -926,7 +926,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         console.warn(`[terminal] attach replay ${sessionId} failed:`, error);
         return;
       }
-      markAppliedSequence(entry, eventSequence(kept[index]));
+      markAppliedSequence(entry, eventSequence(event));
     }
   };
 

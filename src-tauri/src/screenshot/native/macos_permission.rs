@@ -9,7 +9,7 @@ pub const MACOS_SCREEN_RECORDING_REQUIRED: &str = "Screenshot capture needs the 
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     pub(super) fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
 }

@@ -55,7 +55,9 @@ function ignoredLogPath(hookDir) {
   const replicaRoot = path.resolve(hookDir, "..", "..");
   const replicaName = path.basename(replicaRoot);
   if (!replicaName.startsWith("__")) return null; // not a Room replica: no Matrix above us
-  return path.join(path.resolve(replicaRoot, "..", ".."), replicaName.slice(1), "rtk-ignored-tools-claude.md");
+  return path.join(
+    path.resolve(replicaRoot, "..", ".."), replicaName.slice(1), "rtk-ignored-tools-claude.md"
+  );
 }
 
 // One `YYYYMMDD_HHMMSS <Tool>: <command>` line per skip, local time. The tool field
@@ -70,7 +72,8 @@ function logIgnored(hookDir, tool, cmd) {
     if (!target) return;
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
-    const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_` +
+      `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
     fs.appendFileSync(target, `${ts} ${tool}: ${cmd.replace(/\s+/g, " ").trim()}\n`, "utf8");
   } catch {
     // best effort
@@ -78,7 +81,7 @@ function logIgnored(hookDir, tool, cmd) {
 }
 
 // The hook protocol, shared by both hooks: read the payload, hand the command to
-// the shell's own `decide`, and answer.
+// the shell's own `decide`, and return only rewritten input, never a permission decision.
 //
 // `decide(body)` returns the complete replacement command, or `null` for "hand it
 // back untouched and put it on the record". It never writes to stdout and never
@@ -117,8 +120,6 @@ function runHook(hookDir, tool, decide) {
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          permissionDecision: "allow",
-          permissionDecisionReason: `ac_rtk_claude_${tool}`,
           updatedInput: ti,
         },
       })

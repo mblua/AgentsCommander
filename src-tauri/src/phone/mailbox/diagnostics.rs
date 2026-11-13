@@ -1,6 +1,6 @@
 // Only primitive/static/UUID diagnostics; expressions remain lazy when disabled.
 macro_rules! response_diag {
-    ($stage:literal, $outcome:expr, $id:expr) => {
+    ($stage:literal, $outcome:expr_2021, $id:expr_2021) => {
         if log::log_enabled!(
             target: "agentscommander_lib::response_close_diag",
             log::Level::Debug
@@ -23,7 +23,7 @@ macro_rules! response_diag {
 }
 
 macro_rules! response_diag_result {
-    ($value:expr, $stage:literal, $id:expr) => {{
+    ($value:expr_2021, $stage:literal, $id:expr_2021) => {{
         let result = $value;
         if log::log_enabled!(
             target: "agentscommander_lib::response_close_diag",
@@ -43,7 +43,7 @@ macro_rules! response_diag_result {
 }
 
 macro_rules! response_diag_local {
-    ($stage:literal, $outcome:expr, $id:expr) => {
+    ($stage:literal, $outcome:expr_2021, $id:expr_2021) => {
         crate::phone::mailbox::pty_claim::response_diag_emit_lazy(
             $stage,
             || $outcome,
@@ -54,7 +54,7 @@ macro_rules! response_diag_local {
 }
 
 macro_rules! response_diag_option_local {
-    ($value:expr, $stage:literal, $outcome:literal, $id:expr) => {
+    ($value:expr_2021, $stage:literal, $outcome:literal, $id:expr_2021) => {
         crate::phone::mailbox::pty_claim::response_diag_option_lazy(
             $value,
             $stage,
@@ -66,7 +66,7 @@ macro_rules! response_diag_option_local {
 }
 
 macro_rules! response_diag_result_local {
-    ($value:expr, $stage:literal, $id:expr) => {{
+    ($value:expr_2021, $stage:literal, $id:expr_2021) => {{
         let result = $value;
         crate::phone::mailbox::pty_claim::response_diag_result_ref(
             &result,

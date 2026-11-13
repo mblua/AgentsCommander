@@ -164,14 +164,17 @@ pub(crate) fn cleanup_fixture_on_drop(
 impl Drop for Fixture {
     fn drop(&mut self) {
         if self.cleanup_on_drop {
-            if let Some(cleanup) = self.drop_cleanup.take() {
-                cleanup_fixture_on_drop(&self.root, cleanup.remove_dir_all, cleanup.diagnostic);
-            } else {
-                cleanup_fixture_on_drop(
-                    &self.root,
-                    |root| fs::remove_dir_all(root),
-                    std::io::stderr().lock(),
-                );
+            match self.drop_cleanup.take() {
+                Some(cleanup) => {
+                    cleanup_fixture_on_drop(&self.root, cleanup.remove_dir_all, cleanup.diagnostic);
+                }
+                _ => {
+                    cleanup_fixture_on_drop(
+                        &self.root,
+                        |root| fs::remove_dir_all(root),
+                        std::io::stderr().lock(),
+                    );
+                }
             }
         }
     }

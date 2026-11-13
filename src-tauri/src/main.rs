@@ -136,7 +136,10 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
             | agentscommander_lib::cli::Commands::CodingAgent(_)
             | agentscommander_lib::cli::Commands::TerminalSnapshot(_)
     ) {
-        std::env::set_var("AC_MACHINE_OUTPUT", "1");
+        // SAFETY: runs before any thread starts
+        unsafe {
+            std::env::set_var("AC_MACHINE_OUTPUT", "1");
+        }
     }
     if !matches!(&cmd, Commands::TestReset(_)) {
         if let Err(error) =

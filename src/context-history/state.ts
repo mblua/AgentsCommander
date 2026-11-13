@@ -245,7 +245,7 @@ export function createHistoryState(
       if (list !== null) {
         sessionCount = selected !== null && list.includes(selected)
           ? selected
-          : list[list.length - 1];
+          : list[list.length - 1] ?? null;
       }
       setFiltersSignal({ ...filters(), sessionCount });
       resetAll();
