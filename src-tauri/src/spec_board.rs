@@ -50,6 +50,16 @@ pub(crate) async fn prepare_default_spec_directory(repo: &Path) -> Result<PathBu
     Ok(default_dir)
 }
 
+/// #4590 - UTF-8 decode errors of spec files. Each variant keeps the
+/// `FromUtf8Error` as `source()`; the text equals the pre-#4590 string.
+#[derive(Debug, thiserror::Error)]
+enum SpecTextError {
+    #[error("Spec file must be valid UTF-8")]
+    Open(#[source] std::string::FromUtf8Error),
+    #[error("Saved spec file is not UTF-8")]
+    Saved(#[source] std::string::FromUtf8Error),
+}
+
 pub(crate) async fn read_open_spec(path: &Path) -> Result<String, String> {
     let metadata = filesystem::spec_path_metadata(path)
         .await
@@ -62,8 +72,7 @@ pub(crate) async fn read_open_spec(path: &Path) -> Result<String, String> {
     let bytes = filesystem::read_spec_bytes(path)
         .await
         .map_err(|e| format!("Failed to read spec file: {e}"))?;
-    let content =
-        String::from_utf8(bytes).map_err(|_| "Spec file must be valid UTF-8".to_string())?;
+    let content = String::from_utf8(bytes).map_err(|e| SpecTextError::Open(e).to_string())?;
     Ok(content)
 }
 
@@ -71,7 +80,7 @@ pub(crate) async fn read_saved_spec(path: &Path) -> Result<String, String> {
     let final_bytes = filesystem::read_spec_bytes(path)
         .await
         .map_err(|e| format!("Failed to read saved spec file: {e}"))?;
-    String::from_utf8(final_bytes).map_err(|_| "Saved spec file is not UTF-8".to_string())
+    String::from_utf8(final_bytes).map_err(|e| SpecTextError::Saved(e).to_string())
 }
 
 pub(crate) async fn read_watched_spec(path: &Path) -> std::io::Result<Vec<u8>> {
