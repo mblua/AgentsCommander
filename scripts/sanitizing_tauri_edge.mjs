@@ -62,38 +62,53 @@ function measure(path, scan, receivers) {
     path);
   const imports = scan.items.filter(item => item.kind === 'use'), imported = [], references = [];
   const record = (rule, t) => { if (!edge) hit(m,rule,t.line,occurrenceIdentity(scan,t)); };
+  const ctx = { m, path, scan, ts, edge, receivers, imports, imported, references, record };
   for (let i = 0; i < ts.length; i++) {
-    const t = ts[i];
-    const emit = ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(';
-    if (t.text === '.' && emit && !edge) {
-      // Only a proven port emit is not core Tauri use; REAL and UNKNOWN stay counted.
-      const proof = receivers?.classify(path, scan, t) ??
-        { kind: UNKNOWN, reason: 'missing receiver context' };
-      if (proof.kind === UNKNOWN)
-        warning(m, path, t.line, { ambiguous: true, reason: proof.reason });
-      if (proof.kind !== PROVEN_PORT) record('emit_files', t);
-    }
-    if ((t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
-      ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') ||
-      (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
-      ts[i + 2]?.text === '(' && ts[i + 2].mate === ts[i + 3]?.index &&
-      receivers?.proveState(path, scan, t).proved === true)) record('state_files',t);
-    if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
-      ts[i - 2]?.kind === 'ident')) continue;
-    const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
-    if (value.startsWith('tauri::') || value === 'tauri' || /(?:^|::)AppHandle$/.test(value)) {
-      // Imports establish names; repeated imports needed by a split are not
-      // additional uses. An unused import still contributes its own signal.
-      if (imports.some(item => item.start <= t.start && t.start < item.end))
-        imported.push({t,value});
-      else { references.push(value); record('tauri_files',t); }
-      warning(m,path,t.line,r);
-    }
-    i = r.end - 1;
+    recordCoreUse(ctx, i);
+    i = recordTauriPath(ctx, i);
   }
   for (const {t,value} of imported) if (!references.some(
     ref => ref === value || ref.startsWith(value + '::')))
     record('tauri_files',t);
+  recordCommands(ctx);
+  return m;
+}
+
+function recordCoreUse({ path, scan, ts, edge, receivers, m, record }, i) {
+  const t = ts[i];
+  const emit = ['emit','emit_to'].includes(ts[i + 1]?.name) && ts[i + 2]?.text === '(';
+  if (t.text === '.' && emit && !edge) {
+    // Only a proven port emit is not core Tauri use; REAL and UNKNOWN stay counted.
+    const proof = receivers?.classify(path, scan, t) ??
+      { kind: UNKNOWN, reason: 'missing receiver context' };
+    if (proof.kind === UNKNOWN)
+      warning(m, path, t.line, { ambiguous: true, reason: proof.reason });
+    if (proof.kind !== PROVEN_PORT) record('emit_files', t);
+  }
+  if ((t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
+    ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') ||
+    (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
+    ts[i + 2]?.text === '(' && ts[i + 2].mate === ts[i + 3]?.index &&
+    receivers?.proveState(path, scan, t).proved === true)) record('state_files',t);
+}
+
+function recordTauriPath({ path, scan, ts, imports, imported, references, m, record }, i) {
+  const t = ts[i];
+  if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
+    ts[i - 2]?.kind === 'ident')) return i;
+  const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
+  if (value.startsWith('tauri::') || value === 'tauri' || /(?:^|::)AppHandle$/.test(value)) {
+    // Imports establish names; repeated imports needed by a split are not
+    // additional uses. An unused import still contributes its own signal.
+    if (imports.some(item => item.start <= t.start && t.start < item.end))
+      imported.push({t,value});
+    else { references.push(value); record('tauri_files',t); }
+    warning(m,path,t.line,r);
+  }
+  return r.end - 1;
+}
+
+function recordCommands({ path, scan, ts, m, record }) {
   const ordinals = new Map(); m.commandIds = new Set();
   for (const item of scan.items) {
     if (item.kind !== 'fn' || item.testOnly) continue;
@@ -108,25 +123,29 @@ function measure(path, scan, receivers) {
     record('command_files',scan.tokens[item.first]);
     for (const a of attrs) warning(m,path,a.line,a);
     const identity = `${path}:${key}#${ordinal}`; m.commandIds.add(identity);
-    let disk = false;
-    for (let i = 0; i < ts.length; i++) {
-      const t = ts[i];
-      if (item.bodyStart === null || t.start <= item.bodyStart || t.start >= item.end ||
-        t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
-          ts[i - 2]?.kind === 'ident')) continue;
-      const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
-      if (/^(?:(?:std|tokio)::)?fs::/.test(value) ||
-        /^(?:(?:std|tokio)::fs::)?File::(?:open|create)$/.test(value) ||
-        /^(?:(?:std|tokio)::fs::)?OpenOptions(?:::|$)/.test(value) ||
-          /^(?:(?:std|tokio)::fs::)?read_dir$/.test(value)) {
-        disk = true; warning(m,path,t.line,r);
-      }
-      i = r.end - 1;
-    }
+    const disk = touchesDisk(path, scan, ts, m, item);
     if (disk) m.commands.set(identity,
       hit(m,'disk_commands',item.line,occurrenceIdentity(scan,scan.tokens[item.first])));
   }
-  return m;
+}
+
+function touchesDisk(path, scan, ts, m, item) {
+  let disk = false;
+  for (let i = 0; i < ts.length; i++) {
+    const t = ts[i];
+    if (item.bodyStart === null || t.start <= item.bodyStart || t.start >= item.end ||
+      t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
+        ts[i - 2]?.kind === 'ident')) continue;
+    const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');
+    if (/^(?:(?:std|tokio)::)?fs::/.test(value) ||
+      /^(?:(?:std|tokio)::fs::)?File::(?:open|create)$/.test(value) ||
+      /^(?:(?:std|tokio)::fs::)?OpenOptions(?:::|$)/.test(value) ||
+        /^(?:(?:std|tokio)::fs::)?read_dir$/.test(value)) {
+      disk = true; warning(m,path,t.line,r);
+    }
+    i = r.end - 1;
+  }
+  return disk;
 }
 
 if (isMain(import.meta.url)) process.exitCode = await gateCli(runGate);
