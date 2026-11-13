@@ -40,7 +40,7 @@ export function rampColor(mean: number, theme: "dark" | "light"): string {
   const [low, mid, high] = theme === "dark" ? DARK_RAMP : LIGHT_RAMP;
   const m = Math.min(100, Math.max(0, mean));
   const [from, to, t] = m <= 50 ? [low, mid, m / 50] : [mid, high, (m - 50) / 50];
-  const hex = from.map((c, i) => Math.round(c + (to[i] - c) * t).toString(16).padStart(2, "0"));
+  const hex = from.map((c, i) => Math.round(c + ((to[i] ?? c) - c) * t).toString(16).padStart(2, "0"));
   return `#${hex.join("")}`;
 }
 

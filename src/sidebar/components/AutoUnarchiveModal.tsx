@@ -9,17 +9,17 @@ function cycleTabFocus(event: KeyboardEvent, focusables: HTMLElement[]): void {
   const index = focusables.indexOf(document.activeElement as HTMLElement);
   if (index === -1) {
     event.preventDefault();
-    (event.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
+    (event.shiftKey ? focusables[focusables.length - 1] : focusables[0])?.focus();
     return;
   }
   if (event.shiftKey) {
     if (index <= 0) {
       event.preventDefault();
-      focusables[focusables.length - 1].focus();
+      focusables[focusables.length - 1]?.focus();
     }
   } else if (index === focusables.length - 1) {
     event.preventDefault();
-    focusables[0].focus();
+    focusables[0]?.focus();
   }
 }
 
@@ -93,7 +93,7 @@ const AutoUnarchiveModal: Component = () => {
             >
               <p class="auto-unarchive-copy">
                 {entries().length === 1
-                  ? `${entries()[0].folderName} was restored to your project list. A session started inside it, and an archived project cannot hold a running session.`
+                  ? `${entries()[0]?.folderName} was restored to your project list. A session started inside it, and an archived project cannot hold a running session.`
                   : "These projects were restored to your project list because sessions started inside them, and archived projects cannot hold running sessions."}
               </p>
               <div class="auto-unarchive-list">

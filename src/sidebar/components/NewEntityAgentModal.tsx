@@ -161,7 +161,7 @@ const NewEntityAgentModal: Component<{
     if (currentIndex < 0) nextIndex = offset > 0 ? 0 : rows.length - 1;
     else nextIndex = (currentIndex + offset + rows.length) % rows.length;
     e.preventDefault();
-    rows[nextIndex].focus();
+    rows[nextIndex]?.focus();
   };
 
   const handleListKeyDown = (e: KeyboardEvent) => {

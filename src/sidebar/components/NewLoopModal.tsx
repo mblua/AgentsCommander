@@ -37,8 +37,9 @@ const NewLoopModal: Component<{
 
   createEffect(() => {
     const options = coordinatorOptions();
-    if (!selectedWorkgroup() && options.length === 1) {
-      setSelectedWorkgroup(options[0].workgroup);
+    const only = options[0];
+    if (!selectedWorkgroup() && options.length === 1 && only) {
+      setSelectedWorkgroup(only.workgroup);
     }
   });
 

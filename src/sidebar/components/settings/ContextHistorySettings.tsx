@@ -32,7 +32,8 @@ export function parseContextHistorySessionWindows(raw: string): number[] | null 
     if (!/^\d+$/.test(token)) return null;
     const value = Number(token);
     if (value < 1 || value > CONTEXT_HISTORY_SESSION_WINDOW_MAX) return null;
-    if (counts.length > 0 && value <= counts[counts.length - 1]) return null;
+    const previous = counts[counts.length - 1];
+    if (previous !== undefined && value <= previous) return null;
     counts.push(value);
   }
   return counts;

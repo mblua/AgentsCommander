@@ -93,7 +93,7 @@ export function sessionDisplayName(
       const projectFolder = originProject() || pathProject;
       const normalized = trimTrailingSlashes(wd.replaceAll("\\", "/"));
       const parts = normalized.split("/");
-      const agentDir = parts[parts.length - 1].replace(/^__?agent_/, "");
+      const agentDir = (parts[parts.length - 1] ?? "").replace(/^__?agent_/, "");
       return `${agentDir}@${projectFolder}`;
     }
     const normalized = trimTrailingSlashes(wd.replaceAll("\\", "/"));
@@ -216,8 +216,9 @@ const SessionItem: Component<{
   const openBotChooser = async () => {
     const settings = await SettingsAPI.get();
     const bots = settings.telegramBots || [];
-    if (bots.length === 1) {
-      await TelegramAPI.attach(props.session.id, bots[0].id);
+    const onlyBot = bots[0];
+    if (bots.length === 1 && onlyBot) {
+      await TelegramAPI.attach(props.session.id, onlyBot.id);
     } else if (bots.length > 1) {
       setAvailableBots(bots);
       setShowBotMenu(true);

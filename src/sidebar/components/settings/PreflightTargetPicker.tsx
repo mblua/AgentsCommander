@@ -37,9 +37,9 @@ export function nextEnabledIndex(
 ): number {
   const dir = from < 0 ? 1 : step;
   for (let i = from < 0 ? 0 : from + step; i >= 0 && i < rows.length; i += dir) {
-    if (!rows[i].running) return i;
+    if (!rows[i]?.running) return i;
   }
-  return from >= 0 && from < rows.length && !rows[from].running ? from : -1;
+  return from >= 0 && from < rows.length && !rows[from]?.running ? from : -1;
 }
 
 /** Lets the panel read and set the list's open state (Escape arbitration). */

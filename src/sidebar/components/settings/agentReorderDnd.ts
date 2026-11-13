@@ -31,6 +31,7 @@ export function autoScrollDelta(pointerY: number, listTop: number, listBottom: n
 export function reorderedIds(ids: readonly string[], fromIndex: number, targetIndex: number): string[] {
   const next = [...ids];
   const [moved] = next.splice(fromIndex, 1);
-  next.splice(targetIndex, 0, moved);
+  // `as`: keeps the old result for an out-of-range fromIndex (inserts undefined); see #4571 P04 report.
+  next.splice(targetIndex, 0, moved as string);
   return next;
 }

@@ -48,8 +48,8 @@ export const projectCollapseStore = {
     const ownerKey = projectKey(projectPath);
     setCollapsedProjects((prev) => {
       const next: Record<string, boolean> = {};
-      for (const k of Object.keys(prev)) {
-        next[k] = k === ownerKey ? prev[k] : true;
+      for (const [k, value] of Object.entries(prev)) {
+        next[k] = k === ownerKey ? value : true;
       }
       return next;
     });
