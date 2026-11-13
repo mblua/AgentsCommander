@@ -361,7 +361,10 @@ fn archive_clean_pair(
             (&journal.task, original_task),
             (&journal.status, original_status),
         ] {
-            let backup_hash = task_source_state(&root.join(side.backup.as_ref().unwrap()))
+            let Some(backup) = side.backup.as_ref() else {
+                return Err(clean_conflict("archive backup name missing"));
+            };
+            let backup_hash = task_source_state(&root.join(backup))
                 .map_err(write_failed)?
                 .hash;
             if backup_hash != Some(expected.hash.clone().unwrap_or_else(|| hash_bytes(&[]))) {
