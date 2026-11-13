@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PiCommandLocation {
@@ -209,69 +209,97 @@ enum TokenizedCommandPosition {
     Arguments,
 }
 
-fn tokenized_has_unsupported_pi_position(atoms: &[DecodedCmdAtom]) -> bool {
-    let mut position = TokenizedCommandPosition::Head;
-    let mut position_can_carry = true;
+struct PiPositionState {
+    position: TokenizedCommandPosition,
+    can_carry: bool,
+}
 
-    for atom in atoms {
-        let mut saw_syntax = false;
-        for (index, chunk) in atom.control_chunks.iter().enumerate() {
-            if !chunk.is_empty() {
-                saw_syntax = true;
-                match position {
-                    TokenizedCommandPosition::Head => {
-                        if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
-                            return true;
-                        }
-                        if position_can_carry && is_unsupported_wrapper(chunk) {
-                            position = TokenizedCommandPosition::WrapperArgument;
-                        } else {
-                            position = TokenizedCommandPosition::Arguments;
-                            position_can_carry = false;
-                        }
-                    }
-                    TokenizedCommandPosition::WrapperArgument => {
-                        if position_can_carry
-                            && (is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk))
-                        {
-                            return true;
-                        }
-                        position = TokenizedCommandPosition::Arguments;
-                        position_can_carry = false;
-                    }
-                    TokenizedCommandPosition::Arguments => {
-                        position_can_carry = false;
-                    }
+impl PiPositionState {
+    /// Returns true when the chunk puts a Pi executable in an unsupported position.
+    fn after_chunk(&mut self, chunk: &str) -> bool {
+        match self.position {
+            TokenizedCommandPosition::Head => {
+                if is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk) {
+                    return true;
+                }
+                if self.can_carry && is_unsupported_wrapper(chunk) {
+                    self.position = TokenizedCommandPosition::WrapperArgument;
+                } else {
+                    self.position = TokenizedCommandPosition::Arguments;
+                    self.can_carry = false;
                 }
             }
-
-            if let Some(control) = atom.unescaped_controls.get(index) {
-                saw_syntax = true;
-                match control {
-                    '&' | '|' => {
-                        position = TokenizedCommandPosition::Head;
-                        position_can_carry = true;
-                    }
-                    '<' | '>' | ')' => position_can_carry = false,
-                    '(' => {}
-                    _ => position_can_carry = false,
+            TokenizedCommandPosition::WrapperArgument => {
+                if self.can_carry
+                    && (is_exact_pi_executable(chunk) || is_reserved_pi_executable(chunk))
+                {
+                    return true;
                 }
+                self.position = TokenizedCommandPosition::Arguments;
+                self.can_carry = false;
+            }
+            TokenizedCommandPosition::Arguments => {
+                self.can_carry = false;
+            }
+        }
+        false
+    }
+
+    fn after_control(&mut self, control: char) {
+        match control {
+            '&' | '|' => {
+                self.position = TokenizedCommandPosition::Head;
+                self.can_carry = true;
+            }
+            '<' | '>' | ')' => self.can_carry = false,
+            '(' => {}
+            _ => self.can_carry = false,
+        }
+    }
+}
+
+/// `Break` = unsupported Pi position; `Continue(saw_syntax)` otherwise.
+fn scan_pi_atom(atom: &DecodedCmdAtom, state: &mut PiPositionState) -> ControlFlow<(), bool> {
+    let mut saw_syntax = false;
+    for (index, chunk) in atom.control_chunks.iter().enumerate() {
+        if !chunk.is_empty() {
+            saw_syntax = true;
+            if state.after_chunk(chunk) {
+                return ControlFlow::Break(());
             }
         }
 
+        if let Some(control) = atom.unescaped_controls.get(index) {
+            saw_syntax = true;
+            state.after_control(*control);
+        }
+    }
+    ControlFlow::Continue(saw_syntax)
+}
+
+fn tokenized_has_unsupported_pi_position(atoms: &[DecodedCmdAtom]) -> bool {
+    let mut state = PiPositionState {
+        position: TokenizedCommandPosition::Head,
+        can_carry: true,
+    };
+
+    for atom in atoms {
+        let ControlFlow::Continue(saw_syntax) = scan_pi_atom(atom, &mut state) else {
+            return true;
+        };
         if !saw_syntax {
-            position_can_carry = false;
+            state.can_carry = false;
         }
         // Candidate state crosses an argv boundary only when the suffix since
         // the last amp/pipe boundary is made of opening groups and, for the
         // wrapper state, one listed wrapper. Redirection, closing groups,
         // other literal chunks, and empty atoms consume that state.
         if matches!(
-            position,
+            state.position,
             TokenizedCommandPosition::Head | TokenizedCommandPosition::WrapperArgument
-        ) && !position_can_carry
+        ) && !state.can_carry
         {
-            position = TokenizedCommandPosition::Arguments;
+            state.position = TokenizedCommandPosition::Arguments;
         }
     }
 
