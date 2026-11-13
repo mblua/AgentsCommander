@@ -1512,12 +1512,12 @@ function normalizeTeamConfigResult(value: unknown): TeamConfigResult {
 
   const coordinator = value.coordinator;
   if (typeof coordinator !== "string") {
-    throw new Error("Invalid get_team_config response: coordinator must be a string");
+    throw new TypeError("Invalid get_team_config response: coordinator must be a string");
   }
 
   const rawRepos = value.repos;
   if (!Array.isArray(rawRepos)) {
-    throw new Error(
+    throw new TypeError(
       "Invalid get_team_config response: repos must be an array of { url: string; agents: string[] }",
     );
   }
