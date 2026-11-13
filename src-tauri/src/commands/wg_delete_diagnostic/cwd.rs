@@ -27,6 +27,8 @@ impl Drop for HandleGuard {
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 
         if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            // SAFETY: `HandleGuard` owns the snapshot/OpenProcess result; the check excludes null
+            // and INVALID_HANDLE_VALUE, and Drop closes the handle once.
             unsafe {
                 let _ = CloseHandle(self.0);
             }
@@ -136,6 +138,7 @@ pub(super) fn scan_cwd_processes_windows(wg_dir: &Path) -> Result<Vec<BlockerPro
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
     let canonical_wg = canonicalize_for_compare(wg_dir);
+    // SAFETY: GetCurrentProcessId takes no arguments and has no caller preconditions.
     let current_pid = unsafe { GetCurrentProcessId() };
     let mut out = Vec::new();
 
@@ -211,22 +214,30 @@ fn enumerate_processes_windows() -> Result<Vec<ProcessSnapshotEntry>, String> {
         TH32CS_SNAPPROCESS,
     };
 
+    // SAFETY: TH32CS_SNAPPROCESS requests all processes; CreateToolhelp32Snapshot ignores
+    // the PID for this flag. The failure sentinel is checked before HandleGuard owns it.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err("CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS) failed".into());
     }
     let snapshot = HandleGuard(snapshot);
 
+    // SAFETY: PROCESSENTRY32W contains integers and a UTF-16 array, all zero-valid;
+    // `dwSize` is set before Process32FirstW uses the writable entry.
     let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
     let mut out = Vec::new();
+    // SAFETY: `snapshot` owns the successful process snapshot; `entry.dwSize` is its full
+    // size and `&mut entry` provides writable PROCESSENTRY32W storage for Process32FirstW.
     let mut ok = unsafe { Process32FirstW(snapshot.raw(), &mut entry) };
     while ok != 0 {
         out.push(ProcessSnapshotEntry {
             pid: entry.th32ProcessID,
             name: nul_terminated_utf16(&entry.szExeFile),
         });
+        // SAFETY: `snapshot` remains open and `entry` retains its initialized dwSize;
+        // Process32NextW writes that same exclusively borrowed PROCESSENTRY32W.
         ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
     }
 
@@ -246,6 +257,8 @@ fn read_process_cwd_windows(pid: u32) -> Option<String> {
     };
 
     let handle =
+        // SAFETY: OpenProcess takes numeric rights/PID, with inheritance disabled; failure
+        // is checked for null before the returned handle is owned by HandleGuard.
         unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid) };
     if handle.is_null() {
         log::debug!("[wg_delete_diagnostic] CWD scan: OpenProcess failed for pid {pid}");
@@ -294,6 +307,9 @@ fn query_process_basic_info(
 
     let mut pbi = std::mem::MaybeUninit::<ProcessBasicInformationRaw>::uninit();
     let mut return_len: u32 = 0;
+    // SAFETY: `handle` is retained by read_process_cwd_windows' HandleGuard. `pbi` has
+    // the repr(C) ProcessBasicInformationRaw layout and full writable size; return_len
+    // is a writable u32 for NtQueryInformationProcess(ProcessBasicInformation).
     let status = unsafe {
         NtQueryInformationProcess(
             handle,
@@ -306,6 +322,8 @@ fn query_process_basic_info(
     if status != 0 {
         return None;
     }
+    // SAFETY: `status == 0` above is NtQueryInformationProcess success, which writes
+    // ProcessBasicInformation into `pbi`; its repr(C) fields are integers and raw pointers.
     Some(unsafe { pbi.assume_init() })
 }
 
@@ -315,6 +333,9 @@ fn query_wow64_peb_address(handle: windows_sys::Win32::Foundation::HANDLE) -> Op
 
     let mut peb_address: usize = 0;
     let mut return_len: u32 = 0;
+    // SAFETY: `handle` is retained by read_process_cwd_windows' HandleGuard;
+    // ProcessWow64Information writes a pointer-sized value into `peb_address`, with
+    // its exact size supplied and a separate writable `return_len`.
     let status = unsafe {
         NtQueryInformationProcess(
             handle,
@@ -344,6 +365,9 @@ fn read_remote_struct<T: Copy>(
     let mut out = std::mem::MaybeUninit::<T>::uninit();
     let requested = std::mem::size_of::<T>();
     let mut bytes_read: usize = 0;
+    // SAFETY: `out` is aligned writable storage for exactly `requested` bytes of T.
+    // ReadProcessMemory validates the remote address, never Rust-dereferences it, and
+    // `handle` remains owned by read_process_cwd_windows; bytes_read is a local usize.
     let ok = unsafe {
         ReadProcessMemory(
             handle,
@@ -356,6 +380,9 @@ fn read_remote_struct<T: Copy>(
     if ok == 0 || bytes_read != requested {
         return None;
     }
+    // SAFETY: The checks above require a successful full-size ReadProcessMemory copy.
+    // All callers instantiate T with the repr(C) remote prefixes (only integers/raw
+    // pointers, with all bit patterns allowed); no copied pointer is dereferenced locally.
     Some(unsafe { out.assume_init() })
 }
 
@@ -372,6 +399,9 @@ fn read_remote_bytes(
     }
     let mut buf = vec![0u8; len];
     let mut bytes_read: usize = 0;
+    // SAFETY: `buf` owns `len` writable bytes after the MAX_CWD_BYTES check; bytes_read
+    // is a local usize. ReadProcessMemory validates the remote address and copies into
+    // this buffer while read_process_cwd_windows keeps `handle` open.
     let ok = unsafe {
         ReadProcessMemory(
             handle,
