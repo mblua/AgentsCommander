@@ -501,58 +501,80 @@ pub(crate) fn codex_has_manual_resume(tokens: &[&str], codex_idx: usize) -> bool
 
 pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
     for agent in &settings.agents {
-        validate_agent_command_text(&format!("Agent \"{}\"", agent.label), &agent.command)?;
+        validate_agent_row(agent)?;
+    }
 
-        validate_env_rows(
-            &agent.envs,
-            &format!("Agent \"{}\" env settings", agent.label),
-        )?;
+    validate_profile_cells(settings)?;
 
-        // #529 (G8): reject a bad instructions filename here so the user gets a
-        // clear IPC error at save, not a silent fallback at launch. Empty/absent
-        // is allowed (means "use the command-derived default").
-        if let Some(f) = agent.instructions_filename.as_deref() {
-            let f = f.trim();
-            if !f.is_empty() && !crate::config::agent_command::is_safe_instructions_filename(f) {
-                return Err(format!(
-                    "Agent \"{}\" instructions filename is invalid: must be a bare .md filename \
-                        with no path separators",
-                    agent.label
-                ));
-            }
+    for (agent_name, letter) in &settings.coding_agent_profiles.default_profile_by_agent {
+        if !is_valid_profile_letter(letter) {
+            return Err(format!(
+                "Coding agent default profile for '{agent_name}' must be A through Z"
+            ));
         }
+    }
 
-        // #598: reject a bad config-seed dest at save so the user gets a clear
-        // IPC error here, not a silent fail-soft skip at launch. Inactive
-        // (disabled or empty dest) is allowed (means "no seeding").
-        if let Some(seed) = agent.config_seed.as_ref() {
-            if seed.is_active() {
-                validate_config_seed_dest(&seed.dest).map_err(|e| {
-                    format!("Agent \"{}\" config seed is invalid: {}", agent.label, e)
-                })?;
-                // #2162: a dest ending in an OS token names the same folder as
-                // the OS variant of the shorter dest. Warn, never reject.
-                if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
-                    if stem.is_empty() {
-                        log::warn!(
-                            "[config-seed] agent \"{}\" dest '{}' is only an OS token suffix",
-                            agent.label,
-                            seed.dest.trim()
-                        );
-                    } else {
-                        log::warn!(
-                            "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names \
-                                the same template folder as the OS variant of dest '{}'",
-                            agent.label,
-                            seed.dest.trim(),
-                            stem
-                        );
-                    }
+    Ok(())
+}
+
+fn validate_agent_row(agent: &AgentConfig) -> Result<(), String> {
+    validate_agent_command_text(&format!("Agent \"{}\"", agent.label), &agent.command)?;
+
+    validate_env_rows(
+        &agent.envs,
+        &format!("Agent \"{}\" env settings", agent.label),
+    )?;
+
+    // #529 (G8): reject a bad instructions filename here so the user gets a
+    // clear IPC error at save, not a silent fallback at launch. Empty/absent
+    // is allowed (means "use the command-derived default").
+    if let Some(f) = agent.instructions_filename.as_deref() {
+        let f = f.trim();
+        if !f.is_empty() && !crate::config::agent_command::is_safe_instructions_filename(f) {
+            return Err(format!(
+                "Agent \"{}\" instructions filename is invalid: must be a bare .md filename \
+                    with no path separators",
+                agent.label
+            ));
+        }
+    }
+
+    validate_agent_config_seed(agent)
+}
+
+fn validate_agent_config_seed(agent: &AgentConfig) -> Result<(), String> {
+    // #598: reject a bad config-seed dest at save so the user gets a clear
+    // IPC error here, not a silent fail-soft skip at launch. Inactive
+    // (disabled or empty dest) is allowed (means "no seeding").
+    if let Some(seed) = agent.config_seed.as_ref() {
+        if seed.is_active() {
+            validate_config_seed_dest(&seed.dest)
+                .map_err(|e| format!("Agent \"{}\" config seed is invalid: {}", agent.label, e))?;
+            // #2162: a dest ending in an OS token names the same folder as
+            // the OS variant of the shorter dest. Warn, never reject.
+            if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
+                if stem.is_empty() {
+                    log::warn!(
+                        "[config-seed] agent \"{}\" dest '{}' is only an OS token suffix",
+                        agent.label,
+                        seed.dest.trim()
+                    );
+                } else {
+                    log::warn!(
+                        "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names \
+                            the same template folder as the OS variant of dest '{}'",
+                        agent.label,
+                        seed.dest.trim(),
+                        stem
+                    );
                 }
             }
         }
     }
+    Ok(())
+}
 
+fn validate_profile_cells(settings: &AppSettings) -> Result<(), String> {
     for (agent_id, cells) in &settings.coding_agent_profiles.profiles_by_agent {
         for (letter, cell) in cells {
             if !is_valid_profile_letter(letter) {
@@ -585,14 +607,6 @@ pub fn validate_agent_commands(settings: &AppSettings) -> Result<(), String> {
                     &effective,
                 )?;
             }
-        }
-    }
-
-    for (agent_name, letter) in &settings.coding_agent_profiles.default_profile_by_agent {
-        if !is_valid_profile_letter(letter) {
-            return Err(format!(
-                "Coding agent default profile for '{agent_name}' must be A through Z"
-            ));
         }
     }
 
