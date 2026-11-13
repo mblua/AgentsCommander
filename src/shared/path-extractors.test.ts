@@ -4,6 +4,8 @@ import {
   extractWorkgroupName,
   extractAgentName,
   computeTrailingText,
+  trimTrailingSeparators,
+  trimTrailingSlashes,
 } from './path-extractors';
 
 describe('path-extractors', () => {
@@ -121,5 +123,26 @@ describe('path-extractors, Room (#1614 F1)', () => {
     expect(extractProjectName(w)).toBe('foo');
     expect(extractWorkgroupName(w)).toBe('ROOM-19-DEV-TEAM');
     expect(extractAgentName(w)).toBeNull();
+  });
+});
+
+describe('trailing separator trim (#4456 S8786)', () => {
+  const samples = [
+    '', '/', '///', 'a', 'a//', '//a//', 'a\\/\\', 'C:\\x\\', 'a/\\/', '/a/b/',
+  ];
+
+  it.each(samples)('trimTrailingSlashes matches the old regex for %j', (s) => {
+    expect(trimTrailingSlashes(s)).toBe(s.replace(/\/+$/, ''));
+  });
+
+  it.each(samples)('trimTrailingSeparators matches the old regex for %j', (s) => {
+    expect(trimTrailingSeparators(s)).toBe(s.replace(/[\\/]+$/, ''));
+  });
+
+  it('keeps a long run of separators that is not at the end', () => {
+    const slashes = `${'/'.repeat(100_000)}x`;
+    expect(trimTrailingSlashes(slashes)).toBe(slashes);
+    const mixed = `${'\\/'.repeat(50_000)}x`;
+    expect(trimTrailingSeparators(mixed)).toBe(mixed);
   });
 });

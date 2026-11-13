@@ -7,6 +7,7 @@ import AgentPickerModal from "./AgentPickerModal";
 import { automationIdPart } from "./replica-repo-badges";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
+import { trimTrailingSlashes } from "../../shared/path-extractors";
 import { homeStore } from "../../main/stores/home";
 import { toastStore } from "../../shared/stores/toasts";
 import { launchErrorMessage } from "../../shared/launch-errors";
@@ -356,9 +357,9 @@ const AcDiscoveryPanel: Component = () => {
           >
             {(() => {
               const replica = ctxMenuReplica()!;
-              const rp = replica.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
+              const rp = trimTrailingSlashes(replica.path.replaceAll("\\", "/").toLowerCase());
               const session = sessionsStore.sessions.find(s =>
-                s.workingDirectory.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") === rp
+                trimTrailingSlashes(s.workingDirectory.replaceAll("\\", "/").toLowerCase()) === rp
               );
               if (!session) return null;
               return (

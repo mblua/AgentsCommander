@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import type { Component } from "solid-js";
 import type { TeamAgentSource } from "../../shared/types";
 import { EntityAPI } from "../../shared/ipc";
+import { trimTrailingSeparators } from "../../shared/path-extractors";
 import { repoDisplayName } from "../../shared/repo-display-name";
 import { projectStore } from "../stores/project";
 import { TeamContextAlertsEditor } from "./TeamContextAlertsEditor";
@@ -54,7 +55,7 @@ const NewTeamModal: Component<{
   );
 
   const currentProjectName = createMemo(() => {
-    const path = props.projectPath.replace(/[\\/]+$/, "");
+    const path = trimTrailingSeparators(props.projectPath);
     const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
     return separatorIndex >= 0 ? path.slice(separatorIndex + 1) : path;
   });

@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import type { Component } from "solid-js";
 import { CANONICAL_AC_ROOT_DIR } from "../../shared/constants";
 import { EntityAPI } from "../../shared/ipc";
+import { trimTrailingSeparators } from "../../shared/path-extractors";
 import { repoDisplayName } from "../../shared/repo-display-name";
 import type {
   TeamWizardAgentEntry,
@@ -48,7 +49,7 @@ const EditTeamModal: Component<{
   );
 
   const currentProjectName = createMemo(() => {
-    const path = props.projectPath.replace(/[\\/]+$/, "");
+    const path = trimTrailingSeparators(props.projectPath);
     const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
     return separatorIndex >= 0 ? path.slice(separatorIndex + 1) : path;
   });
@@ -113,7 +114,7 @@ const EditTeamModal: Component<{
         const agentRef = portableAgentRef(configPath);
         if (!discoveredRefs.has(agentRef)) {
           const fallbackPath =
-            `${props.projectPath.replace(/[\\/]+$/, "")}/${CANONICAL_AC_ROOT_DIR}/${agentRef}`;
+            `${trimTrailingSeparators(props.projectPath)}/${CANONICAL_AC_ROOT_DIR}/${agentRef}`;
           entries.push({
             name: agentRef.replace(/^_agent_/, ""),
             path: fallbackPath,

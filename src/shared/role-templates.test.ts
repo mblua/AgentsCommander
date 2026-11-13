@@ -248,3 +248,18 @@ describe("sourceLabel", () => {
     );
   });
 });
+
+describe("slugifyTemplateName dash trim (#4456 S8786)", () => {
+  it.each([
+    ["", ""],
+    ["-", ""],
+    ["--a--", "a"],
+    ["a-b", "a-b"],
+  ])("trims edge dashes of %j", (input, expected) => {
+    expect(slugifyTemplateName(input)).toBe(expected);
+  });
+
+  it("handles a long run of dashes not at the end", () => {
+    expect(slugifyTemplateName(`${"-".repeat(100_000)}a`)).toBe("a");
+  });
+});

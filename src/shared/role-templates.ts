@@ -15,13 +15,22 @@ export function filterRoleTemplates(
   );
 }
 
+function trimDashes(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text[start] === "-") start++;
+  while (end > start && text[end - 1] === "-") end--;
+  return text.slice(start, end);
+}
+
 export function slugifyTemplateName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[\s_]+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  return trimDashes(
+    name
+      .toLowerCase()
+      .replace(/[\s_]+/g, "-")
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-"),
+  );
 }
 
 export function sourceLabel(template: Pick<RoleTemplateMeta, "source">): string {
