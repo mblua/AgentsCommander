@@ -138,6 +138,44 @@ struct ChunkEffect {
     contributed: bool,
 }
 
+/// `esc` is the index of the 0x1b byte. `None` = the chunk ends right after
+/// ESC (caller `break`s). `Some(i)` = index of the last byte of the sequence;
+/// the caller's own `i += 1` steps past it.
+fn skip_escape_sequence(data: &[u8], esc: usize) -> Option<usize> {
+    let i = esc + 1;
+    if i >= data.len() {
+        return None;
+    }
+    Some(match data[i] {
+        b'[' | b'O' => skip_csi_tail(data, i + 1),
+        b']' | b'P' | b'_' | b'^' | b'X' => skip_string_tail(data, i + 1),
+        _ => i,
+    })
+}
+
+fn skip_csi_tail(data: &[u8], mut i: usize) -> usize {
+    while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+        i += 1;
+    }
+    i
+}
+
+fn skip_string_tail(data: &[u8], mut i: usize) -> usize {
+    while i < data.len() {
+        if data[i] == 0x07 {
+            break;
+        }
+        if data[i] == 0x1b {
+            if i + 1 < data.len() && data[i + 1] == 0x5c {
+                i += 1;
+            }
+            break;
+        }
+        i += 1;
+    }
+    i
+}
+
 /// Pure classifier. `pending` persists across chunks, while the ESC parse state
 /// is local to this chunk so it can never swallow a later chunk's content.
 fn classify_chunk(pending: &mut bool, data: &[u8]) -> ChunkEffect {
@@ -147,36 +185,10 @@ fn classify_chunk(pending: &mut bool, data: &[u8]) -> ChunkEffect {
     while i < data.len() {
         let b = data[i];
         match b {
-            0x1b => {
-                i += 1;
-                if i >= data.len() {
-                    break;
-                }
-                match data[i] {
-                    b'[' | b'O' => {
-                        i += 1;
-                        while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
-                            i += 1;
-                        }
-                    }
-                    b']' | b'P' | b'_' | b'^' | b'X' => {
-                        i += 1;
-                        while i < data.len() {
-                            if data[i] == 0x07 {
-                                break;
-                            }
-                            if data[i] == 0x1b {
-                                if i + 1 < data.len() && data[i + 1] == 0x5c {
-                                    i += 1;
-                                }
-                                break;
-                            }
-                            i += 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            0x1b => match skip_escape_sequence(data, i) {
+                Some(end) => i = end,
+                None => break,
+            },
             0x0d | 0x0a => {
                 if *pending {
                     submitted = true;
