@@ -18,6 +18,7 @@ import {
   type GithubRepoRef,
 } from "../../shared/github-url";
 import { stripFrontmatter } from "../../shared/markdown";
+import { trimTrailingSeparators } from "../../shared/path-extractors";
 import { quotaChipAttrs } from "./agent-quota";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
@@ -293,7 +294,7 @@ function pathSeparatorFor(path: string): "\\" | "/" {
 }
 
 function trimTrailingPathSeparators(path: string): string {
-  return path.replace(/[\\/]+$/, "") || path;
+  return trimTrailingSeparators(path) || path;
 }
 
 function isAbsolutePath(path: string): boolean {

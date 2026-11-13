@@ -1,6 +1,7 @@
 import { createMemo, createSignal } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
+import { trimTrailingSlashes } from "../../shared/path-extractors";
 import type { RepoMatch, Session, SessionCommunication, SessionRepo, SessionSelection, SessionsState, Team } from "../../shared/types";
 import type { TransportConnectionState } from "../../shared/transport";
 import { projectStore } from "./project";
@@ -147,7 +148,7 @@ function advanceRowMembershipGeneration(): void {
 }
 
 function normalizePath(p: string): string {
-  return p.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
+  return trimTrailingSlashes(p.replaceAll("\\", "/").toLowerCase());
 }
 
 function isUnderAnyPath(path: string, roots: string[]): boolean {

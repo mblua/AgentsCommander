@@ -1,6 +1,20 @@
 import { CANONICAL_AC_ROOT_DIR } from './constants';
 import { isNumberedEntityDirName } from './entity-prefix';
 
+/** Drops the trailing run of `/`. */
+export function trimTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end--;
+  return path.slice(0, end);
+}
+
+/** Drops the trailing run of `/` and `\`. */
+export function trimTrailingSeparators(path: string): string {
+  let end = path.length;
+  while (end > 0 && (path[end - 1] === '/' || path[end - 1] === '\\')) end--;
+  return path.slice(0, end);
+}
+
 function pathParts(workDir: string): string[] {
   return workDir.replaceAll('\\', '/').split('/').filter(s => s.length > 0);
 }
