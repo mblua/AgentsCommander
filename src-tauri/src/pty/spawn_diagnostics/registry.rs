@@ -315,17 +315,9 @@ impl SpawnRecord {
     /// a redaction that silently fails is worse than none, because it invites the log to
     /// be pasted in public.
     fn scrub(&self, text: &str) -> String {
-        // Exact needles first (the secret-keyed env values this child was given), then
-        // the URL-shape redactor AC already applies to error text, so a key smuggled
-        // inside a URL the child printed (`?key=...`, `/bot<token>/`) does not walk out
-        // through `head=` either.
-        let mut text = crate::telegram::redact::redact(text);
-        for secret in &self.redact {
-            if text.contains(secret.as_str()) {
-                text = text.replace(secret.as_str(), "<redacted>");
-            }
-        }
-        text
+        // The exact secret-keyed env values this child was given AND the URL/credential
+        // shapes, masked in one pass over the original text (#4319).
+        crate::telegram::redact::redact_with_needles(text, &self.redact)
     }
 
     fn argv_log(&self) -> String {

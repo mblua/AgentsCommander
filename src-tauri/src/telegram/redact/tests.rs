@@ -180,3 +180,86 @@ fn redacts_telegram_token_surrounded_by_non_ascii() {
     assert!(got.contains("中文"), "lost 中文: {got}");
     assert!(got.contains("ñ"), "lost ñ: {got}");
 }
+
+// #4319 — AgentsCommander credentials. `logging.rs` passes every log line
+// and every error-modal message through `redact()`, so testing `redact()`
+// covers both sinks.
+const FAKE_UUID: &str = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
+
+/// #4319 — container API tokens are masked wherever they appear.
+#[test]
+fn redacts_container_api_token() {
+    let msg = redact(&format!(
+        "auth failed for ac-container-{FAKE_UUID}-9f0c2a7e-5d1b-4c3a-8e6f-2b7d9a1c4e50 (expired)"
+    ));
+    assert_eq!(msg, "auth failed for ac-container-*** (expired)");
+}
+
+/// #4319 — a UUID right after each secret context is masked; the context
+/// itself stays so the operator can see which credential was involved.
+#[test]
+fn redacts_uuid_after_secret_contexts() {
+    for (raw, want) in [
+        (
+            format!("env AGENTSCOMMANDER_TOKEN={FAKE_UUID} set"),
+            "env AGENTSCOMMANDER_TOKEN=*** set",
+        ),
+        (
+            format!("env AGENTSCOMMANDER_API_TOKEN=\"{FAKE_UUID}\""),
+            "env AGENTSCOMMANDER_API_TOKEN=\"***\"",
+        ),
+        (
+            format!("ran send --token {FAKE_UUID} --root x"),
+            "ran send --token *** --root x",
+        ),
+        (
+            format!("ran send --token={FAKE_UUID}"),
+            "ran send --token=***",
+        ),
+        (
+            format!("header Authorization: Bearer {FAKE_UUID}"),
+            "header Authorization: Bearer ***",
+        ),
+    ] {
+        let msg = redact(&raw);
+        assert_eq!(msg, want, "input: {raw}");
+        assert!(!msg.contains(FAKE_UUID), "leaked: {msg}");
+    }
+}
+
+/// #4319 — bare ids (session/message/client/op) are UUIDs too and must
+/// stay visible: only a secret context marks a UUID as a secret.
+#[test]
+fn keeps_bare_uuid_without_secret_context() {
+    for raw in [
+        format!("session {FAKE_UUID} closed"),
+        format!("queued message {FAKE_UUID} to peer"),
+        format!("client_id=container-{FAKE_UUID}-x"),
+        format!("--token-file {FAKE_UUID}"),
+        format!("Bearer-ish {FAKE_UUID}"),
+    ] {
+        assert_eq!(redact(&raw), raw);
+    }
+}
+
+/// #4319 — `{:?}` of a Telegram bot config never shows the token, while
+/// serialization still writes it.
+#[test]
+fn telegram_bot_config_debug_redacts_token() {
+    let bot = crate::telegram::types::TelegramBotConfig {
+        id: "bot-1".to_string(),
+        label: "Main".to_string(),
+        token: "987654321:FAKE_TOKEN_FOR_TESTING_xxxxxxxxxxxxxxx".to_string(),
+        chat_id: 42,
+        color: "blue".to_string(),
+    };
+    let debug = format!("{bot:?}");
+    assert!(!debug.contains("FAKE_TOKEN_FOR_TESTING"), "leaked: {debug}");
+    assert!(debug.contains("token: \"[REDACTED]\""), "got: {debug}");
+    assert!(debug.contains("chat_id: 42"), "got: {debug}");
+    let json = serde_json::to_string(&bot).expect("serialize");
+    assert!(
+        json.contains("FAKE_TOKEN_FOR_TESTING"),
+        "serialization changed: {json}"
+    );
+}
