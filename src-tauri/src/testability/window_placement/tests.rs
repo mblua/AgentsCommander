@@ -1,7 +1,7 @@
 use super::*;
 
 fn exe(name: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(format!(r"C:\tmp\{name}"))
+    std::path::Path::new("tmp").join(name)
 }
 
 #[test]
