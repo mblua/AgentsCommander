@@ -323,8 +323,8 @@ impl DiscoveryBranchWatcher {
                     let mgr = self.session_manager.read().await;
                     match mgr.find_by_name(&entry.session_name).await {
                         Some(id) => {
-                            let gen = mgr.get_git_repos_gen(id).await.unwrap_or(0);
-                            (Some(id), gen)
+                            let r#gen = mgr.get_git_repos_gen(id).await.unwrap_or(0);
+                            (Some(id), r#gen)
                         }
                         None => (None, 0),
                     }

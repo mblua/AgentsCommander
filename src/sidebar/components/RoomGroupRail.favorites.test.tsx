@@ -821,7 +821,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake();
       const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
-        const { rail, ui, rust, docs } = await prepareReorderTargets();
+        const { ui, rust, docs } = await prepareReorderTargets();
         mockRect(ui, 80, 0); // zero-height == detached, filtered out of the candidates
         mockRect(rust, 114, 0);
         mockRect(docs, 148);

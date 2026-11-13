@@ -714,6 +714,10 @@ impl fmt::Debug for OutboxMessage {
     }
 }
 
+pub(crate) fn outbox_message_file(outbox: &Path, id: &str) -> PathBuf {
+    outbox.join(format!("{id}.json"))
+}
+
 /// Receipt paths for an outbox message `id`; one spelling for CLI and mailbox.
 pub(crate) fn outbox_delivered_receipt(outbox: &Path, id: &str) -> PathBuf {
     outbox.join("delivered").join(format!("{id}.json"))
