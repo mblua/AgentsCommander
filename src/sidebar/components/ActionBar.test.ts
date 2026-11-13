@@ -114,6 +114,9 @@ vi.mock("./SettingsModal", () => ({
   default: () => null,
 }));
 
+import { onOpenSettings } from "../../shared/ipc";
+import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
+
 import ActionBar, { activeClass, computeResourceBadgeState, triState } from "./ActionBar";
 import { projectStore } from "../stores/project";
 import {
@@ -412,5 +415,49 @@ describe("ActionBar helpers (#2611)", () => {
   it("activeClass returns the old class suffix strings", () => {
     expect(activeClass(true)).toBe("active");
     expect(activeClass(false)).toBe("");
+  });
+});
+
+
+describe("ActionBar pending mount cleanup (#4441)", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  function pendingRegistration() {
+    let resolve!: (unlisten: () => void) => void;
+    const pending = new Promise<() => void>((done) => { resolve = done; });
+    vi.mocked(onOpenSettings).mockReturnValueOnce(pending);
+    vi.mocked(resourceMonitorStore.startPolling).mockClear();
+    return resolve;
+  }
+
+  it("releases late registration and skips polling after disposal", async () => {
+    const resolve = pendingRegistration();
+    const unlisten = vi.fn();
+    const { dispose } = renderActionBar();
+    dispose();
+    resolve(unlisten);
+    await Promise.resolve();
+
+    expect(resourceMonitorStore.startPolling).not.toHaveBeenCalled();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("retains polling while mounted and releases both handles on disposal", async () => {
+    const resolve = pendingRegistration();
+    const unlisten = vi.fn();
+    const { dispose } = renderActionBar();
+    resolve(unlisten);
+    await Promise.resolve();
+
+    expect(resourceMonitorStore.startPolling).toHaveBeenCalledOnce();
+    const stop = vi.mocked(resourceMonitorStore.startPolling).mock.results[0].value;
+    expect(stop).not.toHaveBeenCalled();
+    expect(unlisten).not.toHaveBeenCalled();
+    dispose();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(unlisten).toHaveBeenCalledOnce();
   });
 });
