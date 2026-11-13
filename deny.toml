@@ -28,7 +28,6 @@ ignore = [
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via gtk3-macros (Linux)" },
   { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30/0.38/0.39 transitive; needs upgrades" },
   { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30/0.38/0.39 transitive; needs upgrades" },
-  { id = "RUSTSEC-2026-0386", reason = "tokio 1.51.0 AsyncFd unsound; needs bump" },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, via fontdue (snapshot renderer)" },
   { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained, via serde_yaml" },
   { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, via zbus (Linux)" },
