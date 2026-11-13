@@ -28,8 +28,8 @@ impl WebAccessToken {
 pub(crate) fn read_persisted_web_token(
     config_dir: Option<&std::path::Path>,
 ) -> Result<String, String> {
-    let token_path = config_dir.ok_or("No config dir")?.join("web-token.txt");
-    crate::filesystem::documents::read_config_document(&token_path)
+    let config_dir = config_dir.ok_or("No config dir")?;
+    crate::filesystem::documents::read_web_access_token(config_dir)
         .map_err(|e| format!("Cannot read web token: {e}"))
 }
 
