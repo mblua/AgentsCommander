@@ -79,9 +79,21 @@ const PI_POSITIVE: &[&str] = &[
     "pi.exe",
     "Pi.CMD",
     "pi.ps1",
-    r"C:\Tools\pi.exe",
-    r"\\server\share\pi.cmd",
-    r"\\?\C:\Tools\pi.exe",
+    if cfg!(windows) {
+        r"C:\Tools\pi.exe"
+    } else {
+        "/opt/tools/pi"
+    },
+    if cfg!(windows) {
+        r"\\server\share\pi.cmd"
+    } else {
+        "/opt/tools/pi"
+    },
+    if cfg!(windows) {
+        r"\\?\C:\Tools\pi.exe"
+    } else {
+        "/opt/tools/pi"
+    },
     "/usr/local/bin/pi",
     "  pi  ",
 ];
@@ -223,7 +235,15 @@ fn direct_shell_capability_matrix() {
         assert!(supports_self_handoff_switch(shell));
     }
 
-    for shell in ["agent", "agent.exe", r"C:\Cursor\agent.cmd"] {
+    for shell in [
+        "agent",
+        "agent.exe",
+        if cfg!(windows) {
+            r"C:\Cursor\agent.cmd"
+        } else {
+            "/opt/cursor/agent.cmd"
+        },
+    ] {
         assert!(needs_explicit_enter(shell));
         assert_eq!(
             resolve_logical_command_text(shell, LogicalPtyCommand::Clear),

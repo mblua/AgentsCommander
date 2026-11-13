@@ -69,11 +69,19 @@ fn agent_clis_require_explicit_enter() {
     for shell in [
         "codex",
         "codex.exe",
-        "C:\\Users\\maria\\.codex\\codex.exe",
+        if cfg!(windows) {
+            "C:\\Users\\maria\\.codex\\codex.exe"
+        } else {
+            "/home/u/.codex/codex"
+        },
         "/usr/local/bin/claude",
         "agy",
         "agy.exe",
-        "C:\\tools\\agy.cmd",
+        if cfg!(windows) {
+            "C:\\tools\\agy.cmd"
+        } else {
+            "/opt/tools/agy.cmd"
+        },
         "antigravity",
         "agent.exe",
         "hermes",

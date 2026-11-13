@@ -934,11 +934,16 @@ fn common_validation_rejects_blank_host_and_line_separators() {
 fn prepare_launch_keeps_cmd_exe_fallback_without_host_shell_and_direct_otherwise() {
     // No host shell + non-direct command: historical cmd.exe /C wrapper.
     let launch = prepare_launch("claude", &["--x".to_string()], None).expect("fallback launch");
-    assert_eq!(launch.program, "cmd.exe");
-    assert_eq!(
-        launch.args,
-        vec!["/C".to_string(), "claude".to_string(), "--x".to_string()]
-    );
+    if cfg!(windows) {
+        assert_eq!(launch.program, "cmd.exe");
+        assert_eq!(
+            launch.args,
+            vec!["/C".to_string(), "claude".to_string(), "--x".to_string()]
+        );
+    } else {
+        assert_eq!(launch.program, "claude");
+        assert_eq!(launch.args, vec!["--x".to_string()]);
+    }
     // Direct exe: unchanged program + argv.
     let launch = prepare_launch("claude.exe", &["--x".to_string()], None).expect("direct launch");
     assert_eq!(launch.program, "claude.exe");

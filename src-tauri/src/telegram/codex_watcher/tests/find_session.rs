@@ -35,6 +35,8 @@ fn find_session_file_matches_by_cwd_canonicalization() {
     assert_eq!(found, Some(expected_a));
 }
 
+// Codex writes backslash cwds only on Windows; cwd_canonicalization covers matching.
+#[cfg(windows)]
 #[test]
 fn find_session_file_matches_forward_slash_ac_input_against_backslash_codex_input() {
     let tmp = tempfile::tempdir().unwrap();

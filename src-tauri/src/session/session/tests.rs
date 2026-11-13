@@ -218,19 +218,35 @@ fn live_session_record_requires_id_and_non_exited_status() {
 
 #[test]
 fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
-    let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team");
+    let p = find_workgroup_task_path_for_cwd(if cfg!(windows) {
+        r"C:\proj\.ac\wg-3-team"
+    } else {
+        "/proj/.ac/wg-3-team"
+    });
     assert_eq!(
         p,
-        Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))
+        Some(std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\proj\.ac\wg-3-team\TASK.md"
+        } else {
+            "/proj/.ac/wg-3-team/TASK.md"
+        }))
     );
 }
 
 #[test]
 fn find_workgroup_task_path_walks_up_from_replica_dir() {
-    let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team\__agent_dev-rust");
+    let p = find_workgroup_task_path_for_cwd(if cfg!(windows) {
+        r"C:\proj\.ac\wg-3-team\__agent_dev-rust"
+    } else {
+        "/proj/.ac/wg-3-team/__agent_dev-rust"
+    });
     assert_eq!(
         p,
-        Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))
+        Some(std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\proj\.ac\wg-3-team\TASK.md"
+        } else {
+            "/proj/.ac/wg-3-team/TASK.md"
+        }))
     );
 }
 
@@ -239,6 +255,8 @@ fn find_workgroup_task_path_returns_none_outside_workgroup() {
     assert_eq!(find_workgroup_task_path_for_cwd(r"C:\Users\me\misc"), None);
 }
 
+// The verbatim UNC prefix exists only on Windows; the two path-walk tests cover Unix.
+#[cfg(windows)]
 #[test]
 fn find_workgroup_task_path_handles_unc_prefix_input() {
     // The helper is a pure path walk; it does not strip `\\?\` itself —
