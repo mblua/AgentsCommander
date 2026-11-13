@@ -199,37 +199,7 @@ pub(super) fn resolve_selection_commit_target(
     old_id: Option<Uuid>,
     old_mode: SelectionMode,
 ) -> Result<(SelectionMode, Option<Uuid>, Option<SessionStatus>), String> {
-    let (removals, exits, finalizations) = lifecycle_sets;
-
-    let projected_status = |id: Uuid| -> Option<SessionStatus> {
-        if removals.contains(&id) {
-            return None;
-        }
-        if let Some(mutation) = mutations
-            .finalizations
-            .iter()
-            .find(|mutation| match mutation {
-                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
-                    binding.session_id == id
-                }
-            })
-        {
-            return Some(match mutation {
-                FinalizeMutation::Live(_, _) => SessionStatus::Running,
-                FinalizeMutation::Dormant(_, _, code) => SessionStatus::Exited(*code),
-            });
-        }
-        let current = state.sessions.get(&id)?.status.clone();
-        if matches!(current, SessionStatus::Exited(_)) {
-            return Some(current);
-        }
-        mutations
-            .mark_exited
-            .iter()
-            .find(|(candidate, _)| *candidate == id)
-            .map(|(_, code)| SessionStatus::Exited(*code))
-            .or(Some(current))
-    };
+    let (removals, exits, _) = lifecycle_sets;
 
     let (target_mode, target_id, target_status) = match decision {
         CommitDecision::Keep => {
@@ -247,46 +217,101 @@ pub(super) fn resolve_selection_commit_target(
         }
         CommitDecision::Clear => (SelectionMode::None, None, None),
         CommitDecision::Live(witness) => {
-            let id = witness.session_id;
-            if !witness.has_pty || witness.detached {
-                return Err(format!("live target has invalid runtime witness: {id}"));
-            }
-            if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
-                return Err(format!("live target is still pending: {id}"));
-            }
-            if removals.contains(&id) {
-                return Err(format!("live target is also removed: {id}"));
-            }
-            match projected_status(id) {
-                Some(SessionStatus::Exited(_)) => {
-                    return Err(format!("live target is exited: {id}"));
-                }
-                Some(_) => {}
-                None => return Err(format!("live target is missing: {id}")),
-            }
-            (SelectionMode::Live, Some(id), Some(SessionStatus::Active))
+            live_commit_target(state, mutations, lifecycle_sets, witness)?
         }
         CommitDecision::Dormant(witness) => {
-            let id = witness.session_id;
-            if witness.detached {
-                return Err(format!("dormant target is detached: {id}"));
-            }
-            if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
-                return Err(format!("dormant target is still pending: {id}"));
-            }
-            if removals.contains(&id) {
-                return Err(format!("dormant target is also removed: {id}"));
-            }
-            let status =
-                projected_status(id).ok_or_else(|| format!("dormant target is missing: {id}"))?;
-            if !matches!(status, SessionStatus::Exited(_)) {
-                return Err(format!("dormant target is not exited: {id}"));
-            }
-            (SelectionMode::Dormant, Some(id), Some(status))
+            dormant_commit_target(state, mutations, lifecycle_sets, witness)?
         }
     };
 
     Ok((target_mode, target_id, target_status))
+}
+
+fn projected_selection_status(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+    removals: &HashSet<Uuid>,
+    id: Uuid,
+) -> Option<SessionStatus> {
+    if removals.contains(&id) {
+        return None;
+    }
+    if let Some(mutation) = mutations
+        .finalizations
+        .iter()
+        .find(|mutation| match mutation {
+            FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                binding.session_id == id
+            }
+        })
+    {
+        return Some(match mutation {
+            FinalizeMutation::Live(_, _) => SessionStatus::Running,
+            FinalizeMutation::Dormant(_, _, code) => SessionStatus::Exited(*code),
+        });
+    }
+    let current = state.sessions.get(&id)?.status.clone();
+    if matches!(current, SessionStatus::Exited(_)) {
+        return Some(current);
+    }
+    mutations
+        .mark_exited
+        .iter()
+        .find(|(candidate, _)| *candidate == id)
+        .map(|(_, code)| SessionStatus::Exited(*code))
+        .or(Some(current))
+}
+
+fn live_commit_target(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+    lifecycle_sets: &LifecycleMutationSets,
+    witness: crate::session::selection::payload::LiveRuntimeWitness,
+) -> Result<(SelectionMode, Option<Uuid>, Option<SessionStatus>), String> {
+    let (removals, _, finalizations) = lifecycle_sets;
+    let id = witness.session_id;
+    if !witness.has_pty || witness.detached {
+        return Err(format!("live target has invalid runtime witness: {id}"));
+    }
+    if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
+        return Err(format!("live target is still pending: {id}"));
+    }
+    if removals.contains(&id) {
+        return Err(format!("live target is also removed: {id}"));
+    }
+    match projected_selection_status(state, mutations, removals, id) {
+        Some(SessionStatus::Exited(_)) => {
+            return Err(format!("live target is exited: {id}"));
+        }
+        Some(_) => {}
+        None => return Err(format!("live target is missing: {id}")),
+    }
+    Ok((SelectionMode::Live, Some(id), Some(SessionStatus::Active)))
+}
+
+fn dormant_commit_target(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+    lifecycle_sets: &LifecycleMutationSets,
+    witness: crate::session::selection::payload::DormantRuntimeWitness,
+) -> Result<(SelectionMode, Option<Uuid>, Option<SessionStatus>), String> {
+    let (removals, _, finalizations) = lifecycle_sets;
+    let id = witness.session_id;
+    if witness.detached {
+        return Err(format!("dormant target is detached: {id}"));
+    }
+    if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
+        return Err(format!("dormant target is still pending: {id}"));
+    }
+    if removals.contains(&id) {
+        return Err(format!("dormant target is also removed: {id}"));
+    }
+    let status = projected_selection_status(state, mutations, removals, id)
+        .ok_or_else(|| format!("dormant target is missing: {id}"))?;
+    if !matches!(status, SessionStatus::Exited(_)) {
+        return Err(format!("dormant target is not exited: {id}"));
+    }
+    Ok((SelectionMode::Dormant, Some(id), Some(status)))
 }
 
 pub(super) fn validate_unique_ids(
