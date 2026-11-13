@@ -6,6 +6,17 @@ import { TaskAPI } from "../../shared/ipc";
 import { pathHasEntityDirSegment } from "../../shared/entity-prefix";
 import TaskCleanConfirmModal from "./TaskCleanConfirmModal";
 
+/** #4339: Clean rejects with { code, message }; older/other rejects stay plain values. */
+function cleanRejection(err: unknown): { committed: boolean; message: string } {
+  if (typeof err === "object" && err !== null) {
+    const { code, message } = err as Record<string, unknown>;
+    if (typeof code === "string" && typeof message === "string") {
+      return { committed: code === "MutationCommitted", message };
+    }
+  }
+  return { committed: false, message: String(err) };
+}
+
 interface ParsedTask {
   title: string | null;
   body: string;
@@ -263,8 +274,9 @@ const WorkgroupTask: Component = () => {
       setEditing(false);
       setTitleDraft("");
     } catch (err) {
-      committed = String(err).includes("task mutation already committed");
-      setError(String(err));
+      const rejection = cleanRejection(err);
+      committed = rejection.committed;
+      setError(rejection.message);
     } finally {
       terminalStore.finishTaskMutation(workgroupRoot, committed);
       setCapturedSessionId(null);

@@ -163,9 +163,37 @@ fn strip_unc(p: &Path) -> String {
     raw.into_owned()
 }
 
-fn committed_task_error(stage: &str, error: impl std::fmt::Display) -> String {
+/// Stable error codes of the TASK.md mutation family (#4339).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum TaskErrorCode {
+    MutationCommitted,
+    Failed,
+}
+
+/// A rejected task mutation; `code` tells the UI whether the write already committed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct TaskIpcError {
+    code: TaskErrorCode,
+    message: String,
+}
+
+impl From<String> for TaskIpcError {
+    fn from(message: String) -> Self {
+        Self {
+            code: TaskErrorCode::Failed,
+            message,
+        }
+    }
+}
+
+fn committed_task_error(stage: &str, error: impl std::fmt::Display) -> TaskIpcError {
     log::warn!("[task] mutation already committed; {stage} failed: {error}");
-    format!("task mutation already committed; {stage} failed: {error}; do not repeat Clean")
+    TaskIpcError {
+        code: TaskErrorCode::MutationCommitted,
+        message: format!(
+            "task mutation already committed; {stage} failed: {error}; do not repeat Clean"
+        ),
+    }
 }
 
 fn task_result_from_snapshot(snapshot: task_ops::TaskSnapshot) -> TaskUpdateResult {
@@ -202,7 +230,7 @@ fn emit_task_updated(app: &AppHandle, result: &TaskUpdateResult) -> Result<(), S
 
 async fn read_committed_task_snapshot(
     root: std::path::PathBuf,
-) -> Result<TaskUpdateResult, String> {
+) -> Result<TaskUpdateResult, TaskIpcError> {
     let snapshot = tokio::task::spawn_blocking(move || task_ops::read_snapshot(&root))
         .await
         .map_err(|error| committed_task_error("snapshot worker", error))?
@@ -213,7 +241,7 @@ async fn read_committed_task_snapshot(
 fn deliver_committed_task(
     result: TaskUpdateResult,
     emit: impl FnOnce(&TaskUpdateResult) -> Result<(), String>,
-) -> Result<TaskUpdateResult, String> {
+) -> Result<TaskUpdateResult, TaskIpcError> {
     emit(&result).map_err(|error| committed_task_error("event delivery", error))?;
     Ok(result)
 }
@@ -221,7 +249,7 @@ fn deliver_committed_task(
 async fn publish_committed_task(
     app: &AppHandle,
     root: std::path::PathBuf,
-) -> Result<TaskUpdateResult, String> {
+) -> Result<TaskUpdateResult, TaskIpcError> {
     let result = read_committed_task_snapshot(root).await?;
     deliver_committed_task(result, |result| emit_task_updated(app, result))
 }
@@ -279,7 +307,9 @@ pub async fn task_set_title(
         task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
     log::info!("[task] set_title for session {session_id} -> {outcome:?}");
 
-    publish_committed_task(&app, wg_root).await
+    publish_committed_task(&app, wg_root)
+        .await
+        .map_err(|error| error.message)
 }
 
 /// Clear the workgroup TASK.md for the given session to the canonical Clean state.
@@ -290,7 +320,7 @@ pub async fn task_clean(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     session_id: String,
-) -> Result<TaskUpdateResult, String> {
+) -> Result<TaskUpdateResult, TaskIpcError> {
     let wg_root = resolve_wg_root(&session_mgr, &session_id).await?;
     let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
     log::info!("[task] clean for session {session_id} -> {outcome:?}");
@@ -308,7 +338,7 @@ pub async fn task_clean_at(
     app: AppHandle,
     settings: State<'_, SettingsState>,
     workgroup_root: String,
-) -> Result<TaskUpdateResult, String> {
+) -> Result<TaskUpdateResult, TaskIpcError> {
     // Clone the small Vec and drop the read guard immediately; perform() does
     // blocking IO and must not be held across the settings lock.
     let project_paths = {
@@ -357,7 +387,9 @@ pub async fn task_set_title_at(
         task_ops::perform(&wg_root, TaskOp::SetUserTitle(title)).map_err(|e| e.to_string())?;
     log::info!("[task] set_title_at for {workgroup_root} -> {outcome:?}");
 
-    publish_committed_task(&app, wg_root).await
+    publish_committed_task(&app, wg_root)
+        .await
+        .map_err(|error| error.message)
 }
 
 #[cfg(test)]
