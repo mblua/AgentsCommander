@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
-//
-// #2297 phase 3 - Spec Board quit gate, consent modal and registration lock.
-//
-// The board is mounted for real; only the Tauri window API and the heavy
-// mermaid renderer are stubbed. jsdom does not implement `inert`, so this file
-// asserts the lock STATE (attribute, disabled textarea, status) and containment
-// only - native pointer/keyboard refusal and unchanged docId/content/dirty need
-// the permitted real-webview pass.
+// #4461: content errors preserve the App close guard and quit gate.
 import { render } from "solid-js/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

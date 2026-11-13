@@ -39,11 +39,14 @@ const isLegacyDetached =
   windowType === "terminal" && params.get("detached") === "true";
 
 if (!isTauri) {
-  render(() => (
+  render(
+    () => (
       <WindowErrorBoundary label="browser">
         <BrowserApp />
       </WindowErrorBoundary>
-    ), root);
+    ),
+    root
+  );
 } else if (windowType === "detached" || isLegacyDetached) {
   const lockedSessionId = params.get("sessionId") || undefined;
   render(
@@ -55,42 +58,57 @@ if (!isTauri) {
     root
   );
 } else if (windowType === "resource-monitor") {
-  render(() => (
+  render(
+    () => (
       <WindowErrorBoundary label="resource-monitor">
         <ResourceMonitorApp />
       </WindowErrorBoundary>
-    ), root);
+    ),
+    root
+  );
 } else if (windowType === "watchers") {
   // #1171 - the query parameter is only read here, on the window's first creation. The
   // window is a singleton, so every later open focuses it and re-scopes it through the
   // `watchers_scope_request` event instead.
-  render(() => (
+  render(
+    () => (
       <WindowErrorBoundary label="watchers">
         <WatchersApp initialSessionId={params.get("sessionId") || undefined} />
       </WindowErrorBoundary>
-    ), root);
+    ),
+    root
+  );
 } else if (windowType === "screenshot-overlay") {
   document.documentElement.dataset.window = "screenshot-overlay";
-  render(() => (
+  render(
+    () => (
       <WindowErrorBoundary label="screenshot-overlay">
         <ScreenshotOverlayApp />
       </WindowErrorBoundary>
-    ), root);
+    ),
+    root
+  );
 } else if (windowType === "spec-board") {
-  render(() => (
+  render(
+    () => (
       <WindowErrorBoundary label="spec-board">
         <SpecBoardApp />
       </WindowErrorBoundary>
-    ), root);
+    ),
+    root
+  );
 } else {
   // #1652 - one harvester per app start. The main window always exists, and
   // scanning from exactly one window is what keeps a single previous-run record
   // from being reported by several windows at once. `harvestIpcBlackBox` awaits
   // the install above internally, so this line does not need to.
   void harvestIpcBlackBox(BlackBoxAPI.report);
-  render(() => (
+  render(
+    () => (
       <WindowErrorBoundary label="main">
         <MainApp />
       </WindowErrorBoundary>
-    ), root);
+    ),
+    root
+  );
 }
