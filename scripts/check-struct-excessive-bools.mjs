@@ -87,7 +87,8 @@ export function validateBaseline(value) {
   for (const e of value.entries) {
     need(e && typeof e === 'object' && !Array.isArray(e) &&
       same(Object.keys(e), ['id', 'platforms']), 'baseline entry fields must be id,platforms');
-    need(typeof e.id === 'string' && /^rust:\S+::\S+$/.test(e.id), `invalid entry id ${e.id}`);
+    need(typeof e.id === 'string' && /^rust:\S+$/.test(e.id) &&
+      /\S::\S/.test(e.id.slice(5)), `invalid entry id ${e.id}`);
     need(Array.isArray(e.platforms) && e.platforms.length > 0 &&
       e.platforms.every(h => HOSTS.includes(h)) && sortedUnique(e.platforms),
     `entry ${e.id} needs nonempty sorted unique host membership`);
