@@ -63,9 +63,10 @@ function measure(path, scan, receivers) {
   const imports = scan.items.filter(item => item.kind === 'use'), imported = [], references = [];
   const record = (rule, t) => { if (!edge) hit(m,rule,t.line,occurrenceIdentity(scan,t)); };
   const ctx = { m, path, scan, ts, edge, receivers, imports, imported, references, record };
-  for (let i = 0; i < ts.length; i++) {
+  let i = 0;
+  while (i < ts.length) {
     recordCoreUse(ctx, i);
-    i = recordTauriPath(ctx, i);
+    i = recordTauriPath(ctx, i) + 1;
   }
   for (const {t,value} of imported) if (!references.some(
     ref => ref === value || ref.startsWith(value + '::')))
