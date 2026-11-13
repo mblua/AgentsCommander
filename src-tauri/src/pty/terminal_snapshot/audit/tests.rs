@@ -70,3 +70,32 @@ fn t4_owner_count_matches_arc_count() {
     drop(second);
     matches();
 }
+
+#[test]
+fn t5_drop_wakes_waiting_task() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Wake;
+
+    struct CountingWake(AtomicUsize);
+
+    impl Wake for CountingWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let guard =
+        TerminalSnapshotAuditGuard::pre_admission(TerminalSnapshotSourcePlane::ContainerApi);
+    let clone = guard.clone();
+    let counter = Arc::new(CountingWake(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::clone(&counter));
+    let mut context = Context::from_waker(&waker);
+    let mut wait = std::pin::pin!(guard.wait_for_retained_owners(1));
+    assert!(matches!(wait.as_mut().poll(&mut context), Poll::Pending));
+    drop(clone);
+    assert!(
+        counter.0.load(Ordering::SeqCst) >= 1,
+        "T5: dropping the extra guard must wake the waiting task before repoll"
+    );
+    assert!(matches!(wait.as_mut().poll(&mut context), Poll::Ready(())));
+}
