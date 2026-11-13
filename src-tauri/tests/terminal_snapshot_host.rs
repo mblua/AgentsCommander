@@ -360,7 +360,7 @@ fn publish_test_response(source: &Path, destination: &Path) {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "kernel32")]
-    // SAFETY: MoveFileExW matches Windows fileapi.h: two LPCWSTR pointers, DWORD flags and BOOL
+    // SAFETY: MoveFileExW matches Windows winbase.h: two LPCWSTR pointers, DWORD flags and BOOL
     // result, with the Windows system calling convention.
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
