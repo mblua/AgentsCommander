@@ -10,7 +10,9 @@ const enabled = vi.mocked(AutomationAPI.enabled);
 const probe = () => document.querySelector<HTMLButtonElement>('[data-ac-testid="csp-probe"]');
 const state = () => probe()?.getAttribute("data-ac-state");
 function violation(effectiveDirective: string): void {
-  document.dispatchEvent(Object.assign(new Event("securitypolicyviolation"), { effectiveDirective }));
+  document.dispatchEvent(
+    Object.assign(new Event("securitypolicyviolation"), { effectiveDirective }),
+  );
 }
 
 beforeEach(() => {
