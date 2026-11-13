@@ -124,6 +124,7 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 // Extracted helpers add no constructor sites; all 99 classified rows still match.
 // #4016: recertified by the source walk; cli/stdout/tests.rs adds one TestOnly
 // child-runner constructor, for 100 classified rows.
+const FAKE_SHELL_RS: &str = "src-tauri/src/process/host/login/fake_shell.rs";
 const INVENTORY: &[Row] = &[
     ("src-tauri/src/events/pty/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
@@ -342,12 +343,7 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/process/host/login.rs", 1, 0, &[(Owner, 1)]),
     // #4608: `#[cfg(all(test, unix))]` fake login shell; its executable probe is test-only.
-    (
-        "src-tauri/src/process/host/login/fake_shell.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
+    (FAKE_SHELL_RS, 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/config/coding_agents_catalog/tests.rs",
         1,
