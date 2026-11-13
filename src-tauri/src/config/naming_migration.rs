@@ -516,8 +516,8 @@ fn move_no_replace(
     naming_journal::move_migration_file_no_replace(from, to)
 }
 
-/// `hard_link` is create-only; `std::fs::rename` is not used here because a
-/// POSIX rename silently replaces an existing destination.
+/// `hard_link` is create-only; `std::fs::rename` is not used for files because
+/// a POSIX rename silently replaces an existing destination.
 #[cfg(not(windows))]
 fn move_no_replace(
     from: &Path,
@@ -527,6 +527,22 @@ fn move_no_replace(
     #[cfg(test)]
     if let Some(kind) = faults.take("move_no_replace", to) {
         return Err(io::Error::new(kind, "injected move_no_replace failure"));
+    }
+    // A directory cannot be hard-linked, so it is renamed instead. The caller
+    // holds the migration lock and the absence check keeps the move
+    // create-only, matching the Windows move of a legacy directory.
+    if naming_journal::migration_metadata(from)?.is_dir() {
+        match naming_journal::migration_metadata(to) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "move_no_replace destination exists",
+                ));
+            }
+        }
+        return naming_journal::replace_journal_file(from, to);
     }
     naming_journal::link_migration_file(from, to)?;
     #[cfg(test)]

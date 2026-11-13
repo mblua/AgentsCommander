@@ -211,11 +211,7 @@ fn acl_app() -> tauri::App<tauri::test::MockRuntime> {
     app
 }
 
-const LOCAL: &str = if cfg!(windows) {
-    "http://tauri.localhost/"
-} else {
-    "tauri://localhost/"
-};
+const LOCAL: &str = crate::test_support::LOCAL_IPC_ORIGIN;
 
 fn invoke(
     webview: &WebviewWindow<tauri::test::MockRuntime>,
