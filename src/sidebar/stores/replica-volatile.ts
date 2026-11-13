@@ -34,8 +34,8 @@ function zipByPath<T>(
   const vals = values ?? [];
   if (paths.length !== vals.length) return {};
   const map: Record<string, T | null> = {};
-  for (let i = 0; i < paths.length; i += 1) {
-    map[paths[i]] = vals[i] ?? null;
+  for (const [i, path] of paths.entries()) {
+    map[path] = vals[i] ?? null;
   }
   return map;
 }
