@@ -837,6 +837,53 @@ test('04 committed source and registry inputs stay distinct from dirty files', t
     registryBase: registered.unregistered.base, registryHead: registered.unregistered.head }));
 });
 
+function directSourceWitnesses(s, tree, registries, side, literal) {
+  const witnesses = [], excluded = [];
+  for (const [p, entry] of tree) {
+    if (!p.startsWith(attemptsScope) || !p.endsWith('.rs') || /\/tests?\//.test(p)) continue;
+    const lines = s.readBlob(entry).split('\n');
+    lines.forEach((line, index) => {
+      if (!line.includes('"' + literal + '"') || line.trimStart().startsWith('//')) return;
+      const registration = registries[side].find(c => c.name === literal &&
+        p.startsWith(c.literalScope ?? c.scope));
+      (registration ? excluded : witnesses).push({ path: p, line: index + 1 });
+    });
+  }
+  return { witnesses, excluded };
+}
+
+function assertWitnessDebt(t, side, literal, witnesses, excluded, entries) {
+  if (new Set(witnesses.map(w => w.path)).size >= 2) {
+    const debt = entries.find(e => e.literal === literal);
+    assert.ok(debt, JSON.stringify({ side, literal, witnesses, entries }));
+    for (const witness of witnesses) assert.ok(debt.sites.some(site =>
+      site.path === witness.path && site.line === witness.line), JSON.stringify(witness));
+  }
+  let reason = 'example absent from source';
+  if (excluded.length) reason = 'scoped registered name';
+  else if (witnesses.length) reason = 'direct source occurrences checked';
+  t.diagnostic(JSON.stringify({ control: 'direct-source witnesses', side, literal,
+    witnesses, excluded, reason }));
+}
+
+function injectionPlan(s, before, registries) {
+  const existing = before.unregistered.head.entries[0];
+  let literal = existing?.literal ?? 'proof_4024_fresh.json';
+  if (!existing) {
+    const occupied = new Set([...before.unregistered.base.entries.map(e => e.literal),
+      ...registries.base.map(c => c.name), ...registries.head.map(c => c.name)]);
+    while (occupied.has(literal)) literal = '_' + literal;
+  }
+  const headTree = new Map(s.headTree), additions = new Map(), sites = [];
+  for (let i = 0; i < (existing ? 1 : 2); i++) {
+    let p = root + 'proof_4024_' + i + '.rs';
+    while (headTree.has(p)) p = p.replace('.rs', '_fresh.rs');
+    const entry = { path: p }; headTree.set(p, entry);
+    additions.set(entry, sourceLiteral(literal)); sites.push({ path: p, line: 1 });
+  }
+  return { existing, literal, headTree, additions, sites };
+}
+
 test('04 real default snapshot exposes debt and rejects exact memory injection', t => {
   const s = createSnapshot({ cwd: repo, ...parseArgs([]) });
   const before = containersGate(s);
@@ -854,44 +901,11 @@ test('04 real default snapshot exposes debt and rejects exact memory injection',
     }
     // Independent direct-source witnesses, without the discovery helper's matcher.
     for (const literal of ['run.json', 'report.json', 'experiment.json']) {
-      const witnesses = [], excluded = [];
-      for (const [p, entry] of tree) {
-        if (!p.startsWith(attemptsScope) || !p.endsWith('.rs') || /\/tests?\//.test(p)) continue;
-        const lines = s.readBlob(entry).split('\n');
-        lines.forEach((line, index) => {
-          if (!line.includes('"' + literal + '"') || line.trimStart().startsWith('//')) return;
-          const registration = registries[side].find(c => c.name === literal &&
-            p.startsWith(c.literalScope ?? c.scope));
-          (registration ? excluded : witnesses).push({ path: p, line: index + 1 });
-        });
-      }
-      if (new Set(witnesses.map(w => w.path)).size >= 2) {
-        const debt = entries.find(e => e.literal === literal);
-        assert.ok(debt, JSON.stringify({ side, literal, witnesses, entries }));
-        for (const witness of witnesses) assert.ok(debt.sites.some(site =>
-          site.path === witness.path && site.line === witness.line), JSON.stringify(witness));
-      }
-      let reason = 'example absent from source';
-      if (excluded.length) reason = 'scoped registered name';
-      else if (witnesses.length) reason = 'direct source occurrences checked';
-      t.diagnostic(JSON.stringify({ control: 'direct-source witnesses', side, literal,
-        witnesses, excluded, reason }));
+      const { witnesses, excluded } = directSourceWitnesses(s, tree, registries, side, literal);
+      assertWitnessDebt(t, side, literal, witnesses, excluded, entries);
     }
   }
-  const existing = before.unregistered.head.entries[0];
-  let literal = existing?.literal ?? 'proof_4024_fresh.json';
-  if (!existing) {
-    const occupied = new Set([...before.unregistered.base.entries.map(e => e.literal),
-      ...registries.base.map(c => c.name), ...registries.head.map(c => c.name)]);
-    while (occupied.has(literal)) literal = '_' + literal;
-  }
-  const headTree = new Map(s.headTree), additions = new Map(), sites = [];
-  for (let i = 0; i < (existing ? 1 : 2); i++) {
-    let p = root + 'proof_4024_' + i + '.rs';
-    while (headTree.has(p)) p = p.replace('.rs', '_fresh.rs');
-    const entry = { path: p }; headTree.set(p, entry);
-    additions.set(entry, sourceLiteral(literal)); sites.push({ path: p, line: 1 });
-  }
+  const { existing, literal, headTree, additions, sites } = injectionPlan(s, before, registries);
   const injected = { ...s, headTree,
     readBlob: entry => additions.has(entry) ? additions.get(entry) : s.readBlob(entry) };
   const after = containersGate(injected), restored = containersGate(s);
