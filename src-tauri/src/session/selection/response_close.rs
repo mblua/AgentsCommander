@@ -1,3 +1,4 @@
+use crate::resource_monitor::registry::termination::CleanupFailure;
 use std::sync::atomic::Ordering;
 
 use std::sync::{Arc, Mutex};
@@ -137,12 +138,22 @@ enum ResponseEffectState<T> {
     Ambiguous,
 }
 
+enum ResponseGroupWorker {
+    #[cfg(test)]
+    Legacy(
+        tokio::task::JoinHandle<Result<crate::resource_monitor::types::ResourceKillResult, String>>,
+    ),
+    Diagnostic(
+        tokio::task::JoinHandle<
+            Result<crate::resource_monitor::types::ResourceKillResult, CleanupFailure>,
+        >,
+    ),
+}
+
 struct ResponseEffectRecord {
     stages: Vec<(&'static str, ResponseEffectState<()>)>,
     group: Option<ResponseEffectState<crate::resource_monitor::types::ResourceKillResult>>,
-    group_worker: Option<
-        tokio::task::JoinHandle<Result<crate::resource_monitor::types::ResourceKillResult, String>>,
-    >,
+    group_worker: Option<ResponseGroupWorker>,
     sealed: bool,
 }
 
@@ -269,6 +280,7 @@ impl ResponseEffectOwner {
         &self.backend
     }
 
+    #[cfg(test)]
     pub(crate) fn start_group(
         &self,
         start: impl FnOnce() -> tokio::task::JoinHandle<
@@ -277,15 +289,37 @@ impl ResponseEffectOwner {
     ) -> Option<()> {
         let mut record = self.record.lock().ok()?;
         record.group = Some(ResponseEffectState::Running);
-        record.group_worker = Some(start());
+        record.group_worker = Some(ResponseGroupWorker::Legacy(start()));
         Some(())
     }
 
+    pub(crate) fn start_group_diagnostic(
+        &self,
+        start: impl FnOnce() -> tokio::task::JoinHandle<
+            Result<crate::resource_monitor::types::ResourceKillResult, CleanupFailure>,
+        >,
+    ) -> Option<()> {
+        let mut record = self.record.lock().ok()?;
+        record.group = Some(ResponseEffectState::Running);
+        record.group_worker = Some(ResponseGroupWorker::Diagnostic(start()));
+        Some(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn poll_group(
         &self,
         cx: &mut std::task::Context<'_>,
         id: uuid::Uuid,
     ) -> std::task::Poll<Option<()>> {
+        self.poll_group_diagnostic(cx, id)
+            .map(|outcome| outcome.ok().flatten())
+    }
+
+    pub(crate) fn poll_group_diagnostic(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        id: uuid::Uuid,
+    ) -> std::task::Poll<Result<Option<()>, CleanupFailure>> {
         // The JoinHandle stays in the retained owner while it is polled. Losing
         // this waiter does not drop the only handle or fabricate a group outcome.
         use std::future::Future;
@@ -295,18 +329,35 @@ impl ResponseEffectOwner {
         let Some(worker) = record.group_worker.as_mut() else {
             return std::task::Poll::Pending;
         };
-        match std::pin::Pin::new(worker).poll(cx) {
+        let outcome = match worker {
+            #[cfg(test)]
+            ResponseGroupWorker::Legacy(worker) => std::pin::Pin::new(worker)
+                .poll(cx)
+                .map(|joined| joined.map(|result| result.map_err(CleanupFailure::Ordinary))),
+            ResponseGroupWorker::Diagnostic(worker) => std::pin::Pin::new(worker).poll(cx),
+        };
+        match outcome {
             std::task::Poll::Pending => std::task::Poll::Pending,
             std::task::Poll::Ready(Ok(outcome)) => {
-                if let Err(error) = &outcome {
-                    log::warn!(
-                        "[session] resource cleanup failed session={id} source=ResponseClose: \
-            {error}"
-                    );
-                }
-                record.group = Some(ResponseEffectState::Completed(outcome));
+                let (stored, veto) = match outcome {
+                    Ok(result) => (Ok(result), None),
+                    Err(CleanupFailure::Ordinary(error)) => {
+                        log::warn!(
+                            "[session] resource cleanup failed session={id} source=ResponseClose: \
+                             {error}"
+                        );
+                        (Err(error), None)
+                    }
+                    Err(error @ CleanupFailure::EvidenceVeto { .. }) => {
+                        (Err("not_called:evidence_veto".into()), Some(error))
+                    }
+                };
+                record.group = Some(ResponseEffectState::Completed(stored));
                 let _ = record.group_worker.take();
-                std::task::Poll::Ready(Some(()))
+                std::task::Poll::Ready(match veto {
+                    Some(error) => Err(error),
+                    None => Ok(Some(())),
+                })
             }
             std::task::Poll::Ready(Err(error)) => {
                 record.group = Some(ResponseEffectState::Ambiguous);
@@ -315,7 +366,7 @@ impl ResponseEffectOwner {
                     "[session] resource cleanup task failed session={id} source=ResponseClose: \
             {error}"
                 );
-                std::task::Poll::Ready(None)
+                std::task::Poll::Ready(Ok(None))
             }
         }
     }

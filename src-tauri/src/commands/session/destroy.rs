@@ -3,6 +3,7 @@ use crate::commands::session::publish_legacy_destroy_outcome;
 #[cfg(test)]
 use crate::commands::session::restart_reader_seam;
 use crate::pty::manager::PtyManager;
+use crate::resource_monitor::registry::termination::CleanupFailure;
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::CommitDecision;
@@ -144,33 +145,7 @@ pub(crate) async fn teardown_legacy_destroy_runtime<R: tauri::Runtime>(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .publish_stop_witness(session_id, "session-destroy");
         }
-        let monitor = Arc::clone(&resource_monitor);
-        match tokio::task::spawn_blocking(move || {
-            monitor.kill_group(
-                session_id,
-                crate::resource_monitor::ResourceKillReason::SessionDestroy,
-            )
-        })
-        .await
-        {
-            Ok(Ok(result)) => {
-                if result.quarantined {
-                    log::warn!(
-                        "[session] resource cleanup quarantined session={} source={:?}: {}",
-                        session_id,
-                        source,
-                        result.message
-                    );
-                }
-            }
-            Ok(Err(error)) => log::warn!(
-                "[session] resource cleanup failed session={session_id} source={source:?}: {error}"
-            ),
-            Err(error) => log::warn!(
-                "[session] resource cleanup task failed session={session_id} \
-                 source={source:?}: {error}"
-            ),
-        }
+        cleanup_destroy_group(resource_monitor, session_id, source).await?;
     }
 
     // The std-Mutex guard from this `let` initializer is dropped at the `;`
@@ -207,6 +182,48 @@ pub async fn destroy_session_inner<R: tauri::Runtime>(
     destroy_sessions_with_source(app, vec![uuid], DestructionSource::ManualClose, false)
         .await?
         .into_single_result(uuid)
+}
+
+async fn cleanup_destroy_group(
+    monitor: Arc<ResourceMonitorState>,
+    session_id: Uuid,
+    source: &DestructionSource,
+) -> Result<(), String> {
+    match tokio::task::spawn_blocking(move || {
+        monitor.kill_group_diagnostic(
+            session_id,
+            crate::resource_monitor::ResourceKillReason::SessionDestroy,
+        )
+    })
+    .await
+    {
+        Ok(Ok(result)) => {
+            if result.quarantined {
+                log::warn!(
+                    "[session] resource cleanup quarantined session={} source={:?}: {}",
+                    session_id,
+                    source,
+                    result.message
+                );
+            }
+        }
+        Ok(Err(CleanupFailure::EvidenceVeto { result, .. })) => {
+            return Err(result.message);
+        }
+        Ok(Err(CleanupFailure::Ordinary(error))) => log::warn!(
+            "[session] resource cleanup failed session={} source={:?}: {}",
+            session_id,
+            source,
+            error
+        ),
+        Err(error) => log::warn!(
+            "[session] resource cleanup task failed session={} source={:?}: {}",
+            session_id,
+            source,
+            error
+        ),
+    }
+    Ok(())
 }
 
 pub(crate) async fn background_destroy_session_inner<R: tauri::Runtime>(

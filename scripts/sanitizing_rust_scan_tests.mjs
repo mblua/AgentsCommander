@@ -153,6 +153,32 @@ test('3330 custom manifest spellings retain the production crate root', () => {
 });
 
 const packageHeader = '[package]\nname="repro"\nversion="0.1.0"\nedition="2021"\n';
+function assertLintMetadataCase(original, location, metadata, newline, central, adoption) {
+  const files = {...original};
+  if (location === 'workspace-and-members') {
+    files['Cargo.toml'] += central;
+    for (const member of ['src-tauri', 'crates/x'])
+      files[member + '/Cargo.toml'] += adoption;
+  } else files[location] += metadata;
+  for (const path of Object.keys(files))
+    files[path] = files[path].replaceAll('\n', newline);
+  const factory = scan(files);
+  for (const path of ['harness.rs', 'harness/child.rs']) {
+    const result = factory(prefix + path);
+    assert.equal(result.productionTokens.length, 0, location + metadata);
+    assert.ok(result.items.length > 0);
+    assert.ok(result.items.every(item => item.testOnly));
+    assert.equal(result.isTestOffset(0), true);
+  }
+  assert.ok(factory(prefix + 'production.rs').productionTokens.length > 0);
+  const unchanged = diskGate(trees(original, files));
+  assert.equal(unchanged.exit, 0);
+  assert.deepEqual(unchanged.totals.map(total => total.disk_files), [1, 1]);
+  const production = {...files, [prefix + 'lib.rs']: 'mod harness; mod production;'};
+  const delta = diskGate(trees(files, production));
+  assert.equal(delta.exit, 1);
+  assert.deepEqual(delta.totals.map(total => total.disk_files), [1, 3]);
+}
 test('3509 lint metadata preserves inherited tests and production deltas', () => {
   const central = '[workspace.lints.clippy]\nfn_params_excessive_bools="warn"\n';
   const adoption = '[lints]\nworkspace=true\n';
@@ -171,30 +197,7 @@ test('3509 lint metadata preserves inherited tests and production deltas', () =>
     for (const metadata of [central, adoption, central + adoption]) {
       for (const location of ['Cargo.toml', 'src-tauri/Cargo.toml', 'crates/x/Cargo.toml',
         'workspace-and-members']) {
-        const files = {...original};
-        if (location === 'workspace-and-members') {
-          files['Cargo.toml'] += central;
-          for (const member of ['src-tauri', 'crates/x'])
-            files[member + '/Cargo.toml'] += adoption;
-        } else files[location] += metadata;
-        for (const path of Object.keys(files))
-          files[path] = files[path].replaceAll('\n', newline);
-        const factory = scan(files);
-        for (const path of ['harness.rs', 'harness/child.rs']) {
-          const result = factory(prefix + path);
-          assert.equal(result.productionTokens.length, 0, location + metadata);
-          assert.ok(result.items.length > 0);
-          assert.ok(result.items.every(item => item.testOnly));
-          assert.equal(result.isTestOffset(0), true);
-        }
-        assert.ok(factory(prefix + 'production.rs').productionTokens.length > 0);
-        const unchanged = diskGate(trees(original, files));
-        assert.equal(unchanged.exit, 0);
-        assert.deepEqual(unchanged.totals.map(total => total.disk_files), [1, 1]);
-        const production = {...files, [prefix + 'lib.rs']: 'mod harness; mod production;'};
-        const delta = diskGate(trees(files, production));
-        assert.equal(delta.exit, 1);
-        assert.deepEqual(delta.totals.map(total => total.disk_files), [1, 3]);
+        assertLintMetadataCase(original, location, metadata, newline, central, adoption);
       }
     }
   }

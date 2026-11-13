@@ -123,17 +123,21 @@ async function refreshTaskSnapshotAttempt(path: string, aggregate?: SnapshotAggr
   }
   } finally {
     if (operation) endOperation(operation, "snapshot-end", outcome, outcome === "applied" ? 1 : 0);
-    if (aggregate) {
-      if (outcome === "applied") aggregate.changedCount++;
-      const rank = (value: string) => {
-        if (value === "error") return 3;
-        if (value === "stale") return 2;
-        if (value === "applied") return 1;
-        return 0;
-      };
-      if (rank(outcome) > rank(aggregate.outcome)) aggregate.outcome = outcome;
-    }
+    if (aggregate) foldSnapshotOutcome(aggregate, outcome);
   }
+}
+
+function foldSnapshotOutcome(
+  aggregate: SnapshotAggregate, outcome: NonNullable<RailFields["outcome"]>,
+): void {
+  if (outcome === "applied") aggregate.changedCount++;
+  const rank = (value: string) => {
+    if (value === "error") return 3;
+    if (value === "stale") return 2;
+    if (value === "applied") return 1;
+    return 0;
+  };
+  if (rank(outcome) > rank(aggregate.outcome)) aggregate.outcome = outcome;
 }
 
 function refreshTaskSnapshots(): void {

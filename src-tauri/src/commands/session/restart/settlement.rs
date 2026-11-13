@@ -6,6 +6,7 @@ use super::super::telegram::{
 use super::context::LifecycleExecutionContext;
 use crate::app_state::DetachedSessionsState;
 use crate::pty::manager::PtyManager;
+use crate::resource_monitor::registry::termination::CleanupFailure;
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::{CommitDecision, LifecycleMutations};
 use crate::session::selection::{
@@ -255,6 +256,7 @@ pub(crate) async fn publish_restart_after_warnings<R: tauri::Runtime>(
 pub(crate) struct RestartTeardownError {
     pub(crate) message: String,
     pub(crate) old_lost: bool,
+    evidence_veto: bool,
 }
 
 pub(crate) async fn complete_owned_replacement_retirement<R: tauri::Runtime>(
@@ -335,7 +337,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
             .publish_stop_witness(session_id, "session-restart");
         let monitor = Arc::clone(&resource_monitor);
         match tokio::task::spawn_blocking(move || {
-            monitor.kill_group(
+            monitor.kill_group_diagnostic(
                 session_id,
                 crate::resource_monitor::ResourceKillReason::SessionDestroy,
             )
@@ -348,11 +350,18 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
                 result.message
             ),
             Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                log::warn!("[restart] resource cleanup failed session={session_id}: {error}");
+            Ok(Err(CleanupFailure::EvidenceVeto { result, .. })) => {
+                return Err(RestartTeardownError {
+                    message: result.message,
+                    old_lost: !transaction.runtime_snapshot(session_id).has_pty,
+                    evidence_veto: true,
+                });
+            }
+            Ok(Err(CleanupFailure::Ordinary(error))) => {
+                log::warn!("[restart] resource cleanup failed session={session_id}: {error}")
             }
             Err(error) => {
-                log::warn!("[restart] resource cleanup task failed session={session_id}: {error}");
+                log::warn!("[restart] resource cleanup task failed session={session_id}: {error}")
             }
         }
     }
@@ -377,6 +386,7 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
         return Err(RestartTeardownError {
             message,
             old_lost: false,
+            evidence_veto: false,
         });
     }
     if let Err(error) = kill_result {
@@ -453,7 +463,7 @@ pub(crate) async fn accept_restart_teardown<R: tauri::Runtime>(
     match teardown {
         Ok(old_lost) => Ok(old_lost),
         Err(error) => {
-            if error.old_lost {
+            if error.old_lost && !error.evidence_veto {
                 // Section 5.2: the old PTY is already gone, so its demands must
                 // not outlive the failed restart.
                 crate::commands::telegram::release_all_reader_demands(transaction.app(), uuid)
