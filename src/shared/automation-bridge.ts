@@ -215,8 +215,7 @@ async function resolveSingleTarget(
     };
   }
 
-  // matches.length === 0 returned above.
-  const element = matches[0]!;
+  const element = matches[0]!; // matches.length === 0 returned above.
   if (!isElementVisible(element)) {
     return {
       response: errorResponse(
@@ -1066,9 +1065,8 @@ function parseUiPointerOperation(value: string | null | undefined): UiPointerOpe
 
 function parseUiKeyChord(value: string | null | undefined): UiKeyChord | null {
   const match = typeof value === "string" ? UI_KEY_CHORD.exec(value) : null;
-  if (!match) return null;
+  if (!match || match[5] === undefined) return null;
   const name = match[5];
-  if (name === undefined) return null;
   return {
     key: name === "Space" ? " " : name,
     code: name,
@@ -1246,15 +1244,7 @@ function observedResponse(
   errors: string[],
 ): AnyUiAutomationResponse {
   if (errors.length === 0) return successResponse(windowLabel, request, snapshotTarget(target), diagnostics);
-  // errors.length > 0 here.
-  return errorResponse(
-    windowLabel,
-    request,
-    "listener_exception",
-    errors[0]!,
-    availableTargets(),
-    diagnostics,
-  );
+  return errorResponse(windowLabel, request, "listener_exception", errors[0]!, availableTargets(), diagnostics); // non-empty
 }
 
 function topmostElementAtCenter(element: HTMLElement): { ok: true } | { ok: false; element: HTMLElement | null } {
