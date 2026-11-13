@@ -151,7 +151,7 @@ pub(crate) fn publish_cli_pty_request(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         _ => return Err("publish_ambiguous"),
     }
-    let mut options = new_request_open_options();
+    let options = new_request_open_options();
     let mut file = options.open(&temp).map_err(|_| "publish_failed")?;
     if file.write_all(bytes).is_err() || file.flush().is_err() || file.sync_all().is_err() {
         drop(file);
