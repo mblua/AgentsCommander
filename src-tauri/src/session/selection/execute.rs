@@ -643,19 +643,20 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             auto_select_precondition: None,
             warnings,
         };
-        if let Some(owned) = request.owned_replacement.clone() {
-            let result = execute_owned_finalize_create(self, request).await;
-            if let Some(result) = result.as_ref() {
-                if let Ok(mut state) = owned.owner.state.lock() {
-                    state.completion = Some(result.clone());
-                    state.publication_observed = true;
-                    state.envelope_released = true;
+        match request.owned_replacement.clone() {
+            Some(owned) => {
+                let result = execute_owned_finalize_create(self, request).await;
+                if let Some(result) = result.as_ref() {
+                    if let Ok(mut state) = owned.owner.state.lock() {
+                        state.completion = Some(result.clone());
+                        state.publication_observed = true;
+                        state.envelope_released = true;
+                    }
+                    owned.owner.changed.notify_waiters();
                 }
-                owned.owner.changed.notify_waiters();
+                result
             }
-            result
-        } else {
-            Some(execute_finalize_create(self, request).await)
+            _ => Some(execute_finalize_create(self, request).await),
         }
     }
 

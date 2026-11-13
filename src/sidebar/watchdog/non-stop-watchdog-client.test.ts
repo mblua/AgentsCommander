@@ -306,7 +306,7 @@ describe("#2180 nonStopWatchdogClient alarm listener", () => {
   });
 
   it("does not play anything before an event arrives", async () => {
-    const fake = await seedClient();
+    await seedClient();
     const dispose = startInRoot();
 
     expect(vi.mocked(playNonStopAlarm)).not.toHaveBeenCalled();

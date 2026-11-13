@@ -3,7 +3,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub(crate) fn loop_discovery_entries(root: &Path) -> io::Result<impl Iterator<Item = PathBuf>> {
+pub(crate) fn loop_discovery_entries(
+    root: &Path,
+) -> io::Result<impl Iterator<Item = PathBuf> + use<>> {
     std::fs::read_dir(root).map(|entries| entries.flatten().map(|entry| entry.path()))
 }
 

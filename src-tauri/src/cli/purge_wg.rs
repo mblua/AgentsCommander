@@ -185,7 +185,7 @@ pub fn execute(args: PurgeWgArgs) -> i32 {
         return 1;
     }
 
-    let outbox_path = outbox_dir.join(format!("{msg_id}.json"));
+    let outbox_path = crate::phone::types::outbox_message_file(&outbox_dir, &msg_id);
     let json = match serde_json::to_string_pretty(&message) {
         Ok(j) => j,
         Err(e) => {
@@ -212,9 +212,7 @@ fn wait_for_purge_response(
     args: &PurgeWgArgs,
 ) -> i32 {
     let response_path = ac_dir.join("responses").join(format!("{request_id}.json"));
-    let rejected_reason_path = outbox_dir
-        .join("rejected")
-        .join(format!("{msg_id}.reason.txt"));
+    let rejected_reason_path = crate::phone::types::outbox_rejected_reason(outbox_dir, msg_id);
 
     // (#885 F-6) Single deadline: collapse close-session's two poll loops
     // into one. The 30s hardcoded confirm_timeout fires first on graceful
