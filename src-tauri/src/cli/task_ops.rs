@@ -47,7 +47,7 @@ use document::{
     user_owned_title, ParsedTask,
 };
 pub(crate) use document::{parse_task, title_value_of};
-use flow::perform_inner;
+use flow::{perform_inner, task_lock_path};
 pub(crate) use initialization::{
     build_task_content, initialize_new_room, prepare_new_room_task_content, validate_task_title,
 };
@@ -113,11 +113,7 @@ pub fn perform(wg_root: &Path, op: TaskOp) -> Result<EditOutcome, TaskOpError> {
 }
 
 pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
-    let _lock = LockGuard::acquire(
-        &root.join(format!("{TASK_FILE_NAME}.lock")),
-        LOCK_TIMEOUT_5S,
-        LOCK_STALE_AFTER_5M,
-    )?;
+    let _lock = LockGuard::acquire(&task_lock_path(root), LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M)?;
     recover_clean_pair_locked(root)?;
     let path = root.join(TASK_FILE_NAME);
     let task = match read_description_snapshot(&path, TASK_LIMIT) {
@@ -156,11 +152,7 @@ pub fn append_status(
     text: &str,
     author: &str,
 ) -> Result<StatusReceipt, TaskOpError> {
-    let _lock = LockGuard::acquire(
-        &root.join(format!("{TASK_FILE_NAME}.lock")),
-        LOCK_TIMEOUT_5S,
-        LOCK_STALE_AFTER_5M,
-    )?;
+    let _lock = LockGuard::acquire(&task_lock_path(root), LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M)?;
     recover_clean_pair_locked(root)?;
     let tail = read_latest_status_locked(root)?;
     if let Some(last) = &tail.record {
