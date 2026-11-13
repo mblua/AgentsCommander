@@ -10,8 +10,11 @@ const TARGETS = [
   'aarch64-apple-darwin', 'x86_64-apple-darwin',
 ];
 // Vite's preload helper ships in dist/ even though Vite is a development dependency.
-const FORCE_NPM = ['node_modules/vite'];
-const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const FORCE_NPM = new Set(['node_modules/vite']);
+const cmp = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 const packageOrder = (a, b) => cmp(a.name, b.name) || cmp(a.version, b.version);
 
 // Resolve cargo without PATH: rustup homes first, then fixed system paths (S4036).
@@ -83,7 +86,7 @@ export function selectNpm(lock) {
     if (!entries[key]) throw new Error(`Missing required npm package ${key}`);
   }
   const selected = Object.entries(entries).filter(([key, pkg]) => {
-    if (FORCE_NPM.includes(key)) return true;
+    if (FORCE_NPM.has(key)) return true;
     return key.startsWith('node_modules/') && pkg.dev !== true
       && !key.includes('node_modules/@types/');
   }).map(([key, pkg]) => ({
