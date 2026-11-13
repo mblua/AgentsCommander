@@ -185,16 +185,11 @@ async fn runner_success_with_descendant_holding_pipe() {
 
 #[tokio::test]
 async fn runner_success_with_detached_survivor() {
-    // round-3 F2 pin (deliberate platform divergence): a fully detached
-    // (non-pipe-holding) descendant of the update step is reaped on
-    // Windows by the per-step JobObject drop (KILL_ON_JOB_CLOSE: no
-    // survivors from an update step on Windows) but SURVIVES on Unix (no
-    // job; the group-kill runs only on timeout/truncation). The step
-    // itself reports success on both platforms, via the plain-success
-    // path, NOT the R1 reader-truncation arm: the survivor's handles are
-    // redirected away from the step's pipes, so the readers EOF when the
-    // parent exits. The survivor writes its marker only after a delay that
-    // exceeds the step.
+    // Both platforms reap the step's tree on success: Windows job drop,
+    // Unix group SIGKILL. The step reports success via the plain-success
+    // path: the survivor's handles are redirected away from the step's
+    // pipes, so the readers EOF when the parent exits. The survivor writes
+    // its marker only after a delay that exceeds the step.
     let dir = tempfile::tempdir().expect("tempdir");
     let marker = dir.path().join("marker.txt");
     let marker_str = marker.to_string_lossy().replace('\\', "/");
@@ -245,22 +240,8 @@ async fn runner_success_with_detached_survivor() {
         "completion bounded, took {:?}",
         started.elapsed()
     );
-    if cfg!(windows) {
-        // The per-step job drop reaped the survivor before its delayed
-        // marker write.
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        assert!(!marker.exists(), "Windows survivor must have been reaped");
-    } else {
-        // No job on Unix: the detached descendant survives the step and
-        // writes the marker within ~3s.
-        for _ in 0..30 {
-            if marker.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(marker.exists(), "Unix survivor must write the marker");
-    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!marker.exists(), "survivor must have been reaped");
 }
 
 #[tokio::test]
