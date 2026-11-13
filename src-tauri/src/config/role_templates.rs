@@ -342,7 +342,7 @@ pub(crate) fn parse_agency_template_frontmatter(content: &str) -> TemplateFrontm
         frontmatter.push_str(line);
         frontmatter.push('\n');
     }
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) else {
+    let Ok(value) = serde_norway::from_str::<serde_norway::Value>(&frontmatter) else {
         return TemplateFrontmatter::default();
     };
     let scalar = |key: &str| {

@@ -605,7 +605,7 @@ fn should_skip_upstream_division(name: &str) -> bool {
 }
 
 fn yaml_scalar(value: &str) -> String {
-    serde_yaml::to_string(value)
+    serde_norway::to_string(value)
         .unwrap_or_else(|_| format!("{value:?}"))
         .trim()
         .trim_start_matches("---")

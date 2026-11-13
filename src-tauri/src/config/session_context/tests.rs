@@ -17,6 +17,7 @@ mod skill_index;
 mod template_heal;
 mod template_render;
 mod token_accounting;
+mod yaml_parity_4470;
 
 fn issue_2832_fixture() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();

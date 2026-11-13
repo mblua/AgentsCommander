@@ -336,3 +336,95 @@ fn staged_rewrite_persists_collected_count_before_publication() {
         1
     );
 }
+
+#[test]
+fn issue_4470_template_frontmatter_unchanged() {
+    let cases = [
+        (
+            "plain",
+            "---\nname: n\ndescription: d\ncolor: red\n---\n".to_string(),
+        ),
+        (
+            "colon",
+            "---\nname: n\ndescription: a: b\n---\n".to_string(),
+        ),
+        ("duplicate", "---\nname: n\nname: m\n---\n".to_string()),
+        (
+            "long-color",
+            format!("---\nname: n\ncolor: {}\n---\n", "x".repeat(65)),
+        ),
+        (
+            "folded",
+            "---\nname: n\ndescription: >\n  a\n  b\n---\n".to_string(),
+        ),
+        (
+            "bom-crlf",
+            "\u{feff}---\r\nname: n\r\ncolor: red\r\n---\r\n".to_string(),
+        ),
+        ("absent", "no frontmatter".to_string()),
+    ];
+    for (label, content) in cases {
+        let fm = parse_agency_template_frontmatter(&content);
+        let expected = match label {
+            "plain" => (Some("n"), Some("d"), Some("red")),
+            "colon" | "duplicate" | "absent" => (None, None, None),
+            "long-color" => (Some("n"), None, None),
+            "folded" => (Some("n"), Some("a b"), None),
+            "bom-crlf" => (Some("n"), None, Some("red")),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            (
+                fm.name.as_deref(),
+                fm.description.as_deref(),
+                fm.color.as_deref()
+            ),
+            expected,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn issue_4470_yaml_scalar_unchanged() {
+    let cases = [
+        ("plain", "plain"),
+        ("a: b", "'a: b'"),
+        ("# hash", "'# hash'"),
+        ("- dash", "'- dash'"),
+        ("yes", "yes"),
+        ("no", "no"),
+        ("null", "'null'"),
+        ("~", "'~'"),
+        ("123", "'123'"),
+        ("1.5", "'1.5'"),
+        ("", "''"),
+        (" lead", "' lead'"),
+        ("trail ", "'trail '"),
+        ("it's", "it's"),
+        ("say \"hi\"", "say \"hi\""),
+        ("a\nb", "|-\n  a\n  b"),
+        ("ñandú", "ñandú"),
+        ("@at", "'@at'"),
+        ("*star", "'*star'"),
+        ("&amp", "'&amp'"),
+        ("!bang", "'!bang'"),
+        ("%pct", "'%pct'"),
+        ("{x}", "'{x}'"),
+        ("[x]", "'[x]'"),
+        ("`tick`", "'`tick`'"),
+        ("0x1F", "'0x1F'"),
+        (".inf", "'.inf'"),
+    ];
+    for (input, expected) in cases {
+        let scalar = yaml_scalar(input);
+        let name = parse_agency_template_frontmatter(&format!("---\nname: {scalar}\n---\n")).name;
+        assert_eq!(scalar, expected, "{input:?}");
+        let expected_name = if input.is_empty() {
+            None
+        } else {
+            Some(input.trim())
+        };
+        assert_eq!(name.as_deref(), expected_name, "{input:?}");
+    }
+}
