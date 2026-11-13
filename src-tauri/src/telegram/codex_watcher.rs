@@ -531,7 +531,7 @@ pub(crate) async fn lock_global_diagnostic_files() -> tokio::sync::MutexGuard<'s
 }
 
 macro_rules! bridge_log {
-    ($state:ident, $tag:expr, $msg:expr) => {
+    ($state:ident, $tag:expr_2021, $msg:expr_2021) => {
         if let Some(bridge_logger) = $state.logger.as_mut() {
             bridge_logger.log($tag, &$state.session_id, $msg);
         }
