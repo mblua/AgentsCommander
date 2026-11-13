@@ -1,0 +1,12 @@
+{
+  "identifier": "spec-board",
+  "description": "#4330 spec board window",
+  "windows": ["spec-board"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-minimize",
+    "core:window:allow-start-dragging"
+  ]
+}
