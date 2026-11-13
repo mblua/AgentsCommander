@@ -506,3 +506,37 @@ fn wait_timeout_error_keeps_diagnostic_and_adds_timeout_fields() {
     assert_eq!(timed_out["timeoutMs"], 1234);
     assert_eq!(timed_out["phase"], "wait_startup_timeout");
 }
+
+#[test]
+fn ui_automation_session_debug_redacts_token() {
+    let session = UiAutomationSession {
+        pid: 4637,
+        token: "ui-secret-4637".to_string(),
+        exe_path: "/app/ac-4637.exe".to_string(),
+        config_dir: "/cfg".to_string(),
+        window_labels: vec!["main".to_string()],
+        ready_window_labels: Vec::new(),
+        started_at_unix_ms: 0,
+    };
+    let out = format!("{session:?}");
+    assert!(!out.contains("ui-secret-4637"));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("ac-4637.exe"));
+}
+
+#[test]
+fn ui_automation_request_debug_redacts_token() {
+    let request = UiAutomationRequest {
+        request_id: "req-4637".to_string(),
+        token: "ui-req-secret-4637".to_string(),
+        window: "main".to_string(),
+        action: UiAutomationAction::Query,
+        selector: "sel".to_string(),
+        value: None,
+        expires_at_unix_ms: None,
+    };
+    let out = format!("{request:?}");
+    assert!(!out.contains("ui-req-secret-4637"));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("req-4637"));
+}

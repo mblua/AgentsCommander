@@ -103,6 +103,38 @@ test('normalization removes BOM, CRLF, CR, trailing spaces and extra final newli
   assert.equal(normalize(''), '\n');
 });
 
+function oldNormalize(text) {
+  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
+    .split('\n').map(line => line.replace(/[ \t]+$/g, '')).join('\n')
+    .replace(/\n*$/, '\n');
+}
+
+test('normalize matches the previous regex implementation', () => {
+  const fixed = ['', '\n', '\n\n\n', 'a', 'a \t \n\n', '\uFEFFa\r\nb \r\n\r\n', ' \t',
+    'a\n \n\t\n', '\r\r\n\n\r', '\uFEFF\uFEFFa'];
+  for (const s of fixed) assert.equal(normalize(s), oldNormalize(s), JSON.stringify(s));
+  const alphabet = [' ', '\t', '\n', '\r', '\uFEFF', 'a', '\u00a0'];
+  let seed = 12345;
+  const next = () => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return seed >>> 16;
+  };
+  for (let i = 0; i < 2000; i++) {
+    let s = '';
+    const length = next() % 41;
+    for (let j = 0; j < length; j++) s += alphabet[next() % alphabet.length];
+    assert.equal(normalize(s), oldNormalize(s), JSON.stringify(s));
+  }
+});
+
+test('normalize stays linear on long space and newline runs', () => {
+  for (const input of [' '.repeat(200000) + 'x', '\n'.repeat(200000) + 'x']) {
+    const start = performance.now();
+    normalize(input);
+    assert.ok(performance.now() - start < 200);
+  }
+});
+
 test('render is stable for shuffled inputs and deduplicates normalized texts', () => {
   const a = { ...printable('a'), texts: ['\uFEFFsame \r\n'] };
   const b = printable('b');
