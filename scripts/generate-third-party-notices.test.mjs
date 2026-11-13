@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';
+import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +46,46 @@ test('missing Rust root and empty registry selections fail closed', () => {
   assert.throws(() => selectCrates([{ packages: [pkg('agentscommander', { source: null })],
     resolve: { nodes: [{ id: 'agentscommander', deps: [] }] } }]), /No Rust crates/);
   assert.throws(() => selectCrates([]), /No Rust crates/);
+});
+
+const crateEntry = name => ({ name, version: '1.0.0', license: 'MIT', authors: [],
+  dir: path.dirname(`/registry/${name}/Cargo.toml`) });
+const rootedMetadata = (packages, nodes) => ({
+  packages: [pkg('agentscommander', { source: null }), ...packages],
+  resolve: { nodes },
+});
+
+test('selectCrates returns full sorted entries', () => {
+  assert.deepEqual(selectCrates([metadata()]), [crateEntry('indirect'), crateEntry('normal')]);
+});
+
+test('selectCrates fails closed on a missing package or resolve node', () => {
+  assert.throws(() => selectCrates([rootedMetadata([], [
+    { id: 'agentscommander', deps: [dep('ghost')] },
+  ])]), /cargo metadata is missing package ghost/);
+  assert.throws(() => selectCrates([rootedMetadata([pkg('lonely')], [
+    { id: 'agentscommander', deps: [dep('lonely')] },
+  ])]), /cargo metadata is missing resolve node lonely/);
+});
+
+test('selectCrates defaults missing authors to an empty list', () => {
+  const noAuthors = pkg('noauth');
+  delete noAuthors.authors;
+  assert.deepEqual(selectCrates([rootedMetadata([noAuthors], [
+    { id: 'agentscommander', deps: [dep('noauth')] }, { id: 'noauth', deps: [] },
+  ])]), [crateEntry('noauth')]);
+});
+
+test('selectCrates walks a dependency cycle once', () => {
+  assert.deepEqual(selectCrates([rootedMetadata([pkg('a'), pkg('b')], [
+    { id: 'agentscommander', deps: [dep('a')] },
+    { id: 'a', deps: [dep('b')] }, { id: 'b', deps: [dep('a')] },
+  ])]), [crateEntry('a'), crateEntry('b')]);
+});
+
+test('selectCrates keys the same crate across targets once', () => {
+  assert.deepEqual(selectCrates([metadata(), metadata()]),
+    [crateEntry('indirect'), crateEntry('normal')]);
 });
 
 test('npm filters dev/types, includes nested packages and forced Vite, uses lock version', () => {
