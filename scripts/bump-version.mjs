@@ -69,17 +69,17 @@ const PATCHES = [
   {
     file: 'package.json',
     label: 'root version',
-    re: /(\r?\n\s*"name":\s*"agentscommander",\s*\r?\n\s*"version":\s*)"[^"]+"/,
+    re: /(\r?\n\s*"name":\s*"agentscommander",[^\S\n]*\n\s*"version":\s*)"[^"]+"/,
   },
   {
     file: 'npm/package.json',
     label: 'npm wrapper version',
-    re: /(\r?\n\s*"name":\s*"@mblua\/agentscommander",\s*\r?\n\s*"version":\s*)"[^"]+"/,
+    re: /(\r?\n\s*"name":\s*"@mblua\/agentscommander",[^\S\n]*\n\s*"version":\s*)"[^"]+"/,
   },
   {
     file: 'package-lock.json',
     label: 'root version',
-    re: /(\r?\n\s*"name":\s*"agentscommander",\s*\r?\n\s*"version":\s*)"[^"]+"/,
+    re: /(\r?\n\s*"name":\s*"agentscommander",[^\S\n]*\n\s*"version":\s*)"[^"]+"/,
   },
   {
     file: 'package-lock.json',

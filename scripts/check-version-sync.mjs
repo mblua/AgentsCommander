@@ -34,12 +34,12 @@ const checks = [
   extract(
     'package.json:version',
     'package.json',
-    /(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
+    /(?:\r?\n)\s*"name":\s*"agentscommander",[^\S\n]*\n\s*"version":\s*"([^"]+)"/,
   ),
   extract(
     'npm/package.json:version',
     'npm/package.json',
-    /(?:\r?\n)\s*"name":\s*"@mblua\/agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
+    /(?:\r?\n)\s*"name":\s*"@mblua\/agentscommander",[^\S\n]*\n\s*"version":\s*"([^"]+)"/,
   ),
   extract(
     'npm/install.js:VERSION',
@@ -49,7 +49,7 @@ const checks = [
   extract(
     'package-lock.json:root.version',
     'package-lock.json',
-    /(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
+    /(?:\r?\n)\s*"name":\s*"agentscommander",[^\S\n]*\n\s*"version":\s*"([^"]+)"/,
   ),
   extract(
     'package-lock.json:packages[""].version',

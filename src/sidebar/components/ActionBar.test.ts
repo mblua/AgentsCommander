@@ -496,4 +496,19 @@ describe("ActionBar theme toggle document class (#4499)", () => {
 
     dispose();
   });
+
+  it("forces the light-theme class on instead of flipping a stale class", () => {
+    mockState.settings = { soundsEnabled: true, themeLight: false, specBoardEnabled: false };
+    document.documentElement.classList.add("light-theme");
+    const { dispose } = renderActionBar();
+    const themeButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.theme"]'
+    );
+    if (!themeButton) throw new Error("theme button not rendered");
+
+    themeButton.click();
+    expect(document.documentElement.classList.contains("light-theme")).toBe(true);
+
+    dispose();
+  });
 });
