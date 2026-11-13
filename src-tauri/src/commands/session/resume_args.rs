@@ -435,7 +435,11 @@ pub(crate) fn maybe_inject_muse_resume(
 /// (#599 R2) Lifted to module scope (was nested in `resolve_claude_projects_dir`)
 /// so `claude_projects_dir_for_config_dir` can reuse it for the env-layer probe.
 pub(crate) fn expand_env_var_refs(input: &str) -> String {
-    // Pass 1: %NAME% (cmd-style).
+    expand_powershell_env_refs(&expand_percent_refs(input))
+}
+
+/// Pass 1: %NAME% (cmd-style).
+fn expand_percent_refs(input: &str) -> String {
     let mut buf = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(start) = rest.find('%') {
@@ -444,21 +448,14 @@ pub(crate) fn expand_env_var_refs(input: &str) -> String {
         match after.find('%') {
             Some(end) => {
                 let name = &after[..end];
-                let valid =
-                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                if valid {
-                    if let Ok(v) = crate::config::environment::resume_expansion_value(name) {
-                        buf.push_str(&v);
-                    } else {
+                match percent_ref_value(name) {
+                    Some(v) => buf.push_str(&v),
+                    None => {
+                        // Invalid var name (e.g. "100%" literal) or unset; preserve.
                         buf.push('%');
                         buf.push_str(name);
                         buf.push('%');
                     }
-                } else {
-                    // Not a valid var name (e.g. "100%" literal); preserve.
-                    buf.push('%');
-                    buf.push_str(name);
-                    buf.push('%');
                 }
                 rest = &after[end + 1..];
             }
@@ -471,9 +468,36 @@ pub(crate) fn expand_env_var_refs(input: &str) -> String {
         }
     }
     buf.push_str(rest);
+    buf
+}
 
-    // Pass 2: $env:NAME (PowerShell-style). Case-insensitive prefix; name
-    // terminates at the first byte that is not [A-Za-z0-9_].
+/// Value for a valid `%NAME%`; `None` keeps the literal. The lookup runs only
+/// for a valid name.
+fn percent_ref_value(name: &str) -> Option<String> {
+    let valid = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return None;
+    }
+    crate::config::environment::resume_expansion_value(name).ok()
+}
+
+/// Index one past the last [A-Za-z0-9_] byte starting at `name_start`.
+fn env_name_end(bytes: &[u8], name_start: usize) -> usize {
+    let mut name_end = name_start;
+    while name_end < bytes.len() {
+        let c = bytes[name_end];
+        if c.is_ascii_alphanumeric() || c == b'_' {
+            name_end += 1;
+        } else {
+            break;
+        }
+    }
+    name_end
+}
+
+/// Pass 2: $env:NAME (PowerShell-style). Case-insensitive prefix; name
+/// terminates at the first byte that is not [A-Za-z0-9_].
+fn expand_powershell_env_refs(buf: &str) -> String {
     let mut out = String::with_capacity(buf.len());
     let bytes = buf.as_bytes();
     let mut i = 0;
@@ -481,15 +505,7 @@ pub(crate) fn expand_env_var_refs(input: &str) -> String {
         let remaining = &buf[i..];
         if remaining.len() >= 5 && remaining.as_bytes()[..5].eq_ignore_ascii_case(b"$env:") {
             let name_start = i + 5;
-            let mut name_end = name_start;
-            while name_end < bytes.len() {
-                let c = bytes[name_end];
-                if c.is_ascii_alphanumeric() || c == b'_' {
-                    name_end += 1;
-                } else {
-                    break;
-                }
-            }
+            let name_end = env_name_end(bytes, name_start);
             if name_end > name_start {
                 let name = &buf[name_start..name_end];
                 if let Ok(v) = crate::config::environment::resume_expansion_value(name) {
