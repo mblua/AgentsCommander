@@ -1,3 +1,6 @@
+//! Shared outbound HTTP: `OutboundNetwork` holds the pooled `reqwest` clients
+//! behind a permit semaphore, and `NetworkBackoff` gives jittered retry delays.
+
 use std::sync::Arc;
 use std::time::Duration;
 

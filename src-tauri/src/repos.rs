@@ -1,3 +1,6 @@
+//! Repository discovery: repo names, remote URL sanitizing, coding-agent
+//! detection, repository search and Git working-tree checks.
+
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 

@@ -1,3 +1,6 @@
+//! `AppError`, the shared application error type, and its conversion to the
+//! `String` error that Tauri commands return.
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
