@@ -989,7 +989,8 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
       const direction = event.shiftKey ? -1 : 1;
       next = (index + direction + items.length) % items.length;
     }
-    items[next].focus();
+    // items is non-empty and next is reduced modulo items.length.
+    items[next]!.focus();
   };
 
   const openResourcesSettings = () => {
