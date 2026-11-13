@@ -109,6 +109,54 @@ function readonlyRegex(scan, item, type, init) {
   }
   return true;
 }
+function threadStaticEnd(ts, group, i, path) {
+  let end = i + 1;
+  for (; end < group.end && ts[end].text !== ';'; end++)
+    if (['(','[','{'].includes(ts[end].text)) end = ts[end].mate;
+  if (end === group.end) throw new Error(
+    `${path}:${ts[i].line}: thread_local static not delimitable`);
+  return end;
+}
+function threadLocalStatics(ts, groups, path) {
+  const out = [];
+  for (const group of groups) for (let i = group.start + 1; i < group.end; i++)
+    if (ts[i].name === 'static') {
+    const end = threadStaticEnd(ts, group, i, path);
+    out.push({ item: null, first: i, last: end, thread: true }); i = end;
+  }
+  return out;
+}
+function staticTypeState(m, scan, path, type, thread) {
+  let state = false;
+  for (let i = 0; i < type.length; i++)
+    if (type[i].kind === 'ident' && !(type[i - 1]?.text === '::' &&
+      type[i - 2]?.kind === 'ident')) {
+    const r = qualified(scan,type,i), value = r.path ?? (r.ambiguous ? r.raw : '');
+    if (stateType.test(value) || thread && /(?:^|::)(?:Cell|RefCell)$/.test(value)) {
+      state = true; warning(m,path,type[i].line,r);
+    }
+    i = r.end - 1;
+  }
+  return state;
+}
+function measureDeclaration(m, scan, ts, d, path) {
+  if (scan.isTestOffset(ts[d.first].start)) return;
+  const segment = ts.slice(d.first,d.last), colon = segment.findIndex(t => t.text === ':'),
+    eq = segment.findIndex(t => t.text === '=');
+  if (colon < 0 || eq < colon) throw new Error(
+    `${path}:${ts[d.first].line}: static type/initializer not delimitable`);
+  const type = segment.slice(colon + 1,eq), init = segment.slice(eq + 1);
+  const typed = staticTypeState(m, scan, path, type, d.thread);
+  const state = segment[1]?.name === 'mut' || typed;
+  if (!state) return;
+  if (segment[1]?.name !== 'mut' && readonlyRegex(scan,d.item,type,init)) return;
+  const identityStart = d.thread ? threadIdentityStart(ts, d.first) : d.first;
+  const identityTokens = d.thread ? ts.slice(identityStart, d.last) : segment;
+  const site = hit(m, 'globals', ts[d.first].line,
+    occurrenceIdentity(scan, ts[d.first], identityTokens));
+  const exposed = d.thread ? identityStart !== d.first : explicitVisibility(scan, d.item);
+  if (exposed) m.exposedGlobals.push(site);
+}
 function measure(path, scan) {
   const m = metric(), ts = scan.tokens;
   m.exposedGlobals = [];
@@ -118,41 +166,8 @@ function measure(path, scan) {
     ts[g.start - 2]?.name === 'thread_local');
   const declarations = scan.items.filter(i => i.kind === 'static').map(item => ({ item,
     first: item.first, last: item.last, thread: false }));
-  for (const group of threadGroups) for (let i = group.start + 1; i < group.end; i++)
-    if (ts[i].name === 'static') {
-    let end = i + 1;
-    for (; end < group.end && ts[end].text !== ';'; end++)
-      if (['(','[','{'].includes(ts[end].text)) end = ts[end].mate;
-    if (end === group.end) throw new Error(
-      `${path}:${ts[i].line}: thread_local static not delimitable`);
-    declarations.push({ item: null, first: i, last: end, thread: true }); i = end;
-  }
-  for (const d of declarations) {
-    if (scan.isTestOffset(ts[d.first].start)) continue;
-    const segment = ts.slice(d.first,d.last), colon = segment.findIndex(t => t.text === ':'),
-      eq = segment.findIndex(t => t.text === '=');
-    if (colon < 0 || eq < colon) throw new Error(
-      `${path}:${ts[d.first].line}: static type/initializer not delimitable`);
-    const type = segment.slice(colon + 1,eq), init = segment.slice(eq + 1);
-    let state = segment[1]?.name === 'mut';
-    for (let i = 0; i < type.length; i++)
-      if (type[i].kind === 'ident' && !(type[i - 1]?.text === '::' &&
-        type[i - 2]?.kind === 'ident')) {
-      const r = qualified(scan,type,i), value = r.path ?? (r.ambiguous ? r.raw : '');
-      if (stateType.test(value) || d.thread && /(?:^|::)(?:Cell|RefCell)$/.test(value)) {
-        state = true; warning(m,path,type[i].line,r);
-      }
-      i = r.end - 1;
-    }
-    if (!state) continue;
-    if (segment[1]?.name !== 'mut' && readonlyRegex(scan,d.item,type,init)) continue;
-    const identityStart = d.thread ? threadIdentityStart(ts, d.first) : d.first;
-    const identityTokens = d.thread ? ts.slice(identityStart, d.last) : segment;
-    const site = hit(m, 'globals', ts[d.first].line,
-      occurrenceIdentity(scan, ts[d.first], identityTokens));
-    const exposed = d.thread ? identityStart !== d.first : explicitVisibility(scan, d.item);
-    if (exposed) m.exposedGlobals.push(site);
-  }
+  declarations.push(...threadLocalStatics(ts, threadGroups, path));
+  for (const d of declarations) measureDeclaration(m, scan, ts, d, path);
   return m;
 }
 
