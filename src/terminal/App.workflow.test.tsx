@@ -5,7 +5,7 @@ import { terminalStore } from "./stores/terminal";
 import { __setTransportForTests } from "../shared/ipc";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import type { TransportConnectionState, UnlistenFn } from "../shared/transport";
-import type { PtyScreenSnapshot, Session } from "../shared/types";
+import type { Session } from "../shared/types";
 import {
   baseSettings,
   installBrowserDomStubs,
