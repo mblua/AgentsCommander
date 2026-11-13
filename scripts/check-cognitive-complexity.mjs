@@ -2302,7 +2302,7 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
 // holds the function. `mod x;` items are resolved to their out-of-line files
 // so a removal is credited when the pull request touched the real file.
 const OUT_OF_LINE_MOD_RE =
-  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;/g;
 const PATH_ATTRIBUTE_RE = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
 
 function stripRustComments(source) {
@@ -4462,7 +4462,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       }
     }],
     ['case 3527: exact historical inventory and independent guards', () => {
-      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const clone = (value) => structuredClone(value);
       const entries = HISTORICAL_3527_SITES.map(([id, anchor]) => ({ id, sites: {
         windows: [anchor], linux: [anchor], macos: [anchor],
       } }));

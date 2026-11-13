@@ -511,7 +511,7 @@ return sinks.map(site=>({...site,
 }
 
 // Positive, deliberately small TOML subset; no unconsumed statement can enable inheritance.
-function ordinaryManifest(cargo, external = false, path, tree) {
+function ordinaryManifest(cargo, external, path, tree) {
   const gap = String.raw`(?:[ \t\r\n]|#[^\r\n]*(?![^\r\n]))*`;
   const string = String.raw`(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')`;
   const scalar = `(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
@@ -535,7 +535,7 @@ function ordinaryManifest(cargo, external = false, path, tree) {
       cargo = cargo.slice(arrayHeader[0].length);
       continue;
     }
-    const header = /^\[[ \t]*([^\[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
+    const header = /^\[[ \t]*([^[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
       .exec(cargo);
     if (header) {
       section = header[1].trim();
