@@ -55,10 +55,6 @@ function splitTop(text: string): string[] {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
-function lineOf(text: string, index: number): number {
-  return text.slice(0, index).split("\n").length;
-}
-
 function isRustTestPath(path: string): boolean {
   const base = path.slice(path.lastIndexOf("/") + 1);
   return path.includes("/tests/") || /^tests\.rs$|_tests?\.rs$/.test(base);
