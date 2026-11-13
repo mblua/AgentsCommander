@@ -4,6 +4,8 @@ import {
   extractWorkgroupName,
   extractAgentName,
   computeTrailingText,
+  matchPathRoot,
+  type PathRoot,
   trimTrailingSeparators,
   trimTrailingSlashes,
 } from './path-extractors';
@@ -144,5 +146,53 @@ describe('trailing separator trim (#4456 S8786)', () => {
     expect(trimTrailingSlashes(slashes)).toBe(slashes);
     const mixed = `${'\\/'.repeat(50_000)}x`;
     expect(trimTrailingSeparators(mixed)).toBe(mixed);
+  });
+});
+
+describe('matchPathRoot', () => {
+  // Oracle: the regexes normalizePath used before #4476.
+  const DRIVE_ORACLE = /^([A-Za-z]:)[\\/]+(.*)$/;
+  const UNC_ORACLE = /^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/;
+
+  function oracle(path: string): PathRoot | null {
+    const drive = DRIVE_ORACLE.exec(path);
+    if (drive) return { drive: drive[1], rest: drive[2] };
+    const unc = UNC_ORACLE.exec(path);
+    return unc ? { server: unc[1], share: unc[2], rest: unc[3] } : null;
+  }
+
+  it('matches the old regexes on every short string', () => {
+    const alphabet = ['C', ':', '/', '\\', 'a', '\n'];
+    let level = [''];
+    let checked = 0;
+    for (let len = 0; len <= 6; len++) {
+      for (const path of level) {
+        expect(matchPathRoot(path), JSON.stringify(path)).toEqual(oracle(path));
+        checked++;
+      }
+      level = level.flatMap(prefix => alphabet.map(ch => prefix + ch));
+    }
+    expect(checked).toBe(55_987);
+  });
+
+  it.each([
+    'C:/x/y',
+    'C:\\x',
+    '//srv/share',
+    '//srv/share/a/b',
+    '\\\\srv\\share',
+    '///x',
+    '//srv',
+    '//srv/',
+    'C:',
+  ])('matches the old regexes on %j', path => {
+    expect(matchPathRoot(path)).toEqual(oracle(path));
+  });
+
+  it('handles long separator and name runs', () => {
+    expect(matchPathRoot(`C:${'/'.repeat(100_000)}a`)).toEqual({ drive: 'C:', rest: 'a' });
+    const server = 's'.repeat(50_000);
+    const share = 't'.repeat(50_000);
+    expect(matchPathRoot(`//${server}/${share}/x`)).toEqual({ server, share, rest: 'x' });
   });
 });
