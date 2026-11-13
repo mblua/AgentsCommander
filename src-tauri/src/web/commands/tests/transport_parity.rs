@@ -303,7 +303,7 @@ async fn issue_1937_transport_parity_tauri_registration_presence() {
                 cmd: cmd.to_string(),
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
-                url: "http://tauri.localhost".parse().unwrap(),
+                url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
                 body: tauri::ipc::InvokeBody::Json(json!({ "request": request })),
                 headers: Default::default(),
                 invoke_key: tauri::test::INVOKE_KEY.to_string(),

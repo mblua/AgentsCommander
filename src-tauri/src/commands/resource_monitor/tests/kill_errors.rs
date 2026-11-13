@@ -395,7 +395,7 @@ fn invoke_unsupported_resource_kill(
             cmd: "kill_resource_group".into(),
             callback: tauri::ipc::CallbackFn(0),
             error: tauri::ipc::CallbackFn(1),
-            url: "http://tauri.localhost".parse().unwrap(),
+            url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
             body: tauri::ipc::InvokeBody::Json(serde_json::json!({
                 "request": {
                     "sessionId": session_id,
