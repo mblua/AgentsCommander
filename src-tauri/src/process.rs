@@ -1,3 +1,6 @@
+//! External process helpers (agent, Docker, Git, GitHub, harness, host) and
+//! the platform-specific `is_running` PID check.
+
 pub(crate) mod agent;
 pub(crate) mod docker;
 pub(crate) mod git;
