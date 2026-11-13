@@ -32,7 +32,7 @@ While the sidebar is compact, a voice recording or voice auto-execute countdown 
 
 The screenshot capture hotkey is **the only OS-global shortcut AgentsCommander registers**. It fires whether or not an AC window has focus, which is the point: you press it while looking at the thing you want to capture.
 
-It is configurable, and it is available on Windows, macOS (Control key, not Command) and Linux/X11 (not Wayland). See [Configure the hotkey](../features/screenshot-capture.md#configure-the-hotkey) for the accepted key combinations, how to change it, and how to check that the registration succeeded.
+It is configurable, and it is available on Windows, macOS (Control key, not Command) and Linux (X11, and Wayland through the desktop portal; on Hyprland a key binding is needed, see [Wayland: the key binding on Hyprland](../features/screenshot-capture.md#wayland-the-key-binding-on-hyprland)). See [Configure the hotkey](../features/screenshot-capture.md#configure-the-hotkey) for the accepted key combinations, how to change it, and how to check that the registration succeeded.
 
 ## Scope
 

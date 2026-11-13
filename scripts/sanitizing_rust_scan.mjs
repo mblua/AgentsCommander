@@ -60,7 +60,8 @@ export function lexRust(path, text) {
         else if (text.startsWith('*/', i)) { depth--; advance(i + 2); }
         else advance(i + 1);
       }
-      if (depth) error(path, tokenLine, 'unclosed block comment'); continue;
+      if (depth) error(path, tokenLine, 'unclosed block comment');
+      continue;
     }
     const raw = /^(?:br|r)(#*)"/.exec(text.slice(i));
     if (raw) {
@@ -114,9 +115,9 @@ export function lexRust(path, text) {
     }
     if (/\d/.test(c)) {
       // A tuple index cannot absorb the following projection, call or range.
-      const numeric = tokens.at(-1)?.text === '.' ? /^\d[\d_]*/ :
-        /^(?:0(?:x[\da-fA-F_]+|o[0-7_]+|b[01_]+)|\d[\d_]*(?:\.(?!\.|[_\p{ID_Start}])[\d_]*)?(?:[eE][+-]?[\d_]+)?)(?:[_\p{ID_Start}][\p{ID_Continue}_]*)?/u;
-      advance(i + numeric.exec(text.slice(i))[0].length);
+      const rest = text.slice(i);
+      advance(i + (tokens.at(-1)?.text === '.' ? /^\d[\d_]*/.exec(rest)[0].length
+        : rustNumberLength(rest)));
       add('number', start, i, tokenLine); continue;
     }
     const punctuation = ['::', '=>', '->', '==', '!=', '+=', '-=', '*=', '/=', '..=', '..', '&&',
@@ -134,6 +135,14 @@ export function lexRust(path, text) {
   if (stack.length) error(path, tokens[stack.at(-1)].line, 'unclosed delimiter');
   return { tokens, groups };
 }
+// Rust numeric literal: radix or decimal head, then an optional type suffix.
+const RUST_RADIX_INT = /^0(?:x[\da-fA-F_]+|o[0-7_]+|b[01_]+)/;
+const RUST_DECIMAL = /^\d[\d_]*(?:\.(?!\.|[_\p{ID_Start}])[\d_]*)?(?:[eE][+-]?[\d_]+)?/u;
+const RUST_SUFFIX = /^[_\p{ID_Start}][\p{ID_Continue}_]*/u;
+function rustNumberLength(text) {
+  const head = (RUST_RADIX_INT.exec(text) ?? RUST_DECIMAL.exec(text))[0];
+  return head.length + (RUST_SUFFIX.exec(text.slice(head.length))?.[0].length ?? 0);
+}
 function splitTop(tokens, separator = ',') {
   const result = []; let start = 0;
   for (let i = 0; i < tokens.length; i++) {
@@ -142,7 +151,8 @@ function splitTop(tokens, separator = ',') {
     else if (tokens[i].text === separator) { if (i > start) result.push(tokens.slice(start, i));
       start = i + 1; }
   }
-  if (start < tokens.length) result.push(tokens.slice(start)); return result;
+  if (start < tokens.length) result.push(tokens.slice(start));
+  return result;
 }
 export function parseMeta(tokens) {
   let i = 0;
@@ -160,7 +170,8 @@ export function parseMeta(tokens) {
       while (i < tokens.length && ![',', ')'].includes(tokens[i].text)) {
         if (opens[tokens[i].text]) {
           const end = tokens.findIndex(t => t.index === tokens[i].mate);
-          if (end < i) fail(); i = end + 1;
+          if (end < i) fail();
+          i = end + 1;
         } else i++;
       }
       if (begin === i) fail();
@@ -181,7 +192,9 @@ export function parseMeta(tokens) {
     }
     return node;
   }
-  const meta = parse(); if (i !== tokens.length) fail(); return meta;
+  const meta = parse();
+  if (i !== tokens.length) fail();
+  return meta;
 }
 export function impliesTest(meta) {
   if (meta.name === 'test' && meta.args === null && meta.value === undefined) return true;
@@ -498,7 +511,7 @@ return sinks.map(site=>({...site,
 function ordinaryManifest(cargo, external = false, path, tree) {
   const gap = String.raw`(?:[ \t\r\n]|#[^\r\n]*(?![^\r\n]))*`;
   const string = String.raw`(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')`;
-  const scalar = String.raw`(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
+  const scalar = `(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
   const array = String.raw`\[${gap}(?:${scalar}${gap}(?:,${gap}${scalar}${gap})*,?${gap})?\]`;
   const pair = String.raw`[A-Za-z0-9_-]+[ \t]*=[ \t]*(?:${scalar}|${array})`;
   const inline = String.raw`\{[ \t]*${pair}(?:[ \t]*,[ \t]*${pair})*[ \t]*\}`;

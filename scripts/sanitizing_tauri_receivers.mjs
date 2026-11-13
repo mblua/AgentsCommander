@@ -336,8 +336,8 @@ export function createReceiverClassifier(context) {
   function canonical(target, module) {
     const parts = target.split('::');
     let segments;
-    if (parts[0] === 'crate') segments = [], parts.shift();
-    else if (parts[0] === 'self') segments = [...module.segments], parts.shift();
+    if (parts[0] === 'crate') { segments = []; parts.shift(); }
+    else if (parts[0] === 'self') { segments = [...module.segments]; parts.shift(); }
     else if (parts[0] === 'super') {
       segments = [...module.segments];
       while (parts[0] === 'super') {
@@ -483,7 +483,7 @@ export function createReceiverClassifier(context) {
   // Only Unknown means the import does not resolve to a trait; other errors propagate.
   function importedTrait(module, target) {
     try { return traitAt(canonical(target, module)); }
-    catch (e) { if (e instanceof Unknown) return null; throw e; }
+    catch (e) { if (e instanceof Unknown) { return null; } throw e; }
   }
   // True when a trait has an impl for a generic, object, reference, Box or Arc target.
   function openImpls(trait) {

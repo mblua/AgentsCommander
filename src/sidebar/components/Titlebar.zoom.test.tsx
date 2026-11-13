@@ -289,9 +289,10 @@ describe("Titlebar zoom stepper", () => {
     expect(controls).toBeTruthy();
     const children = Array.from(controls?.children ?? []);
 
-    expect(children[0]?.querySelector('[data-ac-testid="titlebar.webserver.button"]')).toBeTruthy();
-    expect(children[1]?.getAttribute("data-ac-testid")).toBe("titlebar.zoom");
-    expect(children[2]?.querySelector('[data-ac-testid="titlebar.layout.button"]')).toBeTruthy();
+    expect(children[0]?.getAttribute("data-ac-testid")).toBe("screenshot-hotkey-status");
+    expect(children[1]?.querySelector('[data-ac-testid="titlebar.webserver.button"]')).toBeTruthy();
+    expect(children[2]?.getAttribute("data-ac-testid")).toBe("titlebar.zoom");
+    expect(children[3]?.querySelector('[data-ac-testid="titlebar.layout.button"]')).toBeTruthy();
   });
 
   it("clicking plus updates the live display and persists main zoom", async () => {

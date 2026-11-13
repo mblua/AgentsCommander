@@ -51,6 +51,7 @@ impl Default for AppSettings {
             sounds_enabled: true,
             raise_terminal_on_click: true,
             screenshot_capture_hotkey: default_screenshot_capture_hotkey(),
+            screenshot_hyprland_bind: false,
             sidebar_compact_hotkey: default_sidebar_compact_hotkey(),
             room_number_mask: default_room_number_mask(),
             voice_to_text_enabled: false,

@@ -29,7 +29,7 @@ pub(crate) async fn update_settings_with_hotkey_registration(
     app: AppHandle,
     settings: &SettingsState,
     new_settings: AppSettings,
-    register_hotkey: fn(&AppHandle, &str) -> Result<(), String>,
+    register_hotkey: fn(&AppHandle, &str, bool) -> Result<(), String>,
 ) -> Result<(), String> {
     let tracker = app
         .try_state::<crate::pty::manager::ResponseCloseState>()
@@ -50,7 +50,11 @@ pub(crate) async fn update_settings_with_hotkey_registration(
     // #714 re-register the (possibly changed) hotkey. Syntax was already validated
     // before persistence; an OS-level registration conflict must NOT turn this
     // successfully-persisted save into an Err. Surface it as a visible event.
-    if let Err(e) = register_hotkey(&app, &saved.screenshot_capture_hotkey) {
+    if let Err(e) = register_hotkey(
+        &app,
+        &saved.screenshot_capture_hotkey,
+        saved.screenshot_hyprland_bind,
+    ) {
         let _ = app.emit(
             "screenshot_capture_failed",
             serde_json::json!({
@@ -80,7 +84,7 @@ pub(crate) async fn save_settings_draft_with_hotkey_registration(
     app: AppHandle,
     settings: &SettingsState,
     draft: AppSettings,
-    register_hotkey: fn(&AppHandle, &str) -> Result<(), String>,
+    register_hotkey: fn(&AppHandle, &str, bool) -> Result<(), String>,
 ) -> Result<(), String> {
     let tracker = app
         .try_state::<crate::pty::manager::ResponseCloseState>()
@@ -100,7 +104,11 @@ pub(crate) async fn save_settings_draft_with_hotkey_registration(
     purge_sessions_after_settings_update(&saved).await;
     // #714 same non-failing hotkey re-registration as update_settings: persisted
     // save stays successful even if the OS refuses the hotkey.
-    if let Err(e) = register_hotkey(&app, &saved.screenshot_capture_hotkey) {
+    if let Err(e) = register_hotkey(
+        &app,
+        &saved.screenshot_capture_hotkey,
+        saved.screenshot_hyprland_bind,
+    ) {
         let _ = app.emit(
             "screenshot_capture_failed",
             serde_json::json!({

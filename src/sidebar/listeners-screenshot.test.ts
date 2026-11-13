@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { FakeTransport } from "../shared/testing/fake-transport";
-import { __setTransportForTests } from "../shared/ipc";
+import { ScreenshotAPI, __setTransportForTests } from "../shared/ipc";
 import { toastStore, TOAST_EXIT_MS } from "../shared/stores/toasts";
 import type { ScreenshotHotkeyStatus } from "../shared/types";
 import {
@@ -126,5 +126,77 @@ describe("wireScreenshotListeners", () => {
     expect(toastStore.items).toHaveLength(0);
 
     unlisteners.forEach((u) => u());
+  });
+  const BAD = (error: string): ScreenshotHotkeyStatus => ({
+    configured: "Ctrl+Q",
+    registered: false,
+    error,
+  });
+  const STATUS_EVENT = "screenshot_hotkey_status_changed";
+  const warnings = () =>
+    toastStore.items.filter((t) => t.kind === "error" && t.message.includes("is not active"));
+  const settle = async () => {
+    await vi.waitFor(() => {
+      expect(fake.callsFor("screenshot_get_hotkey_status")).toHaveLength(1);
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it("warns once when the same status event repeats", async () => {
+    fake.resolve("screenshot_get_hotkey_status", OK_STATUS);
+    const unlisteners = await wireScreenshotListeners();
+    await settle();
+
+    fake.emitFromBackend(STATUS_EVENT, BAD("needs a line"));
+    fake.emitFromBackend(STATUS_EVENT, BAD("needs a line"));
+
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0].message).toContain("Ctrl+Q");
+    expect(warnings()[0].message).toContain("needs a line");
+    unlisteners.forEach((u) => u());
+  });
+
+  it("startup read and event with the same warning give one toast", async () => {
+    fake.resolve("screenshot_get_hotkey_status", BAD("taken"));
+    const unlisteners = await wireScreenshotListeners();
+    await settle();
+    await vi.waitFor(() => expect(warnings()).toHaveLength(1));
+
+    fake.emitFromBackend(STATUS_EVENT, BAD("taken"));
+
+    expect(warnings()).toHaveLength(1);
+    unlisteners.forEach((u) => u());
+  });
+
+  it("a different warning toasts again", async () => {
+    fake.resolve("screenshot_get_hotkey_status", OK_STATUS);
+    const unlisteners = await wireScreenshotListeners();
+    await settle();
+
+    fake.emitFromBackend(STATUS_EVENT, BAD("first"));
+    fake.emitFromBackend(STATUS_EVENT, BAD("second"));
+
+    expect(warnings()).toHaveLength(2);
+    unlisteners.forEach((u) => u());
+  });
+
+  it("a registered status in between re-arms the same warning", async () => {
+    fake.resolve("screenshot_get_hotkey_status", OK_STATUS);
+    const unlisteners = await wireScreenshotListeners();
+    await settle();
+
+    fake.emitFromBackend(STATUS_EVENT, BAD("same"));
+    fake.emitFromBackend(STATUS_EVENT, OK_STATUS);
+    fake.emitFromBackend(STATUS_EVENT, BAD("same"));
+
+    expect(warnings()).toHaveLength(2);
+    unlisteners.forEach((u) => u());
+  });
+
+  it("startCapture invokes screenshot_start_capture", async () => {
+    fake.resolve("screenshot_start_capture", null);
+    await ScreenshotAPI.startCapture();
+    expect(fake.callsFor("screenshot_start_capture")).toHaveLength(1);
   });
 });

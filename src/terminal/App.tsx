@@ -42,8 +42,9 @@ const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
 
 function normalizePathForCompare(path: string): string {
   let normalized = path;
-  if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
-  else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+  if (normalized.startsWith("\\\\?\\") || normalized.startsWith("//?/")) {
+    normalized = normalized.slice(4);
+  }
   return normalized.replaceAll("\\", "/").toLowerCase();
 }
 

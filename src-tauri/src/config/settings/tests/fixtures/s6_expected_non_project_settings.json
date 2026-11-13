@@ -128,6 +128,7 @@
   "restoreCoordinatorWakeState": false,
   "roomNumberMask": "#",
   "screenshotCaptureHotkey": "Ctrl+Q",
+  "screenshotHyprlandBind": false,
   "selectedRowRailColor": "#FFFFFF",
   "selectedRowRailWidth": "9px",
   "sidebarAlwaysOnTop": false,

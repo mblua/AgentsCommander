@@ -12,4 +12,9 @@ impl<R: Runtime> ScreenshotEvents for AppHandle<R> {
     fn capture_failed(&self, event: ScreenshotCaptureEvent) {
         let _ = self.emit("screenshot_capture_failed", event);
     }
+
+    #[cfg(target_os = "linux")]
+    fn hotkey_status_changed(&self, status: crate::screenshot::ScreenshotHotkeyStatus) {
+        let _ = self.emit("screenshot_hotkey_status_changed", status);
+    }
 }

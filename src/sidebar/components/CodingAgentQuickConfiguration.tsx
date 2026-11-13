@@ -113,8 +113,8 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
       ? document.activeElement.closest(".onboarding-card-row")
       : null;
     const focusedKey = focusedRow
-      ?.querySelector('[data-ac-role="agent-preset"]')
-      ?.getAttribute("data-ac-agent-key");
+      ?.querySelector<HTMLElement>('[data-ac-role="agent-preset"]')
+      ?.dataset.acAgentKey;
     setWelcomeStatus(rows);
     if (!focusedKey || !modalRef || modalRef.contains(document.activeElement)) return;
     const card = modalRef.querySelector<HTMLElement>(
@@ -730,7 +730,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
             <Show when={isCustom()}>
               <div class="onboarding-custom-fields">
                 <label class="onboarding-field-label">
-                  Agent name
+                  {"Agent name"}
                   <input
                     class="onboarding-field-input"
                     type="text"
@@ -742,7 +742,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                   />
                 </label>
                 <label class="onboarding-field-label">
-                  Command
+                  {"Command"}
                   <input
                     class="onboarding-field-input"
                     type="text"

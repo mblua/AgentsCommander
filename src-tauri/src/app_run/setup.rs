@@ -350,13 +350,19 @@ fn start_restore(app: SetupApp<'_>, start: RestoreStart) {
 fn spawn_screenshot_hotkey_registration(app: SetupApp<'_>) {
     let app_for_hotkey = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        let configured = app_for_hotkey
-            .state::<SettingsState>()
-            .read()
-            .await
-            .screenshot_capture_hotkey
-            .clone();
-        match crate::screenshot::register_configured_hotkey(&app_for_hotkey, &configured) {
+        let (configured, hyprland_bind) = {
+            let state = app_for_hotkey.state::<SettingsState>();
+            let settings = state.read().await;
+            (
+                settings.screenshot_capture_hotkey.clone(),
+                settings.screenshot_hyprland_bind,
+            )
+        };
+        match crate::screenshot::register_configured_hotkey(
+            &app_for_hotkey,
+            &configured,
+            hyprland_bind,
+        ) {
             Ok(()) => log::info!("[screenshot] global hotkey registered '{configured}'"),
             Err(error) => {
                 log::warn!("[screenshot] global hotkey registration failed: {error}");
