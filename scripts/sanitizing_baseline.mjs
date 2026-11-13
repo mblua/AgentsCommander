@@ -219,6 +219,25 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
 // so an entry goes stale once its debt is merged.
 export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';
 const ALLOWLIST_GATES = ['01', '02', '05', '06', '07', '08', '09', 'cog'];
+function allowlistEntryShape(e, bad) {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) throw bad('must be an object');
+  if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(
+    `gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
+  for (const field of ['rule', 'path', 'reason', 'since'])
+    if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(
+      `${field} must be a non-empty string`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(e.since)) throw bad('since must be YYYY-MM-DD');
+  if (!Number.isInteger(e.issue) || e.issue <= 0) throw bad('issue must be a positive integer');
+}
+function allowlistEntryHash(e, bad) {
+  for (const field of ['symbol', 'hash'])
+    if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(
+      `${field} must be a non-empty string when present`);
+  if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol ||
+    !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
+    throw bad('cog entries need rule new|stale, symbol and a 12-hex hash');
+  if (e.gate !== 'cog' && e.hash !== undefined) throw bad('hash only applies to cog entries');
+}
 export function parseAllowlist(text) {
   let document;
   try { document = JSON.parse(text); } catch { throw new GateError(
@@ -228,21 +247,8 @@ export function parseAllowlist(text) {
   const keys = new Set();
   for (const [i, e] of document.entries.entries()) {
     const bad = reason => new GateError(`${ALLOWLIST_FILE}: entry ${i} ${reason}`);
-    if (!e || typeof e !== 'object' || Array.isArray(e)) throw bad('must be an object');
-    if (!ALLOWLIST_GATES.includes(e.gate)) throw bad(
-      `gate must be one of ${ALLOWLIST_GATES.join(', ')}`);
-    for (const field of ['rule', 'path', 'reason', 'since'])
-      if (typeof e[field] !== 'string' || !e[field].trim()) throw bad(
-        `${field} must be a non-empty string`);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.since)) throw bad('since must be YYYY-MM-DD');
-    if (!Number.isInteger(e.issue) || e.issue <= 0) throw bad('issue must be a positive integer');
-    for (const field of ['symbol', 'hash'])
-      if (e[field] !== undefined && (typeof e[field] !== 'string' || !e[field].trim())) throw bad(
-        `${field} must be a non-empty string when present`);
-    if (e.gate === 'cog' && (!['new', 'stale'].includes(e.rule) || !e.symbol ||
-      !/^[0-9a-f]{12}$/.test(e.hash ?? '')))
-      throw bad('cog entries need rule new|stale, symbol and a 12-hex hash');
-    if (e.gate !== 'cog' && e.hash !== undefined) throw bad('hash only applies to cog entries');
+    allowlistEntryShape(e, bad);
+    allowlistEntryHash(e, bad);
     const key = JSON.stringify([e.gate, e.rule, e.path, e.symbol ?? null, e.hash ?? null]);
     if (keys.has(key)) throw bad('duplicates an earlier entry');
     keys.add(key);

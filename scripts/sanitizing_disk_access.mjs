@@ -296,17 +296,18 @@ function receiverSites(m, scan) {
   }
 }
 
+function receiverCall(m, ts, i, t) {
+  if (receiverMethod.test(t.name) && ts[i + 1]?.text === '(')
+    hit(m, 'receiver_method_approximation', t.line);
+}
+
 function measure(path, scan) {
   const m = metric(), ts = scan.productionTokens;
   if (owner(path)) return m;
   for (let i = 0; i < ts.length; i++) {
     const t = ts[i];
     if (t.kind !== 'ident') continue;
-    if (ts[i - 1]?.text === '.') {
-      if (receiverMethod.test(t.name) && ts[i + 1]?.text === '(')
-        hit(m, 'receiver_method_approximation', t.line);
-      continue;
-    }
+    if (ts[i - 1]?.text === '.') { receiverCall(m, ts, i, t); continue; }
     if (ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident') continue;
     const r = qualified(scan, ts, i, diskPath);
     const value = r.path ?? '';
