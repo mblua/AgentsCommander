@@ -116,6 +116,7 @@ rust-source-scrub = { path = "../crates/rust-source-scrub" }
 syn = { version = "=2.0.117", features = ["full", "visit"] }
 tempfile = "3"
 tauri = { version = "2.12.1", features = ["image-png", "test"] }
+ts-rs = "=12.0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
