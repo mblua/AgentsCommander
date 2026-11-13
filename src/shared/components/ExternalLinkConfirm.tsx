@@ -102,18 +102,21 @@ const ExternalLinkConfirm: Component = () => {
         e.stopImmediatePropagation();
         const focusables = [copyBtnRef, cancelBtnRef, openBtnRef].filter(Boolean) as HTMLElement[];
         if (focusables.length < 2) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (first === undefined || last === undefined) return;
         const idx = focusables.indexOf(document.activeElement as HTMLElement);
         if (idx === -1) {
           e.preventDefault();
-          (e.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
+          (e.shiftKey ? last : first).focus();
           return;
         }
         if (e.shiftKey && idx <= 0) {
           e.preventDefault();
-          focusables[focusables.length - 1].focus();
+          last.focus();
         } else if (!e.shiftKey && idx === focusables.length - 1) {
           e.preventDefault();
-          focusables[0].focus();
+          first.focus();
         }
       }
     };

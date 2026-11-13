@@ -384,7 +384,7 @@ impl CatalogReseedState {
 }
 
 #[cfg(test)]
-pub(crate) fn hold_selected_catalog_test_lock(path: &Path) -> impl std::fmt::Debug {
+pub(crate) fn hold_selected_catalog_test_lock(path: &Path) -> impl std::fmt::Debug + use<> {
     acquire_catalog_lock(&CatalogPaths::new(path.parent().expect("catalog parent"))).unwrap()
 }
 

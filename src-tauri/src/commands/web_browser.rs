@@ -263,8 +263,11 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, Str
             .on_new_window(move |url, _| {
                 if is_app_origin(&url, dev.as_ref()) {
                     log::warn!("[web-browser] refused window.open to {url}");
-                } else if let Some(window) = browser_window(&popup_app) {
-                    let _ = window.navigate(url);
+                } else {
+                    let target = browser_window(&popup_app);
+                    if let Some(window) = target {
+                        let _ = window.navigate(url);
+                    }
                 }
                 NewWindowResponse::Deny
             })

@@ -491,7 +491,10 @@ fn host_timeout_cancellation_claims_only_the_unaccepted_request() {
     let config = temporary.path().join("config");
     std::fs::create_dir_all(&config).expect("host cancellation config directory");
     let _env = ConfigEnvGuard::set(&config);
-    std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    // SAFETY: runs only in the isolated --test-threads=1 child process
+    unsafe {
+        std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    }
     crate::logging::init_logger();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

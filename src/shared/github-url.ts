@@ -22,8 +22,9 @@ function refFromHostAndPath(host: string, path: string): GithubRepoRef | null {
   if (!GITHUB_HOSTS.has(host.toLowerCase())) return null;
   const segments = path.split("/").filter((segment) => segment.length > 0);
   if (segments.length !== 2) return null;
-  const owner = segments[0];
-  const repo = stripDotGit(segments[1]);
+  const [owner, rawRepo] = segments;
+  if (owner === undefined || rawRepo === undefined) return null;
+  const repo = stripDotGit(rawRepo);
   if (!isSafeSegment(owner) || !isSafeSegment(repo)) return null;
   if (!NAME_RE.test(owner) || !NAME_RE.test(repo)) return null;
   return { owner, repo };
@@ -46,8 +47,9 @@ export function parseGithubRemote(remote: string | null | undefined): GithubRepo
   }
 
   const scp = SCP_LIKE_RE.exec(trimmed);
-  if (!scp) return null;
-  return refFromHostAndPath(scp[1], scp[2]);
+  const [, host, path] = scp ?? [];
+  if (host === undefined || path === undefined) return null;
+  return refFromHostAndPath(host, path);
 }
 
 export function githubRepoUrl(ref: GithubRepoRef): string {

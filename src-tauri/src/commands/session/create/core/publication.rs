@@ -372,7 +372,7 @@ async fn publish_tooling<R: tauri::Runtime>(
     let id = session.id;
     // Save lastCodingAgent + codingAgents (skip for temp sessions)
     if !skip_tooling_save {
-        if let Some(ref aid) = agent_id {
+        if let Some(aid) = agent_id {
             // Resolve label: use provided agent_label, or look up from settings by agent_id.
             // Without this fallback, callers that pass agent_id but no label (session-requests,
             // web remote) would write app: "Unknown" into the per-instance config.json.

@@ -19,7 +19,8 @@ export const errorModalStore = {
   get current(): ErrorLogEntry | null {
     const e = entries();
     const i = index();
-    return e.length > 0 && i < e.length ? e[i] : null;
+    // i < e.length: e[i] is in range.
+    return e.length > 0 && i < e.length ? e[i]! : null;
   },
   get open(): boolean {
     const e = entries();

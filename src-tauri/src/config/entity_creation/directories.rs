@@ -175,7 +175,7 @@ pub(crate) fn clone_target_present(path: &Path) -> bool {
     disk::clone_target_present(path)
 }
 
-pub(crate) fn agent_matrix_candidates(root: &Path) -> impl Iterator<Item = PathBuf> {
+pub(crate) fn agent_matrix_candidates(root: &Path) -> impl Iterator<Item = PathBuf> + use<> {
     disk::agent_matrix_candidates(root)
         .into_iter()
         .flatten()
