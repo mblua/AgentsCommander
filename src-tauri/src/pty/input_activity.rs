@@ -419,36 +419,10 @@ pub fn chunk_qualifies_typing_hold(data: &[u8]) -> bool {
     while i < data.len() {
         let b = data[i];
         match b {
-            0x1b => {
-                i += 1;
-                if i >= data.len() {
-                    break;
-                }
-                match data[i] {
-                    b'[' | b'O' => {
-                        i += 1;
-                        while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
-                            i += 1;
-                        }
-                    }
-                    b']' | b'P' | b'_' | b'^' | b'X' => {
-                        i += 1;
-                        while i < data.len() {
-                            if data[i] == 0x07 {
-                                break;
-                            }
-                            if data[i] == 0x1b {
-                                if i + 1 < data.len() && data[i + 1] == 0x5c {
-                                    i += 1;
-                                }
-                                break;
-                            }
-                            i += 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            0x1b => match skip_escape_sequence(data, i) {
+                Some(end) => i = end,
+                None => break,
+            },
             0x0d | 0x0a | 0x08 | 0x7f | 0x09 | 0x20 | 0x03 | 0x15 => return true,
             _ if b < 0x20 => {}
             _ => return true,
