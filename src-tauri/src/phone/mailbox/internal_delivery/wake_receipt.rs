@@ -40,25 +40,32 @@ pub(super) fn mark_response_submitted(response: Option<&ResponseWakeWork>, msg: 
             None
         }
     }) {
-        if let Ok(candidate) = attempt.candidate.lock() {
-            if let Some(candidate) = candidate.as_ref() {
+        match attempt.candidate.lock() {
+            Ok(candidate) => {
+                if let Some(candidate) = candidate.as_ref() {
+                    response_diag_local!(
+                        "mark_request_submitted",
+                        "true_invocation",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
+                    attempt
+                        .state
+                        .mark_request_submitted(&candidate.context, true);
+                } else {
+                    response_diag_local!(
+                        "mark_request_submitted",
+                        "candidate_absent",
+                        None::<Uuid>
+                    );
+                }
+            }
+            _ => {
                 response_diag_local!(
                     "mark_request_submitted",
-                    "true_invocation",
-                    Uuid::parse_str(&msg.id).ok()
+                    "candidate_lock_failure",
+                    None::<Uuid>
                 );
-                attempt
-                    .state
-                    .mark_request_submitted(&candidate.context, true);
-            } else {
-                response_diag_local!("mark_request_submitted", "candidate_absent", None::<Uuid>);
             }
-        } else {
-            response_diag_local!(
-                "mark_request_submitted",
-                "candidate_lock_failure",
-                None::<Uuid>
-            );
         }
     } else {
         response_diag_local!(

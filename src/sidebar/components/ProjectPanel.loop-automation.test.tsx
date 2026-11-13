@@ -774,7 +774,7 @@ describe("ProjectPanel loop automation hooks", () => {
       await projectStore.createAndLoad(projectPath);
       await snapshots.applied();
 
-      const { rowSelector, toggleSelector, staleReloadPromise } = await enableLoopDuringStaleReload({
+      const { rowSelector, staleReloadPromise } = await enableLoopDuringStaleReload({
         root: rendered.root, fake, loopId: "weekday-standup", discoveryCounter,
       });
       const beforeQueuedReload = snapshots.current();

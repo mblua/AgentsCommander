@@ -557,7 +557,7 @@ export function expectedCodingAgentMoveOrder(
   const to = direction === "up" ? from - 1 : from + 1;
   if (from < 0 || to < 0 || to >= ids.length) return [...ids];
   const next = [...ids];
-  next.splice(to, 0, next.splice(from, 1)[0]);
+  next.splice(to, 0, ...next.splice(from, 1));
   return next;
 }
 

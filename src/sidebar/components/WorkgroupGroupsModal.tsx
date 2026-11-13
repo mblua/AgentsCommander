@@ -1,6 +1,6 @@
-import { Component, For, Index, Show, createMemo, createResource, createSignal } from "solid-js";
+import { Component, For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 import { focusOnMount } from "../../shared/focus-on-mount";
-import { SettingsAPI } from "../../shared/ipc";
+import { settingsStore } from "../../shared/stores/settings";
 import type { NonStopGroupConfig, WorkgroupGroupsConfig } from "../../shared/types";
 import {
   MAX_GROUP_NAME_LENGTH,
@@ -148,17 +148,10 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     setDraft({ ...draft(), nonStop: { ...current, sound: { ...current.sound, ...patch } } });
     setSaveError(null);
   };
-  // Bots reuse the existing settings fetch (Change L dropped). The fetch swallows
-  // any error so a failed/absent settings handler yields an empty bot list (no
-  // unhandled rejection) rather than surfacing an error in the modal.
-  const [botsResource] = createResource(async () => {
-    try {
-      return await SettingsAPI.get();
-    } catch {
-      return null;
-    }
-  });
-  const bots = () => botsResource()?.telegramBots ?? [];
+  // settingsStore owns the bots. No generic settings event exists, so refresh on
+  // open keeps them fresh; refresh() catches and logs a failed fetch.
+  onMount(() => settingsStore.refresh());
+  const bots = () => settingsStore.current?.telegramBots ?? [];
 
   return (
     <div class="modal-overlay" data-ac-testid="workgroupGroups.modal">
