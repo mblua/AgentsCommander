@@ -3,6 +3,7 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
+import { __disposeSettingsSubscriptionsForTests, settingsStore } from "../../shared/stores/settings";
 import {
   click,
   contextMenu,
@@ -36,7 +37,7 @@ function diagnostics(fake: FakeTransport): RailDiagnosticRecord[] {
 }
 
 describe("rail diagnostic positive controls with real gate and transport", () => {
-  afterEach(() => { setLogLevel("info"); resetUiStoresForTests(); document.body.replaceChildren(); vi.restoreAllMocks(); });
+  afterEach(() => { __disposeSettingsSubscriptionsForTests(); setLogLevel("info"); resetUiStoresForTests(); document.body.replaceChildren(); vi.restoreAllMocks(); });
 
   async function prepare() {
     resetUiStoresForTests();
@@ -336,6 +337,7 @@ async function openGroupsEditorFrom(el: Element): Promise<void> {
   await waitFor(() => expect(target("workgroupGroups.contextMenu").textContent).toContain("Edit"));
   click(target("workgroupGroups.contextMenu.edit"));
   await waitFor(() => expect(target("workgroupGroups.modal")).not.toBeNull());
+  await settingsStore.load().catch(() => {});
 }
 
 /** A session that makes the given workgroup "working" (running dot class). */
@@ -1387,6 +1389,7 @@ describe("RoomGroupRail native menu boundary", () => {
       expect(peerOpen()).toBe(true);
       expect(bubble).toHaveBeenCalledTimes(1);
       if (action === "edit") {
+        await settingsStore.load().catch(() => {});
         expect(document.querySelectorAll('[data-ac-testid="workgroupGroups.modal"]')).toHaveLength(1);
         expect(mounted.fake.callsFor("update_project_groups")).toHaveLength(0);
       } else {
