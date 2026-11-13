@@ -20,6 +20,9 @@ pub(crate) const PROJECT_SHARED_DIRS: &[&str] = &["plans", "tools", "errors", "p
 /// read and write inside it.
 pub(crate) const PROJECT_SKILLS_DIR: &str = "project-skills";
 
+/// Entry file of every skill folder (`skills/<name>/SKILL.md`).
+pub(crate) const SKILL_MD_FILENAME: &str = "SKILL.md";
+
 /// Inspect before traversal; occupied paths are never repaired or replaced.
 pub(crate) fn ensure_project_skills_dir(ac_root: &Path) -> std::io::Result<()> {
     ensure_skills_leaf(ac_root, PROJECT_SKILLS_DIR)

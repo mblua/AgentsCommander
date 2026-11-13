@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// Filename for the agent role definition, auto-injected from the identity matrix.
 pub(crate) use crate::filesystem::projects::entities::roles::ROLE_FILE_NAME as ROLE_MD_FILENAME;
 pub(crate) const SKILLS_DIR_NAME: &str = "skills";
-pub(crate) const SKILL_MD_FILENAME: &str = "SKILL.md";
+pub(crate) use crate::config::shared_locations::SKILL_MD_FILENAME;
 pub(crate) const SKILL_FRONTMATTER_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const SKILL_INDEX_TOTAL_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const SKILL_TRIGGER_TEXT_MAX_CHARS: usize = 1536;
