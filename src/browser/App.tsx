@@ -10,6 +10,7 @@ import {
   sidebarCompact,
 } from "../shared/sidebar-compact";
 import "../sidebar/styles/sidebar.css";
+import "../sidebar/styles/onboarding-modal.css";
 import "../terminal/styles/terminal.css";
 import "./styles/browser.css";
 
