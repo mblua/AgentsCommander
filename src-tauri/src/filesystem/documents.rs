@@ -415,5 +415,9 @@ pub(crate) fn publish_web_access_token(config_dir: &Path, token: &str) -> io::Re
     std::fs::write(config_dir.join("web-token.txt"), token)
 }
 
+pub(crate) fn read_web_access_token(config_dir: &Path) -> io::Result<String> {
+    read_config_document(&config_dir.join("web-token.txt"))
+}
+
 #[cfg(test)]
 mod tests;
