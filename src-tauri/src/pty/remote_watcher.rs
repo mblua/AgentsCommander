@@ -137,6 +137,7 @@ pub(crate) fn base_branch_display(branch: &str, base_label: &str) -> String {
 pub(super) const ROUND_LOG_LEVEL: log::Level = log::Level::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum CiState {
     Unknown,
@@ -145,6 +146,7 @@ pub(crate) enum CiState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum StalenessState {
     Unknown,
@@ -153,6 +155,7 @@ pub(crate) enum StalenessState {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(rename = "RemoteActivityUpdate"))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteActivityPayload {
     repo_paths: Vec<String>,
