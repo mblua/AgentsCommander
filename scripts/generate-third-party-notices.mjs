@@ -40,35 +40,41 @@ export function resolveCargo(candidates = cargoCandidates(),
 
 export function selectCrates(metadataByTarget) {
   const selected = new Map();
-  for (const metadata of metadataByTarget) {
-    const packages = new Map(metadata.packages.map(pkg => [pkg.id, pkg]));
-    const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
-    const root = metadata.packages.find(pkg => pkg.name === 'agentscommander');
-    if (!root) throw new Error('cargo metadata is missing root agentscommander');
-    const seen = new Set();
-    const pending = [root.id];
-    while (pending.length) {
-      const id = pending.pop();
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const pkg = packages.get(id);
-      if (!pkg) throw new Error(`cargo metadata is missing package ${id}`);
-      if (pkg.targets.some(target => target.kind.includes('proc-macro'))) continue;
-      if (pkg.source != null) {
-        selected.set(`${pkg.name}@${pkg.version}`, {
-          name: pkg.name, version: pkg.version, license: pkg.license,
-          authors: pkg.authors ?? [], dir: path.dirname(pkg.manifest_path),
-        });
-      }
-      const node = nodes.get(id);
-      if (!node) throw new Error(`cargo metadata is missing resolve node ${id}`);
-      for (const dep of node.deps) {
-        if (dep.dep_kinds.some(kind => kind.kind === null)) pending.push(dep.pkg);
-      }
-    }
-  }
+  for (const metadata of metadataByTarget) collectMetadataCrates(metadata, selected);
   if (!selected.size) throw new Error('No Rust crates selected');
   return [...selected.values()].sort(packageOrder);
+}
+
+function collectMetadataCrates(metadata, selected) {
+  const packages = new Map(metadata.packages.map(pkg => [pkg.id, pkg]));
+  const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
+  const root = metadata.packages.find(pkg => pkg.name === 'agentscommander');
+  if (!root) throw new Error('cargo metadata is missing root agentscommander');
+  const seen = new Set();
+  const pending = [root.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const pkg = packages.get(id);
+    if (!pkg) throw new Error(`cargo metadata is missing package ${id}`);
+    if (pkg.targets.some(target => target.kind.includes('proc-macro'))) continue;
+    if (pkg.source != null) {
+      selected.set(`${pkg.name}@${pkg.version}`, {
+        name: pkg.name, version: pkg.version, license: pkg.license,
+        authors: pkg.authors ?? [], dir: path.dirname(pkg.manifest_path),
+      });
+    }
+    pushNormalDeps(nodes, id, pending);
+  }
+}
+
+function pushNormalDeps(nodes, id, pending) {
+  const node = nodes.get(id);
+  if (!node) throw new Error(`cargo metadata is missing resolve node ${id}`);
+  for (const dep of node.deps) {
+    if (dep.dep_kinds.some(kind => kind.kind === null)) pending.push(dep.pkg);
+  }
 }
 
 export function selectNpm(lock) {

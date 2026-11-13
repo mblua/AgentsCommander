@@ -203,7 +203,7 @@ describe("ExternalLinkConfirm keyboard trap", () => {
 
     const event = pressKey("Escape");
 
-    expect(document.querySelector('[role="alertdialog"]')).toBe(null);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
     expect(event.defaultPrevented).toBe(true);
     dispose();
   });

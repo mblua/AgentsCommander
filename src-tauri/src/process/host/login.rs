@@ -109,5 +109,7 @@ pub(crate) fn parse_sentinel_path(stdout: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+#[cfg(all(test, unix))]
+pub(crate) mod fake_shell;
 #[cfg(test)]
 mod tests;
