@@ -154,17 +154,16 @@ fn issue_4470_scalar_kinds_unchanged() {
         let index = index_one("q", &format!("---\n{body}\n---\n"));
         let expected = match label {
             "yes" => "2f27a9281ed43a5ad3b36deeffcd92c8a573af215f84f56ca6644d72d256c6bb",
-            "number" => "6a35104bb1b3d38a009615c539e598cf30ef34203792c5091f9db7c95283bf71",
-            "null" => "6a35104bb1b3d38a009615c539e598cf30ef34203792c5091f9db7c95283bf71",
-            "sequence" => "6a35104bb1b3d38a009615c539e598cf30ef34203792c5091f9db7c95283bf71",
+            "number" | "null" | "sequence" | "tagged" => {
+                "6a35104bb1b3d38a009615c539e598cf30ef34203792c5091f9db7c95283bf71"
+            }
             "single" => "9feded3af131e3daa8536ca791a27cce721ff40f61e2782c71a2579c54ff8d00",
-            "folded" => "30fb524e03b71d4dfcccf18e8736932dbc90af0a206d0ee45172219930514771",
-            "literal" => "30fb524e03b71d4dfcccf18e8736932dbc90af0a206d0ee45172219930514771",
-            "tagged" => "6a35104bb1b3d38a009615c539e598cf30ef34203792c5091f9db7c95283bf71",
+            "folded" | "literal" => {
+                "30fb524e03b71d4dfcccf18e8736932dbc90af0a206d0ee45172219930514771"
+            }
             "alias" => "ef660282f6f36fb76419cd49925b193587b9657738298df39bcc8b11dacd5b15",
             "flow" => "76e6bd7c10ee5f86f0e3d78a1953857e80f205f8cfbfe8d11b9223f9f0fc6127",
-            "bare" => "37c84e98a89dfa221b0eeea98f13b9a2f6712e237f0bc6ead657e1846af36f10",
-            "empty" => "37c84e98a89dfa221b0eeea98f13b9a2f6712e237f0bc6ead657e1846af36f10",
+            "bare" | "empty" => "37c84e98a89dfa221b0eeea98f13b9a2f6712e237f0bc6ead657e1846af36f10",
             _ => unreachable!(),
         };
         assert_eq!(fingerprint(&index), expected, "{label}");
