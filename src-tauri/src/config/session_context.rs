@@ -373,7 +373,11 @@ fn ensure_replica_shared_locations(agent_root: &str, canonical_root: &str) {
     }
 }
 
-const MANAGED_CONTEXT_FILENAMES: &[&str] = &["last_ac_context.md", "CLAUDE.md", "AGENTS.md"];
+const MANAGED_CONTEXT_FILENAMES: &[&str] = &[
+    crate::config::instructions_filename::AC_CONTEXT_FILE_NAME,
+    "CLAUDE.md",
+    "AGENTS.md",
+];
 
 #[derive(Debug, Clone, Copy)]
 pub enum ManagedContextTarget {
