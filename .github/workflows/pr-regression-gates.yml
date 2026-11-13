@@ -388,6 +388,7 @@ jobs:
           npm run sanitizing:disk_access -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:global_state -- --base-ref "${GATE_BASE_REF:-origin/main}"
           npm run sanitizing:process_env -- --base-ref "${GATE_BASE_REF:-origin/main}"
+          npm run sanitizing:lock_poison -- --base-ref "${GATE_BASE_REF:-origin/main}"
 
   rust-regression-windows:
     name: rust-regression-windows
