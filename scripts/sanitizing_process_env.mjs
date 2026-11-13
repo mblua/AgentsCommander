@@ -39,15 +39,15 @@ function measure(path, scan) {
       ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan, ts, i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (ts[r.end]?.text !== '(') continue;
-    if (/^(?:(?:std|tokio)::process::)?Command::new$/.test(value)) { if (!launchOwner) record(
-      'launch_files',ts[i]); warning(m,path,ts[i].line,r); }
+    if (/^(?:(?:std|tokio)::process::)?Command::new$/.test(value)) { if (!launchOwner) { record(
+      'launch_files',ts[i]); } warning(m,path,ts[i].line,r); }
     if (/^(?:(?:std::)?env::)?(?:var|var_os)$/.test(value) && (value.includes('env::') ||
       r.binding?.kind === 'import')) {
-      if (!readOwner) record('env_read_files',ts[i]); warning(m,path,ts[i].line,r);
+      if (!readOwner) { record('env_read_files',ts[i]); } warning(m,path,ts[i].line,r);
     }
     if (/^(?:(?:std::)?env::)?(?:set_var|remove_var)$/.test(value) && (value.includes('env::') ||
       r.binding?.kind === 'import')) {
-      if (!writeOwner) hit(m,'env_write',ts[i].line); warning(m,path,ts[i].line,r);
+      if (!writeOwner) { hit(m,'env_write',ts[i].line); } warning(m,path,ts[i].line,r);
     }
     i = r.end - 1;
   }

@@ -87,7 +87,7 @@ pub(super) fn acquire_loop_lock_for_dir_in(
         .ok_or_else(|| format!("Loop directory {} has no parent", dir.display()))?;
     let loop_id = dir
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .and_then(|name| name.strip_prefix(LOOP_DIR_PREFIX))
         .ok_or_else(|| format!("{} is not a Loop directory", dir.display()))?;
     acquire_loop_lock_in(ac_root, loop_id, timeout, journal_dir)

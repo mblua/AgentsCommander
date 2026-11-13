@@ -892,6 +892,8 @@ export interface AppSettings {
   responseCloseEnabled?: boolean;
   responseCloseIdleSeconds?: number;
   screenshotCaptureHotkey?: string;
+  /** #2774 AC keeps its own key binding block in Omarchy's hypr/bindings.lua. */
+  screenshotHyprlandBind?: boolean;
   /** #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
    * an invalid value blocks the save. */
   sidebarCompactHotkey?: string;

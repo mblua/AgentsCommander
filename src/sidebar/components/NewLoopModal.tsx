@@ -209,8 +209,7 @@ const NewLoopModal: Component<{
               checked={enabled()}
               onChange={(e) => setEnabled(e.currentTarget.checked)}
               data-ac-testid="loop.new.enabled"
-            />
-            Enabled
+            />Enabled
           </label>
 
           <label class="loop-checkbox-field">
@@ -219,8 +218,7 @@ const NewLoopModal: Component<{
               checked={forceInject()}
               onChange={(e) => setForceInject(e.currentTarget.checked)}
               data-ac-testid="loop.new.forceInject"
-            />
-            Force inject even if orchestrator is busy
+            />Force inject even if orchestrator is busy
           </label>
 
           <label class="loop-checkbox-field">
@@ -229,8 +227,7 @@ const NewLoopModal: Component<{
               checked={accumulate()}
               onChange={(e) => setAccumulate(e.currentTarget.checked)}
               data-ac-testid="loop.new.accumulate"
-            />
-            Continue the previous conversation each run
+            />Continue the previous conversation each run
           </label>
 
           <div class="entity-textarea-meta">

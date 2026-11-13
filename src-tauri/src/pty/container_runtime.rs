@@ -506,6 +506,73 @@ pub(crate) fn redact_container_diagnostic_text(input: &str) -> String {
     redacted
 }
 
+fn skip_ascii_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn secret_value_start(bytes: &[u8], key_end: usize) -> Option<usize> {
+    let mut cursor = skip_ascii_whitespace(bytes, key_end);
+    let mut quoted_key = false;
+    if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
+        quoted_key = true;
+        cursor = skip_ascii_whitespace(bytes, cursor + 1);
+    }
+    if quoted_key && cursor < bytes.len() && bytes[cursor] == b',' {
+        cursor = skip_ascii_whitespace(bytes, cursor + 1);
+        if cursor >= bytes.len() || !matches!(bytes[cursor], b'"' | b'\'') {
+            return None;
+        }
+    } else if cursor < bytes.len() && matches!(bytes[cursor], b'=' | b':') {
+        cursor = skip_ascii_whitespace(bytes, cursor + 1);
+    } else {
+        return None;
+    }
+    Some(cursor)
+}
+
+fn secret_value_range(input: &str, cursor: usize) -> (usize, usize) {
+    let bytes = input.as_bytes();
+    if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
+        let quote = bytes[cursor];
+        let value_start = cursor + 1;
+        let mut value_end = value_start;
+        while value_end < bytes.len() && bytes[value_end] != quote {
+            value_end += 1;
+        }
+        (value_start, value_end)
+    } else {
+        let value_start = cursor;
+        let mut value_end = value_start;
+        while value_end < bytes.len() {
+            if is_unquoted_secret_delimiter(bytes[value_end]) {
+                break;
+            }
+            let ch = input[value_end..]
+                .chars()
+                .next()
+                .expect("valid char boundary");
+            value_end += ch.len_utf8();
+        }
+        (value_start, value_end)
+    }
+}
+
+fn starts_with_redacted_sentinel(input: &str, value_start: usize) -> bool {
+    let bytes = input.as_bytes();
+    let redacted_end = value_start.saturating_add(REDACTED_SECRET.len());
+    let redacted_boundary = redacted_end == input.len()
+        || (redacted_end < bytes.len()
+            && (is_unquoted_secret_delimiter(bytes[redacted_end])
+                || matches!(bytes[redacted_end], b'"' | b'\'')))
+        || input
+            .get(redacted_end..)
+            .is_some_and(|suffix| suffix.starts_with("\\n") || suffix.starts_with("\\r"));
+    input[value_start..].starts_with(REDACTED_SECRET) && redacted_boundary
+}
+
 fn redact_key_values(input: &str, key: &str) -> String {
     let lower = input.to_ascii_lowercase();
     let key_lower = key.to_ascii_lowercase();
@@ -515,72 +582,13 @@ fn redact_key_values(input: &str, key: &str) -> String {
 
     while let Some(relative) = lower[search_start..].find(&key_lower) {
         let key_start = search_start + relative;
-        let mut cursor = key_start + key.len();
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let mut quoted_key = false;
-        if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
-            quoted_key = true;
-            cursor += 1;
-            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-        }
-        if quoted_key && cursor < bytes.len() && bytes[cursor] == b',' {
-            cursor += 1;
-            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-            if cursor >= bytes.len() || !matches!(bytes[cursor], b'"' | b'\'') {
-                search_start = key_start + key.len();
-                continue;
-            }
-        } else if cursor < bytes.len() && matches!(bytes[cursor], b'=' | b':') {
-            cursor += 1;
-            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-        } else {
+        let Some(cursor) = secret_value_start(bytes, key_start + key.len()) else {
             search_start = key_start + key.len();
             continue;
-        }
-
-        let (value_start, value_end) =
-            if cursor < bytes.len() && (bytes[cursor] == b'"' || bytes[cursor] == b'\'') {
-                let quote = bytes[cursor];
-                let value_start = cursor + 1;
-                let mut value_end = value_start;
-                while value_end < bytes.len() && bytes[value_end] != quote {
-                    value_end += 1;
-                }
-                (value_start, value_end)
-            } else {
-                let value_start = cursor;
-                let mut value_end = value_start;
-                while value_end < bytes.len() {
-                    if is_unquoted_secret_delimiter(bytes[value_end]) {
-                        break;
-                    }
-                    let ch = input[value_end..]
-                        .chars()
-                        .next()
-                        .expect("valid char boundary");
-                    value_end += ch.len_utf8();
-                }
-                (value_start, value_end)
-            };
-
-        let redacted_end = value_start.saturating_add(REDACTED_SECRET.len());
-        let redacted_boundary = redacted_end == input.len()
-            || (redacted_end < bytes.len()
-                && (is_unquoted_secret_delimiter(bytes[redacted_end])
-                    || matches!(bytes[redacted_end], b'"' | b'\'')))
-            || input
-                .get(redacted_end..)
-                .is_some_and(|suffix| suffix.starts_with("\\n") || suffix.starts_with("\\r"));
-        if input[value_start..].starts_with(REDACTED_SECRET) && redacted_boundary {
-            search_start = redacted_end;
+        };
+        let (value_start, value_end) = secret_value_range(input, cursor);
+        if starts_with_redacted_sentinel(input, value_start) {
+            search_start = value_start.saturating_add(REDACTED_SECRET.len());
             continue;
         }
         if value_end > value_start {

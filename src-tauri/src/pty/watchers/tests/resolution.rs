@@ -15,7 +15,7 @@ fn watcher(commands: Option<&[&str]>) -> WatcherEntry {
         enabled: true,
         mode: WatcherMode::Occurrence,
         pattern: "x".to_string(),
-        commands: commands.map(|list| list.iter().map(|s| s.to_string()).collect()),
+        commands: commands.map(|list| list.iter().map(ToString::to_string).collect()),
         dedupe: WatcherDedupe::Row,
         dedupe_window_ms: 2000,
         captured_against: None,

@@ -138,62 +138,94 @@ pub(crate) fn retain_configuration_commands_with_startup(
         if !catalog {
             retain_duplicate_agent_rows(after, before, startup)?;
         }
-        if let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) {
-            let mut counts = BTreeMap::new();
-            for row in before
-                .get("agents")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
+        retain_agent_base_commands(after, before, identity, catalog)?;
+    }
+    if profiles {
+        retain_profile_additional_arguments(after, before, catalog)?;
+    }
+    Ok(())
+}
+
+fn agent_id_counts<'a>(before: &'a Value, identity: &str) -> BTreeMap<&'a str, usize> {
+    let mut counts = BTreeMap::new();
+    for row in before
+        .get("agents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = row.get(identity).and_then(Value::as_str) {
+            *counts.entry(id).or_insert(0usize) += 1;
+        }
+    }
+    counts
+}
+
+fn previous_agent_row<'a>(before: &'a Value, identity: &str, row: &Value) -> Option<&'a Value> {
+    row.get(identity).and_then(Value::as_str).and_then(|id| {
+        before
+            .get("agents")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get(identity).and_then(Value::as_str) == Some(id))
+            })
+    })
+}
+
+fn retain_agent_base_commands(
+    after: &mut Value,
+    before: &Value,
+    identity: &str,
+    catalog: bool,
+) -> Result<(), String> {
+    if let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) {
+        let counts = agent_id_counts(before, identity);
+        for row in rows {
+            if !catalog
+                && row
+                    .get(identity)
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| counts.get(id).copied().unwrap_or(0) > 1)
             {
-                if let Some(id) = row.get(identity).and_then(Value::as_str) {
-                    *counts.entry(id).or_insert(0usize) += 1;
-                }
+                continue;
             }
-            for row in rows {
-                if !catalog
-                    && row
-                        .get(identity)
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| counts.get(id).copied().unwrap_or(0) > 1)
-                {
-                    continue;
-                }
-                let previous = row.get(identity).and_then(Value::as_str).and_then(|id| {
-                    before
-                        .get("agents")
-                        .and_then(Value::as_array)
-                        .and_then(|rows| {
-                            rows.iter()
-                                .find(|row| row.get(identity).and_then(Value::as_str) == Some(id))
-                        })
-                });
-                if let Some(row) = row.as_object_mut() {
-                    retain_command_leaf(row, previous.and_then(Value::as_object), "baseCommand")?;
-                }
+            let previous = previous_agent_row(before, identity, row);
+            if let Some(row) = row.as_object_mut() {
+                retain_command_leaf(row, previous.and_then(Value::as_object), "baseCommand")?;
             }
         }
     }
-    if profiles {
-        let pointer = if catalog {
-            "/codingAgentProfiles"
-        } else {
-            "/codingAgentProfiles/profilesByAgent"
-        };
-        if let Some(groups) = after.pointer_mut(pointer).and_then(Value::as_object_mut) {
-            for (id, cells) in groups {
-                if let Some(cells) = cells.as_object_mut() {
-                    for (letter, cell) in cells {
-                        let previous = before
-                            .pointer(pointer)
-                            .and_then(|groups| groups.get(id))
-                            .and_then(|cells| cells.get(letter))
-                            .and_then(Value::as_object);
-                        if let Some(cell) = cell.as_object_mut() {
-                            retain_command_leaf(cell, previous, "additionalArguments")?;
-                        }
-                    }
-                }
+    Ok(())
+}
+
+fn retain_profile_additional_arguments(
+    after: &mut Value,
+    before: &Value,
+    catalog: bool,
+) -> Result<(), String> {
+    let pointer = if catalog {
+        "/codingAgentProfiles"
+    } else {
+        "/codingAgentProfiles/profilesByAgent"
+    };
+    if let Some(groups) = after.pointer_mut(pointer).and_then(Value::as_object_mut) {
+        for (id, cells) in groups {
+            let previous_group = before.pointer(pointer).and_then(|groups| groups.get(id));
+            retain_profile_cells(cells, previous_group)?;
+        }
+    }
+    Ok(())
+}
+
+fn retain_profile_cells(cells: &mut Value, previous_group: Option<&Value>) -> Result<(), String> {
+    if let Some(cells) = cells.as_object_mut() {
+        for (letter, cell) in cells {
+            let previous = previous_group
+                .and_then(|cells| cells.get(letter))
+                .and_then(Value::as_object);
+            if let Some(cell) = cell.as_object_mut() {
+                retain_command_leaf(cell, previous, "additionalArguments")?;
             }
         }
     }

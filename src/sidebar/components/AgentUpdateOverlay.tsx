@@ -2,7 +2,9 @@ import {
   Component,
   For,
   Index,
+  Match,
   Show,
+  Switch,
   createEffect,
   createMemo,
   createSignal,
@@ -326,11 +328,14 @@ const AgentUpdateOverlay: Component = () => {
                       }
                     >
                       <span class="agent-update-node-marker" aria-hidden="true">
-                        {node().state === "ok" ? (
-                          <CheckIcon />
-                        ) : node().state === "failed" || node().state === "cancelled" ? (
-                          <CrossIcon />
-                        ) : null}
+                        <Switch>
+                          <Match when={node().state === "ok"}>
+                            <CheckIcon />
+                          </Match>
+                          <Match when={node().state === "failed" || node().state === "cancelled"}>
+                            <CrossIcon />
+                          </Match>
+                        </Switch>
                       </span>
                       <div class="agent-update-node-body">
                         <div class="agent-update-node-label">{node().label}</div>

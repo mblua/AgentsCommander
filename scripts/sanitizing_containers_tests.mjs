@@ -92,9 +92,17 @@ const candidateSnapshot = () => {
   assert.equal(oid.status, 0);
   const head = oid.stdout.toString().trim();
   const snapshot = createSnapshot({ cwd: repo, baseRef: head });
-  assert.equal(snapshot.headOid, head);
+  assert.equal(snapshot.headOid, head,
+    'HEAD moved while taking the candidate snapshot; rerun on a stable checkout');
   return snapshot;
 };
+// Live-clone gate calls return ERROR if HEAD moves mid-test (#4214 diagnosis:
+// _sanitizing/flaky-test04-ac4214-001). Fail with the gate reasons, not later `undefined`.
+function stable(result, step) {
+  if (result.status !== 'ERROR') return result;
+  assert.fail(`test 04 step "${step}": gate ERROR exit ${result.exit}: ` +
+    result.diagnostics.filter(d => d.reason).map(d => d.reason).join(' | '));
+}
 function settingsPolicy() {
   const s = candidateSnapshot();
   const entries = parseRegistry(s.readBlob(s.headTree.get('scripts/containers.json')));
@@ -402,14 +410,15 @@ test('04 settings immutable git and errors', t => {
     'commit FAIL/1 -> removal PASS/0');
   const s = candidateSnapshot(), registryEntry = s.headTree.get('scripts/containers.json');
   const bytes = s.readBlob(registryEntry);
-  const before = containersGate(s), settings = r => r.metrics.find(m => m.id === c.id);
+  const before = stable(containersGate(s), 'before');
+  const settings = r => r.metrics.find(m => m.id === c.id);
   assert.equal(settings(before).externalUses, 0);
   assert.deepEqual(settings(before).writerInventory, { files: 0, sites: 0 });
   assert.ok(!before.diagnostics.some(d => d.status === 'FAIL' && d.identity === c.id));
   const lib = s.headTree.get(root + 'lib.rs'), original = s.readBlob(lib);
   const line = original.split('\n').length + 1;
   const injected = { ...s, readBlob: e => e === lib ? original + '\n' + runtime : s.readBlob(e) };
-  const after = containersGate(injected);
+  const after = stable(containersGate(injected), 'memory injection');
   assert.ok(after.diagnostics.some(d => d.status === 'FAIL' && d.identity === c.id &&
     d.path === root + 'lib.rs' && d.line === line));
   assert.equal(injected.headOid, s.headOid);
@@ -420,14 +429,15 @@ test('04 settings immutable git and errors', t => {
   const without = snapshot => ({ ...snapshot, readBlob: e => e === registryEntry ?
     JSON.stringify({ version: 1, containers: parseRegistry(bytes).filter(p => p.id !== c.id) }) :
     snapshot.readBlob(e) });
-  compareInventories(before, containersGate(without(s)));
+  compareInventories(before, stable(containersGate(without(s)), 'without registry'));
   for (const [p, expected] of [[root + 'external_writer.rs', 0], [c.owner, 1]]) {
     const tree = new Map(s.headTree), entry = { path: p };
     tree.set(p, entry);
     const writer = { ...s, headTree: tree, readBlob: e => e === entry ?
       'fn f(){ std::fs::write("other", "value"); }' : s.readBlob(e) };
-    const result = containersGate(writer);
-    compareInventories(result, containersGate(without(writer)));
+    const result = stable(containersGate(writer), 'writer ' + p);
+    compareInventories(result,
+      stable(containersGate(without(writer)), 'writer ' + p + ' without registry'));
     assert.deepEqual(settings(result).writerInventory, { files: expected, sites: expected });
     t.diagnostic(JSON.stringify({ control: expected ? 'owner writer' : 'non-owner writer',
       status: result.status, exit: result.exit, inventory: result.inventory,

@@ -237,7 +237,7 @@ const SessionItem: Component<{
       const detachedLabel = `terminal-${props.session.id.replaceAll("-", "")}`;
       const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
       if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
+        await WindowAPI.focusMain();
       }
     }
   };

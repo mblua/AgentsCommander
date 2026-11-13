@@ -66,6 +66,7 @@ const PRE_EXISTING_TESTIDS = `
   settings.general.roomNumberMask
   settings.general.roomNumberMask.example
   settings.general.screenshotCaptureHotkey
+  settings.general.screenshotHyprlandBind
   settings.general.selectedRowRailColor
   settings.general.selectedRowRailColor.note
   settings.general.selectedRowRailWidth
@@ -385,12 +386,12 @@ describe("SettingsModal General categories + search (#2704)", () => {
     const { rendered, $ } = await renderModal();
     try {
       type($<HTMLInputElement>(SEARCH), "hotkey");
-      expect(rendered.root.querySelectorAll(".settings-general-result")).toHaveLength(2);
+      expect(rendered.root.querySelectorAll(".settings-general-result")).toHaveLength(3);
       for (const c of GENERAL_CATEGORIES) expect($(pane(c.id)).hidden).toBe(true);
       const counts = GENERAL_CATEGORIES.map(
         (c) => $(cat(c.id)).querySelector(".settings-general-cat-count")!.textContent,
       );
-      expect(counts).toEqual(["2", "0", "0", "0", "0"]);
+      expect(counts).toEqual(["3", "0", "0", "0", "0"]);
       expect($(cat("terminal")).classList.contains("is-empty")).toBe(true);
       expect($(cat("appearance")).hasAttribute("aria-current")).toBe(false);
       expect($(".settings-general-result-path").textContent).toBe("Appearance › Hotkeys");

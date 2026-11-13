@@ -65,7 +65,7 @@ const COUNT_FIELDS = [
 // not configure, and only on a run that already carries a failure. It is
 // deliberately NOT in this list: admitting it would break A4's partition, and
 // rejecting it is the fail-closed direction (plan 23).
-const ASSERTION_STATUSES = ['passed', 'failed', 'skipped', 'todo'];
+const ASSERTION_STATUSES = new Set(['passed', 'failed', 'skipped', 'todo']);
 
 // A2. The producer's complete entry-status enum. Measured at `f08b8241`: the
 // JSON reporter computes it as a ternary,
@@ -131,7 +131,7 @@ function checkAssertionShape(assertion) {
   if (assertion === null || typeof assertion !== 'object' || Array.isArray(assertion)) {
     return 'an assertionResults entry is not an object';
   }
-  if (!ASSERTION_STATUSES.includes(assertion.status)) {
+  if (!ASSERTION_STATUSES.has(assertion.status)) {
     return `an assertion carries an unknown status ${JSON.stringify(assertion.status)}`;
   }
   return null;

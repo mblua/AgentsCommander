@@ -192,7 +192,7 @@ struct Harness {
 
 fn harness(registered: &[&str], teams: Vec<TeamMembers>, fallback_result: bool) -> Harness {
     let settings = AppSettings {
-        project_paths: registered.iter().map(|path| path.to_string()).collect(),
+        project_paths: registered.iter().map(ToString::to_string).collect(),
         ..AppSettings::default()
     };
     harness_with(settings, teams, fallback_result)

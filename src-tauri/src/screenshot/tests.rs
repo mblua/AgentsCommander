@@ -102,6 +102,11 @@ impl ScreenshotEvents for ConfirmationHost {
         assert_eq!(event.message, "synthetic save failure");
         self.record("failed");
     }
+
+    #[cfg(target_os = "linux")]
+    fn hotkey_status_changed(&self, _status: ScreenshotHotkeyStatus) {
+        panic!("completion must not publish hotkey status");
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]

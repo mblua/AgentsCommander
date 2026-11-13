@@ -18,7 +18,7 @@ export function repoLabelFromPath(path: string): string {
 }
 
 export function formatReplicaRepoBadgeLabel(repo: Pick<SessionRepo, "label" | "branch">): string {
-  return `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`;
+  return repo.branch ? `${repo.label}/${repo.branch}` : repo.label;
 }
 
 /** #2064 — the CI and staleness suffixes on the repo chip's tooltip. Only `running`

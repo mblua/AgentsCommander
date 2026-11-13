@@ -349,43 +349,15 @@ impl MailboxPoller {
         status: &str,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        if let Some(ref rid) = msg.request_id {
-            let response = serde_json::json!({
-                "action": SELF_CLEAR_ACTION,
-                "status": status,                 // "queued" | "already_queued"
-                "session_id": session_id.to_string(),
-                "settle_secs": SELF_CLEAR_SETTLE_SECS,   // single-sourced const
-                "requested_by": msg.from,
-            });
-            if let Ok(json) = serde_json::to_string_pretty(&response) {
-                // (1) outbox-relative <ac_dir>/responses/<rid>.json - skip for app-outbox.
-                if !is_app_outbox {
-                    if let Some(responses_dir) = path
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .map(|ac| ac.join("responses"))
-                    {
-                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                        let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{rid}.json")),
-                            &json,
-                        );
-                    }
-                }
-                // (2) resolved-sender path (best-effort).
-                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                    let responses_dir = std::path::PathBuf::from(sender_path)
-                        .join(crate::config::agent_local_dir_name())
-                        .join("responses");
-                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                    let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{rid}.json")),
-                        &json,
-                    );
-                }
-            }
-        }
-        self.move_to_delivered(app, path, msg).await
+        let response = serde_json::json!({
+            "action": SELF_CLEAR_ACTION,
+            "status": status,                 // "queued" | "already_queued"
+            "session_id": session_id.to_string(),
+            "settle_secs": SELF_CLEAR_SETTLE_SECS,   // single-sourced const
+            "requested_by": msg.from,
+        });
+        self.write_request_ack(app, path, msg, response, is_app_outbox)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -399,43 +371,17 @@ impl MailboxPoller {
         targets: &SelfSwitchTargets,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        if let Some(ref rid) = msg.request_id {
-            let response = serde_json::json!({
-                "action": SELF_SWITCH_ACTION,
-                "status": status,
-                "session_id": session_id.to_string(),
-                "settle_secs": SELF_CLEAR_SETTLE_SECS,
-                "requested_by": msg.from,
-                "target_coding_agent": targets.coding_agent,
-                "target_profile": targets.profile,
-            });
-            if let Ok(json) = serde_json::to_string_pretty(&response) {
-                if !is_app_outbox {
-                    if let Some(responses_dir) = path
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .map(|ac| ac.join("responses"))
-                    {
-                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                        let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{rid}.json")),
-                            &json,
-                        );
-                    }
-                }
-                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                    let responses_dir = std::path::PathBuf::from(sender_path)
-                        .join(crate::config::agent_local_dir_name())
-                        .join("responses");
-                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                    let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{rid}.json")),
-                        &json,
-                    );
-                }
-            }
-        }
-        self.move_to_delivered(app, path, msg).await
+        let response = serde_json::json!({
+            "action": SELF_SWITCH_ACTION,
+            "status": status,
+            "session_id": session_id.to_string(),
+            "settle_secs": SELF_CLEAR_SETTLE_SECS,
+            "requested_by": msg.from,
+            "target_coding_agent": targets.coding_agent,
+            "target_profile": targets.profile,
+        });
+        self.write_request_ack(app, path, msg, response, is_app_outbox)
+            .await
     }
 
     /// #1632 - write the self-handoff-and-restart queue-ack response, then move the message to
@@ -452,43 +398,17 @@ impl MailboxPoller {
         recipe: &SelfRestartRecipe,
         is_app_outbox: bool,
     ) -> Result<(), String> {
-        if let Some(ref rid) = msg.request_id {
-            let response = serde_json::json!({
-                "action": SELF_RESTART_ACTION,
-                "status": status,
-                "session_id": session_id.to_string(),
-                "settle_secs": SELF_CLEAR_SETTLE_SECS,
-                "requested_by": msg.from,
-                "coding_agent": recipe.agent,
-                "profile": recipe.profile,
-            });
-            if let Ok(json) = serde_json::to_string_pretty(&response) {
-                if !is_app_outbox {
-                    if let Some(responses_dir) = path
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .map(|ac| ac.join("responses"))
-                    {
-                        let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                        let _ = mailbox_disk::write_mailbox_document(
-                            &responses_dir.join(format!("{rid}.json")),
-                            &json,
-                        );
-                    }
-                }
-                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                    let responses_dir = std::path::PathBuf::from(sender_path)
-                        .join(crate::config::agent_local_dir_name())
-                        .join("responses");
-                    let _ = mailbox_disk::ensure_mailbox_archive_directory(&responses_dir);
-                    let _ = mailbox_disk::write_mailbox_document(
-                        &responses_dir.join(format!("{rid}.json")),
-                        &json,
-                    );
-                }
-            }
-        }
-        self.move_to_delivered(app, path, msg).await
+        let response = serde_json::json!({
+            "action": SELF_RESTART_ACTION,
+            "status": status,
+            "session_id": session_id.to_string(),
+            "settle_secs": SELF_CLEAR_SETTLE_SECS,
+            "requested_by": msg.from,
+            "coding_agent": recipe.agent,
+            "profile": recipe.profile,
+        });
+        self.write_request_ack(app, path, msg, response, is_app_outbox)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -502,15 +422,29 @@ impl MailboxPoller {
         status: &str,
         is_app_outbox: bool,
     ) -> Result<(), String> {
+        let response = serde_json::json!({
+            "action": RAISE_HAND_ACTION,
+            "status": status,
+            "raised": raised,
+            "session_id": session_id.to_string(),
+            "requested_by": msg.from,
+        });
+        self.write_request_ack(app, path, msg, response, is_app_outbox)
+            .await
+    }
+
+    /// Best-effort dual write of a queue-ack response, then move the message to delivered/.
+    async fn write_request_ack<S: MailboxHost>(
+        &self,
+        app: &S,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+        response: serde_json::Value,
+        is_app_outbox: bool,
+    ) -> Result<(), String> {
         if let Some(ref rid) = msg.request_id {
-            let response = serde_json::json!({
-                "action": RAISE_HAND_ACTION,
-                "status": status,
-                "raised": raised,
-                "session_id": session_id.to_string(),
-                "requested_by": msg.from,
-            });
             if let Ok(json) = serde_json::to_string_pretty(&response) {
+                // (1) outbox-relative <ac_dir>/responses/<rid>.json - skip for app-outbox.
                 if !is_app_outbox {
                     if let Some(responses_dir) = path
                         .parent()
@@ -524,6 +458,7 @@ impl MailboxPoller {
                         );
                     }
                 }
+                // (2) resolved-sender path (best-effort).
                 if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
                     let responses_dir = std::path::PathBuf::from(sender_path)
                         .join(crate::config::agent_local_dir_name())
