@@ -2,26 +2,7 @@ import { Component, For, Show, createEffect, onCleanup, onMount } from "solid-js
 import { Portal } from "solid-js/web";
 import { autoUnarchiveStore } from "../stores/auto-unarchive";
 import { automationIdPart } from "./replica-repo-badges";
-
-// Keeps Tab focus cycling between the modal's focusable elements.
-function cycleTabFocus(event: KeyboardEvent, focusables: HTMLElement[]): void {
-  if (focusables.length < 2) return;
-  const index = focusables.indexOf(document.activeElement as HTMLElement);
-  if (index === -1) {
-    event.preventDefault();
-    (event.shiftKey ? focusables[focusables.length - 1] : focusables[0])?.focus();
-    return;
-  }
-  if (event.shiftKey) {
-    if (index <= 0) {
-      event.preventDefault();
-      focusables[focusables.length - 1]?.focus();
-    }
-  } else if (index === focusables.length - 1) {
-    event.preventDefault();
-    focusables[0]?.focus();
-  }
-}
+import { trapTabFocus } from "../../shared/focus-trap";
 
 const AutoUnarchiveModal: Component = () => {
   let messageRef: HTMLDivElement | undefined;
@@ -41,7 +22,7 @@ const AutoUnarchiveModal: Component = () => {
       }
       if (event.key === "Tab") {
         event.stopImmediatePropagation();
-        cycleTabFocus(event, [messageRef, acknowledgeRef].filter(Boolean) as HTMLElement[]);
+        trapTabFocus(event, [messageRef, acknowledgeRef].filter(Boolean) as HTMLElement[]);
         return;
       }
       event.stopImmediatePropagation();
