@@ -980,4 +980,3 @@ where
         app_run::exit::on_run_event(host, event, &ctx, &policy, &close_spec);
     }
 }
-#[doc(hidden)] pub mod codeql_control;
