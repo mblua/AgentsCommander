@@ -53,67 +53,81 @@ pub fn resolve_agent_target(
     // Case 1: fully qualified (`<project>:<local>`).
     // Require exactly one colon, non-empty project, local shaped `wg-N-team/agent`.
     if target.contains(':') {
-        // More than one colon is invalid shape.
-        if target.matches(':').count() != 1 {
-            return Err(ResolutionError::InvalidShape(target.to_string()));
-        }
-        let (project, local) = match split_project_prefix(target) {
-            (Some(p), l) => (p, l),
-            _ => return Err(ResolutionError::InvalidShape(target.to_string())),
-        };
-        if !is_valid_wg_local_shape(local) {
-            return Err(ResolutionError::InvalidShape(target.to_string()));
-        }
-
-        // Existence check.
-        let agent = local.split_once('/').map(|(_, a)| a).unwrap_or_default();
-        let wg = local.split_once('/').map(|(w, _)| w).unwrap_or_default();
-        let replica_dir = format!("__agent_{agent}");
-        for (name, dir) in enumerate_project_dirs(project_paths) {
-            if name != project {
-                continue;
-            }
-            let Some(ac_root) = existing_ac_root(&dir) else {
-                continue;
-            };
-            let candidate = ac_root.join(wg).join(&replica_dir);
-            if agent_matrix_directory_present(&candidate) {
-                return Ok(target.to_string());
-            }
-        }
-        return Err(ResolutionError::UnknownQualified(target.to_string()));
+        return resolve_qualified_target(target, project_paths);
     }
 
     // Case 2: unqualified WG-local form (`wg-N-team/agent`).
     if is_valid_wg_local_shape(target) {
-        let wg = target.split_once('/').map(|(w, _)| w).unwrap_or_default();
-        let agent = target.split_once('/').map(|(_, a)| a).unwrap_or_default();
-        let replica_dir = format!("__agent_{agent}");
-        let mut candidates: Vec<String> = Vec::new();
-        for (name, dir) in enumerate_project_dirs(project_paths) {
-            let Some(ac_root) = existing_ac_root(&dir) else {
-                continue;
-            };
-            let candidate = ac_root.join(wg).join(&replica_dir);
-            if agent_matrix_directory_present(&candidate) {
-                let fqn = format!("{name}:{wg}/{agent}");
-                if !candidates.contains(&fqn) {
-                    candidates.push(fqn);
-                }
-            }
-        }
-        return match candidates.len() {
-            0 => Err(ResolutionError::NoMatch(target.to_string())),
-            1 => Ok(candidates.pop().unwrap()),
-            _ => Err(ResolutionError::Ambiguous {
-                target: target.to_string(),
-                candidates,
-            }),
-        };
+        return resolve_unqualified_wg_target(target, project_paths);
     }
 
     // Case 3: origin form or bare — return as-is (legacy delegation).
     Ok(target.to_string())
+}
+
+fn resolve_qualified_target(
+    target: &str,
+    project_paths: &[String],
+) -> Result<String, ResolutionError> {
+    // More than one colon is invalid shape.
+    if target.matches(':').count() != 1 {
+        return Err(ResolutionError::InvalidShape(target.to_string()));
+    }
+    let (project, local) = match split_project_prefix(target) {
+        (Some(p), l) => (p, l),
+        _ => return Err(ResolutionError::InvalidShape(target.to_string())),
+    };
+    if !is_valid_wg_local_shape(local) {
+        return Err(ResolutionError::InvalidShape(target.to_string()));
+    }
+
+    // Existence check.
+    let agent = local.split_once('/').map(|(_, a)| a).unwrap_or_default();
+    let wg = local.split_once('/').map(|(w, _)| w).unwrap_or_default();
+    let replica_dir = format!("__agent_{agent}");
+    for (name, dir) in enumerate_project_dirs(project_paths) {
+        if name != project {
+            continue;
+        }
+        let Some(ac_root) = existing_ac_root(&dir) else {
+            continue;
+        };
+        let candidate = ac_root.join(wg).join(&replica_dir);
+        if agent_matrix_directory_present(&candidate) {
+            return Ok(target.to_string());
+        }
+    }
+    Err(ResolutionError::UnknownQualified(target.to_string()))
+}
+
+fn resolve_unqualified_wg_target(
+    target: &str,
+    project_paths: &[String],
+) -> Result<String, ResolutionError> {
+    let wg = target.split_once('/').map(|(w, _)| w).unwrap_or_default();
+    let agent = target.split_once('/').map(|(_, a)| a).unwrap_or_default();
+    let replica_dir = format!("__agent_{agent}");
+    let mut candidates: Vec<String> = Vec::new();
+    for (name, dir) in enumerate_project_dirs(project_paths) {
+        let Some(ac_root) = existing_ac_root(&dir) else {
+            continue;
+        };
+        let candidate = ac_root.join(wg).join(&replica_dir);
+        if agent_matrix_directory_present(&candidate) {
+            let fqn = format!("{name}:{wg}/{agent}");
+            if !candidates.contains(&fqn) {
+                candidates.push(fqn);
+            }
+        }
+    }
+    match candidates.len() {
+        0 => Err(ResolutionError::NoMatch(target.to_string())),
+        1 => Ok(candidates.pop().unwrap()),
+        _ => Err(ResolutionError::Ambiguous {
+            target: target.to_string(),
+            candidates,
+        }),
+    }
 }
 
 /// Resolve an agent ref (from team config) to a display name.
