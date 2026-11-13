@@ -114,6 +114,8 @@ fn windows_get_dacl(path: &Path) -> Vec<u8> {
 
     let wide = absolute_verbatim_utf16(path).expect("verbatim path");
     let mut needed = 0_u32;
+    // SAFETY: `wide` comes from absolute_verbatim_utf16 and stays NUL-terminated.
+    // GetFileSecurityW allows null storage with size zero; `needed` is writable.
     let first = unsafe {
         GetFileSecurityW(
             wide.as_ptr(),
@@ -124,9 +126,15 @@ fn windows_get_dacl(path: &Path) -> Vec<u8> {
         )
     };
     assert_eq!(first, 0);
+    // SAFETY: GetLastError takes no pointers and reads the thread-local error left
+    // by the failed GetFileSecurityW; the intervening assertion succeeded.
     let raw_error = unsafe { GetLastError() };
     assert_eq!(raw_error, ERROR_INSUFFICIENT_BUFFER);
     let mut descriptor = vec![0_u8; usize::try_from(needed).expect("descriptor size")];
+    // SAFETY: `descriptor` has exactly `needed` writable bytes and remains live along
+    // with `wide` and the size output. The test allocator delegates to System (HeapAlloc on
+    // Windows), whose allocation alignment suffices for a security descriptor; see
+    // src-tauri/src/pty/terminal_snapshot/tests/resource.rs:82 and :109.
     let success = unsafe {
         GetFileSecurityW(
             wide.as_ptr(),
@@ -158,6 +166,8 @@ fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
     let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
 
     let mut descriptor = std::mem::MaybeUninit::<SECURITY_DESCRIPTOR>::zeroed();
+    // SAFETY: `descriptor` is aligned SECURITY_DESCRIPTOR storage. InitializeSecurityDescriptor
+    // receives its writable address and revision 1, the supported security descriptor revision.
     let initialized = unsafe { InitializeSecurityDescriptor(descriptor.as_mut_ptr().cast(), 1) };
     assert_ne!(
         initialized,
@@ -165,7 +175,12 @@ fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
         "InitializeSecurityDescriptor: {}",
         io::Error::last_os_error()
     );
+    // SAFETY: The zeroed SECURITY_DESCRIPTOR has integer and raw-pointer fields with valid
+    // zero representations; InitializeSecurityDescriptor succeeded and initialized it.
     let mut descriptor = unsafe { descriptor.assume_init() };
+    // SAFETY: `descriptor` was successfully initialized; `acl_ptr` addresses the live ACL
+    // returned by windows_world_access_acl. SetSecurityDescriptorDacl borrows that ACL; both
+    // values remain live through SetFileSecurityW.
     let dacl_set = unsafe {
         SetSecurityDescriptorDacl(
             (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
@@ -182,6 +197,8 @@ fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
     );
     descriptor.Control |= SE_DACL_PROTECTED;
     let wide = absolute_verbatim_utf16(path).expect("verbatim path");
+    // SAFETY: `wide` is NUL-terminated by absolute_verbatim_utf16; `descriptor` is initialized
+    // with its DACL pointing into the still-live `acl`. SetFileSecurityW only borrows them.
     let success = unsafe {
         SetFileSecurityW(
             wide.as_ptr(),
@@ -198,6 +215,8 @@ fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
     let mut persisted = windows_get_dacl(path);
     let mut control = 0_u16;
     let mut revision = 0_u32;
+    // SAFETY: `persisted` is the successful GetFileSecurityW descriptor from windows_get_dacl.
+    // GetSecurityDescriptorControl borrows it and writes the live control/revision outputs.
     let control_ok = unsafe {
         GetSecurityDescriptorControl(persisted.as_mut_ptr().cast(), &mut control, &mut revision)
     };
@@ -206,6 +225,8 @@ fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
     let mut present = 0;
     let mut defaulted = 0;
     let mut persisted_acl = std::ptr::null_mut();
+    // SAFETY: `persisted` is the live descriptor returned by windows_get_dacl; the present,
+    // DACL pointer and defaulted outputs are writable locals for GetSecurityDescriptorDacl.
     let dacl_ok = unsafe {
         GetSecurityDescriptorDacl(
             persisted.as_mut_ptr().cast(),
@@ -217,7 +238,13 @@ fn windows_protect_existing_dacl(path: &Path) -> Vec<u8> {
     assert_ne!(dacl_ok, 0);
     assert_ne!(present, 0);
     assert!(!persisted_acl.is_null());
+    // SAFETY: GetSecurityDescriptorDacl succeeded and returned a non-null ACL within the
+    // still-live `persisted` descriptor. The Windows-produced ACL header is initialized and
+    // DWORD-aligned, so its AclSize field can be read.
     let persisted_size = unsafe { usize::from((*persisted_acl).AclSize) };
+    // SAFETY: `persisted_acl` is the non-null DACL returned by GetSecurityDescriptorDacl.
+    // Its AclSize covers initialized bytes within the single live `persisted` allocation; the
+    // immutable slice is copied before that allocation is dropped or mutated.
     unsafe { std::slice::from_raw_parts(persisted_acl.cast::<u8>(), persisted_size) }.to_vec()
 }
 
@@ -229,6 +256,8 @@ fn windows_dacl_bytes(path: &Path) -> Vec<u8> {
     let mut present = 0;
     let mut defaulted = 0;
     let mut acl = std::ptr::null_mut();
+    // SAFETY: `descriptor` is the successful GetFileSecurityW result from windows_get_dacl.
+    // GetSecurityDescriptorDacl only reads it and writes the three live output locals.
     let success = unsafe {
         GetSecurityDescriptorDacl(
             descriptor.as_mut_ptr().cast(),
@@ -240,7 +269,12 @@ fn windows_dacl_bytes(path: &Path) -> Vec<u8> {
     assert_ne!(success, 0);
     assert_ne!(present, 0);
     assert!(!acl.is_null());
+    // SAFETY: GetSecurityDescriptorDacl succeeded and `acl` was checked non-null. It points
+    // to the initialized, DWORD-aligned ACL header in the still-live `descriptor`.
     let size = unsafe { usize::from((*acl).AclSize) };
+    // SAFETY: `acl` is the checked non-null DACL within `descriptor`; its initialized
+    // AclSize bytes belong to that single live allocation. No mutation occurs while the
+    // immutable slice is copied into its own vector.
     unsafe { std::slice::from_raw_parts(acl.cast::<u8>(), size) }.to_vec()
 }
 
@@ -253,6 +287,9 @@ fn windows_set_compression(path: &Path, format: u16) {
 
     let file = open_regular_no_follow(path, true, false).expect("open compression fixture");
     let mut returned = 0_u32;
+    // SAFETY: `file` owns the live synchronous handle from open_regular_no_follow. The
+    // FSCTL_SET_COMPRESSION input is a live u16 of the declared size; `returned` is writable,
+    // and DeviceIoControl allows no output buffer and null OVERLAPPED for this handle.
     let success = unsafe {
         DeviceIoControl(
             file.as_raw_handle() as HANDLE,
@@ -278,6 +315,8 @@ fn windows_set_attributes(path: &Path, attributes: u32) {
     use windows_sys::Win32::Storage::FileSystem::SetFileAttributesW;
 
     let wide = absolute_verbatim_utf16(path).expect("verbatim path");
+    // SAFETY: absolute_verbatim_utf16 produced the live NUL-terminated `wide` path.
+    // SetFileAttributesW borrows that path and receives attribute bits by value.
     let success = unsafe { SetFileAttributesW(wide.as_ptr(), attributes) };
     assert_ne!(
         success,
@@ -330,6 +369,10 @@ fn windows_world_access_acl() -> Vec<u8> {
         + world_sid.len();
     let mut acl = vec![0_u8; acl_length];
     let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+    // SAFETY: `acl` reserves the ACL header plus one ACCESS_ALLOWED_ACE and the SID, with
+    // DWORD-multiple length. Its test allocator delegates to System/HeapAlloc (see
+    // src-tauri/src/pty/terminal_snapshot/tests/resource.rs:82 and :109), so it is DWORD-aligned;
+    // InitializeAcl receives that entire live writable buffer and ACL_REVISION.
     let initialized = unsafe {
         InitializeAcl(
             acl_ptr,
@@ -343,6 +386,9 @@ fn windows_world_access_acl() -> Vec<u8> {
         "InitializeAcl: {}",
         io::Error::last_os_error()
     );
+    // SAFETY: InitializeAcl succeeded for `acl_ptr`, and `acl_length` includes this ACE
+    // and all 12 SID bytes. `world_sid` encodes revision 1, one subauthority, authority 1 and
+    // subauthority 0 (S-1-1-0); it stays live while AddAccessAllowedAceEx copies the SID.
     let added = unsafe {
         AddAccessAllowedAceEx(
             acl_ptr,

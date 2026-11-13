@@ -54,8 +54,12 @@ fn working_set_bytes() -> u64 {
         K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: PROCESS_MEMORY_COUNTERS contains only integer fields; all-zero bits
+    // form initialized values for every field before `cb` is assigned.
     let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>() };
     counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: GetCurrentProcess returns the current-process pseudo-handle, requiring no
+    // close. `counters` is writable and `cb` equals its size for K32GetProcessMemoryInfo.
     let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
     if ok == 0 {
         0
