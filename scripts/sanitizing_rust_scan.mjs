@@ -7,6 +7,40 @@ function error(path, line, reason) { throw new GateError(
   `${path}:${line}: ${reason}; review Rust syntax`); }
 
 // Rust escapes, rather than JSON/JavaScript string escapes.
+// `i` is the index of the escape letter; each helper returns the final index.
+function hexEscape(source, i, byte) {
+  const hex = source.slice(i + 1, i + 3);
+  if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
+  const code = Number.parseInt(hex, 16);
+  if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
+  // Still validate all remaining escapes.
+  return { text: String.fromCodePoint(code), i: i + 2, opaque: byte && code > 127 };
+}
+function unicodeEscape(source, i) {
+  const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
+  if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
+    'invalid Rust Unicode escape');
+  const code = Number.parseInt(hex, 16);
+  if (code > 0x10ffff || code >= 0xd800 &&
+    code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
+  return { text: String.fromCodePoint(code), i: end };
+}
+function lineContinuation(source, i, e) {
+  if (e === '\r') i++;
+  while (/[\t\n\r ]/.test(source[i + 1] ?? '') && i + 1 < source.length) i++;
+  return i;
+}
+function rustEscape(source, i, byte) {
+  const e = source[i], simple = { n: '\n', r: '\r', t: '\t', '0': '\0',
+    [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
+  if (Object.hasOwn(simple, e)) return { text: simple[e], i, opaque: false };
+  if (e === 'x') return hexEscape(source, i, byte);
+  if (e === 'u' && source[i + 1] === '{' && !byte)
+    return { ...unicodeEscape(source, i), opaque: false };
+  if (e === '\n' || e === '\r' && source[i + 1] === '\n')
+    return { text: '', i: lineContinuation(source, i, e), opaque: false };
+  throw new GateError('invalid Rust escape');
+}
 export function decodeRustString(raw, byte = false) {
   const prefix = /^(?:b)?r(#+|)"/.exec(raw);
   if (prefix) return raw.slice(prefix[0].length, -prefix[1].length - 1);
@@ -15,28 +49,9 @@ export function decodeRustString(raw, byte = false) {
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     if (c.codePointAt(0) !== 92) { value += c; continue; }
-    const e = source[++i], simple = { n: '\n', r: '\r', t: '\t', '0': '\0',
-      [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
-    if (Object.hasOwn(simple, e)) value += simple[e];
-    else if (e === 'x') {
-      const hex = source.slice(i + 1, i + 3);
-      if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
-      const code = Number.parseInt(hex, 16);
-      if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
-      if (byte && code > 127) opaque = true; // Still validate all remaining escapes.
-      value += String.fromCodePoint(code); i += 2;
-    } else if (e === 'u' && source[i + 1] === '{' && !byte) {
-      const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
-      if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
-        'invalid Rust Unicode escape');
-      const code = Number.parseInt(hex, 16);
-      if (code > 0x10ffff || code >= 0xd800 &&
-        code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
-      value += String.fromCodePoint(code); i = end;
-    } else if (e === '\n' || e === '\r' && source[i + 1] === '\n') {
-      if (e === '\r') i++;
-      while (/[\t\n\r ]/.test(source[i + 1] ?? '') && i + 1 < source.length) i++;
-    } else throw new GateError('invalid Rust escape');
+    const escape = rustEscape(source, i + 1, byte);
+    value += escape.text; i = escape.i;
+    opaque ||= escape.opaque;
   }
   return opaque || byte && /[^\x00-\x7f]/.test(value) ? null : value;
 }
@@ -535,8 +550,7 @@ function ordinaryManifest(cargo, external, path, tree) {
       cargo = cargo.slice(arrayHeader[0].length);
       continue;
     }
-    const header = /^\[[ \t]*([^[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
-      .exec(cargo);
+    const header = /^\[([^[\]\r\n]+)\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(cargo);
     if (header) {
       section = header[1].trim();
       targetTable = false;
@@ -574,8 +588,7 @@ function ordinaryManifest(cargo, external, path, tree) {
 }
 
 // Snapshot-local, no filesystem or process state; unsupported syntax keeps production.
-export function createRustScanner(tree, readBlob) {
-  const scans = new Map(), incoming = new Map();
+function manifestsUnsupported(tree, readBlob) {
   let unsupported = [...tree.keys()].some(p => p.startsWith('src-tauri/src/bin/'));
   for (const [path, manifest] of tree) {
     if (!/(^|\/)Cargo\.toml$/.test(path)) continue;
@@ -585,50 +598,66 @@ export function createRustScanner(tree, readBlob) {
     unsupported ||= !ordinaryManifest(readBlob(manifest),
       path !== 'src-tauri/Cargo.toml', path, tree);
   }
+  return unsupported;
+}
+// Same per-path cut as the caller's `continue` for paths outside src-tauri/src/.
+function rustFileUnsupported(path, scan, mods) {
+  let unsupported = false;
+  if (scan.attributes.some(a => a.signals.some(m => m.name === 'path')) ||
+      scan.tokens.some(t => t.name === 'include' && scan.tokens[t.index + 1]?.text === '!'))
+    unsupported = true;
+  if (scan.tokens.some(t => t.name === 'mod' && !mods.some(i => i.first === t.index)))
+    unsupported = true;
+  if (!path.startsWith('src-tauri/src/')) {
+    if (path.slice(0, path.lastIndexOf('/')) === 'src-tauri' &&
+        scan.tokens.some(t => t.name === 'mod')) unsupported = true;
+  } else if (mods.some(i => i.bodyScope || i.scope !== scan.root)) unsupported = true;
+  return unsupported;
+}
+function addModTargets(incoming, tree, path, mods) {
+  let ambiguous = false;
+  const crateRoot = ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path);
+  const base = crateRoot || path.endsWith('/mod.rs')
+    ? path.slice(0, path.lastIndexOf('/')) : path.slice(0, -3);
+  for (const item of mods) {
+    const targets = [base + '/' + item.name + '.rs', base + '/' + item.name + '/mod.rs']
+      .filter(p => tree.has(p));
+    if (targets.length > 1) ambiguous = true;
+    for (const target of targets) {
+      if (!incoming.has(target)) incoming.set(target, []);
+      incoming.get(target).push({ parent: path, test: item.cfgTest });
+    }
+  }
+  return ambiguous;
+}
+function testOnlyFiles(incoming) {
+  const testOnly = new Set();
+  let changed;
+  do {
+    changed = false;
+    for (const [path, declarations] of incoming) {
+      if (testOnly.has(path) ||
+          ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path)) continue;
+      if (declarations.every(d => d.test || testOnly.has(d.parent))) {
+        testOnly.add(path); changed = true;
+      }
+    }
+  } while (changed);
+  return testOnly;
+}
+export function createRustScanner(tree, readBlob) {
+  const scans = new Map(), incoming = new Map();
+  let unsupported = manifestsUnsupported(tree, readBlob);
   for (const [path, entry] of tree) {
     if (!path.endsWith('.rs')) continue;
     const scan = scanRust(path, readBlob(entry));
     scans.set(path, scan);
-    if (scan.attributes.some(a => a.signals.some(m => m.name === 'path')) ||
-        scan.tokens.some(t => t.name === 'include' && scan.tokens[t.index + 1]?.text === '!'))
-      unsupported = true;
     const mods = scan.items.filter(i => i.kind === 'mod');
-    if (scan.tokens.some(t => t.name === 'mod' && !mods.some(i => i.first === t.index)))
-      unsupported = true;
-    if (!path.startsWith('src-tauri/src/')) {
-      if (path.slice(0, path.lastIndexOf('/')) === 'src-tauri' &&
-          scan.tokens.some(t => t.name === 'mod')) unsupported = true;
-      continue;
-    }
-    if (mods.some(i => i.bodyScope || i.scope !== scan.root))
-      unsupported = true;
-    const crateRoot = ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path);
-    const base = crateRoot || path.endsWith('/mod.rs')
-      ? path.slice(0, path.lastIndexOf('/')) : path.slice(0, -3);
-    for (const item of mods) {
-      const targets = [base + '/' + item.name + '.rs', base + '/' + item.name + '/mod.rs']
-        .filter(p => tree.has(p));
-      if (targets.length > 1) unsupported = true;
-      for (const target of targets) {
-        if (!incoming.has(target)) incoming.set(target, []);
-        incoming.get(target).push({ parent: path, test: item.cfgTest });
-      }
-    }
+    if (rustFileUnsupported(path, scan, mods)) unsupported = true;
+    if (!path.startsWith('src-tauri/src/')) continue;
+    if (addModTargets(incoming, tree, path, mods)) unsupported = true;
   }
-  const testOnly = new Set();
-  if (!unsupported) {
-    let changed;
-    do {
-      changed = false;
-      for (const [path, declarations] of incoming) {
-        if (testOnly.has(path) ||
-            ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path)) continue;
-        if (declarations.every(d => d.test || testOnly.has(d.parent))) {
-          testOnly.add(path); changed = true;
-        }
-      }
-    } while (changed);
-  }
+  const testOnly = unsupported ? new Set() : testOnlyFiles(incoming);
   return path => {
     const scan = scans.get(path);
     if (!scan) return scanRust(path, readBlob(tree.get(path)));
