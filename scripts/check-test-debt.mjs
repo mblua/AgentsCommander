@@ -259,13 +259,7 @@ function moduleRanges(masked) {
 }
 
 function rustTestId(rel, modules, fnName) {
-  const parts = [rel];
-  if (!rel.startsWith('src-tauri/tests/')) {
-    parts.push(...modules);
-  } else if (modules.length > 0) {
-    parts.push(...modules);
-  }
-  parts.push(fnName);
+  const parts = [rel, ...modules, fnName];
   return `rust:${parts.join('::')}`;
 }
 
