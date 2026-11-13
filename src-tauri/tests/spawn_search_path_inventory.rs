@@ -341,6 +341,13 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 2)],
     ),
     ("src-tauri/src/process/host/login.rs", 1, 0, &[(Owner, 1)]),
+    // #4608: `#[cfg(all(test, unix))]` fake login shell; its executable probe is test-only.
+    (
+        "src-tauri/src/process/host/login/fake_shell.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/config/coding_agents_catalog/tests.rs",
         1,
