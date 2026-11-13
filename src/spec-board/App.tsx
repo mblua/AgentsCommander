@@ -468,11 +468,11 @@ const SpecBoardApp: Component = () => {
         <WindowErrorBoundary label="spec-board">
           <SpecBoardToolbar />
           <ConflictBanner />
-  
+
           <div class="spec-board-main">
             <SpecBoardEditor editingLocked={gateLocked()} />
             <MermaidPreview />
-  
+
             <Show when={specBoardStore.showAskAgent}>
               <AskAgentPanel />
             </Show>
@@ -480,7 +480,7 @@ const SpecBoardApp: Component = () => {
               <div class="spec-board-error">{specBoardStore.renderError}</div>
             </Show>
           </div>
-  
+
           <div class="spec-board-footer">
             <div>{specBoardStore.path || "Unsaved"} ({specBoardStore.fileKind})</div>
             <div>
