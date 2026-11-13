@@ -287,7 +287,10 @@ impl AgentQuotaEngine {
 
     pub(crate) async fn tick(&self) {
         let mut ids: Vec<(Uuid, String)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            let registered = self
+                .registered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             registered
                 .iter()
                 .map(|(id, entry)| (*id, entry.agent_id.clone()))
@@ -369,7 +372,10 @@ impl AgentQuotaEngine {
             .account_readings
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut published = self.published.lock().unwrap_or_else(|e| e.into_inner());
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
 
         let mut configured: Vec<(&String, &AgentQuotaSource)> = sources.iter().collect();
         configured.sort_unstable_by(|a, b| a.0.cmp(b.0));
