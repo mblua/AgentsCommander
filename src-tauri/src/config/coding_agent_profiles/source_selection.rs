@@ -348,39 +348,59 @@ pub(crate) fn plan_identity_reference_patch(
             return Err(IdentityReferenceError::Conflict);
         }
         if side_index == 0 {
-            patch_identity_companion(tooling, source, mappings)?;
-            if let Some(default) = tooling.get_mut("replicaSelectionDefault") {
-                if !default.is_object() {
-                    return Err(IdentityReferenceError::Conflict);
-                }
-                patch_identity_companion(default, source, mappings)?;
-            }
+            patch_primary_tooling(tooling, source, mappings)?;
         } else {
-            if let Some(history) = tooling.get_mut("codingAgents") {
-                let history = history
-                    .as_object_mut()
-                    .ok_or(IdentityReferenceError::Conflict)?;
-                for entry in history.values_mut() {
-                    if !entry.is_object() {
-                        return Err(IdentityReferenceError::Conflict);
-                    }
-                    patch_identity_companion(entry, source, mappings)?;
-                }
-            }
-            if let Some(history) = tooling.get_mut("sourceReferences") {
-                let history = history
-                    .as_array_mut()
-                    .ok_or(IdentityReferenceError::Conflict)?;
-                for entry in history {
-                    if !entry.is_object() {
-                        return Err(IdentityReferenceError::Conflict);
-                    }
-                    patch_identity_companion(entry, source, mappings)?;
-                }
-            }
+            patch_history_tooling(tooling, source, mappings)?;
         }
     }
     Ok(IdentityReferencePatch { before, after })
+}
+
+fn patch_primary_tooling(
+    tooling: &mut Value,
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+) -> Result<(), crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::IdentityReferenceError;
+    patch_identity_companion(tooling, source, mappings)?;
+    if let Some(default) = tooling.get_mut("replicaSelectionDefault") {
+        if !default.is_object() {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        patch_identity_companion(default, source, mappings)?;
+    }
+    Ok(())
+}
+
+fn patch_history_tooling(
+    tooling: &mut Value,
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+) -> Result<(), crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::IdentityReferenceError;
+    if let Some(history) = tooling.get_mut("codingAgents") {
+        let history = history
+            .as_object_mut()
+            .ok_or(IdentityReferenceError::Conflict)?;
+        for entry in history.values_mut() {
+            if !entry.is_object() {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            patch_identity_companion(entry, source, mappings)?;
+        }
+    }
+    if let Some(history) = tooling.get_mut("sourceReferences") {
+        let history = history
+            .as_array_mut()
+            .ok_or(IdentityReferenceError::Conflict)?;
+        for entry in history {
+            if !entry.is_object() {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            patch_identity_companion(entry, source, mappings)?;
+        }
+    }
+    Ok(())
 }
 
 /// The caller has durably recorded the authorized inventory before this call.

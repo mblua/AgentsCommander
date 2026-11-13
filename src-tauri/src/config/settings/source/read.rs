@@ -834,20 +834,7 @@ pub(crate) fn collect_origin_units(
     unknown: &mut Vec<Vec<String>>,
 ) {
     if let Some(agents) = value.get("agents") {
-        let mut keys = HashSet::new();
-        match agents.as_array() {
-            Some(agents) => {
-                for agent in agents {
-                    match agent.get("id").and_then(Value::as_str) {
-                        Some(key) if !key.is_empty() && keys.insert(key) => {
-                            out.insert(LegacyOriginUnit::Entry(key.into()));
-                        }
-                        _ => unknown.push(vec!["agents".into()]),
-                    }
-                }
-            }
-            None => unknown.push(vec!["agents".into()]),
-        }
+        collect_agent_units(agents, out, unknown);
     }
     let Some(profiles) = value.get("codingAgentProfiles") else {
         return;
@@ -871,29 +858,64 @@ pub(crate) fn collect_origin_units(
             continue;
         };
         for (key, value) in map {
-            match name {
-                "defaultProfileByAgent" => {
-                    out.insert(LegacyOriginUnit::Default(key.clone()));
-                }
-                "profileSlots" => {
-                    out.insert(LegacyOriginUnit::Slot(key.clone()));
-                }
-                "identityByAgent" => {
-                    out.insert(LegacyOriginUnit::Entry(key.clone()));
-                }
-                _ => {
-                    if let Some(cells) = value.as_object() {
-                        for letter in cells.keys() {
-                            out.insert(if name == "profilesByAgent" {
-                                LegacyOriginUnit::Profile(key.clone(), letter.clone())
-                            } else {
-                                LegacyOriginUnit::Presentation(key.clone(), letter.clone())
-                            });
-                        }
-                    } else {
-                        unknown.push(vec!["codingAgentProfiles".into(), name.into(), key.clone()]);
+            insert_profile_unit(name, key, value, out, unknown);
+        }
+    }
+}
+
+fn collect_agent_units(
+    agents: &Value,
+    out: &mut std::collections::BTreeSet<LegacyOriginUnit>,
+    unknown: &mut Vec<Vec<String>>,
+) {
+    let mut keys = HashSet::new();
+    match agents.as_array() {
+        Some(agents) => {
+            for agent in agents {
+                match agent.get("id").and_then(Value::as_str) {
+                    Some(key) if !key.is_empty() && keys.insert(key) => {
+                        out.insert(LegacyOriginUnit::Entry(key.into()));
                     }
+                    _ => unknown.push(vec!["agents".into()]),
                 }
+            }
+        }
+        None => unknown.push(vec!["agents".into()]),
+    }
+}
+
+fn insert_profile_unit(
+    name: &str,
+    key: &str,
+    value: &Value,
+    out: &mut std::collections::BTreeSet<LegacyOriginUnit>,
+    unknown: &mut Vec<Vec<String>>,
+) {
+    match name {
+        "defaultProfileByAgent" => {
+            out.insert(LegacyOriginUnit::Default(key.to_string()));
+        }
+        "profileSlots" => {
+            out.insert(LegacyOriginUnit::Slot(key.to_string()));
+        }
+        "identityByAgent" => {
+            out.insert(LegacyOriginUnit::Entry(key.to_string()));
+        }
+        _ => {
+            if let Some(cells) = value.as_object() {
+                for letter in cells.keys() {
+                    out.insert(if name == "profilesByAgent" {
+                        LegacyOriginUnit::Profile(key.to_string(), letter.clone())
+                    } else {
+                        LegacyOriginUnit::Presentation(key.to_string(), letter.clone())
+                    });
+                }
+            } else {
+                unknown.push(vec![
+                    "codingAgentProfiles".into(),
+                    name.into(),
+                    key.to_string(),
+                ]);
             }
         }
     }
