@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn strict_team_candidates(
     root: &Path,
-) -> io::Result<impl Iterator<Item = io::Result<PathBuf>>> {
+) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
     Ok(std::fs::read_dir(root)?.filter_map(|entry| match entry {
         Ok(entry) if entry.path().is_dir() => Some(Ok(entry.path())),
         Ok(_) => None,
@@ -81,7 +81,9 @@ pub(crate) fn matrix_directory_present(path: &Path) -> bool {
     path.exists()
 }
 
-pub(crate) fn agent_matrix_candidates(root: &Path) -> io::Result<impl Iterator<Item = PathBuf>> {
+pub(crate) fn agent_matrix_candidates(
+    root: &Path,
+) -> io::Result<impl Iterator<Item = PathBuf> + use<>> {
     Ok(std::fs::read_dir(root)?
         .flatten()
         .map(|entry| entry.path())
