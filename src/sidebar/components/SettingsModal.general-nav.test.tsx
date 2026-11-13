@@ -529,7 +529,8 @@ describe("SettingsModal General categories + search (#2704)", () => {
   // Round 4: at <=760px the categories wrap as chips. The bytes come from disk
   // because a CSS ?raw import evaluates to "" under Vitest (see agent-badge-css.test.ts).
   it("stacks the categories as wrapping chips at 760px and keeps the red dot on the chip", async () => {
-    const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8").replace(
+    const read = (f: string) => readFileSync(new URL(`../styles/${f}`, moduleUrl), "utf8");
+    const css = (read("sidebar.css") + read("settings-modal.css")).replace(
       /\/\*[\s\S]*?\*\//g,
       "",
     );
