@@ -256,9 +256,10 @@ export function selectSessionWindow(
   preferred: number | null | undefined,
   buckets: readonly SessionWindowBucket[] | null | undefined,
 ): { requestedSessions: number; bucket: SessionWindowBucket | null } | null {
-  if (counts.length === 0) return null;
+  const last = counts[counts.length - 1];
+  if (last === undefined) return null;
   const isMember = preferred !== undefined && preferred !== null && counts.includes(preferred);
-  const requestedSessions = isMember ? preferred : counts[counts.length - 1];
+  const requestedSessions = isMember ? preferred : last;
   const bucket = buckets?.find((item) => item.requestedSessions === requestedSessions) ?? null;
   return { requestedSessions, bucket };
 }

@@ -59,7 +59,7 @@ export function describeConfirmModalKeyRouting(
 
     it("Enter on the destructive button confirms", () => {
       const { onCancel, onConfirm, buttons } = mount();
-      buttons[1].focus();
+      buttons[1]!.focus(); // the modal renders two buttons
       const e = keydown("Enter");
       expect(e.defaultPrevented).toBe(true);
       expect(onConfirm).toHaveBeenCalledTimes(1);
@@ -68,7 +68,7 @@ export function describeConfirmModalKeyRouting(
 
     it("Enter anywhere else cancels", () => {
       const { onCancel, onConfirm, buttons } = mount();
-      buttons[0].focus();
+      buttons[0]!.focus(); // the modal renders two buttons
       keydown("Enter");
       expect(onCancel).toHaveBeenCalledTimes(1);
       expect(onConfirm).not.toHaveBeenCalled();
@@ -76,7 +76,7 @@ export function describeConfirmModalKeyRouting(
 
     it("Tab from the last button wraps to the first", () => {
       const { buttons } = mount();
-      buttons[1].focus();
+      buttons[1]!.focus(); // the modal renders two buttons
       const e = keydown("Tab");
       expect(e.defaultPrevented).toBe(true);
       expect(document.activeElement).toBe(buttons[0]);
@@ -84,7 +84,7 @@ export function describeConfirmModalKeyRouting(
 
     it("Shift+Tab from the first button wraps to the last", () => {
       const { buttons } = mount();
-      buttons[0].focus();
+      buttons[0]!.focus(); // the modal renders two buttons
       const e = keydown("Tab", true);
       expect(e.defaultPrevented).toBe(true);
       expect(document.activeElement).toBe(buttons[1]);
