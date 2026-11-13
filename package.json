@@ -62,7 +62,9 @@
     "sanitizing:self": "node --test scripts/sanitizing_self_tests.mjs",
     "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
     "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
-    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff"
+    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -86,6 +88,7 @@
     "husky": "^9.1.7",
     "jscpd": "5.2.1",
     "jsdom": "^25.0.1",
+    "prettier": "3.6.2",
     "typescript": "^5",
     "typescript-eslint": "8.72.1",
     "vite": "^8.0.2",

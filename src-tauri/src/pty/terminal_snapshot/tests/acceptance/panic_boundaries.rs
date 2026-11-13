@@ -159,7 +159,10 @@ fn snapshot_production_panic_boundaries_are_payload_free() {
     let config = temporary.path().join("config");
     std::fs::create_dir_all(&config).expect("panic config directory");
     let _env = ConfigEnvGuard::set(&config);
-    std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    // SAFETY: runs only in the isolated --test-threads=1 child process
+    unsafe {
+        std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    }
     crate::logging::init_logger();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
