@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
+  agentNameFromPathOrSession,
   ANTIGRAVITY_CONTEXT_REGEX,
   ANTIGRAVITY_WEEKLY_QUOTA_REGEX,
   CLAUDE_CONTEXT_REGEX,
@@ -13,6 +14,7 @@ import {
   composeEffectiveCommand,
   defaultInstructionsFilename,
   defaultQuotaSourceForNewAgent,
+  deriveAcRoot,
   deriveMatrixRoot,
   effectiveEnvProjection,
   executableBasename,
@@ -40,6 +42,7 @@ import {
   stringifyArgv,
   suggestedContextRegex,
   suggestedQuotaSource,
+  targetProfileFqn,
   validateEnvRows,
 } from "./profile-utils";
 
@@ -982,5 +985,26 @@ describe("Antigravity indicator suggestions (#2836)", () => {
     expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec(contextRow)?.[1]).toBe("0");
     expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(contextRow)).toBeNull();
     expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec(weeklyRow)).toBeNull();
+  });
+});
+
+describe("trailing slash trim (#4445 S8786)", () => {
+  it("keeps results for edge paths", () => {
+    expect(deriveAcRoot("/")).toBeNull();
+    expect(deriveAcRoot("C:/p/.ac//")).toBe("C:/p/.ac");
+    expect(deriveAcRoot("//p/.ac/x//")).toBe("//p/.ac");
+    expect(deriveMatrixRoot("C:/p/.ac/room-1-t/__agent_dev//")).toBe("C:/p/.ac/_agent_dev");
+    expect(agentNameFromPathOrSession("a//", "s/x")).toBe("a");
+    expect(agentNameFromPathOrSession("//", "s/x")).toBe("x");
+    expect(targetProfileFqn("C:/proj/.ac/_agent_dev///", "s")).toBe("proj:dev");
+    expect(isAcAgentPath("C:/p/.ac/_agent_dev//")).toBe(true);
+    expect(isWgReplicaPath("C:/p/.ac/room-1-t/__agent_dev//")).toBe(true);
+  });
+
+  it("handles a long run of slashes not at the end", () => {
+    const path = `${"/".repeat(100_000)}x`;
+    expect(agentNameFromPathOrSession(path, "s")).toBe("x");
+    expect(isAcAgentPath(path)).toBe(false);
+    expect(deriveAcRoot(path)).toBeNull();
   });
 });

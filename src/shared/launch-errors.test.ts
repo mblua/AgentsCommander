@@ -70,3 +70,20 @@ describe("launchErrorMessage", () => {
     );
   });
 });
+
+describe("launchErrorMessage counts (#4445 S8786)", () => {
+  const CAP = "Resource Monitor cap reached: ";
+  const done = " Close an agent or raise the limit in Settings > Resources.";
+  const head = (ratio: string) => `Resource Monitor cap reached${ratio}.${done}`;
+
+  it("keeps the counts for edge inputs", () => {
+    expect(launchErrorMessage(`${CAP}3 / 5 active`)).toBe(head(" (3/5)"));
+    expect(launchErrorMessage(`${CAP}12/345`)).toBe(head(" (12/345)"));
+    expect(launchErrorMessage(`${CAP}3/`)).toBe(head(""));
+    expect(launchErrorMessage(`${CAP}x7/8`)).toBe(head(" (7/8)"));
+  });
+
+  it("handles a long run of digits with no slash", () => {
+    expect(launchErrorMessage(CAP + "1".repeat(100_000))).toBe(head(""));
+  });
+});
