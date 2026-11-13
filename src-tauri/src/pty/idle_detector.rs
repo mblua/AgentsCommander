@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
@@ -271,8 +271,8 @@ impl IdleDetector {
             "resize_grace must be >= idle_threshold or a resize repaint can \
              trigger a false busy→idle transition"
         );
-        self.tuning.lock().unwrap().insert(session_id, tuning);
-        let mut activity = self.activity.lock().unwrap();
+        lock(&self.tuning).insert(session_id, tuning);
+        let mut activity = lock(&self.activity);
         // #2879 - always a FRESH registration: a re-registration drops any evidence and
         // invalidates every earlier consumer attach, whatever the seed below decides.
         activity.semantic.insert(
@@ -296,16 +296,10 @@ impl IdleDetector {
         // baseline age (the auto-close evaluator treats untracked-but-live as a
         // spawn race; see auto_close.rs). Independent of the #260 activity seed
         // above, which is gated on `seed_initial_activity`.
-        self.silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, Instant::now());
+        lock(&self.silence).insert(session_id, Instant::now());
         // (#580) seed the alive-since clock alongside silence so auto-close can
         // apply WAKE_GRACE (kill-eligibility / anchor-advance gating) from spawn.
-        self.registered_at
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, Instant::now());
+        lock(&self.registered_at).insert(session_id, Instant::now());
     }
 
     /// Mark that a resize just happened for this session.
@@ -315,10 +309,7 @@ impl IdleDetector {
             "[idle] RESIZE recorded for {}",
             &session_id.to_string()[..8]
         );
-        self.resize_grace
-            .lock()
-            .unwrap()
-            .insert(session_id, Instant::now());
+        lock(&self.resize_grace).insert(session_id, Instant::now());
     }
 
     /// #2124 - record one PTY output chunk (printable or escape-only),
@@ -355,10 +346,7 @@ impl IdleDetector {
         now: Instant,
     ) {
         self.notify_raw_output_at(session_id, now);
-        let tuning = self
-            .tuning
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        let tuning = lock(&self.tuning)
             .get(&session_id)
             .copied()
             .unwrap_or(IdleTuning::DEFAULT);
@@ -376,10 +364,7 @@ impl IdleDetector {
         let mut counts_now = false;
         let mut confirmed: Option<(u64, bool)> = None;
         {
-            let mut bursts = self
-                .burst
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut bursts = lock(&self.burst);
             if let Some(pending) = bursts.get_mut(&session_id) {
                 if now.saturating_duration_since(pending.last) > tuning.burst_window {
                     // 2. The gap closed the window: the candidate was a short
@@ -449,9 +434,7 @@ impl IdleDetector {
     /// #2124 - silence age against an injected instant. An untracked session
     /// (or a stamp newer than `now`) reads as zero prior silence: count now.
     fn silence_age_at(&self, session_id: Uuid, now: Instant) -> Duration {
-        self.silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.silence)
             .get(&session_id)
             .and_then(|&stamp| now.checked_duration_since(stamp))
             .unwrap_or(Duration::ZERO)
@@ -461,16 +444,13 @@ impl IdleDetector {
     pub fn record_activity_with_bytes(&self, session_id: Uuid, byte_count: usize) {
         let sid = &session_id.to_string()[..8];
         // Per-session resize grace (#260) — copy out under a brief lock.
-        let resize_grace = self
-            .tuning
-            .lock()
-            .unwrap()
+        let resize_grace = lock(&self.tuning)
             .get(&session_id)
             .copied()
             .unwrap_or(IdleTuning::DEFAULT)
             .resize_grace;
         // Suppress activity caused by resize prompt repaint.
-        if let Some(&last_resize) = self.resize_grace.lock().unwrap().get(&session_id) {
+        if let Some(&last_resize) = lock(&self.resize_grace).get(&session_id) {
             let elapsed = last_resize.elapsed();
             if elapsed < resize_grace {
                 log::trace!(
@@ -485,8 +465,8 @@ impl IdleDetector {
         let was_idle = {
             // Hold both locks together so insert + remove is atomic
             // w.r.t. the watcher thread (same order: activity → idle_set).
-            let mut activity = self.activity.lock().unwrap();
-            let mut idle_set = self.idle_set.lock().unwrap();
+            let mut activity = lock(&self.activity);
+            let mut idle_set = lock(&self.idle_set);
             activity.insert(session_id, Instant::now());
             idle_set.remove(&session_id)
         };
@@ -509,16 +489,9 @@ impl IdleDetector {
     /// Everything after the mark is `record_activity_with_bytes` unchanged, so
     /// the #260 idle dot, the #552 clock and the resize grace are unaffected.
     pub fn record_control_write_activity(&self, session_id: Uuid, byte_count: usize) {
-        let reopened = self
-            .idle_set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&session_id);
+        let reopened = lock(&self.idle_set).contains(&session_id);
         {
-            let mut marks = self
-                .control_write
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut marks = lock(&self.control_write);
             if reopened || marks.contains_key(&session_id) {
                 marks.insert(session_id, Instant::now());
             }
@@ -529,18 +502,13 @@ impl IdleDetector {
     /// #1682 - arming an agent turn cancels the standing mark. Idempotent, and a
     /// no-op for a session that carries none.
     pub fn clear_control_write(&self, session_id: Uuid) {
-        self.control_write
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
+        lock(&self.control_write).remove(&session_id);
     }
 
     /// #1682 - age of the standing control-write mark, or `None` when none
     /// stands. Read once per busy->idle edge by the idle callback.
     pub fn control_write_age(&self, session_id: Uuid) -> Option<Duration> {
-        self.control_write
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.control_write)
             .get(&session_id)
             .map(std::time::Instant::elapsed)
     }
@@ -549,10 +517,7 @@ impl IdleDetector {
     /// `activity`/`idle_set`/`on_busy`, so it never affects the #260 idle dot.
     /// Called for ANY PTY output, user input, and inter-agent delivery.
     pub fn touch_silence(&self, session_id: Uuid) {
-        self.silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, Instant::now());
+        lock(&self.silence).insert(session_id, Instant::now());
     }
 
     #[cfg(test)]
@@ -612,9 +577,7 @@ impl IdleDetector {
     /// Read by the auto-close evaluator.
     pub fn silence_age(&self, session_id: Uuid) -> Option<Duration> {
         let now = Instant::now();
-        self.silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.silence)
             .get(&session_id)
             .and_then(|&t| now.checked_duration_since(t))
     }
@@ -633,9 +596,7 @@ impl IdleDetector {
     /// post-resize repaint does NOT count as activity here; callers needing
     /// resize-awareness must consult `last_resize_age` (via `purge_readiness`).
     pub fn has_printable_activity_since(&self, session_id: Uuid, t: Instant) -> bool {
-        self.activity
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.activity)
             .get(&session_id)
             .is_some_and(|&stamp| stamp > t)
     }
@@ -660,31 +621,14 @@ impl IdleDetector {
     /// value was written, so it cannot have corrupted it. The skew is safe.
     pub fn purge_readiness(&self, ids: &[Uuid]) -> Vec<PurgeReadiness> {
         // Phase 1: clone the small maps, each under its own lock, then release.
-        let tuning = self
-            .tuning
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let resizes = self
-            .resize_grace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let tuning = lock(&self.tuning).clone();
+        let resizes = lock(&self.resize_grace).clone();
 
         // Phase 2: the consistent snapshot. Nesting matches the reader thread's.
         let now = Instant::now();
-        let activity = self
-            .activity
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let idle_set = self
-            .idle_set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let silence = self
-            .silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let activity = lock(&self.activity);
+        let idle_set = lock(&self.idle_set);
+        let silence = lock(&self.silence);
 
         ids.iter()
             .map(|id| {
@@ -716,22 +660,10 @@ impl IdleDetector {
     where
         F: FnOnce() -> Result<T, crate::errors::AppError>,
     {
-        let tuning = self
-            .tuning
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let resizes = self
-            .resize_grace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut activity = self
-            .activity
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut idle_set = self
-            .idle_set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tuning = lock(&self.tuning);
+        let resizes = lock(&self.resize_grace);
+        let mut activity = lock(&self.activity);
+        let mut idle_set = lock(&self.idle_set);
         let now = Instant::now();
         let resolved = tuning
             .get(&session_id)
@@ -771,10 +703,7 @@ impl IdleDetector {
         drop(activity);
         drop(resizes);
         drop(tuning);
-        self.silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, now);
+        lock(&self.silence).insert(session_id, now);
         Ok((route, was_idle))
     }
 
@@ -790,9 +719,7 @@ impl IdleDetector {
     /// until alive past the grace (so wake-time scrollback repaint cannot reset it).
     pub fn alive_age(&self, session_id: Uuid) -> Option<Duration> {
         let now = Instant::now();
-        self.registered_at
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.registered_at)
             .get(&session_id)
             .and_then(|&t| now.checked_duration_since(t))
     }
@@ -802,29 +729,17 @@ impl IdleDetector {
         {
             // #2879 - the current registration goes first, under `activity`: every attach
             // of it is invalid from here on.
-            let mut activity = self.activity.lock().unwrap();
+            let mut activity = lock(&self.activity);
             activity.semantic.remove(&session_id);
             activity.remove(&session_id);
         }
-        self.silence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-        self.registered_at
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-        self.idle_set.lock().unwrap().remove(&session_id);
-        self.resize_grace.lock().unwrap().remove(&session_id);
-        self.control_write
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-        self.burst
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-        self.tuning.lock().unwrap().remove(&session_id);
+        lock(&self.silence).remove(&session_id);
+        lock(&self.registered_at).remove(&session_id);
+        lock(&self.idle_set).remove(&session_id);
+        lock(&self.resize_grace).remove(&session_id);
+        lock(&self.control_write).remove(&session_id);
+        lock(&self.burst).remove(&session_id);
+        lock(&self.tuning).remove(&session_id);
     }
 
     /// #2879 - attach a semantic consumer to the CURRENT `CodexWorking` registration of `id`.
@@ -834,10 +749,7 @@ impl IdleDetector {
     /// registration or a clock.
     pub(crate) fn activity_consumer(self: &Arc<Self>, id: Uuid) -> Option<ActivityConsumerHandle> {
         let token = {
-            let mut activity = self
-                .activity
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut activity = lock(&self.activity);
             let registration = activity
                 .semantic
                 .get_mut(&id)
@@ -851,10 +763,7 @@ impl IdleDetector {
         let retire_detector = Arc::clone(self);
         Some(ActivityConsumerHandle {
             observe: Arc::new(move |value: Option<bool>| {
-                let mut activity = observe_detector
-                    .activity
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut activity = lock(&observe_detector.activity);
                 let Some(registration) = activity.current_attach(id, &observe_token) else {
                     return false;
                 };
@@ -864,10 +773,7 @@ impl IdleDetector {
                 true
             }),
             retire: Arc::new(move || {
-                let mut activity = retire_detector
-                    .activity
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut activity = lock(&retire_detector.activity);
                 let Some(registration) = activity.current_attach(id, &token) else {
                     return false;
                 };
@@ -890,9 +796,9 @@ impl IdleDetector {
         // Snapshot tuning (clone, lock released) so it is never held
         // across the activity/idle_set critical section. Lock order:
         // tuning → activity → idle_set (consistent everywhere).
-        let tuning = self.tuning.lock().unwrap().clone();
-        let activity = self.activity.lock().unwrap();
-        let mut idle_set = self.idle_set.lock().unwrap();
+        let tuning = lock(&self.tuning).clone();
+        let activity = lock(&self.activity);
+        let mut idle_set = lock(&self.idle_set);
         let now = now.unwrap_or_else(Instant::now);
 
         let crossing: HashMap<Uuid, Duration> =
@@ -991,6 +897,10 @@ impl IdleDetector {
             }
         });
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
