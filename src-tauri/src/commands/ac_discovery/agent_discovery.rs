@@ -1,5 +1,7 @@
 mod replica;
 mod teams;
+#[cfg(test)]
+mod tests;
 
 use super::branch_watcher::DiscoveryBranchWatcher;
 use super::gitignore::ensure_ac_root_gitignore_with_names;
