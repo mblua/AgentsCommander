@@ -99,6 +99,22 @@ function stubRunner({ detectorExit = 0, candidate = RECORD_TEXT,
   };
 }
 
+function publicationOutcome(failure, error, recordPath, prior, candidate) {
+  if (failure) {
+    if (!(error instanceof GateError) || !error.message.includes(failure)) {
+      throw new Error(`expected ${failure}, got ${error?.message ?? 'success'}`);
+    }
+    if (!fs.readFileSync(recordPath).equals(Buffer.from(prior))) {
+      throw new Error('failure changed prior final');
+    }
+  } else {
+    if (error) throw error;
+    if (!fs.readFileSync(recordPath).equals(Buffer.from(candidate ?? RECORD_TEXT))) {
+      throw new Error('published bytes differ');
+    }
+  }
+}
+
 async function publicationCase(options, failure, prior, publicationFs) {
   if (options === undefined) options = {};
   if (prior === undefined) prior = RECORD_TEXT;
@@ -113,19 +129,7 @@ async function publicationCase(options, failure, prior, publicationFs) {
       });
       if (!result.ok) throw new Error(result.message);
     } catch (err) { error = err; }
-    if (failure) {
-      if (!(error instanceof GateError) || !error.message.includes(failure)) {
-        throw new Error(`expected ${failure}, got ${error?.message ?? 'success'}`);
-      }
-      if (!fs.readFileSync(recordPath).equals(Buffer.from(prior))) {
-        throw new Error('failure changed prior final');
-      }
-    } else {
-      if (error) throw error;
-      if (!fs.readFileSync(recordPath).equals(Buffer.from(options.candidate ?? RECORD_TEXT))) {
-        throw new Error('published bytes differ');
-      }
-    }
+    publicationOutcome(failure, error, recordPath, prior, options.candidate);
     if (fs.readdirSync(dir).some((name) => name !== 'module-arcs.txt')) {
       throw new Error('owned sibling temp leaked');
     }

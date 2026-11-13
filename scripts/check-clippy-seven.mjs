@@ -46,24 +46,25 @@ export function parseJSON(text) {
     }
     throw new InputError('unterminated JSON string');
   };
+  const container = (ch) => {
+    i++; ws(); const names = new Set(), close = ch === '{' ? '}' : ']';
+    if (text[i] === close) { i++; return; }
+    for (;;) {
+      ws();
+      if (ch === '{') {
+        need(text[i] === '"', 'invalid JSON object key');
+        const name = string(); need(!names.has(name), `duplicate JSON key ${name}`);
+        names.add(name); ws(); need(text[i++] === ':', 'missing JSON colon');
+      }
+      value(); ws();
+      if (text[i] === close) { i++; return; }
+      need(text[i++] === ',', 'missing JSON delimiter');
+    }
+  };
   const value = () => {
     ws(); const ch = text[i];
     if (ch === '"') { string(); return; }
-    if (ch === '{' || ch === '[') {
-      i++; ws(); const names = new Set(), close = ch === '{' ? '}' : ']';
-      if (text[i] === close) { i++; return; }
-      for (;;) {
-        ws();
-        if (ch === '{') {
-          need(text[i] === '"', 'invalid JSON object key');
-          const name = string(); need(!names.has(name), `duplicate JSON key ${name}`);
-          names.add(name); ws(); need(text[i++] === ':', 'missing JSON colon');
-        }
-        value(); ws();
-        if (text[i] === close) { i++; return; }
-        need(text[i++] === ',', 'missing JSON delimiter');
-      }
-    }
+    if (ch === '{' || ch === '[') { container(ch); return; }
     const start = i;
     while (i < text.length && !/[\s,}\]]/.test(text[i])) i++;
     need(i > start, 'missing JSON value');

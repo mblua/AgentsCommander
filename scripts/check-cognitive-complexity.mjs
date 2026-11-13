@@ -1536,13 +1536,20 @@ function normaliseSegments(pathText) {
   return segments.join('/');
 }
 
+/** `text` without its trailing run of `/`; linear, unlike `/\/+$/`. */
+function trimTrailingSlashes(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '/') end--;
+  return text.slice(0, end);
+}
+
 /**
  * The workspace-relative POSIX path of a capture `file_name`, or a CAPTURE
  * error when the path is absolute outside the root or climbs above it.
  */
 function normaliseCapturePath(fileName, workspaceRoot) {
   const slashed = String(fileName).replaceAll('\\', '/');
-  const root = String(workspaceRoot).replaceAll('\\', '/').replace(/\/+$/, '');
+  const root = trimTrailingSlashes(String(workspaceRoot).replaceAll('\\', '/'));
   const absolute = slashed.startsWith('/') || /^[A-Za-z]:\//.test(slashed);
   let relative = slashed;
   if (absolute) {
@@ -5059,6 +5066,18 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       expectEqual(malformed.run(), 1, 'a malformed anchor head is CONFIG');
       if (!stderrText(malformed).includes('CONFIG')) throw new Error(
         `expected CONFIG, got ${stderrText(malformed)}`);
+    }],
+    ['case 4445: the workspace root loses only its trailing slashes, in linear time', () => {
+      expectEqual(normaliseCapturePath('C:/w/src/a.rs', 'C:/w//'), 'src/a.rs', 'trailing //');
+      expectEqual(normaliseCapturePath('C:/w/src/a.rs', 'C:\\w\\'), 'src/a.rs', 'trailing \\');
+      const longRoot = `${'/'.repeat(100_000)}x`;
+      let threw = false;
+      try {
+        normaliseCapturePath('/y/a.rs', longRoot);
+      } catch (error) {
+        threw = error instanceof CaptureError;
+      }
+      expectEqual(threw, true, 'a long run of slashes not at the end');
     }],
   ];
 }

@@ -15,12 +15,15 @@ export function decode(bytes, context) {
   try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new GateError(`${context}: invalid UTF8; repair the Git input`); }
 }
-function resolveGitExecutable({ cwd, env }) {
-  const windows = process.platform === 'win32';
+function gitSearchPath(env, windows) {
   const pathKey = windows ?
     Object.keys(env).sort(codeOrder).find(key => key.toUpperCase() === 'PATH') : 'PATH';
-  const searchPath = (pathKey === undefined ? undefined : env[pathKey]) ??
+  return (pathKey === undefined ? undefined : env[pathKey]) ??
     (windows ? process.env.PATH : '/usr/bin:/bin');
+}
+function resolveGitExecutable({ cwd, env }) {
+  const windows = process.platform === 'win32';
+  const searchPath = gitSearchPath(env, windows);
   const unavailable = detail => new GateError(
     `Git executable unavailable${detail ? ': ' + detail : ''}; install Git/check PATH`);
   // Search only the configured PATH; no implicit Windows cwd-first lookup.

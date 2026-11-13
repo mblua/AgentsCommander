@@ -8,6 +8,12 @@ import type {
 } from "./types";
 import { isEntityDirName } from "./entity-prefix";
 
+function trimTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === "/") end--;
+  return path.slice(0, end);
+}
+
 export const PROFILE_LETTERS = Array.from({ length: 26 }, (_, index) =>
   String.fromCodePoint("A".codePointAt(0)! + index)
 );
@@ -109,7 +115,7 @@ export function hasAcPlaceholder(value: string): boolean {
 
 export function deriveAcRoot(replicaPath: string | null | undefined): string | null {
   if (!replicaPath) return null;
-  const parts = replicaPath.replaceAll("\\", "/").replace(/\/+$/, "").split("/");
+  const parts = trimTrailingSlashes(replicaPath.replaceAll("\\", "/")).split("/");
   const idx = parts.lastIndexOf(".ac");
   if (idx < 0) return null;
   const sep = replicaPath.includes("\\") ? "\\" : "/";
@@ -120,7 +126,7 @@ export function deriveMatrixRoot(replicaPath: string | null | undefined): string
   if (!replicaPath) return null;
   const acRoot = deriveAcRoot(replicaPath);
   if (!acRoot) return null;
-  const parts = replicaPath.replaceAll("\\", "/").replace(/\/+$/, "").split("/");
+  const parts = trimTrailingSlashes(replicaPath.replaceAll("\\", "/")).split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
   if (!leaf.startsWith("__agent_") || !isEntityDirName(parent)) return null;
@@ -535,7 +541,7 @@ export function agentNameFromPathOrSession(
   sessionName: string,
 ): string {
   if (path) {
-    const leaf = path.replaceAll("\\", "/").replace(/\/+$/, "").split("/").pop() ?? "";
+    const leaf = trimTrailingSlashes(path.replaceAll("\\", "/")).split("/").pop() ?? "";
     const agent = leaf.replace(/^__?agent_/, "");
     if (agent) return agent;
   }
@@ -548,7 +554,7 @@ export function targetProfileFqn(
   sessionName: string,
 ): string {
   if (path) {
-    const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
+    const normalized = trimTrailingSlashes(path.replaceAll("\\", "/"));
     const parts = normalized.split("/");
     const acIndex = parts.lastIndexOf(".ac");
     if (acIndex > 0) {
@@ -562,7 +568,7 @@ export function targetProfileFqn(
 
 export function isAcAgentPath(path: string | null | undefined): boolean {
   if (!path) return false;
-  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
+  const normalized = trimTrailingSlashes(path.replaceAll("\\", "/"));
   const parts = normalized.split("/");
   const leaf = parts[parts.length - 1] ?? "";
   return parts.includes(".ac") && /^__?agent_/.test(leaf);
@@ -570,7 +576,7 @@ export function isAcAgentPath(path: string | null | undefined): boolean {
 
 export function isWgReplicaPath(path: string | null | undefined): boolean {
   if (!path) return false;
-  const parts = path.replaceAll("\\", "/").replace(/\/+$/, "").split("/");
+  const parts = trimTrailingSlashes(path.replaceAll("\\", "/")).split("/");
   const leaf = parts[parts.length - 1] ?? "";
   const parent = parts[parts.length - 2] ?? "";
   return parts.includes(".ac") && leaf.startsWith("__agent_") && isEntityDirName(parent);
