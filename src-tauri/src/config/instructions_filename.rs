@@ -1,5 +1,9 @@
 /// AC-internal managed context file name; never a user instructions file.
 pub(crate) const AC_CONTEXT_FILE_NAME: &str = "last_ac_context.md";
+/// Built-in managed instructions file for Claude.
+pub(crate) const CLAUDE_MD_FILE_NAME: &str = "CLAUDE.md";
+/// Built-in managed instructions file for Codex, Antigravity and Pi.
+pub(crate) const AGENTS_MD_FILE_NAME: &str = "AGENTS.md";
 
 /// True only for a bare, safe `*.md` filename that can be `cwd.join`ed and
 /// written without escaping the agent root (R1.5 + G9). This is a strict

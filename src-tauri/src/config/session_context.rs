@@ -10,6 +10,7 @@ mod skill_sections;
 mod templates;
 
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+use crate::config::instructions_filename::{AGENTS_MD_FILE_NAME, CLAUDE_MD_FILE_NAME};
 use agent_template::resolve_agent_context_with_activation;
 pub(crate) use agent_template::PTY_INPUT_COORDINATOR_CONTEXT;
 pub use agent_template::{get_default_agent_template, get_default_coordinator_template};
@@ -375,8 +376,8 @@ fn ensure_replica_shared_locations(agent_root: &str, canonical_root: &str) {
 
 const MANAGED_CONTEXT_FILENAMES: &[&str] = &[
     crate::config::instructions_filename::AC_CONTEXT_FILE_NAME,
-    "CLAUDE.md",
-    "AGENTS.md",
+    CLAUDE_MD_FILE_NAME,
+    AGENTS_MD_FILE_NAME,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -393,10 +394,10 @@ impl ManagedContextTarget {
     /// filename.
     pub fn filename(self) -> &'static str {
         match self {
-            Self::Claude => "CLAUDE.md",
-            Self::Antigravity => "AGENTS.md",
-            Self::Codex => "AGENTS.md",
-            Self::Pi => "AGENTS.md",
+            Self::Claude => CLAUDE_MD_FILE_NAME,
+            Self::Antigravity => AGENTS_MD_FILE_NAME,
+            Self::Codex => AGENTS_MD_FILE_NAME,
+            Self::Pi => AGENTS_MD_FILE_NAME,
         }
     }
 }
