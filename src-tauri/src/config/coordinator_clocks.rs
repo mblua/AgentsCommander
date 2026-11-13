@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
@@ -13,10 +12,6 @@ use crate::filesystem::coordinator_clocks as clock_io;
 /// coordinator. Keystroke bursts inside this window are coalesced to one
 /// update so we do not emit/persist per keystroke.
 const COALESCE_SECS: i64 = 10;
-
-/// (#621 MED-2) Monotonic suffix so concurrent `save_map_to` calls in one process
-/// (auto-close tick + off-tick workgroup-remove saves) never share a temp path.
-static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// (#2413) Orders close-marker changes made by coordinator creates with their
 /// events. The create's clear and a failed create's restore each hold it from
@@ -452,7 +447,7 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
     let tmp = path.with_extension(format!(
         "json.{}.{}.tmp",
         std::process::id(),
-        SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        crate::filesystem::next_temp_name_sequence()
     ));
     let file = clock_io::create_clock_stage(&tmp).map_err(|e| e.to_string())?;
     let write_result = (|| -> std::io::Result<()> {
