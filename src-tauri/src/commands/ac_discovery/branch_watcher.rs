@@ -89,11 +89,17 @@ impl DiscoveryBranchWatcher {
         f: impl FnOnce(&mut HashMap<String, Vec<ReplicaBranchEntry>>) -> R,
     ) -> R {
         let result = {
-            let mut map = self.replicas.lock().unwrap();
+            let mut map = self
+                .replicas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             f(&mut map)
         };
         let paths: Vec<String> = {
-            let map = self.replicas.lock().unwrap();
+            let map = self
+                .replicas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             map.values()
                 .flatten()
                 .flat_map(|e| e.repos.iter().map(|(_, path)| path.clone()))
@@ -104,7 +110,10 @@ impl DiscoveryBranchWatcher {
         // route a transition to the room that owns the repo. `room_dir` is the
         // parent of the replica path, so no new filesystem discovery happens.
         let rooms: Vec<(String, String)> = {
-            let map = self.replicas.lock().unwrap();
+            let map = self
+                .replicas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut rooms = Vec::new();
             for entry in map.values().flatten() {
                 let Some(room_dir) = std::path::Path::new(&entry.replica_path)
@@ -203,11 +212,11 @@ impl DiscoveryBranchWatcher {
         });
         self.discovery_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|k, _| valid.contains(k));
         self.repos_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|k, _| valid.contains(k));
     }
 
@@ -222,8 +231,14 @@ impl DiscoveryBranchWatcher {
             }
         });
         {
-            let mut dc = self.discovery_cache.lock().unwrap();
-            let mut rc = self.repos_cache.lock().unwrap();
+            let mut dc = self
+                .discovery_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut rc = self
+                .repos_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for p in replica_paths {
                 dc.remove(p);
                 rc.remove(p);
@@ -306,7 +321,10 @@ impl DiscoveryBranchWatcher {
     pub(crate) async fn poll(&self) -> Result<(), String> {
         // Flatten per-project entries.
         let entries: Vec<ReplicaBranchEntry> = {
-            let map = self.replicas.lock().unwrap();
+            let map = self
+                .replicas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             map.values().flatten().cloned().collect()
         };
 
@@ -355,7 +373,10 @@ impl DiscoveryBranchWatcher {
                 // (what this did before B2) means a multi-repo replica whose repo just
                 // changed branch compares None against None and never re-emits.
                 let discovery_changed = {
-                    let mut cache = self.discovery_cache.lock().unwrap();
+                    let mut cache = self
+                        .discovery_cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if cache.get(&entry.replica_path) == Some(&payload) {
                         false
                     } else {
@@ -371,7 +392,10 @@ impl DiscoveryBranchWatcher {
                 // Independent cache so multi-repo replicas re-emit on per-repo drift even when
                 // Gate A stays None.
                 let repos_changed = {
-                    let mut cache = self.repos_cache.lock().unwrap();
+                    let mut cache = self
+                        .repos_cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let prev = cache.get(&entry.replica_path);
                     if prev == Some(&refreshed) {
                         false
@@ -404,7 +428,10 @@ impl DiscoveryBranchWatcher {
                         );
                             // Clear our own cache entry so next tick re-evaluates against the fresh
                             // list.
-                            self.repos_cache.lock().unwrap().remove(&entry.replica_path);
+                            self.repos_cache
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&entry.replica_path);
                         }
                     }
                     // If no session exists yet (un-instantiated replica), Gate A has already
@@ -492,7 +519,12 @@ impl DiscoveryBranchWatcher {
     /// stat-change, reads (with size cap), re-stats (defends against torn
     /// in-place editor saves), and emits if content actually changed.
     pub(crate) async fn check_workgroup_task(&self, wg_root: PathBuf, session_ids: Vec<Uuid>) {
-        let previous = self.task_cache.lock().unwrap().get(&wg_root).cloned();
+        let previous = self
+            .task_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&wg_root)
+            .cloned();
         let sentinel = previous.as_ref().map(|entry| entry.sentinel.clone());
         let root = wg_root.clone();
         let next =
@@ -536,7 +568,10 @@ impl DiscoveryBranchWatcher {
         });
         match shipped {
             Ok(next) => {
-                self.task_cache.lock().unwrap().insert(wg_root, next);
+                self.task_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(wg_root, next);
             }
             Err(error) => log::warn!(
                 "[DiscoveryBranchWatcher] task emit failed for {}: {}; retrying next pass",
