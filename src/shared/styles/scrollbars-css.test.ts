@@ -36,7 +36,7 @@ describe("#2579 global Noir scrollbars", () => {
     expect(declValue(thumb, "border-radius")).toBe("2px");
   });
 
-  it("G2 exclusivity: no standard scrollbar property in any of the 16 sheets", () => {
+  it("G2 exclusivity: no standard scrollbar property in any of the 17 sheets", () => {
     // The list is pinned so a new or renamed sheet cannot slip past G2/G3.
     expect(SHEETS).toEqual([
       "src/browser/styles/browser.css",
@@ -49,6 +49,7 @@ describe("#2579 global Noir scrollbars", () => {
       "src/shared/styles/toast.css",
       "src/sidebar/components/settings/preflightTest.css",
       "src/sidebar/styles/context-history.css",
+      "src/sidebar/styles/onboarding-modal.css",
       "src/sidebar/styles/sidebar.css",
       "src/sidebar/styles/variables.css",
       "src/spec-board/styles/spec-board.css",

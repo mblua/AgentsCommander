@@ -124,7 +124,7 @@ pub(crate) fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Opt
 pub(crate) fn enabled_profile_cells<'a>(
     settings: &'a AppSettings,
     agent_id: &str,
-) -> impl Iterator<Item = (&'a String, &'a crate::config::settings::ProfileCellConfig)> + 'a {
+) -> impl Iterator<Item = (&'a String, &'a crate::config::settings::ProfileCellConfig)> + use<'a> {
     settings
         .coding_agent_profiles
         .profiles_by_agent

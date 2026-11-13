@@ -39,12 +39,15 @@ impl OwnedReplacementContinuation {
         &self,
         carrier: impl FnOnce() -> PublishedCarrier,
     ) -> bool {
-        if let Ok(mut state) = self.owner.state.lock() {
-            if let Some(progress) = state.replacement.as_mut() {
-                progress.pending_carrier = Some(carrier());
+        match self.owner.state.lock() {
+            Ok(mut state) => {
+                if let Some(progress) = state.replacement.as_mut() {
+                    progress.pending_carrier = Some(carrier());
+                }
             }
-        } else {
-            return false;
+            _ => {
+                return false;
+            }
         }
         true
     }

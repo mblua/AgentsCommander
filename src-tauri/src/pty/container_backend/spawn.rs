@@ -600,12 +600,12 @@ impl ContainerTransportBackend {
             }
             _ => {
                 if let Some(resources) = self.remove_session_state(id) {
-                    let diagnostics = if let (Some(runtime), Some(handle)) =
-                        (self.runtime.clone(), resources.runtime_handle.clone())
+                    let diagnostics = match (self.runtime.clone(), resources.runtime_handle.clone())
                     {
-                        Some(Self::collect_container_diagnostics(runtime, handle).await)
-                    } else {
-                        None
+                        (Some(runtime), Some(handle)) => {
+                            Some(Self::collect_container_diagnostics(runtime, handle).await)
+                        }
+                        _ => None,
                     };
                     if let Some(diagnostics) = diagnostics.as_ref() {
                         log::error!(

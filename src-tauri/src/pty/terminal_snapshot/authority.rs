@@ -231,12 +231,15 @@ pub(super) fn select_target_session(
             .then_with(|| right.fact.created_at.cmp(&left.fact.created_at))
             .then_with(|| left.fact.id.as_bytes().cmp(right.fact.id.as_bytes()))
     });
-    if let Some(selected) = eligible.into_iter().next() {
-        Ok(selected)
-    } else if unavailable {
-        Err(TerminalSnapshotReasonCode::SnapshotUnavailable)
-    } else {
-        Err(TerminalSnapshotReasonCode::TargetUnavailable)
+    match eligible.into_iter().next() {
+        Some(selected) => Ok(selected),
+        _ => {
+            if unavailable {
+                Err(TerminalSnapshotReasonCode::SnapshotUnavailable)
+            } else {
+                Err(TerminalSnapshotReasonCode::TargetUnavailable)
+            }
+        }
     }
 }
 

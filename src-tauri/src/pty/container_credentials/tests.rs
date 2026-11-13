@@ -35,14 +35,20 @@ fn plan_for(root: &Path, first_run: Option<ContainerFirstRunState>) -> Container
 
 fn with_env<R>(key: &str, value: Option<&str>, f: impl FnOnce() -> R) -> R {
     let prev = std::env::var_os(key);
-    match value {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
+    // SAFETY: callers hold ENV_LOCK
+    unsafe {
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
     }
     let out = f();
-    match prev {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
+    // SAFETY: callers hold ENV_LOCK
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
     }
     out
 }

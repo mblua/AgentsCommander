@@ -59,7 +59,8 @@ export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, 
  *  with no "by " has no vendor and the caller renders it unchanged. */
 export function welcomeVendorOf(description: string): string | null {
   const m = /^.*\bby\s+(\S.*)$/i.exec(description.trim());
-  return m ? m[1].trim() : null;
+  const vendor = m?.[1];
+  return vendor === undefined ? null : vendor.trim();
 }
 
 /** #2784 R3 - CODE ONLY vendor overrides, keyed by catalog key. Never read from,

@@ -33,7 +33,7 @@ impl std::fmt::Display for CloneRepositoryError {
 pub(crate) fn clone_repository(
     url: &str,
     target: &Path,
-) -> impl std::future::Future<Output = Result<Output, CloneRepositoryError>> + Send {
+) -> impl std::future::Future<Output = Result<Output, CloneRepositoryError>> + Send + use<> {
     let mut cmd = clone_command(url, target);
     async move {
         let result = tokio::time::timeout(GIT_CLONE_TIMEOUT, cmd.output()).await;
@@ -55,7 +55,7 @@ fn classify_clone_result(
 
 pub(crate) fn reset_clone_index(
     target: &Path,
-) -> impl std::future::Future<Output = Result<Output, ResetCloneError>> + Send {
+) -> impl std::future::Future<Output = Result<Output, ResetCloneError>> + Send + use<> {
     let mut cmd = reset_command(target);
     async move {
         classify_reset_result(

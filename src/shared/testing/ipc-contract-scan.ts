@@ -72,9 +72,9 @@ function parseParams(name: string, file: string, raw: string, failures: string[]
       failures.push(`unparsed parameter "${param}" in ${name} at ${file}`);
       continue;
     }
-    const type = m[3].trim();
+    const type = m[3]!.trim(); // PARAM groups 2 and 3 are not optional
     if (INJECTED.test(type.replace(/^&\s*/, ""))) continue;
-    keys.push({ key: camelKey(m[2]), required: !/^Option\s*</.test(type) });
+    keys.push({ key: camelKey(m[2]!), required: !/^Option\s*</.test(type) });
   }
   return keys;
 }
@@ -94,7 +94,7 @@ function scanCommands(file: string, text: string, scan: RustScan, failures: stri
     if (!fn) continue;
     const open = m.index + fn.index + fn[0].length - 1;
     const close = matchClose(text, open, "(", ")");
-    const name = fn[1];
+    const name = fn[1]!; // FN_HEAD group 1 is not optional
     const keys = parseParams(name, file, text.slice(open + 1, close), failures);
     const prior = scan.commands.get(name);
     if (prior) failures.push(`duplicate command fn "${name}" in ${prior.file}, ${file}`);
@@ -112,7 +112,8 @@ function scanRegistries(text: string, scan: RustScan): void {
 
 function scanWsArms(text: string, scan: RustScan): void {
   for (const re of [WS_ARM_BEFORE, WS_ARM_AFTER]) {
-    for (const m of text.matchAll(re)) scan.wsArms.add(m[1]);
+    // Both WS_ARM regexes have one non-optional group.
+    for (const m of text.matchAll(re)) scan.wsArms.add(m[1]!);
   }
 }
 
