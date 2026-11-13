@@ -20,6 +20,7 @@ const GATED_SCOPE = /^src-tauri\/.+\.rs$/;
 const MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', 'src-tauri/Cargo.toml',
   'crates/terminal-snapshot-renderer/Cargo.toml', 'crates/rust-source-scrub/Cargo.toml']);
 const DETECTOR = 'scripts/ci-unix-rust-changes.mjs';
+const WORKFLOW = '.github/workflows/pr-regression-gates.yml';
 const ROOTS = new Set(['lib.rs', 'main.rs', 'build.rs']);
 
 function detector(repo, env = process.env) {
@@ -67,6 +68,7 @@ function detector(repo, env = process.env) {
   }
   function reasonFor(file, base, head) {
     if (file === DETECTOR) return 'detector';
+    if (file === WORKFLOW) return 'workflow';
     if (MANIFESTS.has(file)) return 'manifest';
     if (!SCOPE.test(file)) return null;
     for (const rev of [head, base]) {
@@ -152,6 +154,7 @@ function selfTest() {
     'crates/terminal-snapshot-renderer/Cargo.toml': '[package]\n' },
     [manifest('crates/rust-source-scrub/Cargo.toml'),
       manifest('crates/terminal-snapshot-renderer/Cargo.toml')]],
+    ['P22', { [WORKFLOW]: 'jobs: {}\n' }, [`${WORKFLOW}: workflow`]],
     ['N1', { [`${src}win.rs`]: '#[cfg(windows)]\nfn w() {}' }, []],
     ['N2', { 'docs/n.md': '#[cfg(unix)]' }, []],
     ['N3', { [`${src}plainmod/child.rs`]: 'pub fn c() { let x = 1; }' }, []],
@@ -201,7 +204,7 @@ function selfTest() {
       assert.equal(fs.readFileSync(output, 'utf8'), expected, id);
       if (id === 'C3') assert.ok(stdout.includes('(event push)'), id);
     }
-    console.log('ci-unix-rust-changes self-test: 31 cases ok');
+    console.log('ci-unix-rust-changes self-test: 32 cases ok');
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 }
 
