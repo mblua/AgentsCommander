@@ -35,8 +35,9 @@ pub use cli_run::{
     resolve_enabled_from_cli_or_env,
 };
 use cli_run::{
-    expired_response_for_request, is_backend_automation_window, is_wait_retryable_error,
-    preflight_error, print_stdout_json, request_expired, run_cli_request, wait_timeout_error,
+    expired_response_for_request, inflight_file_path, is_backend_automation_window,
+    is_wait_retryable_error, preflight_error, print_stdout_json, request_expired,
+    response_file_path, run_cli_request, wait_timeout_error,
 };
 #[cfg(test)]
 use files::read_session_file_with_retry;
@@ -625,12 +626,11 @@ impl UiAutomationState {
     }
 
     fn inflight_path(&self, request_id: &str) -> PathBuf {
-        self.requests_dir()
-            .join(format!("{request_id}.inflight.json"))
+        inflight_file_path(&self.inner.automation_dir, request_id)
     }
 
     fn response_path(&self, request_id: &str) -> PathBuf {
-        self.responses_dir().join(format!("{request_id}.json"))
+        response_file_path(&self.inner.automation_dir, request_id)
     }
 }
 

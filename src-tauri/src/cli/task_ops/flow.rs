@@ -24,6 +24,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+pub(super) fn task_lock_path(root: &Path) -> PathBuf {
+    root.join(format!("{TASK_FILE_NAME}.lock"))
+}
+
 pub(crate) fn perform_inner<F>(
     wg_root: &Path,
     op: TaskOp,
@@ -33,7 +37,7 @@ where
     F: FnOnce() -> DateTime<Utc>,
 {
     let task_path = wg_root.join(TASK_FILE_NAME);
-    let lock_path = wg_root.join(format!("{TASK_FILE_NAME}.lock"));
+    let lock_path = task_lock_path(wg_root);
     // Per-PID tmp suffix eliminates the tmp-collision race during stale-lock
     // recovery (HIGH-2).
     let tmp_path = wg_root.join(format!("{TASK_FILE_NAME}.tmp.{}", std::process::id()));
