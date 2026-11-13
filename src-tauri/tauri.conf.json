@@ -12,7 +12,13 @@
   },
   "app": {
     "withGlobalTauri": false,
-    "windows": []
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'none'",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
+    }
   },
   "bundle": {
     "active": true,
