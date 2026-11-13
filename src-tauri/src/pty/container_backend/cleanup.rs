@@ -142,6 +142,7 @@ impl ContainerTransportBackend {
                     reopening sealed shutdown work session={session_id} reason={reason} \
                     state=retained"
             );
+                    return;
                 }
             }
         }
