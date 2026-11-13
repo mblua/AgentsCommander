@@ -854,21 +854,9 @@ jobs:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Create or recover the unique guarded draft release
         id: release
@@ -1009,21 +997,9 @@ jobs:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Resolve the unique guarded draft release by numeric ID
         id: release
@@ -1453,21 +1429,9 @@ jobs:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Resolve exact-run producer manifests across workflow attempts
         shell: bash
@@ -2003,21 +1967,9 @@ jobs:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Verify the dynamic immediate immutable predecessor
         shell: bash
@@ -2341,21 +2293,9 @@ jobs:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Install the manifest-pinned GitHub CLI for attestation verification
         shell: bash
@@ -2581,21 +2521,9 @@ jobs:
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Reject caller npm environment before setup-node
         shell: bash
