@@ -67,3 +67,44 @@ async fn snapshot_pruning_preserves_count_and_total_without_mtime_assumptions() 
         assert_eq!(tokio::fs::read(path).await.unwrap(), contents);
     }
 }
+
+#[tokio::test]
+async fn read_open_spec_keeps_invalid_utf8_text() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("spec.md");
+    tokio::fs::write(&path, [0xff, 0xfe]).await.unwrap();
+    assert_eq!(
+        read_open_spec(&path).await.unwrap_err(),
+        "Spec file must be valid UTF-8"
+    );
+}
+
+#[tokio::test]
+async fn read_saved_spec_keeps_invalid_utf8_text() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("spec.md");
+    tokio::fs::write(&path, [0xff, 0xfe]).await.unwrap();
+    assert_eq!(
+        read_saved_spec(&path).await.unwrap_err(),
+        "Saved spec file is not UTF-8"
+    );
+}
+
+#[test]
+fn spec_text_errors_keep_utf8_source() {
+    let cases = [
+        (
+            SpecTextError::Open(String::from_utf8(vec![0xff]).unwrap_err()),
+            "Spec file must be valid UTF-8",
+        ),
+        (
+            SpecTextError::Saved(String::from_utf8(vec![0xff]).unwrap_err()),
+            "Saved spec file is not UTF-8",
+        ),
+    ];
+    for (err, text) in cases {
+        assert_eq!(err.to_string(), text);
+        let source = std::error::Error::source(&err).expect("source kept");
+        assert!(source.is::<std::string::FromUtf8Error>());
+    }
+}

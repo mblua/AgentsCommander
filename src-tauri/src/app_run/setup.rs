@@ -89,7 +89,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
         ctx.shutdown_for_setup.token().clone(),
     );
 
-    start_startup_housekeeping(app);
+    start_startup_housekeeping(app, &ctx.shutdown_for_setup);
     let (git_watcher, discovery_branch_watcher) = start_git_and_remote_watchers(
         app,
         [
@@ -257,7 +257,7 @@ fn mark_restore_in_progress(app: SetupApp<'_>) -> StartupSessions {
     }
 }
 
-fn start_startup_housekeeping(app: SetupApp<'_>) {
+fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
     spawn_screenshot_hotkey_registration(app);
 
     // #264 — spawn the background task that emits `error_log_event`
@@ -265,7 +265,12 @@ fn start_startup_housekeeping(app: SetupApp<'_>) {
     // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
     // logged before this point stay buffered; the frontend's first
     // `drain_error_logs` call collects them.
-    tauri::async_runtime::spawn(crate::logging::spawn_error_emit_task(app.handle().clone()));
+    // Owner: app shutdown (#4579).
+    let emit_shutdown = shutdown.token().child_token();
+    tauri::async_runtime::spawn(crate::logging::spawn_error_emit_task(
+        app.handle().clone(),
+        emit_shutdown,
+    ));
 
     // #271 — seed `<config_dir>/agent-templates/` + README on startup.
     crate::commands::role_templates::ensure_default_templates_dir_at_config();

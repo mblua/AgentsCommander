@@ -387,13 +387,14 @@ pub fn resolve_loop_target(
             project_dir.display()
         ));
     }
-    let resolved = crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &wg_dir)
-        .ok_or_else(|| {
-            format!(
-                "Room '{}' has no identity-verified orchestrator",
-                config.target.workgroup
-            )
-        })?;
+    let resolved =
+        crate::config::coordinator_replica::resolve_wg_coordinator_replica(&ac_root, &wg_dir)
+            .ok_or_else(|| {
+                format!(
+                    "Room '{}' has no identity-verified orchestrator",
+                    config.target.workgroup
+                )
+            })?;
     let target_fqn = format!(
         "{}:{}/{}",
         resolved.project, resolved.wg_name, resolved.agent_name

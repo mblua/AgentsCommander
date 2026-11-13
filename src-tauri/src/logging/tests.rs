@@ -867,7 +867,8 @@ fn error_emit_loop_coalesces_orders_drains_and_wakes() {
     let wake = Arc::new(CaptureWake::default());
     let waker = Waker::from(Arc::clone(&wake));
     let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(error_emit_loop(&sink, &events));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let mut future = std::pin::pin!(error_emit_loop(&sink, &events, &shutdown));
     for message in ["first", "second", "third"] {
         sink.capture(entry(message));
     }
@@ -941,4 +942,27 @@ fn fresh_app_log_collision_preserves_bytes_with_append_fallback() {
     let mut file = debug_logs::open_app_log_append(&path).expect("append fallback");
     debug_logs::append_app_log(&mut file, b"_AFTER").expect("append bytes");
     assert_eq!(std::fs::read(&path).unwrap(), b"SEEDED_AFTER");
+}
+
+struct NoopErrorEvents;
+
+impl ErrorLogEvents for NoopErrorEvents {
+    fn error_log_event(&self) {}
+}
+
+#[tokio::test]
+async fn error_emit_task_stops_when_owner_cancels() {
+    let owner = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(spawn_error_emit_task(NoopErrorEvents, owner.child_token()));
+    tokio::task::yield_now().await;
+    assert!(
+        !task.is_finished(),
+        "emit task must run until its owner closes"
+    );
+    owner.cancel();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+    assert!(
+        matches!(stopped, Ok(Ok(()))),
+        "error emit task kept running after its owner cancelled: {stopped:?}"
+    );
 }

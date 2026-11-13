@@ -49,7 +49,11 @@ fn detect_antigravity_stems_and_wrapper_exclusions() {
         "agy.exe",
         "agy.cmd",
         "antigravity",
-        r"C:\tools\agy.exe",
+        if cfg!(windows) {
+            r"C:\tools\agy.exe"
+        } else {
+            "/opt/tools/agy"
+        },
     ] {
         assert_eq!(
             CodingAgentKind::detect(shell, &[]),
