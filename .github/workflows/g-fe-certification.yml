@@ -18,7 +18,7 @@ jobs:
     env:
       EV_SUBDIR: g-fe-evidence
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Identity and pre-state, asserted
         run: |
           EV="$RUNNER_TEMP/$EV_SUBDIR"; mkdir -p "$EV"
@@ -33,7 +33,7 @@ jobs:
           git status --porcelain | tee "$EV/0-porcelain-before.log"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test ! -s "$EV/0-porcelain-before.log"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.0
       - name: Pin npm and record the toolchain, asserted
