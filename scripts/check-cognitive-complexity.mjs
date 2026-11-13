@@ -4462,7 +4462,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       }
     }],
     ['case 3527: exact historical inventory and independent guards', () => {
-      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const clone = (value) => structuredClone(value);
       const entries = HISTORICAL_3527_SITES.map(([id, anchor]) => ({ id, sites: {
         windows: [anchor], linux: [anchor], macos: [anchor],
       } }));
