@@ -100,13 +100,6 @@ fn collect_replica_matches(
         if let Some((wg_name, agent_short)) = target_local.split_once('/') {
             let replica_dir = format!("__agent_{agent_short}");
 
-            let project_matches = |dir_name: &str| -> bool {
-                match target_project {
-                    Some(want) => dir_name == want,
-                    None => true,
-                }
-            };
-
             for rp in project_paths {
                 let base = std::path::Path::new(rp);
                 if !crate::filesystem::projects::project_path_is_dir(base) {
@@ -117,42 +110,66 @@ fn collect_replica_matches(
                     .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or("");
 
-                let mut dirs_to_check: Vec<std::path::PathBuf> = Vec::new();
-                if project_matches(base_name) {
-                    dirs_to_check.push(base.to_path_buf());
-                }
-                let _ = crate::filesystem::projects::visit_project_kind_children(base, |item| {
-                    let Ok(p) = item else {
-                        return std::ops::ControlFlow::Continue(());
-                    };
-                    if !crate::filesystem::projects::project_path_is_dir(&p) {
-                        return std::ops::ControlFlow::Continue(());
-                    }
-                    let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if dir_name.starts_with('.') {
-                        return std::ops::ControlFlow::Continue(());
-                    }
-                    if !project_matches(dir_name) {
-                        return std::ops::ControlFlow::Continue(());
-                    }
-                    dirs_to_check.push(p);
-                    std::ops::ControlFlow::Continue(())
-                });
-
-                for dir in dirs_to_check {
-                    let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {
-                        continue;
-                    };
-                    let candidate = ac_root.join(wg_name).join(&replica_dir);
-                    if mailbox_disk::mailbox_path_is_dir(&candidate) {
-                        record_repo_match(&candidate.to_string_lossy(), matches);
-                        // Within a single `rp`, first hit is the unique hit —
-                        // an FQN matches one replica dir per project. Continue
-                        // OUTER loop to detect cross-project ambiguity (§DR2-4).
-                        break;
-                    }
-                }
+                let dirs_to_check = collect_dirs_to_check(base, base_name, target_project);
+                record_first_replica(dirs_to_check, wg_name, &replica_dir, matches);
             }
+        }
+    }
+}
+
+fn project_dir_matches(target_project: Option<&str>, dir_name: &str) -> bool {
+    match target_project {
+        Some(want) => dir_name == want,
+        None => true,
+    }
+}
+
+fn collect_dirs_to_check(
+    base: &Path,
+    base_name: &str,
+    target_project: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut dirs_to_check: Vec<std::path::PathBuf> = Vec::new();
+    if project_dir_matches(target_project, base_name) {
+        dirs_to_check.push(base.to_path_buf());
+    }
+    let _ = crate::filesystem::projects::visit_project_kind_children(base, |item| {
+        let Ok(p) = item else {
+            return std::ops::ControlFlow::Continue(());
+        };
+        if !crate::filesystem::projects::project_path_is_dir(&p) {
+            return std::ops::ControlFlow::Continue(());
+        }
+        let dir_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if dir_name.starts_with('.') {
+            return std::ops::ControlFlow::Continue(());
+        }
+        if !project_dir_matches(target_project, dir_name) {
+            return std::ops::ControlFlow::Continue(());
+        }
+        dirs_to_check.push(p);
+        std::ops::ControlFlow::Continue(())
+    });
+    dirs_to_check
+}
+
+fn record_first_replica(
+    dirs: Vec<PathBuf>,
+    wg_name: &str,
+    replica_dir: &str,
+    matches: &mut Vec<String>,
+) {
+    for dir in dirs {
+        let Some(ac_root) = crate::config::ac_root::existing_ac_root(&dir) else {
+            continue;
+        };
+        let candidate = ac_root.join(wg_name).join(replica_dir);
+        if mailbox_disk::mailbox_path_is_dir(&candidate) {
+            record_repo_match(&candidate.to_string_lossy(), matches);
+            // Within a single `rp`, first hit is the unique hit —
+            // an FQN matches one replica dir per project. Continue
+            // OUTER loop to detect cross-project ambiguity (§DR2-4).
+            return;
         }
     }
 }
