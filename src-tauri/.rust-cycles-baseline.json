@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "a5945d06f38b514f",
+      "id": "3c6cb9b74e449508",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -135,9 +135,6 @@
         "agentscommander_lib::config::config_seed::copy",
         "agentscommander_lib::config::config_seed::perform",
         "agentscommander_lib::config::coordinator_clocks",
-        "agentscommander_lib::config::loops",
-        "agentscommander_lib::config::loops::lock",
-        "agentscommander_lib::config::loops::storage",
         "agentscommander_lib::config::placeholders",
         "agentscommander_lib::config::projects",
         "agentscommander_lib::config::role_templates",
@@ -322,6 +319,14 @@
         "agentscommander_lib::web::commands",
         "agentscommander_lib::web::commands::agent_update_dispatch",
         "agentscommander_lib::window"
+      ]
+    },
+    {
+      "id": "99c68c0be14cb315",
+      "members": [
+        "agentscommander_lib::config::loops",
+        "agentscommander_lib::config::loops::lock",
+        "agentscommander_lib::config::loops::storage"
       ]
     },
     {
