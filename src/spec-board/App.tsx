@@ -1,3 +1,4 @@
+import { WindowErrorBoundary } from "../shared/window-error-boundary";
 import { Component, onMount, onCleanup, createEffect, createSignal, Show } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { specBoardStore, setSpecBoardStore } from "./stores/spec-board";
@@ -464,28 +465,30 @@ const SpecBoardApp: Component = () => {
           "min-height": "0",
         }}
       >
-        <SpecBoardToolbar />
-        <ConflictBanner />
-
-        <div class="spec-board-main">
-          <SpecBoardEditor editingLocked={gateLocked()} />
-          <MermaidPreview />
-
-          <Show when={specBoardStore.showAskAgent}>
-            <AskAgentPanel />
-          </Show>
-          <Show when={specBoardStore.renderError}>
-            <div class="spec-board-error">{specBoardStore.renderError}</div>
-          </Show>
-        </div>
-
-        <div class="spec-board-footer">
-          <div>{specBoardStore.path || "Unsaved"} ({specBoardStore.fileKind})</div>
-          <div>
-            {specBoardStore.dirty ? "Dirty " : ""}
-            Version {specBoardStore.versionIndex} of {specBoardStore.versionCount}
+        <WindowErrorBoundary label="spec-board">
+          <SpecBoardToolbar />
+          <ConflictBanner />
+  
+          <div class="spec-board-main">
+            <SpecBoardEditor editingLocked={gateLocked()} />
+            <MermaidPreview />
+  
+            <Show when={specBoardStore.showAskAgent}>
+              <AskAgentPanel />
+            </Show>
+            <Show when={specBoardStore.renderError}>
+              <div class="spec-board-error">{specBoardStore.renderError}</div>
+            </Show>
           </div>
-        </div>
+  
+          <div class="spec-board-footer">
+            <div>{specBoardStore.path || "Unsaved"} ({specBoardStore.fileKind})</div>
+            <div>
+              {specBoardStore.dirty ? "Dirty " : ""}
+              Version {specBoardStore.versionIndex} of {specBoardStore.versionCount}
+            </div>
+          </div>
+        </WindowErrorBoundary>
       </div>
 
       {/* Outside the inert region so an already-registered board can answer. */}
