@@ -735,6 +735,27 @@ fn a_needle_inside_a_credential_shape_does_not_unmask_the_rest_of_it() {
 }
 
 #[test]
+fn a_needle_that_is_a_context_word_or_a_whole_credential_still_masks_the_secret() {
+    // #4319 D1 (Grinch): the needle is the context word itself, or the credential with
+    // a tail; neither may hide the secret from the shape pass.
+    let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
+    let out = scrub_with("Bearer", &format!("Authorization: Bearer {u}"));
+    assert!(!out.contains(u), "{out}");
+    let out = scrub_with("--token", &format!("run --token {u}"));
+    assert!(!out.contains(u), "{out}");
+    let out = scrub_with(
+        "bot",
+        "GET https://api.telegram.org/bot123456:AAGBp_x-yzzzzzzzzzzz/getMe",
+    );
+    assert!(!out.contains("123456") && !out.contains("AAGBp"), "{out}");
+    let out = scrub_with(
+        &format!("Bearer {u}.sig"),
+        &format!("Authorization: Bearer {u}.sig"),
+    );
+    assert!(!out.contains(".sig") && !out.contains(u), "{out}");
+}
+
+#[test]
 fn scrub_merges_touching_spans_and_keeps_plain_text_unchanged() {
     assert_eq!(scrub_with("abc", "no secret here"), "no secret here");
     assert_eq!(scrub_with("abc", "xabcabcx"), "x<redacted>x");

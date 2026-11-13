@@ -79,11 +79,50 @@ pub fn redact(input: &str) -> String {
     out
 }
 
+/// [`redact`] plus every occurrence of the exact `needles`, in ONE pass over
+/// the original text: collect both sets of spans, merge the ones that overlap
+/// or touch, then render once. Two sequential passes let one pass break the
+/// other's match and leave a secret tail in clear (#4319). A merged span that
+/// holds a needle prints `<redacted>`; one made only of redactor spans `***`.
+pub(crate) fn redact_with_needles(text: &str, needles: &[String]) -> String {
+    let mut spans: Vec<(usize, usize, bool)> = secret_spans(text)
+        .into_iter()
+        .map(|(start, end)| (start, end, false))
+        .collect();
+    for needle in needles.iter().filter(|s| !s.is_empty()) {
+        spans.extend(
+            text.match_indices(needle.as_str())
+                .map(|(at, s)| (at, at + s.len(), true)),
+        );
+    }
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    spans.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut iter = spans.into_iter().peekable();
+    while let Some((start, mut end, mut needle)) = iter.next() {
+        while let Some(&(next_start, next_end, next_needle)) = iter.peek() {
+            if next_start > end {
+                break;
+            }
+            end = end.max(next_end);
+            needle |= next_needle;
+            iter.next();
+        }
+        out.push_str(&text[last..start]);
+        out.push_str(if needle { "<redacted>" } else { "***" });
+        last = end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 /// Byte ranges of `input` that [`redact`] masks, in order and disjoint.
 /// Each range starts and ends on a char boundary (the scanners only walk
-/// ASCII bytes). Callers that mask extra needles merge their ranges with
-/// these and render once, so no pass can split another pass's match.
-pub(crate) fn secret_spans(input: &str) -> Vec<(usize, usize)> {
+/// ASCII bytes).
+fn secret_spans(input: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     // Fast path: no secret-bearing substrings present.
     let has_bot = input.contains("/bot");
