@@ -151,7 +151,7 @@ async fn move_coding_agent_tauri_registration_presence() {
             cmd: "move_coding_agent".to_string(),
             callback: tauri::ipc::CallbackFn(0),
             error: tauri::ipc::CallbackFn(1),
-            url: "http://tauri.localhost".parse().unwrap(),
+            url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
             body: tauri::ipc::InvokeBody::Json(json!({
                 "id": "ov-a",
                 "neighborId": "ov-b",
@@ -291,7 +291,7 @@ async fn reorder_coding_agent_tauri_registration_presence() {
             cmd: "reorder_coding_agent".to_string(),
             callback: tauri::ipc::CallbackFn(0),
             error: tauri::ipc::CallbackFn(1),
-            url: "http://tauri.localhost".parse().unwrap(),
+            url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
             body: tauri::ipc::InvokeBody::Json(json!({
                 "id": "ov-a",
                 "expectedIds": overlay_order,

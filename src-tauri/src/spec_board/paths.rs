@@ -229,7 +229,8 @@ pub(crate) fn path_is_under(path: &Path, root: &Path) -> bool {
     let root_key = path_compare_key(root);
     path_key == root_key
         || path_key
-            .strip_prefix(&(root_key + std::path::MAIN_SEPARATOR_STR))
+            // keys are always backslash-separated (path_compare_key)
+            .strip_prefix(&(root_key + "\\"))
             .is_some()
 }
 
