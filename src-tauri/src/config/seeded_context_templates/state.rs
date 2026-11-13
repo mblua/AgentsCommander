@@ -4,9 +4,6 @@ use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -374,7 +371,7 @@ pub(crate) fn unique_state_temp_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
-    let counter = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let counter = crate::filesystem::next_temp_name_sequence();
     parent.join(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),

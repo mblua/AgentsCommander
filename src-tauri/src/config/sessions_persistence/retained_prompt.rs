@@ -6,7 +6,6 @@ use crate::session::manager::{PromptKey, RetainedPrompt, SessionManager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const RETAINED_PROMPTS: &str = super::super::instance_artifacts::RETAINED_PROMPTS;
 
@@ -219,11 +218,10 @@ pub(super) async fn flush_retained_prompts_locked_with_probe(
                 &b.key.effective_profile,
             ))
     });
-    static PROMPT_OP: AtomicU64 = AtomicU64::new(0);
     let temp = dir.join(format!(
         "{RETAINED_PROMPTS}.{}.{}.tmp",
         std::process::id(),
-        PROMPT_OP.fetch_add(1, Ordering::Relaxed)
+        crate::filesystem::next_temp_name_sequence()
     ));
     let result = (|| {
         let bytes = serde_json::to_vec(&RetainedPromptsWire {
