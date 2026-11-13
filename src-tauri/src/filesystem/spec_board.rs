@@ -80,6 +80,8 @@ fn replace_file_with_temp(temp: &Path, target: &Path) -> std::io::Result<()> {
     let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
 
+    // SAFETY: temp_wide and target_wide append NUL via chain(Some(0)) and remain
+    // live and unchanged while MoveFileExW synchronously reads both paths.
     let replaced = unsafe { MoveFileExW(temp_wide.as_ptr(), target_wide.as_ptr(), flags) };
     if replaced == 0 {
         Err(std::io::Error::last_os_error())

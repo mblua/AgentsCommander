@@ -258,10 +258,14 @@ pub(crate) fn handle_facts(file: &ManifestFile) -> io::Result<PhysicalHandleFact
 
     let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
     let success =
+        // SAFETY: file.0 retains its open handle; info provides aligned writable
+        // BY_HANDLE_FILE_INFORMATION storage for this synchronous output.
         unsafe { GetFileInformationByHandle(file.0.as_raw_handle() as HANDLE, info.as_mut_ptr()) };
     if success == 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: success == 0 returned above; GetFileInformationByHandle initializes
+    // the complete info structure when its result is nonzero.
     let info = unsafe { info.assume_init() };
     let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
     let length = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
@@ -311,6 +315,8 @@ pub(crate) fn reopen_windows_zero_access(writer: &ManifestFile) -> io::Result<Ma
         FILE_SHARE_WRITE,
     };
 
+    // SAFETY: writer.0 retains its open file handle throughout ReOpenFile; access,
+    // sharing and flags are scalar constants and the call borrows no memory.
     let handle = unsafe {
         ReOpenFile(
             writer.0.as_raw_handle() as HANDLE,
@@ -322,6 +328,8 @@ pub(crate) fn reopen_windows_zero_access(writer: &ManifestFile) -> io::Result<Ma
     if handle == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: ReOpenFile returned a newly owned handle, checked against
+    // INVALID_HANDLE_VALUE above; ownership transfers once to File for closing.
     let file = unsafe { File::from_raw_handle(handle.cast()) };
     Ok(ManifestFile(file))
 }
@@ -354,6 +362,10 @@ pub(crate) fn publish_windows_manifest_namespace(
     };
 
     let success = match replace {
+        // SAFETY: config/seed_manifest/windows.rs:210 builds both caller buffers with
+        // absolute_verbatim_utf16 (config/seed_manifest/windows.rs:469 appends NUL).
+        // call_windows_namespace retains them.
+        // MoveFileExW only reads those live buffers during the call.
         false => unsafe {
             MoveFileExW(
                 temp_wide.as_ptr(),
@@ -361,6 +373,10 @@ pub(crate) fn publish_windows_manifest_namespace(
                 MOVEFILE_WRITE_THROUGH,
             )
         },
+        // SAFETY: config/seed_manifest/windows.rs:210 builds both caller buffers with
+        // absolute_verbatim_utf16 (config/seed_manifest/windows.rs:469 appends NUL).
+        // call_windows_namespace retains them.
+        // ReplaceFileW reads them synchronously; its optional pointers are null.
         true => unsafe {
             ReplaceFileW(
                 canonical_wide.as_ptr(),
@@ -373,6 +389,7 @@ pub(crate) fn publish_windows_manifest_namespace(
         },
     };
     if success == 0 {
+        // SAFETY: GetLastError reads thread-local state and has no pointer preconditions.
         let raw_error = unsafe { GetLastError() };
         Err(raw_error)
     } else {
@@ -388,6 +405,9 @@ pub(crate) fn mark_windows_manifest_temp_deleted(file: &ManifestFile) -> io::Res
         FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
     };
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    // SAFETY: file.0 retains its handle; disposition is an initialized
+    // FILE_DISPOSITION_INFO with its exact size, borrowed only for the synchronous
+    // SetFileInformationByHandle call with matching FileDispositionInfo class.
     let success = unsafe {
         SetFileInformationByHandle(
             file.0.as_raw_handle() as HANDLE,
@@ -397,6 +417,7 @@ pub(crate) fn mark_windows_manifest_temp_deleted(file: &ManifestFile) -> io::Res
         )
     };
     if success == 0 {
+        // SAFETY: GetLastError reads thread-local state and has no pointer preconditions.
         let raw_error = unsafe { GetLastError() };
         return Err(io::Error::from_raw_os_error(
             i32::try_from(raw_error).unwrap_or(i32::MAX),
@@ -425,6 +446,8 @@ pub(crate) fn manifest_temp_has_only_unnamed_stream(
     struct FindStreamHandle(windows_sys::Win32::Foundation::HANDLE);
     impl Drop for FindStreamHandle {
         fn drop(&mut self) {
+            // SAFETY: FindStreamHandle owns the successful FindFirstStreamW handle
+            // and this Drop closes it once, after all enumeration calls finish.
             if unsafe { FindClose(self.0) } == 0 {
                 log::warn!(
                     "[seed_manifest] FindClose failed after bounded temp stream inventory: {}",
@@ -435,6 +458,10 @@ pub(crate) fn manifest_temp_has_only_unnamed_stream(
     }
 
     let mut data = MaybeUninit::<WIN32_FIND_STREAM_DATA>::zeroed();
+    // SAFETY: config/seed_manifest/windows.rs:676 supplies wide via absolute_verbatim_utf16
+    // (config/seed_manifest/windows.rs:469 appends NUL); data is aligned writable
+    // WIN32_FIND_STREAM_DATA
+    // storage matching FindStreamInfoStandard, with reserved flags zero.
     let raw_handle = unsafe {
         FindFirstStreamW(
             wide.as_ptr(),
@@ -444,6 +471,7 @@ pub(crate) fn manifest_temp_has_only_unnamed_stream(
         )
     };
     if raw_handle == INVALID_HANDLE_VALUE {
+        // SAFETY: GetLastError reads thread-local state and has no pointer preconditions.
         let raw_error = unsafe { GetLastError() };
         return Err(ManifestStreamError::Io {
             operation: "FindFirstStreamW",
@@ -451,6 +479,8 @@ pub(crate) fn manifest_temp_has_only_unnamed_stream(
         });
     }
     let handle = FindStreamHandle(raw_handle);
+    // SAFETY: INVALID_HANDLE_VALUE returned above; successful FindFirstStreamW
+    // initializes the WIN32_FIND_STREAM_DATA output before it is read.
     let mut data = unsafe { data.assume_init() };
     loop {
         let end = data
@@ -464,10 +494,13 @@ pub(crate) fn manifest_temp_has_only_unnamed_stream(
         }
 
         let next =
+            // SAFETY: handle owns a live FindFirstStreamW search handle and data
+            // remains initialized, aligned writable WIN32_FIND_STREAM_DATA storage.
             unsafe { FindNextStreamW(handle.0, (&mut data as *mut WIN32_FIND_STREAM_DATA).cast()) };
         if next != 0 {
             continue;
         }
+        // SAFETY: GetLastError reads thread-local state and has no pointer preconditions.
         let raw_error = unsafe { GetLastError() };
         if raw_error == ERROR_HANDLE_EOF {
             break;

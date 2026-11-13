@@ -65,10 +65,14 @@ pub(crate) fn project_directory_identity(path: &Path) -> std::io::Result<(u64, u
         .open(path)?;
     let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
     let ok =
+        // SAFETY: file owns the handle opened above and info supplies aligned writable
+        // BY_HANDLE_FILE_INFORMATION storage for this synchronous call.
         unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, info.as_mut_ptr()) };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: the ok == 0 error return excludes failure; GetFileInformationByHandle
+    // initializes the complete BY_HANDLE_FILE_INFORMATION output on success.
     let info = unsafe { info.assume_init() };
     let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
     Ok((u64::from(info.dwVolumeSerialNumber), u128::from(index)))
