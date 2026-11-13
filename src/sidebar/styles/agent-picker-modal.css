@@ -1,0 +1,1733 @@
+/* ===== Open Agent Modal ===== */
+.agent-modal {
+  background: var(--sidebar-surface);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  border-radius: 10px;
+  width: 94%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 212, 255, 0.05);
+  overflow: hidden;
+}
+
+.agent-picker-modal {
+  width: min(1180px, 96vw);
+  max-height: min(760px, 88vh);
+}
+
+/* ── #2014 layout A: full-window frame, startup lines, left-only filter ──
+   Ported from ac/project-shared coding-agent-prototype/build/v4-framing.css
+   (sections 1-6, [V4-STARTUP-LINES], [V4-FILTER]) with the prototype's
+   `.pp-v4-frame` scope replaced by `.agent-picker-modal`, so no other surface
+   that shares `.selection-lock-*` or `.agent-comparison-*` can change.
+   The 3 px edge gaps are CSS px: in Tauri zoom is native setZoom, so 100vh/100vw
+   follow the real window with no prototype zoom factor. */
+
+/* 1. Full-window frame with the same 3 px gaps as v2/v3. */
+.agent-picker-modal {
+  width: calc(100vw - 6px);
+  max-width: none;
+  height: calc(100vh - 6px);
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto; /* safety valve only: no scroll at the target sizes */
+  scrollbar-gutter: stable;
+}
+
+/* 2. Every block keeps its content height; the three-panel body absorbs the
+      rest, so the action bar never falls off the frame. */
+.agent-picker-modal .agent-picker-modal-header,
+.agent-picker-modal .agent-picker-botonera,
+.agent-picker-modal .selection-lock-bar,
+.agent-picker-modal .selection-lock-future {
+  flex-shrink: 0;
+}
+
+/* 3. Lower blocks: same elements and texts, compact rows. Nothing is hidden,
+      moved into a tooltip or ellipsised. */
+.agent-picker-modal .selection-lock-bar {
+  padding: 4px 12px;
+  /* 4. Order-dependent separators: layout A is body -> lock bar -> Matrix default
+        -> Apply-to area + action bar, so the lock bar gains a top border and the
+        botonera drops the one that would double the Matrix default's. */
+  border-top: 1px solid var(--sidebar-border);
+}
+.agent-picker-modal .selection-lock-pair,
+.agent-picker-modal .selection-lock-hint {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.agent-picker-modal .selection-lock-remove-scopes,
+.agent-picker-modal .selection-lock-remove-row {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.agent-picker-modal .agent-picker-botonera {
+  border-top: 0;
+}
+
+/* 5. Lock bar: title on its own row; pair and hint share the row below; the
+      "Remove lock from" column keeps two compact rows on the right. */
+.agent-picker-modal .selection-lock-main {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 10px;
+}
+.agent-picker-modal .selection-lock-main > .selection-lock-title { grid-column: 1 / -1; }
+.agent-picker-modal .selection-lock-main > .selection-lock-pair { grid-column: 1; min-width: 0; }
+.agent-picker-modal .selection-lock-main > .selection-lock-hint { grid-column: 2; min-width: 0; }
+.agent-picker-modal .selection-lock-right {
+  grid-template-columns: auto auto;
+  justify-items: end;
+  align-items: center;
+  gap: 1px 8px;
+  flex-shrink: 0;
+}
+.agent-picker-modal .selection-lock-remove-head { grid-area: 1 / 1; }
+.agent-picker-modal .selection-lock-remove-scopes { grid-area: 1 / 2; justify-content: flex-end; }
+.agent-picker-modal .selection-lock-remove-row {
+  grid-area: 2 / 1 / 3 / 3;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+/* 6. Matrix default: heading, stored pair and "Save default" share the first
+      line; the complete inheritance note keeps its own line underneath. */
+.agent-picker-modal .selection-lock-future {
+  padding: 4px 12px 5px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 12px;
+}
+.agent-picker-modal .selection-lock-future-head { grid-area: 1 / 1; }
+.agent-picker-modal .selection-lock-future .selection-lock-kind-row { grid-area: 1 / 2; min-width: 0; }
+.agent-picker-modal .selection-lock-future .selection-lock-future-note { grid-area: 2 / 1 / 3 / 3; }
+.agent-picker-modal .selection-lock-future .selection-lock-remove-row {
+  grid-area: 1 / 3 / 3 / 4;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+/* [V4-STARTUP-LINES] the comparison rows show the complete startup line
+   (command + args) instead of "configured peer": monospace, full text,
+   wrapping — never an ellipsis and never tooltip-only. The agent column takes
+   the width the line needs; the resolution column sizes to its own text. */
+.agent-picker-modal .agent-comparison-table-head,
+.agent-picker-modal .agent-comparison-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.agent-picker-modal .agent-comparison-agent-sub {
+  font-family: "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+/* [V4-FILTER] the agent filter, immediately above the first Coding Agent card.
+   It hides non-matching cards only; the comparison panel keeps every row and
+   the filter never changes the selection and never assigns anything. */
+.agent-picker-modal .agent-profile-provider-panel {
+  /* head + filter + scrolling list (the app rule has only two rows) */
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.agent-picker-modal .agent-profile-provider-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  padding: 6px 7px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.agent-picker-modal .agent-profile-provider-filter label {
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.agent-picker-modal .agent-profile-provider-filter input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 4px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: 11px;
+}
+.agent-picker-modal .agent-profile-provider-filter input::placeholder {
+  color: var(--sidebar-fg-dim);
+}
+.agent-picker-modal .agent-profile-provider-filter input:focus {
+  outline: none;
+  border-color: var(--sidebar-accent);
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.35);
+}
+.agent-picker-modal .agent-profile-provider-filter-status {
+  min-width: 0;
+  color: var(--sidebar-fg-dim);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.agent-picker-modal-header {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.agent-picker-eyebrow {
+  color: var(--sidebar-accent);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agent-picker-context {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-picker-context strong {
+  color: var(--sidebar-fg);
+}
+
+.agent-modal-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.agent-modal-title {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-modal-title strong {
+  color: var(--sidebar-fg);
+}
+
+.agent-back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-accent);
+  cursor: pointer;
+  font-size: 16px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.agent-back-btn:hover {
+  background: rgba(0, 212, 255, 0.1);
+}
+
+/* Search */
+.agent-search-container {
+  position: relative;
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.agent-search-input {
+  width: 100%;
+  background: var(--sidebar-hover);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: var(--radius-md);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  outline: none;
+  height: 36px;
+  transition: border-color var(--transition-fast);
+}
+
+.agent-search-input::placeholder {
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-search-input:focus {
+  border-color: var(--sidebar-accent);
+}
+
+.agent-search-spinner {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(0, 212, 255, 0.2);
+  border-top-color: var(--sidebar-accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+
+/* List */
+.agent-modal-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.agent-modal-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  border-left: 2px solid transparent;
+}
+
+.agent-modal-item:hover,
+.agent-modal-item.highlighted {
+  background: rgba(0, 212, 255, 0.06);
+}
+
+.agent-modal-item.highlighted {
+  border-left-color: var(--sidebar-accent);
+}
+
+.agent-modal-item-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.agent-modal-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-modal-item-name {
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  color: var(--sidebar-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-modal-item.highlighted .agent-modal-item-name {
+  color: var(--sidebar-fg);
+}
+
+.agent-modal-item-detail {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-modal-item-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+/* #1167 - per-TOOL colours for the Open-Agent modal's repo chips, and ONLY those.
+   These are NOT coding-agent labels: the four values come from AGENT_DETECTORS in
+   src-tauri/src/commands/repos.rs:9-14 ("Claude", "Codex", "OpenCode", "Cursor"),
+   which reports which tooling directories a repo contains. That vocabulary is
+   closed and exhaustive, so every chip the modal renders is coloured here and none
+   falls through to the grey .agent-badge base.
+
+   Anchored on .agent-modal-item-badges, which occurs exactly once in the repo
+   (OpenAgentModal.tsx:156), so these rules cannot reach a sidebar row. Before
+   #1167 they were written as `.agent-badge:not(.running)[data-agent=...]` and were
+   shared with the sidebar badge, which is what produced the divergence the issue
+   fixes; the sidebar badge no longer emits data-agent at all.
+
+   Specificity: (0,2,0), still above the .agent-badge base (0,1,0) for background
+   and color, while opacity: 0.4 keeps coming from that base exactly as before. The
+   rendered chip is unchanged.
+
+   The four `.running` variants that used to follow were deleted: nothing in the app
+   emits `running` on an .agent-badge any more. */
+.agent-modal-item-badges [data-agent="Claude"] { background: rgba(217, 119, 6, 0.15); color: #d97706; }
+.agent-modal-item-badges [data-agent="Codex"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.agent-modal-item-badges [data-agent="OpenCode"] { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.agent-modal-item-badges [data-agent="Cursor"] { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
+
+/* Agent choice (after repo selected) */
+.agent-choice {
+  padding: var(--spacing-md);
+}
+
+.agent-color-badge {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.agent-modal-empty {
+  padding: var(--spacing-lg);
+  text-align: center;
+  color: var(--sidebar-fg-dim);
+  font-size: var(--font-size-sm);
+}
+
+.agent-profile-assignment-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.58fr) minmax(0, 1.82fr);
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.agent-profile-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.agent-profile-provider-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+  position: sticky;
+  top: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.agent-profile-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sidebar-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agent-profile-panel-kicker {
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.agent-profile-provider-list,
+.agent-profile-card-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.agent-profile-assignment-scroll {
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  display: grid;
+  grid-template-columns: minmax(300px, 0.92fr) minmax(320px, 0.9fr);
+  gap: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.agent-profile-provider-card,
+.agent-profile-card {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-ui);
+}
+
+.agent-profile-provider-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-left-color: var(--agent-color, var(--sidebar-border));
+}
+
+/* #2577 - picker-scoped: rows keep their own height (no stretch), and the
+   grip sits INSIDE the card border as in Settings. The grip stays a sibling
+   button painted over the card's left padding (no nested buttons). */
+.agent-picker-modal .agent-profile-provider-list {
+  position: relative;
+  align-content: start;
+}
+
+.agent-profile-provider-list > .agent-profile-provider-card-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.agent-profile-provider-card-wrap > .agent-profile-provider-drag-handle {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  z-index: 1;
+  transform: translateY(-50%);
+}
+
+.agent-profile-provider-card-wrap > .agent-profile-provider-card {
+  padding-left: 22px;
+}
+
+.agent-profile-provider-card-wrap.is-drag-source {
+  opacity: 0.35;
+}
+
+.agent-profile-provider-card.active,
+.agent-profile-card.active {
+  border-color: var(--sidebar-accent);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+/* #563: cosmetic-only hover affordance. Selection is click-driven — hovering a
+   card must never pre-select it or update the active comparison row. Only color
+   shifts here (border width and box size are unchanged), so nothing reflows.
+   `:not(.active)` keeps the selected card's distinct accent tint. */
+.agent-profile-provider-card:hover:not(.active),
+.agent-profile-card:hover:not(.active) {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.agent-profile-provider-name,
+.agent-profile-card-title {
+  display: block;
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* #2681 - agent name plus weekly quota remaining on one line. */
+.agent-quota-name-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-quota-name-line > .agent-profile-provider-name,
+.agent-quota-name-line > .agent-quota-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-quota-remaining {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--sidebar-fg-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-profile-provider-command,
+.agent-profile-card-subtitle {
+  display: block;
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.agent-profile-provider-command,
+.agent-profile-param span:last-child,
+.agent-picker-actions .modal-btn {
+  overflow-wrap: anywhere;
+}
+
+.agent-profile-provider-chip,
+.agent-profile-default-marker,
+.agent-profile-token {
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: var(--sidebar-accent);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-profile-card.missing {
+  border-style: dashed;
+}
+
+/* #527: per-card status pill on the Selection profile cards. Same taxonomy and
+   colors as the Config rails so a given (agent, letter) reads identically on
+   both screens. */
+.agent-profile-card-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.agent-profile-card-pill {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.agent-profile-card-pill.match { color: var(--status-active, #35f2a6); border-color: rgba(53, 242, 166, 0.4); }
+.agent-profile-card-pill.configured {
+  color: var(--sidebar-accent, #00d4ff);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: rgba(0, 212, 255, 0.1);
+}
+/* Match the Config rail's literal fallback amber (#e3b341) exactly so the same
+   state reads identically on both screens, independent of theme. */
+.agent-profile-card-pill.fallback { color: #e3b341; border-color: rgba(227, 179, 65, 0.4); }
+.agent-profile-card-pill.missing { color: var(--status-exited, #ff5d5d); border-color: rgba(255, 93, 93, 0.4); }
+
+.agent-profile-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-profile-param-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-profile-param {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.42fr) minmax(0, 1fr);
+  gap: 8px;
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.agent-profile-param span:last-child {
+  color: var(--sidebar-fg);
+  overflow-wrap: anywhere;
+}
+
+.agent-profile-declared-env {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 1px;
+}
+
+.agent-profile-declared-env-head {
+  color: var(--sidebar-accent);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.agent-profile-declared-env-grid {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-profile-declared-env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr) auto;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(4, 8, 14, 0.55);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.agent-profile-declared-env-key {
+  min-width: 0;
+  color: var(--sidebar-fg-dim);
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-profile-declared-env-value {
+  min-width: 0;
+  color: var(--sidebar-fg);
+  overflow-wrap: anywhere;
+}
+
+.agent-profile-declared-env-origin {
+  min-width: 0;
+  justify-self: end;
+  color: var(--status-active, #35f2a6);
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.agent-profile-declared-env-empty {
+  color: var(--sidebar-fg-dim);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.agent-profile-warning-strip {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.agent-profile-warning-strip.visible {
+  border-color: var(--status-pending);
+  color: var(--status-pending);
+}
+
+.agent-profile-token.warn {
+  border-color: var(--status-pending);
+  color: var(--status-pending);
+}
+
+.agent-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-top: 1px solid var(--sidebar-border);
+}
+
+.agent-picker-actions .modal-btn {
+  min-height: 30px;
+  white-space: normal;
+}
+
+.agent-picker-error {
+  margin: var(--spacing-xs) var(--spacing-md) 0;
+  color: var(--status-exited);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+/* ── Selection Screen V2: scope-picker botonera (#384) ── */
+.agent-picker-botonera {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-top: 1px solid var(--sidebar-border);
+}
+
+.agent-scope-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs) var(--spacing-sm);
+}
+
+.agent-scope-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-scope-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.agent-scope-opt.active {
+  color: var(--sidebar-fg);
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+}
+
+.agent-scope-opt.dangerous.active {
+  border-color: var(--status-exited, #ff5d5d);
+  color: var(--status-exited, #ff5d5d);
+}
+
+.agent-scope-count {
+  font-size: 10px;
+  color: var(--sidebar-accent);
+}
+
+.agent-scope-live-note,
+.agent-scope-status {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-scope-live-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--sidebar-accent);
+  border: 1px solid rgba(0, 212, 255, 0.4);
+}
+
+.agent-scope-error {
+  font-size: var(--font-size-sm);
+  color: var(--status-exited);
+}
+
+/* #537: prominent persistent failure banner for a failed Coding Agent assign.
+   Separation by color/fill plus a left accent bar (industrial-dark: minimal
+   full borders). The toast handles the loud transient alert; this keeps the
+   human-readable backend message and retry on screen. */
+.agent-scope-error-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--status-exited, #ff5d5d);
+  background: rgba(220, 50, 50, 0.14);
+  color: var(--status-exited, #ff5d5d);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  animation: agent-scope-error-in 180ms ease-out;
+}
+
+.agent-scope-error-banner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.agent-scope-error-banner-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agent-scope-error-retry {
+  flex: 0 0 auto;
+  padding: 2px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  color: #fff;
+  background: rgba(220, 50, 50, 0.85);
+  cursor: pointer;
+}
+
+.agent-scope-error-retry:hover:not(:disabled) {
+  background: rgba(220, 50, 50, 1);
+}
+
+.agent-scope-error-retry:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@keyframes agent-scope-error-in {
+  0% { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.agent-scope-warnings {
+  font-size: 10px;
+  color: #e3b341;
+}
+
+.agent-scope-targets {
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 10px;
+}
+
+.agent-scope-targets-head {
+  font-weight: 700;
+  color: var(--sidebar-fg);
+  margin-bottom: 2px;
+}
+
+.agent-scope-target-row {
+  display: flex;
+  gap: var(--spacing-xs);
+  align-items: baseline;
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-scope-target-wg {
+  color: var(--sidebar-accent);
+  flex: 0 0 auto;
+}
+
+.agent-scope-target-name {
+  color: var(--sidebar-fg);
+  flex: 0 0 auto;
+}
+
+.agent-scope-target-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-scope-target-live {
+  flex: 0 0 auto;
+  color: var(--status-active, #35f2a6);
+}
+
+.agent-scope-error-ids {
+  color: var(--sidebar-fg-dim);
+}
+
+/* ── #1943 selection lock: lock chip, lock bar, conflict review ──
+   Ported from the approved v3 stylistic reference
+   (.ac/plans/issue_1937/prototypes/index-v3.html, section "Candado de
+   selección"). Amber marks protection everywhere; green marks the eligible
+   set. Nothing here changes an unrelated theme or class. */
+
+/* The sidebar lock chip: only a locked replica renders it. Icon-only since
+   #2030, so the label's gap and padding are gone. */
+.selection-lock-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid rgba(227, 179, 65, 0.55);
+  background: rgba(227, 179, 65, 0.14);
+  color: #e3b341;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.selection-lock-chip svg {
+  width: 8px;
+  height: 8px;
+}
+
+/* The bar sits between the modal header and the three-panel body. */
+.selection-lock-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--sidebar-border);
+  background: rgba(255, 255, 255, 0.02);
+  flex: 0 0 auto;
+}
+
+.selection-lock-bar[data-state="locked"] {
+  background: rgba(227, 179, 65, 0.07);
+  border-bottom-color: rgba(227, 179, 65, 0.35);
+}
+
+.selection-lock-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  border: 1px solid var(--sidebar-border);
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-bar[data-state="locked"] .selection-lock-icon {
+  color: #e3b341;
+  border-color: rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.1);
+}
+
+.selection-lock-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.selection-lock-main {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.selection-lock-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-state {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--sidebar-border);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--sidebar-fg-dim);
+  text-transform: none;
+}
+
+.selection-lock-state[data-state="locked"] {
+  color: #e3b341;
+  border-color: rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.12);
+}
+
+/* An unknown or invalid state is a diagnostic, never a quiet "Unlocked". */
+.selection-lock-state[data-state="unknown"],
+.selection-lock-state[data-state="invalid"] {
+  color: var(--status-exited, #ff5d5d);
+  border-color: rgba(255, 93, 93, 0.45);
+  background: rgba(255, 93, 93, 0.1);
+}
+
+.selection-lock-pair {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selection-lock-bar[data-state="locked"] .selection-lock-pair {
+  color: #f2d98a;
+}
+
+.selection-lock-hint {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selection-lock-right {
+  margin-left: auto;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.selection-lock-scope-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.selection-lock-scope-opt.active {
+  color: var(--sidebar-fg);
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+}
+
+.selection-lock-remove-head {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-remove-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 3px 4px;
+}
+
+.selection-lock-scope-opt.empty {
+  opacity: 0.55;
+}
+
+.selection-lock-scope-opt.empty.active {
+  opacity: 1;
+}
+
+.selection-lock-scope-count {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-scope-opt.active .selection-lock-scope-count {
+  color: #f2d98a;
+}
+
+.selection-lock-remove-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selection-lock-remove-note {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-remove {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--sidebar-fg);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.selection-lock-remove:hover:not(:disabled) {
+  color: #f2d98a;
+  border-color: rgba(227, 179, 65, 0.6);
+  background: rgba(227, 179, 65, 0.1);
+}
+
+.selection-lock-remove:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.selection-lock-remove-done {
+  font-size: 10px;
+  color: #35f2a6;
+}
+
+/* Informational list for `kind`: protected rows only, while every count and
+   the eligible set keep using the complete target list. */
+.selection-lock-kind {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 3px;
+  padding: 6px 12px 7px 52px;
+  border-bottom: 1px solid rgba(227, 179, 65, 0.25);
+  background: rgba(227, 179, 65, 0.04);
+}
+
+.selection-lock-kind-head {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-kind-note {
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  font-style: italic;
+}
+
+.selection-lock-kind-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+}
+
+.selection-lock-kind-row .wg {
+  color: var(--sidebar-accent);
+}
+
+.selection-lock-kind-row .name {
+  color: var(--sidebar-fg);
+}
+
+.selection-lock-kind-row .pair {
+  color: var(--sidebar-fg);
+}
+
+.selection-lock-pill {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.selection-lock-pill.locked {
+  color: #e3b341;
+  border: 1px solid rgba(227, 179, 65, 0.5);
+  background: rgba(227, 179, 65, 0.12);
+}
+
+/* The Matrix default for FUTURE replicas: stored snapshot plus a draft. */
+.selection-lock-future {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 4px;
+  padding: 7px 12px 8px 52px;
+  border-bottom: 1px solid rgba(61, 90, 254, 0.35);
+  background: rgba(61, 90, 254, 0.07);
+}
+
+.selection-lock-future-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.selection-lock-future .decision-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(53, 242, 166, 0.4);
+  background: rgba(53, 242, 166, 0.1);
+  color: #35f2a6;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.selection-lock-future-note {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+/* The six-radios stack: the ordinary scopes, then the same scopes + lock. */
+.agent-scope-stack {
+  display: grid;
+  gap: 3px;
+}
+
+.agent-scope-picker--lock {
+  padding-top: 5px;
+  border-top: 1px dashed rgba(227, 179, 65, 0.35);
+}
+
+.agent-scope-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #e3b341;
+}
+
+.agent-scope-lock-badge svg,
+.agent-scope-opt-lock {
+  width: 10px;
+  height: 10px;
+}
+
+.agent-scope-opt.locked-choice {
+  color: #c8ab6a;
+}
+
+.agent-scope-opt.locked-choice.active {
+  color: #f2d98a;
+  background: rgba(227, 179, 65, 0.14);
+  border-color: rgba(227, 179, 65, 0.55);
+}
+
+.agent-scope-lock-assumption {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+.agent-scope-lock-assumption strong {
+  color: #e3b341;
+}
+
+/* Conflict review over the modal: same tokens, same buttons. */
+.lock-conflict-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+}
+
+.lock-conflict-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.lock-conflict-card {
+  position: relative;
+  width: 620px;
+  max-width: 92%;
+  max-height: 78%;
+  overflow-y: auto;
+  padding: 14px 16px 12px;
+  border: 1px solid rgba(227, 179, 65, 0.45);
+  border-radius: 10px;
+  background: var(--sidebar-surface);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(227, 179, 65, 0.06);
+}
+
+.lock-conflict-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f2d98a;
+}
+
+.lock-conflict-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+.lock-conflict-list {
+  margin: 10px 0;
+  display: grid;
+  gap: 4px;
+}
+
+.lock-conflict-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(227, 179, 65, 0.28);
+  background: rgba(227, 179, 65, 0.06);
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.lock-conflict-row .wg {
+  color: var(--sidebar-accent);
+}
+
+.lock-conflict-row .name {
+  font-weight: 600;
+}
+
+.lock-conflict-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sidebar-fg-dim);
+}
+
+.lock-conflict-arrow {
+  color: #e3b341;
+}
+
+.lock-conflict-next {
+  color: #f2d98a;
+}
+
+.lock-conflict-effects {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.lock-conflict-effect {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--sidebar-fg-dim);
+}
+
+.lock-conflict-effect strong {
+  color: var(--sidebar-fg);
+}
+
+.lock-conflict-effect.danger strong {
+  color: var(--status-exited, #ff5d5d);
+}
+
+.lock-conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.lock-conflict-actions .modal-btn.danger {
+  border: 1px solid var(--status-exited, #ff5d5d);
+  color: var(--status-exited, #ff5d5d);
+  background: rgba(255, 93, 93, 0.08);
+}
+
+/* ── Selection Screen: step guides + same-profile comparison ── */
+.agent-profile-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.agent-profile-panel-heading {
+  min-width: 0;
+}
+
+.agent-profile-step {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--sidebar-border);
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
+}
+
+.agent-profile-step.cyan {
+  color: var(--sidebar-accent);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: rgba(0, 212, 255, 0.1);
+}
+
+.agent-profile-step.yellow {
+  color: var(--status-pending, #f8c657);
+  border-color: rgba(248, 198, 87, 0.4);
+  background: rgba(248, 198, 87, 0.12);
+}
+
+.agent-projection-panel {
+  align-content: stretch;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  min-height: 0;
+}
+
+.agent-projection-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.agent-projection-heading {
+  min-width: 0;
+}
+
+.agent-comparison-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-comparison-summary-tile {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.agent-comparison-summary-value {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.agent-comparison-summary-value.direct {
+  color: var(--status-active, #35f2a6);
+}
+
+.agent-comparison-summary-value.fallback {
+  color: var(--status-pending, #f8c657);
+}
+
+.agent-comparison-summary-value.missing {
+  color: var(--status-exited, #ff5d5d);
+}
+
+.agent-comparison-summary-label {
+  color: var(--sidebar-fg-dim);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.agent-comparison-table {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: clamp(220px, 42vh, 420px);
+  overflow: hidden;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.agent-comparison-table-body {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.agent-comparison-table-head,
+.agent-comparison-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.agent-comparison-table-head {
+  padding: 8px;
+  color: var(--sidebar-fg-dim);
+  background: rgba(4, 8, 14, 0.7);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-comparison-row {
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  background: transparent;
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-align: left;
+}
+
+.agent-comparison-row:hover,
+.agent-comparison-row.active {
+  background: rgba(0, 212, 255, 0.065);
+}
+
+.agent-comparison-row.active {
+  box-shadow: inset 2px 0 0 var(--sidebar-accent);
+}
+
+.agent-comparison-agent-cell,
+.agent-comparison-resolution-cell {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-comparison-agent-name {
+  color: var(--sidebar-fg);
+  font-weight: 800;
+}
+
+.agent-comparison-agent-sub {
+  color: var(--sidebar-fg-dim);
+  line-height: 1.35;
+}
+
+.agent-comparison-resolution {
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+.agent-comparison-agent-name,
+.agent-comparison-agent-sub,
+.agent-comparison-resolution {
+  overflow-wrap: anywhere;
+}
+
+.agent-comparison-status {
+  justify-self: start;
+  padding: 2px 6px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.agent-comparison-status.direct {
+  color: var(--status-active, #35f2a6);
+  border-color: rgba(53, 242, 166, 0.35);
+  background: rgba(53, 242, 166, 0.1);
+}
+
+.agent-comparison-status.fallback {
+  color: var(--status-pending, #f8c657);
+  border-color: rgba(248, 198, 87, 0.4);
+  background: rgba(248, 198, 87, 0.12);
+}
+
+.agent-comparison-status.missing {
+  color: var(--status-exited, #ff5d5d);
+  border-color: rgba(255, 93, 93, 0.4);
+  background: rgba(255, 93, 93, 0.1);
+}
+
+.agent-picker-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.agent-picker-bar-spacer {
+  flex: 1;
+}
+
+.agent-scope-switch,
+.agent-scope-arm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+}
+
+.agent-picker-apply.danger {
+  border-color: var(--status-exited, #ff5d5d);
+  color: var(--status-exited, #ff5d5d);
+}
+
+@media (max-width: 900px) {
+  .agent-profile-assignment-body {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .agent-profile-provider-panel {
+    position: static;
+  }
+
+  .agent-profile-assignment-scroll {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .agent-picker-actions .modal-btn {
+    flex: 1 1 220px;
+  }
+}
+
+/* ── #2038: the two right-hand columns of the Coding Agent profile modal scroll
+   independently. Above the 900px stacking breakpoint the wrapper only lays the
+   columns out: its single row is the frame height (scroll range 0), each column
+   panel is its own scroll area, and the comparison-table row keeps the 220px floor
+   of the table's own clamp(220px, 42vh, 420px) so a short frame scrolls column 3
+   instead of squeezing the rows out of view. The @media (max-width: 900px)
+   single-column block above is deliberately untouched. */
+@media (min-width: 901px) {
+  .agent-profile-assignment-scroll {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .agent-profile-assignment-scroll > .agent-profile-panel {
+    overflow-y: auto;
+  }
+
+  .agent-projection-panel {
+    grid-template-rows: auto auto minmax(220px, 1fr) auto;
+  }
+}
+
+/* Footer hints */
+.agent-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-top: 1px solid var(--sidebar-border);
+  font-size: 9px;
+  color: var(--sidebar-fg-dim);
+  letter-spacing: 0.3px;
+}

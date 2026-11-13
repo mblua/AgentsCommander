@@ -92,7 +92,7 @@ import { wireAgentUpdateListeners } from "./agent-update";
 import { applySelectedRowRail } from "./selected-row-rail";
 import { requestTaskbarAttention } from "./attention";
 import AgentUpdateOverlay from "./components/AgentUpdateOverlay";
-import "./styles/sidebar.css"; import "./styles/onboarding-modal.css";
+import "./styles/sidebar-all.css";
 import "../shared/styles/toast.css";
 
 interface SidebarAppProps {

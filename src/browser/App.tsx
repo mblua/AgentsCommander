@@ -9,8 +9,7 @@ import {
   registerCompactHost,
   sidebarCompact,
 } from "../shared/sidebar-compact";
-import "../sidebar/styles/sidebar.css";
-import "../sidebar/styles/onboarding-modal.css";
+import "../sidebar/styles/sidebar-all.css";
 import "../terminal/styles/terminal.css";
 import "./styles/browser.css";
 

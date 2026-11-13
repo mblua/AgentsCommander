@@ -19,6 +19,9 @@ const mask = (css: string): string =>
 const SHEETS = Object.keys(import.meta.glob("../../**/*.css"))
   .map((p) => `src/${new URL(p, import.meta.url).href.slice(SRC.href.length)}`)
   .sort();
+// sidebar-all.css only lists @import lines (#4577); it has no rules to scan (see I1).
+const IMPORT_LIST = "src/sidebar/styles/sidebar-all.css";
+const RULE_SHEETS = SHEETS.filter((p) => p !== IMPORT_LIST);
 
 const rulesOf = (path: string): ScannedRule[] => scanRules(mask(read(path.slice(4))));
 const GLOBAL = rulesOf("src/shared/styles/scrollbars.css");
@@ -36,7 +39,7 @@ describe("#2579 global Noir scrollbars", () => {
     expect(declValue(thumb, "border-radius")).toBe("2px");
   });
 
-  it("G2 exclusivity: no standard scrollbar property in any of the 17 sheets", () => {
+  it("G2 exclusivity: no standard scrollbar property in any of the 19 sheets", () => {
     // The list is pinned so a new or renamed sheet cannot slip past G2/G3.
     expect(SHEETS).toEqual([
       "src/browser/styles/browser.css",
@@ -48,8 +51,10 @@ describe("#2579 global Noir scrollbars", () => {
       "src/shared/styles/scrollbars.css",
       "src/shared/styles/toast.css",
       "src/sidebar/components/settings/preflightTest.css",
+      "src/sidebar/styles/agent-picker-modal.css",
       "src/sidebar/styles/context-history.css",
       "src/sidebar/styles/onboarding-modal.css",
+      "src/sidebar/styles/sidebar-all.css",
       "src/sidebar/styles/sidebar.css",
       "src/sidebar/styles/variables.css",
       "src/spec-board/styles/spec-board.css",
@@ -57,7 +62,7 @@ describe("#2579 global Noir scrollbars", () => {
       "src/terminal/styles/variables.css",
       "src/watchers/styles/watchers.css",
     ]);
-    const hits = SHEETS.flatMap((p) =>
+    const hits = RULE_SHEETS.flatMap((p) =>
       rulesOf(p).flatMap((r) =>
         declProps(r.body)
           .filter((d) => d === "scrollbar-width" || d === "scrollbar-color")
@@ -68,7 +73,7 @@ describe("#2579 global Noir scrollbars", () => {
   });
 
   it("G3 single source: only the five bare pseudo-element rules exist", () => {
-    const hits = SHEETS.flatMap((p) =>
+    const hits = RULE_SHEETS.flatMap((p) =>
       rulesOf(p)
         .filter((r) => r.selectors.some((s) => s.includes("::-webkit-scrollbar")))
         .map((r) => `${p}: ${r.selectors.join(", ")}`),
@@ -80,6 +85,16 @@ describe("#2579 global Noir scrollbars", () => {
       "src/shared/styles/scrollbars.css: ::-webkit-scrollbar-corner",
       "src/shared/styles/scrollbars.css: ::-webkit-scrollbar-thumb",
     ]);
+  });
+
+  it("I1 the import list holds only @import lines, so no rule bypasses G2/G3", () => {
+    const lines = read(IMPORT_LIST.slice(4))
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l !== "");
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    for (const l of lines) expect(l).toMatch(/^@import "\.\/[a-z0-9-]+\.css";$/);
   });
 
   it("G4 reach: main.tsx imports the sheet before everything else", () => {
