@@ -165,32 +165,35 @@ export function parseMeta(tokens) {
     while (tokens[i]?.text === '::') { i++; if (tokens[i]?.kind !== 'ident') fail();
       name += '::' + tokens[i++].name; }
     const node = { name, args: null };
-    if (tokens[i]?.text === '=') {
-      i++; const begin = i;
-      while (i < tokens.length && ![',', ')'].includes(tokens[i].text)) {
-        if (opens[tokens[i].text]) {
-          const end = tokens.findIndex(t => t.index === tokens[i].mate);
-          if (end < i) fail();
-          i = end + 1;
-        } else i++;
-      }
-      if (begin === i) fail();
-      const value = tokens.slice(begin, i);
-      node.value = value.length === 1 ? value[0].value ??
-        value[0].text : value.map(t => t.text).join('');
-      node.valueTokens = value;
-    } else if (tokens[i]?.text === '(') {
-      i++; node.args = [];
-      while (tokens[i]?.text !== ')') {
-        if (!tokens[i]) fail();
-        // cfg_attr conditions may contain literal key/value leaves.
-        node.args.push(parse());
-        if (tokens[i]?.text === ')') break;
-        if (tokens[i++]?.text !== ',') fail();
-      }
-      i++;
-    }
+    if (tokens[i]?.text === '=') parseMetaValue(node);
+    else if (tokens[i]?.text === '(') parseMetaArgs(node);
     return node;
+  }
+  function parseMetaValue(node) {
+    i++; const begin = i;
+    while (i < tokens.length && ![',', ')'].includes(tokens[i].text)) {
+      if (opens[tokens[i].text]) {
+        const end = tokens.findIndex(t => t.index === tokens[i].mate);
+        if (end < i) fail();
+        i = end + 1;
+      } else i++;
+    }
+    if (begin === i) fail();
+    const value = tokens.slice(begin, i);
+    node.value = value.length === 1 ? value[0].value ??
+      value[0].text : value.map(t => t.text).join('');
+    node.valueTokens = value;
+  }
+  function parseMetaArgs(node) {
+    i++; node.args = [];
+    while (tokens[i]?.text !== ')') {
+      if (!tokens[i]) fail();
+      // cfg_attr conditions may contain literal key/value leaves.
+      node.args.push(parse());
+      if (tokens[i]?.text === ')') break;
+      if (tokens[i++]?.text !== ',') fail();
+    }
+    i++;
   }
   const meta = parse();
   if (i !== tokens.length) fail();

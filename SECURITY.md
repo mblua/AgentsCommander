@@ -20,7 +20,7 @@ Please include:
 
 | Version | Status |
 |---|---|
-| Latest minor release (currently `0.8.x`) | Supported — security fixes shipped on the next patch release |
+| Latest minor release | Supported — security fixes shipped on the next patch release |
 | Previous minor release | Best-effort — security fixes if backporting is straightforward |
 | Older | Unsupported — please upgrade |
 

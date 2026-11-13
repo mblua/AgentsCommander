@@ -389,24 +389,7 @@ pub(crate) fn require_source_original_units(
         return Err(SourcePreparationError::StaleRevision);
     }
     for unit in units {
-        if origin.require_disjoint([unit.clone()]).is_ok() {
-            continue;
-        }
-        let mut covered = false;
-        for proof in aggregate
-            .originals
-            .iter()
-            .filter(|proof| proof.units.contains(unit))
-        {
-            // This model records binding and unit membership only; the per-unit
-            // loop rechecks those facts. Same-Default relation coherence is
-            // enforced below; distinct default/profile groups remain separate.
-            origin.require_legacy_units([unit.clone()], Some(proof))?;
-            covered = true;
-        }
-        if !covered {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
+        require_unit_covered(origin, aggregate, unit)?;
     }
     let entry_or_profile = units.iter().any(|unit| {
         matches!(
@@ -422,60 +405,94 @@ pub(crate) fn require_source_original_units(
         .iter()
         .filter(|unit| matches!(unit, LegacyOriginUnit::Default(_)))
     {
-        if origin.require_disjoint([default.clone()]).is_ok() {
-            continue;
-        }
-        let mut groups = aggregate
-            .originals
-            .iter()
-            .filter(|proof| proof.units.contains(default));
-        let group = groups
-            .next()
-            .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
-        if groups.any(|other| other.units != group.units) {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        let keys: Vec<_> = group
-            .units
-            .iter()
-            .filter_map(|unit| match unit {
-                LegacyOriginUnit::Entry(key) => Some(key),
-                _ => None,
-            })
-            .collect();
-        if keys.len() != 1 {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        let key = keys[0];
-        let profiles: Vec<_> = group
-            .units
-            .iter()
-            .filter_map(|unit| match unit {
-                LegacyOriginUnit::Profile(profile_key, letter) if profile_key == key => {
-                    Some(letter)
-                }
-                _ => None,
-            })
-            .collect();
-        if profiles.len() > 1 {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        let changes_profile = units.iter().any(|unit| {
-            matches!(unit,
-            LegacyOriginUnit::Profile(profile_key, _) if profile_key == key)
-        });
-        // Missing original selected profile cannot prove disjunction for K/L.
-        if changes_profile && profiles.is_empty() {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        let linked_change = units.contains(&LegacyOriginUnit::Entry(key.clone()))
-            || profiles.iter().any(|letter| {
-                units.contains(&LegacyOriginUnit::Profile(key.clone(), (*letter).clone()))
-            })
-            || units.contains(default);
-        if linked_change {
-            origin.require_legacy_units([default.clone()], Some(group))?;
-        }
+        require_default_group_coherent(origin, units, aggregate, default)?;
+    }
+    Ok(())
+}
+
+fn require_unit_covered(
+    origin: &LegacyCompatibilityOrigin,
+    aggregate: &SourceOriginalProofAggregate,
+    unit: &LegacyOriginUnit,
+) -> Result<(), SourcePreparationError> {
+    if origin.require_disjoint([unit.clone()]).is_ok() {
+        return Ok(());
+    }
+    let mut covered = false;
+    for proof in aggregate
+        .originals
+        .iter()
+        .filter(|proof| proof.units.contains(unit))
+    {
+        // This model records binding and unit membership only; the per-unit
+        // loop rechecks those facts. Same-Default relation coherence is
+        // enforced below; distinct default/profile groups remain separate.
+        origin.require_legacy_units([unit.clone()], Some(proof))?;
+        covered = true;
+    }
+    if !covered {
+        return Err(SourcePreparationError::LegacyOriginUnresolved);
+    }
+    Ok(())
+}
+
+fn require_default_group_coherent(
+    origin: &LegacyCompatibilityOrigin,
+    units: &std::collections::BTreeSet<LegacyOriginUnit>,
+    aggregate: &SourceOriginalProofAggregate,
+    default: &LegacyOriginUnit,
+) -> Result<(), SourcePreparationError> {
+    if origin.require_disjoint([default.clone()]).is_ok() {
+        return Ok(());
+    }
+    let mut groups = aggregate
+        .originals
+        .iter()
+        .filter(|proof| proof.units.contains(default));
+    let group = groups
+        .next()
+        .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
+    if groups.any(|other| other.units != group.units) {
+        return Err(SourcePreparationError::LegacyOriginUnresolved);
+    }
+    let keys: Vec<_> = group
+        .units
+        .iter()
+        .filter_map(|unit| match unit {
+            LegacyOriginUnit::Entry(key) => Some(key),
+            _ => None,
+        })
+        .collect();
+    if keys.len() != 1 {
+        return Err(SourcePreparationError::LegacyOriginUnresolved);
+    }
+    let key = keys[0];
+    let profiles: Vec<_> = group
+        .units
+        .iter()
+        .filter_map(|unit| match unit {
+            LegacyOriginUnit::Profile(profile_key, letter) if profile_key == key => Some(letter),
+            _ => None,
+        })
+        .collect();
+    if profiles.len() > 1 {
+        return Err(SourcePreparationError::LegacyOriginUnresolved);
+    }
+    let changes_profile = units.iter().any(|unit| {
+        matches!(unit,
+        LegacyOriginUnit::Profile(profile_key, _) if profile_key == key)
+    });
+    // Missing original selected profile cannot prove disjunction for K/L.
+    if changes_profile && profiles.is_empty() {
+        return Err(SourcePreparationError::LegacyOriginUnresolved);
+    }
+    let linked_change = units.contains(&LegacyOriginUnit::Entry(key.clone()))
+        || profiles.iter().any(|letter| {
+            units.contains(&LegacyOriginUnit::Profile(key.clone(), (*letter).clone()))
+        })
+        || units.contains(default);
+    if linked_change {
+        origin.require_legacy_units([default.clone()], Some(group))?;
     }
     Ok(())
 }

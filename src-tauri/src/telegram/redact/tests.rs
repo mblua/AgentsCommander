@@ -263,3 +263,61 @@ fn telegram_bot_config_debug_redacts_token() {
         "serialization changed: {json}"
     );
 }
+
+/// #4475 — secret contexts match in any ASCII case; the context text is
+/// kept as written and only the UUID is masked.
+#[test]
+fn redacts_uuid_after_secret_contexts_in_any_case() {
+    for (raw, want) in [
+        (
+            format!("header authorization: bearer {FAKE_UUID}"),
+            "header authorization: bearer ***",
+        ),
+        (format!("header BEARER {FAKE_UUID}"), "header BEARER ***"),
+        (
+            format!("env agentscommander_token={FAKE_UUID}"),
+            "env agentscommander_token=***",
+        ),
+        (
+            format!("env AgentsCommander_Api_Token='{FAKE_UUID}'"),
+            "env AgentsCommander_Api_Token='***'",
+        ),
+        (
+            format!("ran send --TOKEN {FAKE_UUID}"),
+            "ran send --TOKEN ***",
+        ),
+    ] {
+        let msg = redact(&raw);
+        assert_eq!(msg, want, "input: {raw}");
+        assert!(!msg.contains(FAKE_UUID), "leaked: {msg}");
+    }
+}
+
+/// #4475 — both watcher `BotTarget`s and the bridge's `ReaderDestSender`
+/// (which holds them) must not print the bot token through `Debug`.
+#[test]
+fn watcher_bot_targets_debug_redacts_token() {
+    const TOKEN: &str = "987654321:FAKE_TOKEN_FOR_TESTING_xxxxxxxxxxxxxxx";
+    let claude = crate::telegram::claude_watcher::BotTarget {
+        token: TOKEN.to_string(),
+        chat_id: 42,
+    };
+    let codex = crate::telegram::codex_watcher::BotTarget {
+        token: TOKEN.to_string(),
+        chat_id: 42,
+    };
+    let (claude_tx, _claude_rx) = tokio::sync::watch::channel(Some(claude.clone()));
+    let (codex_tx, _codex_rx) = tokio::sync::watch::channel(Some(codex.clone()));
+    let senders = [
+        crate::telegram::bridge::ReaderDestSender::Claude(claude_tx),
+        crate::telegram::bridge::ReaderDestSender::Codex(codex_tx),
+    ];
+    for debug in [format!("{claude:?}"), format!("{codex:?}")] {
+        assert_eq!(debug, "BotTarget { token: \"[REDACTED]\", chat_id: 42 }");
+    }
+    for sender in &senders {
+        let debug = format!("{sender:?}");
+        assert!(!debug.contains("FAKE_TOKEN_FOR_TESTING"), "leaked: {debug}");
+    }
+    assert_eq!(claude.token, TOKEN, "the token value itself is unchanged");
+}

@@ -18,7 +18,7 @@ import {
   type GithubRepoRef,
 } from "../../shared/github-url";
 import { stripFrontmatter } from "../../shared/markdown";
-import { trimTrailingSeparators } from "../../shared/path-extractors";
+import { matchPathRoot, trimTrailingSeparators } from "../../shared/path-extractors";
 import { quotaChipAttrs } from "./agent-quota";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
@@ -316,17 +316,16 @@ function pushPathSegment(segments: string[], segment: string, hasRoot: boolean):
 
 function normalizePath(path: string, separator: "\\" | "/"): string {
   const trimmed = path.trim();
-  const driveMatch = trimmed.match(/^([A-Za-z]:)[\\/]+(.*)$/);
-  const uncMatch = driveMatch ? null : trimmed.match(/^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/);
+  const parsed = matchPathRoot(trimmed);
   let root = "";
   let rest = trimmed;
 
-  if (driveMatch) {
-    root = `${driveMatch[1]}${separator}`;
-    rest = driveMatch[2];
-  } else if (uncMatch) {
-    root = `${separator}${separator}${uncMatch[1]}${separator}${uncMatch[2]}${separator}`;
-    rest = uncMatch[3];
+  if (parsed && "drive" in parsed) {
+    root = `${parsed.drive}${separator}`;
+    rest = parsed.rest;
+  } else if (parsed) {
+    root = `${separator}${separator}${parsed.server}${separator}${parsed.share}${separator}`;
+    rest = parsed.rest;
   } else if (/^[\\/]/.test(trimmed)) {
     root = separator;
     rest = trimmed.replace(/^[\\/]+/, "");

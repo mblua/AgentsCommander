@@ -32,8 +32,9 @@
 //!     (`pty/container_tokens.rs` mints them with that prefix);
 //!   - a bare UUID is masked only right after a secret context:
 //!     `AGENTSCOMMANDER_TOKEN=`, `AGENTSCOMMANDER_API_TOKEN=`,
-//!     `--token <x>`, `--token=<x>` or `Bearer <x>`. Session, message,
-//!     client and op ids are UUIDs too and stay visible elsewhere.
+//!     `--token <x>`, `--token=<x>` or `Bearer <x>`, in any ASCII case.
+//!     Session, message, client and op ids are UUIDs too and stay visible
+//!     elsewhere.
 //!   - Known gap: a secret UUID logged with no context is not masked.
 //!
 //! Implementation notes:
@@ -128,9 +129,9 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
     let has_bot = input.contains("/bot");
     let has_key = input.contains("key=");
     let has_ac = input.contains(CONTAINER_PREFIX)
-        || input.contains("TOKEN=")
-        || input.contains("--token")
-        || input.contains("Bearer ");
+        || contains_ignore_case(input, "TOKEN=")
+        || contains_ignore_case(input, "--token")
+        || contains_ignore_case(input, "Bearer ");
     if !has_bot && !has_key && !has_ac {
         return spans;
     }
@@ -208,7 +209,8 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
 const CONTAINER_PREFIX: &str = "ac-container-";
 
 /// Contexts after which a UUID is a secret. The bool says whether one or
-/// more spaces must separate the context from the value.
+/// more spaces must separate the context from the value. Matched ignoring
+/// ASCII case, so `bearer <x>` and `agentscommander_token=<x>` count too.
 const SECRET_CONTEXTS: [(&str, bool); 5] = [
     ("AGENTSCOMMANDER_TOKEN=", false),
     ("AGENTSCOMMANDER_API_TOKEN=", false),
@@ -233,7 +235,7 @@ fn match_ac_credential(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
         }
     }
     for (ctx, spaced) in SECRET_CONTEXTS {
-        if !bytes[i..].starts_with(ctx.as_bytes()) {
+        if !starts_with_ignore_case(&bytes[i..], ctx.as_bytes()) {
             continue;
         }
         let mut start = i + ctx.len();
@@ -277,6 +279,19 @@ fn uuid_end(bytes: &[u8], start: usize) -> Option<usize> {
         return None;
     }
     Some(i)
+}
+
+/// `haystack` starts with `needle`, ignoring ASCII case.
+fn starts_with_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
+}
+
+/// `haystack` holds `needle` somewhere, ignoring ASCII case.
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 #[inline]

@@ -664,6 +664,33 @@ pub(crate) fn recover_interrupted_migration(
     }
     let (managed_definitions, managed_bytes) = journal_managed_base(&journal)?;
 
+    if existing_base_completed(paths, &journal, &backup)? {
+        return Ok(None);
+    }
+
+    let published_at = match read_optional_regular_file(&paths.local, "local coding-agent catalog")?
+    {
+        Some(local_bytes) => {
+            finish_with_published_local(paths, &journal, &local_bytes, &managed_bytes)?
+        }
+        None => finish_with_extracted_local(
+            paths,
+            &journal,
+            &backup,
+            &managed_definitions,
+            &managed_bytes,
+        )?,
+    };
+    inject_catalog_failure("after_base")?;
+    log::info!("[coding-agents] resumed and completed an interrupted managed-catalog migration");
+    Ok(Some(published_at))
+}
+
+fn existing_base_completed(
+    paths: &CatalogPaths,
+    journal: &MigrationJournalWire,
+    backup: &[u8],
+) -> Result<bool, String> {
     if let Some(base_bytes) = read_optional_regular_file(&paths.base, "persisted catalog")? {
         if let Ok(analysis) = analyze_base_bytes(&paths.base, &base_bytes) {
             if let Some(marker) = analysis.marker.as_ref() {
@@ -671,7 +698,7 @@ pub(crate) fn recover_interrupted_migration(
                     && marker.content_sha256 == journal.managed_content_sha256
                 {
                     // Completed: never re-extract or overwrite the local layer.
-                    return Ok(None);
+                    return Ok(true);
                 }
             }
         }
@@ -686,60 +713,68 @@ pub(crate) fn recover_interrupted_migration(
         // the base was never replaced; continue below and finish the sequence.
     }
 
-    let published_at = match read_optional_regular_file(&paths.local, "local coding-agent catalog")?
+    Ok(false)
+}
+
+fn finish_with_published_local(
+    paths: &CatalogPaths,
+    journal: &MigrationJournalWire,
+    local_bytes: &[u8],
+    managed_bytes: &[u8],
+) -> Result<DateTime<Utc>, String> {
+    if sha256_hex(local_bytes) != journal.local_sha256
+        || local_bytes.len() as u64 != journal.local_byte_length
     {
-        Some(local_bytes) => {
-            if sha256_hex(&local_bytes) != journal.local_sha256
-                || local_bytes.len() as u64 != journal.local_byte_length
-            {
+        return Err(
+            "the local overrides file does not match the interrupted migration; \
+                    recovery is blocked and every byte is preserved"
+                .to_string(),
+        );
+    }
+    if journal.source_kind == MIGRATION_SOURCE_INSTANCE {
+        let source_path = PathBuf::from(&journal.source_path);
+        if let Some(source_bytes) =
+            read_optional_regular_file(&source_path, "recorded migration source")?
+        {
+            if sha256_hex(&source_bytes) != journal.source_sha256 {
                 return Err(
-                    "the local overrides file does not match the interrupted migration; \
-                            recovery is blocked and every byte is preserved"
+                    "the instance source changed during the interrupted migration; \
+                            recovery is blocked"
                         .to_string(),
                 );
             }
-            if journal.source_kind == MIGRATION_SOURCE_INSTANCE {
-                let source_path = PathBuf::from(&journal.source_path);
-                if let Some(source_bytes) =
-                    read_optional_regular_file(&source_path, "recorded migration source")?
-                {
-                    if sha256_hex(&source_bytes) != journal.source_sha256 {
-                        return Err(
-                            "the instance source changed during the interrupted migration; \
-                                    recovery is blocked"
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-            publish_base(&paths.base, &managed_bytes, journal.source_kind.as_str())?;
-            Utc::now()
         }
-        None => {
-            let mut recomputed = extract_legacy_local(&backup, &managed_definitions)?;
-            if sha256_hex(&recomputed) != journal.local_sha256
-                || recomputed.len() as u64 != journal.local_byte_length
-            {
-                recomputed = extract_legacy_local_mode(&backup, &managed_definitions, true)?;
-            }
-            if sha256_hex(&recomputed) != journal.local_sha256
-                || recomputed.len() as u64 != journal.local_byte_length
-            {
-                return Err(
-                    "the recomputed extraction does not match the journal local hash; recovery \
-                            is blocked and every byte is preserved"
-                        .to_string(),
-                );
-            }
-            publish_exclusive(&paths.local, &recomputed)?;
-            inject_catalog_failure("after_local")?;
-            publish_base(&paths.base, &managed_bytes, journal.source_kind.as_str())?;
-            Utc::now()
-        }
-    };
-    inject_catalog_failure("after_base")?;
-    log::info!("[coding-agents] resumed and completed an interrupted managed-catalog migration");
-    Ok(Some(published_at))
+    }
+    publish_base(&paths.base, managed_bytes, journal.source_kind.as_str())?;
+    Ok(Utc::now())
+}
+
+fn finish_with_extracted_local(
+    paths: &CatalogPaths,
+    journal: &MigrationJournalWire,
+    backup: &[u8],
+    managed_definitions: &[CodingAgentDefinition],
+    managed_bytes: &[u8],
+) -> Result<DateTime<Utc>, String> {
+    let mut recomputed = extract_legacy_local(backup, managed_definitions)?;
+    if sha256_hex(&recomputed) != journal.local_sha256
+        || recomputed.len() as u64 != journal.local_byte_length
+    {
+        recomputed = extract_legacy_local_mode(backup, managed_definitions, true)?;
+    }
+    if sha256_hex(&recomputed) != journal.local_sha256
+        || recomputed.len() as u64 != journal.local_byte_length
+    {
+        return Err(
+            "the recomputed extraction does not match the journal local hash; recovery \
+                    is blocked and every byte is preserved"
+                .to_string(),
+        );
+    }
+    publish_exclusive(&paths.local, &recomputed)?;
+    inject_catalog_failure("after_local")?;
+    publish_base(&paths.base, managed_bytes, journal.source_kind.as_str())?;
+    Ok(Utc::now())
 }
 
 fn journal_managed_base(

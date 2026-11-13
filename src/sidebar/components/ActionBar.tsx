@@ -207,11 +207,7 @@ const ActionBar: Component = () => {
   };
 
   const applyThemeClass = (light: boolean) => {
-    if (light) {
-      document.documentElement.classList.add("light-theme");
-    } else {
-      document.documentElement.classList.remove("light-theme");
-    }
+    document.documentElement.classList.toggle("light-theme", light);
   };
   const handleToggleTheme = async () => {
     const previousValue = isLight();
