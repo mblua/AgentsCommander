@@ -18,6 +18,24 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+fn request_file_path(automation_dir: &Path, request_id: &str) -> PathBuf {
+    automation_dir
+        .join(REQUESTS_DIR)
+        .join(format!("{request_id}.json"))
+}
+
+pub(super) fn inflight_file_path(automation_dir: &Path, request_id: &str) -> PathBuf {
+    automation_dir
+        .join(REQUESTS_DIR)
+        .join(format!("{request_id}.inflight.json"))
+}
+
+pub(super) fn response_file_path(automation_dir: &Path, request_id: &str) -> PathBuf {
+    automation_dir
+        .join(RESPONSES_DIR)
+        .join(format!("{request_id}.json"))
+}
+
 pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse, Value> {
     ensure_current_exe_is_testable()?;
 
@@ -39,15 +57,9 @@ pub(super) fn run_cli_request(input: &CliRequest) -> Result<UiAutomationResponse
         expires_at_unix_ms: Some(request_expires_at_unix_ms(input.timeout_ms)),
     };
 
-    let request_path = automation_dir
-        .join(REQUESTS_DIR)
-        .join(format!("{request_id}.json"));
-    let inflight_path = automation_dir
-        .join(REQUESTS_DIR)
-        .join(format!("{request_id}.inflight.json"));
-    let response_path = automation_dir
-        .join(RESPONSES_DIR)
-        .join(format!("{request_id}.json"));
+    let request_path = request_file_path(&automation_dir, &request_id);
+    let inflight_path = inflight_file_path(&automation_dir, &request_id);
+    let response_path = response_file_path(&automation_dir, &request_id);
 
     write_json_atomic_new(&request_path, &request).map_err(|e| {
         response_error_value(
