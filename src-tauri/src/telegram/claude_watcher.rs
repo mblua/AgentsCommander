@@ -145,10 +145,19 @@ fn runs_first_attach_decision(first_attach_done: bool, has_current_file: bool) -
 /// already have, and `claude_watcher_layering` equality-pins this module's
 /// dependency set. Two three-line structs are cheaper than an arc between the
 /// watchers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BotTarget {
     pub token: String,
     pub chat_id: i64,
+}
+
+impl std::fmt::Debug for BotTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BotTarget")
+            .field("token", &"[REDACTED]")
+            .field("chat_id", &self.chat_id)
+            .finish()
+    }
 }
 
 /// The §6 live-attach preamble window of `path`, as `(start, body)` pairs.
