@@ -95,9 +95,21 @@ export function licenseFiles(dirEntries) {
 }
 
 export function normalize(text) {
-  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
-    .split('\n').map(line => line.replace(/[ \t]+$/g, '')).join('\n')
-    .replace(/\n*$/, '\n');
+  const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+  const body = lines.map(trimSpaceTab).join('\n');
+  return `${trimNewlines(body)}\n`;
+}
+
+function trimSpaceTab(line) {
+  let end = line.length;
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end--;
+  return line.slice(0, end);
+}
+
+function trimNewlines(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '\n') end--;
+  return text.slice(0, end);
 }
 
 function packageTexts(pkg, texts) {
