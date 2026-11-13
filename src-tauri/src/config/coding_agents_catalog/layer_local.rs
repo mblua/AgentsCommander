@@ -742,23 +742,15 @@ pub(crate) fn compose_local_layer(
 
     for row in &local.rows {
         match index.get(&row.key).copied() {
-            Some(position) => {
-                if row.remove {
-                    if !working[position].removable {
-                        return Err(format!(
-                            "{layer} remove row targets nonremovable coding agent '{}'",
-                            row.key
-                        ));
-                    }
-                    removed[position] = true;
-                } else {
-                    working[position] = if local.complete_definitions {
-                        build_new_definition(&row.key, &row.fields, description)?
-                    } else {
-                        apply_local_fields(working[position].clone(), &row.fields)
-                    };
-                }
-            }
+            Some(position) => apply_known_local_row(
+                row,
+                position,
+                local.complete_definitions,
+                description,
+                layer,
+                &mut working,
+                &mut removed,
+            )?,
             None => {
                 // An unknown tombstone is valid and retained for a future
                 // shipped key; only a new ordinary row needs a complete def.
@@ -780,56 +772,98 @@ pub(crate) fn compose_local_layer(
     effective.extend(local_added);
 
     for definition in &effective {
-        if validate_definition(definition).is_err() {
-            return Err(format!(
-                "coding agent '{}' failed validation after composition: {}",
-                definition.key,
-                definition_problem_reason(definition)
-            ));
-        }
-        for (index, command) in definition.update_commands.iter().enumerate() {
-            validate_update_command_string(command, &composition, index).map_err(|reason| {
-                format!(
-                    "coding agent '{}' failed validation after composition: {reason}",
-                    definition.key
-                )
-            })?;
-        }
-        if let Some(install) = definition.install_commands.as_ref() {
-            validate_install_commands(install, &composition).map_err(|reason| {
-                format!(
-                    "coding agent '{}' failed validation after composition: {reason}",
-                    definition.key
-                )
-            })?;
-        }
+        validate_composed_definition(definition, &composition)?;
     }
 
     if let Some(order) = &local.order {
-        let position: HashMap<&str, usize> = effective
-            .iter()
-            .enumerate()
-            .map(|(index, definition)| (definition.key.as_str(), index))
-            .collect();
-        let mut taken = vec![false; effective.len()];
-        let mut ordered = Vec::with_capacity(effective.len());
-        for key in order {
-            if let Some(&position) = position.get(key.as_str()) {
-                if !taken[position] {
-                    taken[position] = true;
-                    ordered.push(effective[position].clone());
-                }
-            }
-        }
-        for (index, definition) in effective.into_iter().enumerate() {
-            if !taken[index] {
-                ordered.push(definition);
-            }
-        }
-        effective = ordered;
+        effective = apply_local_order(effective, order);
     }
 
     Ok(effective)
+}
+
+fn apply_known_local_row(
+    row: &LocalRow,
+    position: usize,
+    complete_definitions: bool,
+    description: LayerDescription,
+    layer: &str,
+    working: &mut [CodingAgentDefinition],
+    removed: &mut [bool],
+) -> Result<(), String> {
+    if row.remove {
+        if !working[position].removable {
+            return Err(format!(
+                "{layer} remove row targets nonremovable coding agent '{}'",
+                row.key
+            ));
+        }
+        removed[position] = true;
+    } else {
+        working[position] = if complete_definitions {
+            build_new_definition(&row.key, &row.fields, description)?
+        } else {
+            apply_local_fields(working[position].clone(), &row.fields)
+        };
+    }
+    Ok(())
+}
+
+fn validate_composed_definition(
+    definition: &CodingAgentDefinition,
+    composition: &str,
+) -> Result<(), String> {
+    if validate_definition(definition).is_err() {
+        return Err(format!(
+            "coding agent '{}' failed validation after composition: {}",
+            definition.key,
+            definition_problem_reason(definition)
+        ));
+    }
+    for (index, command) in definition.update_commands.iter().enumerate() {
+        validate_update_command_string(command, composition, index).map_err(|reason| {
+            format!(
+                "coding agent '{}' failed validation after composition: {reason}",
+                definition.key
+            )
+        })?;
+    }
+    if let Some(install) = definition.install_commands.as_ref() {
+        validate_install_commands(install, composition).map_err(|reason| {
+            format!(
+                "coding agent '{}' failed validation after composition: {reason}",
+                definition.key
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn apply_local_order(
+    effective: Vec<CodingAgentDefinition>,
+    order: &[String],
+) -> Vec<CodingAgentDefinition> {
+    let position: HashMap<&str, usize> = effective
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| (definition.key.as_str(), index))
+        .collect();
+    let mut taken = vec![false; effective.len()];
+    let mut ordered = Vec::with_capacity(effective.len());
+    for key in order {
+        if let Some(&position) = position.get(key.as_str()) {
+            if !taken[position] {
+                taken[position] = true;
+                ordered.push(effective[position].clone());
+            }
+        }
+    }
+    for (index, definition) in effective.into_iter().enumerate() {
+        if !taken[index] {
+            ordered.push(definition);
+        }
+    }
+    ordered
 }
 
 /// Apply the shipped support gate to a resolved catalog, warning once per
