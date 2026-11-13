@@ -402,7 +402,7 @@ async fn new_project_replacement_after_save_rolls_back_registration_and_is_retry
     .unwrap();
     assert!(disk
         .get("projectPaths")
-        .map_or(true, |v| v.as_array().is_some_and(|a| a.is_empty())));
+        .is_none_or(|v| v.as_array().is_some_and(|a| a.is_empty())));
     assert_eq!(
         std::fs::read(project.join(".ac").join("foreign.txt")).unwrap(),
         b"FOREIGN"
