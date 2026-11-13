@@ -1889,10 +1889,9 @@ const ProjectPanel: Component = () => {
             closeReplicaCtxMenu();
             return;
           }
-          const onlyBot = bots.length === 1 ? bots[0] : undefined;
-          if (onlyBot !== undefined) {
+          if (bots.length === 1 && bots[0] !== undefined) {
             closeReplicaCtxMenu();
-            await TelegramAPI.attach(sessionId, onlyBot.id);
+            await TelegramAPI.attach(sessionId, bots[0].id);
             return;
           }
 
