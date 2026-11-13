@@ -180,7 +180,7 @@ Then present the candidate template(s) and create with `create-agent-matrix --ro
 
 /// #909: the `agency-agents-roles/SKILL.md` we shipped from `00eca16` (PR #682) through
 /// `646aeac`. Its `description` is an unquoted YAML plain scalar containing an inner
-/// `": "`, so `serde_yaml` rejects it at line 2 column 105 and `discover_skill_index`
+/// `": "`, so the YAML parser rejects it at line 2 column 105 and `discover_skill_index`
 /// drops the skill entirely. Frozen here so a pristine copy can be recognized and
 /// repaired without ever touching a user-edited file.
 ///
