@@ -168,6 +168,34 @@ export function startTeamIdleWatcher(): () => void {
       unlistenOsFocus = unlisten;
     });
 
+    const settleRoomLatch = (
+      key: string,
+      sample: RoomSample,
+      enabled: boolean,
+      focusedRoomKey: string | null,
+      now: number,
+    ) => {
+      let latch = latches.get(key);
+      const invalid = latch !== undefined && latchInvalid(latch, sample);
+      if (invalid) {
+        latches.delete(key);
+        latch = undefined;
+      }
+      // Capture before history replacement; an invalidated contributing ID
+      // discards the entire episode, even if a surviving ID just went idle.
+      if (enabled && !invalid && !latch) {
+        latch = captureCompletion(previousByRoom.get(key), sample, ++generation);
+        if (latch) latches.set(key, latch);
+      }
+      if (!latch) return;
+      if (!sample.ci) latch.ciAlreadyRunning = false;
+      // This same effect runs on latch creation AND confirmation publication.
+      // Sampling rebuilt exact live identities; no remembered second edge.
+      if (sample.confirmed || roomIsRawActive(sample.room)) return;
+      latches.delete(key);
+      if (!shouldSuppressBeep(key, focusedRoomKey, graceUntil, now)) void playTeamIdleBeep();
+    };
+
     createEffect(() => {
       const enabled = settingsStore.current?.teamIdleBeepEnabled ?? true;
       const currentByRoom = registerRoomSessions(projectStore.projects, sessionToRoom);
@@ -183,25 +211,7 @@ export function startTeamIdleWatcher(): () => void {
         if (!currentByRoom.has(key) || !enabled) latches.delete(key);
       }
       for (const [key, sample] of currentByRoom) {
-        let latch = latches.get(key);
-        const invalid = latch !== undefined && latchInvalid(latch, sample);
-        if (invalid) {
-          latches.delete(key);
-          latch = undefined;
-        }
-        // Capture before history replacement; an invalidated contributing ID
-        // discards the entire episode, even if a surviving ID just went idle.
-        if (enabled && !invalid && !latch) {
-          latch = captureCompletion(previousByRoom.get(key), sample, ++generation);
-          if (latch) latches.set(key, latch);
-        }
-        if (!latch) continue;
-        if (!sample.ci) latch.ciAlreadyRunning = false;
-        // This same effect runs on latch creation AND confirmation publication.
-        // Sampling rebuilt exact live identities; no remembered second edge.
-        if (sample.confirmed || roomIsRawActive(sample.room)) continue;
-        latches.delete(key);
-        if (!shouldSuppressBeep(key, focusedRoomKey, graceUntil, now)) void playTeamIdleBeep();
+        settleRoomLatch(key, sample, enabled, focusedRoomKey, now);
       }
       previousByRoom.clear();
       for (const [key, sample] of currentByRoom) previousByRoom.set(key, sample.busy);
