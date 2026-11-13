@@ -679,8 +679,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       if (current !== "") setApiClientMintRoot("");
       return;
     }
-    const firstOption = options[0];
-    if (firstOption && !options.some((option) => option.path === current)) {
+    const firstOption = options[0]; if (firstOption && !options.some((o) => o.path === current)) {
       setApiClientMintRoot(firstOption.path);
     }
   });

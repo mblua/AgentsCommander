@@ -411,8 +411,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
       // Build the text from the memo's value objects ONLY. Reaching back into
       // `sessionsStore` here would move the subscription out of the memo.
-      const newest = blocked[0];
-      if (newest === undefined) return; // unreachable: length > 0 above
+      const newest = blocked[0]; if (newest === undefined) return; // length > 0 above
       const suffix =
         blocked.length > 1 ? ` (and ${blocked.length - 1} more waiting)` : "";
       toastStore.push({
