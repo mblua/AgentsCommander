@@ -53,6 +53,8 @@ fn raw_hwnd(hwnd: isize) -> HWND {
 /// High word of `GetQueueStatus`: a sent message is in the queue right
 /// now. The low word only reports arrivals since the previous call.
 fn sent_message_pending() -> bool {
+    // SAFETY: GetQueueStatus accepts the documented QS_SENDMESSAGE flag and queries only the
+    // calling thread queue; no window handle or caller buffer is passed.
     let status = unsafe { GetQueueStatus(QS_SENDMESSAGE) };
     (status >> 16) & QS_SENDMESSAGE != 0
 }
@@ -98,6 +100,9 @@ fn spawn_killfocus_sender(hwnd: isize, kf_returned: Arc<AtomicBool>) -> JoinHand
     thread::spawn(move || {
         // Blocks until the window thread processes it, so the message
         // stays pending-sent against that thread.
+        // SAFETY: body passes its owned Window HWND, retained through teardown drain and sender
+        // settlement. WM_KILLFOCUS with zero wParam/lParam carries no borrowed pointers;
+        // SendMessageW uses only that handle and scalar values synchronously.
         unsafe { SendMessageW(raw_hwnd(hwnd), WM_KILLFOCUS, 0, 0) };
         kf_returned.store(true, Ordering::SeqCst);
     })
@@ -130,6 +135,8 @@ fn body(owned: &mut Owned, stage: &AtomicUsize, kf_returned: &Arc<AtomicBool>) {
     stage.store(STAGE_OUTER_SEND_ISSUED, Ordering::SeqCst);
     // A same-thread send calls the window procedure directly, without
     // pumping the queue.
+    // SAFETY: hwnd belongs to the Window retained in owned on this thread. WM_KEYUP uses scalar
+    // VK_SHIFT and INCIDENT_KEYUP_LPARAM, with no borrowed message data.
     unsafe { SendMessageW(raw_hwnd(hwnd), WM_KEYUP, VK_SHIFT, INCIDENT_KEYUP_LPARAM) };
     stage.store(STAGE_OUTER_SEND_RETURNED, Ordering::SeqCst);
     assert!(
@@ -143,7 +150,12 @@ fn body(owned: &mut Owned, stage: &AtomicUsize, kf_returned: &Arc<AtomicBool>) {
 /// this is the only thing in teardown that releases the sender.
 fn drain_sent_messages(hwnd: isize) -> bool {
     wait_until(STEP_BOUND, || {
+        // SAFETY: MSG is a Windows C record of integers/pointers admitting all zeros. PeekMessageW
+        // receives its live writable storage immediately below.
         let mut msg: MSG = unsafe { std::mem::zeroed() };
+        // SAFETY: msg is live writable MSG storage; hwnd is the retained Window handle from
+        // teardown, or zero if setup failed (all thread windows). PM_NOREMOVE and zero message
+        // range are documented PeekMessageW inputs; no message pointer escapes.
         unsafe { PeekMessageW(&mut msg, raw_hwnd(hwnd), 0, 0, PM_NOREMOVE) };
         !sent_message_pending()
     })
