@@ -531,8 +531,8 @@ fn move_no_replace(
     // A directory cannot be hard-linked, so it is renamed instead. The caller
     // holds the migration lock and the absence check keeps the move
     // create-only, matching the Windows move of a legacy directory.
-    if std::fs::symlink_metadata(from)?.is_dir() {
-        match std::fs::symlink_metadata(to) {
+    if naming_journal::migration_metadata(from)?.is_dir() {
+        match naming_journal::migration_metadata(to) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
             Ok(_) => {
@@ -542,7 +542,7 @@ fn move_no_replace(
                 ));
             }
         }
-        return std::fs::rename(from, to);
+        return naming_journal::replace_journal_file(from, to);
     }
     naming_journal::link_migration_file(from, to)?;
     #[cfg(test)]
