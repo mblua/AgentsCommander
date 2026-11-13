@@ -408,7 +408,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
       setSnapshots(fetched);
       setLoadError("");
       const incoming = fetched.flatMap((snapshot, index) =>
-        snapshot.matches.map((match) => freezeRow(match, sessionById(ids[index])))
+        snapshot.matches.map((match) => freezeRow(match, sessionById(ids[index]!))) // ids.map
       );
       setRows((prev) => capPerSession(mergeRows(keepSessions(prev, ids), incoming), limit));
     } catch (err) {
