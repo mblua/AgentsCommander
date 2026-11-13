@@ -20,7 +20,7 @@
     "reclaim:artifacts:apply": "node scripts/reclaim-build-artifacts.mjs --apply",
     "prepare": "husky",
     "tauri": "tauri",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.app.json",
     "lint": "eslint --max-warnings 0 src",
     "check:frontend-dependencies": "node scripts/check-frontend-dependencies.mjs",
     "test": "vitest run",
