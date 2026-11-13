@@ -7,7 +7,7 @@ pub(crate) fn fake_shell(dir: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
     std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     // A parallel test's forked child can hold this file's write fd until its exec
     // (ETXTBSY); wait until it is executable.
     for attempt in 1..=50 {
