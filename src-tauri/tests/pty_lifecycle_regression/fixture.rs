@@ -91,7 +91,10 @@ struct TestConfigEnvGuard {
 impl TestConfigEnvGuard {
     fn set(path: &Path) -> Self {
         let previous = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").ok();
-        std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
+        // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
+        unsafe {
+            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
+        }
         Self { previous }
     }
 }
@@ -99,9 +102,15 @@ impl TestConfigEnvGuard {
 impl Drop for TestConfigEnvGuard {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.as_ref() {
-            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
+            // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
+            unsafe {
+                std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
+            }
         } else {
-            std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
+            // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
+            unsafe {
+                std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
+            }
         }
     }
 }
