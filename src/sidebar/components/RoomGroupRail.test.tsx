@@ -1,22 +1,16 @@
 // @vitest-environment jsdom
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, CiState, Session, WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
-import { __disposeSettingsSubscriptionsForTests, settingsStore } from "../../shared/stores/settings";
 import {
-  click,
-  contextMenu,
-  input,
-  renderWithFakeTransport,
-  resetUiStoresForTests,
-  session,
-  waitFor,
+  __disposeSettingsSubscriptionsForTests, settingsStore,
+} from "../../shared/stores/settings";
+import {
+  click, contextMenu, input, renderWithFakeTransport, resetUiStoresForTests, session, waitFor,
 } from "../../shared/testing/ui-harness";
-import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { remoteActivityStore } from "../stores/remote-activity";
-import type { CiState } from "../../shared/types";
 import {
   defaultGroupsConfig,
   defaultNonStop,
@@ -27,7 +21,7 @@ import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
 import RoomGroupRail from "./RoomGroupRail";
 import { setLogLevel } from "../../shared/console-capture";
 import { __setTransportForTests, type RailDiagnosticRecord } from "../../shared/ipc";
-import { projectStore } from "../stores/project";
+import { projectStore, type ProjectState } from "../stores/project";
 import { railEntity } from "../rail-diagnostics";
 
 const projectPath = "C:\\Project";
