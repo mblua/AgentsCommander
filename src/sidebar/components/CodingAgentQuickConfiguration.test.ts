@@ -904,9 +904,9 @@ describe("CodingAgentQuickConfiguration", () => {
 
     // #2784 - rules selected by their EXACT selector prelude, comments blanked.
     const sheetRules = () => {
-      // The variable base keeps the real file: URL (see sidebar-compact.test.ts).
-      const moduleUrl = import.meta.url;
-      const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+      // Real file: URL base (see sidebar-compact.test.ts); sheets in load order (#4577).
+      const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
+      const css = read("../styles/sidebar.css") + read("../styles/onboarding-modal.css");
       return scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
     };
     const rulesFor = (prelude: string) =>
@@ -2116,9 +2116,9 @@ describe("CodingAgentQuickConfiguration", () => {
       );
       expect(box.getAttribute("tabindex")).toBe("0");
       // jsdom cannot measure the scroll; the declarations pin the row width.
-      // The variable base keeps the real file: URL (see sidebar-compact.test.ts).
-      const moduleUrl = import.meta.url;
-      const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+      // Real file: URL base (see sidebar-compact.test.ts); sheets in load order (#4577).
+      const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
+      const css = read("../styles/sidebar.css") + read("../styles/onboarding-modal.css");
       const body = soleRuleBody(
         scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " "))),
         ".onboarding-install-output",
