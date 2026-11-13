@@ -820,3 +820,40 @@ fn resolve_switch_targets_rejects_unknown_requested_agent_with_choices() {
     assert!(err.contains("codex-main (Codex Main)"));
     assert!(err.contains("codex-research (Codex Research)"));
 }
+
+#[test]
+fn handoff_text_policy_preserves_valid_prompt_and_removes_arabic_control() {
+    use crate::phone::mailbox::handoff::{checked_handoff_prompt, normalize_self_forget_line};
+    assert_eq!(normalize_self_forget_line("a\u{061C}b"), Some("ab".into()));
+    let prompt =
+        build_self_clear_handoff_prompt("self-clear/20260101_000000_SELF-HANDOFF.md", Some("done"));
+    assert_eq!(checked_handoff_prompt(prompt.clone()).unwrap(), prompt);
+    for path in ["self-clear/bad\u{202E}.md", "self-clear/bad\r.md"] {
+        assert!(checked_handoff_prompt(build_self_clear_handoff_prompt(path, None)).is_err());
+    }
+}
+
+#[tokio::test]
+async fn rejected_handoff_prompt_restores_archive_without_injecting() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("SELF-HANDOFF.md");
+    std::fs::write(&path, "keep handoff").unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recorded = calls.clone();
+    let mut inject = move |_, _| {
+        recorded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        async { Ok(()) }
+    };
+    let delivered = crate::phone::mailbox::settle::inject_handoff_prompt_with_archive(
+        temp.path(),
+        Uuid::new_v4(),
+        "self-clear",
+        |_, _| "bad\u{202E}".into(),
+        None,
+        &mut inject,
+    )
+    .await;
+    assert!(!delivered);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "keep handoff");
+}

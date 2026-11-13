@@ -430,7 +430,11 @@ where
     );
     // (#756) Returns whether the prompt reached the PTY, so the drivers fire
     // their post-boundary-content event only on a real injection.
-    if let Err(e) = inject(session_id, prompt).await {
+    let injected = match super::handoff::checked_handoff_prompt(prompt) {
+        Ok(prompt) => inject(session_id, prompt).await,
+        Err(error) => Err(error),
+    };
+    if let Err(e) = injected {
         log::warn!(
             "[mailbox] {action}: handoff prompt injection failed for session {session_id}: {e}"
         );

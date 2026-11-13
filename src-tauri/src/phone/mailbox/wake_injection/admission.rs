@@ -1,6 +1,9 @@
 //! Payload formatting and prewrite admission for peer wake injection.
 use super::super::handoff::resolve_remote_pty_command;
-use super::super::notice::{format_wake_content, WakeContent, WakeDeliveryOrigin};
+use super::super::notice::{
+    format_wake_content, ResolvedWakeSpawnPlan, WakeContent, WakeDeliveryOrigin,
+    ERR_INVALID_PEER_TEXT,
+};
 use super::super::pty_claim::response_diag_debug_only;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
@@ -159,4 +162,54 @@ pub(crate) fn log_standard_payload(session_id: Uuid, msg: &OutboxMessage, payloa
         payload.len(),
         payload.chars().take(100).collect::<String>()
     );
+}
+
+/// #4309 - gate for rendered peer wake text. The fixed leading `\n` and trailing
+/// `\n\r` are framing; the rest is data. The whole block stays within the bound.
+pub(crate) fn checked_peer_payload(payload: String) -> Result<String, String> {
+    let data = payload
+        .strip_prefix('\n')
+        .and_then(|rest| rest.strip_suffix("\n\r"));
+    let verdict = match data {
+        None => Err("invalid_text:framing".to_string()),
+        Some(_) if payload.len() > crate::pty::backend::PTY_INPUT_MAX_BYTES => {
+            Err("payload_too_large".to_string())
+        }
+        Some(data) => {
+            crate::pty::inject::validate_pty_input_text(data).map_err(|error| error.to_string())
+        }
+    };
+    verdict
+        .map(|()| payload)
+        .map_err(|reason| format!("{ERR_INVALID_PEER_TEXT}: {reason}"))
+}
+/// #4309 - true when the written body depends on the recipient backend: only a
+/// container recipient inlines a FilesystemPoller file notification.
+pub(crate) fn body_depends_on_backend(msg: &OutboxMessage, origin: WakeDeliveryOrigin) -> bool {
+    msg.command.is_none()
+        && origin == WakeDeliveryOrigin::FilesystemPoller
+        && crate::phone::messaging::parse_file_notification(&msg.body).is_some()
+}
+/// #4309 - true when a session created from `plan` runs in a container.
+pub(crate) fn plan_is_container(plan: &ResolvedWakeSpawnPlan) -> bool {
+    plan.configured_spawn.as_ref().is_some_and(|spawn| {
+        crate::pty::backend::SessionBackendKind::from(&spawn.backend)
+            == crate::pty::backend::SessionBackendKind::ContainerTransport
+    })
+}
+/// #4309 - pre-actuation gate for the exact peer text a wake writes when its
+/// standard body is `body`. Production peer wakes inject interactively
+/// (`inject_wake_into_pty` passes `true`), so response markers never render.
+pub(crate) fn admit_peer_text(
+    msg: &OutboxMessage,
+    body: &str,
+    origin: WakeDeliveryOrigin,
+    comanaged: bool,
+) -> Result<(), String> {
+    let payload = match &msg.command {
+        Some(_) if msg.body.is_empty() => return Ok(()),
+        Some(_) => crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body),
+        None => standard_payload(msg, body, false, origin, comanaged),
+    };
+    checked_peer_payload(payload).map(drop)
 }
