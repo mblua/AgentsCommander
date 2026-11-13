@@ -338,6 +338,8 @@ fn workgroup_root_ok() {
     );
 }
 
+// Backslash separators exist only on Windows; workgroup_root_ok covers Unix.
+#[cfg(windows)]
 #[test]
 fn workgroup_root_ok_windows_style() {
     let p = Path::new(r"C:\foo\wg-42-team-x\__agent_a");
