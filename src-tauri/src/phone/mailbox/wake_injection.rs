@@ -30,6 +30,9 @@ use uuid::Uuid;
 mod fixture;
 
 mod admission;
+pub(crate) use admission::{
+    admit_peer_text, body_depends_on_backend, checked_peer_payload, plan_is_container,
+};
 use admission::{logical_session_snapshot, standard_payload, standard_prewrite_admission};
 
 #[cfg(test)]
@@ -536,7 +539,8 @@ impl<S: MailboxHost> PtyInjection<'_, S> {
         // `format_pty_wrap` (single source with `PTY_WRAP_FIXED` used by the
         // CLI clamp). Only the `--get-output` + `request_id` case wraps the
         // payload with response markers.
-        let payload = standard_payload(msg, body, use_markers, origin, comanaged);
+        let payload =
+            checked_peer_payload(standard_payload(msg, body, use_markers, origin, comanaged))?;
 
         self.register_standard_watcher(poller, session_id, msg, use_markers, pty_mgr)
             .await?;

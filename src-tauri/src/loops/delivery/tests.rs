@@ -898,3 +898,16 @@ async fn issue_3260_delivery_exited_candidate_never_looks_up_pty() {
     assert_eq!(lookup.stale_session_ids, [session.id]);
     assert_eq!(*host.calls.lock().unwrap(), ["sessions"]);
 }
+
+#[tokio::test]
+async fn invalid_loop_prompt_fails_before_session_effects() {
+    for text in ["go\u{1b}[2J", "a\r\nb"] {
+        let (_tmp, project, _replica, mut config) = recording_delivery_fixture();
+        config.prompt.body = text.into();
+        let host = recording_delivery_host();
+        let report =
+            deliver_loop_prompt(&host, &project, &config, Uuid::new_v4(), Utc::now()).await;
+        assert!(matches!(report.kind, LoopAuditKind::DeliveryFailed));
+        assert_eq!(*host.calls.lock().unwrap(), ["purge"]);
+    }
+}
