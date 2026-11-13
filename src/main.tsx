@@ -1,6 +1,7 @@
 import "./shared/styles/scrollbars.css";
 import "./shared/console-capture";
 import { render } from "solid-js/web";
+import { WindowErrorBoundary } from "./shared/window-error-boundary";
 import { isTauri } from "./shared/platform";
 import TerminalApp from "./terminal/App";
 import BrowserApp from "./browser/App";
@@ -38,30 +39,76 @@ const isLegacyDetached =
   windowType === "terminal" && params.get("detached") === "true";
 
 if (!isTauri) {
-  render(() => <BrowserApp />, root);
+  render(
+    () => (
+      <WindowErrorBoundary label="browser">
+        <BrowserApp />
+      </WindowErrorBoundary>
+    ),
+    root
+  );
 } else if (windowType === "detached" || isLegacyDetached) {
   const lockedSessionId = params.get("sessionId") || undefined;
   render(
-    () => <TerminalApp lockedSessionId={lockedSessionId} detached={true} />,
+    () => (
+      <WindowErrorBoundary label="detached">
+        <TerminalApp lockedSessionId={lockedSessionId} detached={true} />
+      </WindowErrorBoundary>
+    ),
     root
   );
 } else if (windowType === "resource-monitor") {
-  render(() => <ResourceMonitorApp />, root);
+  render(
+    () => (
+      <WindowErrorBoundary label="resource-monitor">
+        <ResourceMonitorApp />
+      </WindowErrorBoundary>
+    ),
+    root
+  );
 } else if (windowType === "watchers") {
   // #1171 - the query parameter is only read here, on the window's first creation. The
   // window is a singleton, so every later open focuses it and re-scopes it through the
   // `watchers_scope_request` event instead.
-  render(() => <WatchersApp initialSessionId={params.get("sessionId") || undefined} />, root);
+  render(
+    () => (
+      <WindowErrorBoundary label="watchers">
+        <WatchersApp initialSessionId={params.get("sessionId") || undefined} />
+      </WindowErrorBoundary>
+    ),
+    root
+  );
 } else if (windowType === "screenshot-overlay") {
   document.documentElement.dataset.window = "screenshot-overlay";
-  render(() => <ScreenshotOverlayApp />, root);
+  render(
+    () => (
+      <WindowErrorBoundary label="screenshot-overlay">
+        <ScreenshotOverlayApp />
+      </WindowErrorBoundary>
+    ),
+    root
+  );
 } else if (windowType === "spec-board") {
-  render(() => <SpecBoardApp />, root);
+  render(
+    () => (
+      <WindowErrorBoundary label="spec-board">
+        <SpecBoardApp />
+      </WindowErrorBoundary>
+    ),
+    root
+  );
 } else {
   // #1652 - one harvester per app start. The main window always exists, and
   // scanning from exactly one window is what keeps a single previous-run record
   // from being reported by several windows at once. `harvestIpcBlackBox` awaits
   // the install above internally, so this line does not need to.
   void harvestIpcBlackBox(BlackBoxAPI.report);
-  render(() => <MainApp />, root);
+  render(
+    () => (
+      <WindowErrorBoundary label="main">
+        <MainApp />
+      </WindowErrorBoundary>
+    ),
+    root
+  );
 }

@@ -151,6 +151,51 @@ pub(crate) fn publish_cli_pty_request(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         _ => return Err("publish_ambiguous"),
     }
+    let options = new_request_open_options();
+    let mut file = options.open(&temp).map_err(|_| "publish_failed")?;
+    if file.write_all(bytes).is_err() || file.flush().is_err() || file.sync_all().is_err() {
+        drop(file);
+        remove_request_temp(&temp)?;
+        return Err("publish_failed");
+    }
+    let temp_identity = match crate::path_identity::verify_opened_regular_file(&temp, &file, false)
+    {
+        Ok(identity) => identity,
+        Err(_) => {
+            drop(file);
+            remove_request_temp(&temp)?;
+            return Err("publish_failed");
+        }
+    };
+    drop(file);
+
+    let prepublication_safe =
+        request_prepublication_safe(outbox, &temp, &final_path, &outbox_identity, &temp_identity);
+    if prepublication_safe.is_err() {
+        remove_request_temp(&temp)?;
+        return Err("publish_ambiguous");
+    }
+    if crate::path_identity::publish_new_file_atomic(&temp, &final_path).is_err() {
+        remove_request_temp(&temp)?;
+        return Err("publish_ambiguous");
+    }
+    let (published, _) = crate::path_identity::read_bounded_regular(&final_path, max_bytes)
+        .map_err(|_| "publish_ambiguous")?;
+    if published != bytes {
+        return Err("publish_ambiguous");
+    }
+    let published_outbox =
+        crate::path_identity::verify_directory(outbox).map_err(|_| "publish_ambiguous")?;
+    if !crate::path_identity::same_object(&outbox_identity, &published_outbox) {
+        return Err("publish_ambiguous");
+    }
+    if let Ok(parent) = std::fs::File::open(outbox) {
+        parent.sync_all().map_err(|_| "publish_ambiguous")?;
+    }
+    Ok(final_path)
+}
+
+fn new_request_open_options() -> std::fs::OpenOptions {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -168,74 +213,36 @@ pub(crate) fn publish_cli_pty_request(
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let mut file = options.open(&temp).map_err(|_| "publish_failed")?;
-    if file.write_all(bytes).is_err() || file.flush().is_err() || file.sync_all().is_err() {
-        drop(file);
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("publish_ambiguous");
-            }
-        }
-        return Err("publish_failed");
-    }
-    let temp_identity = match crate::path_identity::verify_opened_regular_file(&temp, &file, false)
-    {
-        Ok(identity) => identity,
-        Err(_) => {
-            drop(file);
-            if let Err(error) = std::fs::remove_file(&temp) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    return Err("publish_ambiguous");
-                }
-            }
-            return Err("publish_failed");
-        }
-    };
-    drop(file);
+    options
+}
 
-    let prepublication_safe = (|| {
-        let current_outbox = crate::path_identity::verify_directory(outbox)?;
-        let current_temp = crate::path_identity::verify_regular_file(&temp)?;
-        if !crate::path_identity::same_object(&outbox_identity, &current_outbox)
-            || !crate::path_identity::same_object(&temp_identity, &current_temp)
-        {
-            return Err("unsafe_path".to_string());
+fn remove_request_temp(temp: &Path) -> Result<(), &'static str> {
+    if let Err(error) = std::fs::remove_file(temp) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err("publish_ambiguous");
         }
-        match std::fs::symlink_metadata(&final_path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            _ => Err("unsafe_path".to_string()),
-        }
-    })();
-    if prepublication_safe.is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("publish_ambiguous");
-            }
-        }
-        return Err("publish_ambiguous");
     }
-    if crate::path_identity::publish_new_file_atomic(&temp, &final_path).is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err("publish_ambiguous");
-            }
-        }
-        return Err("publish_ambiguous");
+    Ok(())
+}
+
+fn request_prepublication_safe(
+    outbox: &Path,
+    temp: &Path,
+    final_path: &Path,
+    outbox_identity: &crate::path_identity::VerifiedPathIdentity,
+    temp_identity: &crate::path_identity::VerifiedPathIdentity,
+) -> Result<(), String> {
+    let current_outbox = crate::path_identity::verify_directory(outbox)?;
+    let current_temp = crate::path_identity::verify_regular_file(temp)?;
+    if !crate::path_identity::same_object(outbox_identity, &current_outbox)
+        || !crate::path_identity::same_object(temp_identity, &current_temp)
+    {
+        return Err("unsafe_path".to_string());
     }
-    let (published, _) = crate::path_identity::read_bounded_regular(&final_path, max_bytes)
-        .map_err(|_| "publish_ambiguous")?;
-    if published != bytes {
-        return Err("publish_ambiguous");
+    match std::fs::symlink_metadata(final_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        _ => Err("unsafe_path".to_string()),
     }
-    let published_outbox =
-        crate::path_identity::verify_directory(outbox).map_err(|_| "publish_ambiguous")?;
-    if !crate::path_identity::same_object(&outbox_identity, &published_outbox) {
-        return Err("publish_ambiguous");
-    }
-    if let Ok(parent) = std::fs::File::open(outbox) {
-        parent.sync_all().map_err(|_| "publish_ambiguous")?;
-    }
-    Ok(final_path)
 }
 
 pub(crate) fn ensure_terminal_snapshot_child(parent: &Path, child: &Path) -> Result<(), String> {

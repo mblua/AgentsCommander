@@ -256,14 +256,19 @@ async fn cancelled_and_panicked_post_spawn_creates_roll_back_without_ghost_event
         .sessions
         .is_empty());
     assert!(events_rx.try_recv().is_err());
-    assert_eq!(
-        coordinator.inner.create_tickets.available_permits(),
-        CREATE_TICKET_CAPACITY
-    );
-    assert_eq!(
-        coordinator.inner.admission.available_permits(),
-        COORDINATOR_ADMISSION_CAPACITY
-    );
+    await_state_eq(
+        "create ticket and admission permits return after rollback",
+        Duration::from_secs(1),
+        || {
+            (
+                coordinator.inner.create_tickets.available_permits(),
+                coordinator.inner.admission.available_permits(),
+            )
+        },
+        (CREATE_TICKET_CAPACITY, COORDINATOR_ADMISSION_CAPACITY),
+        String::new,
+    )
+    .await;
     coordinator.close_and_join().await;
 }
 

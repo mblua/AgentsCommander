@@ -269,13 +269,13 @@ pub(crate) fn sanitize_skill_metadata_for_context(input: &str) -> String {
 }
 
 pub(crate) fn yaml_field_string(
-    mapping: &serde_yaml::Mapping,
+    mapping: &serde_norway::Mapping,
     key: &str,
 ) -> Result<Option<String>, String> {
-    let lookup = serde_yaml::Value::String(key.to_string());
+    let lookup = serde_norway::Value::String(key.to_string());
     match mapping.get(&lookup) {
         None => Ok(None),
-        Some(serde_yaml::Value::String(value)) => {
+        Some(serde_norway::Value::String(value)) => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 Ok(None)
@@ -457,7 +457,7 @@ fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBu
             }
         };
 
-        let parsed = match serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
+        let parsed = match serde_norway::from_str::<serde_norway::Value>(&frontmatter) {
             Ok(parsed) => parsed,
             Err(e) => {
                 index.warnings.push(format!(
@@ -519,7 +519,7 @@ fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBu
 }
 
 fn build_skill_metadata(
-    mapping: &serde_yaml::Mapping,
+    mapping: &serde_norway::Mapping,
     display_folder: String,
     skill_name: &str,
     entrypoint: &Path,
