@@ -1,6 +1,7 @@
 use super::*;
 
 mod identity_paths;
+mod origin_peers;
 mod resolve_agent_target;
 mod walker_discovery;
 
