@@ -436,59 +436,91 @@ fn publish_edits(
     let mut candidate = source.to_string();
 
     if !refresh.is_empty() {
-        let doc: WriteDoc = toml::from_str(source)
-            .map_err(|e| format!("its structure cannot be located for a write ({e})"))?;
-
-        let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-        for (id, spec) in refresh {
-            let Some(entry) = doc.messages.get(id) else {
-                return Err(format!("`{id}` could not be located for a write"));
-            };
-            let Some(spanned) = &entry.template else {
-                return Err(format!("`{id}` has no `template` value to rewrite"));
-            };
-            if !spanned.get_ref().is_str() {
-                return Err(format!("`{id}` has a non-string `template`"));
-            }
-            if !is_literal_quotable(spec.default_template) {
-                return Err(format!(
-                    "the built-in default for `{id}` cannot be written as a TOML literal"
-                ));
-            }
-            edits.push((spanned.span(), quote_literal(spec.default_template, crlf)));
-        }
-
-        // Descending, so an earlier edit never shifts a later span.
-        edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
-        for (span, literal) in edits {
-            if span.end > candidate.len() || !candidate.is_char_boundary(span.start) {
-                return Err("a `template` span does not address the source".to_string());
-            }
-            candidate.replace_range(span, &literal);
-        }
+        apply_refresh_edits(source, refresh, crlf, &mut candidate)?;
     }
 
     if !append.is_empty() {
-        if !candidate.is_empty() && !candidate.ends_with('\n') {
-            candidate.push('\n');
-        }
-        for spec in append {
-            if !is_literal_quotable(spec.default_template) {
-                return Err(format!(
-                    "the built-in default for `{}` cannot be written as a TOML literal",
-                    spec.id
-                ));
-            }
-            let block = message_block(spec);
-            candidate.push_str(&if crlf {
-                block.replace('\n', "\r\n")
-            } else {
-                block
-            });
-        }
+        append_message_blocks(append, crlf, &mut candidate)?;
     }
 
     let previous_ids: BTreeSet<String> = model.entries.keys().cloned().collect();
+    let intended = intended_templates(refresh, append);
+    verify_candidate(&candidate, &previous_ids, &intended)?;
+
+    if backup {
+        take_backup(path, source);
+    }
+    publish(path, candidate.as_bytes())
+}
+
+fn apply_refresh_edits(
+    source: &str,
+    refresh: &BTreeMap<String, &MessageSpec>,
+    crlf: bool,
+    candidate: &mut String,
+) -> Result<(), String> {
+    let doc: WriteDoc = toml::from_str(source)
+        .map_err(|e| format!("its structure cannot be located for a write ({e})"))?;
+
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    for (id, spec) in refresh {
+        let Some(entry) = doc.messages.get(id) else {
+            return Err(format!("`{id}` could not be located for a write"));
+        };
+        let Some(spanned) = &entry.template else {
+            return Err(format!("`{id}` has no `template` value to rewrite"));
+        };
+        if !spanned.get_ref().is_str() {
+            return Err(format!("`{id}` has a non-string `template`"));
+        }
+        if !is_literal_quotable(spec.default_template) {
+            return Err(format!(
+                "the built-in default for `{id}` cannot be written as a TOML literal"
+            ));
+        }
+        edits.push((spanned.span(), quote_literal(spec.default_template, crlf)));
+    }
+
+    // Descending, so an earlier edit never shifts a later span.
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+    for (span, literal) in edits {
+        if span.end > candidate.len() || !candidate.is_char_boundary(span.start) {
+            return Err("a `template` span does not address the source".to_string());
+        }
+        candidate.replace_range(span, &literal);
+    }
+    Ok(())
+}
+
+fn append_message_blocks(
+    append: &[&MessageSpec],
+    crlf: bool,
+    candidate: &mut String,
+) -> Result<(), String> {
+    if !candidate.is_empty() && !candidate.ends_with('\n') {
+        candidate.push('\n');
+    }
+    for spec in append {
+        if !is_literal_quotable(spec.default_template) {
+            return Err(format!(
+                "the built-in default for `{}` cannot be written as a TOML literal",
+                spec.id
+            ));
+        }
+        let block = message_block(spec);
+        candidate.push_str(&if crlf {
+            block.replace('\n', "\r\n")
+        } else {
+            block
+        });
+    }
+    Ok(())
+}
+
+fn intended_templates(
+    refresh: &BTreeMap<String, &MessageSpec>,
+    append: &[&MessageSpec],
+) -> BTreeMap<String, String> {
     let mut intended: BTreeMap<String, String> = BTreeMap::new();
     for (id, spec) in refresh {
         intended.insert(id.clone(), spec.default_template.to_string());
@@ -496,12 +528,7 @@ fn publish_edits(
     for spec in append {
         intended.insert(spec.id.to_string(), spec.default_template.to_string());
     }
-    verify_candidate(&candidate, &previous_ids, &intended)?;
-
-    if backup {
-        take_backup(path, source);
-    }
-    publish(path, candidate.as_bytes())
+    intended
 }
 
 /// The writer never publishes text it has not re-parsed. Without this gate a
