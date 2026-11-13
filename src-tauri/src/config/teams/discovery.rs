@@ -421,38 +421,11 @@ pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     let i_am_coordinator = coordinator.as_deref() == Some(wg.my_agent_name.as_str());
 
     if coordinator.is_none() {
-        if crate::config::environment::machine_output_string().is_err() {
-            eprintln!(
-                "Warning: no orchestrator found for Room '{}', showing all replicas",
-                wg.my_wg_name
-            );
-        } else {
-            log::warn!(
-                "Warning: no orchestrator found for Room '{}', showing all replicas",
-                wg.my_wg_name
-            );
-        }
+        warn_missing_wg_coordinator(&wg.my_wg_name);
     }
 
     // Collect all replicas in my WG
-    let mut replicas: Vec<(String, PathBuf)> = Vec::new();
-    let _ = crate::filesystem::directories::visit_cli_discovery_entries(&wg.my_wg_dir, |entry| {
-        let Ok((p, _)) = entry else {
-            return ControlFlow::<()>::Continue(());
-        };
-        if !crate::filesystem::directories::cli_discovery_is_dir(&p) {
-            return ControlFlow::Continue(());
-        }
-        let agent = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_prefix("__agent_"))
-            .map(str::to_string);
-        if let Some(agent) = agent {
-            replicas.push((agent, p));
-        }
-        ControlFlow::Continue(())
-    });
+    let replicas = collect_wg_replicas(&wg.my_wg_dir);
 
     for (agent_name, agent_path) in &replicas {
         if *agent_name == wg.my_agent_name {
@@ -474,45 +447,7 @@ pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     // Coordinator also sees coordinators of other WGs in the same Project AC Root
     // (same project, different WG — still qualified with `wg.my_project`).
     if i_am_coordinator {
-        let _ = crate::filesystem::directories::visit_cli_discovery_entries(&wg.ac_root, |entry| {
-            let Ok((other_wg_dir, _)) = entry else {
-                return ControlFlow::<()>::Continue(());
-            };
-            if !crate::filesystem::directories::cli_discovery_is_dir(&other_wg_dir) {
-                return ControlFlow::Continue(());
-            }
-            let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
-                Some(n)
-                    if crate::config::entity_prefix::has_entity_prefix(n) && n != wg.my_wg_name =>
-                {
-                    n.to_string()
-                }
-                _ => return ControlFlow::Continue(()),
-            };
-
-            if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
-                let coord_dir = other_wg_dir.join(format!("__agent_{other_coord}"));
-                if !crate::filesystem::directories::cli_discovery_is_dir(&coord_dir) {
-                    return ControlFlow::Continue(());
-                }
-                let peer_name = format!("{}:{}/{}", wg.my_project, other_wg_name, other_coord);
-                if peers.iter().any(|p| p.name == peer_name) {
-                    return ControlFlow::Continue(());
-                }
-                let reachable =
-                    crate::config::teams::can_communicate(&my_full_name, &peer_name, &discovered);
-                peers.push(build_wg_peer(
-                    &wg.my_project,
-                    &other_coord,
-                    &other_wg_name,
-                    &coord_dir,
-                    reachable,
-                    &session_index,
-                ));
-            }
-
-            ControlFlow::Continue(())
-        });
+        append_other_wg_coordinators(&wg, &my_full_name, &discovered, &session_index, &mut peers);
     }
 
     // #293 — synthetic Root Agent reply peer (identity-verified coordinators
@@ -528,6 +463,88 @@ pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     }
 
     peers
+}
+
+fn warn_missing_wg_coordinator(wg_name: &str) {
+    if crate::config::environment::machine_output_string().is_err() {
+        eprintln!(
+            "Warning: no orchestrator found for Room '{}', showing all replicas",
+            wg_name
+        );
+    } else {
+        log::warn!(
+            "Warning: no orchestrator found for Room '{}', showing all replicas",
+            wg_name
+        );
+    }
+}
+
+fn collect_wg_replicas(wg_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut replicas: Vec<(String, PathBuf)> = Vec::new();
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(wg_dir, |entry| {
+        let Ok((p, _)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        if !crate::filesystem::directories::cli_discovery_is_dir(&p) {
+            return ControlFlow::Continue(());
+        }
+        let agent = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix("__agent_"))
+            .map(str::to_string);
+        if let Some(agent) = agent {
+            replicas.push((agent, p));
+        }
+        ControlFlow::Continue(())
+    });
+    replicas
+}
+
+fn append_other_wg_coordinators(
+    wg: &WgReplicaInfo,
+    my_full_name: &str,
+    discovered: &[crate::config::teams::DiscoveredTeam],
+    session_index: &HashMap<String, Vec<CandidateSession>>,
+    peers: &mut Vec<PeerInfo>,
+) {
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(&wg.ac_root, |entry| {
+        let Ok((other_wg_dir, _)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        if !crate::filesystem::directories::cli_discovery_is_dir(&other_wg_dir) {
+            return ControlFlow::Continue(());
+        }
+        let other_wg_name = match other_wg_dir.file_name().and_then(|n| n.to_str()) {
+            Some(n) if crate::config::entity_prefix::has_entity_prefix(n) && n != wg.my_wg_name => {
+                n.to_string()
+            }
+            _ => return ControlFlow::Continue(()),
+        };
+
+        if let Some(other_coord) = resolve_wg_coordinator(&wg.ac_root, &other_wg_dir) {
+            let coord_dir = other_wg_dir.join(format!("__agent_{other_coord}"));
+            if !crate::filesystem::directories::cli_discovery_is_dir(&coord_dir) {
+                return ControlFlow::Continue(());
+            }
+            let peer_name = format!("{}:{}/{}", wg.my_project, other_wg_name, other_coord);
+            if peers.iter().any(|p| p.name == peer_name) {
+                return ControlFlow::Continue(());
+            }
+            let reachable =
+                crate::config::teams::can_communicate(my_full_name, &peer_name, discovered);
+            peers.push(build_wg_peer(
+                &wg.my_project,
+                &other_coord,
+                &other_wg_name,
+                &coord_dir,
+                reachable,
+                session_index,
+            ));
+        }
+
+        ControlFlow::Continue(())
+    });
 }
 
 fn effective_wg_project_paths(wg: &WgReplicaInfo, project_paths: &[String]) -> Vec<String> {
