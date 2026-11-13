@@ -135,3 +135,9 @@ Phase 2 of #93 (if shipped) will surface this in the sidebar UI; Phase 3 (if shi
 
 When you add or update source comments, follow the
 [in-code comment convention](docs/in-code-comments.md).
+
+## Third-party notices
+
+After changing dependencies, run `npm ci --ignore-scripts`, then
+`node scripts/generate-third-party-notices.mjs` and commit `THIRD_PARTY_NOTICES.md`.
+The PR check runs the generator with `--check` and fails when notices are out of date.
