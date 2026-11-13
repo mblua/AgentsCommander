@@ -1,3 +1,6 @@
+//! Path helpers that strip the Windows verbatim (`\\?\`) prefix from paths
+//! and path strings.
+
 use std::path::{Path, PathBuf};
 
 fn strip_windows_verbatim_prefix_str(path: &str) -> Option<String> {

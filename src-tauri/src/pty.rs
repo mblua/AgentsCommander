@@ -1,3 +1,6 @@
+//! Pseudo-terminal sessions: local and container backends, input routing and
+//! injection, output handling, idle and menu detection, and the session manager.
+
 pub(crate) mod agent_quota; // #2482 - weekly quota reading per agent session
 pub mod backend;
 pub(crate) mod backend_kind;
