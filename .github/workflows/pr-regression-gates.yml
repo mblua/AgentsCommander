@@ -4043,6 +4043,9 @@ jobs:
       - name: TypeScript type check
         run: npm run typecheck
 
+      - name: "Flaky-rate script tests (#4527)"
+        run: node --test "scripts/flaky-*.test.mjs"
+
       - name: "npm test with #480 known-debt guard"
         run: |
           # The three classifier inputs are removed first and the removal is
@@ -4117,4 +4120,25 @@ jobs:
           path: |
             npm-test.log
             npm-test-results.json
+          if-no-files-found: ignore
+
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          node scripts/flaky-observations.mjs vitest --in npm-test-results.json
+          --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job frontend-regression
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: flaky-obs-frontend-regression-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
           if-no-files-found: ignore
