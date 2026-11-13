@@ -470,98 +470,119 @@ pub(crate) fn prepare_registered_profile_owner(
             path.to_path_buf()
         };
         let prepared = if duplicate_rows || physical_profile_rows(profile_before, true).is_err() {
-            // Preserve the pre-existing lenient row view without converting an
-            // ambiguous ID map. Profile edits still need an unambiguous BASE.
-            let previous_view = registered_profiles_for_read(profile_before);
-            let previous: CodingAgentProfilesConfig = previous_view
-                .get("codingAgentProfiles")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| e.to_string())?
-                .unwrap_or_default();
-            if comparable_registered_profile_draft(previous, &settings.agents)
-                != comparable_registered_profile_draft(
-                    settings.coding_agent_profiles.clone(),
-                    &settings.agents,
-                )
-            {
-                return Err("ambiguousProfileConversion".into());
-            }
-            let mut retained = profile_incoming.clone();
-            retain_configuration_commands_with_startup(
-                &mut retained,
-                profile_before,
-                "id",
-                false,
-                true,
-                false,
-                startup,
-            )?;
-            match profile_before.get("codingAgentProfiles") {
-                Some(profiles) => retained["codingAgentProfiles"] = profiles.clone(),
-                None => {
-                    retained
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("codingAgentProfiles");
-                }
-            }
-            retained
-        } else if profile_before.get("agents").is_none()
-            && profile_incoming.get("agents").is_none()
-            && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
-                == Some(&Value::from(1))
-            && !["profilesByAgent", "profileLabelsByAgent", "identityByAgent"]
-                .iter()
-                .any(|key| {
-                    profile_before
-                        .get("codingAgentProfiles")
-                        .is_some_and(|profiles| profiles.get(*key).is_some())
-                })
-        {
+            retain_ambiguous_profile_rows(settings, profile_before, profile_incoming, startup)?
+        } else if is_canonical_split_profile_owner(profile_before, profile_incoming) {
             // Canonical split owners do not acquire a new physical row donor
             // or rewrite their packet for an unrelated preference save.
             profile_before.clone()
         } else {
-            let mut prepared = canonical_profile_source(profile_before, profile_incoming, true)
-                .map_err(|reason| format!("{}: {reason}", owner_path.display()))?;
-            // Typed slot edits own `label`; opaque siblings belong to the raw
-            // owner, including obsolete `name` and extension values.
-            if let Some(slots) = prepared
-                .pointer_mut("/codingAgentProfiles/profileSlots")
-                .and_then(Value::as_object_mut)
-            {
-                for (letter, slot) in slots {
-                    if let (Some(slot), Some(raw)) = (
-                        slot.as_object_mut(),
-                        profile_before
-                            .pointer("/codingAgentProfiles/profileSlots")
-                            .and_then(|slots| slots.get(letter))
-                            .and_then(Value::as_object),
-                    ) {
-                        for (key, value) in raw {
-                            if key != "label" {
-                                slot.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            retain_configuration_commands_with_startup(
-                &mut prepared,
-                profile_before,
-                "id",
-                false,
-                true,
-                false,
-                startup,
-            )?;
-            prepared
+            canonical_prepared_profile_rows(profile_before, profile_incoming, &owner_path, startup)?
         };
         Some(prepared)
     };
     Ok(prepared_profiles)
+}
+
+fn retain_ambiguous_profile_rows(
+    settings: &AppSettings,
+    profile_before: &Value,
+    profile_incoming: &Value,
+    startup: Option<&StartupAgentRows>,
+) -> Result<Value, String> {
+    // Preserve the pre-existing lenient row view without converting an
+    // ambiguous ID map. Profile edits still need an unambiguous BASE.
+    let previous_view = registered_profiles_for_read(profile_before);
+    let previous: CodingAgentProfilesConfig = previous_view
+        .get("codingAgentProfiles")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    if comparable_registered_profile_draft(previous, &settings.agents)
+        != comparable_registered_profile_draft(
+            settings.coding_agent_profiles.clone(),
+            &settings.agents,
+        )
+    {
+        return Err("ambiguousProfileConversion".into());
+    }
+    let mut retained = profile_incoming.clone();
+    retain_configuration_commands_with_startup(
+        &mut retained,
+        profile_before,
+        "id",
+        false,
+        true,
+        false,
+        startup,
+    )?;
+    match profile_before.get("codingAgentProfiles") {
+        Some(profiles) => retained["codingAgentProfiles"] = profiles.clone(),
+        None => {
+            retained
+                .as_object_mut()
+                .unwrap()
+                .remove("codingAgentProfiles");
+        }
+    }
+    Ok(retained)
+}
+
+fn is_canonical_split_profile_owner(profile_before: &Value, profile_incoming: &Value) -> bool {
+    profile_before.get("agents").is_none()
+        && profile_incoming.get("agents").is_none()
+        && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+            == Some(&Value::from(1))
+        && !["profilesByAgent", "profileLabelsByAgent", "identityByAgent"]
+            .iter()
+            .any(|key| {
+                profile_before
+                    .get("codingAgentProfiles")
+                    .is_some_and(|profiles| profiles.get(*key).is_some())
+            })
+}
+
+fn canonical_prepared_profile_rows(
+    profile_before: &Value,
+    profile_incoming: &Value,
+    owner_path: &Path,
+    startup: Option<&StartupAgentRows>,
+) -> Result<Value, String> {
+    let mut prepared = canonical_profile_source(profile_before, profile_incoming, true)
+        .map_err(|reason| format!("{}: {reason}", owner_path.display()))?;
+    // Typed slot edits own `label`; opaque siblings belong to the raw
+    // owner, including obsolete `name` and extension values.
+    if let Some(slots) = prepared
+        .pointer_mut("/codingAgentProfiles/profileSlots")
+        .and_then(Value::as_object_mut)
+    {
+        for (letter, slot) in slots {
+            if let (Some(slot), Some(raw)) = (
+                slot.as_object_mut(),
+                profile_before
+                    .pointer("/codingAgentProfiles/profileSlots")
+                    .and_then(|slots| slots.get(letter))
+                    .and_then(Value::as_object),
+            ) {
+                for (key, value) in raw {
+                    if key != "label" {
+                        slot.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+    }
+    retain_configuration_commands_with_startup(
+        &mut prepared,
+        profile_before,
+        "id",
+        false,
+        true,
+        false,
+        startup,
+    )?;
+    Ok(prepared)
 }
 
 pub(crate) fn refresh_registered_agent_row_metadata(

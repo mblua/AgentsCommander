@@ -349,26 +349,12 @@ pub(super) fn scan_restart_manager_processes_windows(
     let bulk_list: Vec<RM_PROCESS_INFO> = bulk_result.blockers;
 
     if bulk_list.is_empty() {
-        if let Some(error) = bulk_result.systemic_error {
-            return Err(error);
-        }
-        if bulk_result.skipped_register_failures > 0 {
-            log::warn!(
-                "[wg_delete_diagnostic] Restart Manager skipped {} unregisterable resources",
-                bulk_result.skipped_register_failures
-            );
-        }
-        if bulk_result.skipped_register_failures == wide_files.len()
-            && bulk_result
-                .skipped_register_error_codes
-                .iter()
-                .any(|code| *code != Some(2))
-        {
-            return Err(diagnostic_error(
-                "RmRegisterResources failed for all probed resources",
-            ));
-        }
-        return Ok(Vec::new());
+        return empty_bulk_scan_result(
+            bulk_result.systemic_error,
+            bulk_result.skipped_register_failures,
+            &bulk_result.skipped_register_error_codes,
+            wide_files.len(),
+        );
     }
 
     let mut by_pid = blocker_processes_by_pid(&bulk_list);
@@ -387,57 +373,101 @@ pub(super) fn scan_restart_manager_processes_windows(
         }
         let single = std::slice::from_ref(wide);
 
-        let session = match rm_start() {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!(
-                    "[wg_delete_diagnostic] per-file RmStartSession failed for {}: {}",
-                    path.display(),
-                    e.message
-                );
-                continue;
-            }
+        let Some(list) = probe_file_blockers(path, single) else {
+            continue;
         };
-        if let Err(e) = rm_register(session.0, single) {
-            log::warn!(
-                "[wg_delete_diagnostic] per-file RmRegisterResources failed for {}: {}",
-                path.display(),
-                e.message
-            );
-            continue; // file vanished mid-scan or RM rejected it; non-fatal
-        }
-        let list = match rm_get_list(session.0) {
-            Ok(l) => l,
-            Err(e) => {
-                log::warn!(
-                    "[wg_delete_diagnostic] per-file RmGetList failed for {}: {}",
-                    path.display(),
-                    e.message
-                );
-                continue;
-            }
-        };
-        drop(session); // explicit RmEndSession before next iteration
 
-        for info in &list {
-            let pid = info.Process.dwProcessId;
-            if !target_pids.contains(&pid) {
-                continue;
-            }
-            // PID-recycle defence: the bulk pass saw a different process if the
-            // ProcessStartTime FILETIME differs.
-            if let Some(b) = bulk_list.iter().find(|b| b.Process.dwProcessId == pid) {
-                if !same_start(&b.Process.ProcessStartTime, &info.Process.ProcessStartTime) {
-                    continue;
-                }
-            }
-            if let Some(entry) = by_pid.get_mut(&pid) {
-                if entry.files.len() < MAX_FILES_PER_PROCESS {
-                    entry.files.push(path.to_string_lossy().to_string());
-                }
-            }
-        }
+        attribute_file_blockers(path, &list, &target_pids, &bulk_list, &mut by_pid);
     }
 
     Ok(by_pid.into_values().collect())
+}
+
+fn empty_bulk_scan_result(
+    systemic_error: Option<DiagnosticError>,
+    skipped_register_failures: usize,
+    skipped_register_error_codes: &[Option<u32>],
+    probed: usize,
+) -> Result<Vec<BlockerProcess>, DiagnosticError> {
+    if let Some(error) = systemic_error {
+        return Err(error);
+    }
+    if skipped_register_failures > 0 {
+        log::warn!(
+            "[wg_delete_diagnostic] Restart Manager skipped {} unregisterable resources",
+            skipped_register_failures
+        );
+    }
+    if skipped_register_failures == probed
+        && skipped_register_error_codes
+            .iter()
+            .any(|code| *code != Some(2))
+    {
+        return Err(diagnostic_error(
+            "RmRegisterResources failed for all probed resources",
+        ));
+    }
+    Ok(Vec::new())
+}
+
+fn probe_file_blockers(path: &Path, single: &[Vec<u16>]) -> Option<Vec<RM_PROCESS_INFO>> {
+    let session = match rm_start() {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!(
+                "[wg_delete_diagnostic] per-file RmStartSession failed for {}: {}",
+                path.display(),
+                e.message
+            );
+            return None;
+        }
+    };
+    if let Err(e) = rm_register(session.0, single) {
+        log::warn!(
+            "[wg_delete_diagnostic] per-file RmRegisterResources failed for {}: {}",
+            path.display(),
+            e.message
+        );
+        return None; // file vanished mid-scan or RM rejected it; non-fatal
+    }
+    let list = match rm_get_list(session.0) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!(
+                "[wg_delete_diagnostic] per-file RmGetList failed for {}: {}",
+                path.display(),
+                e.message
+            );
+            return None;
+        }
+    };
+    drop(session); // explicit RmEndSession before next iteration
+    Some(list)
+}
+
+fn attribute_file_blockers(
+    path: &Path,
+    list: &[RM_PROCESS_INFO],
+    target_pids: &HashSet<u32>,
+    bulk_list: &[RM_PROCESS_INFO],
+    by_pid: &mut HashMap<u32, BlockerProcess>,
+) {
+    for info in list {
+        let pid = info.Process.dwProcessId;
+        if !target_pids.contains(&pid) {
+            continue;
+        }
+        // PID-recycle defence: the bulk pass saw a different process if the
+        // ProcessStartTime FILETIME differs.
+        if let Some(b) = bulk_list.iter().find(|b| b.Process.dwProcessId == pid) {
+            if !same_start(&b.Process.ProcessStartTime, &info.Process.ProcessStartTime) {
+                continue;
+            }
+        }
+        if let Some(entry) = by_pid.get_mut(&pid) {
+            if entry.files.len() < MAX_FILES_PER_PROCESS {
+                entry.files.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
 }

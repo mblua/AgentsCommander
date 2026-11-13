@@ -140,19 +140,11 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
     let mut i = 0;
     while i < bytes.len() {
         // Telegram bot token: `/bot<digits>:<base64url-chars>`
-        if has_bot && i + 4 <= bytes.len() && &bytes[i..i + 4] == b"/bot" {
-            // Look for `<digits>:<chars>` immediately after `/bot`.
-            let after_prefix = i + 4;
-            let digits_end = scan_while(bytes, after_prefix, is_ascii_digit);
-            if digits_end > after_prefix && digits_end < bytes.len() && bytes[digits_end] == b':' {
-                let chars_start = digits_end + 1;
-                let chars_end = scan_while(bytes, chars_start, is_token_char);
-                if chars_end - chars_start >= 10 {
-                    // Match. Keep `/bot`, mask the `<digits>:<chars>` span.
-                    spans.push((after_prefix, chars_end));
-                    i = chars_end;
-                    continue;
-                }
+        if has_bot {
+            if let Some((start, end)) = bot_token_span(bytes, i) {
+                spans.push((start, end));
+                i = end;
+                continue;
             }
         }
 
@@ -168,17 +160,11 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
         // (operator surprise when a non-secret short value is masked).
         // See `redacts_short_query_key_values_intentionally` test for the
         // contract.
-        if has_key && i + 5 <= bytes.len() {
-            let starts_query = bytes[i] == b'?' || bytes[i] == b'&';
-            if starts_query && &bytes[i + 1..i + 5] == b"key=" {
-                let val_start = i + 5;
-                let val_end = scan_while(bytes, val_start, is_token_char);
-                if val_end > val_start {
-                    // Match. Keep the `?key=` / `&key=` prefix, mask value.
-                    spans.push((val_start, val_end));
-                    i = val_end;
-                    continue;
-                }
+        if has_key {
+            if let Some((start, end)) = query_key_span(bytes, i) {
+                spans.push((start, end));
+                i = end;
+                continue;
             }
         }
 
@@ -204,6 +190,38 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
         i += ch.len_utf8();
     }
     spans
+}
+
+fn bot_token_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"/bot" {
+        // Look for `<digits>:<chars>` immediately after `/bot`.
+        let after_prefix = i + 4;
+        let digits_end = scan_while(bytes, after_prefix, is_ascii_digit);
+        if digits_end > after_prefix && digits_end < bytes.len() && bytes[digits_end] == b':' {
+            let chars_start = digits_end + 1;
+            let chars_end = scan_while(bytes, chars_start, is_token_char);
+            if chars_end - chars_start >= 10 {
+                // Match. Keep `/bot`, mask the `<digits>:<chars>` span.
+                return Some((after_prefix, chars_end));
+            }
+        }
+    }
+    None
+}
+
+fn query_key_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    if i + 5 <= bytes.len() {
+        let starts_query = bytes[i] == b'?' || bytes[i] == b'&';
+        if starts_query && &bytes[i + 1..i + 5] == b"key=" {
+            let val_start = i + 5;
+            let val_end = scan_while(bytes, val_start, is_token_char);
+            if val_end > val_start {
+                // Match. Keep the `?key=` / `&key=` prefix, mask value.
+                return Some((val_start, val_end));
+            }
+        }
+    }
+    None
 }
 
 const CONTAINER_PREFIX: &str = "ac-container-";
