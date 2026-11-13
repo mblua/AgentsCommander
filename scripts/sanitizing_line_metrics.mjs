@@ -29,11 +29,12 @@ function fileVerdict(snapshot, gate, path, measure, violates) {
         'split the file or reduce it to at most 1000 lines' } };
 }
 // Shared traversal keeps both text gates identical about Git inputs and error precedence.
-export function textGate(snapshot, gate, measure, violates) {
+export function textGate(snapshot, gate, measure, violates, extensions = ['.rs']) {
   const diagnostics = [], metrics = [];
   let fail = false;
   try {
-    for (const { path } of snapshot.changed.filter(entry => entry.path.endsWith('.rs'))) {
+    for (const { path } of snapshot.changed.filter(entry =>
+      extensions.some(ext => entry.path.endsWith(ext)))) {
       const { violation, metric, diagnostic } =
         fileVerdict(snapshot, gate, path, measure, violates);
       fail ||= violation;
@@ -43,7 +44,11 @@ export function textGate(snapshot, gate, measure, violates) {
     snapshot.assertStableHead();
     return { gate, status: fail ? 'FAIL' : 'PASS', exit: fail ? 1 : 0,
       requestedRef: snapshot.requestedRef, refOid: snapshot.refOid, baseOid: snapshot.baseOid,
-      headOid: snapshot.headOid, changedRustFiles: metrics.length, metrics, diagnostics };
+      headOid: snapshot.headOid,
+      changedRustFiles: metrics.filter(entry => entry.path.endsWith('.rs')).length,
+      ...(extensions.includes('.ts') ? { changedTsFiles: metrics.filter(entry =>
+        entry.path.endsWith('.ts') || entry.path.endsWith('.tsx')).length } : {}),
+      metrics, diagnostics };
   } catch (e) {
     return { gate, status: 'ERROR', exit: e.exit ?? 3,
       baseOid: snapshot.baseOid, headOid: snapshot.headOid,
