@@ -1,0 +1,62 @@
+name: Rebind the guarded annotated tag
+description: Verify the guarded annotated tag and release authority against the remote.
+inputs:
+  tag-object:
+    description: Guard output tag-object.
+    required: true
+  peeled-commit:
+    description: Guard output peeled-commit.
+    required: true
+  authority-sha256:
+    description: Guard output authority-sha256.
+    required: true
+  release-dir:
+    description: Guard output release-dir.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        EVENT_SHA: ${{ github.sha }}
+        EXPECTED_TAG_OBJECT: ${{ inputs.tag-object }}
+        EXPECTED_PEELED_COMMIT: ${{ inputs.peeled-commit }}
+        EXPECTED_AUTHORITY_SHA256: ${{ inputs.authority-sha256 }}
+        RELEASE_DIR: ${{ inputs.release-dir }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REF_TYPE" = tag
+        test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
+        TAG="$GITHUB_REF_NAME"
+        test "$RELEASE_DIR" = "docs/releases/$TAG"
+        test -f "$RELEASE_DIR/release-authority-v1.txt"
+        printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+        HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+        PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
+        TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
+        test "$GITHUB_SHA" = "$EVENT_SHA"
+        test "$GITHUB_SHA" = "$HEAD_COMMIT"
+        test "$HEAD_COMMIT" = "$PEELED_COMMIT"
+        test "$TAG_OBJECT" != "$PEELED_COMMIT"
+        test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
+        test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
+        tag_bytes="$(mktemp)"
+        tag_payload="$(mktemp)"
+        git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
+        perl -0777 -e '
+          binmode STDIN;
+          binmode STDOUT;
+          local $/;
+          my $bytes = <STDIN>;
+          my $separator = index($bytes, "\n\n");
+          die "annotated tag header/message separator missing\n" if $separator < 0;
+          print substr($bytes, $separator + 2);
+        ' < "$tag_bytes" > "$tag_payload"
+        cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
+        mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+        test "${#REMOTE_TAG[@]}" -eq 2
+        printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
+        printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
+        test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+        test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
