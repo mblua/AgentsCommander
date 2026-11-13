@@ -34,7 +34,7 @@ impl MailboxPoller {
             .and_then(|name| name.strip_suffix(".json"))
             .ok_or("No source id")?;
         // Derive only from the scanner's basename; reject_message owns payload-id safeguards.
-        let reason_path = parent.join("rejected").join(format!("{id}.reason.txt"));
+        let reason_path = crate::phone::types::outbox_rejected_reason(parent, id);
         let reason = match mailbox_disk::mailbox_path_symlink_metadata(&reason_path) {
             Ok(_) => {
                 let (bytes, _) = crate::path_identity::read_bounded_regular(&reason_path, 4096)?;
