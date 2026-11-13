@@ -59,6 +59,7 @@
     "sanitizing:global_state": "node scripts/sanitizing_global_state.mjs",
     "sanitizing:disk_access": "node scripts/sanitizing_disk_access.mjs",
     "sanitizing:process_env": "node scripts/sanitizing_process_env.mjs",
+    "sanitizing:lock_poison": "node scripts/sanitizing_lock_poison.mjs",
     "sanitizing:self": "node --test scripts/sanitizing_self_tests.mjs",
     "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
     "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
