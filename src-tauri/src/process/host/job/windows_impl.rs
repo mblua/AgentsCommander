@@ -48,15 +48,19 @@ pub struct JobObject {
     handle: HANDLE,
 }
 
-// A HANDLE is an opaque kernel handle, safe to use and close from any thread;
-// the value is only moved into PtyInstance and read back out under a Mutex.
+// SAFETY: Windows job handles may be used and closed from any thread. JobObject
+// owns the handle from create(); moving it transfers the sole Drop responsibility.
 unsafe impl Send for JobObject {}
+// SAFETY: shared JobObject methods only call thread-safe Windows job APIs on the
+// owned handle. Drop requires exclusive ownership, so it cannot close a borrowed handle.
 unsafe impl Sync for JobObject {}
 
 impl JobObject {
     fn create() -> Result<Self, &'static str> {
-        // SAFETY: the returned handle is null-checked and then owned by
-        // `JobObject`; the information buffer is initialized before use.
+        // SAFETY: CreateJobObjectW accepts null attributes/name. Its null-checked
+        // result is owned by `job`. All fields of JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        // admit zero; initialized `info` lives through SetInformationJobObject and its
+        // supplied class and byte size match that struct.
         unsafe {
             let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if handle.is_null() {
@@ -79,8 +83,9 @@ impl JobObject {
     }
 
     fn assign(&self, pid: u32) -> Result<(), &'static str> {
-        // SAFETY: the process handle is null-checked and closed on every
-        // path; `self.handle` remains owned by this JobObject.
+        // SAFETY: OpenProcess accepts the numeric pid and requested access flags;
+        // its null-checked result has the rights AssignProcessToJobObject requires and
+        // is closed exactly once after assignment. self borrows the live owned job handle.
         unsafe {
             let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
             if process.is_null() {
@@ -136,7 +141,8 @@ impl JobObject {
     }
 
     pub(crate) fn terminate_checked(&self) -> std::io::Result<()> {
-        // SAFETY: `self.handle` is a valid job handle owned by `self`.
+        // SAFETY: create() stores a non-null CreateJobObjectW handle in self; this
+        // borrow keeps it open through TerminateJobObject, which accepts exit code 1.
         if unsafe { TerminateJobObject(self.handle, 1) } == 0 {
             Err(std::io::Error::last_os_error())
         } else {
@@ -147,9 +153,12 @@ impl JobObject {
     /// Query the authoritative Job Object active-member count. Callers use
     /// this only after dropping every owner-held direct-process reference.
     pub(crate) fn active_processes(&self) -> std::io::Result<u32> {
+        // SAFETY: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION consists entirely of integer
+        // fields, for which zero is valid; QueryInformationJobObject fills it before use.
         let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: the output buffer has the exact information-class layout
-        // and remains valid for the duration of the call.
+        // SAFETY: self borrows the job handle owned since create(). `accounting` is
+        // writable storage of the exact class and size passed to QueryInformationJobObject;
+        // null return-length is permitted and the output is read only on nonzero success.
         let ok = unsafe {
             QueryInformationJobObject(
                 self.handle,
@@ -169,8 +178,10 @@ impl JobObject {
 }
 
 fn sole_primary_thread(pid: u32) -> Result<u32, &'static str> {
-    // SAFETY: standard ToolHelp enumeration; the snapshot is closed before
-    // return and THREADENTRY32 has dwSize initialized as required.
+    // SAFETY: CreateToolhelp32Snapshot accepts TH32CS_SNAPTHREAD with pid 0;
+    // INVALID_HANDLE_VALUE is rejected before enumeration. THREADENTRY32 has only integer
+    // fields (zero is valid), and dwSize is set before Thread32First/Next write it. The
+    // snapshot stays open through enumeration and is closed once on either return path.
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if snapshot == INVALID_HANDLE_VALUE {
@@ -197,8 +208,9 @@ fn sole_primary_thread(pid: u32) -> Result<u32, &'static str> {
 
 fn resume_primary_thread(pid: u32) -> Result<(), &'static str> {
     let tid = sole_primary_thread(pid)?;
-    // SAFETY: the thread handle is null-checked and closed after the one
-    // resume operation. A suspended spawn must report a prior count of one.
+    // SAFETY: sole_primary_thread supplies the numeric tid. OpenThread requests
+    // THREAD_SUSPEND_RESUME; its null-checked result has ResumeThread access and stays
+    // open through the call, then CloseHandle consumes it once. No pointers are passed.
     unsafe {
         let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, tid);
         if thread.is_null() {
@@ -534,9 +546,9 @@ pub(crate) async fn spawn_suspended_contained(
 
 impl Drop for JobObject {
     fn drop(&mut self) {
-        // SAFETY: `self.handle` is a valid job handle owned by `self`. Closing
-        // the last handle to a KILL_ON_JOB_CLOSE job terminates the remaining
-        // tree, so this doubles as the hard-exit safety net.
+        // SAFETY: create() gives this JobObject sole ownership of its non-null job
+        // handle; Drop has exclusive access and closes it once. Windows permits CloseHandle
+        // from any thread, including the thread to which JobObject was moved.
         unsafe {
             let _ = CloseHandle(self.handle);
         }

@@ -253,7 +253,9 @@ impl TargetProcessOwner {
         }
         #[cfg(unix)]
         if !cleanup_required && self.pgid > 0 {
-            // SAFETY: the retained positive group belongs to this step.
+            // SAFETY: spawn_native records pgid via i32::try_from(child.id()); the > 0
+            // guard makes -self.pgid representable. kill accepts that group selector and SIGKILL
+            // without accessing caller memory.
             unsafe {
                 libc::kill(-self.pgid, libc::SIGKILL);
             }
@@ -324,7 +326,8 @@ impl TargetProcessOwner {
         }
         #[cfg(unix)]
         if cleanup_required && self.pgid > 0 {
-            // SAFETY: the group was created for this updater step.
+            // SAFETY: self.pgid > 0 makes its negation a representable group
+            // selector. kill accepts SIGKILL and has no caller-memory arguments.
             let result = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
             if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
                 defects.push(format!(
@@ -362,7 +365,8 @@ impl TargetProcessOwner {
                         }
                         #[cfg(unix)]
                         if self.pgid > 0 {
-                            // SAFETY: this remains the retained group identity.
+                            // SAFETY: self.pgid > 0 makes its negation a valid group selector.
+                            // kill accepts SIGKILL and takes no pointers into Rust memory.
                             unsafe {
                                 libc::kill(-self.pgid, libc::SIGKILL);
                             }
