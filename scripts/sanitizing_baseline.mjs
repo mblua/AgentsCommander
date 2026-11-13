@@ -22,7 +22,7 @@ function resolveGitExecutable({ cwd, env }) {
   const searchPath = (pathKey === undefined ? undefined : env[pathKey]) ??
     (windows ? process.env.PATH : '/usr/bin:/bin');
   const unavailable = detail => new GateError(
-    `Git executable unavailable${detail ? `: ${detail}` : ''}; install Git/check PATH`);
+    `Git executable unavailable${detail ? ': ' + detail : ''}; install Git/check PATH`);
   // Search only the configured PATH; no implicit Windows cwd-first lookup.
   for (let directory of (searchPath ?? '').split(path.delimiter)) {
     if (windows && directory.startsWith('"') && directory.endsWith('"'))

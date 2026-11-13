@@ -213,7 +213,7 @@ export function isQuotaSource(v: unknown): v is QuotaSourceConfig {
  *  names /bin/bash, the backend's non-Windows default
  *  (src-tauri/src/config/settings.rs). Pure literals: no filesystem access. */
 const WINDOWS_DEFAULT_SHELL_HINT =
-  "Not a complete executable path. Enter the complete path to the shell executable, for example: C:\\Program Files\\Git\\bin\\bash.exe. We recommend bash.exe from Git Bash.";
+  String.raw`Not a complete executable path. Enter the complete path to the shell executable, for example: C:\Program Files\Git\bin\bash.exe. We recommend bash.exe from Git Bash.`;
 const POSIX_DEFAULT_SHELL_HINT =
   "Not a complete executable path. Enter the complete path to the shell executable, for example: /bin/bash.";
 
@@ -244,16 +244,24 @@ const TABS: { key: SettingsTab; label: string }[] = [
  * precedent for an auxiliary window requesting its own section is broken. `"watchers"` is
  * wired because the activity window's day-one empty state depends on it.
  */
-export const resolveSettingsSection = (s: string | undefined): SettingsTab =>
-  s === "agents" || s === "profiles"
-    ? "agents"
-    : s === "integrations"
-      ? "integrations"
-      : s === "watchers"
-        ? "watchers"
-        : s === "context-history" && isTauri
-          ? "context-history"
-          : "general";
+export const resolveSettingsSection = (s: string | undefined): SettingsTab => {
+  if (s === "agents" || s === "profiles") return "agents";
+  if (s === "integrations") return "integrations";
+  if (s === "watchers") return "watchers";
+  return s === "context-history" && isTauri ? "context-history" : "general";
+};
+
+/** Env row state: managed rows first, then the enabled flag. */
+const envRowState = (readOnly: boolean, enabled: boolean): string => {
+  if (readOnly) return "managed";
+  return enabled ? "enabled" : "disabled";
+};
+
+/** Env row checkbox state: disabled when managed, else the checked flag. */
+const envCheckboxState = (readOnly: boolean, enabled: boolean): string => {
+  if (readOnly) return "disabled";
+  return enabled ? "checked" : "unchecked";
+};
 
 const BYTES_PER_GIB = 1024 ** 3;
 const CONTAINER_IMAGE_EXAMPLE = "agentscommander/ac-claude:latest";
@@ -359,7 +367,7 @@ function parseTypingHoldSeconds(raw: string): number | null {
 
 function parseResponseCloseIdleSeconds(raw: string): number | null {
   const text = raw.trim();
-  if (!/^[0-9]+$/.test(text)) return null;
+  if (!/^\d+$/.test(text)) return null;
   const value = Number(text);
   return Number.isSafeInteger(value) && value >= RESPONSE_CLOSE_IDLE_SECONDS_MIN && value <= RESPONSE_CLOSE_IDLE_SECONDS_MAX
     ? value
@@ -368,7 +376,7 @@ function parseResponseCloseIdleSeconds(raw: string): number | null {
 
 function parseRoomIdleConfirmationSeconds(raw: string): number | null {
   const text = raw.trim();
-  if (!/^[0-9]+$/.test(text)) return null;
+  if (!/^\d+$/.test(text)) return null;
   const value = Number(text);
   return Number.isSafeInteger(value) && value >= ROOM_IDLE_CONFIRMATION_SECONDS_MIN && value <= ROOM_IDLE_CONFIRMATION_SECONDS_MAX
     ? value
@@ -957,6 +965,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const apiServerStatusAddress = () => {
     const source = apiServerRunning() ? (modalSeed() ?? settings.data) : settings.data;
     return source ? `${source.apiServerBind}:${source.apiServerPort}` : "";
+  };
+  const apiServerToggleState = () => {
+    if (apiServerBusy()) return "updating";
+    return apiServerChecked() ? "checked" : "unchecked";
+  };
+  const apiServerStatusState = () => {
+    if (apiServerBusy()) return "updating";
+    return apiServerRunning() ? "running" : "stopped";
+  };
+  const apiServerStatusText = () => {
+    if (apiServerBusy()) return "Updating...";
+    return apiServerRunning() ? `Running on ${apiServerStatusAddress()}` : "Stopped";
   };
 
   const saveCurrentSettingsDraft = async (): Promise<AppSettings> => {
@@ -1573,7 +1593,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!pendingOrder()) return;
     const onInteractionOutside = (e: Event) => {
       const grip = (e.target as Element | null)?.closest?.(".settings-agent-drag-handle");
-      const gripAgentId = grip?.closest(".settings-agent-row")?.getAttribute("data-ac-agent-id");
+      const gripAgentId = grip?.closest<HTMLElement>(".settings-agent-row")?.dataset.acAgentId;
       if (gripAgentId && gripAgentId === kbdGrabbedId()) return;
       cancelPickUp("Move cancelled, order restored.");
     };
@@ -1928,7 +1948,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const agentId = settings.data.agents[index]?.id;
     if (!agentId || !pendingQuotaSeed.has(agentId)) return;
     if (settings.data.quotaSources && agentId in settings.data.quotaSources) return;
-    const seeded = defaultQuotaSourceForNewAgent(String(value));
+    const seeded = defaultQuotaSourceForNewAgent(String(value as string));
     if (!seeded) return;
     setQuotaSource(agentId, seeded);
     pendingQuotaSeed.delete(agentId);
@@ -3100,6 +3120,23 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-testid="settings.general.screenshotCaptureHotkey"
                 />
               </label>
+              <label data-ac-setting="screenshotHyprlandBind" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.screenshotHyprlandBind ?? false}
+                  onChange={(e) =>
+                    updateField("screenshotHyprlandBind", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.screenshotHyprlandBind"
+                />
+                <span class="settings-label">Add the screenshot shortcut to Hyprland for me</span>
+              </label>
+              <div class="settings-hint">
+                Linux with Hyprland (Omarchy): AgentsCommander writes its own marked lines in
+                ~/.config/hypr/bindings.lua and keeps them in step with the key above. Turn off
+                to remove them.
+              </div>
               <label data-ac-setting="sidebarCompactHotkey" class="settings-field">
                 <span class="settings-label">Compact sidebar hotkey</span>
                 <input
@@ -3536,13 +3573,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   }}
                   data-ac-testid="settings.general.apiServerEnabled"
                   data-ac-role="checkbox"
-                  data-ac-state={
-                    apiServerBusy()
-                      ? "updating"
-                      : apiServerChecked()
-                        ? "checked"
-                        : "unchecked"
-                  }
+                  data-ac-state={apiServerToggleState()}
                 />
                 <span>Enable API server</span>
               </label>
@@ -3592,13 +3623,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 class="settings-hint"
                 data-ac-testid="settings.general.apiServerStatus"
                 data-ac-role="status"
-                data-ac-state={apiServerBusy() ? "updating" : apiServerRunning() ? "running" : "stopped"}
+                data-ac-state={apiServerStatusState()}
               >
-                {apiServerBusy()
-                  ? "Updating..."
-                  : apiServerRunning()
-                    ? `Running on ${apiServerStatusAddress()}`
-                    : "Stopped"}
+                {apiServerStatusText()}
               </div>
               <div
                 class="settings-api-client-mint"
@@ -3903,7 +3930,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   aria-label={readOnly() ? "Variable seteada por AgentsCommander" : undefined}
                   data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}`}
                   data-ac-role="row"
-                  data-ac-state={readOnly() ? "managed" : row.enabled ? "enabled" : "disabled"}
+                  data-ac-state={envRowState(readOnly(), row.enabled)}
                   data-ac-env-source={row.source}
                 >
                   <input
@@ -3936,7 +3963,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                       onChange={(e) => updateAgentEnv(agentIndex, rowIndex(), "enabled", e.currentTarget.checked)}
                       data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.enabled`}
                       data-ac-role="checkbox"
-                      data-ac-state={readOnly() ? "disabled" : row.enabled ? "checked" : "unchecked"}
+                      data-ac-state={envCheckboxState(readOnly(), row.enabled)}
                     />
                   </label>
                   <button

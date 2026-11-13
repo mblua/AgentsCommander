@@ -218,6 +218,10 @@ body,
 
 .watchers-col-time {
   width: 78px;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  white-space: nowrap;
 }
 
 .watchers-col-watcher {
@@ -256,13 +260,6 @@ body,
 .watchers-row td {
   padding: var(--spacing-xs) var(--spacing-md);
   vertical-align: top;
-}
-
-.watchers-col-time {
-  font-family: "Cascadia Code", "JetBrains Mono", monospace;
-  font-size: var(--font-size-sm);
-  color: var(--sidebar-fg-dim);
-  white-space: nowrap;
 }
 
 .watchers-mode {

@@ -18,10 +18,10 @@ const HASH = /^[a-f0-9]{64}$/;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = 'clippy-seven.baseline.json';
 const TEMP = '.github/workflows/clippy-seven-measurement.yml';
-const OWNER = [BASELINE, 'scripts/check-clippy-seven.mjs',
+const OWNER = new Set([BASELINE, 'scripts/check-clippy-seven.mjs',
   'scripts/check-clippy-seven.test.mjs', 'package.json',
   '.github/workflows/pr-regression-gates.yml',
-  'docs/quality/clippy-seven-gate.md'];
+  'docs/quality/clippy-seven-gate.md']);
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const order = (a, b) => {
@@ -69,7 +69,10 @@ export function parseJSON(text) {
     need(i > start, 'missing JSON value');
   };
   try { value(); ws(); need(i === text.length, 'trailing JSON content'); return JSON.parse(text); }
-  catch (e) { if (e instanceof InputError) throw e; throw new InputError('invalid JSON'); }
+  catch (e) {
+    if (e instanceof InputError) throw e;
+    throw new InputError('invalid JSON');
+  }
 }
 const document = file => parseJSON(fs.readFileSync(file, 'utf8'));
 function git(root, args) {
@@ -235,7 +238,7 @@ export function baselineDiff(ref, root = ROOT) {
     need(['origin/main', 'refs/remotes/origin/main'].includes(ref), 'adoption needs origin/main');
     need(!git(root, ['ls-tree', 'origin/main', '--', BASELINE]), 'main already adopted baseline');
     historical(root, b);
-    need(s.changed.every(c => OWNER.includes(c.path)), 'unapproved initial authored scope');
+    need(s.changed.every(c => OWNER.has(c.path)), 'unapproved initial authored scope');
   }
   s.assertStableHead();
 }
@@ -269,15 +272,15 @@ function environment(root, output) {
   fs.writeFileSync(output, json({ environment: values, configs,
     externalConfiguration: 'standard CI runner; no external config attestation' }));
   for (const c of configs) {
-    need(!/\[env(?:\.|\])|(?:rustflags|rustc(?:-wrapper|-workspace-wrapper)?)\s*=/
+    need(!/\[env[.\]]|(?:rustflags|rustc(?:-wrapper|-workspace-wrapper)?)\s*=/
       .test(c.text), `unexplained Cargo configuration ${c.file}`);
   }
   need(values.CLIPPY_CONF_DIR === null, 'CLIPPY_CONF_DIR must be absent');
   for (const [key, value] of Object.entries(values)) {
     if (!value) continue;
     if (/FLAGS|CLIPPY_ARGS/.test(key)) {
-      need(!/cap-lints|clippy|(?:^|\s)-(?:A|W|D|F)|--(?:allow|warn|deny|forbid)/
-        .test(value.replaceAll(String.fromCharCode(31), ' ')), `unexplained lint override ${key}`);
+      need(!/cap-lints|clippy|(?:^|\s)-[ADFW]|--(?:allow|warn|deny|forbid)/
+        .test(value.replaceAll(String.fromCodePoint(31), ' ')), `unexplained lint override ${key}`);
     } else if (/WRAPPER/.test(key)) {
       need(/^sccache(?:\.exe)?$/.test(path.basename(value)), `unknown wrapper ${key}`);
     } else if (key.endsWith('RUSTC')) {
@@ -344,7 +347,7 @@ export function workflowContract(text) {
     const job = host === 'windows' ? 'rust-regression-windows' : 'clippy-linux';
     const start = text.indexOf(`\n  ${job}:`);
     need(start >= 0, `missing native host ${host}`);
-    const rest = text.slice(start + 1), next = rest.slice(1).search(/\n  [a-z][\w-]*:/);
+    const rest = text.slice(start + 1), next = rest.slice(1).search(/\n {2}[a-z][\w-]*:/);
     const body = next < 0 ? rest : rest.slice(0, next + 1);
     const captureStart = body.indexOf('      - name: cargo clippy\n');
     const gateStart = body.indexOf('      - name: Seven-lint gate\n');

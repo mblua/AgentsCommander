@@ -161,6 +161,21 @@ describe("EditLoopModal", () => {
     vi.useRealTimers();
   });
 
+  it("keeps checkbox label text unchanged", async () => {
+    renderModal();
+    await settle();
+
+    const checkboxText = Array.from(
+      document.querySelectorAll("label.loop-checkbox-field"),
+      (label) => label.textContent,
+    );
+    expect(checkboxText).toEqual([
+      "Enabled",
+      "Force inject even if orchestrator is busy",
+      "Continue the previous conversation each run",
+    ]);
+  });
+
   it("loads the full prompt body and sends an empty payload for a no-op save", async () => {
     renderModal();
     await settle();

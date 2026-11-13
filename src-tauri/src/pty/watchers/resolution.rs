@@ -240,7 +240,10 @@ impl ResolutionLog {
             return 0;
         }
         let mut written = 0;
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for notice in notices {
             let changed = last
                 .get(&notice.subject)

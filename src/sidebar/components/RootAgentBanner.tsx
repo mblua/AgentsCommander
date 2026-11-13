@@ -14,7 +14,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
-import type { Session, TelegramBotConfig } from "../../shared/types";
+import type { MainSidebarSide, Session, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
@@ -39,7 +39,7 @@ import {
   sidebarCompact,
   toggleSidebarCompact,
 } from "../../shared/sidebar-compact";
-import type { MainSidebarSide } from "../../shared/types";
+
 
 // #2236 D23 - a click whose target sits inside one of these is a nested
 // control's own click and must not also activate the row.
@@ -373,12 +373,16 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     }
   };
 
-  const rowLabel = () =>
-    rootSession()
-      ? typeof rootSession()!.status === "string"
-        ? "Open Root Agent session"
-        : "Wake Root Agent session"
-      : "Create Root Agent session";
+  const rowLabel = () => {
+    if (!rootSession()) return "Create Root Agent session";
+    return typeof rootSession()!.status === "string"
+      ? "Open Root Agent session"
+      : "Wake Root Agent session";
+  };
+  const bannerState = () => {
+    if (!rootSession()) return "missing";
+    return hasLivePty() ? "live" : "dormant";
+  };
   const toggleLabel = () =>
     `${compact() ? "Expand" : "Collapse"} sidebar (${currentHotkey()})`;
 
@@ -406,7 +410,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
         }
         data-ac-testid="rootAgent.banner"
         data-ac-role="button"
-        data-ac-state={rootSession() ? (hasLivePty() ? "live" : "dormant") : "missing"}
+        data-ac-state={bannerState()}
       >
         <button
           type="button"

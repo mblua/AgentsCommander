@@ -84,6 +84,21 @@ pub(crate) fn validate_saved_screenshot(
     Ok(canonical)
 }
 
+/// #2774 Read the portal's screenshot file: a regular file (no symlink), at most
+/// `max_bytes`. Never writes or deletes it.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_portal_screenshot(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("could not read the portal screenshot: {e}"))?;
+    if !meta.is_file() {
+        return Err("portal screenshot is not a regular file".to_string());
+    }
+    if meta.len() > max_bytes {
+        return Err("portal screenshot is too large".to_string());
+    }
+    std::fs::read(path).map_err(|e| format!("could not read the portal screenshot: {e}"))
+}
+
 /// Remove only the supplied partial screenshot.
 pub(crate) fn remove_partial_screenshot(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)

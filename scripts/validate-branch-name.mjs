@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolveGit } from './resolve-git.mjs';
 
-const PATTERN          = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9][0-9]*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const PATTERN          = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9]\d*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const MAX_SLUG         = 50;
 const TARGET_REPO      = 'mblua/AgentsCommander';
 const CUTOFF_SHA_PATH  = '.github/branch-name-enforcement.cutoff.sha';
@@ -138,23 +138,21 @@ async function verifyIssueOpen(issue) {
     `Issue #${issue} is ${printable(data.state)}. Branch must reference an OPEN issue.`);
 }
 
-void (async () => {
-  try {
-    const args   = parseArgs(process.argv.slice(2));
-    try { resolveGit(); } catch (e) { die(printable(e.message)); }
-    const branch = args.branch || resolveBranch();
+try {
+  const args   = parseArgs(process.argv.slice(2));
+  try { resolveGit(); } catch (e) { die(printable(e.message)); }
+  const branch = args.branch || resolveBranch();
 
-    if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0);
-      }
-    if (isGrandfathered(branch)) { console.log(
-      `[branch-name] grandfathered (cut before enforcement): ${branch}`); process.exit(0); }
+  if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0);
+    }
+  if (isGrandfathered(branch)) { console.log(
+    `[branch-name] grandfathered (cut before enforcement): ${branch}`); process.exit(0); }
 
-    const { issue } = validateFormat(branch);
-    if (args.checkIssue) await verifyIssueOpen(issue);
+  const { issue } = validateFormat(branch);
+  if (args.checkIssue) await verifyIssueOpen(issue);
 
-    console.log(`[branch-name] OK: ${branch}`);
-    process.exit(0);
-  } catch (err) {
-    die(`Unexpected error: ${printable(err?.message || err)}`);
-  }
-})();
+  console.log(`[branch-name] OK: ${branch}`);
+  process.exit(0);
+} catch (err) {
+  die(`Unexpected error: ${printable(err?.message || err)}`);
+}

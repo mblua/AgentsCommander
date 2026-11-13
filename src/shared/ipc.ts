@@ -4,7 +4,6 @@ import {
   measurePtyViewport,
   rememberSpawnViewport,
   resetUiTerminalControllerForTests,
-  type UiTerminalOperation,
 } from "./terminal-viewport";
 import type {
   ListenOptions,
@@ -156,7 +155,7 @@ import type {
 import { createPreflightTestAPI } from "./preflightTestApi";
 import { decodeSessionSelection } from "./session-selection";
 
-export type { UiTerminalOperation };
+export type { UiTerminalOperation } from "./terminal-viewport";
 
 export interface SessionRepoInput {
   label: string;
@@ -917,7 +916,7 @@ export interface RailDiagnosticRecord {
   selectionProjectId?: number;
   selectionGroupId?: number;
   kind?: "custom" | "system" | "nonstop" | "ungrouped" | "project" | "favorites";
-  selectionKind?: RailDiagnosticRecord["kind"];
+  selectionKind?: NonNullable<RailDiagnosticRecord["kind"]>;
   phase?: "arming" | "dragging" | "saving" | "idle";
   outcome?: "applied" | "unchanged" | "stale" | "error" | "disconnected" | "unloaded" |
     "queued" | "discarded" | "suppressed" | "overflow" | "no-press";
@@ -930,7 +929,7 @@ export interface RailDiagnosticRecord {
   captured?: boolean;
   documentFocused?: boolean;
   targetTag?: "button" | "span" | "svg" | "path" | "aside" | "body" | "input" | "textarea" | "other" | "none";
-  activeTag?: RailDiagnosticRecord["targetTag"];
+  activeTag?: NonNullable<RailDiagnosticRecord["targetTag"]>;
   count?: number;
   changedCount?: number;
   durationMs?: number;
@@ -1066,6 +1065,7 @@ export const ScreenshotAPI = {
     }),
   cancel: (captureId: string) =>
     transport.invoke<void>("screenshot_cancel_capture", { captureId }),
+  startCapture: () => transport.invoke<void>("screenshot_start_capture"),
   getHotkeyStatus: () =>
     transport.invoke<ScreenshotHotkeyStatus>("screenshot_get_hotkey_status"),
   reloadHotkey: () =>
@@ -1883,6 +1883,16 @@ export function onScreenshotCaptureFailed(
 ): Promise<UnlistenFn> {
   return transport.listen<ScreenshotCaptureFailedEvent>(
     "screenshot_capture_failed",
+    callback
+  );
+}
+
+/** #2774 Final Wayland hotkey status (after startup and after each Settings save). */
+export function onScreenshotHotkeyStatusChanged(
+  callback: (status: ScreenshotHotkeyStatus) => void
+): Promise<UnlistenFn> {
+  return transport.listen<ScreenshotHotkeyStatus>(
+    "screenshot_hotkey_status_changed",
     callback
   );
 }

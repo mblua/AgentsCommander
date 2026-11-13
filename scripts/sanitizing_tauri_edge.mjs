@@ -4,7 +4,10 @@ import { runMeasuredGate, metric, hit, warning, occurrenceIdentity,
   resolveAlias as resolveGateAlias,
   qualified as qualifiedGatePath } from './sanitizing_gate_support.mjs';
 
-const relevantPath = new RegExp("^(?:tauri(?:::|$)|(?:(?:std|tokio)::)?fs::|(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$))");
+const TAURI_PATH = /tauri(?:::|$)/.source;
+const FS_PATH = /(?:(?:std|tokio)::)?fs::/.source;
+const FS_ITEM = /(?:(?:std|tokio)::fs::)?(?:AppHandle|File|OpenOptions|read_dir)(?:::|$)/.source;
+const relevantPath = new RegExp(`^(?:${TAURI_PATH}|${FS_PATH}|${FS_ITEM})`);
 function resolveAlias(scan, input, scope) {
   return resolveGateAlias(scan, input, scope, relevantPath);
 }
@@ -70,11 +73,11 @@ function measure(path, scan, receivers) {
         warning(m, path, t.line, { ambiguous: true, reason: proof.reason });
       if (proof.kind !== PROVEN_PORT) record('emit_files', t);
     }
-    if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
-      ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') record('state_files',t);
-    else if (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
+    if ((t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
+      ts[i + 2]?.text === '::' && ts[i + 3]?.text === '<') ||
+      (t.text === '.' && ['state','try_state'].includes(ts[i + 1]?.name) &&
       ts[i + 2]?.text === '(' && ts[i + 2].mate === ts[i + 3]?.index &&
-      receivers?.proveState(path, scan, t).proved === true) record('state_files',t);
+      receivers?.proveState(path, scan, t).proved === true)) record('state_files',t);
     if (t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
       ts[i - 2]?.kind === 'ident')) continue;
     const r = qualified(scan,ts,i), value = r.path ?? (r.ambiguous ? r.raw : '');

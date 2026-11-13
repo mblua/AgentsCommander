@@ -115,6 +115,7 @@ static ROOM_IDLE_CONFIRMATION_HOTKEY: Mutex<(Vec<String>, bool)> = Mutex::new((V
 fn room_idle_confirmation_register_hotkey(
     _: &tauri::AppHandle,
     hotkey: &str,
+    _hyprland_bind: bool,
 ) -> Result<(), String> {
     let mut state = ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap();
     state.0.push(hotkey.to_string());

@@ -7,7 +7,7 @@ export function createArchiveIpcMock({ projectMethods }: { projectMethods: Proje
   return {
     getTransportConnectionState: () => ({ state: "connected", generation: 0 }),
     TaskAPI: {
-      getSnapshotAt: vi.fn(async (workgroupRoot: string): Promise<TaskSnapshot> => ({
+      getSnapshotAt: vi.fn((workgroupRoot: string): Promise<TaskSnapshot> => Promise.resolve({
         workgroupRoot,
         task: null,
         taskTitle: null,

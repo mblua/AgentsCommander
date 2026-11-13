@@ -42,8 +42,9 @@ const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
 
 function normalizePathForCompare(path: string): string {
   let normalized = path;
-  if (normalized.startsWith("\\\\?\\")) normalized = normalized.slice(4);
-  else if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+  if (normalized.startsWith("\\\\?\\") || normalized.startsWith("//?/")) {
+    normalized = normalized.slice(4);
+  }
   return normalized.replaceAll("\\", "/").toLowerCase();
 }
 
@@ -411,18 +412,18 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     return "No active session";
   });
 
+  const layoutState = () => {
+    if (terminalStore.activeSessionId) return "active";
+    if (terminalStore.selectionMode === "dormant") return "dormant";
+    return terminalStore.bindingState;
+  };
+
   return (
     <div
       class="terminal-layout"
       data-ac-testid="terminal.root"
       data-ac-role="surface"
-      data-ac-state={
-        terminalStore.activeSessionId
-          ? "active"
-          : terminalStore.selectionMode === "dormant"
-            ? "dormant"
-            : terminalStore.bindingState
-      }
+      data-ac-state={layoutState()}
     >
       <Show when={!props.embedded}>
         <Titlebar detached={props.detached} lockedSessionId={props.lockedSessionId} />

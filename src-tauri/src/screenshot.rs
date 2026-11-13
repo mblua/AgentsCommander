@@ -117,6 +117,10 @@ pub struct ScreenshotCaptureEvent {
 pub trait ScreenshotEvents {
     fn capture_saved(&self, result: ScreenshotCaptureResult);
     fn capture_failed(&self, event: ScreenshotCaptureEvent);
+    /// #2774 A Wayland registration reached its final status (the X11, Windows and macOS
+    /// paths decide synchronously and do not emit this).
+    #[cfg(target_os = "linux")]
+    fn hotkey_status_changed(&self, status: ScreenshotHotkeyStatus);
 }
 
 pub trait ScreenshotHotkeyOwner {

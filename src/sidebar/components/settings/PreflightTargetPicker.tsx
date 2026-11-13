@@ -58,6 +58,11 @@ export interface PreflightTargetPickerProps {
   onControl?: (control: PreflightTargetPickerControl) => void;
 }
 
+const optionState = (p: { chosen: boolean; active: boolean }) => {
+  if (p.chosen) return "chosen";
+  return p.active ? "active" : "inactive";
+};
+
 const TargetOption: Component<{
   id: string;
   row: PreflightTestTarget;
@@ -75,7 +80,7 @@ const TargetOption: Component<{
     data-ac-testid={`settings.preflightTest.target.option.${props.index}`}
     data-ac-role="text"
     data-ac-detail={props.row.replicaPath}
-    data-ac-state={props.chosen ? "chosen" : props.active ? "active" : "inactive"}
+    data-ac-state={optionState(props)}
     onMouseDown={(e) => e.preventDefault()}
     onClick={() => props.onChoose(props.row)}
   >

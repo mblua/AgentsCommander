@@ -30,22 +30,22 @@ const BACKEND_OWNED_COMPLETION_COMMANDS = new Set<string>([
 /** A uniform integer in [0, bound) from the Web Crypto CSPRNG (reconnect jitter). */
 function randomJitter(bound: number): number {
   const [value] = crypto.getRandomValues(new Uint32Array(1));
-  return Math.floor((value / 0x1_0000_0000) * bound);
+  return Math.floor((value / 0x100000000) * bound);
 }
 
 export class WsTransport implements Transport {
   private ws: WebSocket | null = null;
   private nextId = 1;
-  private pending = new Map<number, PendingRequest>();
-  private listeners = new Map<string, Set<(payload: unknown) => void>>();
+  private readonly pending = new Map<number, PendingRequest>();
+  private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
   private reconnectDelay = 1000;
-  private maxReconnectDelay = 10000;
+  private readonly maxReconnectDelay = 10000;
   private connected = false;
   private generation = 0;
-  private connectionListeners = new Set<(state: TransportConnectionState) => void>();
+  private readonly connectionListeners = new Set<(state: TransportConnectionState) => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
-  private url: string;
+  private readonly url: string;
 
   constructor() {
     const params = new URLSearchParams(window.location.search);

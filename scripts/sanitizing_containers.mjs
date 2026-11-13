@@ -9,7 +9,7 @@ const writerPath = new RegExp('^(?:(?:std|tokio)::fs::(?:write|File::create|Open
   '(?:fs::)?write|(?:File::create|OpenOptions::new))$');
 const rustSource = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 const validPath = p => typeof p === 'string' && p.startsWith('src-tauri/src/') &&
-  !p.includes('..') && !p.includes(String.fromCharCode(92)) &&
+  !p.includes('..') && !p.includes(String.fromCodePoint(92)) &&
   !p.includes('//') && !p.split('/').includes('.');
 export function parseRegistry(text) {
   let doc;
@@ -45,7 +45,7 @@ const settingsPaths = ['', 'names::'].flatMap(prefix => settingsNames.map(name =
 const owns = (c, p) => p === c.owner || c.ownerModule && p.startsWith(c.owner.slice(0, -3) + '/');
 const rustPath = /^(?:crate|self|super|[A-Za-z_]\w*)(?:::[A-Za-z_]\w*)*$/;
 const settingsPolicy = 'instance-settings-v1', artifactsPolicy = 'instance-artifacts-v1';
-const metadataFiles = [artifactRoot + '.rs', artifactRoot + '/names.rs'];
+const metadataFiles = new Set([artifactRoot + '.rs', artifactRoot + '/names.rs']);
 function validatePolicy(c) {
   if (c.metadataPolicy === artifactsPolicy) {
     if (c.literalScope === undefined || c.ownerModule !== undefined ||
@@ -78,14 +78,14 @@ function canonical(path, chain) {
   const parts = path.replace(/^::/, '').split('::'), root = [...chain];
   if (parts[0] === 'crate') return parts.join('::');
   if (parts[0] === 'self') parts.shift();
-  while (parts[0] === 'super') { if (!root.length) return null; root.pop(); parts.shift(); }
+  while (parts[0] === 'super') { if (!root.length) { return null; } root.pop(); parts.shift(); }
   return ['crate', ...root, ...parts].join('::');
 }
 const tokenText = ts => ts.map(t => t.kind === 'string' ? JSON.stringify(t.value) :
   t.name ?? t.text).join(' ');
 function metadataExemptions(path, scan, c) {
   const exempt = new Set();
-  if (c.metadataPolicy !== settingsPolicy || !metadataFiles.includes(path)) return exempt;
+  if (c.metadataPolicy !== settingsPolicy || !metadataFiles.has(path)) return exempt;
   const production = new Set(scan.productionTokens);
   const items = scan.items.filter(i => !i.testOnly && i.scope === scan.root);
   const tokens = i => scan.tokens.slice(i.first, i.last + 1);
@@ -175,20 +175,21 @@ function metadataExemptions(path, scan, c) {
 
 // instance-artifacts-v1: a container name may appear in instance metadata only as the
 // exact `const X: &str = "<name>";` in names.rs or as an INSTANCE_ARTIFACTS row name.
-const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 function artifactExemptions(path, scan, c) {
   const exempt = new Set();
-  if (c.metadataPolicy !== artifactsPolicy || !metadataFiles.includes(path)) return exempt;
+  if (c.metadataPolicy !== artifactsPolicy || !metadataFiles.has(path)) return exempt;
   const names = path.endsWith('/names.rs'), name = escapeRegex(JSON.stringify(c.name));
-  const shape = names ? new RegExp('^const [A-Za-z_]\\w* : & str = ' + name + ' ;$') :
-    new RegExp('^InstanceArtifact \\{ name : ' + name + ' , kind : ArtifactKind :: \\w+ , ' +
-      'disposition : Disposition :: \\w+ , comment : "(?:[^"\\\\]|\\\\.)*" , \\}$');
+  const shape = names ? new RegExp(String.raw`^const [A-Za-z_]\w* : & str = ` + name + ' ;$') :
+    new RegExp(String.raw`^InstanceArtifact \{ name : ` + name +
+      String.raw` , kind : ArtifactKind :: \w+ , ` +
+      String.raw`disposition : Disposition :: \w+ , comment : "(?:[^"\\]|\\.)*" , \}$`);
   const production = new Set(scan.productionTokens);
   for (const t of scan.productionTokens) {
     if (t.kind !== 'string' || t.value !== c.name) continue;
     const site = names ? rootItem(scan, t, 'const') : artifactRow(scan, t);
     const ts = site && scan.tokens.slice(site.first, site.last + 1);
-    if (ts && ts.every(x => production.has(x)) && shape.test(tokenText(ts))) exempt.add(t.start);
+    if (ts?.every(x => production.has(x)) && shape.test(tokenText(ts))) exempt.add(t.start);
   }
   return exempt;
 }
@@ -397,7 +398,7 @@ function literalIdentity(value) {
   const literal = value.replaceAll(String.fromCodePoint(92), '/');
   const relative = literal.replace(/^(?:[A-Za-z]:)?\//, '');
   const segments = relative.split('/');
-  const segment = /^(?:[A-Za-z0-9_.*-]|\{(?:[A-Za-z_][A-Za-z0-9_]*)?\})+$/;
+  const segment = /^(?:[\w.*-]|\{(?:[A-Za-z_]\w*)?\})+$/;
   if (segments.some(s => !s || s === '.' || s === '..' ||
       !segment.test(s))) return null;
   return /^.+\.(?:jsonl?|toml|ya?ml|db|sqlite3?|lock|md|txt)$/.test(segments.at(-1))

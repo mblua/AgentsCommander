@@ -2,21 +2,16 @@
 
 // ── Linux display-server detection (#1842) ─────────────────────────────────
 
-/// The refusal message for a Wayland session. The wording is deliberate: it
-/// says *detected as* Wayland, not *is* Wayland, because
-/// [`classify_display_server`] approximates `wl_display_connect(NULL)` and can
-/// produce a false `Wayland` (see its declared false positives). An "is" would
-/// send a user who is already on Xorg to change something that is correct; the
-/// last sentence names the actionable class instead — a stale setting or socket
-/// from an earlier session — without claiming which member fired, because the
-/// classifier cannot tell. The literal `"Xorg"` is asserted by a test.
+/// #2774 The message when the screenshot shortcut could not be registered with
+/// xdg-desktop-portal on Wayland (portal unreachable, or it would not bind the
+/// shortcut). It names the fix (install the desktop's portal backend) and keeps the
+/// Xorg fallback; the literal `"Xorg"` is asserted by a test.
 #[cfg(target_os = "linux")]
-pub const WAYLAND_UNSUPPORTED: &str = "Screenshot capture needs an X11 session, and this one \
-    was detected as Wayland, so the hotkey was not registered. Log out and choose the Xorg \
-    option (on Ubuntu: \"Ubuntu on Xorg\") at the login screen, then start AgentsCommander \
-    again. If you are already on Xorg, a Wayland setting or socket left over from an earlier \
-    session caused this: start AgentsCommander from a fresh login shell, not from a terminal \
-    multiplexer or service that was started under Wayland.";
+pub const WAYLAND_UNSUPPORTED: &str = "Screenshot capture on Wayland needs xdg-desktop-portal \
+    with the Screenshot and GlobalShortcuts portals, and the screenshot shortcut could not be \
+    registered there. Install your desktop's portal backend (on Hyprland: \
+    xdg-desktop-portal-hyprland) and restart AgentsCommander, or log in with an Xorg \
+    session.";
 
 /// The display server the capture path believes it is running under.
 #[cfg(target_os = "linux")]

@@ -88,6 +88,15 @@ vi.mock("../../shared/sound", () => ({
   setSoundsEnabled: vi.fn(),
 }));
 
+vi.mock("../../shared/stores/resourceMonitor", () => ({
+  resourceMonitorStore: {
+    snapshot: null,
+    error: null,
+    startPolling: vi.fn(() => vi.fn()),
+    stopPolling: vi.fn(),
+  },
+}));
+
 vi.mock("../../shared/platform", () => ({
   get isBrowser() {
     return mockState.isBrowser;

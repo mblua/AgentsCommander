@@ -121,7 +121,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 // Absolute local index.html with readable sibling assets; a new absolute output.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn check_paths(fixture: &Path, out: &Path) -> Result<(), String> {
-    let name = fixture.file_name().and_then(|name| name.to_str());
+    let name = fixture.file_name().and_then(std::ffi::OsStr::to_str);
     if !fixture.is_absolute() || name != Some("index.html") {
         return Err("--fixture must be an absolute path to index.html".to_owned());
     }

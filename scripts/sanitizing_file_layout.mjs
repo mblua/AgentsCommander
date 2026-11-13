@@ -7,7 +7,7 @@ import {
   resolveAlias as resolveGateAlias
 } from './sanitizing_gate_support.mjs';
 
-const relevantPath = new RegExp("(?:^|::)(?:test)$");
+const relevantPath = /(?:^|::)(?:test)$/;
 function resolveAlias(scan, input, scope) {
   return resolveGateAlias(scan, input, scope, relevantPath);
 }

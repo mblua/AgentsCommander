@@ -20,7 +20,7 @@ export interface ListenCall {
 
 type InvokeHandler = (
   args: Record<string, unknown>
-) => unknown | Promise<unknown>;
+) => unknown;
 
 interface FakeTransportOptions {
   binaryPty?: boolean;

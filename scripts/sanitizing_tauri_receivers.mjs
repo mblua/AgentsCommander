@@ -6,10 +6,10 @@ export const REAL = 'REAL', PROVEN_PORT = 'PROVEN_PORT', UNKNOWN = 'UNKNOWN';
 
 const TAURI_REAL = /^tauri::(?:[A-Za-z_]+::)*(?:AppHandle|App|Window|WebviewWindow|Emitter)$/;
 const MARKERS = new Map([['Send', 'std::marker::Send'], ['Sync', 'std::marker::Sync']]);
-const ARC = ['std::sync::Arc', 'alloc::sync::Arc'];
+const ARC = new Set(['std::sync::Arc', 'alloc::sync::Arc']);
 const BOUNDARY = new Set([';', '{', '}', '(', ',', '=', '=>']);
 const BOUNDARY_WORDS = new Set(['if', 'return', 'match', 'while', 'in', 'else']);
-const CRATE_ROOTS = ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'];
+const CRATE_ROOTS = new Set(['src-tauri/src/lib.rs', 'src-tauri/src/main.rs']);
 const HARMLESS_ATTRS = new Set(['doc', 'derive', 'allow', 'warn', 'deny', 'expect']);
 
 class Unknown extends Error {}
@@ -297,7 +297,7 @@ export function createReceiverClassifier(context) {
   };
 
   // ---- module ancestry: only `mod x;` declared at a crate-rooted file's top level ----
-  const dirOf = path => CRATE_ROOTS.includes(path) || path.endsWith('/mod.rs')
+  const dirOf = path => CRATE_ROOTS.has(path) || path.endsWith('/mod.rs')
     ? path.slice(0, path.lastIndexOf('/')) : path.slice(0, -3);
   const moduleCache = new Map();
   function childFile(parent, name) {
@@ -326,8 +326,8 @@ export function createReceiverClassifier(context) {
   function moduleOf(path) {
     const rel = path.replace(/^src-tauri\/src\//, '');
     need(rel !== path, 'file outside crate source');
-    const root = CRATE_ROOTS.includes(path) ? path : 'src-tauri/src/lib.rs';
-    if (CRATE_ROOTS.includes(path)) return { root, segments: [] };
+    const root = CRATE_ROOTS.has(path) ? path : 'src-tauri/src/lib.rs';
+    if (CRATE_ROOTS.has(path)) return { root, segments: [] };
     const segments = rel.replace(/(?:\/mod)?\.rs$/, '').split('/');
     need(fileOf(root, segments) === path, 'file not reached through ordinary module tree');
     return { root, segments };
@@ -336,8 +336,8 @@ export function createReceiverClassifier(context) {
   function canonical(target, module) {
     const parts = target.split('::');
     let segments;
-    if (parts[0] === 'crate') segments = [], parts.shift();
-    else if (parts[0] === 'self') segments = [...module.segments], parts.shift();
+    if (parts[0] === 'crate') { segments = []; parts.shift(); }
+    else if (parts[0] === 'self') { segments = [...module.segments]; parts.shift(); }
     else if (parts[0] === 'super') {
       segments = [...module.segments];
       while (parts[0] === 'super') {
@@ -372,9 +372,11 @@ export function createReceiverClassifier(context) {
       const module = { root: location.root, segments: location.segments };
       return traitAt(canonical(binding.target, module), visited);
     }
-    const kinds = ['trait', 'struct', 'enum', 'union', 'type', 'fn', 'const', 'static', 'mod'];
+    const kinds = new Set([
+      'trait', 'struct', 'enum', 'union', 'type', 'fn', 'const', 'static', 'mod',
+    ]);
     const items = scan.items.filter(i => i.name === location.name && i.scope === scan.root &&
-      kinds.includes(i.kind));
+      kinds.has(i.kind));
     need(items.length === 1 && items[0].kind === 'trait', 'name is not a unique trait');
     const item = items[0];
     need(item.attributes.every(a => HARMLESS_ATTRS.has(a.meta.name)),
@@ -391,7 +393,7 @@ export function createReceiverClassifier(context) {
     if (r.binding?.kind === 'import') {
       const target = r.path;
       if (/^tauri(?:::|$)/.test(target)) return { tauri: target };
-      if (ARC.includes(target)) return { arc: true };
+      if (ARC.has(target)) return { arc: true };
       if (/^(?:std|core)::marker::(?:Send|Sync)$/.test(target)) return { marker: target };
       if (/^(?:std|core|alloc)::/.test(target)) return { external: target };
       return { trait: traitAt(canonical(target, module)) };
@@ -403,7 +405,7 @@ export function createReceiverClassifier(context) {
     }
     if (MARKERS.has(text)) return { marker: MARKERS.get(text) };
     if (text.startsWith('tauri::')) return { tauri: text };
-    if (ARC.includes(text)) return { arc: true };
+    if (ARC.has(text)) return { arc: true };
     if (/^(?:crate|self|super)::/.test(text)) return { trait: traitAt(canonical(text, module)) };
     return unknown('unresolved type path: ' + text);
   }
@@ -481,7 +483,7 @@ export function createReceiverClassifier(context) {
   // Only Unknown means the import does not resolve to a trait; other errors propagate.
   function importedTrait(module, target) {
     try { return traitAt(canonical(target, module)); }
-    catch (e) { if (e instanceof Unknown) return null; throw e; }
+    catch (e) { if (e instanceof Unknown) { return null; } throw e; }
   }
   // True when a trait has an impl for a generic, object, reference, Box or Arc target.
   function openImpls(trait) {

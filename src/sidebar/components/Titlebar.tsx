@@ -1,6 +1,11 @@
 import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } from "solid-js";
 import iconUrl from "../../assets/icon-16.png";
-import { InstanceAPI, ScreenshotAPI, SettingsAPI } from "../../shared/ipc";
+import {
+  InstanceAPI,
+  ScreenshotAPI,
+  SettingsAPI,
+  onScreenshotHotkeyStatusChanged,
+} from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { sidebarCompact } from "../../shared/sidebar-compact";
 import { extractWorkgroupName, computeTrailingText } from "../../shared/path-extractors";
@@ -35,9 +40,25 @@ const formatScreenshotHotkeyForDisplay = (canonicalHotkey: string): string | nul
   return displayTokens.join(" + ");
 };
 
+// The hotkey to show in the chip: the configured combo only when the backend
+// reports it registered without error and it formats cleanly; otherwise null.
+const activeHotkey = (status: unknown): string | null => {
+  if (typeof status !== "object" || status === null) return null;
+  const s = status as { registered?: unknown; error?: unknown; configured?: unknown };
+  return s.registered === true &&
+    s.error === null &&
+    typeof s.configured === "string" &&
+    formatScreenshotHotkeyForDisplay(s.configured) !== null
+    ? s.configured
+    : null;
+};
+
+// #2774 - the camera chip is always visible in the native app and a click
+// starts a capture; the key appears only when the backend reports the hotkey
+// active (startup read below, then `screenshot_hotkey_status_changed`).
 // #1398 - the backend now registers the hotkey at the top of setup, so the
 // first read almost always lands after registration. This bounded re-read is
-// the hardening that keeps a slow boot from hiding the chip for the rest of
+// the hardening that keeps a slow boot from showing no key for the rest of
 // the session; the ceiling exists so a permanently undecided runtime cannot
 // poll forever.
 const HOTKEY_STATUS_RETRY_DELAY_MS = 250;
@@ -65,16 +86,8 @@ const ScreenshotHotkeyStatusChip: Component = () => {
         .then((status) => {
           if (disposed) return;
           if (status !== null && status.registered === true) {
-            // Registration is decided; the status never changes again this
-            // session. The guard below is the current one-shot predicate,
-            // unchanged except that `registered` is already known true here.
-            if (
-              status.error === null &&
-              typeof status.configured === "string" &&
-              formatScreenshotHotkeyForDisplay(status.configured) !== null
-            ) {
-              setCanonicalHotkey(status.configured);
-            }
+            // Registration is decided; later changes arrive as status events.
+            setCanonicalHotkey(activeHotkey(status));
             return;
           }
           // `registered: false` with `error: null` is the pre-registration
@@ -90,22 +103,38 @@ const ScreenshotHotkeyStatusChip: Component = () => {
     };
 
     attempt(HOTKEY_STATUS_MAX_RETRIES);
+
+    let unlistenStatus: (() => void) | null = null;
+    onCleanup(() => unlistenStatus?.());
+    onScreenshotHotkeyStatusChanged((s) => {
+      if (!disposed) setCanonicalHotkey(activeHotkey(s));
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenStatus = unlisten;
+      })
+      .catch((err) => console.warn("[screenshot] status subscribe failed:", err));
   });
 
+  const label = () =>
+    displayHotkey() ? `Take a screenshot (${displayHotkey()})` : "Take a screenshot";
+
   return (
-    <Show when={displayHotkey()}>
-      {(hotkey) => (
-        <span
-          class="screenshot-hotkey-status"
-          data-ac-testid="screenshot-hotkey-status"
-          title={`Screenshot capture shortcut: ${hotkey()}`}
-          aria-label={`Screenshot capture shortcut: ${hotkey()}`}
-        >
-          <span class="screenshot-hotkey-status-icon" aria-hidden="true">&#x1F4F7;</span>
-          <span class="screenshot-hotkey-status-text">{hotkey()}</span>
-        </span>
-      )}
-    </Show>
+    <button
+      type="button"
+      class="screenshot-hotkey-status"
+      data-ac-testid="screenshot-hotkey-status"
+      title={label()}
+      aria-label={label()}
+      onClick={() =>
+        void ScreenshotAPI.startCapture().catch((err) =>
+          console.error("[screenshot] startCapture failed:", err))}
+    >
+      <span class="screenshot-hotkey-status-icon" aria-hidden="true">&#x1F4F7;</span>
+      <Show when={displayHotkey()}>
+        {(hotkey) => <span class="screenshot-hotkey-status-text">{hotkey()}</span>}
+      </Show>
+    </button>
   );
 };
 

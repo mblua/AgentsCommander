@@ -273,7 +273,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
     const report = state.report();
     if (report.loading) return TEXT.loading;
     if (report.error) return TEXT.error;
-    if (report.data && report.data.agentsPage.length === 0) return TEXT.empty;
+    if (report.data?.agentsPage.length === 0) return TEXT.empty;
     return "";
   });
 

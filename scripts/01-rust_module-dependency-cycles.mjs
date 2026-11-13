@@ -53,7 +53,7 @@ function compareCodeUnits(a, b) {
 }
 
 /** Always applied, matched on any path segment. */
-const DEFAULT_EXCLUDES = ['target', '.git', 'node_modules', '.direnv', '.cargo', 'vendor'];
+const DEFAULT_EXCLUDES = new Set(['target', '.git', 'node_modules', '.direnv', '.cargo', 'vendor']);
 
 const LEVELS = ['module', 'function', 'all'];
 const FUNCTION_SCOPES = ['cross-module', 'all'];
@@ -91,6 +91,16 @@ const NON_CALL_WORDS = new Set([
 const CFG_ANY_RE = /\bcfg\s*\(/;
 
 class UsageError extends Error {}
+
+function rejectsUsage(h, extra) {
+  try {
+    h.run(extra);
+    return false;
+  } catch (err) {
+    return err instanceof UsageError;
+  }
+}
+
 class AnalysisError extends Error {}
 
 /* ------------------------------------------------------------------ *
@@ -672,7 +682,7 @@ function isExcluded(relPosix, compiled) {
 function hasDefaultExcludedSegment(relPosix) {
   const segments = relPosix.split('/');
   for (const seg of segments) {
-    if (DEFAULT_EXCLUDES.includes(seg)) return true;
+    if (DEFAULT_EXCLUDES.has(seg)) return true;
   }
   return false;
 }
@@ -704,7 +714,7 @@ function findRustFiles(root, compiledExcludes, ctx) {
       });
       continue;
     }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    entries.sort((a, b) => compareCodeUnits(a.name, b.name));
 
     for (const entry of entries) {
       const abs = path.join(dir, entry.name);
@@ -802,7 +812,7 @@ function parseMinimalToml(text) {
   return tables;
 }
 
-const DEP_TABLE_NAMES = ['dependencies', 'dev-dependencies', 'build-dependencies'];
+const DEP_TABLE_NAMES = new Set(['dependencies', 'dev-dependencies', 'build-dependencies']);
 
 /** Collect dependency crate names out of every dependency table shape. */
 function collectDependencyNames(tables) {
@@ -810,7 +820,7 @@ function collectDependencyNames(tables) {
   for (const [tableName, keys] of tables) {
     if (tableName === '') continue;
     const segments = tableName.split('.').map(unquoteTomlKey);
-    const idx = segments.findIndex((s) => DEP_TABLE_NAMES.includes(s));
+    const idx = segments.findIndex((s) => DEP_TABLE_NAMES.has(s));
     if (idx < 0) continue;
     if (idx === segments.length - 1) {
       for (const key of keys.keys()) names.add(key);
@@ -838,7 +848,7 @@ function listRootFilesIn(dir) {
   } catch {
     return found;
   }
-  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  entries.sort((a, b) => compareCodeUnits(a.name, b.name));
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
     const abs = path.join(dir, entry.name);
@@ -1005,7 +1015,7 @@ function discoverTargets(rootAbs, manifests, opts, ctx) {
     }
   }
 
-  targets.sort((a, b) => (a.targetId < b.targetId ? -1 : a.targetId > b.targetId ? 1 : 0));
+  targets.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
   return targets;
 }
 
@@ -1542,7 +1552,9 @@ function qualifiedPathRegex(target) {
     if (target.pkgIdent && !anchors.includes(target.pkgIdent)) anchors.push(target.pkgIdent);
   }
   return new RegExp(
-    '\\b(?:' + anchors.map(escapeRe).join('|') + ')(?:\\s*::\\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*)+',
+    String.raw`\b(?:` +
+      anchors.map(escapeRe).join('|') +
+      String.raw`)(?:\s*::\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*)+`,
     'g',
   );
 }
@@ -1818,7 +1830,8 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   let base = null;
   let rest = null;
 
-  if (first === 'crate') {
+  if (first === 'crate' || (target.kind !== 'lib'
+    && (first === target.libName || first === target.pkgIdent))) {
     base = [];
     rest = segments.slice(1);
   } else if (first === 'self') {
@@ -1837,9 +1850,6 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
     }
     base = up;
     rest = segments.slice(k);
-  } else if (target.kind !== 'lib' && (first === target.libName || first === target.pkgIdent)) {
-    base = [];
-    rest = segments.slice(1);
   } else if (contextSegments.length > 0
     && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
     // Rust 2018 resolves a relative first segment in the current module before
@@ -2032,7 +2042,7 @@ function addModuleEdge(edges, adjacency, edge, opts, ctx) {
 }
 
 function sortedModules(tree) {
-  return Array.from(tree.modules.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return Array.from(tree.modules.values()).sort((a, b) => compareCodeUnits(a.id, b.id));
 }
 
 /* ------------------------------------------------------------------ *
@@ -2045,7 +2055,7 @@ const METHOD_CALL_RE =
 // The lookbehind keeps this to a bare first segment. `std::fs::File::open(`
 // must not read as `File::open(` on a locally defined `File`: without type
 // information that is a guess, and a guess is how an invented edge happens.
-const TYPE_CALL_RE = /(?<![.:\w])([A-Za-z_][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
+const TYPE_CALL_RE = /(?<![.:\w])([A-Za-z_]\w*)\s*::\s*([A-Za-z_]\w*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
 const BARE_CALL_RE = /(?<![.:\w])([A-Za-z_]\w*)\s*(?:::\s*<[^<>;{}]*>\s*)?\(/g;
 
 /** Argument groups of top-level macro invocations, which are skipped wholesale. */
@@ -2456,7 +2466,7 @@ function tarjan(nodeIds, adjacency) {
     }
   }
 
-  sccs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  sccs.sort((a, b) => compareCodeUnits(a[0], b[0]));
   return sccs;
 }
 
@@ -2498,7 +2508,7 @@ function compareCycles(a, b) {
   const am = a.members[0] || '';
   const bm = b.members[0] || '';
   if (am !== bm) return am < bm ? -1 : 1;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  return compareCodeUnits(a.id, b.id);
 }
 
 function buildModuleCycles(graph) {
@@ -2556,7 +2566,7 @@ function classifyFunctionCycles(graph, ctx) {
   }
 
   cycles.sort(compareCycles);
-  recursion.sort((a, b) => (a.function < b.function ? -1 : a.function > b.function ? 1 : 0));
+  recursion.sort((a, b) => compareCodeUnits(a.function, b.function));
   return { cycles, recursion };
 }
 
@@ -2668,8 +2678,10 @@ function applyBaseline(result, baseline, baselinePath, opts, ctx) {
       resolvedCycles.push({ graph: 'function', id: cycle.id, members: cycle.members || [] });
     }
   }
-  resolvedCycles.sort((a, b) => (a.graph !== b.graph ? (a.graph < b.graph ? -1 : 1) : a.id < b.id ?
-    -1 : 1));
+  resolvedCycles.sort((a, b) => {
+    if (a.graph !== b.graph) return a.graph < b.graph ? -1 : 1;
+    return a.id < b.id ? -1 : 1;
+  });
 
   return {
     used: true,
@@ -2732,7 +2744,6 @@ function analyze(opts) {
   if (stat.isFile()) {
     if (!rootAbs.endsWith('.rs')) throw new AnalysisError(`not a .rs file: ${toPosix(rootAbs)}`);
     rustFiles = [rootAbs];
-    manifests = [];
     ctx.root = path.dirname(rootAbs);
     targets = [
       makeTarget({
@@ -2832,7 +2843,7 @@ function analyze(opts) {
       files: count,
     };
   });
-  crates.sort((a, b) => (a.targetId < b.targetId ? -1 : a.targetId > b.targetId ? 1 : 0));
+  crates.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
 
   return {
     ctx,
@@ -3022,7 +3033,7 @@ function buildGraphPayload(result) {
 
   if (wantFunction) {
     payload.functions = Array.from(result.callGraph.nodes.values())
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .sort((a, b) => compareCodeUnits(a.id, b.id))
       .map((fn) => ({
         id: fn.id,
         name: fn.name,
@@ -3228,23 +3239,24 @@ function renderHuman(result, baselineInfo, exitCode) {
   // be misread as proof of absence.
   const bs = blindSpotsPayload(ctx);
   const width = 40;
-  out.push('BLIND SPOTS - what this analysis could NOT see');
-  out.push(`  ${leader('unresolved method calls (x.foo())', width)} ${bs.unresolvedMethodCalls}`);
-  out.push(`  ${leader('calls inside macro invocations', width)} ${bs.macroInvocationsSkipped} invocations skipped`);
-  out.push(`  ${leader('macro_rules! bodies skipped', width)} ${bs.macroDefinitionsSkipped}`);
-  out.push(`  ${leader('unresolved bare calls', width)} ${bs.unresolvedBareCalls}`);
-  out.push(`  ${leader('calls outside function bodies', width)} ${bs.callsOutsideFunctionBodies}`);
-  out.push(`  ${leader('glob imports in scope', width)} ${bs.globImports}`);
-  out.push(`  ${leader('ambiguous bare paths (no edge)', width)} ${bs.ambiguousBarePaths}`);
-  out.push(`  ${leader('unresolved internal paths', width)} ${bs.unresolvedInternalPaths}`);
-  out.push(`  ${leader('external references ignored', width)} ${bs.externalReferences}`);
-  out.push(`  ${leader('unreachable files excluded', width)} ${bs.unreachableFiles.length}`);
   out.push(
-    `  ${leader('unsupported #[path] attributes', width)} ${bs.unsupportedPathAttributes.length}`);
-  out.push(`  ${leader('mod decls inside inline mod blocks', width)} ${bs.inlineModuleFileDeclarations.length}`);
-  out.push('  Function-level results are a LOWER BOUND. Zero is not proof of absence.');
-  out.push('');
-  out.push(verdictLine(result, baselineInfo, exitCode));
+    'BLIND SPOTS - what this analysis could NOT see',
+    `  ${leader('unresolved method calls (x.foo())', width)} ${bs.unresolvedMethodCalls}`,
+    `  ${leader('calls inside macro invocations', width)} ${bs.macroInvocationsSkipped} invocations skipped`,
+    `  ${leader('macro_rules! bodies skipped', width)} ${bs.macroDefinitionsSkipped}`,
+    `  ${leader('unresolved bare calls', width)} ${bs.unresolvedBareCalls}`,
+    `  ${leader('calls outside function bodies', width)} ${bs.callsOutsideFunctionBodies}`,
+    `  ${leader('glob imports in scope', width)} ${bs.globImports}`,
+    `  ${leader('ambiguous bare paths (no edge)', width)} ${bs.ambiguousBarePaths}`,
+    `  ${leader('unresolved internal paths', width)} ${bs.unresolvedInternalPaths}`,
+    `  ${leader('external references ignored', width)} ${bs.externalReferences}`,
+    `  ${leader('unreachable files excluded', width)} ${bs.unreachableFiles.length}`,
+    `  ${leader('unsupported #[path] attributes', width)} ${bs.unsupportedPathAttributes.length}`,
+    `  ${leader('mod decls inside inline mod blocks', width)} ${bs.inlineModuleFileDeclarations.length}`,
+    '  Function-level results are a LOWER BOUND. Zero is not proof of absence.',
+    '',
+    verdictLine(result, baselineInfo, exitCode),
+  );
 
   return out.join('\n') + '\n';
 }
@@ -3272,7 +3284,8 @@ function verdictLine(result, baselineInfo, exitCode) {
 function renderDiagnostics(ctx) {
   const lines = [];
   for (const diag of ctx.diagnostics) {
-    lines.push(`${diag.level}: ${diag.code}: ${diag.message}${diag.file ? ` (${diag.file})` : ''}`);
+    const where = diag.file ? ` (${diag.file})` : '';
+    lines.push(`${diag.level}: ${diag.code}: ${diag.message}${where}`);
   }
   return lines.length > 0 ? lines.join('\n') + '\n' : '';
 }
@@ -3379,7 +3392,7 @@ function main(argv) {
       return 3;
     }
     process.stderr.write(`internal error: ${err && err.message}\n`);
-    if (err && err.stack) process.stderr.write(`${err.stack}\n`);
+    if (err?.stack) process.stderr.write(`${err.stack}\n`);
     return 3;
   }
 }
@@ -3771,14 +3784,7 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      const rejects = (extra) => {
-        try {
-          h.run(extra);
-          return false;
-        } catch (err) {
-          return err instanceof UsageError;
-        }
-      };
+      const rejects = (extra) => rejectsUsage(h, extra);
       h.yes(rejects(['--write-baseline=']), '--write-baseline= rejected');
       h.yes(rejects(['--baseline=']), '--baseline= rejected');
       h.yes(rejects(['--baseline=', '--write-baseline=x']),
@@ -3988,14 +3994,7 @@ const FIXTURES = [
     },
     run: [],
     assert(res, h) {
-      const rejects = (extra) => {
-        try {
-          h.run(extra);
-          return false;
-        } catch (err) {
-          return err instanceof UsageError;
-        }
-      };
+      const rejects = (extra) => rejectsUsage(h, extra);
       h.yes(
         rejects(['--emit-graph=g.json', '--write-baseline=b.json']),
         '--emit-graph with --write-baseline rejected',
@@ -4133,9 +4132,9 @@ const FIXTURES = [
     assert(res, h) {
       h.eq(res.callGraph.edges.length, 0, 'function edge records');
       h.eq(res.moduleGraph.edges.length, 0, 'module edge records');
-      const fns = Array.from(res.callGraph.nodes.keys());
-      h.yes(fns.includes('crate::a::caller'), 'caller is a function node');
-      h.yes(fns.includes('crate::a::helper'), 'helper is a function node');
+      const fns = new Set(res.callGraph.nodes.keys());
+      h.yes(fns.has('crate::a::caller'), 'caller is a function node');
+      h.yes(fns.has('crate::a::helper'), 'helper is a function node');
       const ids = moduleIds(res);
       h.yes(ids.includes('crate::a'), 'crate::a is a module node');
       h.no(ids.includes('crate::a::inner'), 'the inline mod is not a module node');
@@ -4610,9 +4609,9 @@ const FIXTURES = [
         h.yes(hasModuleEdge(res, 'crate::a', `crate::${m}`),
           `a -> ${m} retained under ${attr || 'no attribute'}`);
       }
-      const calls = res.callGraph.edges.map((e) => e.to);
-      h.yes(calls.includes('crate::call_any::g'), 'call under any(test, unix) retained');
-      h.yes(calls.includes('crate::call_plain::g'), 'ordinary call retained');
+      const calls = new Set(res.callGraph.edges.map((e) => e.to));
+      h.yes(calls.has('crate::call_any::g'), 'call under any(test, unix) retained');
+      h.yes(calls.has('crate::call_plain::g'), 'ordinary call retained');
     },
   },
   {
@@ -4743,8 +4742,14 @@ function runSelfTest() {
           const errChunks = [];
           const realOut = process.stdout.write;
           const realErr = process.stderr.write;
-          process.stdout.write = (chunk) => (outChunks.push(String(chunk)), true);
-          process.stderr.write = (chunk) => (errChunks.push(String(chunk)), true);
+          process.stdout.write = (chunk) => {
+            outChunks.push(String(chunk));
+            return true;
+          };
+          process.stderr.write = (chunk) => {
+            errChunks.push(String(chunk));
+            return true;
+          };
           let code;
           try {
             code = cliMain([dir, ...extra]);

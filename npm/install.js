@@ -165,7 +165,7 @@ function installBinary() {
 
 function cleanupFailedInstall(shasumTmpPath) {
   if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-  if (typeof shasumTmpPath !== 'undefined' && fs.existsSync(shasumTmpPath)) fs.unlinkSync(shasumTmpPath);
+  if (shasumTmpPath !== undefined && fs.existsSync(shasumTmpPath)) fs.unlinkSync(shasumTmpPath);
 }
 
 async function main() {

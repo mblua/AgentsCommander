@@ -63,7 +63,8 @@ export function micButtonTitle(
 }
 
 export function repoBranchLabel(repo: { label: string; branch?: string | null }): string {
-  return `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`;
+  const branchSuffix = repo.branch ? `/${repo.branch}` : "";
+  return `${repo.label}${branchSuffix}`;
 }
 
 export function detachUi(detached: boolean): { title: string; state: string; menuLabel: string } {
@@ -236,7 +237,7 @@ const SessionItem: Component<{
       const detachedLabel = `terminal-${props.session.id.replaceAll("-", "")}`;
       const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
       if (!detachedWin) {
-        await WindowAPI.ensureTerminal();
+        await WindowAPI.focusMain();
       }
     }
   };

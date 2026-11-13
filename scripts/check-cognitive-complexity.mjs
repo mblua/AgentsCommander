@@ -63,17 +63,17 @@ import { ALLOWLIST_FILE, parseAllowlist, isMain } from './sanitizing_baseline.mj
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_DIRS = new Set(['target', 'node_modules', 'dist', '.git']);
-const PLATFORMS = ['windows', 'linux', 'macos'];
+const PLATFORMS = new Set(['windows', 'linux', 'macos']);
 const ROOT_CARGO_CONFIG = '.cargo/config.toml';
 const ROOT_CARGO_CONFIG_SHA256 = 'a64c48300486b9bd06dd77b2ab72ebb53b18dc6a475be4546a26c8d9bb67963e';
 const PINNED_THRESHOLD_LINE = 'cognitive-complexity-threshold = 25';
 const CARGO_CONFIG_RE = /(^|\/)\.cargo\/config(\.toml)?$/;
 const S1_RE = /cognitive_complexity|cognitive-complexity/g;
 
-const USAGE = `Usage: node scripts/check-cognitive-complexity.mjs --self-test
+const USAGE = String.raw`Usage: node scripts/check-cognitive-complexity.mjs --self-test
        node scripts/check-cognitive-complexity.mjs --scan-sources
-       node scripts/check-cognitive-complexity.mjs --capture <file> --clippy-exit <n> \\
-             --platform <platform> --rustc-version <v> [--report] [--emit <file>] \\
+       node scripts/check-cognitive-complexity.mjs --capture <file> --clippy-exit <n> \
+             --platform <platform> --rustc-version <v> [--report] [--emit <file>] \
              [--workspace-root <dir>] [--commit <sha>]
        node scripts/check-cognitive-complexity.mjs --baseline-diff --base-ref <ref>
        node scripts/check-cognitive-complexity.mjs --merge <emitted.json>... --out <baseline.json>
@@ -123,11 +123,17 @@ class RustSourceError extends Error {
   }
 }
 
+function compareLexically(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function lineOf(source, index) {
   let line = 1;
   const limit = Math.min(index, source.length);
   for (let i = 0; i < limit; i += 1) {
-    if (source.charCodeAt(i) === 10) line += 1;
+    if (source.codePointAt(i) === 10) line += 1;
   }
   return line;
 }
@@ -673,7 +679,7 @@ function parsePlatform(argv, i) {
   const value_ = argv[i + 1];
   if (value_ ===
     undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
-  if (!PLATFORMS.includes(value_)) {
+  if (!PLATFORMS.has(value_)) {
     throw new UsageError(
       `--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
   }
@@ -1607,7 +1613,7 @@ function validateBaseline(document, rustcVersion) {
       throw new ConfigError(`baseline entry ${entry.id} sites must not be empty`);
     }
     for (const platform of platforms) {
-      if (!PLATFORMS.includes(platform)) {
+      if (!PLATFORMS.has(platform)) {
         throw new ConfigError(
           `baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
       }
@@ -1833,7 +1839,7 @@ export function runCapture(options, io = {}) {
   // 14. Emission, after steps 2 to 11 all passed and before the verdict.
   if (options.emit !== undefined) {
     const entries = [...observed.keys()]
-      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      .sort(compareLexically)
       .map((id) => ({ id, anchors: observed.get(id) }));
     const document = {
       platform: options.platform,
@@ -1846,8 +1852,7 @@ export function runCapture(options, io = {}) {
 
   // 12. Anchor multisets, not counts: an equal-count replacement is refused.
   const baselineById = new Map(baselineDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort((a,
-    b) => (a < b ? -1 : a > b ? 1 : 0));
+  const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort(compareLexically);
   const newFindings = [];
   const staleFindings = [];
   for (const id of ids) {
@@ -2260,7 +2265,7 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
   if (!exactSites) return false; // #3527 condition-2
   const actual = removals.map(historical3527TupleKey).sort();
   const expected = historical3527Tuples().map(historical3527TupleKey)
-    .sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    .sort(compareLexically);
   if (!historical3527Equal(actual, expected)) return false; // #3527 condition-3
   const selected = new Set(HISTORICAL_3527_SITES.map(([id]) => id));
   const equalMetadata = historical3527Equal(historical3527Without(baseDocument, 'entries'),
@@ -2396,8 +2401,7 @@ export function runBaselineDiff(options, io = {}) {
   const removals = [];
   const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
   const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort((a,
-    b) => (a < b ? -1 : a > b ? 1 : 0));
+  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort(compareLexically);
   for (const id of ids) {
     const baseEntry = baseById.get(id);
     const headEntry = headById.get(id);
@@ -2406,7 +2410,7 @@ export function runBaselineDiff(options, io = {}) {
         ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
         ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
       ]),
-    ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    ].sort(compareLexically);
     for (const platform of platforms) {
       const remaining = new Map();
       for (const anchor of baseEntry?.sites[platform] ?? []) {
@@ -2558,7 +2562,7 @@ export function runMerge(options, io = {}) {
       throw new ConfigError(`${file} must be a JSON object`);
     }
     const platform = document.platform;
-    if (!PLATFORMS.includes(platform)) {
+    if (!PLATFORMS.has(platform)) {
       throw new ConfigError(
         `${file} platform must be windows, linux or macos, got ${JSON.stringify(platform)}`,
       );
@@ -2604,12 +2608,11 @@ export function runMerge(options, io = {}) {
         }
       }
       if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
-      merged.get(entry.id).sites[platform] = [...entry.anchors].sort((a,
-        b) => (a < b ? -1 : a > b ? 1 : 0));
+      merged.get(entry.id).sites[platform] = [...entry.anchors].sort(compareLexically);
     }
   }
   const entries = [...merged.values()].sort((left, right) =>
-    (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    compareLexically(left.id, right.id));
   const document = {
     version: 1,
     issue: 2234,
@@ -2686,7 +2689,7 @@ export function runClassifyProbe(options, io = {}) {
         : code.code;
     histogram.set(key, (histogram.get(key) ?? 0) + 1);
   }
-  const keys = [...histogram.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const keys = [...histogram.keys()].sort(compareLexically);
   for (const key of keys) stdout(`${key} ${histogram.get(key)}`);
 
   if (stopReason !== null) {
@@ -2752,8 +2755,9 @@ function runFixture(files, sources = {}, bytes = {}) {
 function expectHit(hits, rule, file, line) {
   const found = hits.some((hit) => hit.rule === rule && hit.file === file && hit.line === line);
   if (!found) {
+    const locationSuffix = line === null ? '' : ':' + line;
     throw new Error(
-      `expected ${rule} at ${file}${line === null ? '' : `:${line}`}, got ${JSON.stringify(hits)}`);
+      `expected ${rule} at ${file}${locationSuffix}, got ${JSON.stringify(hits)}`);
   }
 }
 
@@ -3039,8 +3043,10 @@ function baselineDiffFixture({
   const working = new Set(workingFiles);
   const runGit = (args) => {
     if (historical3527 !== null && (args[0] === 'rev-parse' || args[0] === 'hash-object')) {
-      const position = args[0] === 'hash-object' ? 'workspace' :
-        args[1].startsWith('HEAD:') ? 'head' : 'base';
+      let position = 'workspace';
+      if (args[0] !== 'hash-object') {
+        position = args[1].startsWith('HEAD:') ? 'head' : 'base';
+      }
       const file = args[0] === 'hash-object' ? args[2] : args[1].slice(args[1].indexOf(':') + 1);
       if (historical3527.gitFailure === file + ':' + position) throw new GitError('failure', false);
       const override = historical3527.blobs?.[file + ':' + position];
@@ -3051,9 +3057,11 @@ function baselineDiffFixture({
     if (args[0] === 'rev-parse' || args[0] === 'hash-object') {
       if (historical === null) throw new Error('unexpected historical Git invocation');
       if (historical.gitError) throw new GitError('historical Git failure', false);
-      const key = args[0] === 'hash-object' ? 'workspaceBlob'
-        : args[1] === baseRef + ':' + BASELINE_FILE ? 'baselineBlob'
-          : args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
+      let key = 'workspaceBlob';
+      if (args[0] !== 'hash-object') {
+        if (args[1] === baseRef + ':' + BASELINE_FILE) key = 'baselineBlob';
+        else key = args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
+      }
       return historical[key] ?? (key === 'baselineBlob'
         ? HISTORICAL_3319_BASELINE : HISTORICAL_3319_SOURCE);
     }
@@ -3645,7 +3653,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const workspace = { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML };
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: String.raw`src\a.rs`, line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: String.raw`src\a.rs`,
+            line: 1, column: 1, slice: 'heavy' }),
           cognitiveRecord({ file: 'src/a.rs', line: 1, column: 1, slice: 'heavy' }),
           buildFinished(),
         ),
@@ -3834,8 +3843,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const anchor = anchorFor('src/one.rs', 1, 1, fixture.reader);
       const missing = otherAnchor(anchor);
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/one.rs::heavy', sites: { windows: [anchor, missing].sort((a,
-          b) => (a < b ? -1 : a > b ? 1 : 0)) } },
+        { id: 'rust:src/one.rs::heavy',
+          sites: { windows: [anchor, missing].sort(compareLexically) } },
       ]);
       expectEqual(fixture.run(), 1, 'the unobserved anchor is a STALE');
       const lines = findingLines(fixture, 'STALE');
@@ -4176,7 +4185,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 24: a backslash and a forward-slash path are one id', () => {
       const fixture = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: 'src-tauri\\src\\a.rs', line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: String.raw`src-tauri\src\a.rs`,
+            line: 1, column: 1, slice: 'heavy' }),
           cognitiveRecord({ file: 'src-tauri/src/a.rs', line: 1, column: 1, slice: 'heavy' }),
           buildFinished(),
         ),
@@ -4191,7 +4201,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
     ['case 25: an absolute path inside the root is relativised, outside it is CAPTURE', () => {
       const inside = captureFixture({
         capture: jsonl(
-          cognitiveRecord({ file: String.raw`C:\ws\src\a.rs`, line: 1, column: 1, slice: 'heavy' }),
+          cognitiveRecord({ file: String.raw`C:\ws\src\a.rs`,
+            line: 1, column: 1, slice: 'heavy' }),
           buildFinished(),
         ),
         workspace: { 'src/a.rs': HEAVY_SOURCE, 'clippy.toml': PINNED_CLIPPY_TOML },
@@ -4343,8 +4354,8 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const replacement = anchorFor('src/rc1.rs', second.line, second.column, fixture.reader);
       const missing = otherAnchor(observed, replacement);
       workspace['cognitive-complexity.baseline.json'] = baselineJson([
-        { id: 'rust:src/rc1.rs::impl:A::m', sites: { windows: [observed, missing].sort((a,
-          b) => (a < b ? -1 : a > b ? 1 : 0)) } },
+        { id: 'rust:src/rc1.rs::impl:A::m',
+          sites: { windows: [observed, missing].sort(compareLexically) } },
       ]);
       expectEqual(fixture.run(), 1, 'R-C1 is refused');
       const newLines = findingLines(fixture, 'NEW');
@@ -4391,7 +4402,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       changed.workspace['cognitive-complexity.baseline.json'] = baselineJson([
         {
           id: 'rust:src/dup.rs::fn:f::{closure}',
-          sites: { windows: [anchor, replacement].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) },
+          sites: { windows: [anchor, replacement].sort(compareLexically) },
         },
       ]);
       expectEqual(changed.run(), 1, 'a changed second site is refused');
@@ -4453,15 +4464,15 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       const document = (values) => JSON.parse(baselineJson(values));
       const base = document([...entries, extra].sort((a, b) => a.id.localeCompare(b.id)));
       // Use the same lexical ordering required by the parser, independent of locale.
-      base.entries.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      base.entries.sort((a, b) => compareLexically(a.id, b.id));
       base.toolchain = '1.98.1';
       const head = clone(base);
       head.entries = [clone(extra)];
       const paths = HISTORICAL_3527_PINS.map(([file]) => file);
       const tupleText = ({ id, anchor, platform }) => `${id}#${anchor} (${platform})`;
       const sameLines = (actual, expected, label) => expectEqual(
-        JSON.stringify([...actual].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)),
-        JSON.stringify([...expected].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)), label);
+        JSON.stringify([...actual].sort(compareLexically)),
+        JSON.stringify([...expected].sort(compareLexically)), label);
       const run = (name, { before = base, after = head, diff = [], working = paths,
         proof = {}, kind = 'blocked', exit = 1 } = {}) => {
         const fixture = baselineDiffFixture({ base: JSON.stringify(before),
@@ -4566,10 +4577,14 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
           run('3527 equality ' + level + ' ' + operation, { before, after });
         }
       }
-      const reorder = (value) => Array.isArray(value) ? value.map(reorder)
-        : value !== null && typeof value === 'object'
-          ? Object.fromEntries(Object.entries(value).reverse().map(([key, v]) => [key, reorder(v)]))
-          : value;
+      const reorder = (value) => {
+        if (Array.isArray(value)) return value.map(reorder);
+        if (value !== null && typeof value === 'object') {
+          return Object.fromEntries(
+            Object.entries(value).reverse().map(([key, v]) => [key, reorder(v)]));
+        }
+        return value;
+      };
       run('3527 key-order-only', { after: reorder(head), kind: 'positive' });
       const metadataChanged = clone(head);
       metadataChanged.capturedAt = '3527-changed';
@@ -4608,7 +4623,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       growth.entries.find((e) => e.id === entries[0].id).sites.windows = [extraAnchor];
       run('3527 equal-size swap', { after: growth, kind: 'growth' });
       growth.entries.find((e) => e.id === entries[0].id).sites.windows =
-        [entries[0].sites.windows[0], extraAnchor].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+        [entries[0].sites.windows[0], extraAnchor].sort(compareLexically);
       run('3527 returned extra anchor', { after: growth, kind: 'growth' });
       run('3527 growth', { before: head, after: base, kind: 'growth' });
       run('3527 dormant', { before: head, kind: 'ordinary', exit: 0 });

@@ -33,7 +33,9 @@ pub struct ScreenshotHotkeyRuntime {
 pub fn register_configured_hotkey<H: ScreenshotHotkeyOwner>(
     app: &H,
     configured: &str,
+    hyprland_bind: bool,
 ) -> Result<(), String> {
+    let _ = hyprland_bind;
     // Surface a genuine syntax error; otherwise record the unsupported status.
     super::parse_screenshot_hotkey(configured)?;
     let state = app.hotkey_state();

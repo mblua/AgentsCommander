@@ -18,7 +18,7 @@ export function repoLabelFromPath(path: string): string {
 }
 
 export function formatReplicaRepoBadgeLabel(repo: Pick<SessionRepo, "label" | "branch">): string {
-  return `${repo.label}${repo.branch ? `/${repo.branch}` : ""}`;
+  return repo.branch ? `${repo.label}/${repo.branch}` : repo.label;
 }
 
 /** #2064 — the CI and staleness suffixes on the repo chip's tooltip. Only `running`
@@ -60,11 +60,9 @@ export function configuredReplicaRepoBadges(
   workgroup: Pick<AcWorkgroup, "repoPath">
 ): SessionRepo[] {
   const repoPaths = replica.repoPaths ?? [];
-  const sourcePaths = repoPaths.length > 0
-    ? repoPaths
-    : workgroup.repoPath
-      ? [workgroup.repoPath]
-      : [];
+  let sourcePaths: string[] = [];
+  if (repoPaths.length > 0) sourcePaths = repoPaths;
+  else if (workgroup.repoPath) sourcePaths = [workgroup.repoPath];
   const singleRepoBranch = sourcePaths.length === 1 ? replica.repoBranch ?? null : null;
   const byPath = replica.repoBranchByPath;
   const dirtyByPath = replica.repoDirtyByPath;

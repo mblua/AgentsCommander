@@ -80,7 +80,7 @@ const BindOption: Component<BindOptionProps> = (props) => (
         </span>
       </span>
       <Show when={props.note}>
-        <span class={`webserver-bind-note${props.noteClass ? ` ${props.noteClass}` : ""}`}>
+        <span class={["webserver-bind-note", props.noteClass].filter(Boolean).join(" ")}>
           {props.note}
         </span>
       </Show>
@@ -846,8 +846,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
             disabled={busy() || !ownedRunning()}
             data-ac-testid="titlebar.webserver.restart"
           >
-            <span class="layout-option-icon">&#x21BB;</span>
-            Restart Server
+            <span class="layout-option-icon">&#x21BB;</span>Restart Server
           </button>
           <button
             class="layout-option"
@@ -855,8 +854,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
             disabled={busy() || !canOpenBrowser()}
             data-ac-testid="titlebar.webserver.open"
           >
-            <span class="layout-option-icon">&#x2197;</span>
-            Open in Browser
+            <span class="layout-option-icon">&#x2197;</span>Open in Browser
           </button>
         </div>
       </Show>

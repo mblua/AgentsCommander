@@ -252,7 +252,7 @@ pub(crate) fn validate_identity_snapshot_with_digest(
         }
         configurations.insert(id, (preimage, entry.name));
         let mut local_profiles = BTreeMap::<String, &str>::new();
-        for (letter, profile) in entry.profiles.into_iter().flat_map(|cells| cells.iter()) {
+        for (letter, profile) in entry.profiles.into_iter().flat_map(BTreeMap::iter) {
             let preimage = profile_identity_preimage(profile);
             let id = digest("pid1:", &preimage);
             if let Some((existing_preimage, existing_name)) = profile_preimages.get(&id) {

@@ -1,5 +1,7 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod wayland;
 #[cfg(target_os = "windows")]
 mod window_screenshot;
 

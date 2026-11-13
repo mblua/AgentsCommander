@@ -69,7 +69,7 @@ const sortedUnique = list => list.every((v, i) => !i || order(list[i - 1], v) < 
 // Imported helpers throw their own error classes; every one of them is invalid input here.
 const asInput = fn => {
   try { return fn(); }
-  catch (e) { if (e instanceof InputError) throw e; throw new InputError(e.message); }
+  catch (e) { if (e instanceof InputError) { throw e; } throw new InputError(e.message); }
 };
 
 // ---- baseline schema ----
