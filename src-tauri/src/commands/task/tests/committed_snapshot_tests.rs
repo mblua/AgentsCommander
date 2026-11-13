@@ -27,14 +27,19 @@ async fn mutation_snapshot_preserves_legacy_projection_and_committed_failures() 
     let event = serde_json::to_value(&result).unwrap();
     assert_eq!(event["taskTitle"], "USER: café");
     let error = deliver_committed_task(result, |_| Err("injected emit".into())).unwrap_err();
-    assert!(error.contains("already committed"));
-    assert!(error.contains("do not repeat Clean"));
+    assert_eq!(error.code, TaskErrorCode::MutationCommitted);
+    assert!(error.message.contains("already committed"));
+    assert!(error.message.contains("do not repeat Clean"));
+    let wire = serde_json::to_value(&error).unwrap();
+    assert_eq!(wire["code"], "MutationCommitted");
+    assert_eq!(wire["message"], error.message);
     assert_eq!(std::fs::read(&file).unwrap(), bytes);
     std::fs::write(dir.path().join("TASK-status.jsonl"), "[]\n").unwrap();
     let error = read_committed_task_snapshot(dir.path().to_path_buf())
         .await
         .unwrap_err();
-    assert!(error.contains("already committed"));
+    assert_eq!(error.code, TaskErrorCode::MutationCommitted);
+    assert!(error.message.contains("already committed"));
     assert_eq!(std::fs::read(&file).unwrap(), bytes);
 }
 
@@ -84,4 +89,15 @@ fn root_keys_preserve_ordinary_paths_and_normalize_windows_unc() {
         let expected = if cfg!(windows) { windows_key } else { raw };
         assert_eq!(strip_unc(Path::new(raw)), expected);
     }
+}
+
+#[test]
+fn ordinary_string_errors_map_to_failed_code() {
+    let error = TaskIpcError::from("permission denied".to_string());
+    assert_eq!(error.code, TaskErrorCode::Failed);
+    assert_eq!(error.message, "permission denied");
+    assert_eq!(
+        serde_json::to_value(&error).unwrap(),
+        serde_json::json!({ "code": "Failed", "message": "permission denied" })
+    );
 }

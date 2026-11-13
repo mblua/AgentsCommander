@@ -661,15 +661,106 @@ fn credentials_are_scrubbed_from_echoed_output() {
         ..test_init(Some(CodingAgentKind::Codex))
     });
     record.note_output(format!("AGENTSCOMMANDER_TOKEN={token}\r\n").as_bytes());
-
-    assert!(record.head_log().contains("<redacted>"));
+    let masked = |log: String| log.contains("<redacted>") || log.contains("***");
+    assert!(masked(record.head_log()));
     assert!(!record.head_log().contains(token));
-    assert!(record.argv_log().contains("<redacted>"));
+    assert!(masked(record.argv_log()));
     assert!(!record.argv_log().contains(token));
     assert!(
         record.head_log().contains("AGENTSCOMMANDER_TOKEN"),
         "the rest of the line still has to be readable"
     );
+}
+
+/// Scrub `line` with `needle` as the only secret-keyed env value.
+fn scrub_with(needle: &str, line: &str) -> String {
+    let record = SpawnRecord::new(SpawnRecordInit {
+        redact: vec![needle.to_string()],
+        ..test_init(Some(CodingAgentKind::Codex))
+    });
+    record.scrub(line)
+}
+
+#[test]
+fn a_needle_that_starts_with_a_masked_credential_leaves_no_tail_in_clear() {
+    // #4319 D2: masking the redactor shape first split the exact needle, so its tail
+    // walked out (`Bearer ***.s3cretSig`).
+    let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
+    let u2 = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+    for (needle, line, tail) in [
+        (
+            format!("{u}.s3cretSig"),
+            format!("Authorization: Bearer {u}.s3cretSig ok"),
+            "s3cretSig",
+        ),
+        (
+            format!("{u}:hunter2"),
+            format!("run --token {u}:hunter2 ok"),
+            "hunter2",
+        ),
+        (
+            format!("ac-container-{u}-{u2}-extraSecret"),
+            format!("tok=ac-container-{u}-{u2}-extraSecret ok"),
+            "extraSecret",
+        ),
+    ] {
+        let out = scrub_with(&needle, &line);
+        assert!(!out.contains(tail), "{out}");
+        assert!(!out.contains(u), "{out}");
+        assert!(out.contains("<redacted>"), "{out}");
+        assert!(
+            out.ends_with(" ok"),
+            "the rest of the line stays readable: {out}"
+        );
+    }
+}
+
+#[test]
+fn a_needle_inside_a_credential_shape_does_not_unmask_the_rest_of_it() {
+    // #4319 D1: masking the needle first broke the redactor's shape match, so the part
+    // of the credential that was not the needle walked out.
+    let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
+    let u2 = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+    let out = scrub_with(u, &format!("tok=ac-container-{u}-{u2} ok"));
+    assert!(!out.contains(u) && !out.contains(u2), "{out}");
+    let out = scrub_with(
+        "AAGBp_x",
+        "GET https://api.telegram.org/bot1234567:AAGBp_x-yzzzzzzzzzzz/getMe",
+    );
+    assert!(!out.contains("AAGBp") && !out.contains("1234567"), "{out}");
+    assert!(out.ends_with("/getMe"), "{out}");
+    let out = scrub_with("AIzaSy", "url?key=AIzaSyAbc123&x=1");
+    assert!(!out.contains("AIzaSy") && !out.contains("Abc123"), "{out}");
+    assert!(out.ends_with("&x=1"), "{out}");
+}
+
+#[test]
+fn a_needle_that_is_a_context_word_or_a_whole_credential_still_masks_the_secret() {
+    // #4319 D1 (Grinch): the needle is the context word itself, or the credential with
+    // a tail; neither may hide the secret from the shape pass.
+    let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
+    let out = scrub_with("Bearer", &format!("Authorization: Bearer {u}"));
+    assert!(!out.contains(u), "{out}");
+    let out = scrub_with("--token", &format!("run --token {u}"));
+    assert!(!out.contains(u), "{out}");
+    let out = scrub_with(
+        "bot",
+        "GET https://api.telegram.org/bot123456:AAGBp_x-yzzzzzzzzzzz/getMe",
+    );
+    assert!(!out.contains("123456") && !out.contains("AAGBp"), "{out}");
+    let out = scrub_with(
+        &format!("Bearer {u}.sig"),
+        &format!("Authorization: Bearer {u}.sig"),
+    );
+    assert!(!out.contains(".sig") && !out.contains(u), "{out}");
+}
+
+#[test]
+fn scrub_merges_touching_spans_and_keeps_plain_text_unchanged() {
+    assert_eq!(scrub_with("abc", "no secret here"), "no secret here");
+    assert_eq!(scrub_with("abc", "xabcabcx"), "x<redacted>x");
+    let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
+    assert_eq!(scrub_with("zzz", &format!("Bearer {u} é")), "Bearer *** é");
 }
 
 #[test]

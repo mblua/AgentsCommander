@@ -235,82 +235,96 @@ pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<Stri
     let is_cmd = crate::commands::session::executable_basename(shell) == "cmd";
 
     if is_cmd {
-        let mut result = args.to_vec();
-
-        if is_claude {
-            if let Some(idx) = result.iter().position(|arg| {
-                crate::commands::session::executable_basename(arg).starts_with("claude")
-            }) {
-                strip_claude_tokens(&mut result, idx + 1);
-            }
-        }
-        if is_codex {
-            if let Some(idx) = result
-                .iter()
-                .position(|arg| crate::commands::session::executable_basename(arg) == "codex")
-            {
-                strip_codex_tokens(&mut result, idx + 1);
-            }
-        }
-        if is_antigravity {
-            if let Some(idx) = result.iter().position(|arg| {
-                matches!(
-                    crate::commands::session::executable_basename(arg).as_str(),
-                    "agy" | "antigravity"
-                )
-            }) {
-                strip_antigravity_tokens(&mut result, idx + 1);
-            }
-        }
-
-        for arg in &mut result {
-            let mut tokens: Vec<String> = arg
-                .split_whitespace()
-                .map(std::string::ToString::to_string)
-                .collect();
-            let mut changed = false;
-
-            if is_claude {
-                if let Some(idx) = tokens.iter().position(|token| {
-                    crate::commands::session::executable_basename(token).starts_with("claude")
-                }) {
-                    let before = tokens.len();
-                    strip_claude_tokens(&mut tokens, idx + 1);
-                    changed |= tokens.len() != before;
-                }
-            }
-
-            if is_codex {
-                if let Some(idx) = tokens.iter().position(|token| {
-                    crate::commands::session::executable_basename(token) == "codex"
-                }) {
-                    let before = tokens.len();
-                    strip_codex_tokens(&mut tokens, idx + 1);
-                    changed |= tokens.len() != before;
-                }
-            }
-
-            if is_antigravity {
-                if let Some(idx) = tokens.iter().position(|token| {
-                    matches!(
-                        crate::commands::session::executable_basename(token).as_str(),
-                        "agy" | "antigravity"
-                    )
-                }) {
-                    let before = tokens.len();
-                    strip_antigravity_tokens(&mut tokens, idx + 1);
-                    changed |= tokens.len() != before;
-                }
-            }
-
-            if changed {
-                *arg = tokens.join(" ");
-            }
-        }
-
-        result
+        strip_cmd_injected_args(args, is_claude, is_codex, is_antigravity)
     } else {
         strip_direct_injected_args(args, is_claude, is_codex, is_antigravity)
+    }
+}
+
+fn strip_cmd_injected_args(
+    args: &[String],
+    is_claude: bool,
+    is_codex: bool,
+    is_antigravity: bool,
+) -> Vec<String> {
+    let mut result = args.to_vec();
+
+    if is_claude {
+        if let Some(idx) = result.iter().position(|arg| {
+            crate::commands::session::executable_basename(arg).starts_with("claude")
+        }) {
+            strip_claude_tokens(&mut result, idx + 1);
+        }
+    }
+    if is_codex {
+        if let Some(idx) = result
+            .iter()
+            .position(|arg| crate::commands::session::executable_basename(arg) == "codex")
+        {
+            strip_codex_tokens(&mut result, idx + 1);
+        }
+    }
+    if is_antigravity {
+        if let Some(idx) = result.iter().position(|arg| {
+            matches!(
+                crate::commands::session::executable_basename(arg).as_str(),
+                "agy" | "antigravity"
+            )
+        }) {
+            strip_antigravity_tokens(&mut result, idx + 1);
+        }
+    }
+
+    for arg in &mut result {
+        strip_cmd_arg_tokens(arg, is_claude, is_codex, is_antigravity);
+    }
+
+    result
+}
+
+fn strip_cmd_arg_tokens(arg: &mut String, is_claude: bool, is_codex: bool, is_antigravity: bool) {
+    let mut tokens: Vec<String> = arg
+        .split_whitespace()
+        .map(std::string::ToString::to_string)
+        .collect();
+    let mut changed = false;
+
+    if is_claude {
+        if let Some(idx) = tokens.iter().position(|token| {
+            crate::commands::session::executable_basename(token).starts_with("claude")
+        }) {
+            let before = tokens.len();
+            strip_claude_tokens(&mut tokens, idx + 1);
+            changed |= tokens.len() != before;
+        }
+    }
+
+    if is_codex {
+        if let Some(idx) = tokens
+            .iter()
+            .position(|token| crate::commands::session::executable_basename(token) == "codex")
+        {
+            let before = tokens.len();
+            strip_codex_tokens(&mut tokens, idx + 1);
+            changed |= tokens.len() != before;
+        }
+    }
+
+    if is_antigravity {
+        if let Some(idx) = tokens.iter().position(|token| {
+            matches!(
+                crate::commands::session::executable_basename(token).as_str(),
+                "agy" | "antigravity"
+            )
+        }) {
+            let before = tokens.len();
+            strip_antigravity_tokens(&mut tokens, idx + 1);
+            changed |= tokens.len() != before;
+        }
+    }
+
+    if changed {
+        *arg = tokens.join(" ");
     }
 }
 

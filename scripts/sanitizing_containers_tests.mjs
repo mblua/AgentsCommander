@@ -70,7 +70,7 @@ test('04 delegated Attempts writers remain global while scope inventory is zero'
 
 test('04 rejects unsafe basenames and nonstrings', () => {
   for (const name of [
-    '', '.', '..', '../Role.md', './Role.md', 'a/b', 'a\\b', 'C:Role.md',
+    '', '.', '..', '../Role.md', './Role.md', 'a/b', String.raw`a\b`, 'C:Role.md',
     'a b', ' a', 'a ', '\n', 'a\n', 'a:b', 'a*', 'é.md', null, 1, true, {}, [],
   ]) {
     const registry = attemptsRegistry();
@@ -525,8 +525,8 @@ test('04 instance-artifacts-v1 registry contract', () => {
 test('04 stage-1 containers scan all production sources on candidate HEAD', t => {
   const s = candidateSnapshot();
   const entries = parseRegistry(s.readBlob(s.headTree.get('scripts/containers.json')));
-  const ids = ['RoleExperiment/Attempts', 'Sessions/Snapshot', 'Sessions/OrphanArchive',
-    'TeamCreation/ConfigMutationLock', 'TeamCreation/Conventions', 'Screenshots/Native'];
+  const ids = new Set(['RoleExperiment/Attempts', 'Sessions/Snapshot', 'Sessions/OrphanArchive',
+    'TeamCreation/ConfigMutationLock', 'TeamCreation/Conventions', 'Screenshots/Native']);
   for (const id of ids) {
     const c = entries.find(e => e.id === id);
     assert.equal(c.literalScope, root, id);
@@ -536,7 +536,7 @@ test('04 stage-1 containers scan all production sources on candidate HEAD', t =>
   assert.equal(result.exit, 0);
   for (const id of ids)
     assert.equal(result.metrics.find(m => m.id === id).externalLiterals, 0, id);
-  t.diagnostic(JSON.stringify(result.metrics.filter(m => ids.includes(m.id))));
+  t.diagnostic(JSON.stringify(result.metrics.filter(m => ids.has(m.id))));
 });
 
 // Independent immutable sides: mutating HEAD cannot mutate the base fixture's blobs.
@@ -655,16 +655,16 @@ test('04 unregistered accepts relocation and shrinking per literal', t => {
 });
 
 test('04 literal-files-v1 exact grammar and lexical limits', t => {
-  const accepted = ['run.json', 'a.jsonl', 'a.toml', 'a.yaml', 'a.yml', 'a.db', 'a.sqlite',
+  const accepted = new Set(['run.json', 'a.jsonl', 'a.toml', 'a.yaml', 'a.yml', 'a.db', 'a.sqlite',
     'a.sqlite3', '.team.lock', 'Role.md', 'a.txt', '/fixture/a.json', 'C:/fixture/a.json',
     'x' + String.fromCodePoint(92) + 'a.json', '{}.json', '{name}_*.json',
-    'a/{_id9}/report.json', 'RUN.json'];
+    'a/{_id9}/report.json', 'RUN.json']);
   const rejected = ['', '.json', './run.json', '../run.json', 'a//run.json',
     'a/./run.json', 'a/../run.json', 'run.JSON', 'a.csv', ' run.json', 'a b.json',
     'a\n.json', 'é.json', '{9id}.json', '{bad-name}.json', '{x.json', 'a.json/', 'C:a.json'];
   for (const value of [...accepted, ...rejected]) {
     const fixture = ratchetTree(distributed(value));
-    const entries = accepted.includes(value) ?
+    const entries = accepted.has(value) ?
       [debtEntry(value.replaceAll(String.fromCodePoint(92), '/'))] : [];
     const result = containersGate(fixture);
     assert.equal(result.exit, 0, JSON.stringify(result));
@@ -837,6 +837,53 @@ test('04 committed source and registry inputs stay distinct from dirty files', t
     registryBase: registered.unregistered.base, registryHead: registered.unregistered.head }));
 });
 
+function directSourceWitnesses(s, tree, registries, side, literal) {
+  const witnesses = [], excluded = [];
+  for (const [p, entry] of tree) {
+    if (!p.startsWith(attemptsScope) || !p.endsWith('.rs') || /\/tests?\//.test(p)) continue;
+    const lines = s.readBlob(entry).split('\n');
+    lines.forEach((line, index) => {
+      if (!line.includes('"' + literal + '"') || line.trimStart().startsWith('//')) return;
+      const registration = registries[side].some(c => c.name === literal &&
+        p.startsWith(c.literalScope ?? c.scope));
+      (registration ? excluded : witnesses).push({ path: p, line: index + 1 });
+    });
+  }
+  return { witnesses, excluded };
+}
+
+function assertWitnessDebt(t, side, literal, witnesses, excluded, entries) {
+  if (new Set(witnesses.map(w => w.path)).size >= 2) {
+    const debt = entries.find(e => e.literal === literal);
+    assert.ok(debt, JSON.stringify({ side, literal, witnesses, entries }));
+    for (const witness of witnesses) assert.ok(debt.sites.some(site =>
+      site.path === witness.path && site.line === witness.line), JSON.stringify(witness));
+  }
+  let reason = 'example absent from source';
+  if (excluded.length) reason = 'scoped registered name';
+  else if (witnesses.length) reason = 'direct source occurrences checked';
+  t.diagnostic(JSON.stringify({ control: 'direct-source witnesses', side, literal,
+    witnesses, excluded, reason }));
+}
+
+function injectionPlan(s, before, registries) {
+  const existing = before.unregistered.head.entries[0];
+  let literal = existing?.literal ?? 'proof_4024_fresh.json';
+  if (!existing) {
+    const occupied = new Set([...before.unregistered.base.entries.map(e => e.literal),
+      ...registries.base.map(c => c.name), ...registries.head.map(c => c.name)]);
+    while (occupied.has(literal)) literal = '_' + literal;
+  }
+  const headTree = new Map(s.headTree), additions = new Map(), sites = [];
+  for (let i = 0; i < (existing ? 1 : 2); i++) {
+    let p = root + 'proof_4024_' + i + '.rs';
+    while (headTree.has(p)) p = p.replace('.rs', '_fresh.rs');
+    const entry = { path: p }; headTree.set(p, entry);
+    additions.set(entry, sourceLiteral(literal)); sites.push({ path: p, line: 1 });
+  }
+  return { existing, literal, headTree, additions, sites };
+}
+
 test('04 real default snapshot exposes debt and rejects exact memory injection', t => {
   const s = createSnapshot({ cwd: repo, ...parseArgs([]) });
   const before = containersGate(s);
@@ -854,44 +901,11 @@ test('04 real default snapshot exposes debt and rejects exact memory injection',
     }
     // Independent direct-source witnesses, without the discovery helper's matcher.
     for (const literal of ['run.json', 'report.json', 'experiment.json']) {
-      const witnesses = [], excluded = [];
-      for (const [p, entry] of tree) {
-        if (!p.startsWith(attemptsScope) || !p.endsWith('.rs') || /\/tests?\//.test(p)) continue;
-        const lines = s.readBlob(entry).split('\n');
-        lines.forEach((line, index) => {
-          if (!line.includes('"' + literal + '"') || line.trimStart().startsWith('//')) return;
-          const registration = registries[side].find(c => c.name === literal &&
-            p.startsWith(c.literalScope ?? c.scope));
-          (registration ? excluded : witnesses).push({ path: p, line: index + 1 });
-        });
-      }
-      if (new Set(witnesses.map(w => w.path)).size >= 2) {
-        const debt = entries.find(e => e.literal === literal);
-        assert.ok(debt, JSON.stringify({ side, literal, witnesses, entries }));
-        for (const witness of witnesses) assert.ok(debt.sites.some(site =>
-          site.path === witness.path && site.line === witness.line), JSON.stringify(witness));
-      }
-      let reason = 'example absent from source';
-      if (excluded.length) reason = 'scoped registered name';
-      else if (witnesses.length) reason = 'direct source occurrences checked';
-      t.diagnostic(JSON.stringify({ control: 'direct-source witnesses', side, literal,
-        witnesses, excluded, reason }));
+      const { witnesses, excluded } = directSourceWitnesses(s, tree, registries, side, literal);
+      assertWitnessDebt(t, side, literal, witnesses, excluded, entries);
     }
   }
-  const existing = before.unregistered.head.entries[0];
-  let literal = existing?.literal ?? 'proof_4024_fresh.json';
-  if (!existing) {
-    const occupied = new Set([...before.unregistered.base.entries.map(e => e.literal),
-      ...registries.base.map(c => c.name), ...registries.head.map(c => c.name)]);
-    while (occupied.has(literal)) literal = '_' + literal;
-  }
-  const headTree = new Map(s.headTree), additions = new Map(), sites = [];
-  for (let i = 0; i < (existing ? 1 : 2); i++) {
-    let p = root + 'proof_4024_' + i + '.rs';
-    while (headTree.has(p)) p = p.replace('.rs', '_fresh.rs');
-    const entry = { path: p }; headTree.set(p, entry);
-    additions.set(entry, sourceLiteral(literal)); sites.push({ path: p, line: 1 });
-  }
+  const { existing, literal, headTree, additions, sites } = injectionPlan(s, before, registries);
   const injected = { ...s, headTree,
     readBlob: entry => additions.has(entry) ? additions.get(entry) : s.readBlob(entry) };
   const after = containersGate(injected), restored = containersGate(s);

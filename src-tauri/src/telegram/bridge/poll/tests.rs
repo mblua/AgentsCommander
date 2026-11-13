@@ -154,3 +154,61 @@ async fn delivery_continues_after_injection_error() {
 async fn delivery_emits_final_event_for_invalid_session_identity() {
     check_delivery(false, false).await;
 }
+
+async fn trace_for(text: &str) -> Vec<String> {
+    let trace = Arc::new(Mutex::new(DeliveryTrace::default()));
+    let runtime = RecordingRuntime {
+        trace: Arc::clone(&trace),
+        injection_fails: false,
+    };
+    let event_port = RecordingEvents(Arc::clone(&trace));
+    let id = Uuid::nil();
+    let session = id.to_string();
+    let mut logger = BridgeLogger::new(&session);
+    deliver_text(
+        &runtime,
+        &event_port,
+        id,
+        &session,
+        text,
+        "sender",
+        &mut logger,
+    )
+    .await;
+    let calls = trace.lock().unwrap().calls.clone();
+    calls
+}
+
+#[tokio::test]
+async fn delivery_rejects_unsafe_text_without_side_effects() {
+    let max = crate::pty::input_limits::PTY_INPUT_MAX_BYTES;
+    for text in [
+        "hi\u{1b}[2J".into(),
+        "a\rb".into(),
+        "a\r\nb".into(),
+        "x\u{202E}y".into(),
+        "\u{061C}".into(),
+        "x".repeat(max + 1),
+        format!("{}é", "x".repeat(max - 1)),
+    ] {
+        assert!(trace_for(&text).await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn delivery_accepts_tab_newline_and_multibyte_at_bound() {
+    let max = crate::pty::input_limits::PTY_INPUT_MAX_BYTES;
+    for text in ["a\tb\nc".into(), "é".repeat(max / 2)] {
+        let id = Uuid::nil();
+        assert_eq!(
+            trace_for(&text).await,
+            vec![
+                format!("inject:{id}:{text}"),
+                format!("note:{id}"),
+                format!("incoming:{id}:{text}:sender"),
+                format!("set:{id}:[TG] {text}"),
+                format!("last:{id}:[TG] {text}"),
+            ]
+        );
+    }
+}

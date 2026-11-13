@@ -648,16 +648,7 @@ pub(crate) fn build_direct_matrix_context(
     let cwd_path = Path::new(cwd);
     let role_path = roles::role_path(cwd_path);
     let config_path = crate::config::config_file_path(cwd_path);
-    let config = if crate::filesystem::session_context::context_source_exists(&config_path) {
-        let config_content = crate::filesystem::session_context::read_context_source(&config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        Some(
-            serde_json::from_str::<serde_json::Value>(&config_content)
-                .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
-        )
-    } else {
-        None
-    };
+    let config = read_matrix_config(&config_path)?;
     let global_context =
         ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts, activation)?;
     let mut resolved_paths = vec![(
@@ -667,52 +658,11 @@ pub(crate) fn build_direct_matrix_context(
     let mut missing: Vec<String> = Vec::new();
 
     if let Some(config) = &config {
-        if let Some(context_array) = config.get("context").and_then(|v| v.as_array()) {
-            for entry in context_array {
-                let raw = match entry.as_str() {
-                    Some(s) => s,
-                    None => continue,
-                };
-
-                if raw == CONTEXT_TOKEN_GLOBAL {
-                    // GLOBAL is resolved separately.
-                } else if raw == CONTEXT_TOKEN_REPOS {
-                    log::debug!(
-                        "Skipping deprecated {CONTEXT_TOKEN_REPOS} context token for {cwd}"
-                    );
-                } else {
-                    let abs = cwd_path.join(raw);
-                    if documents::configured_context_exists(&abs) {
-                        if !resolved_paths_include_path(&resolved_paths, &abs) {
-                            let label = abs
-                                .file_name()
-                                .and_then(std::ffi::OsStr::to_str)
-                                .unwrap_or(raw)
-                                .to_string();
-                            resolved_paths.push((label, abs));
-                        }
-                    } else {
-                        missing.push(raw.to_string());
-                    }
-                }
-            }
-        }
+        collect_configured_context(config, cwd, cwd_path, &mut resolved_paths, &mut missing);
     }
 
     if !missing.is_empty() {
-        let matrix_name = cwd_path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("unknown");
-        return Err(format!(
-            "Agent Matrix '{}' has missing context files:\n{}",
-            matrix_name,
-            missing
-                .iter()
-                .map(|m| format!("  - {m}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
+        return Err(missing_context_error(cwd_path, &missing));
     }
 
     if roles::role_present(cwd_path) && !resolved_paths_include_path(&resolved_paths, &role_path) {
@@ -733,4 +683,83 @@ pub(crate) fn build_direct_matrix_context(
     );
 
     Ok(file_path)
+}
+
+fn read_matrix_config(config_path: &Path) -> Result<Option<serde_json::Value>, String> {
+    Ok(
+        if crate::filesystem::session_context::context_source_exists(config_path) {
+            let config_content =
+                crate::filesystem::session_context::read_context_source(config_path)
+                    .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+            Some(
+                serde_json::from_str::<serde_json::Value>(&config_content)
+                    .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
+            )
+        } else {
+            None
+        },
+    )
+}
+
+fn collect_configured_context(
+    config: &serde_json::Value,
+    cwd: &str,
+    cwd_path: &Path,
+    resolved_paths: &mut Vec<(String, std::path::PathBuf)>,
+    missing: &mut Vec<String>,
+) {
+    let Some(context_array) = config.get("context").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for entry in context_array {
+        let raw = match entry.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        push_context_entry(raw, cwd, cwd_path, resolved_paths, missing);
+    }
+}
+
+fn push_context_entry(
+    raw: &str,
+    cwd: &str,
+    cwd_path: &Path,
+    resolved_paths: &mut Vec<(String, std::path::PathBuf)>,
+    missing: &mut Vec<String>,
+) {
+    if raw == CONTEXT_TOKEN_GLOBAL {
+        // GLOBAL is resolved separately.
+    } else if raw == CONTEXT_TOKEN_REPOS {
+        log::debug!("Skipping deprecated {CONTEXT_TOKEN_REPOS} context token for {cwd}");
+    } else {
+        let abs = cwd_path.join(raw);
+        if documents::configured_context_exists(&abs) {
+            if !resolved_paths_include_path(resolved_paths, &abs) {
+                let label = abs
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or(raw)
+                    .to_string();
+                resolved_paths.push((label, abs));
+            }
+        } else {
+            missing.push(raw.to_string());
+        }
+    }
+}
+
+fn missing_context_error(cwd_path: &Path, missing: &[String]) -> String {
+    let matrix_name = cwd_path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("unknown");
+    format!(
+        "Agent Matrix '{}' has missing context files:\n{}",
+        matrix_name,
+        missing
+            .iter()
+            .map(|m| format!("  - {m}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }

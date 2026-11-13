@@ -436,6 +436,12 @@ impl MailboxPoller {
             }
         }
 
+        // #4309 - shared PTY text policy before any recipient actuation. A file
+        // notification's text depends on the backend: judged below from the plan.
+        if !super::wake_injection::body_depends_on_backend(msg, origin) {
+            super::wake_injection::admit_peer_text(msg, &msg.body, origin, comanaged)?;
+        }
+
         // (#885 J2) A purge is destroying this agent's record right now. A wake
         // delivered into that window falls through to spawn-persistent below and
         // would cold-spawn the agent we are purging, silently breaking the verb's
@@ -471,6 +477,12 @@ impl MailboxPoller {
                 std::ops::ControlFlow::Break(delivered) => return Ok(delivered),
                 std::ops::ControlFlow::Continue(fallback) => fallback,
             };
+            // #4309 - no live candidate took the wake. Judge the text the spawn below would
+            // write, before any destroy, spawn or replacement.
+            if super::wake_injection::body_depends_on_backend(msg, origin) {
+                self.admit_cold_peer_text(app, msg, (origin, comanaged))
+                    .await?;
+            }
             if let Some(previous) = fallback.1 {
                 if self
                     .peer_wake_needs_owned_replacement(app, msg, previous)
@@ -507,6 +519,30 @@ impl MailboxPoller {
                 )
                 .await;
         }
+    }
+
+    /// #4309 - a container backend inlines the notified file; a local one writes
+    /// the notification line. Inline errors return here, before any effect. A plan
+    /// error is left to the fallback and the replacement, which resolve their own.
+    async fn admit_cold_peer_text<S: MailboxHost>(
+        &self,
+        app: &S,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+    ) -> Result<(), String> {
+        let (origin, comanaged) = delivery;
+        let Ok(plan) = self.resolve_wake_spawn_plan(app, msg).await else {
+            return Ok(());
+        };
+        let inline = if super::wake_injection::plan_is_container(&plan) {
+            let sender_root = self.resolve_repo_path(&msg.from, app).await;
+            let sender_root = sender_root.as_deref().map(Path::new);
+            super::notice::container_body_override_for_delivery(origin, &msg.body, sender_root)?
+        } else {
+            None
+        };
+        let body = inline.as_deref().unwrap_or(&msg.body);
+        super::wake_injection::admit_peer_text(msg, body, origin, comanaged)
     }
 
     async fn peer_wake_needs_owned_replacement<S: MailboxHost>(
@@ -749,6 +785,9 @@ impl MailboxPoller {
         }) {
             return Ok(OwnedPeerWakeStep::Retained);
         }
+        // #4309 - a replacement is LocalProcess-only, so it writes `msg.body` (no inline
+        // override). Judge that exact text, from this plan, before any transfer.
+        super::wake_injection::admit_peer_text(msg, &msg.body, delivery.0, delivery.1)?;
         let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
         let Some(target) = self
             .admit_owned_peer_replacement(app, msg, &request, previous)

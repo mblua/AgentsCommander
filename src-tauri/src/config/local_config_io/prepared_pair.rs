@@ -304,45 +304,15 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
     })();
     drop(file);
     let result = result.and_then(|()| {
-        guard.check()?;
-        if read_config_pair_physical(path)? != *before {
-            return Err(PreparedPairError::Conflict);
-        }
-        if *before == PhysicalState::Absent {
-            if let Some(source) = source {
-                publish_absent_source_image(
-                    path,
-                    &tmp,
-                    after,
-                    guard,
-                    source,
-                    stage_identity.as_ref(),
-                )?;
-            } else {
-                // Atomic create-if-absent; rename would clobber a racing Unix creator.
-                guard.check()?;
-                link_absent_local_config_stage(&tmp, path).map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::AlreadyExists {
-                        PreparedPairError::Conflict
-                    } else {
-                        PreparedPairError::Io(e.to_string())
-                    }
-                })?;
-                guard.check()?;
-                remove_local_config_stage(&tmp)
-                    .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-            }
-        } else {
-            publish_temp_config_guarded(&tmp, path, guard)?;
-        }
-        guard.check()?;
-        #[cfg(not(windows))]
-        sync_local_config_directory(
-            path.parent()
-                .ok_or(PreparedPairError::InvalidPlan("PAIR target has no parent"))?,
+        publish_prepared_stage(
+            path,
+            &tmp,
+            before,
+            after,
+            guard,
+            source,
+            stage_identity.as_ref(),
         )
-        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-        Ok(())
     });
     if let Err(primary) = &result {
         if !guard.failed.get() {
@@ -350,27 +320,80 @@ pub(super) fn publish_prepared_pair_image_with_source_parent(
                 report_cleanup_refusal(primary, &refusal);
                 return Err(refusal);
             }
-            if let Some(source) = source {
-                let parent = source.parent;
-                if !source.moved.get() {
-                    validate_source_publication_children(parent, &tmp, path)?;
-                    if let Some(owned) = &stage_identity {
-                        // Cleanup owns only this stage, never the published target.
-                        guard.check()?;
-                        parent.remove_regular_file_if_same(&tmp, owned);
-                    }
-                }
-            } else if let Err(e) = remove_local_config_stage(&tmp) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!("[prepared-pair] temporary cleanup failed: {e}");
-                }
-            }
+            cleanup_failed_prepared_stage(path, &tmp, guard, source, stage_identity.as_ref())?;
         }
     }
     if result.is_ok() {
         guard.check()?;
     }
     result
+}
+
+fn publish_prepared_stage(
+    path: &Path,
+    tmp: &Path,
+    before: &PhysicalState,
+    after: &PhysicalState,
+    guard: &PairTargetGuard<'_>,
+    source: Option<&SourceNativePublication<'_>>,
+    stage_identity: Option<&crate::path_identity::VerifiedPathIdentity>,
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
+    if read_config_pair_physical(path)? != *before {
+        return Err(PreparedPairError::Conflict);
+    }
+    if *before == PhysicalState::Absent {
+        if let Some(source) = source {
+            publish_absent_source_image(path, tmp, after, guard, source, stage_identity)?;
+        } else {
+            // Atomic create-if-absent; rename would clobber a racing Unix creator.
+            guard.check()?;
+            link_absent_local_config_stage(tmp, path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    PreparedPairError::Conflict
+                } else {
+                    PreparedPairError::Io(e.to_string())
+                }
+            })?;
+            guard.check()?;
+            remove_local_config_stage(tmp).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        }
+    } else {
+        publish_temp_config_guarded(tmp, path, guard)?;
+    }
+    guard.check()?;
+    #[cfg(not(windows))]
+    sync_local_config_directory(
+        path.parent()
+            .ok_or(PreparedPairError::InvalidPlan("PAIR target has no parent"))?,
+    )
+    .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    Ok(())
+}
+
+fn cleanup_failed_prepared_stage(
+    path: &Path,
+    tmp: &Path,
+    guard: &PairTargetGuard<'_>,
+    source: Option<&SourceNativePublication<'_>>,
+    stage_identity: Option<&crate::path_identity::VerifiedPathIdentity>,
+) -> Result<(), PreparedPairError> {
+    if let Some(source) = source {
+        let parent = source.parent;
+        if !source.moved.get() {
+            validate_source_publication_children(parent, tmp, path)?;
+            if let Some(owned) = stage_identity {
+                // Cleanup owns only this stage, never the published target.
+                guard.check()?;
+                parent.remove_regular_file_if_same(tmp, owned);
+            }
+        }
+    } else if let Err(e) = remove_local_config_stage(tmp) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("[prepared-pair] temporary cleanup failed: {e}");
+        }
+    }
+    Ok(())
 }
 
 fn publish_absent_source_image(

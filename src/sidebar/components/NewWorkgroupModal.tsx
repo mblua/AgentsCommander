@@ -46,18 +46,21 @@ const NewWorkgroupModal: Component<{
     setListOpen(true);
     resetActive();
   };
+  const moveActiveTeam = (e: KeyboardEvent) => {
+    e.preventDefault();
+    setListOpen(true);
+    const count = filteredTeams().length;
+    let next: number;
+    if (activeIndex() < 0) next = 0;
+    else next = activeIndex() + (e.key === "ArrowDown" ? 1 : -1);
+    const index = count === 0 ? -1 : Math.max(0, Math.min(count - 1, next));
+    setActiveIndex(index);
+    if (index >= 0) listElement.children[index]?.scrollIntoView({ block: "nearest" });
+  };
   const handleTeamKeyDown = (e: KeyboardEvent) => {
     if (e.isComposing || compositionActive) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      setListOpen(true);
-      const count = filteredTeams().length;
-      let next: number;
-      if (activeIndex() < 0) next = 0;
-      else next = activeIndex() + (e.key === "ArrowDown" ? 1 : -1);
-      const index = count === 0 ? -1 : Math.max(0, Math.min(count - 1, next));
-      setActiveIndex(index);
-      if (index >= 0) listElement.children[index]?.scrollIntoView({ block: "nearest" });
+      moveActiveTeam(e);
     } else if (e.key === "Enter" && listOpen()) {
       e.preventDefault();
       e.stopPropagation();

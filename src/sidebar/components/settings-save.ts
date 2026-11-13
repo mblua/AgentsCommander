@@ -36,12 +36,8 @@ function normalizeAgentBackend(agent: AgentConfig): AgentConfig {
   };
 }
 
-export function mergeSettingsForSavePreservingProjects(
-  draft: AppSettings,
-  fresh: AppSettings,
-  modalSeed: AppSettings | null = null
-): AppSettings {
-  const webServerFields = modalSeed
+function webServerFields(draft: AppSettings, fresh: AppSettings, modalSeed: AppSettings | null) {
+  return modalSeed
     ? {
         webServerEnabled: Object.is(draft.webServerEnabled, modalSeed.webServerEnabled)
           ? fresh.webServerEnabled
@@ -54,7 +50,10 @@ export function mergeSettingsForSavePreservingProjects(
           : draft.webServerBind,
       }
     : {};
-  const apiServerFields = modalSeed
+}
+
+function apiServerFields(draft: AppSettings, fresh: AppSettings, modalSeed: AppSettings | null) {
+  return modalSeed
     ? {
         apiServerPort: Object.is(draft.apiServerPort, modalSeed.apiServerPort)
           ? fresh.apiServerPort
@@ -64,11 +63,17 @@ export function mergeSettingsForSavePreservingProjects(
           : draft.apiServerBind,
       }
     : {};
+}
 
+export function mergeSettingsForSavePreservingProjects(
+  draft: AppSettings,
+  fresh: AppSettings,
+  modalSeed: AppSettings | null = null
+): AppSettings {
   return {
     ...draft,
-    ...webServerFields,
-    ...apiServerFields,
+    ...webServerFields(draft, fresh, modalSeed),
+    ...apiServerFields(draft, fresh, modalSeed),
     responseCloseEnabled: modalSeed && (draft.responseCloseEnabled ?? true) === (modalSeed.responseCloseEnabled ?? true)
       ? (fresh.responseCloseEnabled ?? true)
       : (draft.responseCloseEnabled ?? true),

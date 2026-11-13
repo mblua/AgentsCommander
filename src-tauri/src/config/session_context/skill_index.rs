@@ -161,51 +161,85 @@ pub(crate) fn extract_skill_frontmatter(path: &Path) -> Result<String, String> {
             break;
         }
 
-        for byte in &read_buffer[..read] {
-            current_line.push(*byte);
-
-            if saw_opening {
-                let remaining = SKILL_FRONTMATTER_MAX_BYTES.saturating_sub(frontmatter.len());
-                if current_line.len() > remaining.saturating_add(8) {
-                    return Err(frontmatter_limit_error());
-                }
-            } else if current_line.len() > 1024 {
-                return Err("missing opening frontmatter delimiter".to_string());
-            }
-
-            if *byte != b'\n' {
-                continue;
-            }
-
-            if !saw_opening {
-                if !is_frontmatter_delimiter(&current_line, true) {
-                    return Err("missing opening frontmatter delimiter".to_string());
-                }
-                saw_opening = true;
-                current_line.clear();
-                continue;
-            }
-
-            if is_frontmatter_delimiter(&current_line, false) {
-                return frontmatter_utf8(frontmatter);
-            }
-            append_frontmatter_line(&mut frontmatter, &current_line)?;
-            current_line.clear();
+        if scan_frontmatter_chunk(
+            &read_buffer[..read],
+            &mut current_line,
+            &mut frontmatter,
+            &mut saw_opening,
+        )? {
+            return frontmatter_utf8(frontmatter);
         }
     }
 
+    finish_skill_frontmatter(&current_line, frontmatter, saw_opening)
+}
+
+fn check_frontmatter_line_limit(
+    saw_opening: bool,
+    current_line: &[u8],
+    frontmatter: &[u8],
+) -> Result<(), String> {
+    if saw_opening {
+        let remaining = SKILL_FRONTMATTER_MAX_BYTES.saturating_sub(frontmatter.len());
+        if current_line.len() > remaining.saturating_add(8) {
+            return Err(frontmatter_limit_error());
+        }
+    } else if current_line.len() > 1024 {
+        return Err("missing opening frontmatter delimiter".to_string());
+    }
+    Ok(())
+}
+
+fn scan_frontmatter_chunk(
+    chunk: &[u8],
+    current_line: &mut Vec<u8>,
+    frontmatter: &mut Vec<u8>,
+    saw_opening: &mut bool,
+) -> Result<bool, String> {
+    for byte in chunk {
+        current_line.push(*byte);
+
+        check_frontmatter_line_limit(*saw_opening, current_line, frontmatter)?;
+
+        if *byte != b'\n' {
+            continue;
+        }
+
+        if !*saw_opening {
+            if !is_frontmatter_delimiter(current_line, true) {
+                return Err("missing opening frontmatter delimiter".to_string());
+            }
+            *saw_opening = true;
+            current_line.clear();
+            continue;
+        }
+
+        if is_frontmatter_delimiter(current_line, false) {
+            return Ok(true);
+        }
+        append_frontmatter_line(frontmatter, current_line)?;
+        current_line.clear();
+    }
+    Ok(false)
+}
+
+fn finish_skill_frontmatter(
+    current_line: &[u8],
+    mut frontmatter: Vec<u8>,
+    saw_opening: bool,
+) -> Result<String, String> {
     if !current_line.is_empty() {
         if !saw_opening {
-            if is_frontmatter_delimiter(&current_line, true) {
+            if is_frontmatter_delimiter(current_line, true) {
                 return Err("missing closing frontmatter delimiter".to_string());
             }
             return Err("missing opening frontmatter delimiter".to_string());
         }
 
-        if is_frontmatter_delimiter(&current_line, false) {
+        if is_frontmatter_delimiter(current_line, false) {
             return frontmatter_utf8(frontmatter);
         }
-        append_frontmatter_line(&mut frontmatter, &current_line)?;
+        append_frontmatter_line(&mut frontmatter, current_line)?;
     }
 
     if saw_opening {
@@ -269,13 +303,13 @@ pub(crate) fn sanitize_skill_metadata_for_context(input: &str) -> String {
 }
 
 pub(crate) fn yaml_field_string(
-    mapping: &serde_yaml::Mapping,
+    mapping: &serde_norway::Mapping,
     key: &str,
 ) -> Result<Option<String>, String> {
-    let lookup = serde_yaml::Value::String(key.to_string());
+    let lookup = serde_norway::Value::String(key.to_string());
     match mapping.get(&lookup) {
         None => Ok(None),
-        Some(serde_yaml::Value::String(value)) => {
+        Some(serde_norway::Value::String(value)) => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 Ok(None)
@@ -457,7 +491,7 @@ fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBu
             }
         };
 
-        let parsed = match serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
+        let parsed = match serde_norway::from_str::<serde_norway::Value>(&frontmatter) {
             Ok(parsed) => parsed,
             Err(e) => {
                 index.warnings.push(format!(
@@ -519,7 +553,7 @@ fn append_skill_metadata(index: &mut SkillIndex, candidates: Vec<(String, PathBu
 }
 
 fn build_skill_metadata(
-    mapping: &serde_yaml::Mapping,
+    mapping: &serde_norway::Mapping,
     display_folder: String,
     skill_name: &str,
     entrypoint: &Path,

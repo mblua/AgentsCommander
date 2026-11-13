@@ -396,21 +396,47 @@ excluded on all three platforms at once (section 2.3).
 
 ## 7. Bumping the pinned Rust version
 
-The pin is local to seven CI invocations and frozen nowhere else:
+The pin is one Rust version written in many places. A bump changes every active place below
+in one pull request. A pull request that changes only some of them, an automated update
+included, is incomplete.
 
-- five `toolchain:` inputs in `.github/workflows/pr-regression-gates.yml`, for
-  `rust-regression-windows`, `rust-slow-test-windows`, `clippy-linux`, `rust-regression-linux` and
-  `rust-regression-macos`;
-- two in `.github/workflows/cache-warm.yml`, for `warm-debug` and `verify-warm-debug`.
+Active places (change them to the new version):
 
-No `rust-toolchain.toml` exists: local development, `release.yml`, `bundle-validation.yml` and the
-other workflows stay on floating stable, and the pin must not be widened to them.
+- the root `rust-toolchain.toml` (`channel`). Rustup reads it for every ordinary `cargo` or
+  `rustc` call whose working directory is inside the repo, so local development and every
+  workflow job without its own `toolchain:` input use the pinned version;
+- `.github/workflows/`: `toolchain:` inputs, run-time checks that compare `rustc -vV` with it,
+  `--rustc-version` arguments, step names, comments;
+- validators: `scripts/check-too-many-lines.mjs`, `scripts/check-clippy-seven.mjs` and the
+  `TOOLCHAIN` constant in `scripts/check-struct-excessive-bools.mjs`;
+- the `toolchain` field of `too-many-lines.baseline.json`, `clippy-seven.baseline.json`,
+  `struct-excessive-bools.baseline.json` and `cognitive-complexity.baseline.json`; regenerate
+  each baseline from emissions made with the new version, never edit only the field;
+- tests: `scripts/check-too-many-lines.test.mjs` and `scripts/check-clippy-seven.test.mjs`
+  (`scripts/check-struct-excessive-bools.test.mjs` reads the `TOOLCHAIN` constant);
+- gate docs: `docs/quality/too-many-lines-gate.md`, `docs/quality/clippy-seven-gate.md` and
+  section 2 of this file.
+
+Historical places (keep the old version, do not change):
+
+- the #3319 and #3527 shrink clauses in `scripts/check-cognitive-complexity.mjs`, which admit
+  only baselines whose two toolchains are that old version, and the self-tests in that file that
+  build their fixtures;
+- section 3 (#3319) and section 8 of this file.
+
+`cargo +<toolchain>`, `RUSTUP_TOOLCHAIN` and a `rustup override` on a closer directory still
+beat the file. Do not add a second toolchain file or remove the root one.
 
 To bump:
 
-1. Change the version in the seven places above, and in the three run-time assertions in
-   `pr-regression-gates.yml` that compare `rustc -vV` with the pin (one in each gate leg) - otherwise each leg fails with
-   `toolchain pin did not take effect`.
+1. List every candidate with `git grep -n -F '<old version>'` over the whole repository. Change
+   each hit in an active place; leave each hit in a historical place. Run the grep again: only
+   historical hits may remain. Do not trust a fixed count; the grep is the list and this section
+   says which hits are historical. A hit in a file not named here: STOP and classify it before the
+   bump. Why all active places: rustup prefers the file over the version a workflow installs as
+   default, so a stale `toolchain:` input can pass silently, while a stale run-time check fails
+   the job (`toolchain pin did not take effect` or a failed `test`), a stale validator rejects
+   the regenerated baselines, and a stale `--rustc-version` argument mislabels the data.
 2. Regenerate the baseline from the three platforms' emissions, merged by the script's `--merge`
    (it refuses unless all three agree on commit and rustc version). A light-tier run produces the
    Windows and Linux emissions but not macOS, so label the pull request `ci:full` to get all three. The toolchain-refresh

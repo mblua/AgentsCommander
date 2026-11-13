@@ -55,10 +55,19 @@ const DAY_WALK_DEPTH: i64 = 7;
 /// gaining a reference the other does not already have, and
 /// `claude_watcher_layering` equality-pins the Claude watcher's dependency set.
 /// Two three-line structs are cheaper than an arc between the watchers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BotTarget {
     pub token: String,
     pub chat_id: i64,
+}
+
+impl std::fmt::Debug for BotTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BotTarget")
+            .field("token", &"[REDACTED]")
+            .field("chat_id", &self.chat_id)
+            .finish()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

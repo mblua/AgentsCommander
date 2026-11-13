@@ -2,6 +2,7 @@ pub mod agent_update;
 pub mod agent_version;
 pub mod api;
 pub mod capture;
+pub(crate) mod cleanup_diagnostics;
 pub mod cli;
 pub mod commands;
 pub mod config;

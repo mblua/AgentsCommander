@@ -683,3 +683,100 @@ fn resolve_remote_pty_command_maps_pi_clear_to_new_and_fresh_boundary() {
     assert_eq!(resolved.logical, LogicalPtyCommand::Clear);
     assert!(resolved.logical.creates_fresh_boundary());
 }
+
+#[test]
+fn checked_peer_payload_accepts_valid_text_and_exact_bound() {
+    use crate::phone::mailbox::wake_injection::checked_peer_payload;
+    use crate::phone::messaging::format_pty_wrap;
+    let valid = format_pty_wrap("p:r/a", "ok\ttab\nline é 🦀");
+    assert_eq!(checked_peer_payload(valid.clone()).unwrap(), valid);
+    let max = crate::pty::input_limits::PTY_INPUT_MAX_BYTES;
+    let fixed = format_pty_wrap("p:r/a", "").len();
+    let body = format!("é{}", "x".repeat(max - fixed - 2));
+    let exact = format_pty_wrap("p:r/a", &body);
+    assert_eq!(exact.len(), max);
+    assert_eq!(checked_peer_payload(exact.clone()).unwrap(), exact);
+    assert!(
+        checked_peer_payload(format_pty_wrap("p:r/a", &(body + "x")))
+            .unwrap_err()
+            .contains("payload_too_large")
+    );
+}
+
+#[test]
+fn checked_peer_payload_rejects_controls_without_echo() {
+    use crate::phone::mailbox::notice::ERR_INVALID_PEER_TEXT;
+    use crate::phone::mailbox::wake_injection::checked_peer_payload;
+    use crate::phone::messaging::format_pty_wrap;
+    for (from, body) in [
+        ("p:r/a", "hi\u{1b}[2J"),
+        ("p:r/a", "a\rb"),
+        ("p:r/a", "a\r\nb"),
+        ("p:r/a", "x\u{202E}y"),
+        ("a\u{061C}", "secret"),
+    ] {
+        let error = checked_peer_payload(format_pty_wrap(from, body)).unwrap_err();
+        assert!(error.starts_with(ERR_INVALID_PEER_TEXT));
+        assert!(crate::phone::mailbox::handoff::is_permanent_delivery_error(
+            &error
+        ));
+        assert!(!error.contains(body));
+    }
+    let error = checked_peer_payload("plain".into()).unwrap_err();
+    assert!(error.starts_with(ERR_INVALID_PEER_TEXT));
+    assert!(crate::phone::mailbox::handoff::is_permanent_delivery_error(
+        &error
+    ));
+    assert!(!error.contains("plain"));
+}
+
+#[test]
+fn admit_peer_text_judges_the_exact_render() {
+    use crate::phone::mailbox::wake_injection::admit_peer_text;
+    use crate::phone::messaging::{compose_sender_for_comanaged_origin, format_pty_wrap};
+    let max = crate::pty::input_limits::PTY_INPUT_MAX_BYTES;
+    let mut wake = wake_message_to_target();
+    let origin = WakeDeliveryOrigin::DbQueue;
+    wake.body = "x".repeat(max - format_pty_wrap(&wake.from, "").len());
+    assert_eq!(format_pty_wrap(&wake.from, &wake.body).len(), max);
+    assert!(admit_peer_text(&wake, &wake.body, origin, false).is_ok());
+    assert!(admit_peer_text(&wake, &wake.body, origin, true)
+        .unwrap_err()
+        .contains("payload_too_large"));
+    let display_from = compose_sender_for_comanaged_origin(&wake.from);
+    wake.body = "x".repeat(max - format_pty_wrap(&display_from, "").len());
+    assert_eq!(format_pty_wrap(&display_from, &wake.body).len(), max);
+    assert!(admit_peer_text(&wake, &wake.body, origin, true).is_ok());
+    wake.get_output = true;
+    wake.request_id = Some("r1".into());
+    wake.body = "x".repeat(max - format_pty_wrap(&wake.from, "").len());
+    assert!(admit_peer_text(&wake, &wake.body, origin, false).is_ok());
+    wake.command = Some("clear".into());
+    wake.body.clear();
+    assert!(admit_peer_text(&wake, &wake.body, origin, false).is_ok());
+    wake.body = "x\u{202E}y".into();
+    assert!(admit_peer_text(&wake, &wake.body, origin, false).is_err());
+}
+
+#[test]
+fn body_depends_on_backend_only_for_filesystem_file_notifications() {
+    use crate::phone::mailbox::wake_injection::body_depends_on_backend;
+    let mut wake = wake_message_to_target();
+    wake.body = crate::phone::messaging::format_file_notification("dir/messaging/f.md");
+    assert!(body_depends_on_backend(
+        &wake,
+        WakeDeliveryOrigin::FilesystemPoller
+    ));
+    assert!(!body_depends_on_backend(&wake, WakeDeliveryOrigin::DbQueue));
+    wake.command = Some("clear".into());
+    assert!(!body_depends_on_backend(
+        &wake,
+        WakeDeliveryOrigin::FilesystemPoller
+    ));
+    wake.command = None;
+    wake.body = "plain".into();
+    assert!(!body_depends_on_backend(
+        &wake,
+        WakeDeliveryOrigin::FilesystemPoller
+    ));
+}

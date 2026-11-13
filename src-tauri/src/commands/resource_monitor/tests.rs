@@ -311,6 +311,7 @@ fn register_running(state: &ResourceMonitorState, id: Uuid, root: ProcessIdentit
     reg.register_root_pid(root.pid).unwrap();
 }
 
+mod cleanup;
 mod kill_errors;
 mod quarantine;
 mod serialization;

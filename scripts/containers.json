@@ -190,7 +190,7 @@
       "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 40,
+        "files": 41,
         "sites": 98
       }
     },
@@ -203,7 +203,7 @@
       "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 40,
+        "files": 41,
         "sites": 98
       }
     },
@@ -227,7 +227,7 @@
       "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 40,
+        "files": 41,
         "sites": 98
       }
     },
@@ -236,9 +236,11 @@
       "name": "web-token.txt",
       "scope": "src-tauri/src/filesystem/",
       "owner": "src-tauri/src/filesystem/documents.rs",
+      "literalScope": "src-tauri/src/",
+      "metadataPolicy": "instance-artifacts-v1",
       "externalLiteralBaseline": 0,
       "writerInventory": {
-        "files": 40,
+        "files": 41,
         "sites": 98
       }
     },

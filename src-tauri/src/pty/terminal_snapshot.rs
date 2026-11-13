@@ -28,6 +28,7 @@ use authority::{
 use finalization::{await_deadline, ensure_before_deadline, run_blocking_with_deadline};
 #[cfg(test)]
 use finalization::{final_revalidate_async, finalize_host_publication};
+pub(crate) use limiter::SNAPSHOT_LIMITER_KEY_CAP;
 use limiter::{
     decrement_counter, prune_map, LimiterLeaseInner, RequesterSnapshotPermit, RollingState,
 };
@@ -70,10 +71,7 @@ mod test_support;
 pub(crate) const SNAPSHOT_SERVER_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const SNAPSHOT_INGRESS_LIMIT: usize = 8;
 pub(crate) const SNAPSHOT_REQUESTER_RATE: usize = 6;
-pub(crate) const SNAPSHOT_TARGET_RATE: usize = 12;
 pub(crate) const SNAPSHOT_INGRESS_RATE: usize = 30;
-pub(crate) const SNAPSHOT_RATE_WINDOW: Duration = Duration::from_secs(60);
-pub(crate) const SNAPSHOT_LIMITER_KEY_CAP: usize = 4_096;
 pub(crate) const SNAPSHOT_GLOBAL_IN_FLIGHT: usize = 2;
 pub(crate) const SNAPSHOT_ARTIFACT_DIRECTORY_CAP: usize = 4_096;
 pub(crate) const SNAPSHOT_ARTIFACT_FILE_CAP: usize = 8_192;

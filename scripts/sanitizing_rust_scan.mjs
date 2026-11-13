@@ -165,32 +165,35 @@ export function parseMeta(tokens) {
     while (tokens[i]?.text === '::') { i++; if (tokens[i]?.kind !== 'ident') fail();
       name += '::' + tokens[i++].name; }
     const node = { name, args: null };
-    if (tokens[i]?.text === '=') {
-      i++; const begin = i;
-      while (i < tokens.length && ![',', ')'].includes(tokens[i].text)) {
-        if (opens[tokens[i].text]) {
-          const end = tokens.findIndex(t => t.index === tokens[i].mate);
-          if (end < i) fail();
-          i = end + 1;
-        } else i++;
-      }
-      if (begin === i) fail();
-      const value = tokens.slice(begin, i);
-      node.value = value.length === 1 ? value[0].value ??
-        value[0].text : value.map(t => t.text).join('');
-      node.valueTokens = value;
-    } else if (tokens[i]?.text === '(') {
-      i++; node.args = [];
-      while (tokens[i]?.text !== ')') {
-        if (!tokens[i]) fail();
-        // cfg_attr conditions may contain literal key/value leaves.
-        node.args.push(parse());
-        if (tokens[i]?.text === ')') break;
-        if (tokens[i++]?.text !== ',') fail();
-      }
-      i++;
-    }
+    if (tokens[i]?.text === '=') parseMetaValue(node);
+    else if (tokens[i]?.text === '(') parseMetaArgs(node);
     return node;
+  }
+  function parseMetaValue(node) {
+    i++; const begin = i;
+    while (i < tokens.length && ![',', ')'].includes(tokens[i].text)) {
+      if (opens[tokens[i].text]) {
+        const end = tokens.findIndex(t => t.index === tokens[i].mate);
+        if (end < i) fail();
+        i = end + 1;
+      } else i++;
+    }
+    if (begin === i) fail();
+    const value = tokens.slice(begin, i);
+    node.value = value.length === 1 ? value[0].value ??
+      value[0].text : value.map(t => t.text).join('');
+    node.valueTokens = value;
+  }
+  function parseMetaArgs(node) {
+    i++; node.args = [];
+    while (tokens[i]?.text !== ')') {
+      if (!tokens[i]) fail();
+      // cfg_attr conditions may contain literal key/value leaves.
+      node.args.push(parse());
+      if (tokens[i]?.text === ')') break;
+      if (tokens[i++]?.text !== ',') fail();
+    }
+    i++;
   }
   const meta = parse();
   if (i !== tokens.length) fail();
@@ -508,7 +511,7 @@ return sinks.map(site=>({...site,
 }
 
 // Positive, deliberately small TOML subset; no unconsumed statement can enable inheritance.
-function ordinaryManifest(cargo, external = false, path, tree) {
+function ordinaryManifest(cargo, external, path, tree) {
   const gap = String.raw`(?:[ \t\r\n]|#[^\r\n]*(?![^\r\n]))*`;
   const string = String.raw`(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')`;
   const scalar = `(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
@@ -532,8 +535,7 @@ function ordinaryManifest(cargo, external = false, path, tree) {
       cargo = cargo.slice(arrayHeader[0].length);
       continue;
     }
-    const header = /^\[[ \t]*([^\[\]\r\n]+?)[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/
-      .exec(cargo);
+    const header = /^\[([^[\]\r\n]+)\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(cargo);
     if (header) {
       section = header[1].trim();
       targetTable = false;
@@ -571,8 +573,7 @@ function ordinaryManifest(cargo, external = false, path, tree) {
 }
 
 // Snapshot-local, no filesystem or process state; unsupported syntax keeps production.
-export function createRustScanner(tree, readBlob) {
-  const scans = new Map(), incoming = new Map();
+function manifestsUnsupported(tree, readBlob) {
   let unsupported = [...tree.keys()].some(p => p.startsWith('src-tauri/src/bin/'));
   for (const [path, manifest] of tree) {
     if (!/(^|\/)Cargo\.toml$/.test(path)) continue;
@@ -582,50 +583,66 @@ export function createRustScanner(tree, readBlob) {
     unsupported ||= !ordinaryManifest(readBlob(manifest),
       path !== 'src-tauri/Cargo.toml', path, tree);
   }
+  return unsupported;
+}
+// Same per-path cut as the caller's `continue` for paths outside src-tauri/src/.
+function rustFileUnsupported(path, scan, mods) {
+  let unsupported = false;
+  if (scan.attributes.some(a => a.signals.some(m => m.name === 'path')) ||
+      scan.tokens.some(t => t.name === 'include' && scan.tokens[t.index + 1]?.text === '!'))
+    unsupported = true;
+  if (scan.tokens.some(t => t.name === 'mod' && !mods.some(i => i.first === t.index)))
+    unsupported = true;
+  if (!path.startsWith('src-tauri/src/')) {
+    if (path.slice(0, path.lastIndexOf('/')) === 'src-tauri' &&
+        scan.tokens.some(t => t.name === 'mod')) unsupported = true;
+  } else if (mods.some(i => i.bodyScope || i.scope !== scan.root)) unsupported = true;
+  return unsupported;
+}
+function addModTargets(incoming, tree, path, mods) {
+  let ambiguous = false;
+  const crateRoot = ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path);
+  const base = crateRoot || path.endsWith('/mod.rs')
+    ? path.slice(0, path.lastIndexOf('/')) : path.slice(0, -3);
+  for (const item of mods) {
+    const targets = [base + '/' + item.name + '.rs', base + '/' + item.name + '/mod.rs']
+      .filter(p => tree.has(p));
+    if (targets.length > 1) ambiguous = true;
+    for (const target of targets) {
+      if (!incoming.has(target)) incoming.set(target, []);
+      incoming.get(target).push({ parent: path, test: item.cfgTest });
+    }
+  }
+  return ambiguous;
+}
+function testOnlyFiles(incoming) {
+  const testOnly = new Set();
+  let changed;
+  do {
+    changed = false;
+    for (const [path, declarations] of incoming) {
+      if (testOnly.has(path) ||
+          ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path)) continue;
+      if (declarations.every(d => d.test || testOnly.has(d.parent))) {
+        testOnly.add(path); changed = true;
+      }
+    }
+  } while (changed);
+  return testOnly;
+}
+export function createRustScanner(tree, readBlob) {
+  const scans = new Map(), incoming = new Map();
+  let unsupported = manifestsUnsupported(tree, readBlob);
   for (const [path, entry] of tree) {
     if (!path.endsWith('.rs')) continue;
     const scan = scanRust(path, readBlob(entry));
     scans.set(path, scan);
-    if (scan.attributes.some(a => a.signals.some(m => m.name === 'path')) ||
-        scan.tokens.some(t => t.name === 'include' && scan.tokens[t.index + 1]?.text === '!'))
-      unsupported = true;
     const mods = scan.items.filter(i => i.kind === 'mod');
-    if (scan.tokens.some(t => t.name === 'mod' && !mods.some(i => i.first === t.index)))
-      unsupported = true;
-    if (!path.startsWith('src-tauri/src/')) {
-      if (path.slice(0, path.lastIndexOf('/')) === 'src-tauri' &&
-          scan.tokens.some(t => t.name === 'mod')) unsupported = true;
-      continue;
-    }
-    if (mods.some(i => i.bodyScope || i.scope !== scan.root))
-      unsupported = true;
-    const crateRoot = ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path);
-    const base = crateRoot || path.endsWith('/mod.rs')
-      ? path.slice(0, path.lastIndexOf('/')) : path.slice(0, -3);
-    for (const item of mods) {
-      const targets = [base + '/' + item.name + '.rs', base + '/' + item.name + '/mod.rs']
-        .filter(p => tree.has(p));
-      if (targets.length > 1) unsupported = true;
-      for (const target of targets) {
-        if (!incoming.has(target)) incoming.set(target, []);
-        incoming.get(target).push({ parent: path, test: item.cfgTest });
-      }
-    }
+    if (rustFileUnsupported(path, scan, mods)) unsupported = true;
+    if (!path.startsWith('src-tauri/src/')) continue;
+    if (addModTargets(incoming, tree, path, mods)) unsupported = true;
   }
-  const testOnly = new Set();
-  if (!unsupported) {
-    let changed;
-    do {
-      changed = false;
-      for (const [path, declarations] of incoming) {
-        if (testOnly.has(path) ||
-            ['src-tauri/src/lib.rs', 'src-tauri/src/main.rs'].includes(path)) continue;
-        if (declarations.every(d => d.test || testOnly.has(d.parent))) {
-          testOnly.add(path); changed = true;
-        }
-      }
-    } while (changed);
-  }
+  const testOnly = unsupported ? new Set() : testOnlyFiles(incoming);
   return path => {
     const scan = scans.get(path);
     if (!scan) return scanRust(path, readBlob(tree.get(path)));

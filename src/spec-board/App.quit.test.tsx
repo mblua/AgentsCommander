@@ -48,6 +48,18 @@ vi.mock("mermaid", () => ({
 
 vi.mock("../shared/platform", () => ({ isTauri: true, isBrowser: false }));
 
+const toolbar = vi.hoisted(() => ({ broken: false }));
+
+vi.mock("./components/SpecBoardToolbar", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./components/SpecBoardToolbar")>();
+  return {
+    default: () => {
+      if (toolbar.broken) throw new Error("toolbar boom");
+      return real.default({});
+    },
+  };
+});
+
 import SpecBoardApp from "./App";
 import { setSpecBoardStore } from "./stores/spec-board";
 import { __setTransportForTests } from "../shared/ipc";
@@ -168,6 +180,7 @@ describe("SpecBoardApp quit gate (#2297)", () => {
     tauri.label = "spec-board";
     tauri.closeRequested = null;
     tauri.destroyCalls = 0;
+    toolbar.broken = false;
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
@@ -605,5 +618,32 @@ describe("SpecBoardApp quit gate (#2297)", () => {
     cleanup = null;
     await flush();
     expect(fake.callsFor("quit_gate_unregister")).toHaveLength(1);
+  });
+
+  it("keeps guard, gate and inert controls through a toolbar error (#4461)", async () => {
+    toolbar.broken = true;
+    const gate = deferred<unknown>();
+    fake.onInvoke("quit_gate_register", () => gate.promise);
+    const board = await mountBoard();
+    const wrapper = controls(board);
+    expect(wrapper.textContent).toContain("Something went wrong in this window.");
+    expect(wrapper.querySelector(".spec-board-toolbar")).toBeNull();
+    expect(tauri.closeRequested).not.toBeNull();
+    expect(fake.callsFor("quit_gate_unregister")).toHaveLength(0);
+    expect(wrapper.hasAttribute("inert")).toBe(true);
+    gate.resolve({ status: "Registered" });
+    await flush();
+    expect(wrapper.hasAttribute("inert")).toBe(false);
+    toolbar.broken = false;
+    Array.from(wrapper.querySelectorAll("button"))
+      .find((button) => button.textContent === "Try again")!
+      .click();
+    await flush();
+    expect(controls(board)).toBe(wrapper);
+    expect(wrapper.querySelector(".spec-board-toolbar")).not.toBeNull();
+    expect(wrapper.textContent).not.toContain("Something went wrong in this window.");
+    expect(wrapper.hasAttribute("inert")).toBe(false);
+    expect(tauri.closeRequested).not.toBeNull();
+    expect(fake.callsFor("quit_gate_unregister")).toHaveLength(0);
   });
 });

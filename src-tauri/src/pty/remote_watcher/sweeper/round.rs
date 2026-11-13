@@ -7,7 +7,7 @@ use futures::stream::StreamExt;
 
 use crate::config::remote_activity_cache::PersistedRepoCi;
 
-use super::super::sweeper_state::RemoteSweeper;
+use super::super::sweeper_state::{RemoteSweeper, SweeperState};
 use super::super::{
     activity_for, due, persisted_repo_ci, query_key, CiState, KeyOutcome, KeyPlan, PathFacts,
     QueryKey, RemoteActivity, RemoteActivityPayload, SnapshotPersistence, StalenessCarry,
@@ -197,68 +197,91 @@ impl RemoteSweeper {
         // The label chain runs on either axis, once per distinct nwo, and is
         // cached for the process lifetime: CI needs the name to decide the
         // identical-to-default suppression, staleness to render `%BASE%`.
-        let mut pending_base: Vec<(String, String)> = Vec::new();
-        let mut admitted: Vec<(QueryKey, KeyPlan)> = Vec::new();
-        let mut completion_reserved: HashSet<QueryKey> = HashSet::new();
-        let mut identity_reserved: HashSet<QueryKey> = HashSet::new();
+        let mut out = RoundReservations {
+            pending_base: Vec::new(),
+            admitted: Vec::new(),
+            completion_reserved: HashSet::new(),
+            identity_reserved: HashSet::new(),
+        };
         let mut unresolvable_nwos: HashSet<String> = HashSet::new();
         if gh_path.is_some() && !throttled {
             let mut state = self.lock_state();
             for (key, plan) in due_keys {
-                // A key is never queried with a base label a resolution would
-                // have supplied, so suppression decisions are unchanged.
-                if unresolvable_nwos.contains(&key.nwo) {
-                    continue;
-                }
-                let resolved = state.base_branches.contains_key(&key.nwo)
-                    || pending_base.iter().any(|(nwo, _)| nwo == &key.nwo);
-                // An unresolved label must assume the worst case; step 7 refunds
-                // the reservation when the compare is not issued.
-                let identity = u32::from(
-                    plan.ci
-                        && !plan.staleness
-                        && state.base_branches.get(&key.nwo).is_none_or(|label| {
-                            label.as_str() != DEFAULT_BRANCH_LABEL && *label != key.branch
-                        }),
+                Self::reserve_key(
+                    &mut state,
+                    key,
+                    plan,
+                    groups,
+                    facts,
+                    &mut out,
+                    &mut unresolvable_nwos,
                 );
-                let corroboration = plan.ci
-                    && state.keys.get(key).is_some_and(|entry| {
-                        entry.ci.confirmed == Some(CiState::Running)
-                            && !entry.ci.completion.known.is_empty()
-                    });
-                let cost = u32::from(plan.staleness)
-                    + u32::from(plan.ci)
-                    + identity
-                    + if corroboration { 3 } else { 0 };
-                let needed = f64::from(cost) + if resolved { 0.0 } else { 1.0 };
-                if state.budget_tokens < needed {
-                    if !resolved {
-                        unresolvable_nwos.insert(key.nwo.clone());
-                    }
-                    continue;
-                }
-                if !resolved {
-                    let Some(index) = groups.get(key).and_then(|group| group.first()) else {
-                        continue;
-                    };
-                    pending_base.push((key.nwo.clone(), facts[*index].path.clone()));
-                }
-                state.budget_tokens -= needed;
-                if identity == 1 {
-                    identity_reserved.insert(key.clone());
-                }
-                if corroboration {
-                    completion_reserved.insert(key.clone());
-                }
-                admitted.push((key.clone(), *plan));
             }
         }
-        RoundReservations {
-            pending_base,
-            admitted,
-            completion_reserved,
-            identity_reserved,
+        out
+    }
+
+    fn key_query_cost(state: &SweeperState, key: &QueryKey, plan: &KeyPlan) -> (u32, bool, u32) {
+        let identity = u32::from(
+            plan.ci
+                && !plan.staleness
+                && state.base_branches.get(&key.nwo).is_none_or(|label| {
+                    label.as_str() != DEFAULT_BRANCH_LABEL && *label != key.branch
+                }),
+        );
+        let corroboration = plan.ci
+            && state.keys.get(key).is_some_and(|entry| {
+                entry.ci.confirmed == Some(CiState::Running)
+                    && !entry.ci.completion.known.is_empty()
+            });
+        let cost = u32::from(plan.staleness)
+            + u32::from(plan.ci)
+            + identity
+            + if corroboration { 3 } else { 0 };
+        (identity, corroboration, cost)
+    }
+
+    fn reserve_key(
+        state: &mut SweeperState,
+        key: &QueryKey,
+        plan: &KeyPlan,
+        groups: &BTreeMap<QueryKey, Vec<usize>>,
+        facts: &[PathFacts],
+        out: &mut RoundReservations,
+        unresolvable_nwos: &mut HashSet<String>,
+    ) {
+        // A key is never queried with a base label a resolution would
+        // have supplied, so suppression decisions are unchanged.
+        if unresolvable_nwos.contains(&key.nwo) {
+            return;
         }
+        let resolved = state.base_branches.contains_key(&key.nwo)
+            || out.pending_base.iter().any(|(nwo, _)| nwo == &key.nwo);
+        // An unresolved label must assume the worst case; step 7 refunds
+        // the reservation when the compare is not issued.
+        let (identity, corroboration, cost) = Self::key_query_cost(state, key, plan);
+        let needed = f64::from(cost) + if resolved { 0.0 } else { 1.0 };
+        if state.budget_tokens < needed {
+            if !resolved {
+                unresolvable_nwos.insert(key.nwo.clone());
+            }
+            return;
+        }
+        if !resolved {
+            let Some(index) = groups.get(key).and_then(|group| group.first()) else {
+                return;
+            };
+            out.pending_base
+                .push((key.nwo.clone(), facts[*index].path.clone()));
+        }
+        state.budget_tokens -= needed;
+        if identity == 1 {
+            out.identity_reserved.insert(key.clone());
+        }
+        if corroboration {
+            out.completion_reserved.insert(key.clone());
+        }
+        out.admitted.push((key.clone(), *plan));
     }
 
     pub(super) async fn query_round(

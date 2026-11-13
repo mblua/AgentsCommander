@@ -21,7 +21,7 @@ import { scanRust, lexRust, decodeRustString,
     compatibilitySites } from './sanitizing_rust_scan.mjs';
 
 // Fixtures are isolated repositories, never a user's worktree. No network/symlinks/profiles.
-function fixture(t) {
+export function fixture(t) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sanitizing-'));
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(cwd,
       'no-global-config'),
@@ -48,8 +48,8 @@ function fixture(t) {
   return { cwd, git, write, commit, base, runner, snapshot: (baseRef = base, run = runner) =>
       createSnapshot({ cwd, baseRef, runner: run }) };
 }
-const text = (n, width = 1) => ('a'.repeat(width) + '\n').repeat(n);
-function sequence(f, gate, name, before, mutation, expected = 1) {
+export const text = (n, width = 1) => ('a'.repeat(width) + '\n').repeat(n);
+export function sequence(f, gate, name, before, mutation, expected = 1) {
   f.write(name, before); const base = f.commit();
   assert.equal(gate(f.snapshot(base)).exit, 0);
   f.write(name, mutation); f.commit(); const result = gate(f.snapshot(base));
@@ -873,6 +873,28 @@ test('allowlist: schema refuses malformed and duplicate entries', () => {
     doc([allow('cog', 'new', 'a.rs')]), doc([allow('08', 'globals', 'a.rs'), allow('08', 'globals',
         'a.rs')])])
     assert.throws(() => parseAllowlist(bad));
+});
+test('allowlist: schema reports each exact error message', () => {
+  const ok = allow('08', 'globals', 'a.rs');
+  const doc = entries => JSON.stringify({ version: 1, entries });
+  const cog = { ...ok, gate: 'cog', rule: 'new', symbol: 's', hash: 'abcdefabcdef' };
+  const cases = [
+    ['{', 'invalid JSON'],
+    [JSON.stringify({ entries: [] }), 'must be an object with version 1 and an entries array'],
+    [doc([null]), 'entry 0 must be an object'],
+    [doc([{ ...ok, gate: '99' }]), 'entry 0 gate must be one of 01, 02, 05, 06, 07, 08, 09, cog'],
+    [doc([{ ...ok, reason: ' ' }]), 'entry 0 reason must be a non-empty string'],
+    [doc([{ ...ok, since: '2026-1-1' }]), 'entry 0 since must be YYYY-MM-DD'],
+    [doc([{ ...ok, issue: 0 }]), 'entry 0 issue must be a positive integer'],
+    [doc([{ ...ok, symbol: '' }]), 'entry 0 symbol must be a non-empty string when present'],
+    [doc([{ ...cog, hash: 'xyz' }]),
+      'entry 0 cog entries need rule new|stale, symbol and a 12-hex hash'],
+    [doc([{ ...ok, hash: 'abc' }]), 'entry 0 hash only applies to cog entries'],
+    [doc([ok, ok]), 'entry 1 duplicates an earlier entry'],
+  ];
+  for (const [text, reason] of cases)
+    assert.throws(() => parseAllowlist(text), { message: `sanitizing.allowlist.json: ${reason}` });
+  assert.equal(parseAllowlist(doc([cog])).length, 1);
 });
 
 registerSnapshotTransferTests({trees, rustRoot, allow});

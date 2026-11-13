@@ -643,12 +643,14 @@ pub(crate) fn inline_body_from_file_notification(
         .map_err(|e| format!("message file not readable for container delivery: {e}"))?;
     if bytes.len() > crate::api::message_store::INLINE_BODY_MAX_BYTES {
         return Err(format!(
-            "message file exceeds inline cap ({} bytes)",
+            "{}: payload_too_large (message file exceeds inline cap ({} bytes))",
+            ERR_INVALID_PEER_TEXT,
             crate::api::message_store::INLINE_BODY_MAX_BYTES
         ));
     }
-    let body = String::from_utf8(bytes)
-        .map_err(|e| format!("message file is not UTF-8 for container delivery: {e}"))?;
+    let body = String::from_utf8(bytes).map_err(|e| {
+        format!("{ERR_INVALID_PEER_TEXT}: invalid_text:utf8 (message file is not UTF-8: {e})")
+    })?;
     Ok(Some(body))
 }
 
@@ -940,6 +942,9 @@ pub(crate) const ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND: &str =
 /// (1635-1); this defends hand-written outbox JSON.
 pub(crate) const ERR_INVALID_DISPATCH_PROFILE: &str =
     "send: requestedProfile must be a single letter A through Z";
+
+/// #4309 - permanent marker: the shared PTY text policy rejected peer wake text.
+pub(crate) const ERR_INVALID_PEER_TEXT: &str = "invalid_peer_text";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResolvedRemotePtyCommand {

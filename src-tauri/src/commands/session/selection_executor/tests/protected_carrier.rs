@@ -1,5 +1,6 @@
 //! Protected carrier provisioning and retirement fixture.
 
+mod cleanup;
 mod closing;
 
 use super::native_fixture::NativeFixture;
@@ -16,9 +17,20 @@ pub(crate) struct ProtectedFixture {
 }
 impl ProtectedFixture {
     pub(crate) async fn new(with_parent: bool) -> Self {
+        Self::new_with_monitor(
+            with_parent,
+            Arc::new(crate::resource_monitor::ResourceMonitorState::new()),
+        )
+        .await
+    }
+
+    pub(crate) async fn new_with_monitor(
+        with_parent: bool,
+        monitor: Arc<crate::resource_monitor::ResourceMonitorState>,
+    ) -> Self {
         let name = std::env::var("AC_P17_CARRIER_CHILD").unwrap();
         isolated_identity(&name);
-        let mut f = NativeFixture::build(false).await;
+        let mut f = NativeFixture::build_with_monitor(false, monitor).await;
         let tracker = f.pty.lock().unwrap().response_close_state();
         *f.manager.write().await = crate::session::manager::SessionManager::with_response_close(
             tracker.clone(),

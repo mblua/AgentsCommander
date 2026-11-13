@@ -1,7 +1,7 @@
 use super::notice::{
     logical_command_wire_value, parse_remote_pty_command, ResolvedRemotePtyCommand, RetryState,
-    ERR_INVALID_DISPATCH_PROFILE, ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND, ERR_UNRESOLVABLE_AGENT,
-    ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND,
+    ERR_INVALID_DISPATCH_PROFILE, ERR_INVALID_PEER_TEXT, ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND,
+    ERR_UNRESOLVABLE_AGENT, ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND,
 };
 use crate::config::settings::AppSettings;
 use crate::filesystem::phone_mailbox as mailbox_disk;
@@ -33,6 +33,7 @@ pub(crate) fn is_permanent_delivery_error(error: &str) -> bool {
         || error.starts_with(ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND)
         || error.starts_with(ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND)
         || error.starts_with(ERR_INVALID_DISPATCH_PROFILE)
+        || error.starts_with(ERR_INVALID_PEER_TEXT)
 }
 
 /// (#1399) Claim marker for a message handed to a wake worker. Suffix, not a
@@ -445,12 +446,20 @@ pub(crate) fn normalize_self_forget_line(line: &str) -> Option<String> {
 pub(crate) fn is_summary_format_control(ch: char) -> bool {
     matches!(
         ch,
+        '\u{061C}' |
         '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'
             | '\u{2066}'..='\u{2069}'
             | '\u{FEFF}'
     )
+}
+
+/// #4309 - handoff prompts carry an archive path and an agent-written summary.
+pub(crate) fn checked_handoff_prompt(prompt: String) -> Result<String, String> {
+    crate::pty::inject::validate_pty_input_text(&prompt)
+        .map(|()| prompt)
+        .map_err(|error| format!("invalid handoff prompt: {error}"))
 }
 
 #[cfg(test)]

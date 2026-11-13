@@ -118,6 +118,14 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
         }
     }
 
+    if let Err(error) = crate::pty::inject::validate_pty_input_text(&config.prompt.body) {
+        return failed_report(
+            Some(target_fqn),
+            None,
+            format!("invalid loop prompt: {error}"),
+        );
+    }
+
     let loop_storage_dir = loop_dir(&target.ac_root, &config.loop_def.id);
     let policy = config.policy.busy_coordinator.clone();
     let session_start = config.policy.session_start;

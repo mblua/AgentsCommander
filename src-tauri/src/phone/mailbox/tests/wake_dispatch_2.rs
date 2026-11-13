@@ -728,3 +728,220 @@ async fn poll_split_counts_transient_attempts_across_cycles() {
     assert!(poller.live_claims.is_empty());
     assert_eq!(hooks.inject_calls.lock().unwrap().len(), 2);
 }
+
+async fn text_gate_fixture() -> (
+    MailboxFixture,
+    tauri::AppHandle<tauri::test::MockRuntime>,
+    MailboxTestHooks,
+    MailboxPoller,
+    Uuid,
+) {
+    let fixture = make_mailbox_fixture();
+    let app = app_handle(&fixture.app);
+    let exited = add_mailbox_session(
+        &app,
+        &fixture.target_cwd,
+        "deferred",
+        SessionStatus::Exited(0),
+        None,
+    )
+    .await;
+    let hooks = MailboxTestHooks::default();
+    hooks.pty_presence.lock().unwrap().insert(exited, false);
+    hooks.inject_results.lock().unwrap().push_back(Ok(()));
+    let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+    (fixture, app, hooks, poller, exited)
+}
+
+fn assert_text_gate_no_effect(hooks: &MailboxTestHooks) {
+    assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+    assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn invalid_peer_text_has_no_lifecycle_effect() {
+    use crate::phone::mailbox::handoff::is_permanent_delivery_error;
+    use crate::phone::mailbox::notice::ERR_INVALID_PEER_TEXT;
+    for case in 0..3 {
+        let (_fixture, app, hooks, poller, _) = text_gate_fixture().await;
+        let mut msg = wake_message_to_target();
+        let origin = if case == 1 {
+            WakeDeliveryOrigin::DbQueue
+        } else {
+            WakeDeliveryOrigin::FilesystemPoller
+        };
+        match case {
+            0 => msg.body = "hi\u{1b}[2J".into(),
+            1 => {
+                msg.body = "a\r\nb".into();
+                msg.preferred_agent.clear();
+            }
+            _ => msg = logical_command_message("clear", "x\u{202E}y"),
+        }
+        let error = poller
+            .deliver_wake_with_origin(&app, &msg, origin)
+            .await
+            .unwrap_err();
+        assert!(error.starts_with(ERR_INVALID_PEER_TEXT), "{error}");
+        assert!(is_permanent_delivery_error(&error));
+        assert_text_gate_no_effect(&hooks);
+    }
+}
+
+#[tokio::test]
+async fn valid_peer_text_still_respawns_exited() {
+    let (_fixture, app, hooks, poller, exited) = text_gate_fixture().await;
+    let mut msg = wake_message_to_target();
+    msg.body = "ok\tline\né".into();
+    poller
+        .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+        .await
+        .unwrap();
+    assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![exited]);
+    assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+    assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn exact_bound_api_text_is_delivered() {
+    let (_fixture, app, hooks, poller, _) = text_gate_fixture().await;
+    let mut msg = wake_message_to_target();
+    msg.preferred_agent.clear();
+    let max = crate::pty::input_limits::PTY_INPUT_MAX_BYTES;
+    msg.body = "x".repeat(max - crate::phone::messaging::format_pty_wrap(&msg.from, "").len());
+    assert_eq!(
+        crate::phone::messaging::format_pty_wrap(&msg.from, &msg.body).len(),
+        max
+    );
+    poller
+        .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::DbQueue)
+        .await
+        .unwrap();
+    assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+    assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
+}
+
+async fn container_file_wake(
+    fixture: &MailboxFixture,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    dir: &str,
+    content: &[u8],
+) -> OutboxMessage {
+    {
+        let state = app.state::<SettingsState>();
+        let mut settings = state.write().await;
+        let agent = settings
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "codex")
+            .unwrap();
+        agent.backend.kind = SessionBackendKind::ContainerTransport;
+        agent.backend.image = Some("agentscommander/ac-codex:latest".into());
+    }
+    file_text_wake(fixture, dir, content)
+}
+
+fn file_text_wake(fixture: &MailboxFixture, dir: &str, content: &[u8]) -> OutboxMessage {
+    let directory = std::path::Path::new(&fixture.sender_cwd)
+        .parent()
+        .unwrap()
+        .join(dir);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("20260704-000000-wg1-tech-lead-to-wg1-dev-rust-x.md");
+    std::fs::write(&path, content).unwrap();
+    let mut msg = wake_message_to_target();
+    msg.body = crate::phone::messaging::format_file_notification(&path.to_string_lossy());
+    msg
+}
+
+async fn assert_container_text_plan(
+    poller: &MailboxPoller,
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    msg: &OutboxMessage,
+) {
+    assert!(poller
+        .resolve_repo_path(CANONICAL_WAKE_FROM, app)
+        .await
+        .is_some());
+    let plan = poller.resolve_wake_spawn_plan(app, msg).await.unwrap();
+    assert!(crate::phone::mailbox::wake_injection::plan_is_container(
+        &plan
+    ));
+}
+
+#[tokio::test]
+async fn invalid_container_inline_text_has_no_lifecycle_effect() {
+    let (fixture, app, hooks, poller, _) = text_gate_fixture().await;
+    let msg = container_file_wake(&fixture, &app, "messaging", b"\x1b[2J").await;
+    assert_container_text_plan(&poller, &app, &msg).await;
+    let error = poller
+        .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+        .await
+        .unwrap_err();
+    assert!(error.starts_with(crate::phone::mailbox::notice::ERR_INVALID_PEER_TEXT));
+    assert!(crate::phone::mailbox::handoff::is_permanent_delivery_error(
+        &error
+    ));
+    assert_text_gate_no_effect(&hooks);
+}
+
+#[tokio::test]
+async fn deterministic_container_inline_errors_have_no_lifecycle_effect() {
+    use crate::phone::mailbox::handoff::is_permanent_delivery_error;
+    use crate::phone::mailbox::notice::ERR_INVALID_PEER_TEXT;
+    let cap = crate::api::message_store::INLINE_BODY_MAX_BYTES;
+    for (dir, content, reason, permanent) in [
+        ("messaging", vec![b'x'; cap + 1], "payload_too_large", true),
+        ("messaging", vec![0xff, 0xfe], "invalid_text:utf8", true),
+        (
+            "notmessaging",
+            b"ok".to_vec(),
+            "not a messaging directory",
+            false,
+        ),
+    ] {
+        let (fixture, app, hooks, poller, _) = text_gate_fixture().await;
+        let msg = container_file_wake(&fixture, &app, dir, &content).await;
+        assert_container_text_plan(&poller, &app, &msg).await;
+        let error = poller
+            .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+            .await
+            .unwrap_err();
+        assert!(error.contains(reason), "{error}");
+        assert_eq!(is_permanent_delivery_error(&error), permanent);
+        if permanent {
+            assert!(error.starts_with(ERR_INVALID_PEER_TEXT));
+        }
+        if reason == "payload_too_large" {
+            assert!(error.contains("inline cap"));
+        }
+        assert_text_gate_no_effect(&hooks);
+    }
+}
+
+#[tokio::test]
+async fn valid_container_inline_text_still_respawns() {
+    let (fixture, app, hooks, poller, exited) = text_gate_fixture().await;
+    let msg = container_file_wake(&fixture, &app, "messaging", b"inline ok\n").await;
+    assert_container_text_plan(&poller, &app, &msg).await;
+    poller
+        .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+        .await
+        .unwrap();
+    assert_eq!(*hooks.destroy_calls.lock().unwrap(), vec![exited]);
+    assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+    assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn local_recipient_ignores_unsafe_file_content() {
+    let (fixture, app, hooks, poller, _) = text_gate_fixture().await;
+    let msg = file_text_wake(&fixture, "messaging", b"\x1b[2J");
+    poller
+        .deliver_wake_with_origin(&app, &msg, WakeDeliveryOrigin::FilesystemPoller)
+        .await
+        .unwrap();
+    assert_eq!(hooks.spawn_calls.lock().unwrap().len(), 1);
+    assert_eq!(hooks.inject_calls.lock().unwrap().len(), 1);
+}

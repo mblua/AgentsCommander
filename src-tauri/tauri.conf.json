@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/dev/packages/tauri-utils/schema.json",
   "productName": "Agents Commander",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "identifier": "dev.agentscommander.app",
   "mainBinaryName": "agentscommander",
   "build": {
@@ -20,7 +20,9 @@
     "publisher": "AgentsCommander Contributors",
     "category": "Development",
     "resources": {
-      "../dist": "dist/"
+      "../dist": "dist/",
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "icon": [
       "icons/32x32.png",

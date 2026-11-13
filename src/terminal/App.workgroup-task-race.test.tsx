@@ -354,7 +354,7 @@ describe("P4 snapshot ownership and reconciliation", () => {
     const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
     fake.onInvoke("task_clean", () => {
       fake.onInvoke("task_get_snapshot", () => { throw new Error("read failed"); });
-      if (committedError) throw new Error("task mutation already committed; do not repeat Clean");
+      if (committedError) throw { code: "MutationCommitted", message: "task mutation already committed; do not repeat Clean" };
       return { workgroupRoot: WG_ROOT, task: "not authoritative" };
     });
     const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -459,6 +459,26 @@ describe("P4 snapshot ownership and reconciliation", () => {
       await flush(16);
       expect(headerTitle(view.root)).toBe("New title");
       expect(terminalStore.activeTaskSnapshot?.revision).toBe("new-topic:1");
+    } finally { view.cleanup(); }
+  });
+
+  it("Failed Clean object with committed text keeps the guard off when rereading fails", async () => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    fake.onInvoke("task_clean", () => {
+      fake.onInvoke("task_get_snapshot", () => { throw new Error("read failed"); });
+      throw { code: "Failed", message: "task mutation already committed; permission denied" };
+    });
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      const clean = view.root.querySelector<HTMLButtonElement>('button[title="Clean TASK (reset for new topic)"]')!;
+      click(clean); await flush();
+      click(document.querySelector<HTMLButtonElement>(".quit-confirm-btn-quit")!); await flush(16);
+      expect(view.root.textContent).toContain("task mutation already committed; permission denied");
+      expect(view.root.textContent).not.toContain("Clean was saved, but the updated task could not be read");
+      expect(terminalStore.cleanPending).toBe(false);
+      expect(clean.disabled).toBe(false);
+      expect(fake.callsFor("task_clean")).toHaveLength(1);
     } finally { view.cleanup(); }
   });
 
