@@ -126,16 +126,91 @@ pub struct PersistedSession {
     pub context_percent: Option<u8>,
 }
 
+struct SessionDedup {
+    name_index: HashMap<String, usize>,
+    cwd_index: HashMap<String, usize>,
+    root_index: Option<usize>,
+    result: Vec<PersistedSession>,
+}
+
+impl SessionDedup {
+    fn merge_root(&mut self, idx: usize, session: PersistedSession, norm_cwd: String) {
+        log::warn!(
+            "[sessions] Dropping duplicate root agent session '{}' at '{}'",
+            session.name,
+            session.working_directory
+        );
+        if !self.result[idx].was_active || session.was_active {
+            let old_cwd = normalized_cwd_key(&self.result[idx].working_directory);
+            self.name_index.remove(&self.result[idx].name);
+            self.cwd_index.remove(&old_cwd);
+            self.name_index.insert(session.name.clone(), idx);
+            self.cwd_index.insert(norm_cwd, idx);
+            self.result[idx] = session;
+            self.result[idx].is_root_agent = true;
+        } else {
+            self.result[idx].is_root_agent = true;
+        }
+    }
+
+    fn merge_by_name(&mut self, idx: usize, session: PersistedSession, norm_cwd: String) {
+        log::warn!(
+            "[sessions] Dropping duplicate session by name '{}'",
+            session.name
+        );
+        if !self.result[idx].was_active || session.was_active {
+            // Patch self.cwd_index if the CWD changed
+            let old_cwd = normalized_cwd_key(&self.result[idx].working_directory);
+            if old_cwd != norm_cwd {
+                self.cwd_index.remove(&old_cwd);
+                self.cwd_index.insert(norm_cwd, idx);
+            }
+            self.result[idx] = session;
+        }
+    }
+
+    fn merge_by_cwd(&mut self, idx: usize, session: PersistedSession) {
+        log::warn!(
+            "[sessions] Dropping duplicate session by CWD '{}' (existing='{}', incoming='{}')",
+            session.working_directory,
+            self.result[idx].name,
+            session.name
+        );
+        if !self.result[idx].was_active || session.was_active {
+            self.name_index.remove(&self.result[idx].name);
+            self.name_index.insert(session.name.clone(), idx);
+            self.result[idx] = session;
+        }
+    }
+
+    fn push_unique(&mut self, session: PersistedSession, norm_cwd: String, is_root_agent: bool) {
+        self.name_index
+            .insert(session.name.clone(), self.result.len());
+        self.cwd_index.insert(norm_cwd, self.result.len());
+        if is_root_agent {
+            self.root_index = Some(self.result.len());
+        }
+        self.result.push(session);
+        if is_root_agent {
+            if let Some(last) = self.result.last_mut() {
+                last.is_root_agent = true;
+            }
+        }
+    }
+}
+
 /// Remove duplicate sessions by name AND `working_directory`.
 /// When duplicates share the same key (name or CWD), keep the one with
 /// `was_active=true`; if none (or both) are active, keep the last occurrence.
 /// Note: callers are expected to filter out temp sessions before calling this.
 pub(super) fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSession> {
     let total = sessions.len();
-    let mut name_index: HashMap<String, usize> = HashMap::new();
-    let mut cwd_index: HashMap<String, usize> = HashMap::new();
-    let mut root_index: Option<usize> = None;
-    let mut result: Vec<PersistedSession> = Vec::with_capacity(total);
+    let mut dedup = SessionDedup {
+        name_index: HashMap::new(),
+        cwd_index: HashMap::new(),
+        root_index: None,
+        result: Vec::with_capacity(total),
+    };
 
     for session in sessions {
         let norm_cwd = normalized_cwd_key(&session.working_directory);
@@ -143,84 +218,37 @@ pub(super) fn deduplicate(sessions: Vec<PersistedSession>) -> Vec<PersistedSessi
             || crate::config::root_agent::is_root_agent_path(&session.working_directory);
 
         if is_root_agent {
-            if let Some(idx) = root_index {
-                log::warn!(
-                    "[sessions] Dropping duplicate root agent session '{}' at '{}'",
-                    session.name,
-                    session.working_directory
-                );
-                if !result[idx].was_active || session.was_active {
-                    let old_cwd = normalized_cwd_key(&result[idx].working_directory);
-                    name_index.remove(&result[idx].name);
-                    cwd_index.remove(&old_cwd);
-                    name_index.insert(session.name.clone(), idx);
-                    cwd_index.insert(norm_cwd, idx);
-                    result[idx] = session;
-                    result[idx].is_root_agent = true;
-                } else {
-                    result[idx].is_root_agent = true;
-                }
+            if let Some(idx) = dedup.root_index {
+                dedup.merge_root(idx, session, norm_cwd);
                 continue;
             }
         }
 
         // Check name-based duplicate
-        if let Some(&idx) = name_index.get(&session.name) {
-            log::warn!(
-                "[sessions] Dropping duplicate session by name '{}'",
-                session.name
-            );
-            if !result[idx].was_active || session.was_active {
-                // Patch cwd_index if the CWD changed
-                let old_cwd = normalized_cwd_key(&result[idx].working_directory);
-                if old_cwd != norm_cwd {
-                    cwd_index.remove(&old_cwd);
-                    cwd_index.insert(norm_cwd, idx);
-                }
-                result[idx] = session;
-            }
+        if let Some(&idx) = dedup.name_index.get(&session.name) {
+            dedup.merge_by_name(idx, session, norm_cwd);
             continue;
         }
 
         // Check CWD-based duplicate
-        if let Some(&idx) = cwd_index.get(&norm_cwd) {
-            log::warn!(
-                "[sessions] Dropping duplicate session by CWD '{}' (existing='{}', incoming='{}')",
-                session.working_directory,
-                result[idx].name,
-                session.name
-            );
-            if !result[idx].was_active || session.was_active {
-                name_index.remove(&result[idx].name);
-                name_index.insert(session.name.clone(), idx);
-                result[idx] = session;
-            }
+        if let Some(&idx) = dedup.cwd_index.get(&norm_cwd) {
+            dedup.merge_by_cwd(idx, session);
             continue;
         }
 
         // New unique session
-        name_index.insert(session.name.clone(), result.len());
-        cwd_index.insert(norm_cwd, result.len());
-        if is_root_agent {
-            root_index = Some(result.len());
-        }
-        result.push(session);
-        if is_root_agent {
-            if let Some(last) = result.last_mut() {
-                last.is_root_agent = true;
-            }
-        }
+        dedup.push_unique(session, norm_cwd, is_root_agent);
     }
 
-    if result.len() < total {
+    if dedup.result.len() < total {
         log::info!(
             "[sessions] Deduplicated: {} → {} sessions",
             total,
-            result.len()
+            dedup.result.len()
         );
     }
 
-    result
+    dedup.result
 }
 
 pub(super) fn normalized_cwd_key(cwd: &str) -> String {
