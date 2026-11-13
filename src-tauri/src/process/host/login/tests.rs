@@ -2,16 +2,7 @@
 use super::*;
 
 #[cfg(unix)]
-use std::path::PathBuf;
-
-#[cfg(unix)]
-fn fake_shell(dir: &Path, name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
+use super::fake_shell::fake_shell;
 
 /// Fallback branch of plan 6.3.T10: the spawn succeeding through the real
 /// builder proves `setsid` did not fail, which a re-introduced process group
