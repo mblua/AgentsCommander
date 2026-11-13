@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { resolveGit } from './resolve-git.mjs';
 
 const WIN = String.raw`(?:windows|target_os\s*=\s*"windows"|target_family\s*=\s*"windows")`;
 const PRED = String.raw`(?:\bunix\b|not\s*\(\s*` + WIN + String.raw`\s*\)`
@@ -22,7 +23,7 @@ const DETECTOR = 'scripts/ci-unix-rust-changes.mjs';
 const ROOTS = new Set(['lib.rs', 'main.rs', 'build.rs']);
 
 function detector(repo, env = process.env) {
-  const git = (args, extra = {}) => execFileSync('git', args, {
+  const git = (args, extra = {}) => execFileSync(resolveGit(), args, {
     cwd: repo, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...extra,
   });
   function readAt(rev, file) {
@@ -31,26 +32,46 @@ function detector(repo, env = process.env) {
     } catch { return null; }
     return git(['show', `${rev}:${file}`]);
   }
+  function declaringAt(rev, file) {
+    const base = path.posix.basename(file);
+    if (ROOTS.has(base) || /^src-tauri\/(?:tests|benches|examples)\/[^/]+\.rs$/.test(file))
+      return null;
+    const dir = path.posix.dirname(file);
+    const name = base === 'mod.rs' ? path.posix.basename(dir) : base.slice(0, -3);
+    const parent = base === 'mod.rs' ? path.posix.dirname(dir) : dir;
+    for (const candidate of [`${parent}.rs`, `${parent}/mod.rs`,
+      `${parent}/lib.rs`, `${parent}/main.rs`]) {
+      if (candidate === file) continue;
+      const text = readAt(rev, candidate);
+      if (text !== null) return { file: candidate, text, name };
+    }
+    return null;
+  }
   function gatedBy(rev, file) {
     for (let depth = 0; depth < 32; depth++) {
-      const base = path.posix.basename(file);
-      if (ROOTS.has(base) || /^src-tauri\/(?:tests|benches|examples)\/[^/]+\.rs$/.test(file))
-        return null;
-      const dir = path.posix.dirname(file);
-      const name = base === 'mod.rs' ? path.posix.basename(dir) : base.slice(0, -3);
-      const parent = base === 'mod.rs' ? path.posix.dirname(dir) : dir;
-      let declaring;
-      for (const candidate of [`${parent}.rs`, `${parent}/mod.rs`,
-        `${parent}/lib.rs`, `${parent}/main.rs`]) {
-        if (candidate === file) continue;
-        const text = readAt(rev, candidate);
-        if (text === null) continue;
-        if (gated(name).test(text)) return candidate;
-        declaring = candidate;
-        break;
-      }
+      const declaring = declaringAt(rev, file);
       if (!declaring) return null;
-      file = declaring;
+      if (gated(declaring.name).test(declaring.text)) return declaring.file;
+      file = declaring.file;
+    }
+    return null;
+  }
+  function reasonAt(rev, file) {
+    const text = readAt(rev, file);
+    if (text === null) return null;
+    if (OWN.test(text)) return 'own-cfg';
+    if (WINM.test(text)) return 'cfg-macro';
+    if (!GATED_SCOPE.test(file)) return null;
+    const parent = gatedBy(rev, file);
+    return parent ? `gated-by ${parent}` : null;
+  }
+  function reasonFor(file, base, head) {
+    if (file === DETECTOR) return 'detector';
+    if (MANIFESTS.has(file)) return 'manifest';
+    if (!SCOPE.test(file)) return null;
+    for (const rev of [head, base]) {
+      const reason = reasonAt(rev, file);
+      if (reason) return reason;
     }
     return null;
   }
@@ -60,22 +81,7 @@ function detector(repo, env = process.env) {
       .split('\0').filter(Boolean);
     const reasons = [];
     for (const file of changed) {
-      let reason;
-      if (file === DETECTOR) reason = 'detector';
-      else if (MANIFESTS.has(file)) reason = 'manifest';
-      else if (SCOPE.test(file)) {
-        for (const rev of [head, base]) {
-          const text = readAt(rev, file);
-          if (text === null) continue;
-          if (OWN.test(text)) reason = 'own-cfg';
-          else if (WINM.test(text)) reason = 'cfg-macro';
-          else if (GATED_SCOPE.test(file)) {
-            const parent = gatedBy(rev, file);
-            if (parent) reason = `gated-by ${parent}`;
-          }
-          if (reason) break;
-        }
-      }
+      const reason = reasonFor(file, base, head);
       if (reason) reasons.push(`${file}: ${reason}`);
     }
     return { match: reasons.length > 0, reasons };
@@ -206,11 +212,11 @@ try {
     const options = {};
     for (let i = 0; i < args.length; i += 2) {
       if (!['--base', '--head', '--repo'].includes(args[i]) || !args[i + 1]
-        || args[i + 1].startsWith('--') || options[args[i]]) throw Error('invalid arguments');
+        || args[i + 1].startsWith('--') || options[args[i]]) throw new Error('invalid arguments');
       options[args[i]] = args[i + 1];
     }
     if (!options['--base'] || !options['--head'])
-      throw Error('usage: --base <rev> --head <rev> [--repo <dir>] | --self-test');
+      throw new Error('usage: --base <rev> --head <rev> [--repo <dir>] | --self-test');
     const result = detector(options['--repo']).detect(
       options['--base'], options['--head'], process.env.GITHUB_EVENT_NAME);
     console.log(`unix-rust-changes: match=${result.match}`
