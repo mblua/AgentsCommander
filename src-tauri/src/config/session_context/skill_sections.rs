@@ -468,69 +468,11 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
     let mut output = String::new();
     push_with_budget(&mut output, GENERATED_SKILLS_SECTION_INTRO);
 
-    match (&index.matrix_root, &index.skills_root) {
-        (None, _) => {
-            push_with_budget(
-                &mut output,
-                "No canonical Agent Matrix root was resolved for this session, so no runtime \
-                    skills were discovered.\n",
-            );
-        }
-        (Some(_), Some(skills_root)) => {
-            let root = sanitize_skill_metadata_for_context(skills_root);
-            push_with_budget(&mut output, &format!("Canonical skills root: `{root}`\n\n"));
-            push_with_budget(&mut output, GENERATED_SKILLS_SECTION_REPLICA_LINE);
-            if index.skills.is_empty() {
-                push_with_budget(
-                    &mut output,
-                    "\nNo valid skills with parseable SKILL.md frontmatter were discovered.\n",
-                );
-            }
-        }
-        (Some(matrix_root), None) => {
-            let root = sanitize_skill_metadata_for_context(matrix_root);
-            push_with_budget(
-                &mut output,
-                &format!("Canonical Agent Matrix root: `{root}`\n"),
-            );
-        }
-    }
+    push_skills_root_lines(&mut output, index);
 
-    let mut omitted_skills = 0;
-    let mut omitted_warnings = 0;
     let scope_label = skill_scope_label(index);
 
-    if !index.skills.is_empty() {
-        if push_with_budget(&mut output, "\n### Available Skills\n\n") {
-            for skill in &index.skills {
-                let name = sanitize_skill_metadata_for_context(&skill.name);
-                let entrypoint = sanitize_skill_metadata_for_context(&skill.entrypoint_path);
-                let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
-                let full_entry = format!(
-                    "- `{name}` - {trigger}\n  Scope: {scope_label}\n  Entrypoint: `{entrypoint}`\n"
-                );
-                if push_with_budget(&mut output, &full_entry) {
-                    continue;
-                }
-
-                let minimal_entry = format!(
-                    "- `{name}` - Metadata omitted because the skill index exceeded the \
-                        {SKILL_INDEX_TOTAL_MAX_BYTES} byte startup-context budget; inspect \
-                        SKILL.md if needed.\n  Scope: {scope_label}\n  \
-                        Entrypoint: `{entrypoint}`\n"
-                );
-                if !push_with_budget(&mut output, &minimal_entry) {
-                    omitted_skills += 1;
-                    log::warn!(
-                        "[skills] omitted skill `{name}` from generated context because the skill \
-                            index budget was exhausted"
-                    );
-                }
-            }
-        } else {
-            omitted_skills += index.skills.len();
-        }
-    }
+    let omitted_skills = push_skill_entries(&mut output, index, scope_label);
 
     let mut warnings: Vec<String> = index
         .warnings
@@ -548,11 +490,88 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
         }
     }
 
+    let omitted_warnings = push_warning_lines(&mut output, warnings);
+
+    append_budget_summary(&mut output, omitted_skills, omitted_warnings, true);
+    output
+}
+
+fn push_skills_root_lines(output: &mut String, index: &SkillIndex) {
+    match (&index.matrix_root, &index.skills_root) {
+        (None, _) => {
+            push_with_budget(
+                output,
+                "No canonical Agent Matrix root was resolved for this session, so no runtime \
+                    skills were discovered.\n",
+            );
+        }
+        (Some(_), Some(skills_root)) => {
+            let root = sanitize_skill_metadata_for_context(skills_root);
+            push_with_budget(output, &format!("Canonical skills root: `{root}`\n\n"));
+            push_with_budget(output, GENERATED_SKILLS_SECTION_REPLICA_LINE);
+            if index.skills.is_empty() {
+                push_with_budget(
+                    output,
+                    "\nNo valid skills with parseable SKILL.md frontmatter were discovered.\n",
+                );
+            }
+        }
+        (Some(matrix_root), None) => {
+            let root = sanitize_skill_metadata_for_context(matrix_root);
+            push_with_budget(output, &format!("Canonical Agent Matrix root: `{root}`\n"));
+        }
+    }
+}
+
+fn push_skill_entries(output: &mut String, index: &SkillIndex, scope_label: &str) -> usize {
+    let mut omitted_skills = 0;
+    if !index.skills.is_empty() {
+        if push_with_budget(output, "\n### Available Skills\n\n") {
+            for skill in &index.skills {
+                if push_skill_entry(output, skill, scope_label) {
+                    omitted_skills += 1;
+                }
+            }
+        } else {
+            omitted_skills += index.skills.len();
+        }
+    }
+    omitted_skills
+}
+
+fn push_skill_entry(output: &mut String, skill: &SkillMetadata, scope_label: &str) -> bool {
+    let name = sanitize_skill_metadata_for_context(&skill.name);
+    let entrypoint = sanitize_skill_metadata_for_context(&skill.entrypoint_path);
+    let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
+    let full_entry =
+        format!("- `{name}` - {trigger}\n  Scope: {scope_label}\n  Entrypoint: `{entrypoint}`\n");
+    if push_with_budget(output, &full_entry) {
+        return false;
+    }
+
+    let minimal_entry = format!(
+        "- `{name}` - Metadata omitted because the skill index exceeded the \
+            {SKILL_INDEX_TOTAL_MAX_BYTES} byte startup-context budget; inspect \
+            SKILL.md if needed.\n  Scope: {scope_label}\n  \
+            Entrypoint: `{entrypoint}`\n"
+    );
+    if !push_with_budget(output, &minimal_entry) {
+        log::warn!(
+            "[skills] omitted skill `{name}` from generated context because the skill \
+                index budget was exhausted"
+        );
+        return true;
+    }
+    false
+}
+
+fn push_warning_lines(output: &mut String, warnings: Vec<String>) -> usize {
+    let mut omitted_warnings = 0;
     if !warnings.is_empty() {
-        if push_with_budget(&mut output, "\n### Skill Discovery Warnings\n\n") {
+        if push_with_budget(output, "\n### Skill Discovery Warnings\n\n") {
             for warning in warnings {
                 let line = format!("- {warning}\n");
-                if !push_with_budget(&mut output, &line) {
+                if !push_with_budget(output, &line) {
                     omitted_warnings += 1;
                     log::warn!(
                         "[skills] omitted warning from generated context because the skill index \
@@ -564,7 +583,5 @@ pub(crate) fn render_skills_section(index: &SkillIndex) -> String {
             omitted_warnings += warnings.len();
         }
     }
-
-    append_budget_summary(&mut output, omitted_skills, omitted_warnings, true);
-    output
+    omitted_warnings
 }
