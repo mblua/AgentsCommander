@@ -191,17 +191,12 @@ async fn scan_agents(
     clocks_snapshot: &HashMap<String, crate::config::coordinator_clocks::ClockEntry>,
     call_id: u64,
 ) -> DiscoveryScan {
-    let mut agents: Vec<AcAgentMatrix> = Vec::new();
-    let mut teams: Vec<AcTeam> = Vec::new();
-    let mut workgroups: Vec<AcWorkgroup> = Vec::new();
-    let mut loops: Vec<crate::config::loops::AcLoopSummary> = Vec::new();
-    let mut context_template_updates = Vec::new();
+    let mut scan = DiscoveryScan::default();
     // Track the Project AC Root-containing dir each workgroup originated from. Keys are
     // `wg.name` values (unique within a discovery run; workgroup dir names include
     // the team name which collides only intentionally across projects). Populated as
     // we push to `workgroups` so we can later call `update_replicas_for_project` once
     // per project rather than once globally (Grinch #1 + #12).
-    let mut wg_project_map: HashMap<String, String> = HashMap::new();
 
     for base_path in &cfg.project_paths {
         let base = Path::new(base_path);
@@ -210,94 +205,114 @@ async fn scan_agents(
         }
 
         // Also check children of the base path (same pattern as search_repos)
-        let dirs_to_check = discovery_project_directories(base);
-
-        for repo_dir in dirs_to_check {
-            let Some(ac_root) = existing_ac_root(&repo_dir) else {
-                continue;
-            };
-            let repo_dir_str = projected_path_string(&repo_dir);
-
-            // Opportunistic: ensure gitignore exists for existing projects
-            let _ = ensure_ac_root_gitignore_with_names(
-                &ac_root,
-                &crate::config::agent_command::managed_instructions_filenames(cfg),
-            );
-            scan_context_templates(&repo_dir, &ac_root, &mut context_template_updates).await;
-            loops.extend(crate::config::loops::discover_loops_in_project(&repo_dir));
-
-            let project_folder = repo_dir
-                .file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or("unknown")
-                .to_string();
-
-            let entries = match discovery_directory_entries(&ac_root) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !discovery_path_is_dir(&path) {
-                    continue;
-                }
-
-                let dir_name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-
-                // Agent matrices: _agent_* (single underscore prefix)
-                if dir_name.starts_with("_agent_") {
-                    agents.push(discover_agent_matrix(
-                        &path,
-                        &project_folder,
-                        &dir_name,
-                        cfg,
-                    ));
-                }
-
-                // Workgroups: wg-*
-                if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
-                    workgroups.push(
-                        discover_workgroup(
-                            &path,
-                            &dir_name,
-                            &project_folder,
-                            &ac_root,
-                            cfg,
-                            clocks_snapshot,
-                            call_id,
-                        )
-                        .await,
-                    );
-                    wg_project_map.insert(dir_name.clone(), repo_dir_str.clone());
-                }
-
-                // Teams: _team_*
-                if dir_name.starts_with("_team_") {
-                    if let Some(team) = discover_team(&path, &project_folder, &dir_name) {
-                        teams.push(team);
-                    }
-                }
-            }
+        for repo_dir in discovery_project_directories(base) {
+            scan_repo_dir(&repo_dir, cfg, clocks_snapshot, call_id, &mut scan).await;
         }
     }
 
     // Sort alphabetically
-    agents.sort_by_key(|a| a.name.to_lowercase());
-    teams.sort_by_key(|a| a.name.to_lowercase());
-    workgroups.sort_by_key(|a| a.name.to_lowercase());
-    loops.sort_by_key(|a| a.name.to_lowercase());
+    scan.agents.sort_by_key(|a| a.name.to_lowercase());
+    scan.teams.sort_by_key(|a| a.name.to_lowercase());
+    scan.workgroups.sort_by_key(|a| a.name.to_lowercase());
+    scan.loops.sort_by_key(|a| a.name.to_lowercase());
 
-    DiscoveryScan {
-        agents,
-        teams,
-        workgroups,
-        loops,
-        context_template_updates,
-        wg_project_map,
+    scan
+}
+
+/// Scans one project directory's AC root into `scan`.
+async fn scan_repo_dir(
+    repo_dir: &Path,
+    cfg: &crate::config::settings::AppSettings,
+    clocks_snapshot: &HashMap<String, crate::config::coordinator_clocks::ClockEntry>,
+    call_id: u64,
+    scan: &mut DiscoveryScan,
+) {
+    let Some(ac_root) = existing_ac_root(repo_dir) else {
+        return;
+    };
+    let repo_dir_str = projected_path_string(repo_dir);
+
+    // Opportunistic: ensure gitignore exists for existing projects
+    let _ = ensure_ac_root_gitignore_with_names(
+        &ac_root,
+        &crate::config::agent_command::managed_instructions_filenames(cfg),
+    );
+    scan_context_templates(repo_dir, &ac_root, &mut scan.context_template_updates).await;
+    scan.loops
+        .extend(crate::config::loops::discover_loops_in_project(repo_dir));
+
+    let project_folder = repo_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("unknown")
+        .to_string();
+
+    let entries = match discovery_directory_entries(&ac_root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let context = replica::DiscoveryContext {
+        project_folder: &project_folder,
+        ac_root: &ac_root,
+        cfg,
+        clocks_snapshot,
+        call_id,
+    };
+    for entry in entries.flatten() {
+        scan_ac_root_entry(&entry.path(), &context, &repo_dir_str, scan).await;
+    }
+}
+
+/// Adds one AC root entry to `scan`: agent matrix, workgroup or team.
+async fn scan_ac_root_entry(
+    path: &Path,
+    context: &replica::DiscoveryContext<'_>,
+    repo_dir_str: &str,
+    scan: &mut DiscoveryScan,
+) {
+    if !discovery_path_is_dir(path) {
+        return;
+    }
+
+    let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_string(),
+        None => return,
+    };
+
+    // Agent matrices: _agent_* (single underscore prefix)
+    if dir_name.starts_with("_agent_") {
+        scan.agents.push(discover_agent_matrix(
+            path,
+            context.project_folder,
+            &dir_name,
+            context.cfg,
+        ));
+    }
+
+    // Workgroups: wg-*
+    if crate::config::entity_prefix::has_entity_prefix(&dir_name) {
+        scan.workgroups.push(
+            discover_workgroup(
+                path,
+                &dir_name,
+                context.project_folder,
+                context.ac_root,
+                context.cfg,
+                context.clocks_snapshot,
+                context.call_id,
+            )
+            .await,
+        );
+        scan.wg_project_map
+            .insert(dir_name.clone(), repo_dir_str.to_string());
+    }
+
+    // Teams: _team_*
+    if dir_name.starts_with("_team_") {
+        if let Some(team) = discover_team(path, context.project_folder, &dir_name) {
+            scan.teams.push(team);
+        }
     }
 }
 
@@ -459,6 +474,7 @@ async fn discover_workgroup(
     }
 }
 
+#[derive(Default)]
 struct DiscoveryScan {
     agents: Vec<AcAgentMatrix>,
     teams: Vec<AcTeam>,
