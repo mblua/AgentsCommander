@@ -32,7 +32,7 @@ pub(crate) fn read_team_discovery_config(path: &Path) -> std::io::Result<String>
 
 pub(crate) fn team_discovery_entries(
     path: &Path,
-) -> std::io::Result<impl Iterator<Item = std::io::Result<(PathBuf, std::ffi::OsString)>>> {
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(PathBuf, std::ffi::OsString)>> + use<>> {
     std::fs::read_dir(path)
         .map(|entries| entries.map(|entry| entry.map(|entry| (entry.path(), entry.file_name()))))
 }

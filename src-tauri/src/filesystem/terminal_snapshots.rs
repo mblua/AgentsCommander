@@ -16,7 +16,7 @@ pub(crate) fn snapshot_is_dir(path: &Path) -> bool {
 
 pub(crate) fn snapshot_entries(
     path: &Path,
-) -> io::Result<impl Iterator<Item = io::Result<(PathBuf, OsString)>>> {
+) -> io::Result<impl Iterator<Item = io::Result<(PathBuf, OsString)>> + use<>> {
     std::fs::read_dir(path)
         .map(|entries| entries.map(|entry| entry.map(|entry| (entry.path(), entry.file_name()))))
 }

@@ -728,7 +728,7 @@ impl FakeProbe {
         })
     }
 
-    fn probe(self: &Arc<Self>) -> impl Fn() -> ChildLiveness + Send + 'static {
+    fn probe(self: &Arc<Self>) -> impl Fn() -> ChildLiveness + Send + 'static + use<> {
         let probe = Arc::clone(self);
         move || {
             probe.calls.fetch_add(1, Ordering::SeqCst);
