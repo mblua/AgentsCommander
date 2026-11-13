@@ -37,7 +37,7 @@ function diagnostics(fake: FakeTransport): RailDiagnosticRecord[] {
 }
 
 describe("rail diagnostic positive controls with real gate and transport", () => {
-  afterEach(() => { __disposeSettingsSubscriptionsForTests(); setLogLevel("info"); resetUiStoresForTests(); document.body.replaceChildren(); vi.restoreAllMocks(); });
+  afterEach(() => { setLogLevel("info"); resetUiStoresForTests(); document.body.replaceChildren(); vi.restoreAllMocks(); });
 
   async function prepare() {
     resetUiStoresForTests();
@@ -459,6 +459,7 @@ describe("RoomGroupRail", () => {
   });
 
   afterEach(() => {
+    __disposeSettingsSubscriptionsForTests();
     resetUiStoresForTests();
     document.body.replaceChildren();
     vi.useRealTimers();
@@ -1271,6 +1272,7 @@ describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
 describe("RoomGroupRail native menu boundary", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => {
+    __disposeSettingsSubscriptionsForTests();
     setLogLevel("info");
     resetUiStoresForTests();
     document.body.replaceChildren();
