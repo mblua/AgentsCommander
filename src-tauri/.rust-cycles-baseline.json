@@ -8,7 +8,7 @@
   },
   "moduleCycles": [
     {
-      "id": "3c6cb9b74e449508",
+      "id": "0a96640d2ace1113",
       "members": [
         "agentscommander_lib",
         "agentscommander_lib::agent_update",
@@ -290,9 +290,6 @@
         "agentscommander_lib::screenshot::native::window_capture",
         "agentscommander_lib::screenshot::unsupported",
         "agentscommander_lib::session::auto_close",
-        "agentscommander_lib::session::context_alerts",
-        "agentscommander_lib::session::context_alerts::actor",
-        "agentscommander_lib::session::context_alerts::runtime",
         "agentscommander_lib::session::create_contracts",
         "agentscommander_lib::session::manager",
         "agentscommander_lib::session::manager::binding",
@@ -335,6 +332,14 @@
         "agentscommander_lib::pty::output",
         "agentscommander_lib::pty::output::attachments",
         "agentscommander_lib::pty::output::capture"
+      ]
+    },
+    {
+      "id": "897cef14e42a1694",
+      "members": [
+        "agentscommander_lib::session::context_alerts",
+        "agentscommander_lib::session::context_alerts::actor",
+        "agentscommander_lib::session::context_alerts::runtime"
       ]
     }
   ],
