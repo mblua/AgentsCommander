@@ -315,17 +315,44 @@ impl SpawnRecord {
     /// a redaction that silently fails is worse than none, because it invites the log to
     /// be pasted in public.
     fn scrub(&self, text: &str) -> String {
-        // Exact needles first (the secret-keyed env values this child was given), then
-        // the URL-shape redactor AC already applies to error text, so a key smuggled
-        // inside a URL the child printed (`?key=...`, `/bot<token>/`) does not walk out
-        // through `head=` either.
-        let mut text = crate::telegram::redact::redact(text);
-        for secret in &self.redact {
-            if text.contains(secret.as_str()) {
-                text = text.replace(secret.as_str(), "<redacted>");
-            }
+        // One pass over the ORIGINAL text: collect the spans the URL/credential
+        // redactor masks plus every occurrence of the exact secret-keyed env values
+        // this child was given, merge spans that overlap or touch, then render once.
+        // Two sequential passes let one pass break the other's match and leave a
+        // secret tail in clear (#4319). A merged span that holds a needle prints
+        // `<redacted>`; one made only of redactor spans prints `***`.
+        let mut spans: Vec<(usize, usize, bool)> = crate::telegram::redact::secret_spans(text)
+            .into_iter()
+            .map(|(start, end)| (start, end, false))
+            .collect();
+        for secret in self.redact.iter().filter(|s| !s.is_empty()) {
+            spans.extend(
+                text.match_indices(secret.as_str())
+                    .map(|(at, s)| (at, at + s.len(), true)),
+            );
         }
-        text
+        if spans.is_empty() {
+            return text.to_string();
+        }
+        spans.sort_unstable();
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        let mut iter = spans.into_iter().peekable();
+        while let Some((start, mut end, mut needle)) = iter.next() {
+            while let Some(&(next_start, next_end, next_needle)) = iter.peek() {
+                if next_start > end {
+                    break;
+                }
+                end = end.max(next_end);
+                needle |= next_needle;
+                iter.next();
+            }
+            out.push_str(&text[last..start]);
+            out.push_str(if needle { "<redacted>" } else { "***" });
+            last = end;
+        }
+        out.push_str(&text[last..]);
+        out
     }
 
     fn argv_log(&self) -> String {

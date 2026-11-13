@@ -64,6 +64,27 @@
 ///   -> "Telegram error: Unauthorized"  (no match, no change)
 /// ```
 pub fn redact(input: &str) -> String {
+    let spans = secret_spans(input);
+    if spans.is_empty() {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut last = 0;
+    for (start, end) in spans {
+        out.push_str(&input[last..start]);
+        out.push_str("***");
+        last = end;
+    }
+    out.push_str(&input[last..]);
+    out
+}
+
+/// Byte ranges of `input` that [`redact`] masks, in order and disjoint.
+/// Each range starts and ends on a char boundary (the scanners only walk
+/// ASCII bytes). Callers that mask extra needles merge their ranges with
+/// these and render once, so no pass can split another pass's match.
+pub(crate) fn secret_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
     // Fast path: no secret-bearing substrings present.
     let has_bot = input.contains("/bot");
     let has_key = input.contains("key=");
@@ -72,11 +93,10 @@ pub fn redact(input: &str) -> String {
         || input.contains("--token")
         || input.contains("Bearer ");
     if !has_bot && !has_key && !has_ac {
-        return input.to_string();
+        return spans;
     }
 
     let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < bytes.len() {
         // Telegram bot token: `/bot<digits>:<base64url-chars>`
@@ -88,8 +108,8 @@ pub fn redact(input: &str) -> String {
                 let chars_start = digits_end + 1;
                 let chars_end = scan_while(bytes, chars_start, is_token_char);
                 if chars_end - chars_start >= 10 {
-                    // Match. Keep `/bot`, replace the `<digits>:<chars>` span.
-                    out.push_str("/bot***");
+                    // Match. Keep `/bot`, mask the `<digits>:<chars>` span.
+                    spans.push((after_prefix, chars_end));
                     i = chars_end;
                     continue;
                 }
@@ -114,9 +134,8 @@ pub fn redact(input: &str) -> String {
                 let val_start = i + 5;
                 let val_end = scan_while(bytes, val_start, is_token_char);
                 if val_end > val_start {
-                    // Match. Keep the `?key=` / `&key=` prefix, replace value.
-                    out.push(bytes[i] as char);
-                    out.push_str("key=***");
+                    // Match. Keep the `?key=` / `&key=` prefix, mask value.
+                    spans.push((val_start, val_end));
                     i = val_end;
                     continue;
                 }
@@ -124,31 +143,27 @@ pub fn redact(input: &str) -> String {
         }
 
         // AgentsCommander credentials (#4319). Keep the context prefix,
-        // replace only the secret.
+        // mask only the secret.
         if has_ac {
             if let Some((keep, end)) = match_ac_credential(bytes, i) {
-                out.push_str(&input[i..keep]);
-                out.push_str("***");
+                spans.push((keep, end));
                 i = end;
                 continue;
             }
         }
 
-        // No match at this position — copy a full UTF-8 char. Casting
-        // `bytes[i] as char` is UNSAFE for multi-byte chars: a continuation
-        // byte (e.g. 0xC3 0xA9 for "é") would each map to a different
-        // Unicode scalar (U+00C3 U+00A9 = "Ã©"). `i` is always at a char
-        // boundary here: i=0 starts at one, the match-branch advances
-        // (`chars_end`, `val_end`) only walk ASCII-byte predicates, and
-        // this branch advances by `len_utf8()` of the current char.
+        // No match at this position — skip a full UTF-8 char. `i` is always
+        // at a char boundary here: i=0 starts at one, the match-branch
+        // advances (`chars_end`, `val_end`, `end`) only walk ASCII-byte
+        // predicates, and this branch advances by `len_utf8()` of the
+        // current char. That also keeps every span on char boundaries.
         let ch = input[i..]
             .chars()
             .next()
             .expect("non-empty bytes must yield a char at boundary i");
-        out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    spans
 }
 
 const CONTAINER_PREFIX: &str = "ac-container-";
