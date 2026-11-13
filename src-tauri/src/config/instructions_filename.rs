@@ -1,3 +1,6 @@
+/// AC-internal managed context file name; never a user instructions file.
+pub(crate) const AC_CONTEXT_FILE_NAME: &str = "last_ac_context.md";
+
 /// True only for a bare, safe `*.md` filename that can be `cwd.join`ed and
 /// written without escaping the agent root (R1.5 + G9). This is a strict
 /// predicate: callers trim before calling, so any surrounding whitespace here
@@ -43,7 +46,7 @@ pub fn is_safe_instructions_filename(filename: &str) -> bool {
     }
     // G9: reject the exact AC-internal sentinel (case-insensitive). The
     // user-facing built-ins CLAUDE.md / AGENTS.md stay allowed.
-    if filename.eq_ignore_ascii_case("last_ac_context.md") {
+    if filename.eq_ignore_ascii_case(AC_CONTEXT_FILE_NAME) {
         return false;
     }
     // Windows reserved device names, checked case-insensitively on the segment
