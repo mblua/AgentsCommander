@@ -1244,7 +1244,7 @@ function observedResponse(
   errors: string[],
 ): AnyUiAutomationResponse {
   if (errors.length === 0) return successResponse(windowLabel, request, snapshotTarget(target), diagnostics);
-  return errorResponse(windowLabel, request, "listener_exception", errors[0]!, availableTargets(), diagnostics); // non-empty
+  return errorResponse(windowLabel, request, "listener_exception", errors[0]!, availableTargets(), diagnostics);
 }
 
 function topmostElementAtCenter(element: HTMLElement): { ok: true } | { ok: false; element: HTMLElement | null } {
