@@ -1,6 +1,6 @@
 # Agents Commander: Architecture Map
 
-> Generated from codebase analysis, kept current against the `main` branch (0.20.x). For developers exploring the codebase or contributing changes. Maps the backend, frontend, IPC, PTY, and container layers.
+> Generated from codebase analysis; see the footer for the commit this map was checked against. For developers exploring the codebase or contributing changes. Maps the backend, frontend, IPC, PTY, and container layers.
 
 ---
 
@@ -255,7 +255,7 @@ graph TD
     MA["App.tsx<br/>Root: events, shortcuts,<br/>settings, bridge subs"]
 
     MA --> PP["ProjectPanel.tsx<br/>Projects, rooms, replicas → SessionItem"]
-    MA --> WR["WorkgroupGroupRail.tsx<br/>Favorites, group rail, raise-hand"]
+    MA --> WR["RoomGroupRail.tsx<br/>Room groups and raise-hand indicators"]
     MA --> AB["ActionBar.tsx<br/>Project creation + Settings gear"]
 
     PP --> SI["SessionItem.tsx<br/>Status dot, name (inline rename)<br/>git branch, shell path, mic,<br/>detach, telegram, close"]
@@ -354,17 +354,26 @@ Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them throu
 | TelegramAPI | `commands/telegram.rs` | `attach_telegram`, `detach_telegram`, `list_bridges`, `send_test` |
 | WindowAPI | `commands/window.rs` | `detach_terminal`, `close_detached_terminal` |
 | VoiceAPI | `commands/voice.rs` | `voice_transcribe` |
-| DiscoveryAPI | `commands/ac_discovery.rs` | branch/repo discovery events |
+| AcDiscoveryAPI | `commands/ac_discovery.rs` | branch/repo discovery events |
 | TaskAPI | `commands/task.rs` | `TASK.md` read/update |
 | LoopAPI | `commands/loops.rs` | Project Loop CRUD + state |
 | ResourceMonitorAPI | `commands/resource_monitor.rs` | process snapshot, thresholds |
 | ScreenshotAPI | `commands/screenshot.rs` | window capture |
 | SpecBoardAPI | `commands/spec_board.rs` | spec board CRUD |
 | EntityAPI | `commands/entity_creation.rs`, `commands/agent_creator.rs` | agents, teams, rooms |
-| RoleTemplatesAPI | `commands/role_templates.rs` | role-template picker |
+| RoleTemplateAPI | `commands/role_templates.rs` | role-template picker |
 | ProjectSettingsAPI | `commands/project_settings.rs` | per-project settings |
 | NonStopAPI | `commands/non_stop.rs` | non-stop mode |
 | CoManagedAPI | `commands/co_managed.rs` | `co_managed_get`, `co_managed_set_enabled`, `co_managed_effective_state` |
+| ContextHistoryAPI | `commands/context_history.rs` | `get_context_history_report`, `get_context_history_agent_detail` |
+| BlackBoxAPI | `commands/ipc_blackbox.rs` | `ipc_blackbox_report` |
+| QuitAPI | `commands/quit_gate.rs` | `quit_gate_register`, `quit_gate_resolve` |
+| SessionAPI | `commands/session_warnings.rs` | `drain_session_warnings` |
+| WebBrowserAPI | `commands/web_browser.rs` | `web_browser_show`, `web_browser_navigate` |
+| internal | `commands/codex_resolver.rs` | Codex session-file resolver helpers; no Tauri commands |
+| internal | `commands/phone.rs` | Mailbox and PTY host adapters; no Tauri commands |
+| internal | `commands/web.rs` | WebSocket operation adapters; no Tauri commands |
+| internal | `commands/wg_delete_diagnostic.rs` | Delete-blocker diagnostic helpers; no Tauri commands |
 | TestabilityAPI | `commands/testability.rs` | test-only bridges and resets |
 
 ---
@@ -536,12 +545,12 @@ sequenceDiagram
     participant PM as PtyManager
     participant TM as Terminal
 
-    U->>SB: Click "+ New Session"
+    U->>SB: Choose a repository and agent in OpenAgentModal
     SB->>CMD: invoke("create_session")
-    CMD->>SM: create_session() → UUID
-    CMD->>PM: spawn(id, shell, cwd)
-    PM->>PM: Open PTY (ConPTY or pipes)
-    PM->>PM: Start read loop (std::thread)
+    CMD->>SM: Prepare pending session record
+    CMD->>PM: spawn(manager, backend_kind, spec)
+    PM->>PM: Delegate to local or container backend
+    Note over PM: Local backend opens PTY and starts reader thread
     CMD-->>SB: emit("session_created")
     CMD-->>TM: emit("session_created")
     SB->>SB: sessionsStore.addSession()
@@ -688,6 +697,8 @@ graph TD
 
 ## 8. Persistence: Files on Disk
 
+The diagrams below name runtime files and directories, rather than checked-in source files.
+
 The current `main` source selects the application config directory once at runtime: a nonblank public override wins; otherwise an executable without an underscore suffix uses `$HOME/.agentscommander`, and an executable with an underscore suffix uses only its successfully probed adjacent candidate, never the home directory. A conclusively unwritable candidate stops startup with a message that says to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; an indeterminate write result also stops startup, with a message that says to set `AGENTSCOMMANDER_CONFIG_DIR`. `v0.33.0` is the first release with this resolver. `v0.30.3` immediately selects a derivable adjacent path and has none of those public override, marker, or probe branches. A renamed binary is isolated only when its exact version selects a distinct path. See [Directory layout](directory-layout.md#the-config-dir-selection-rule) for the full versioned contract.
 
 ```mermaid
@@ -707,7 +718,7 @@ graph TD
         WGS["room-&lt;N&gt;-&lt;team&gt;/<br/>__agent_* replicas, repo-*,<br/>messaging/, TASK.md"]
         CM[".co-managed/<br/>config.json, state.json,<br/>queue/, lock"]
         LOOPS["_loop_&lt;id&gt;/config.toml"]
-        SEED["seed-manifest.json,<br/>.gitignore sweep"]
+        SEED["seed-manifest.toml,<br/>.gitignore sweep"]
     end
 
     TEAMS -->|"roster"| WGS
@@ -773,7 +784,27 @@ graph TD
 | File | Purpose |
 |------|---------|
 | `main.rs` | Thin shim → `lib::run()` |
-| `lib.rs` | App bootstrap, state init, window creation, session restore, command registration |
+| `lib.rs` | Module declarations, app adapters and delegation to the desktop entry |
+| `app_run.rs` | Desktop app entry, managed state and Tauri builder |
+| `app_state.rs` | Shared Tauri state types |
+| `cleanup_diagnostics.rs` | Durable evidence for the individual reaper |
+| `co_managed.rs` | Co-managed supervisor |
+| `context_history.rs` | Context-history records, validation and child modules |
+| `debug_logs.rs` | Textual debug log dump |
+| `events.rs` | Frontend event delivery adapters |
+| `filesystem.rs` | Filesystem operations for configuration, sessions and user documents |
+| `history_runtime.rs` | Bounded context-change capture and serial history writers |
+| `process.rs` | Process helpers for agents, Docker, Git, GitHub, harnesses and the host |
+| `pty_input.rs` | Shared forbidden terminal-input scalar policy |
+| `pty_wiring.rs` | Adapters connecting scraper, quota and watcher engines to PTYs |
+| `quit_gate.rs` | Quit consent coordination for windows with unsaved work |
+| `reader_demand.rs` | Room reader-demand re-raise tick |
+| `repos.rs` | Repository path and name helpers |
+| `restore.rs` | Startup restore decisions and task |
+| `spec_board.rs` | Persisted spec board paths and formats |
+| `startup.rs` | Startup preflight, config naming migration and app outbox |
+| `web_server.rs` | Web and API server lifecycle handles |
+| `window.rs` | Main-window geometry helpers |
 | `errors.rs` | `AppError` enum (thiserror) |
 | `path_identity.rs`, `path_utils.rs` | Path canonicalization, identity helpers |
 | `logging.rs` | Logger setup, live log-level control |
@@ -863,7 +894,7 @@ graph TD
 | `screenshot/` | Screenshot capture (Windows, macOS, Linux/X11) |
 | `voice/` | Voice transcription tracking |
 | `web/` | Embedded web server, WebSocket broadcast, embedded auth |
-| `capture/mod.rs` | Co-managed capture subtree (#2232); every module in it is a leaf |
+| `capture.rs`, `capture/` | Co-managed capture types and child modules (#2232) |
 | `capture/record.rs` | `CapturedRecord`, with `provider_final` and `turn_identified` |
 | `capture/key.rs`, `capture/registry.rs` | Consumption keys and per-session owners |
 | `capture/sink.rs`, `capture/state.rs` | `CaptureSlot`, epochs and fingerprints, watermark, cut, budget, abstain reasons |
@@ -874,6 +905,8 @@ graph TD
 | `capture/secrets.rs` | Pre-egress secret detector, runs before any write and any network call |
 | `network/` | Network helpers |
 | `testability/` | Test-only reset, window info, UI automation verbs |
+
+Not indexed: `tests.rs` and `test_support.rs` contain tests and test construction helpers.
 
 ### Frontend (`src/`)
 
@@ -907,7 +940,7 @@ graph TD
 | `sidebar/stores/bridges.ts` | `bridges[]` reactive store |
 | `sidebar/stores/project.ts` | Project/room/replica tree |
 | `sidebar/components/ProjectPanel.tsx` | Projects, rooms and replicas → `SessionItem` |
-| `sidebar/components/WorkgroupGroupRail.tsx` | Rail with favorites, groups, raise-hand |
+| `sidebar/components/RoomGroupRail.tsx` | Room group rail with raise-hand indicators |
 | `sidebar/components/SessionItem.tsx` | Status dot, name, git branch, mic, telegram, detach, close |
 | `sidebar/components/AcDiscoveryPanel.tsx` | Branch and repo discovery panel |
 | `sidebar/components/AgentPickerModal.tsx` | Coding-agent profile assignment modal: assigns a profile to one target, with replica/kind/room scope |
@@ -941,6 +974,9 @@ graph TD
 | `screenshot-overlay/` | Screenshot selection overlay |
 | `spec-board/` | Spec Board window app |
 | `browser/` | Non-Tauri browser build |
+| `context-history/` | Per-agent context history, sessions and timeline UI |
+
+Not indexed: `assets/` contains static image assets.
 
 ### Config Files
 
@@ -950,3 +986,7 @@ graph TD
 | `src-tauri/Cargo.toml` | Rust dependencies |
 | `package.json` | Frontend deps, scripts (`tauri dev`, `kill-dev`) |
 | `vite.config.ts` | Vite config, `__APP_VERSION__` injection from tauri.conf.json |
+
+---
+
+Checked against `main` at commit da58de7706497f27502ad158e14bd9290d9b7665 on 2026-11-13.
