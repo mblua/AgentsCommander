@@ -41,14 +41,7 @@ pub(crate) fn strip_ansi_and_controls(line: &str) -> String {
         match chars.next() {
             // CSI: parameter/intermediate bytes 0x20-0x3F, one final byte 0x40-0x7E.
             Some('[') => {
-                let mut terminated = false;
-                for c in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&c) {
-                        terminated = true;
-                        break;
-                    }
-                }
-                if !terminated {
+                if !skip_csi_chars(&mut chars) {
                     break;
                 }
             }
@@ -57,19 +50,7 @@ pub(crate) fn strip_ansi_and_controls(line: &str) -> String {
             // parser stays inside the sequence; it must not consume that next
             // character either, or it would eat the `ESC` of a later ST pair.
             Some(']') => {
-                let mut terminated = false;
-                while let Some(c) = chars.next() {
-                    if c == '\u{7}' {
-                        terminated = true;
-                        break;
-                    }
-                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
-                        chars.next();
-                        terminated = true;
-                        break;
-                    }
-                }
-                if !terminated {
+                if !skip_osc_chars(&mut chars) {
                     break;
                 }
             }
@@ -79,6 +60,33 @@ pub(crate) fn strip_ansi_and_controls(line: &str) -> String {
     }
     out.retain(|c| (c as u32) >= 0x20 && c != '\u{7f}');
     out.trim().to_string()
+}
+
+fn skip_csi_chars(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let mut terminated = false;
+    for c in chars.by_ref() {
+        if ('\u{40}'..='\u{7e}').contains(&c) {
+            terminated = true;
+            break;
+        }
+    }
+    terminated
+}
+
+fn skip_osc_chars(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let mut terminated = false;
+    while let Some(c) = chars.next() {
+        if c == '\u{7}' {
+            terminated = true;
+            break;
+        }
+        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+            chars.next();
+            terminated = true;
+            break;
+        }
+    }
+    terminated
 }
 
 /// #1551 - every `\n` AND every `\r` is a line break (so `\r\n` yields an empty
