@@ -438,7 +438,7 @@ impl Drop for DockerCommandOwnership {
         let entries = self
             .entries
             .get_mut()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let missing_owner_count = entries.iter().filter(|entry| entry.owner.is_none()).count();
         if missing_owner_count > 0 {
             log::error!(

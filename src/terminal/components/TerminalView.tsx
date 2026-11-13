@@ -246,7 +246,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     const replayStatus = document.createElement("div");
     replayStatus.className = "terminal-replay-status";
     replayStatus.hidden = true;
-    replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
+    replayStatus.dataset.acTestid = `terminal.replay-status.${sessionId}`;
     container.appendChild(replayStatus);
 
     // #1682 - the top-right status strip. The stamp sits immediately LEFT of the
@@ -272,7 +272,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // user-agent `[hidden] { display: none }` rule. While hidden it is not a
     // flex item, so the strip's `gap` does not show either.
     const agentMessageStatus = document.createElement("div");
-    agentMessageStatus.setAttribute("data-testid", `terminal-agent-message-${sessionId}`);
+    agentMessageStatus.dataset.testid = `terminal-agent-message-${sessionId}`;
     agentMessageStatus.setAttribute("aria-label", "Last coding agent message time");
     agentMessageStatus.style.color = "var(--statusbar-fg)";
     agentMessageStatus.style.fontFamily = "var(--font-mono)";
@@ -283,7 +283,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     const gridStatus = document.createElement("div");
     gridStatus.className = "terminal-grid-status";
-    gridStatus.setAttribute("data-testid", `terminal-grid-size-${sessionId}`);
+    gridStatus.dataset.testid = `terminal-grid-size-${sessionId}`;
     gridStatus.setAttribute("aria-label", "Terminal grid size");
     gridStatus.style.color = "var(--statusbar-fg)";
     gridStatus.style.fontFamily = "var(--font-mono)";
@@ -328,7 +328,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
             .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
           return false;
         }
-        return terminal.hasSelection() ? false : true;
+        return !terminal.hasSelection();
       }
 
       if (isCtrlShift && key === "v") {
@@ -830,9 +830,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // entry's queued writes for the next generation, and the write path's
   // `snapshotReplayPending` gate already prevents any post-close registration.
   const closeSnapshotReconcile = (entry: SessionTerminalEntry) => {
-    entry.snapshotReplayPending = false;
-    entry.pendingSnapshotEvents = [];
-    entry.pendingSnapshotBytes = 0;
+    abandonSnapshotReconcile(entry);
   };
 
   // #1489: awaits parse completion of every live write queued since the
@@ -899,16 +897,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // parse into the fresh buffer ahead of the newer snapshot and duplicate
     // it (the issue's own straddle class).
     const drain = attachDrains.get(entry);
-    const releaseDrain = () => {
-      if (!drain) {
-        return;
-      }
-      drain.inFlight -= 1;
-      if (drain.inFlight === 0 && drain.resolve) {
-        drain.resolve();
-        drain.resolve = null;
-      }
-    };
+    const releaseDrain = () => releaseAttachDrain(drain);
     for (let index = 0; index < kept.length; index += 1) {
       const isLast = index === kept.length - 1;
       if (drain) {
@@ -1069,11 +1058,22 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   const attachGenerations = new WeakMap<SessionTerminalEntry, number>();
   const attachDrains = new WeakMap<SessionTerminalEntry, AttachDrain>();
 
+  function releaseAttachDrain(drain: AttachDrain | undefined) {
+    if (!drain) {
+      return;
+    }
+    drain.inFlight -= 1;
+    if (drain.inFlight === 0 && drain.resolve) {
+      drain.resolve();
+      drain.resolve = null;
+    }
+  }
+
   onCleanup(
     registerUiTerminalController(({ element, sessionId, operation }) => {
       if (
-        element.getAttribute("data-ac-testid") !== `terminal.session.${sessionId}` ||
-        element.getAttribute("data-ac-session-id") !== sessionId
+        element.dataset.acTestid !== `terminal.session.${sessionId}` ||
+        element.dataset.acSessionId !== sessionId
       ) {
         return {
           ok: false,
@@ -1269,16 +1269,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     //    stops this generation's pipeline - never an unhandled rejection
     //    (live output continues; the next attach re-seeds).
     const drain = attachDrains.get(entry);
-    const releaseDrain = () => {
-      if (!drain) {
-        return;
-      }
-      drain.inFlight -= 1;
-      if (drain.inFlight === 0 && drain.resolve) {
-        drain.resolve();
-        drain.resolve = null;
-      }
-    };
+    const releaseDrain = () => releaseAttachDrain(drain);
     if (drain) {
       if (drain.inFlight === 0) {
         drain.promise = new Promise<void>((resolve) => {

@@ -14,7 +14,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
-import type { Session, TelegramBotConfig } from "../../shared/types";
+import type { MainSidebarSide, Session, TelegramBotConfig } from "../../shared/types";
 import { sessionProfileBadge } from "../../shared/profile-utils";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
@@ -39,7 +39,7 @@ import {
   sidebarCompact,
   toggleSidebarCompact,
 } from "../../shared/sidebar-compact";
-import type { MainSidebarSide } from "../../shared/types";
+
 
 // #2236 D23 - a click whose target sits inside one of these is a nested
 // control's own click and must not also activate the row.

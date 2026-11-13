@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolveGit } from './resolve-git.mjs';
 
-const PATTERN          = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9][0-9]*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const PATTERN          = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9]\d*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const MAX_SLUG         = 50;
 const TARGET_REPO      = 'mblua/AgentsCommander';
 const CUTOFF_SHA_PATH  = '.github/branch-name-enforcement.cutoff.sha';

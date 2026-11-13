@@ -501,8 +501,8 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/process.rs",
-        2,
-        0,
+        3,
+        1,
         &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
     ),
     (

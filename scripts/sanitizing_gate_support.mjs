@@ -95,7 +95,8 @@ export function metric() { return { counts: {}, sites: {}, commands: new Map(), 
 export function hit(m, rule, line, identity) {
   m.counts[rule] = (m.counts[rule] ?? 0) + 1;
   const site = { line, ...(identity ? { identity } : {}) };
-  (m.sites[rule] ??= []).push(site);
+  m.sites[rule] ??= [];
+  m.sites[rule].push(site);
   return site;
 }
 

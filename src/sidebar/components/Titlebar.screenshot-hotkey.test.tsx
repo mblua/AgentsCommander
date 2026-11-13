@@ -6,6 +6,10 @@ import type { ScreenshotHotkeyStatus } from "../../shared/types";
 
 const mocks = vi.hoisted(() => ({
   getHotkeyStatus: vi.fn(),
+  startCapture: vi.fn(),
+  onStatusChanged: vi.fn(),
+  unlistenStatus: vi.fn(),
+  statusCallback: null as ((status: unknown) => void) | null,
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
   getLabel: vi.fn(),
@@ -29,7 +33,9 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("../../shared/ipc", () => ({
   ScreenshotAPI: {
     getHotkeyStatus: mocks.getHotkeyStatus,
+    startCapture: mocks.startCapture,
   },
+  onScreenshotHotkeyStatusChanged: mocks.onStatusChanged,
   SettingsAPI: {
     get: mocks.getSettings,
     update: mocks.updateSettings,
@@ -120,6 +126,15 @@ const getChip = (root: Element): HTMLElement | null =>
 describe("Titlebar screenshot hotkey status", () => {
   beforeEach(() => {
     mocks.getHotkeyStatus.mockReset();
+    mocks.startCapture.mockReset();
+    mocks.startCapture.mockResolvedValue(undefined);
+    mocks.unlistenStatus.mockReset();
+    mocks.statusCallback = null;
+    mocks.onStatusChanged.mockReset();
+    mocks.onStatusChanged.mockImplementation((cb: (status: unknown) => void) => {
+      mocks.statusCallback = cb;
+      return Promise.resolve(mocks.unlistenStatus);
+    });
     mocks.getSettings.mockReset();
     mocks.updateSettings.mockReset();
     mocks.getLabel.mockReset();
@@ -142,6 +157,7 @@ describe("Titlebar screenshot hotkey status", () => {
 
     expect(controls).not.toBeNull();
     expect(chip).not.toBeNull();
+    expect(chip?.tagName).toBe("BUTTON");
     expect(webServerMenu).not.toBeNull();
     expect(zoomStepper).not.toBeNull();
     expect(chip?.querySelector(".screenshot-hotkey-status-text")?.textContent).toBe("Ctrl + 1");
@@ -162,21 +178,18 @@ describe("Titlebar screenshot hotkey status", () => {
       .toBe("Ctrl + Shift + F9");
   });
 
-  it("is accessible but exposes no activation semantics", async () => {
+  it("is a keyboard-focusable button with the capture label", async () => {
     const { root } = await mountTitlebar();
-    const chip = getChip(root);
+    const chip = getChip(root) as HTMLButtonElement | null;
 
     expect(chip).not.toBeNull();
-    expect(chip?.tagName).toBe("SPAN");
-    expect(chip?.getAttribute("title")).toBe("Screenshot capture shortcut: Ctrl + 1");
-    expect(chip?.getAttribute("aria-label")).toBe("Screenshot capture shortcut: Ctrl + 1");
+    expect(chip?.tagName).toBe("BUTTON");
+    expect(chip?.type).toBe("button");
+    expect(chip?.getAttribute("title")).toBe("Take a screenshot (Ctrl + 1)");
+    expect(chip?.getAttribute("aria-label")).toBe("Take a screenshot (Ctrl + 1)");
     expect(chip?.querySelector(".screenshot-hotkey-status-icon")?.getAttribute("aria-hidden"))
       .toBe("true");
-    expect(chip?.getAttribute("role")).toBeNull();
-    expect(chip?.getAttribute("tabindex")).toBeNull();
-    expect(chip?.querySelector("button, a")).toBeNull();
-    expect(chip?.onclick).toBeNull();
-    expect(chip?.onkeydown).toBeNull();
+    expect(chip?.tabIndex).toBe(0);
   });
 
   it.each([
@@ -185,17 +198,22 @@ describe("Titlebar screenshot hotkey status", () => {
     ["empty", screenshotStatus({ configured: "" })],
     ["malformed", screenshotStatus({ configured: "Ctrl++1" })],
     ["runtime-malformed registration", { ...screenshotStatus(), registered: "true" }],
-  ])("hides a %s status", async (_label, status) => {
+  ])("shows the camera without a key for a %s status", async (_label, status) => {
     const { root } = await mountTitlebar({ status });
+    const chip = getChip(root);
 
-    expect(getChip(root)).toBeNull();
+    expect(chip).not.toBeNull();
+    expect(chip?.querySelector(".screenshot-hotkey-status-text")).toBeNull();
+    expect(chip?.getAttribute("aria-label")).toBe("Take a screenshot");
   });
 
-  it("hides a rejected status request without a duplicate warning", async () => {
+  it("shows the camera without a key for a rejected status request and no error", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { root } = await mountTitlebar({ rejectStatus: true });
+    const chip = getChip(root);
 
-    expect(getChip(root)).toBeNull();
+    expect(chip).not.toBeNull();
+    expect(chip?.querySelector(".screenshot-hotkey-status-text")).toBeNull();
     expect(errorSpy).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
@@ -227,7 +245,8 @@ describe("Titlebar screenshot hotkey status", () => {
 
     const { root } = await mountTitlebar();
 
-    expect(getChip(root)).toBeNull();
+    expect(getChip(root)).not.toBeNull();
+    expect(getChip(root)?.querySelector(".screenshot-hotkey-status-text")).toBeNull();
     expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(1);
 
     // Comfortably past HOTKEY_STATUS_RETRY_DELAY_MS; the second read is
@@ -237,5 +256,47 @@ describe("Titlebar screenshot hotkey status", () => {
     expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(2);
     expect(getChip(root)?.querySelector(".screenshot-hotkey-status-text")?.textContent)
       .toBe("Ctrl + 1");
+  });
+
+  it("clicking the chip starts one capture", async () => {
+    const { root } = await mountTitlebar();
+    getChip(root)?.click();
+
+    expect(mocks.startCapture).toHaveBeenCalledTimes(1);
+    expect(mocks.startCapture).toHaveBeenCalledWith();
+  });
+
+  it("a failed start is caught", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = new Error("portal busy");
+    mocks.startCapture.mockRejectedValue(failure);
+    const { root } = await mountTitlebar();
+
+    getChip(root)?.click();
+    await flushAsyncWork();
+    await Promise.resolve();
+
+    expect(errorSpy).toHaveBeenCalledWith("[screenshot] startCapture failed:", failure);
+    errorSpy.mockRestore();
+  });
+
+  it("status events update the key", async () => {
+    const { root } = await mountTitlebar();
+    expect(mocks.statusCallback).not.toBeNull();
+
+    mocks.statusCallback?.(screenshotStatus({ configured: "Ctrl+2" }));
+    expect(getChip(root)?.querySelector(".screenshot-hotkey-status-text")?.textContent)
+      .toBe("Ctrl + 2");
+
+    mocks.statusCallback?.({ configured: "Ctrl+2", registered: false, error: "x" });
+    expect(getChip(root)?.querySelector(".screenshot-hotkey-status-text")).toBeNull();
+  });
+
+  it("unsubscribes on cleanup", async () => {
+    const { cleanup } = await mountTitlebar();
+    await Promise.resolve();
+    cleanup();
+
+    expect(mocks.unlistenStatus).toHaveBeenCalledTimes(1);
   });
 });

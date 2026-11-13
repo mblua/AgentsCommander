@@ -10,8 +10,8 @@ const FRAMES = {
   A: { canvas: "#00ffff", ansiBackground: 41, text: "A" },
   B: { canvas: "#ffff00", ansiBackground: 42, text: "B" },
 };
-const ZOOMS = [1, 1.1];
-const RENDERERS = ["default", "webgl"];
+const ZOOMS = new Set([1, 1.1]);
+const RENDERERS = new Set(["default", "webgl"]);
 const GENERATION_PATTERN = /^[A-Za-z0-9]{1,32}$/;
 
 const CONTROL_SQUARE = 32;
@@ -104,8 +104,8 @@ function validate(request) {
     return { generation, frame, zoom, renderer };
   }
   if (!Object.hasOwn(FRAMES, frame)) throw new Error("invalid frame");
-  if (!ZOOMS.includes(zoom)) throw new Error("invalid zoom");
-  if (!RENDERERS.includes(renderer)) throw new Error("invalid renderer");
+  if (!ZOOMS.has(zoom)) throw new Error("invalid zoom");
+  if (!RENDERERS.has(renderer)) throw new Error("invalid renderer");
   return { generation, frame, zoom, renderer };
 }
 

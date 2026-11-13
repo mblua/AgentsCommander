@@ -273,8 +273,7 @@ const EditLoopModal: Component<{
               onChange={(e) => setEnabled(e.currentTarget.checked)}
               disabled={loading()}
               data-ac-testid="loop.edit.enabled"
-            />
-            Enabled
+            />Enabled
           </label>
 
           <label class="loop-checkbox-field">
@@ -287,8 +286,7 @@ const EditLoopModal: Component<{
               }}
               disabled={loading()}
               data-ac-testid="loop.edit.forceInject"
-            />
-            Force inject even if orchestrator is busy
+            />Force inject even if orchestrator is busy
           </label>
 
           <label class="loop-checkbox-field">
@@ -298,8 +296,7 @@ const EditLoopModal: Component<{
               onChange={(e) => setAccumulate(e.currentTarget.checked)}
               disabled={loading()}
               data-ac-testid="loop.edit.accumulate"
-            />
-            Continue the previous conversation each run
+            />Continue the previous conversation each run
           </label>
 
           <Show when={!loading() && loadedBusyPolicy() === "skip" && !forceCheckboxTouched()}>

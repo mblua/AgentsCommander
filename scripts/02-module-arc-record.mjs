@@ -287,7 +287,7 @@ function readGraph(file) {
   // hasOwnProperty, not truthiness: the emitter guarantees that an ABSENT section was never
   // computed while an emitted [] means "computed, and there are none". Treating the absent
   // key as empty would write a zero-arc record and call it a success.
-  if (!Object.prototype.hasOwnProperty.call(graph, 'edges')) {
+  if (!Object.hasOwn(graph, 'edges')) {
     throw new GraphError(`graph file '${resolved}' has no 'edges' section: it was emitted with --level function, so module edges were never computed; re-emit with --level all or --level module`);
   }
   if (!Array.isArray(graph.edges)) {

@@ -568,11 +568,7 @@ fn resolve_missing_base(
             "an interrupted managed-catalog migration is pending; it resumes on the next \
                 initialization",
         ));
-        let journal_bytes = snapshot
-            .journal
-            .as_ref()
-            .ok()
-            .and_then(|value| value.as_deref());
+        let journal_bytes = snapshot.journal.as_ref().ok().and_then(Option::as_deref);
         if let Some(journal_bytes) = journal_bytes {
             match journal_legacy_source(journal_bytes) {
                 Ok(Some(entries)) => {

@@ -26,7 +26,7 @@ const UNRESOLVED_AGENT_FIX =
 export function launchErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
   if (raw.startsWith(CAP_PREFIX)) {
-    const counts = /(\d+)\s*\/\s*(\d+)/.exec(raw);
+    const counts = /(?:^|\D)(\d+)\s*\/\s*(\d+)/.exec(raw);
     const ratio = counts ? `${counts[1]}/${counts[2]}` : null;
     const head = ratio
       ? `Resource Monitor cap reached (${ratio}).`

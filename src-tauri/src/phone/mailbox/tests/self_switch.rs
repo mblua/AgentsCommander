@@ -704,3 +704,50 @@ async fn p22_cross_project_ambiguity() {
         None
     );
 }
+
+#[tokio::test]
+async fn app_outbox_ack_skips_outbox_relative_and_writes_resolved_sender() {
+    let fixture = make_self_switch_fixture();
+    let app = app_handle(&fixture.app);
+    let (session_id, _token) = seed_self_switch_session(
+        &app,
+        &fixture.replica,
+        "codex",
+        Some("codex"),
+        None,
+        Some("A"),
+    )
+    .await;
+    let (replica_path, msg) = build_self_switch_message(
+        &fixture.replica,
+        "msg-ss-app-outbox",
+        "rid-ss-app-outbox",
+        None,
+        None,
+        None,
+        "proj-a:wg-1-dev-team/dev-rust",
+    );
+    let app_config = fixture._temp.path().join("app-config");
+    let app_outbox = app_config.join("app-outbox");
+    std::fs::create_dir_all(&app_outbox).unwrap();
+    let path = app_outbox.join("msg-ss-app-outbox.json");
+    std::fs::rename(&replica_path, &path).unwrap();
+    let targets = crate::phone::mailbox::handoff::SelfSwitchTargets {
+        coding_agent: "codex".into(),
+        profile: "A".into(),
+    };
+
+    MailboxPoller::default()
+        .write_self_switch_response(&app, &path, &msg, session_id, "queued", &targets, true)
+        .await
+        .unwrap();
+
+    assert!(
+        !app_config.join("responses").exists(),
+        "app-outbox must not get an outbox-relative ack"
+    );
+    let response = read_response_json(&fixture.replica, "rid-ss-app-outbox").unwrap();
+    assert_eq!(response["status"], "queued");
+    assert_eq!(response["target_coding_agent"], "codex");
+    assert_eq!(response["target_profile"], "A");
+}

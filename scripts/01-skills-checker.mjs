@@ -88,8 +88,8 @@ function trimYamlValue(value) {
 function asciiLower(value) {
   let out = '';
   for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    out += code >= 0x41 && code <= 0x5a ? String.fromCharCode(code + 0x20) : value[i];
+    const code = value.codePointAt(i);
+    out += code >= 0x41 && code <= 0x5a ? String.fromCodePoint(code + 0x20) : value[i];
   }
   return out;
 }
@@ -571,7 +571,7 @@ function decodeEscape(text, i) {
     if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
       return { ok: false, reason: String.raw`a double-quoted scalar with a malformed \u escape` };
     }
-    return { ok: true, value: String.fromCharCode(Number.parseInt(hex, 16)), width: 6 };
+    return { ok: true, value: String.fromCodePoint(Number.parseInt(hex, 16)), width: 6 };
   }
   return { ok: false,
     reason: 'a double-quoted scalar with a backslash escape outside the supported set' };
@@ -629,15 +629,22 @@ function splitPlainKey(body) {
   // line look like an ordinary entry for a key nothing reads, so a plain typo produced
   // a run with no finding at all, not even W-YAML-UNDECIDABLE. Leading whitespace is
   // already routed to W-YAML-UNDECIDABLE by the `indent > 0` branch of parseMiniYaml.
-  return { ok: true, key: body.slice(0, separator).replace(/[ \t]+$/, ''), rest: body.slice(
+  return { ok: true, key: trimTrailingBlanks(body.slice(0, separator)), rest: body.slice(
     separator + 1) };
+}
+
+// `text` without its trailing run of spaces and tabs; linear, unlike `/[ \t]+$/`.
+function trimTrailingBlanks(text) {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === ' ' || text[end - 1] === '\t')) end--;
+  return text.slice(0, end);
 }
 
 // The block-scalar header at the start of a value, or null when it is not one.
 function blockScalarHeader(value) {
-  const header = /^([|>])(\d*)([-+]?)(\d*)[ \t]*(?:#.*)?$/.exec(value);
+  const header = /^([|>])(\d*)(?:([-+])(\d*))?[ \t]*(?:#.*)?$/.exec(value);
   if (!header) return null;
-  const explicit = header[2] || header[4];
+  const explicit = header[2] || header[4] || '';
   const blockIndent = explicit === '' ? null : Number(explicit);
   // serde_yaml rejects a zero indentation indicator outright ("found an indentation
   // indicator equal to 0"), so `|0` and `>0` are outside the subset rather than block
@@ -725,7 +732,7 @@ function resolveScalar(value) {
   let plain = value;
   const comment = /[ \t]#/.exec(plain);
   if (comment) plain = plain.slice(0, comment.index);
-  plain = plain.replace(/[ \t]+$/, '');
+  plain = trimTrailingBlanks(plain);
   if (plain === '') return { kind: 'null', value: null, raw: value };
   return classifyPlainScalar(plain, value);
 }
@@ -2455,10 +2462,11 @@ function selfTest(out) {
       try {
         // No `description` and a non-string `when_to_use`, so both field-layer findings
         // WOULD fire if validation did not stop at the name failure.
+        const nameValue = value === '' ? '' : ` ${value}`;
         writeFixture(
           inner,
           '_agent_x/skills/x/SKILL.md',
-          `---\nname:${value === '' ? '' : ` ${value}`}\nwhen_to_use: 9\n---\n`,
+          `---\nname:${nameValue}\nwhen_to_use: 9\n---\n`,
         );
         const report = runCheck(inner);
         assertSelf(hasCode(report, 'E-NAME-NOT-STRING'),
@@ -3087,6 +3095,20 @@ function selfTest(out) {
     }
     const finding = runCheck(root).findings.find((f) => f.code === 'E-NAME-INVALID');
     assertSelf(finding.message.length < 400, 'and the value must be truncated');
+  });
+
+  // #4445: trailing-blank trims and the block header keep their results in linear time.
+  run('4445', () => {
+    const indent = (value) => blockScalarHeader(value)?.blockIndent;
+    assertSelf(indent('|') === null && indent('|-') === null, 'no indicator is null');
+    assertSelf(indent('|2-') === 2 && indent('>+3 # c') === 3, 'indicator around the sign');
+    assertSelf(indent('|12') === 12 && blockScalarHeader('|0') === null, 'digits and zero');
+    assertSelf(blockScalarHeader(`|${'1'.repeat(100_000)}x`) === null, 'long digits, no header');
+    assertSelf(parseKeyValueLine('name \t: v').key === 'name', 'key loses trailing blanks');
+    const key = `a${' \t'.repeat(50_000)}x`;
+    assertSelf(parseKeyValueLine(`${key}: v`).key === key, 'long blanks inside the key stay');
+    assertSelf(resolveScalar('abc \t').value === 'abc', 'plain scalar loses trailing blanks');
+    assertSelf(resolveScalar(key).value === key, 'long blanks inside a plain scalar stay');
   });
 
   // Acceptance criterion 12: every code in Section 6.8 must be emitted by at least one
