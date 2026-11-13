@@ -16,7 +16,7 @@ async fn probe_commit_announce_emits_the_committed_state_once() {
     })
     .await;
     let frames = drain_frames(&mut frames_rx);
-    assert_eq!(frames.len(), 2);
+    assert_eq!(frames.len(), 1);
     assert_eq!(frames[0]["event"], "agent_install_state_changed");
     assert_eq!(frames[0]["payload"]["install"]["seq"], 1);
     assert!(matches!(
