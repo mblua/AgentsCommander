@@ -374,53 +374,14 @@ impl ContainerTransportBackend {
                 break;
             }
 
-            let epoch = self.cleanup_attempt_epoch.fetch_add(1, Ordering::Relaxed);
-            let mut scheduled = 0_usize;
-            if runtime_has_retained {
-                if let Some(runtime) = self.runtime.clone() {
-                    if self.shutdown_work.spawn_global_sweep_owned_with_control(
-                        None,
-                        "runtime-retained-cleanup",
-                        control.clone(),
-                        deadline,
-                        move |control| runtime.retry_retained_cleanups(control),
-                    ) {
-                        scheduled += 1;
-                    }
-                }
-            }
-            for entry in entries {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                let ownership = Arc::clone(&self.cleanup_ownership);
-                let session_id = entry.session_id;
-                let reason = entry.reason;
-                if !self.shutdown_work.spawn_global_sweep_owned_with_control(
-                    Some(session_id),
-                    reason,
-                    control.clone(),
-                    deadline,
-                    move |control| ownership.attempt(entry, epoch, control),
-                ) {
-                    break;
-                }
-                scheduled += 1;
-            }
+            let scheduled =
+                self.schedule_global_sweep_epoch(entries, runtime_has_retained, control, deadline);
 
             work_report = self.shutdown_work.seal_and_drain_until(deadline);
             if !work_report.terminal || Instant::now() >= deadline {
                 break;
             }
-            let cleanup_remaining = !self
-                .cleanup_ownership
-                .is_empty_until(deadline)
-                .unwrap_or(false);
-            let runtime_remaining = self
-                .runtime
-                .as_ref()
-                .is_some_and(|runtime| !runtime.retained_cleanup_contexts().is_empty());
-            if !cleanup_remaining && !runtime_remaining {
+            if !self.global_sweep_work_remaining(deadline) {
                 break;
             }
             if scheduled == 0 {
@@ -436,5 +397,60 @@ impl ContainerTransportBackend {
             std::thread::sleep(CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF.min(remaining));
         }
         work_report
+    }
+
+    fn schedule_global_sweep_epoch(
+        &self,
+        entries: Vec<Arc<super::retained_cleanup::RetainedContainerCleanup>>,
+        runtime_has_retained: bool,
+        control: &ContainerRuntimeControl,
+        deadline: Instant,
+    ) -> usize {
+        let epoch = self.cleanup_attempt_epoch.fetch_add(1, Ordering::Relaxed);
+        let mut scheduled = 0_usize;
+        if runtime_has_retained {
+            if let Some(runtime) = self.runtime.clone() {
+                if self.shutdown_work.spawn_global_sweep_owned_with_control(
+                    None,
+                    "runtime-retained-cleanup",
+                    control.clone(),
+                    deadline,
+                    move |control| runtime.retry_retained_cleanups(control),
+                ) {
+                    scheduled += 1;
+                }
+            }
+        }
+        for entry in entries {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let ownership = Arc::clone(&self.cleanup_ownership);
+            let session_id = entry.session_id;
+            let reason = entry.reason;
+            if !self.shutdown_work.spawn_global_sweep_owned_with_control(
+                Some(session_id),
+                reason,
+                control.clone(),
+                deadline,
+                move |control| ownership.attempt(entry, epoch, control),
+            ) {
+                break;
+            }
+            scheduled += 1;
+        }
+        scheduled
+    }
+
+    fn global_sweep_work_remaining(&self, deadline: Instant) -> bool {
+        let cleanup_remaining = !self
+            .cleanup_ownership
+            .is_empty_until(deadline)
+            .unwrap_or(false);
+        let runtime_remaining = self
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.retained_cleanup_contexts().is_empty());
+        cleanup_remaining || runtime_remaining
     }
 }
