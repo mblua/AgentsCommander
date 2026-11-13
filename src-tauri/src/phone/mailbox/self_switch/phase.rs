@@ -94,7 +94,7 @@ pub(crate) async fn begin_switch(
     flavor: &SelfHandoffFlavor,
     target_agent: &str,
     target_profile: &str,
-) -> Result<impl Send, String> {
+) -> Result<impl Send + use<>, String> {
     log::info!(
         "[mailbox] {}: session {} idle >={}s; {} with coding agent '{}' profile \
                         '{}' (phase 1)",
@@ -131,7 +131,13 @@ pub(super) async fn restart_with_alias<Persist, PersistFut, Restart, RestartFut>
     current: &mut Option<Uuid>,
     persist: &mut Persist,
     restart: &mut Restart,
-) -> Result<(impl Send, Uuid), String>
+) -> Result<
+    (
+        impl Send + use<Persist, PersistFut, Restart, RestartFut>,
+        Uuid,
+    ),
+    String,
+>
 where
     Persist: FnMut(PathBuf, String, String) -> PersistFut,
     PersistFut: std::future::Future<Output = Result<(), String>>,
