@@ -212,7 +212,7 @@ pub(crate) unsafe fn replace_settings_file_windows_once(
     destination: &[u16],
 ) -> io::Result<()> {
     #[link(name = "kernel32")]
-    // SAFETY: MoveFileExW matches the Windows fileapi.h signature: two LPCWSTR
+    // SAFETY: MoveFileExW matches the Windows winbase.h signature: two LPCWSTR
     // inputs, DWORD flags and BOOL result, using the Windows system calling convention.
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;

@@ -45,7 +45,7 @@ pub(crate) fn replace_local_config_once(
     tmp_wide: &[u16],
 ) -> Result<(), std::io::Error> {
     use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
-    // SAFETY: config/local_config_io/publish.rs:175 and
+    // SAFETY: config/local_config_io/publish.rs:175,231 and
     // config/root_agent/file_io.rs:255 append NUL to both caller buffers.
     // The borrowed slices stay live during ReplaceFileW; optional arguments are null.
     let ok = unsafe {
