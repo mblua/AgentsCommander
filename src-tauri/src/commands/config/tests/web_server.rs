@@ -932,3 +932,20 @@ async fn web_server_owned_status_wildcard_uses_probe_in_all_owned_phases() {
     drop(retained);
     stop.wait().await.expect("wildcard generation drains");
 }
+
+#[test]
+fn mint_api_client_response_debug_redacts_token() {
+    let response = super::super::web_server::MintApiClientResponse {
+        client_id: "client-4637".to_string(),
+        token: "mint-secret-4637".to_string(),
+        bound_fqn: "project:room/agent".to_string(),
+        bound_root: "/root".to_string(),
+        scopes: vec!["read".to_string()],
+        expires_at: None,
+        note: "note".to_string(),
+    };
+    let out = format!("{response:?}");
+    assert!(!out.contains("mint-secret-4637"));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("client-4637"));
+}
