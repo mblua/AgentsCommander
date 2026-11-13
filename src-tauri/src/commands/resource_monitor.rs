@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::config::settings::SettingsState;
+use crate::resource_monitor::registry::termination::CleanupFailure;
 use crate::resource_monitor::types::{
     ResourceGroupState, ResourceKillReason, ResourceKillRequest, ResourceKillResult,
     ResourceLimits, ResourceSnapshot,
@@ -129,14 +130,19 @@ async fn execute_resource_kill_transaction_inner<R: tauri::Runtime>(
     log::info!("[resource-monitor] job-fire session={session_id} job_present={job_fired}");
 
     // Verify + account, settling past a concurrent kill's transient `Terminating`.
-    let mut result = verify_kill_settled(
+    let mut result = match verify_kill_settled_diagnostic(
         Arc::clone(&monitor),
         session_id,
         reason,
         SETTLE_BUDGET,
         SETTLE_POLL,
     )
-    .await?;
+    .await
+    {
+        Ok(result) => result,
+        Err(CleanupFailure::EvidenceVeto { result, .. }) => return Ok(*result),
+        Err(CleanupFailure::Ordinary(error)) => return Err(error),
+    };
 
     if should_finalize_kill(result.state) {
         // Verified dead: full PTY cleanup (drops the job handle = KILL_ON_JOB_CLOSE
@@ -234,6 +240,7 @@ const SETTLE_POLL: Duration = Duration::from_millis(75);
 /// re-runs the reaper (now seeing the job-killed tree as `AlreadyGone` -> `Terminated`).
 /// So a single Force-kill click reliably reaches a verified outcome instead of bailing
 /// on the transient `Terminating` and silently leaving a dead tree with a Running tile.
+#[cfg(test)]
 async fn verify_kill_settled(
     monitor: Arc<ResourceMonitorState>,
     session_id: Uuid,
@@ -241,12 +248,29 @@ async fn verify_kill_settled(
     budget: Duration,
     poll: Duration,
 ) -> Result<ResourceKillResult, String> {
+    verify_kill_settled_diagnostic(monitor, session_id, reason, budget, poll)
+        .await
+        .map_err(|error| match error {
+            CleanupFailure::Ordinary(error) => error,
+            CleanupFailure::EvidenceVeto { result, .. } => result.message,
+        })
+}
+
+async fn verify_kill_settled_diagnostic(
+    monitor: Arc<ResourceMonitorState>,
+    session_id: Uuid,
+    reason: ResourceKillReason,
+    budget: Duration,
+    poll: Duration,
+) -> Result<ResourceKillResult, CleanupFailure> {
     let deadline = Instant::now() + budget;
     loop {
         let monitor_c = Arc::clone(&monitor);
-        let result = tokio::task::spawn_blocking(move || monitor_c.kill_group(session_id, reason))
-            .await
-            .map_err(|e| e.to_string())??;
+        let result = tokio::task::spawn_blocking(move || {
+            monitor_c.kill_group_diagnostic(session_id, reason)
+        })
+        .await
+        .map_err(|e| CleanupFailure::Ordinary(e.to_string()))??;
         if result.state != ResourceGroupState::Terminating || Instant::now() >= deadline {
             return Ok(result);
         }

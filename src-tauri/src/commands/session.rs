@@ -134,6 +134,8 @@ use destroy::detach_response_close_telegram;
 pub(crate) use destroy::execute_destroy_transaction;
 use destroy::execute_destroy_transaction_common;
 use destroy::execute_manual_coordinator_destroy;
+#[cfg(test)]
+pub(crate) use destroy::teardown_legacy_destroy_runtime;
 pub use destroy::CoordinatorCloseOutcome;
 pub(crate) use destroy::DestroyOutcome;
 pub(crate) use destroy::DestroyRequest;
@@ -166,6 +168,8 @@ pub use restart::restart_session_inner_with_activation;
 pub(crate) use restart::restart_session_inner_with_intent;
 #[cfg(test)]
 use restart::restart_skip_auto_resume_with_intent;
+#[cfg(test)]
+pub(crate) use restart::teardown_old_for_restart;
 pub(crate) use restart::LifecycleEntryOutcome;
 #[cfg(test)]
 pub(crate) use restart::MatchedSelection;

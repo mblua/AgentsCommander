@@ -7,6 +7,7 @@ use crate::commands::session::DestructionSource;
 use crate::config::settings::SettingsState;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
+use crate::resource_monitor::registry::termination::CleanupFailure;
 use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::SessionManager;
@@ -109,22 +110,25 @@ pub(crate) fn log_discard_veto<R: tauri::Runtime>(
 pub(crate) async fn response_group_effect(
     owner: &Arc<ResponseEffectOwner>,
     monitor: &Arc<ResourceMonitorState>,
-) -> Option<()> {
+) -> Result<Option<()>, CleanupFailure> {
     let id = owner.registration().member.session_id;
     if !monitor.has_registered_group(id) {
-        return Some(());
+        return Ok(Some(()));
     }
-    owner.start_group(|| {
+    owner.backend().publish_stop_witness(id, "session-destroy");
+    let started = owner.start_group_diagnostic(|| {
         let monitor = monitor.clone();
-        owner.backend().publish_stop_witness(id, "session-destroy");
         tokio::task::spawn_blocking(move || {
-            monitor.kill_group(
+            monitor.kill_group_diagnostic(
                 id,
                 crate::resource_monitor::ResourceKillReason::SessionDestroy,
             )
         })
-    })?;
-    std::future::poll_fn(|cx| owner.poll_group(cx, id)).await
+    });
+    if started.is_none() {
+        return Ok(None);
+    }
+    std::future::poll_fn(|cx| owner.poll_group_diagnostic(cx, id)).await
 }
 
 pub(crate) async fn execute_response_close_transaction<R: tauri::Runtime>(
@@ -375,8 +379,14 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
         .state::<Arc<ResourceMonitorState>>()
         .inner()
         .clone();
-    if response_group_effect(&owner, &monitor).await.is_none() {
-        return Ok(ResponseCloseDisposition::ReconcilePending);
+    match response_group_effect(&owner, &monitor).await {
+        Ok(Some(())) => {}
+        Err(CleanupFailure::EvidenceVeto { operation_id, .. }) => {
+            return Ok(
+                settle_evidence_veto(transaction.app(), &manager, &owner, operation_id).await,
+            );
+        }
+        _ => return Ok(ResponseCloseDisposition::ReconcilePending),
     }
     let Some(kill) = owner.start("kill") else {
         return Ok(ResponseCloseDisposition::ReconcilePending);
@@ -408,6 +418,30 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
     Ok(settle_response_close(transaction.app(), &manager, &owner)
         .await
         .unwrap_or(ResponseCloseDisposition::ReconcilePending))
+}
+
+async fn settle_evidence_veto<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    manager: &SessionManager,
+    owner: &Arc<ResponseEffectOwner>,
+    operation_id: Uuid,
+) -> ResponseCloseDisposition {
+    let Some(kill) = owner.start("kill") else {
+        return ResponseCloseDisposition::ReconcilePending;
+    };
+    if owner
+        .complete(
+            kill,
+            Err(format!("not_called:evidence_veto/{operation_id}")),
+        )
+        .is_none()
+        || owner.seal().is_none()
+    {
+        return ResponseCloseDisposition::ReconcilePending;
+    }
+    settle_response_close(app, manager, owner)
+        .await
+        .unwrap_or(ResponseCloseDisposition::ReconcilePending)
 }
 
 pub(crate) async fn detach_response_close_telegram<R: tauri::Runtime>(

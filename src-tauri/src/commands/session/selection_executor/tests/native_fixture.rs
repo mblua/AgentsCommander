@@ -552,6 +552,17 @@ impl NativeFixture {
         Self::build(true).await
     }
     pub(crate) async fn build(archived: bool) -> Self {
+        Self::build_with_monitor(
+            archived,
+            Arc::new(crate::resource_monitor::ResourceMonitorState::new()),
+        )
+        .await
+    }
+
+    pub(crate) async fn build_with_monitor(
+        archived: bool,
+        monitor: Arc<crate::resource_monitor::ResourceMonitorState>,
+    ) -> Self {
         assert_native_fixture_environment();
         let cwd = tempfile::tempdir().unwrap();
         let owners = crate::app_state::AppOwners::new();
@@ -601,9 +612,7 @@ impl NativeFixture {
             .manage(pty.clone())
             .manage(coordinator.clone())
             .manage(settings)
-            .manage(Arc::new(
-                crate::resource_monitor::ResourceMonitorState::new(),
-            ))
+            .manage(monitor)
             .manage(crate::DetachedSessionsState::default())
             .manage(telegram)
             .manage(captures)

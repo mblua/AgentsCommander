@@ -1,3 +1,8 @@
+use crate::cleanup_diagnostics::{operation::Operation, schema};
+use crate::resource_monitor::registry::{
+    termination::DiagnosticTerminationError, validate_diagnostic_row,
+};
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
@@ -15,9 +20,9 @@ use windows_sys::Win32::System::ProcessStatus::{
     K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess,
-    WaitForSingleObject, PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-    PROCESS_VM_READ,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess,
+    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
 };
 
 pub struct PlatformProcessTreeBackend;
@@ -65,55 +70,47 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         &self,
         process: &ObservedProcess,
     ) -> Result<TerminateOutcome, ResourceError> {
-        let Some(current) = observe_identity(process.identity.pid)? else {
-            return Ok(TerminateOutcome::AlreadyGone);
-        };
-        if current != process.identity {
-            return Ok(TerminateOutcome::AlreadyGone);
+        match terminate_with_calls(process, None, &NativeTerminationCalls) {
+            Ok(outcome) => Ok(outcome),
+            Err(DiagnosticTerminationError::Ordinary(error)) => Err(error),
+            Err(DiagnosticTerminationError::Evidence(error)) => {
+                Err(ResourceError::Message(error.to_string()))
+            }
         }
+    }
 
-        let handle = match open_process(
-            process.identity.pid,
-            PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
-        ) {
-            Ok(handle) => handle,
-            Err(err) => return verify_identity_exited(process.identity, err.to_string()),
-        };
-        let ok = unsafe { TerminateProcess(handle.raw(), 1) };
-        if ok == 0 {
-            let failure = last_error("TerminateProcess failed").to_string();
-            // #1438 - ERROR_ACCESS_DENIED here is usually STATUS_PROCESS_IS_TERMINATING:
-            // the process is already tearing itself down. Give it the same grace the
-            // success path gets so verification sees the settled state. The wait result
-            // is deliberately ignored: a target that is still alive after it produces
-            // the same Err, carrying the original message, so blocked_by_security still
-            // fires on a genuine denial.
-            let _ = unsafe { WaitForSingleObject(handle.raw(), 2_000) };
-            return verify_identity_exited(process.identity, failure);
+    #[allow(private_interfaces)]
+    fn observe_diagnostic_identity(&self, pid: u32) -> schema::CurrentIdentity {
+        match query_identity(pid) {
+            Ok(Some((handle, _))) => {
+                let mut code = 0;
+                if unsafe { GetExitCodeProcess(handle.raw(), &mut code) } == 0 {
+                    return unreadable(&last_error("GetExitCodeProcess failed"));
+                }
+                if code != STILL_ACTIVE as u32 {
+                    return schema::CurrentIdentity {
+                        status: schema::IdentityStatus::Gone,
+                        ..schema::CurrentIdentity::unknown()
+                    };
+                }
+                current_handle(&handle, pid)
+            }
+            Ok(None) => schema::CurrentIdentity {
+                status: schema::IdentityStatus::Gone,
+                ..schema::CurrentIdentity::unknown()
+            },
+            Err(error) => unreadable(&error),
         }
-        let wait_result = unsafe { WaitForSingleObject(handle.raw(), 2_000) };
-        let failure = match wait_result {
-            WAIT_OBJECT_0 => None,
-            WAIT_TIMEOUT => Some(format!(
-                "timed out waiting for pid {} to exit",
-                process.identity.pid
-            )),
-            WAIT_FAILED => Some(last_error("WaitForSingleObject failed").to_string()),
-            other => Some(format!(
-                "unexpected WaitForSingleObject result {other} for pid {}",
-                process.identity.pid
-            )),
-        };
-        if let Some(failure) = failure {
-            return verify_identity_exited(process.identity, failure);
-        }
-        verify_identity_exited(
-            process.identity,
-            format!(
-                "pid {} is still alive after termination",
-                process.identity.pid
-            ),
-        )
+    }
+
+    #[allow(private_interfaces)]
+    fn terminate_verified_diagnostic(
+        &self,
+        process: &ObservedProcess,
+        row: &schema::SelectionRow,
+        operation: &Operation,
+    ) -> Result<TerminateOutcome, DiagnosticTerminationError> {
+        terminate_with_calls(process, Some((row, operation)), &NativeTerminationCalls)
     }
 
     fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
@@ -312,14 +309,25 @@ fn query_identity(pid: u32) -> Result<Option<(OwnedHandle, ProcessIdentity)>, Re
             return if pid_exists(pid)? { Err(err) } else { Ok(None) };
         }
     };
-    let mut creation = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
+    let identity = match handle_identity(&handle, pid) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return if pid_exists(pid)? {
+                Err(error)
+            } else {
+                Ok(None)
+            }
+        }
     };
+    Ok(Some((handle, identity)))
+}
+
+fn handle_identity(handle: &OwnedHandle, pid: u32) -> Result<ProcessIdentity, ResourceError> {
+    let mut creation: FILETIME = unsafe { std::mem::zeroed() };
     let mut exit = creation;
     let mut kernel = creation;
     let mut user = creation;
-    let ok = unsafe {
+    if unsafe {
         GetProcessTimes(
             handle.raw(),
             &mut creation,
@@ -327,18 +335,46 @@ fn query_identity(pid: u32) -> Result<Option<(OwnedHandle, ProcessIdentity)>, Re
             &mut kernel,
             &mut user,
         )
-    };
-    if ok == 0 {
-        let err = last_error("GetProcessTimes failed");
-        return if pid_exists(pid)? { Err(err) } else { Ok(None) };
+    } == 0
+    {
+        return Err(last_error("GetProcessTimes failed"));
     }
-    Ok(Some((
-        handle,
-        ProcessIdentity {
+    Ok(ProcessIdentity {
+        pid,
+        creation_time_100ns: filetime_to_u64(creation),
+    })
+}
+
+fn unreadable(error: &ResourceError) -> schema::CurrentIdentity {
+    schema::CurrentIdentity {
+        status: schema::IdentityStatus::Unreadable,
+        identity: None,
+        executable: None,
+        os_error: error
+            .to_string()
+            .rsplit_once("win32 error ")
+            .and_then(|(_, code)| code.parse().ok()),
+    }
+}
+
+fn current_handle(handle: &OwnedHandle, pid: u32) -> schema::CurrentIdentity {
+    let identity = match handle_identity(handle, pid) {
+        Ok(identity) => identity,
+        Err(error) => return unreadable(&error),
+    };
+    let mut name = vec![0_u16; 32_768];
+    let mut size = name.len() as u32;
+    let ok = unsafe { QueryFullProcessImageNameW(handle.raw(), 0, name.as_mut_ptr(), &mut size) };
+    let os_error = (ok == 0).then(|| unsafe { GetLastError() });
+    schema::CurrentIdentity {
+        status: schema::IdentityStatus::Same,
+        identity: Some(schema::ProcessIdentity {
             pid,
-            creation_time_100ns: filetime_to_u64(creation),
-        },
-    )))
+            start_time: identity.creation_time_100ns,
+        }),
+        executable: (ok != 0).then(|| String::from_utf16_lossy(&name[..size as usize])),
+        os_error,
+    }
 }
 
 /// #1438 - corpse-AWARE probe: `Ok(Some(identity))` means a LIVE process with that
@@ -409,14 +445,137 @@ fn pid_exists(pid: u32) -> Result<bool, ResourceError> {
     Ok(process_entries()?.contains_key(&pid))
 }
 
-fn verify_identity_exited(
-    identity: ProcessIdentity,
-    failure: String,
-) -> Result<TerminateOutcome, ResourceError> {
-    match observe_identity(identity.pid)? {
-        Some(current) if current == identity => Err(ResourceError::Message(failure)),
-        _ => Ok(TerminateOutcome::Terminated),
+// The handle port makes the final-handle ordering testable without touching host processes.
+trait TerminationCalls {
+    type Handle;
+    fn observe(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError>;
+    fn open(&self, pid: u32) -> Result<Self::Handle, ResourceError>;
+    fn current(&self, handle: &Self::Handle, pid: u32) -> schema::CurrentIdentity;
+    fn terminate(&self, handle: &Self::Handle) -> schema::RawApiResult;
+    fn wait(&self, handle: &Self::Handle, pid: u32) -> (schema::ExitObservation, Option<String>);
+}
+
+struct NativeTerminationCalls;
+
+impl TerminationCalls for NativeTerminationCalls {
+    type Handle = OwnedHandle;
+
+    fn observe(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> {
+        observe_identity(pid)
     }
+
+    fn open(&self, pid: u32) -> Result<OwnedHandle, ResourceError> {
+        open_process(
+            pid,
+            PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
+        )
+    }
+
+    fn current(&self, handle: &OwnedHandle, pid: u32) -> schema::CurrentIdentity {
+        current_handle(handle, pid)
+    }
+
+    fn terminate(&self, handle: &OwnedHandle) -> schema::RawApiResult {
+        let ok = unsafe { TerminateProcess(handle.raw(), 1) };
+        let os_error = (ok == 0).then(|| unsafe { GetLastError() });
+        schema::RawApiResult {
+            returned: Some(ok != 0),
+            os_error,
+            detail: os_error.map_or_else(
+                || "TerminateProcess returned nonzero".into(),
+                |code| format!("TerminateProcess failed: win32 error {code}"),
+            ),
+        }
+    }
+
+    fn wait(&self, handle: &OwnedHandle, pid: u32) -> (schema::ExitObservation, Option<String>) {
+        match unsafe { WaitForSingleObject(handle.raw(), 2_000) } {
+            WAIT_OBJECT_0 => (schema::ExitObservation::Exited { code: None }, None),
+            WAIT_TIMEOUT => (
+                schema::ExitObservation::Timeout,
+                Some(format!("timed out waiting for pid {pid} to exit")),
+            ),
+            WAIT_FAILED => {
+                let error = unsafe { GetLastError() };
+                (
+                    schema::ExitObservation::Error {
+                        os_error: Some(error),
+                    },
+                    Some(format!("WaitForSingleObject failed: win32 error {error}")),
+                )
+            }
+            other => (
+                schema::ExitObservation::Unknown,
+                Some(format!(
+                    "unexpected WaitForSingleObject result {other} for pid {pid}"
+                )),
+            ),
+        }
+    }
+}
+
+fn terminate_with_calls(
+    process: &ObservedProcess,
+    diagnostic: Option<(&schema::SelectionRow, &Operation)>,
+    calls: &impl TerminationCalls,
+) -> Result<TerminateOutcome, DiagnosticTerminationError> {
+    if let Some((row, _)) = diagnostic {
+        validate_diagnostic_row(process, row)?;
+    }
+    let current = calls
+        .observe(process.identity.pid)
+        .map_err(DiagnosticTerminationError::Ordinary)?;
+    if current != Some(process.identity) {
+        return Ok(TerminateOutcome::AlreadyGone);
+    }
+    let verify = |failure: String| match calls.observe(process.identity.pid)? {
+        Some(current) if current == process.identity => Err(ResourceError::Message(failure)),
+        _ => Ok(TerminateOutcome::Terminated),
+    };
+    let handle = match calls.open(process.identity.pid) {
+        Ok(handle) => handle,
+        Err(error) => {
+            return verify(error.to_string()).map_err(DiagnosticTerminationError::Ordinary)
+        }
+    };
+    let ticket = if let Some((row, operation)) = diagnostic {
+        let mut final_handle = calls.current(&handle, process.identity.pid);
+        if let Some(identity) = final_handle.identity {
+            final_handle.status = if identity == row.expected {
+                schema::IdentityStatus::Same
+            } else {
+                schema::IdentityStatus::Reused
+            };
+        }
+        let precheck = schema::CurrentIdentity {
+            identity: Some(row.expected),
+            status: schema::IdentityStatus::Same,
+            executable: None,
+            os_error: None,
+        };
+        Some(operation.prepare(row, precheck, final_handle)?)
+    } else {
+        None
+    };
+    let raw = calls.terminate(&handle);
+    if let (Some((_, operation)), Some(ticket)) = (diagnostic, ticket.as_ref()) {
+        operation.returned(ticket, raw.clone())?;
+    }
+    let (exit, wait_failure) = calls.wait(&handle, process.identity.pid);
+    if let (Some((_, operation)), Some(ticket)) = (diagnostic, ticket.as_ref()) {
+        operation.observed(ticket, exit)?;
+    }
+    let failure = if raw.returned == Some(false) {
+        raw.detail
+    } else {
+        wait_failure.unwrap_or_else(|| {
+            format!(
+                "pid {} is still alive after termination",
+                process.identity.pid
+            )
+        })
+    };
+    verify(failure).map_err(DiagnosticTerminationError::Ordinary)
 }
 
 fn filetime_to_u64(value: FILETIME) -> u64 {
