@@ -1,3 +1,6 @@
+//! `ShutdownSignal`, the app-wide cancel signal for background tasks, and
+//! `run_time_boxed`, which bounds blocking cleanup during shutdown.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;

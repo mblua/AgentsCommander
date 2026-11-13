@@ -9,7 +9,7 @@ const NewWorkgroupModal: Component<{
   onClose: () => void;
 }> = (props) => {
   const initiallyUnique = props.teams.length === 1;
-  const initialTeam = initiallyUnique ? props.teams[0].name : "";
+  const initialTeam = initiallyUnique ? (props.teams[0]?.name ?? "") : "";
   const [selectedTeam, setSelectedTeam] = createSignal(initialTeam);
   const [taskTitle, setTaskTitle] = createSignal("");
   const [teamSearch, setTeamSearch] = createSignal(initialTeam);

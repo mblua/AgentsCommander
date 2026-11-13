@@ -18,7 +18,7 @@ pub(crate) const SESSION_READ_RETRY_DELAY_MS: u64 = 25;
 pub(crate) const CLI_MAX_AVAILABLE_TARGETS: usize = 8;
 pub(crate) const CLI_MAX_TARGET_TEXT_CHARS: usize = 80;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiAutomationSession {
     pub pid: u32,
@@ -30,7 +30,30 @@ pub struct UiAutomationSession {
     pub started_at_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for UiAutomationSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            pid,
+            token: _,
+            exe_path,
+            config_dir,
+            window_labels,
+            ready_window_labels,
+            started_at_unix_ms,
+        } = self;
+        f.debug_struct("UiAutomationSession")
+            .field("pid", pid)
+            .field("token", &"[REDACTED]")
+            .field("exe_path", exe_path)
+            .field("config_dir", config_dir)
+            .field("window_labels", window_labels)
+            .field("ready_window_labels", ready_window_labels)
+            .field("started_at_unix_ms", started_at_unix_ms)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiAutomationRequest {
     pub request_id: String,
@@ -42,6 +65,29 @@ pub struct UiAutomationRequest {
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_unix_ms: Option<i64>,
+}
+
+impl std::fmt::Debug for UiAutomationRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            request_id,
+            token: _,
+            window,
+            action,
+            selector,
+            value,
+            expires_at_unix_ms,
+        } = self;
+        f.debug_struct("UiAutomationRequest")
+            .field("request_id", request_id)
+            .field("token", &"[REDACTED]")
+            .field("window", window)
+            .field("action", action)
+            .field("selector", selector)
+            .field("value", value)
+            .field("expires_at_unix_ms", expires_at_unix_ms)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

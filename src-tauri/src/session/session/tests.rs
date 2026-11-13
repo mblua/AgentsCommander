@@ -381,3 +381,26 @@ fn is_working_ignores_pending_review() {
         assert!(!is_working(&idle));
     }
 }
+
+#[test]
+fn session_debug_redacts_token() {
+    let mut s = sample_session(None);
+    s.token = Uuid::new_v4();
+    let out = format!("{s:?}");
+    assert!(!out.contains(&s.token.to_string()));
+    assert!(!out.contains(&s.token.simple().to_string()));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("Session 1"));
+}
+
+#[test]
+fn session_info_debug_redacts_token() {
+    let mut s = sample_session(None);
+    s.token = Uuid::new_v4();
+    let info = SessionInfo::from(&s);
+    let out = format!("{info:?}");
+    assert!(!out.contains(&s.token.to_string()));
+    assert!(!out.contains(&s.token.simple().to_string()));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("Session 1"));
+}

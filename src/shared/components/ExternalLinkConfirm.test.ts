@@ -180,3 +180,98 @@ describe("ExternalLinkConfirm", () => {
     dispose();
   });
 });
+
+describe("ExternalLinkConfirm keyboard trap", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  function pressKey(key: string, shiftKey = false): KeyboardEvent {
+    const event = new KeyboardEvent("keydown", {
+      key,
+      shiftKey,
+      bubbles: true,
+      cancelable: true,
+    });
+    (document.activeElement ?? document).dispatchEvent(event);
+    return event;
+  }
+
+  it("closes the modal on Escape", async () => {
+    const dispose = await openModal();
+    await flushPromises();
+
+    const event = pressKey("Escape");
+
+    expect(document.querySelector('[role="alertdialog"]')).toBe(null);
+    expect(event.defaultPrevented).toBe(true);
+    dispose();
+  });
+
+  it("wraps Tab from Open anyway to Copy URL", async () => {
+    const dispose = await openModal();
+    await flushPromises();
+    buttonByText("Open anyway").focus();
+
+    const event = pressKey("Tab");
+
+    expect(document.activeElement).toBe(copyButton());
+    expect(event.defaultPrevented).toBe(true);
+    dispose();
+  });
+
+  it("wraps Shift+Tab from Copy URL to Open anyway", async () => {
+    const dispose = await openModal();
+    await flushPromises();
+    copyButton().focus();
+
+    const event = pressKey("Tab", true);
+
+    expect(document.activeElement).toBe(buttonByText("Open anyway"));
+    expect(event.defaultPrevented).toBe(true);
+    dispose();
+  });
+
+  it("leaves Tab on the middle button to the browser", async () => {
+    const dispose = await openModal();
+    await flushPromises();
+    const cancel = buttonByText("Cancel");
+    expect(document.activeElement).toBe(cancel);
+
+    const event = pressKey("Tab");
+
+    expect(document.activeElement).toBe(cancel);
+    expect(event.defaultPrevented).toBe(false);
+    dispose();
+  });
+
+  it("moves focus into the dialog when focus is outside it", async () => {
+    const dispose = await openModal();
+    await flushPromises();
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+
+    const forward = pressKey("Tab");
+
+    expect(document.activeElement).toBe(copyButton());
+    expect(forward.defaultPrevented).toBe(true);
+
+    (document.activeElement as HTMLElement).blur();
+    const backward = pressKey("Tab", true);
+
+    expect(document.activeElement).toBe(buttonByText("Open anyway"));
+    expect(backward.defaultPrevented).toBe(true);
+    dispose();
+  });
+
+  it("ignores Tab when no modal is open", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => ExternalLinkConfirm({}), root);
+
+    const event = pressKey("Tab");
+
+    expect(event.defaultPrevented).toBe(false);
+    dispose();
+  });
+});
