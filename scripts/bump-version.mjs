@@ -84,25 +84,22 @@ const PATCHES = [
   {
     file: 'package-lock.json',
     label: 'packages[""].version',
-    re: new RegExp(
-      String.raw`(\r?\n\s*"":\s*\{[^\S\n]*\n\s*"name":\s*"agentscommander",`
-        + String.raw`[^\S\n]*\n\s*"version":\s*)"[^"]+"`,
-    ),
+    re: /(\r?\n\s*"":\s*\{\s*\r?\n\s*"name":\s*"agentscommander",\s*\r?\n\s*"version":\s*)"[^"]+"/,
   },
   {
     file: 'src-tauri/Cargo.toml',
     label: '[package] version',
-    re: /(\r?\n\s*name\s*=\s*"agentscommander"\s*\nversion\s*=\s*)"[^"]+"/,
+    re: /(\r?\n\s*name\s*=\s*"agentscommander"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },
   {
     file: 'Cargo.lock',
     label: 'internal Cargo crate entry',
-    re: /(\r?\n\s*name\s*=\s*"agentscommander"\s*\nversion\s*=\s*)"[^"]+"/,
+    re: /(\r?\n\s*name\s*=\s*"agentscommander"\s*\r?\nversion\s*=\s*)"[^"]+"/,
   },
   {
     file: 'src-tauri/tauri.conf.json',
     label: 'version',
-    re: /(\r?\n\s*"productName":\s*"[^"]+",[^\S\n]*\n\s*"version":\s*)"[^"]+"/,
+    re: /(\r?\n\s*"productName":\s*"[^"]+",\s*\r?\n\s*"version":\s*)"[^"]+"/,
   },
 ];
 
@@ -117,7 +114,7 @@ function readCurrentVersion() {
   // dependency `"version"` literal that happens to appear above the project
   // version (e.g., if package.json keys are reordered or an `overrides`
   // block is added).
-  const m = /\r?\n\s*"name":\s*"agentscommander",[^\S\n]*\n\s*"version":\s*"([^"]+)"/.exec(txt);
+  const m = /\r?\n\s*"name":\s*"agentscommander",\s*\r?\n\s*"version":\s*"([^"]+)"/.exec(txt);
   if (!m) die('Cannot read current version from package.json '
     + '(anchor "name": "agentscommander" not found above "version")');
   return m[1];

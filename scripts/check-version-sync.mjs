@@ -54,25 +54,22 @@ const checks = [
   extract(
     'package-lock.json:packages[""].version',
     'package-lock.json',
-    new RegExp(
-      String.raw`(?:\r?\n)\s*"":\s*\{[^\S\n]*\n\s*"name":\s*"agentscommander",`
-        + String.raw`[^\S\n]*\n\s*"version":\s*"([^"]+)"`,
-    ),
+    /(?:\r?\n)\s*"":\s*\{\s*(?:\r?\n)\s*"name":\s*"agentscommander",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
   ),
   extract(
     'src-tauri/Cargo.toml:[package].version',
     'src-tauri/Cargo.toml',
-    /(?:\r?\n)\s*name\s*=\s*"agentscommander"\s*\nversion\s*=\s*"([^"]+)"/,
+    /(?:\r?\n)\s*name\s*=\s*"agentscommander"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
   ),
   extract(
     'Cargo.lock:internal-crate.version',
     'Cargo.lock',
-    /(?:\r?\n)\s*name\s*=\s*"agentscommander"\s*\nversion\s*=\s*"([^"]+)"/,
+    /(?:\r?\n)\s*name\s*=\s*"agentscommander"\s*(?:\r?\n)version\s*=\s*"([^"]+)"/,
   ),
   extract(
     'src-tauri/tauri.conf.json:version',
     'src-tauri/tauri.conf.json',
-    /(?:\r?\n)\s*"productName":\s*"[^"]+",[^\S\n]*\n\s*"version":\s*"([^"]+)"/,
+    /(?:\r?\n)\s*"productName":\s*"[^"]+",\s*(?:\r?\n)\s*"version":\s*"([^"]+)"/,
   ),
 ];
 
