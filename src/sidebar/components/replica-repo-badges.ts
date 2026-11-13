@@ -5,6 +5,7 @@ import type {
   RepoDirtyByPath,
   SessionRepo,
 } from "../../shared/types";
+import { trimTrailingSlashes } from "../../shared/path-extractors";
 import type { RemoteActivityEntry } from "../stores/remote-activity";
 
 export function stripRepoPrefix(name: string): string {
@@ -12,7 +13,7 @@ export function stripRepoPrefix(name: string): string {
 }
 
 export function repoLabelFromPath(path: string): string {
-  const normalized = path.replaceAll("\\", "/").replace(/\/+$/, "");
+  const normalized = trimTrailingSlashes(path.replaceAll("\\", "/"));
   const dirName = normalized.split("/").pop() ?? "";
   return stripRepoPrefix(dirName);
 }
@@ -80,6 +81,14 @@ export function configuredReplicaRepoBadges(
     .filter((repo) => repo.label.length > 0);
 }
 
+function trimDashes(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text[start] === "-") start++;
+  while (end > start && text[end - 1] === "-") end--;
+  return text.slice(start, end);
+}
+
 export function automationIdPart(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+  return trimDashes(value.replace(/[^a-zA-Z0-9._-]+/g, "-")) || "unknown";
 }

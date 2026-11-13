@@ -1,3 +1,5 @@
+import { trimTrailingSlashes } from "../../shared/path-extractors";
+
 // #1077 §3.4/§5.2: casing is OS-shape aware. Windows-shaped input (drive-rooted,
 // UNC, or verbatim/device `\\?\`/`\\.\` prefixed) is case-folded because its
 // filesystem is case-insensitive and its aliases must collapse. Everything else
@@ -18,7 +20,7 @@ export function normalizeProjectPathForCompare(path: string): string {
   if (!isWindowsShaped(path)) {
     // POSIX-shaped: preserve case and literal backslashes; trim only redundant
     // trailing `/` while keeping the bare root `/`.
-    const trimmed = path.replace(/\/+$/, "");
+    const trimmed = trimTrailingSlashes(path);
     if (trimmed === "" && path.startsWith("/")) return "/";
     return trimmed;
   }
@@ -31,7 +33,7 @@ export function normalizeProjectPathForCompare(path: string): string {
     // \\?\C:\… → C:\…
     normalized = normalized.slice("//?/".length);
   }
-  return normalized.replace(/\/+$/, "");
+  return trimTrailingSlashes(normalized);
 }
 
 export function findLoadedProjectPathForRefresh(

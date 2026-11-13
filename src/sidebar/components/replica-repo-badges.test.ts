@@ -379,3 +379,19 @@ describe("#2064 badge title remote-activity suffixes", () => {
     expect(cleanTitle(activity({ staleness: "stale", behindBy: null }))).toBe(REPO);
   });
 });
+
+describe("automationIdPart dash trim (#4456 S8786)", () => {
+  it.each([
+    ["", "unknown"],
+    ["-", "unknown"],
+    ["--a--", "a"],
+    ["a-b", "a-b"],
+    [" a b ", "a-b"],
+  ])("trims edge dashes of %j", (input, expected) => {
+    expect(automationIdPart(input)).toBe(expected);
+  });
+
+  it("handles a long run of dashes not at the end", () => {
+    expect(automationIdPart(`${"-".repeat(100_000)}a`)).toBe("a");
+  });
+});

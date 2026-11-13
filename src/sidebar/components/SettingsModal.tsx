@@ -1,6 +1,7 @@
 import { Component, type JSX, createSignal, createEffect, createMemo, For, Index, Show, onMount, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { isTauri, isWindows } from "../../shared/platform";
+import { trimTrailingSlashes } from "../../shared/path-extractors";
 import type {
   AppSettings,
   AgentConfig,
@@ -1101,7 +1102,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     for (const project of projectStore.projects) {
       for (const workgroup of project.workgroups) {
         for (const replica of workgroup.agents) {
-          const normalized = replica.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
+          const normalized = trimTrailingSlashes(replica.path.replaceAll("\\", "/").toLowerCase());
           if (seen.has(normalized)) continue;
           seen.add(normalized);
           options.push({

@@ -2,7 +2,7 @@ import { Component, createSignal, Show, For, onCleanup, type JSX } from "solid-j
 import { Portal } from "solid-js/web";
 import type { Session, TelegramBotConfig, RepoMatch } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, emitOpenSettings } from "../../shared/ipc";
-import { extractProjectName } from "../../shared/path-extractors";
+import { extractProjectName, trimTrailingSlashes } from "../../shared/path-extractors";
 import { isTauri } from "../../shared/platform";
 import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
@@ -91,12 +91,12 @@ export function sessionDisplayName(
     const pathProject = extractProjectName(wd);
     if (pathProject) {
       const projectFolder = originProject() || pathProject;
-      const normalized = wd.replaceAll("\\", "/").replace(/\/+$/, "");
+      const normalized = trimTrailingSlashes(wd.replaceAll("\\", "/"));
       const parts = normalized.split("/");
       const agentDir = parts[parts.length - 1].replace(/^__?agent_/, "");
       return `${agentDir}@${projectFolder}`;
     }
-    const normalized = wd.replaceAll("\\", "/").replace(/\/+$/, "");
+    const normalized = trimTrailingSlashes(wd.replaceAll("\\", "/"));
     const parts = normalized.split("/");
     if (parts.length >= 2) {
       return parts.slice(-2).join("/");
@@ -248,9 +248,11 @@ const SessionItem: Component<{
   };
 
   const repoForModal = (): RepoMatch => {
-    const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+    const np = trimTrailingSlashes(
+      props.session.workingDirectory.replaceAll("\\", "/").toLowerCase(),
+    );
     const repo = sessionsStore.repos.find((r) =>
-      r.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") === np
+      trimTrailingSlashes(r.path.replaceAll("\\", "/").toLowerCase()) === np
     );
     return repo ?? { name: props.session.name, path: props.session.workingDirectory, agents: [] };
   };
