@@ -413,6 +413,12 @@ async fn deliver_text(
     from: &str,
     logger: &mut BridgeLogger,
 ) {
+    if let Err(error) = crate::pty::inject::validate_pty_input_text(text) {
+        logger.log("PTY_REJECT", session_id_str, &error.to_string());
+        log::warn!("Telegram input rejected before PTY write: {error}");
+        return;
+    }
+
     if let Err(e) = runtime.inject_text(session_id, text).await {
         logger.log("PTY_ERR", session_id_str, &e.clone());
         log::error!("Failed to write Telegram input to PTY: {e}");
