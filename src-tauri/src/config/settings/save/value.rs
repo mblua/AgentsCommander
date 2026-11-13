@@ -318,59 +318,26 @@ pub(crate) fn prepare_registered_main_agent_groups(
         &settings.local_overlay_state,
         path,
     );
-    if profiles_in_sidecar
-        && !settings
-            .local_overlay_state
-            .owns_top_level("codingAgentProfiles")
-        && disk.is_none_or(|main| !main.contains_key("codingAgentProfiles"))
-        && prepared_profiles.is_some_and(|prepared| prepared.get("codingAgentProfiles").is_none())
-    {
-        // Ambiguous agents without a physical profile group do not grant
-        // authority to materialize the caller's repaired/default profile view.
-        out.remove("codingAgentProfiles");
-    }
-    if !profiles_in_sidecar {
-        if let Some(prepared) = prepared_profiles {
-            if let Some(profiles) = prepared.get("codingAgentProfiles") {
-                out.insert("codingAgentProfiles".into(), profiles.clone());
-            }
-            if !agents_groups.contains_key("agents") {
-                if let Some(rows) = prepared.get("agents") {
-                    out.insert("agents".into(), rows.clone());
-                }
-            }
-        }
-    }
+    apply_prepared_profile_groups(
+        &mut out,
+        settings,
+        disk,
+        agents_groups,
+        profiles_in_sidecar,
+        prepared_profiles,
+    );
 
     // Partial profile ownership can keep these groups in settings.json instead
     // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
     // complete overlay-owned groups stay outside this writer's authority.
     if let Some(disk) = disk {
-        let profiles_owned = settings
-            .local_overlay_state
-            .owned_paths()
-            .iter()
-            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
-        let mut retained = Value::Object(out);
-        if retained.get("agents").is_some() {
-            if let Some(prepared) = prepared_duplicate_agents {
-                retained["agents"] = prepared.clone();
-            }
-        }
-        retain_configuration_commands(
-            &mut retained,
-            &Value::Object(disk.clone()),
-            "id",
-            false,
-            !settings.local_overlay_state.owns_top_level("agents")
-                && !agents_groups.contains_key("agents")
-                && prepared_duplicate_agents.is_none(),
-            !profiles_owned && !agents_groups.contains_key("codingAgentProfiles"),
+        out = retain_disk_legacy_commands(
+            out,
+            settings,
+            disk,
+            agents_groups,
+            prepared_duplicate_agents,
         )?;
-        out = retained
-            .as_object()
-            .expect("retained settings object")
-            .clone();
     }
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
@@ -399,6 +366,73 @@ pub(crate) fn prepare_registered_main_agent_groups(
         path,
     );
     Ok(out)
+}
+
+fn apply_prepared_profile_groups(
+    out: &mut Map<String, Value>,
+    settings: &AppSettings,
+    disk: Option<&Map<String, Value>>,
+    agents_groups: &Map<String, Value>,
+    profiles_in_sidecar: bool,
+    prepared_profiles: Option<&Value>,
+) {
+    if profiles_in_sidecar
+        && !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles")
+        && disk.is_none_or(|main| !main.contains_key("codingAgentProfiles"))
+        && prepared_profiles.is_some_and(|prepared| prepared.get("codingAgentProfiles").is_none())
+    {
+        // Ambiguous agents without a physical profile group do not grant
+        // authority to materialize the caller's repaired/default profile view.
+        out.remove("codingAgentProfiles");
+    }
+    if !profiles_in_sidecar {
+        if let Some(prepared) = prepared_profiles {
+            if let Some(profiles) = prepared.get("codingAgentProfiles") {
+                out.insert("codingAgentProfiles".into(), profiles.clone());
+            }
+            if !agents_groups.contains_key("agents") {
+                if let Some(rows) = prepared.get("agents") {
+                    out.insert("agents".into(), rows.clone());
+                }
+            }
+        }
+    }
+}
+
+fn retain_disk_legacy_commands(
+    out: Map<String, Value>,
+    settings: &AppSettings,
+    disk: &Map<String, Value>,
+    agents_groups: &Map<String, Value>,
+    prepared_duplicate_agents: Option<&Value>,
+) -> Result<Map<String, Value>, String> {
+    let profiles_owned = settings
+        .local_overlay_state
+        .owned_paths()
+        .iter()
+        .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
+    let mut retained = Value::Object(out);
+    if retained.get("agents").is_some() {
+        if let Some(prepared) = prepared_duplicate_agents {
+            retained["agents"] = prepared.clone();
+        }
+    }
+    retain_configuration_commands(
+        &mut retained,
+        &Value::Object(disk.clone()),
+        "id",
+        false,
+        !settings.local_overlay_state.owns_top_level("agents")
+            && !agents_groups.contains_key("agents")
+            && prepared_duplicate_agents.is_none(),
+        !profiles_owned && !agents_groups.contains_key("codingAgentProfiles"),
+    )?;
+    Ok(retained
+        .as_object()
+        .expect("retained settings object")
+        .clone())
 }
 
 pub(crate) fn apply_registered_main_disk_fields(
