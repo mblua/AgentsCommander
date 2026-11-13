@@ -709,6 +709,9 @@ fn legacy_rendered_default_context_is_frozen() {
 
     // C1: the current-generation reconstruction, the `Current` arm's input.
     let c1 = legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
+    // The frozen bytes were taken on Windows, where the messaging path joins with `\`.
+    #[cfg(not(windows))]
+    let c1 = c1.replace("wg-7-dev-team/messaging", "wg-7-dev-team\\messaging");
     assert_eq!(
         c1.len(),
         8718,
@@ -725,6 +728,8 @@ fn legacy_rendered_default_context_is_frozen() {
     // C2: the pre-#1072 reconstruction, the candidate that actually carries
     // the `StaleGenerated` outcome.
     let c2 = pre_1072_legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
+    #[cfg(not(windows))]
+    let c2 = c2.replace("wg-7-dev-team/messaging", "wg-7-dev-team\\messaging");
     assert_eq!(
         c2.len(),
         9096,
