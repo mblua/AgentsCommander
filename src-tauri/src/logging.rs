@@ -350,6 +350,16 @@ fn rotate(state: &AppLogFile) {
 
     let numbered = |i: u32| parent.join(format!("{stem}.{i}"));
 
+    shift_numbered_logs(&numbered);
+
+    if !shift_active_log(base, &numbered) {
+        return;
+    }
+
+    open_rotated_log(state, &mut file_guard, base);
+}
+
+fn shift_numbered_logs(numbered: &impl Fn(u32) -> PathBuf) {
     // Walk descending from KEEP - 1 down to 1. Each rename atomically
     // replaces the destination, so the old `.<KEEP>` is dropped when the
     // first iteration renames `.<KEEP - 1>` over it (G-HIGH-1 fix).
@@ -376,7 +386,9 @@ fn rotate(state: &AppLogFile) {
         // KEEP == 0 is degenerate but harmless — `app.log` gets truncated
         // to a fresh file with no retained history.
     }
+}
 
+fn shift_active_log(base: &std::path::Path, numbered: &impl Fn(u32) -> PathBuf) -> bool {
     // Shift the active file into the `.1` slot.
     if APP_LOG_KEEP >= 1 {
         let one = numbered(1);
@@ -391,7 +403,7 @@ fn rotate(state: &AppLogFile) {
             }
             // Active file stays — next writes append to it; cap will be
             // breached temporarily.
-            return;
+            return false;
         }
     } else if let Err(e) = debug_logs::remove_app_log(base) {
         if !machine_output_enabled() {
@@ -401,10 +413,9 @@ fn rotate(state: &AppLogFile) {
                 e
             );
         }
-        return;
+        return false;
     }
-
-    open_rotated_log(state, &mut file_guard, base);
+    true
 }
 
 fn open_rotated_log(
