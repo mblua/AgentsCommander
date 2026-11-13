@@ -331,20 +331,7 @@ pub(crate) fn retain_duplicate_agent_rows(
             groups.entry(id).or_default().push(index);
         }
     }
-    // Existing unique/new-row saves need no typed duplicate preparation.
-    let mut candidate_counts = BTreeMap::new();
-    for row in rows.iter() {
-        if let Some(id) = row.get("id").and_then(Value::as_str) {
-            *candidate_counts.entry(id.to_owned()).or_insert(0usize) += 1;
-        }
-    }
-    for (id, indices) in &groups {
-        if indices.len() == 1 && candidate_counts.get(*id).copied().unwrap_or(0) > 1 {
-            return Err(format!(
-                "duplicate agent ID '{id}': unprovable row correspondence"
-            ));
-        }
-    }
+    reject_unprovable_singleton_rows(rows, &groups)?;
     if !groups.values().any(|indices| indices.len() > 1) {
         return Ok(());
     }
@@ -383,44 +370,78 @@ pub(crate) fn retain_duplicate_agent_rows(
             return Err(rejected());
         }
         for (candidate_index, (raw_index, expected)) in candidates.into_iter().zip(baseline) {
-            let candidate: AgentConfig =
-                serde_json::from_value(rows[candidate_index].clone()).map_err(|_| rejected())?;
-            if comparable_agent(&candidate)? != comparable_agent(expected)? {
-                return Err(rejected());
-            }
-            let original = raw[raw_index].as_object().ok_or_else(rejected)?;
-            let provided = rows[candidate_index].as_object().ok_or_else(rejected)?;
-            let mut retained = original.clone();
-            for (key, value) in provided {
-                if known_agent_field(key) {
-                    continue;
-                }
-                if original.get(key) != Some(value) {
-                    return Err(rejected());
-                }
-            }
-            // Rebuild recognized fields through the existing serializer, preserving
-            // unknown metadata from this exact whole raw row only.
-            retained.retain(|key, _| !known_agent_field(key));
-            retained.extend(
-                serde_json::to_value(&candidate)
-                    .map_err(|error| error.to_string())?
-                    .as_object()
-                    .ok_or_else(rejected)?
-                    .clone(),
-            );
-            retained.insert("baseCommand".to_owned(), Value::String(candidate.command));
-            match original.get("command") {
-                Some(value) => {
-                    retained.insert("command".to_owned(), value.clone());
-                }
-                None => {
-                    retained.remove("command");
-                }
-            }
-            rows[candidate_index] = Value::Object(retained);
+            retain_candidate_row(id, rows, raw, candidate_index, raw_index, expected)?;
         }
     }
+    Ok(())
+}
+
+fn reject_unprovable_singleton_rows(
+    rows: &[Value],
+    groups: &BTreeMap<&str, Vec<usize>>,
+) -> Result<(), String> {
+    // Existing unique/new-row saves need no typed duplicate preparation.
+    let mut candidate_counts = BTreeMap::new();
+    for row in rows.iter() {
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            *candidate_counts.entry(id.to_owned()).or_insert(0usize) += 1;
+        }
+    }
+    for (id, indices) in groups {
+        if indices.len() == 1 && candidate_counts.get(*id).copied().unwrap_or(0) > 1 {
+            return Err(format!(
+                "duplicate agent ID '{id}': unprovable row correspondence"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn retain_candidate_row(
+    id: &str,
+    rows: &mut [Value],
+    raw: &[Value],
+    candidate_index: usize,
+    raw_index: usize,
+    expected: &AgentConfig,
+) -> Result<(), String> {
+    let rejected = || format!("duplicate agent ID '{id}': unprovable row correspondence");
+    let candidate: AgentConfig =
+        serde_json::from_value(rows[candidate_index].clone()).map_err(|_| rejected())?;
+    if comparable_agent(&candidate)? != comparable_agent(expected)? {
+        return Err(rejected());
+    }
+    let original = raw[raw_index].as_object().ok_or_else(rejected)?;
+    let provided = rows[candidate_index].as_object().ok_or_else(rejected)?;
+    let mut retained = original.clone();
+    for (key, value) in provided {
+        if known_agent_field(key) {
+            continue;
+        }
+        if original.get(key) != Some(value) {
+            return Err(rejected());
+        }
+    }
+    // Rebuild recognized fields through the existing serializer, preserving
+    // unknown metadata from this exact whole raw row only.
+    retained.retain(|key, _| !known_agent_field(key));
+    retained.extend(
+        serde_json::to_value(&candidate)
+            .map_err(|error| error.to_string())?
+            .as_object()
+            .ok_or_else(rejected)?
+            .clone(),
+    );
+    retained.insert("baseCommand".to_owned(), Value::String(candidate.command));
+    match original.get("command") {
+        Some(value) => {
+            retained.insert("command".to_owned(), value.clone());
+        }
+        None => {
+            retained.remove("command");
+        }
+    }
+    rows[candidate_index] = Value::Object(retained);
     Ok(())
 }
 
