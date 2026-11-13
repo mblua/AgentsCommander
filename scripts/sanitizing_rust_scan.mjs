@@ -7,40 +7,6 @@ function error(path, line, reason) { throw new GateError(
   `${path}:${line}: ${reason}; review Rust syntax`); }
 
 // Rust escapes, rather than JSON/JavaScript string escapes.
-// `i` is the index of the escape letter; each helper returns the final index.
-function hexEscape(source, i, byte) {
-  const hex = source.slice(i + 1, i + 3);
-  if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
-  const code = Number.parseInt(hex, 16);
-  if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
-  // Still validate all remaining escapes.
-  return { text: String.fromCodePoint(code), i: i + 2, opaque: byte && code > 127 };
-}
-function unicodeEscape(source, i) {
-  const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
-  if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
-    'invalid Rust Unicode escape');
-  const code = Number.parseInt(hex, 16);
-  if (code > 0x10ffff || code >= 0xd800 &&
-    code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
-  return { text: String.fromCodePoint(code), i: end };
-}
-function lineContinuation(source, i, e) {
-  if (e === '\r') i++;
-  while (/[\t\n\r ]/.test(source[i + 1] ?? '') && i + 1 < source.length) i++;
-  return i;
-}
-function rustEscape(source, i, byte) {
-  const e = source[i], simple = { n: '\n', r: '\r', t: '\t', '0': '\0',
-    [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
-  if (Object.hasOwn(simple, e)) return { text: simple[e], i, opaque: false };
-  if (e === 'x') return hexEscape(source, i, byte);
-  if (e === 'u' && source[i + 1] === '{' && !byte)
-    return { ...unicodeEscape(source, i), opaque: false };
-  if (e === '\n' || e === '\r' && source[i + 1] === '\n')
-    return { text: '', i: lineContinuation(source, i, e), opaque: false };
-  throw new GateError('invalid Rust escape');
-}
 export function decodeRustString(raw, byte = false) {
   const prefix = /^(?:b)?r(#+|)"/.exec(raw);
   if (prefix) return raw.slice(prefix[0].length, -prefix[1].length - 1);
@@ -49,9 +15,28 @@ export function decodeRustString(raw, byte = false) {
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     if (c.codePointAt(0) !== 92) { value += c; continue; }
-    const escape = rustEscape(source, i + 1, byte);
-    value += escape.text; i = escape.i;
-    opaque ||= escape.opaque;
+    const e = source[++i], simple = { n: '\n', r: '\r', t: '\t', '0': '\0',
+      [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
+    if (Object.hasOwn(simple, e)) value += simple[e];
+    else if (e === 'x') {
+      const hex = source.slice(i + 1, i + 3);
+      if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
+      const code = Number.parseInt(hex, 16);
+      if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
+      if (byte && code > 127) opaque = true; // Still validate all remaining escapes.
+      value += String.fromCodePoint(code); i += 2;
+    } else if (e === 'u' && source[i + 1] === '{' && !byte) {
+      const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
+      if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
+        'invalid Rust Unicode escape');
+      const code = Number.parseInt(hex, 16);
+      if (code > 0x10ffff || code >= 0xd800 &&
+        code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
+      value += String.fromCodePoint(code); i = end;
+    } else if (e === '\n' || e === '\r' && source[i + 1] === '\n') {
+      if (e === '\r') i++;
+      while (/[\t\n\r ]/.test(source[i + 1] ?? '') && i + 1 < source.length) i++;
+    } else throw new GateError('invalid Rust escape');
   }
   return opaque || byte && /[^\x00-\x7f]/.test(value) ? null : value;
 }
