@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +13,30 @@ const TARGETS = [
 const FORCE_NPM = ['node_modules/vite'];
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const packageOrder = (a, b) => cmp(a.name, b.name) || cmp(a.version, b.version);
+
+// Resolve cargo without PATH: rustup homes first, then fixed system paths (S4036).
+const POSIX_CARGO = ['/usr/bin/cargo', '/usr/local/bin/cargo', '/opt/homebrew/bin/cargo'];
+export function cargoCandidates(env = process.env, platform = process.platform,
+  home = os.homedir()) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const exe = platform === 'win32' ? 'cargo.exe' : 'cargo';
+  const list = [];
+  if (env.CARGO_HOME && p.isAbsolute(env.CARGO_HOME)) {
+    list.push(p.join(env.CARGO_HOME, 'bin', exe));
+  }
+  list.push(p.join(home, '.cargo', 'bin', exe));
+  if (platform !== 'win32') list.push(...POSIX_CARGO);
+  return [...new Set(list)];
+}
+export function resolveCargo(candidates = cargoCandidates(),
+  isFile = file => fs.statSync(file, { throwIfNoEntry: false })?.isFile() ?? false) {
+  const found = candidates.find(isFile);
+  if (!found) {
+    throw new Error(`cargo not found; looked in: ${candidates.join(', ')}. `
+      + 'Install Rust via rustup or set CARGO_HOME');
+  }
+  return found;
+}
 
 export function selectCrates(metadataByTarget) {
   const selected = new Map();
@@ -137,12 +162,13 @@ async function main(args) {
     if (args.length && !(args.length === 1 && args[0] === '--check')) {
       throw new Error(`Unknown arguments: ${args.join(' ')}`);
     }
+    const cargo = resolveCargo();
     const cargoArgs = ['metadata', '--format-version', '1', '--locked'];
     const options = { cwd: path.join(ROOT, 'src-tauri'), maxBuffer: 128 * 1024 * 1024 };
     // Populate every target's registry packages before reading license files.
-    execFileSync('cargo', cargoArgs, { ...options, stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(cargo, cargoArgs, { ...options, stdio: ['ignore', 'ignore', 'inherit'] });
     const metadata = TARGETS.map(target => JSON.parse(execFileSync(
-      'cargo', [...cargoArgs, '--filter-platform', target],
+      cargo, [...cargoArgs, '--filter-platform', target],
       { ...options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] },
     )));
     const crates = loadTexts(selectCrates(metadata), 'Rust');

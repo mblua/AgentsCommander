@@ -3,8 +3,9 @@ import { test } from 'node:test';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
-  selectCrates, selectNpm, licenseFiles, normalize, render,
+  selectCrates, selectNpm, licenseFiles, normalize, render, cargoCandidates, resolveCargo,
 } from './generate-third-party-notices.mjs';
 
 const pkg = (name, extra = {}) => ({
@@ -120,8 +121,37 @@ test('fences exceed the longest run of backticks', () => {
 
 test('entry point returns failure for unknown argument', () => {
   const result = spawnSync(process.execPath,
-    ['scripts/generate-third-party-notices.mjs', '--bogus'], { encoding: 'utf8' });
+    ['scripts/generate-third-party-notices.mjs', '--bogus'], {
+      encoding: 'utf8', cwd: fileURLToPath(new URL('..', import.meta.url)),
+    });
   assert.equal(result.status, 1);
+});
+
+test('cargo candidates use Windows paths regardless of host', () => {
+  assert.deepEqual(cargoCandidates({ CARGO_HOME: String.raw`C:\ch` }, 'win32',
+    String.raw`C:\Users\u`), [String.raw`C:\ch\bin\cargo.exe`,
+    String.raw`C:\Users\u\.cargo\bin\cargo.exe`]);
+});
+
+test('cargo candidates use POSIX paths regardless of host', () => {
+  assert.deepEqual(cargoCandidates({}, 'linux', '/home/u'), [
+    '/home/u/.cargo/bin/cargo', '/usr/bin/cargo', '/usr/local/bin/cargo',
+    '/opt/homebrew/bin/cargo',
+  ]);
+});
+
+test('cargo candidates ignore relative CARGO_HOME and deduplicate joined paths', () => {
+  const expected = ['/home/u/.cargo/bin/cargo', '/usr/bin/cargo',
+    '/usr/local/bin/cargo', '/opt/homebrew/bin/cargo'];
+  assert.deepEqual(cargoCandidates({ CARGO_HOME: 'rel' }, 'linux', '/home/u'), expected);
+  assert.deepEqual(cargoCandidates({ CARGO_HOME: '/home/u/.cargo' }, 'linux', '/home/u'),
+    expected);
+});
+
+test('cargo resolution selects the first file or reports all searched paths', () => {
+  assert.equal(resolveCargo(['/a', '/b', '/c'], file => file !== '/a'), '/b');
+  assert.throws(() => resolveCargo(['/a', '/b'], () => false),
+    /cargo not found; looked in: \/a, \/b/);
 });
 
 test('selection and render detect new Rust and npm dependencies', () => {
