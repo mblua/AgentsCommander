@@ -679,8 +679,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       if (current !== "") setApiClientMintRoot("");
       return;
     }
-    if (!options.some((option) => option.path === current)) {
-      setApiClientMintRoot(options[0].path);
+    const firstOption = options[0]; if (firstOption && !options.some((o) => o.path === current)) {
+      setApiClientMintRoot(firstOption.path);
     }
   });
 
@@ -1996,7 +1996,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     let inSingle = false;
     let inDouble = false;
     while (index < tokens.length) {
-      const token = tokens[index];
+      const token = tokens[index] ?? ""; // index < tokens.length
       if (tokenHasUnclosedQuote(token, "'")) inSingle = !inSingle;
       if (tokenHasUnclosedQuote(token, '"')) inDouble = !inDouble;
       index += 1;
@@ -2008,7 +2008,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const codexHasManualResume = (tokens: string[], codexIndex: number): boolean => {
     let index = codexIndex + 1;
     while (index < tokens.length) {
-      const token = tokens[index].toLowerCase();
+      const token = (tokens[index] ?? "").toLowerCase(); // index < tokens.length
       if (token === "-c" || token === "--config") {
         index = advancePastConfigValue(tokens, index + 1);
         continue;

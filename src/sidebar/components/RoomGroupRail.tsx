@@ -579,8 +579,7 @@ const ProjectRailSection: Component<{
 
     if (candidates.length === 0) return null;
 
-    for (let index = 0; index < candidates.length; index++) {
-      const rect = candidates[index].rect;
+    for (const [index, { rect }] of candidates.entries()) {
       if (clientY < rect.top + rect.height / 2) return index;
     }
     return candidates.length;
@@ -725,6 +724,7 @@ const ProjectRailSection: Component<{
 
     const nextGroups = groupButtons.slice();
     const [moved] = nextGroups.splice(sourceIndex, 1);
+    if (moved === undefined) return base; // unreachable: sourceIndex >= 0 above
     const clampedTarget = Math.max(0, Math.min(current.targetIndex, nextGroups.length));
     nextGroups.splice(clampedTarget, 0, moved);
     return [...systemButtons, ...nextGroups];

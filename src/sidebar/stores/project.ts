@@ -642,6 +642,7 @@ export const projectStore = {
         );
         if (index === -1) return proj;
         const wg = proj.workgroups[index];
+        if (wg === undefined) return proj; // unreachable: index !== -1 above
         if (wg.task === task && (wg.taskTitle ?? undefined) === normalizedTitle) return proj;
         anyChanged = true;
         const workgroups = proj.workgroups.slice();

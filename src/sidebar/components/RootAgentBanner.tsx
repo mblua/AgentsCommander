@@ -340,9 +340,10 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
         closeMenu(); // parity with ProjectPanel: zero bots closes the menu
         return;
       }
-      if (bots.length === 1) {
+      const onlyBot = bots[0];
+      if (bots.length === 1 && onlyBot) {
         closeMenu();
-        await TelegramAPI.attach(r.id, bots[0].id);
+        await TelegramAPI.attach(r.id, onlyBot.id);
         return;
       }
       setMenuTelegramBots({ epoch, sessionId: r.id, bots }); // menu deliberately stays open
