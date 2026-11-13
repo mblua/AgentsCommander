@@ -85,25 +85,29 @@ function quotedStringStop(source, index, quote) {
 }
 
 function rustCharEscapeStop(source, index) {
-  let i = index;
+  const i = index;
   if (i >= source.length || source[i] === '\n' || source[i] === '\r') return -1;
-  if (source[i] === 'x') {
+  if (source[i] === 'x') return rustHexEscapeStop(source, i + 1);
+  if (source[i] === 'u' && source[i + 1] === '{') return rustUnicodeEscapeStop(source, i + 2);
+  return i + 1;
+}
+
+function rustHexEscapeStop(source, index) {
+  let i = index;
+  for (let count = 0; count < 2; count += 1) {
+    if (!/[0-9A-Fa-f]/.test(source[i] ?? '')) return -1;
     i += 1;
-    for (let count = 0; count < 2; count += 1) {
-      if (!/[0-9A-Fa-f]/.test(source[i] ?? '')) return -1;
-      i += 1;
-    }
-    return i;
   }
-  if (source[i] === 'u' && source[i + 1] === '{') {
-    i += 2;
-    while (i < source.length && source[i] !== '}') {
-      if (source[i] === '\n' || source[i] === '\r') return -1;
-      i += 1;
-    }
-    if (source[i] !== '}') return -1;
-    return i + 1;
+  return i;
+}
+
+function rustUnicodeEscapeStop(source, index) {
+  let i = index;
+  while (i < source.length && source[i] !== '}') {
+    if (source[i] === '\n' || source[i] === '\r') return -1;
+    i += 1;
   }
+  if (source[i] !== '}') return -1;
   return i + 1;
 }
 
@@ -624,15 +628,7 @@ function callbackBody(source, masked, fromIndex, callEnd) {
     if (masked.startsWith('=>', cursor)) {
       cursor = skipWhitespace(masked, cursor + 2);
       if (masked[cursor] === '{') continue;
-      const start = cursor;
-      const stack = [];
-      for (; cursor < callEnd; cursor += 1) {
-        const token = masked[cursor];
-        if (token === ',' && stack.length === 0) break;
-        if ('([{'.includes(token)) stack.push(token);
-        else if (')]}'.includes(token)) stack.pop();
-      }
-      return { body: source.slice(start, cursor) };
+      return { body: source.slice(cursor, expressionBodyEnd(masked, cursor, callEnd)) };
     }
     if (ch === '(') {
       const close = findMatchingParen(masked, cursor);
@@ -643,6 +639,19 @@ function callbackBody(source, masked, fromIndex, callEnd) {
     }
   }
   return null;
+}
+
+// End of an arrow expression body: the first top-level comma, or callEnd.
+function expressionBodyEnd(masked, start, callEnd) {
+  const stack = [];
+  let cursor = start;
+  for (; cursor < callEnd; cursor += 1) {
+    const token = masked[cursor];
+    if (token === ',' && stack.length === 0) break;
+    if ('([{'.includes(token)) stack.push(token);
+    else if (')]}'.includes(token)) stack.pop();
+  }
+  return cursor;
 }
 
 function isFrontendPlaceholder(body) {
