@@ -175,6 +175,42 @@ test('CRLF body: justified and returned text has no carriage return', () => {
   assert.equal(evaluate({ counted: 1001 }, body).exitCode, 0);
 });
 
+const H = `${HEADING}
+
+`;
+const notJustified = (body) => evaluate({ counted: 1001 }, body).exitCode === 1;
+
+test('v6: a closed comment is removed', () => {
+  assert.equal(extractJustification(`${H}<!-- a -->${REASON}`), REASON);
+});
+
+test('v6: an unterminated comment runs to the end of the section', () => {
+  assert.equal(extractJustification(`${H}<!-- ${REASON}`), '');
+  assert.equal(extractJustification(`${H}${REASON} <!-- ${REASON}`), REASON);
+  assert.ok(notJustified(`${H}<!-- ${REASON}`));
+});
+
+test('v6: comments formed by a removal are removed too', () => {
+  const unterminated = `${H}<!<!---->-- ${REASON}`;
+  const formed = `${H}<!-<!-- x -->- ${REASON} -->`;
+  assert.equal(extractJustification(unterminated), '');
+  assert.equal(extractJustification(formed), '');
+  assert.ok(notJustified(unterminated));
+  assert.ok(notJustified(formed));
+});
+
+test('v6: a resolver error fails closed with exit 2', () => {
+  const { dir, base, head } = adds(1);
+  const env = { ...process.env, GATE_GIT_BIN: 'git' };
+  delete env.PR_BODY;
+  delete env.GITHUB_STEP_SUMMARY;
+  const args = [SCRIPT, '--base', base, '--head', head];
+  const run = spawnSync(process.execPath, args, { cwd: dir, env, encoding: 'utf8' });
+  assert.equal(run.status, 2);
+  const expected = /::error::check-pr-net-lines: git failed: GATE_GIT_BIN must be an absolute path/;
+  assert.match(run.stdout, expected);
+});
+
 test('bad args and unknown SHA exit 2', () => {
   const target = adds(1);
   assert.equal(cli(target, '', ['--base', 'zz', '--head', target.head]).code, 2);

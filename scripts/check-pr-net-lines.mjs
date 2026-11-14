@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
+import { resolveGit } from './resolve-git.mjs';
 
 export const NET_LINE_BUDGET = 1000;
 export const MIN_JUSTIFICATION_CHARS = 20;
@@ -71,6 +72,16 @@ export function summarize(entries) {
   return { classes, counted };
 }
 
+// Removes HTML comments until no `<!--` is left; an unterminated one runs to the end.
+function stripComments(text) {
+  let out = text;
+  for (let start = out.indexOf('<!--'); start !== -1; start = out.indexOf('<!--')) {
+    const end = out.indexOf('-->', start + 4);
+    out = end === -1 ? out.slice(0, start) : out.slice(0, start) + out.slice(end + 3);
+  }
+  return out;
+}
+
 // Only the first matching heading counts; its text runs to the next ATX heading.
 export function extractJustification(body) {
   const text = (body ?? '').replace(/\r\n?/g, '\n');
@@ -79,7 +90,7 @@ export function extractJustification(body) {
   const rest = text.slice(heading.index + heading[0].length);
   const next = ANY_HEADING.exec(rest);
   const section = next ? rest.slice(0, next.index) : rest;
-  return section.replace(/<!--[^]*?-->/g, '').trim();
+  return stripComments(section).trim();
 }
 
 export function evaluate(summary, body) {
@@ -116,8 +127,8 @@ export function renderReport(summary, verdict) {
       + `| ${counted} |`);
   }
   const status = verdict.exitCode === 0 ? 'PASS' : 'FAIL';
-  lines.push('', `Counted net: ${summary.counted}. Budget: ${NET_LINE_BUDGET}.`);
-  lines.push(`Verdict: ${status}. ${verdict.message.replace(/^::error::/, '')}`, '');
+  lines.push('', `Counted net: ${summary.counted}. Budget: ${NET_LINE_BUDGET}.`,
+    `Verdict: ${status}. ${verdict.message.replace(/^::error::/, '')}`, '');
   return lines.join('\n');
 }
 
@@ -133,7 +144,7 @@ function parseArgs(argv) {
 
 function git(args) {
   const options = { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: 'pipe' };
-  return execFileSync('git', args, options);
+  return execFileSync(resolveGit(), args, options);
 }
 
 function measure(base, head) {
