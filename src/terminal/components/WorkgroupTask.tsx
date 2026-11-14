@@ -53,7 +53,7 @@ function scanFrontmatter(detect: string, start: number): { title: string | null;
       break;
     }
 
-    if (title === null) title = readTitleLine(detect.slice(pos, lineEnd));
+    title ??= readTitleLine(detect.slice(pos, lineEnd));
 
     pos = nl < 0 ? detect.length : nl + 1;
   }
@@ -143,7 +143,7 @@ const WorkgroupTask: Component = () => {
   const mutationRoot = () => {
     const root = snapshot()?.workgroupRoot;
     if (root) return root;
-    const parts = cwd().split(String.fromCharCode(92)).join("/").split("/");
+    const parts = cwd().split(String.fromCodePoint(92)).join("/").split("/");
     const index = parts.map(part => part.startsWith("room-") || part.startsWith("wg-")).lastIndexOf(true);
     return parts.slice(0, index < 0 ? parts.length : index + 1).join("/");
   };

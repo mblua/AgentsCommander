@@ -517,7 +517,7 @@ fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite:
     let sql = format!("SELECT * FROM {table} ORDER BY injection_id");
     let mut statement = conn.prepare(&sql).unwrap();
     let column_count = statement.column_count();
-    let rows = statement
+    statement
         .query_map([], |row| {
             (0..column_count)
                 .map(|index| row.get(index))
@@ -525,8 +525,7 @@ fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite:
         })
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    rows
+        .unwrap()
 }
 
 fn assert_menu_guard_blocked_round_trip(store: &MessageStore) {

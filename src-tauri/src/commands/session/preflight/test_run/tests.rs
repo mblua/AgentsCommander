@@ -891,7 +891,7 @@ fn draft_wire_decoding() {
                     .as_object_mut()
                     .unwrap()
                     .remove("timeoutSeconds"),
-            )
+            );
         },
         |v| v["cwd"] = "C:/x".into(),
         |v| v["profiles"]["A"]["enabled"] = true.into(),

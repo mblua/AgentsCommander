@@ -1,4 +1,5 @@
 use crate::pty::response_close::ResponseCloseError;
+use crate::pty::response_close::ResponseCloseInner;
 use crate::pty::response_close::ResponseCloseRoute;
 use crate::pty::response_close::ResponseCloseState;
 use crate::pty::response_close::ResponseRouteIdentity;
@@ -138,57 +139,9 @@ impl ResponseCloseState {
             {
                 return;
             }
-            let identity_changed = route.facts.as_ref() != Some(&identity);
             let changed_id = identity.session_id;
-            if identity_changed || route.eligible != eligible {
-                if !route.invalidate(now) {
-                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
-                        log::debug!(
-                            target: DIAG_TARGET,
-                            "response_close_diag outcome=observed stage=failed_transition \
-                             operation=publish_manager_facts site={} old_failed=false id={}",
-                            line!(),
-                            changed_id
-                        );
-                    }
-                    inner.failed = true;
-                }
-            } else if route.manager_working != Some(working) && !route.touch(now) {
-                if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
-                    log::debug!(
-                        target: DIAG_TARGET,
-                        "response_close_diag outcome=observed stage=failed_transition \
-                         operation=publish_manager_facts site={} old_failed=false id={}",
-                        line!(),
-                        changed_id
-                    );
-                }
-                inner.failed = true;
-            }
-            route.facts = Some(identity);
-            route.eligible = eligible;
-            route.manager_working = Some(working);
-            if identity_changed {
-                for dependent in inner.routes.values_mut().filter(|r| {
-                    r.policy
-                        .as_ref()
-                        .is_some_and(|p| p.coordinator.session_id == changed_id)
-                }) {
-                    if !dependent.invalidate(now) {
-                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
-                            && !inner.failed
-                        {
-                            log::debug!(
-                                target: DIAG_TARGET,
-                                "response_close_diag outcome=observed stage=failed_transition \
-                                 operation=publish_manager_facts site={} old_failed=false id={}",
-                                line!(),
-                                changed_id
-                            );
-                        }
-                        inner.failed = true;
-                    }
-                }
+            if record_manager_facts(inner, identity, eligible, working, now) {
+                invalidate_coordinator_dependents(inner, changed_id, now);
             }
         });
     }
@@ -403,45 +356,9 @@ impl ResponseCloseState {
         let _ = self.with_inner(|inner| {
             if let Some(route) = inner.routes.get_mut(&id) {
                 if !closed {
-                    if !route.hold_known || route.hold_until.is_some() {
-                        route.hold_until = None;
-                        route.hold_known = true;
-                        if !route.touch(now) {
-                            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
-                                && !inner.failed
-                            {
-                                log::debug!(
-                                    target: DIAG_TARGET,
-                                    "response_close_diag outcome=observed stage=failed_transition \
-                                     operation=refresh_hold_snapshot site={} old_failed=false \
-                                     id={}",
-                                    line!(),
-                                    id
-                                );
-                            }
-                            inner.failed = true;
-                        }
-                    }
-                } else if route.hold_window != Some(window)
-                    || route.hold_until.is_none_or(|end| now > end)
-                {
-                    // A changed window or unseen manual episode has no timestamp
-                    // authority here. Block until the upper snapshot observes open.
-                    route.hold_known = false;
-                    if !route.touch(now) {
-                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug)
-                            && !inner.failed
-                        {
-                            log::debug!(
-                                target: DIAG_TARGET,
-                                "response_close_diag outcome=observed stage=failed_transition \
-                                 operation=refresh_hold_snapshot site={} old_failed=false id={}",
-                                line!(),
-                                id
-                            );
-                        }
-                        inner.failed = true;
-                    }
+                    refresh_open_hold(route, &mut inner.failed, id, now);
+                } else {
+                    refresh_closed_hold(route, &mut inner.failed, id, window, now);
                 }
                 route.hold_window = Some(window);
             }
@@ -455,5 +372,122 @@ impl ResponseCloseState {
             return Ok(None);
         };
         self.reserve_writer_inner(id, generation, false).map(Some)
+    }
+}
+
+fn record_manager_facts(
+    inner: &mut ResponseCloseInner,
+    identity: ResponseRouteIdentity,
+    eligible: bool,
+    working: bool,
+    now: std::time::Instant,
+) -> bool {
+    let route = inner.routes.get_mut(&identity.session_id).unwrap();
+    let identity_changed = route.facts.as_ref() != Some(&identity);
+    let changed_id = identity.session_id;
+    if identity_changed || route.eligible != eligible {
+        if !route.invalidate(now) {
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=publish_manager_facts site={} old_failed=false id={}",
+                    line!(),
+                    changed_id
+                );
+            }
+            inner.failed = true;
+        }
+    } else if route.manager_working != Some(working) && !route.touch(now) {
+        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag outcome=observed stage=failed_transition \
+                 operation=publish_manager_facts site={} old_failed=false id={}",
+                line!(),
+                changed_id
+            );
+        }
+        inner.failed = true;
+    }
+    route.facts = Some(identity);
+    route.eligible = eligible;
+    route.manager_working = Some(working);
+    identity_changed
+}
+
+fn invalidate_coordinator_dependents(
+    inner: &mut ResponseCloseInner,
+    changed_id: Uuid,
+    now: std::time::Instant,
+) {
+    for dependent in inner.routes.values_mut().filter(|r| {
+        r.policy
+            .as_ref()
+            .is_some_and(|p| p.coordinator.session_id == changed_id)
+    }) {
+        if !dependent.invalidate(now) {
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !inner.failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=publish_manager_facts site={} old_failed=false id={}",
+                    line!(),
+                    changed_id
+                );
+            }
+            inner.failed = true;
+        }
+    }
+}
+
+fn refresh_open_hold(
+    route: &mut ResponseCloseRoute,
+    failed: &mut bool,
+    id: Uuid,
+    now: std::time::Instant,
+) {
+    if !route.hold_known || route.hold_until.is_some() {
+        route.hold_until = None;
+        route.hold_known = true;
+        if !route.touch(now) {
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !*failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=refresh_hold_snapshot site={} old_failed=false \
+                     id={}",
+                    line!(),
+                    id
+                );
+            }
+            *failed = true;
+        }
+    }
+}
+
+fn refresh_closed_hold(
+    route: &mut ResponseCloseRoute,
+    failed: &mut bool,
+    id: Uuid,
+    window: std::time::Duration,
+    now: std::time::Instant,
+) {
+    if route.hold_window != Some(window) || route.hold_until.is_none_or(|end| now > end) {
+        // A changed window or unseen manual episode has no timestamp
+        // authority here. Block until the upper snapshot observes open.
+        route.hold_known = false;
+        if !route.touch(now) {
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) && !*failed {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag outcome=observed stage=failed_transition \
+                     operation=refresh_hold_snapshot site={} old_failed=false id={}",
+                    line!(),
+                    id
+                );
+            }
+            *failed = true;
+        }
     }
 }

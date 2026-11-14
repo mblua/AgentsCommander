@@ -1,7 +1,9 @@
 use super::*;
 use crate::pty::manager::response_close::StaleOrInvalidSettlement;
 use std::time::{Duration, Instant};
+mod finish;
 mod ordinary_ack;
+mod routes;
 
 #[test]
 fn response_close_readiness_requires_all_publishers_and_work_bootstrap() {

@@ -812,7 +812,8 @@ function manifestHeader(cargo, state) {
   if (!header) return 0;
   state.section = header[1].trim();
   state.targetTable = false;
-  if (!manifestSectionAllowed(state.section, state.external)) return -1;
+  if (!manifestSectionAllowed(state.section, state.external) &&
+      !(state.path === 'Cargo.toml' && state.section === 'profile.release')) return -1;
   return header[0].length;
 }
 function workspaceEntryAllowed(state, key, value) {
@@ -826,9 +827,15 @@ function workspaceEntryAllowed(state, key, value) {
   }
   return true;
 }
+// #4639: root release profile, only keys and values that cannot change cfg or targets.
+const RELEASE_PROFILE = { lto: /^(?:false|true|"thin"|"fat"|"off")$/,
+  'codegen-units': /^[1-9][0-9]{0,2}$/, strip: /^(?:false|true|"none"|"debuginfo"|"symbols")$/,
+  panic: /^"(?:unwind|abort)"$/ };
 function manifestEntryAllowed(state, key, value) {
   const { section, external } = state;
   if (!section) return false;
+  if (section === 'profile.release')
+    return Object.hasOwn(RELEASE_PROFILE, key) && RELEASE_PROFILE[key].test(value);
   if (section === 'workspace' && !workspaceEntryAllowed(state, key, value)) return false;
   if (section === 'lib' && !['name', 'crate-type'].includes(key) &&
       !(external && key === 'doctest' && value === 'false')) return false;
