@@ -627,7 +627,8 @@ jobs:
       # use the same name, so a test is either skipped here and run there, or run here.
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --locked --lib --bins --tests --no-fail-fast -- --skip single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets
+        shell: bash
+        run: cargo test --locked --lib --bins --tests --no-fail-fast -- --skip single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets 2>&1 | tee cargo-test.log
         # The path-identity reparse test uses simulated flags; real Windows
         # reparse metadata and no-follow integration are outside its coverage.
 
@@ -731,6 +732,31 @@ jobs:
             ${{ runner.temp }}/tml-windows-metadata.txt
           if-no-files-found: warn
 
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          shopt -s nullglob
+          logs=(src-tauri/*.log)
+          args=()
+          for f in "${logs[@]}"; do args+=(--log "$f"); done
+          node scripts/flaky-observations.mjs cargo \
+            --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job "rust-regression-windows" "${args[@]}"
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flaky-obs-rust-regression-windows-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
+
   rust-slow-test-windows:
     name: rust-slow-test-windows
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -784,6 +810,31 @@ jobs:
             echo "::error::expected exactly one passing test for ${TEST}."
             exit 1
           }
+
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          shopt -s nullglob
+          logs=(src-tauri/slow-test.log)
+          args=()
+          for f in "${logs[@]}"; do args+=(--log "$f"); done
+          node scripts/flaky-observations.mjs cargo \
+            --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job "rust-slow-test-windows" "${args[@]}"
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flaky-obs-rust-slow-test-windows-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
 
   # IS #1850 focused release tests (Windows), split out of rust-regression-windows so
   # their release compile runs in parallel with the debug suite instead of
@@ -2616,6 +2667,31 @@ jobs:
             exit 1
           }
 
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          shopt -s nullglob
+          logs=(src-tauri/*.log)
+          args=()
+          for f in "${logs[@]}"; do args+=(--log "$f"); done
+          node scripts/flaky-observations.mjs cargo \
+            --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job "rust-regression-linux" "${args[@]}"
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flaky-obs-rust-regression-linux-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
+
   rust-release-parity-linux:
     name: rust-release-parity-linux
     # #1842: the Linux PR gate runs ubuntu-latest (24.04) while the Linux
@@ -3228,6 +3304,31 @@ jobs:
             ${{ runner.temp }}/tml-macos-metadata.txt
           if-no-files-found: warn
 
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          shopt -s nullglob
+          logs=(src-tauri/*.log)
+          args=()
+          for f in "${logs[@]}"; do args+=(--log "$f"); done
+          node scripts/flaky-observations.mjs cargo \
+            --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job "rust-regression-macos" "${args[@]}"
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flaky-obs-rust-regression-macos-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
+
   issue-1850-release-macos:
     name: issue-1850-release-macos
     # Skip branch-deletion push events while still requiring pull request validation.
@@ -3785,10 +3886,37 @@ jobs:
           workspaces: . -> target
 
       - name: Test locked terminal snapshot renderer
-        run: cargo test --locked -p terminal-snapshot-renderer
+        shell: bash
+        run: cargo test --locked -p terminal-snapshot-renderer 2>&1 | tee snapshot-renderer-test.log
 
       - name: Test locked api-helper
-        run: cargo test --locked -p session-bridge --bin agentscommander-api-helper
+        shell: bash
+        run: cargo test --locked -p session-bridge --bin agentscommander-api-helper 2>&1 | tee api-helper-test.log
+
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          shopt -s nullglob
+          logs=(snapshot-renderer-test.log api-helper-test.log)
+          args=()
+          for f in "${logs[@]}"; do args+=(--log "$f"); done
+          node scripts/flaky-observations.mjs cargo \
+            --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job "terminal-snapshot-portable-${{ matrix.os }}" "${args[@]}"
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flaky-obs-terminal-snapshot-portable-${{ matrix.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
 
   release-cli-smoke-windows:
     name: release-cli-smoke-windows
@@ -4066,6 +4194,9 @@ jobs:
       - name: TypeScript type check
         run: npm run typecheck
 
+      - name: "Flaky-rate script tests (#4527)"
+        run: node --test "scripts/flaky-*.test.mjs"
+
       - name: "npm test with #480 known-debt guard"
         run: |
           # The three classifier inputs are removed first and the removal is
@@ -4140,4 +4271,25 @@ jobs:
           path: |
             npm-test.log
             npm-test-results.json
+          if-no-files-found: ignore
+
+      # #4527: observation only. It never changes this job's result (D4a).
+      - name: "Flaky observations: write record (#4527)"
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          node scripts/flaky-observations.mjs vitest --in npm-test-results.json
+          --out "$RUNNER_TEMP/flaky-obs/flaky-observations.jsonl" --job frontend-regression
+
+      - name: "Flaky observations: upload (#4527)"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flaky-obs-frontend-regression-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flaky-obs/flaky-observations.jsonl
+          retention-days: 90
           if-no-files-found: ignore
