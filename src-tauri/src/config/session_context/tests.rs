@@ -158,50 +158,8 @@ fn assert_no_broad_read_grant(out: &str) {
             continue;
         }
         let tokens = broad_read_tokens(&clause);
-        let is_read_like = |token: &str| matches!(token, "read" | "access" | "inspect" | "search");
-        let is_quantifier = |token: &str| matches!(token, "any" | "all");
-        let is_universe = |token: &str| matches!(token, "path" | "file" | "directory" | "location");
-
-        for (read_index, token) in tokens.iter().enumerate() {
-            if !is_read_like(token) {
-                continue;
-            }
-            let quantifier_end = (read_index + 7).min(tokens.len());
-            for quantifier_index in (read_index + 1)..quantifier_end {
-                if !is_quantifier(tokens[quantifier_index]) {
-                    continue;
-                }
-                let universe_end = (quantifier_index + 4).min(tokens.len());
-                if tokens[(quantifier_index + 1)..universe_end]
-                    .iter()
-                    .any(|token| is_universe(token))
-                {
-                    panic!("semantic broad read grant found in clause `{clause}`");
-                }
-            }
-        }
-
-        for (quantifier_index, token) in tokens.iter().enumerate() {
-            if !is_quantifier(token) {
-                continue;
-            }
-            let universe_end = (quantifier_index + 4).min(tokens.len());
-            for universe_index in (quantifier_index + 1)..universe_end {
-                if !is_universe(tokens[universe_index]) {
-                    continue;
-                }
-                let readable_end = (universe_index + 7).min(tokens.len());
-                for readable_index in (universe_index + 1)..readable_end {
-                    let directly_readable = tokens[readable_index] == "readable";
-                    let may_or_can_be_read = readable_index + 2 < tokens.len()
-                        && matches!(tokens[readable_index], "may" | "can")
-                        && tokens[readable_index + 1] == "be"
-                        && tokens[readable_index + 2] == "read";
-                    if directly_readable || may_or_can_be_read {
-                        panic!("semantic broad read grant found in clause `{clause}`");
-                    }
-                }
-            }
+        if read_quantifier_universe(&tokens) || quantifier_universe_readable(&tokens) {
+            panic!("semantic broad read grant found in clause `{clause}`");
         }
 
         let has_read_like = tokens.iter().any(|token| is_read_like(token));
@@ -218,6 +176,66 @@ fn assert_no_broad_read_grant(out: &str) {
             "semantic broad read grant found in clause `{clause}`"
         );
     }
+}
+
+fn is_read_like(token: &str) -> bool {
+    matches!(token, "read" | "access" | "inspect" | "search")
+}
+
+fn is_quantifier(token: &str) -> bool {
+    matches!(token, "any" | "all")
+}
+
+fn is_universe(token: &str) -> bool {
+    matches!(token, "path" | "file" | "directory" | "location")
+}
+
+fn read_quantifier_universe(tokens: &[&str]) -> bool {
+    for (read_index, token) in tokens.iter().enumerate() {
+        if !is_read_like(token) {
+            continue;
+        }
+        let quantifier_end = (read_index + 7).min(tokens.len());
+        for quantifier_index in (read_index + 1)..quantifier_end {
+            if !is_quantifier(tokens[quantifier_index]) {
+                continue;
+            }
+            let universe_end = (quantifier_index + 4).min(tokens.len());
+            if tokens[(quantifier_index + 1)..universe_end]
+                .iter()
+                .any(|token| is_universe(token))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn quantifier_universe_readable(tokens: &[&str]) -> bool {
+    for (quantifier_index, token) in tokens.iter().enumerate() {
+        if !is_quantifier(token) {
+            continue;
+        }
+        let universe_end = (quantifier_index + 4).min(tokens.len());
+        for universe_index in (quantifier_index + 1)..universe_end {
+            if !is_universe(tokens[universe_index]) {
+                continue;
+            }
+            let readable_end = (universe_index + 7).min(tokens.len());
+            for readable_index in (universe_index + 1)..readable_end {
+                let directly_readable = tokens[readable_index] == "readable";
+                let may_or_can_be_read = readable_index + 2 < tokens.len()
+                    && matches!(tokens[readable_index], "may" | "can")
+                    && tokens[readable_index + 1] == "be"
+                    && tokens[readable_index + 2] == "read";
+                if directly_readable || may_or_can_be_read {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[test]
