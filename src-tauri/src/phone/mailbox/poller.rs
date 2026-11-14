@@ -729,12 +729,12 @@ fn evaluate_peer(peer: &PurgeGatePeer, quiet: std::time::Duration) -> PurgePeerR
         }
     }
 
-    let outcome = peer_outcome(
-        peer_purgeable,
+    let failures = (
         saw_untracked_failure,
         saw_busy_failure,
         saw_resize_only_failure,
     );
+    let outcome = peer_outcome(peer_purgeable, failures);
 
     PurgePeerResult {
         fqn: peer.fqn.clone(),
@@ -753,12 +753,8 @@ fn evaluate_peer(peer: &PurgeGatePeer, quiet: std::time::Duration) -> PurgePeerR
 // across all live sessions for the peer. `resize_unsettled` is only
 // honest when resize is the sole failing leg for every failing live
 // session. Unknown liveness is more important than either diagnostic.
-fn peer_outcome(
-    peer_purgeable: bool,
-    saw_untracked_failure: bool,
-    saw_busy_failure: bool,
-    saw_resize_only_failure: bool,
-) -> &'static str {
+fn peer_outcome(peer_purgeable: bool, failures: (bool, bool, bool)) -> &'static str {
+    let (saw_untracked_failure, saw_busy_failure, saw_resize_only_failure) = failures;
     if peer_purgeable {
         "skipped"
     } else if saw_untracked_failure {
