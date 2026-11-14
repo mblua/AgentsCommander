@@ -348,119 +348,121 @@ function stripCommentsAndStrings(src) {
   };
 
   let i = 0;
-  while (i < n) {
-    const c = src[i];
-
-    // Line comment, including /// and //!.
-    if (c === '/' && src[i + 1] === '/') {
-      let j = i;
-      while (j < n && src[j] !== '\n') j++;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-
-    // Block comment. Rust permits nesting, so track depth.
-    if (c === '/' && src[i + 1] === '*') {
-      let depth = 1;
-      let j = i + 2;
-      while (j < n && depth > 0) {
-        if (src[j] === '/' && src[j + 1] === '*') {
-          depth++;
-          j += 2;
-        } else if (src[j] === '*' && src[j + 1] === '/') {
-          depth--;
-          j += 2;
-        } else {
-          j++;
-        }
-      }
-      blank(i, j);
-      i = j;
-      continue;
-    }
-
-    if (isIdentStart(c)) {
-      let j = i;
-      while (j < n && isIdentChar(src[j])) j++;
-      const word = src.slice(i, j);
-
-      if (word === 'r' || word === 'br' || word === 'cr') {
-        let k = j;
-        while (k < n && src[k] === '#') k++;
-        const hashes = k - j;
-        if (src[k] === '"') {
-          // Raw string: ends at the first '"' followed by exactly `hashes` '#'.
-          let m = k + 1;
-          let endIdx = n;
-          while (m < n) {
-            if (src[m] === '"') {
-              let h = 0;
-              while (h < hashes && src[m + 1 + h] === '#') h++;
-              if (h === hashes) {
-                endIdx = m + 1 + hashes;
-                break;
-              }
-            }
-            m++;
-          }
-          blank(i, endIdx);
-          i = endIdx;
-          continue;
-        }
-        if (hashes > 0 && word === 'r') {
-          // Raw identifier such as r#fn or r#type. Not a string; emit unchanged.
-          i = k;
-          continue;
-        }
-      }
-      // Plain identifier, or a b"/c"/b' prefix whose delimiter is handled next.
-      i = j;
-      continue;
-    }
-
-    if (c === '"') {
-      let j = i + 1;
-      while (j < n) {
-        if (src[j] === '\\') {
-          j += 2;
-          continue;
-        }
-        if (src[j] === '"') {
-          j++;
-          break;
-        }
-        j++;
-      }
-      blank(i, j);
-      i = j;
-      continue;
-    }
-
-    if (c === "'") {
-      // Char literal only when the following text is an optional backslash
-      // escape, one character, then a closing quote. Everything else is a
-      // lifetime and must be left alone, or an unterminated "char literal"
-      // swallows the rest of the file.
-      let end = -1;
-      if (src[i + 1] === '\\') {
-        if (src[i + 3] === "'") end = i + 4;
-      } else if (src[i + 2] === "'") {
-        end = i + 3;
-      }
-      if (end > 0) {
-        blank(i, end);
-        i = end;
-        continue;
-      }
-      i++;
-      continue;
-    }
-
-    i++;
-  }
+  while (i < n) i = maskStep(src, i, blank);
 
   return out.join('');
+}
+
+function blankTo(blank, from, to) {
+  blank(from, to);
+  return to;
+}
+
+/** Masks the token at `i` when it is a comment or literal; returns the next index. */
+function maskStep(src, i, blank) {
+  const c = src[i];
+
+  // Line comment, including /// and //!.
+  if (c === '/' && src[i + 1] === '/') return blankTo(blank, i, lineCommentEnd(src, i));
+
+  // Block comment. Rust permits nesting, so track depth.
+  if (c === '/' && src[i + 1] === '*') return blankTo(blank, i, blockCommentEnd(src, i));
+
+  if (isIdentStart(c)) return identStep(src, i, blank);
+
+  if (c === '"') return blankTo(blank, i, quotedStringEnd(src, i));
+
+  if (c === "'") {
+    const end = charLiteralEnd(src, i);
+    return end > 0 ? blankTo(blank, i, end) : i + 1;
+  }
+
+  return i + 1;
+}
+
+function lineCommentEnd(src, i) {
+  const n = src.length;
+  let j = i;
+  while (j < n && src[j] !== '\n') j++;
+  return j;
+}
+
+function blockCommentEnd(src, i) {
+  const n = src.length;
+  let depth = 1;
+  let j = i + 2;
+  while (j < n && depth > 0) {
+    if (src[j] === '/' && src[j + 1] === '*') {
+      depth++;
+      j += 2;
+    } else if (src[j] === '*' && src[j + 1] === '/') {
+      depth--;
+      j += 2;
+    } else {
+      j++;
+    }
+  }
+  return j;
+}
+
+const RAW_STRING_PREFIXES = new Set(['r', 'br', 'cr']);
+
+function identStep(src, i, blank) {
+  const n = src.length;
+  let j = i;
+  while (j < n && isIdentChar(src[j])) j++;
+  const word = src.slice(i, j);
+
+  if (RAW_STRING_PREFIXES.has(word)) {
+    let k = j;
+    while (k < n && src[k] === '#') k++;
+    const hashes = k - j;
+    if (src[k] === '"') return blankTo(blank, i, rawStringEnd(src, k, hashes));
+    // Raw identifier such as r#fn or r#type. Not a string; emit unchanged.
+    if (hashes > 0 && word === 'r') return k;
+  }
+  // Plain identifier, or a b"/c"/b' prefix whose delimiter is handled next.
+  return j;
+}
+
+/** Raw string: ends at the first '"' followed by exactly `hashes` '#'. */
+function rawStringEnd(src, k, hashes) {
+  const n = src.length;
+  for (let m = k + 1; m < n; m++) {
+    if (src[m] !== '"') continue;
+    let h = 0;
+    while (h < hashes && src[m + 1 + h] === '#') h++;
+    if (h === hashes) return m + 1 + hashes;
+  }
+  return n;
+}
+
+function quotedStringEnd(src, i) {
+  const n = src.length;
+  let j = i + 1;
+  while (j < n) {
+    if (src[j] === '\\') {
+      j += 2;
+      continue;
+    }
+    if (src[j] === '"') {
+      j++;
+      break;
+    }
+    j++;
+  }
+  return j;
+}
+
+/**
+ * Char literal only when the following text is an optional backslash
+ * escape, one character, then a closing quote. Everything else is a
+ * lifetime and must be left alone, or an unterminated "char literal"
+ * swallows the rest of the file. Returns -1 for a lifetime.
+ */
+function charLiteralEnd(src, i) {
+  if (src[i + 1] === '\\') return src[i + 3] === "'" ? i + 4 : -1;
+  return src[i + 2] === "'" ? i + 3 : -1;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1182,8 +1184,7 @@ function scanScope(st, from, to, ctx, depth) {
   }
   const m = st.masked;
   let i = from;
-  let attrs = [];
-  let attrStart = -1;
+  const pending = { attrs: [], attrStart: -1 };
 
   while (i < to) {
     const c = m[i];
@@ -1193,220 +1194,245 @@ function scanScope(st, from, to, ctx, depth) {
     }
 
     if (c === '#') {
-      let j = i + 1;
-      const inner = m[j] === '!';
-      if (inner) j++;
-      if (m[j] === '[') {
-        const e = matchDelimiter(m, j);
-        if (e < 0 || e >= to) {
-          i = j + 1;
-          continue;
-        }
-        const raw = st.src.slice(i, e + 1);
-        if (inner) {
-          if (ctx.kind === 'file' && hasRequiredTestCfg(raw)) st.out.fileCfgTest = true;
-        } else {
-          if (attrs.length === 0) attrStart = i;
-          attrs.push(raw);
-        }
-        i = e + 1;
-        continue;
-      }
-      i++;
+      i = scanAttribute(st, i, to, ctx, pending);
       continue;
     }
 
-    const itemStart = attrs.length > 0 ? attrStart : i;
-    const next = scanItem(st, i, to, ctx, attrs, itemStart, depth);
-    attrs = [];
-    attrStart = -1;
+    const itemStart = pending.attrs.length > 0 ? pending.attrStart : i;
+    const next = scanItem(st, i, to, ctx, pending.attrs, itemStart, depth);
+    pending.attrs = [];
+    pending.attrStart = -1;
     i = next > i ? next : i + 1;
   }
 }
 
+/** Reads the attribute that `#` at `i` may start; returns the index to resume at. */
+function scanAttribute(st, i, to, ctx, pending) {
+  const m = st.masked;
+  let j = i + 1;
+  const inner = m[j] === '!';
+  if (inner) j++;
+  if (m[j] !== '[') return i + 1;
+  const e = matchDelimiter(m, j);
+  if (e < 0 || e >= to) return j + 1;
+  const raw = st.src.slice(i, e + 1);
+  if (!inner) {
+    if (pending.attrs.length === 0) pending.attrStart = i;
+    pending.attrs.push(raw);
+  } else if (ctx.kind === 'file' && hasRequiredTestCfg(raw)) {
+    st.out.fileCfgTest = true;
+  }
+  return e + 1;
+}
+
+const ITEM_SCANNERS = new Map([
+  ['macro_rules', scanMacroRulesItem],
+  ['use', scanUseItem],
+  ['mod', scanModItem],
+  ['fn', scanFnItem],
+  ['impl', scanImplItem],
+  ['trait', scanTraitItem],
+  ['struct', scanTypeItem],
+  ['enum', scanTypeItem],
+  ['union', scanTypeItem],
+  ['type', scanTypeItem],
+]);
+
 function scanItem(st, i, to, ctx, attrs, itemStart, depth) {
   const m = st.masked;
+  const modifiers = skipItemModifiers(m, i, to);
+  const j = skipWs(m, modifiers.end, to);
+  const kw = readIdent(m, j, to);
+  const attrText = attrs.join(' ');
+  const cfgTest = attrs.some(hasRequiredTestCfg);
+  const cfgGated = !cfgTest && CFG_ANY_RE.test(attrText);
+  const pathAttrRaw = attrs.find((a) => /#\s*\[\s*path\s*=/.test(a)) || null;
+  const item = { st, m, to, ctx, kw, itemStart, depth, cfgTest, cfgGated, pathAttrRaw };
+
+  if (!kw) return recordItem(item, findItemBody(m, j, to).end);
+
+  const scanner = ITEM_SCANNERS.get(kw.name);
+  if (scanner) return scanner(item);
+
+  const body = findItemBody(m, kw.end, to);
+  // A `const` or `static` initializer can hold call syntax that belongs to no
+  // function body. Recorded so those sites are counted, not attributed.
+  if (modifiers.sawValueKeyword) st.out.constStaticRanges.push([itemStart, body.end]);
+  return recordItem(item, body.end);
+}
+
+function skipItemModifiers(m, i, to) {
   let j = i;
   let sawValueKeyword = false;
-
   for (;;) {
     j = skipWs(m, j, to);
     const id = readIdent(m, j, to);
     if (!id || !MODIFIERS.has(id.name)) break;
     j = id.end;
     if (id.name === 'const' || id.name === 'static') sawValueKeyword = true;
-    if (id.name === 'pub') {
-      const k = skipWs(m, j, to);
-      if (m[k] === '(') {
-        const e = matchDelimiter(m, k);
-        if (e > 0 && e < to) j = e + 1;
-      }
-    }
+    if (id.name === 'pub') j = skipVisibilityScope(m, j, to);
   }
+  return { end: j, sawValueKeyword };
+}
 
-  j = skipWs(m, j, to);
-  const kw = readIdent(m, j, to);
-  const attrText = attrs.join(' ');
-  const cfgTest = attrs.some(hasRequiredTestCfg);
-  const cfgGated = !cfgTest && CFG_ANY_RE.test(attrText);
-  const pathAttrRaw = attrs.find((a) => /#\s*\[\s*path\s*=/.test(a)) || null;
-
-  const record = (end) => {
-    if (cfgTest) st.out.cfgTestRanges.push([itemStart, end]);
-    else if (cfgGated) st.out.cfgGatedRanges.push([itemStart, end]);
-  };
-
-  if (!kw) {
-    const body = findItemBody(m, j, to);
-    record(body.end);
-    return body.end;
+/** Steps over the `(crate)` of `pub(crate)`; returns `j` when there is none. */
+function skipVisibilityScope(m, j, to) {
+  const k = skipWs(m, j, to);
+  if (m[k] === '(') {
+    const e = matchDelimiter(m, k);
+    if (e > 0 && e < to) return e + 1;
   }
+  return j;
+}
 
-  const name = kw.name;
+function recordItem(item, end) {
+  if (item.cfgTest) item.st.out.cfgTestRanges.push([item.itemStart, end]);
+  else if (item.cfgGated) item.st.out.cfgGatedRanges.push([item.itemStart, end]);
+  return end;
+}
+
+function itemNameAfterKeyword(item) {
+  return readIdent(item.m, skipWs(item.m, item.kw.end, item.to), item.to);
+}
+
+function scanMacroRulesItem(item) {
+  // The body is a template whose expansion site is unknown, so a path inside
+  // it cannot be attributed to a real module pair. Skipped wholesale.
+  const { m, to } = item;
+  let k = skipWs(m, item.kw.end, to);
+  if (m[k] === '!') k = skipWs(m, k + 1, to);
+  const nameId = readIdent(m, k, to);
+  const body = findItemBody(m, nameId ? nameId.end : k, to);
+  item.st.out.macroRulesRanges.push([item.itemStart, body.end]);
+  return recordItem(item, body.end);
+}
+
+function scanUseItem(item) {
+  const { kw, ctx } = item;
   const afterKw = kw.end;
+  const body = findItemBody(item.m, afterKw, item.to);
+  item.st.out.useDecls.push({
+    start: item.itemStart,
+    keywordStart: kw.start,
+    end: body.end,
+    bodyStart: afterKw,
+    bodyEnd: body.kind === 'semi' ? body.end - 1 : body.end,
+    modStack: ctx.modStack.slice(),
+    cfgTest: item.cfgTest,
+    cfgGated: item.cfgGated,
+  });
+  return recordItem(item, body.end);
+}
 
-  if (name === 'macro_rules') {
-    // The body is a template whose expansion site is unknown, so a path inside
-    // it cannot be attributed to a real module pair. Skipped wholesale.
-    let k = skipWs(m, afterKw, to);
-    if (m[k] === '!') k = skipWs(m, k + 1, to);
-    const nameId = readIdent(m, k, to);
-    const body = findItemBody(m, nameId ? nameId.end : k, to);
-    st.out.macroRulesRanges.push([itemStart, body.end]);
-    record(body.end);
-    return body.end;
-  }
+function scanModItem(item) {
+  const nameId = itemNameAfterKeyword(item);
+  if (!nameId) return recordItem(item, findItemBody(item.m, item.kw.end, item.to).end);
+  const body = findItemBody(item.m, nameId.end, item.to);
+  if (body.kind === 'block') return scanInlineMod(item, nameId, body);
+  const ctx = item.ctx;
+  item.st.out.modDecls.push({
+    name: nameId.name,
+    start: item.itemStart,
+    keywordStart: item.kw.start,
+    end: body.end,
+    modStack: ctx.modStack.slice(),
+    cfgTest: item.cfgTest,
+    cfgGated: item.cfgGated,
+    pathAttrRaw: item.pathAttrRaw,
+  });
+  return recordItem(item, body.end);
+}
 
-  if (name === 'use') {
-    const body = findItemBody(m, afterKw, to);
-    st.out.useDecls.push({
-      start: itemStart,
-      keywordStart: kw.start,
-      end: body.end,
-      bodyStart: afterKw,
-      bodyEnd: body.kind === 'semi' ? body.end - 1 : body.end,
-      modStack: ctx.modStack.slice(),
-      cfgTest,
-      cfgGated,
-    });
-    record(body.end);
-    return body.end;
-  }
-
-  if (name === 'mod') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    if (!nameId) {
-      const body = findItemBody(m, afterKw, to);
-      record(body.end);
-      return body.end;
-    }
-    const body = findItemBody(m, nameId.end, to);
-    if (body.kind === 'block') {
-      st.out.inlineMods.push({
-        name: nameId.name,
-        start: itemStart,
-        end: body.end,
-        bodyStart: body.bodyStart,
-        bodyEnd: body.bodyEnd,
-        modStack: ctx.modStack.slice(),
-        innerStack: ctx.modStack.concat([nameId.name]),
-        cfgTest,
-        cfgGated,
-        pathAttrRaw,
-      });
-      record(body.end);
-      scanScope(
-        st,
-        body.bodyStart,
-        body.bodyEnd,
-        { kind: 'mod', modStack: ctx.modStack.concat([nameId.name]), ownerType: null },
-        depth + 1,
-      );
-      return body.end;
-    }
-    st.out.modDecls.push({
-      name: nameId.name,
-      start: itemStart,
-      keywordStart: kw.start,
-      end: body.end,
-      modStack: ctx.modStack.slice(),
-      cfgTest,
-      cfgGated,
-      pathAttrRaw,
-    });
-    record(body.end);
-    return body.end;
-  }
-
-  if (name === 'fn') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    const body = findItemBody(m, nameId ? nameId.end : afterKw, to);
-    if (nameId) {
-      st.out.fns.push({
-        name: nameId.name,
-        start: itemStart,
-        nameOffset: nameId.start,
-        end: body.end,
-        bodyStart: body.kind === 'block' ? body.bodyStart : -1,
-        bodyEnd: body.kind === 'block' ? body.bodyEnd : -1,
-        modStack: ctx.modStack.slice(),
-        ownerType: ctx.ownerType,
-        cfgTest,
-        cfgGated,
-      });
-    }
-    record(body.end);
-    return body.end;
-  }
-
-  if (name === 'impl') {
-    const body = findItemBody(m, afterKw, to);
-    record(body.end);
-    if (body.kind === 'block') {
-      const header = m.slice(afterKw, body.bodyStart - 1);
-      const selfType = parseImplSelfType(header);
-      scanScope(
-        st,
-        body.bodyStart,
-        body.bodyEnd,
-        { kind: 'impl', modStack: ctx.modStack.slice(), ownerType: selfType },
-        depth + 1,
-      );
-    }
-    return body.end;
-  }
-
-  if (name === 'trait') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    const body = findItemBody(m, nameId ? nameId.end : afterKw, to);
-    record(body.end);
-    if (nameId) st.out.typeDefs.push({ name: nameId.name, modStack: ctx.modStack.slice() });
-    if (body.kind === 'block') {
-      scanScope(
-        st,
-        body.bodyStart,
-        body.bodyEnd,
-        { kind: 'trait', modStack: ctx.modStack.slice(), ownerType: nameId ? nameId.name : null },
-        depth + 1,
-      );
-    }
-    return body.end;
-  }
-
-  if (name === 'struct' || name === 'enum' || name === 'union' || name === 'type') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    const body = findItemBody(m, nameId ? nameId.end : afterKw, to);
-    if (nameId) st.out.typeDefs.push({ name: nameId.name, modStack: ctx.modStack.slice() });
-    record(body.end);
-    return body.end;
-  }
-
-  const body = findItemBody(m, afterKw, to);
-  // A `const` or `static` initializer can hold call syntax that belongs to no
-  // function body. Recorded so those sites are counted, not attributed.
-  if (sawValueKeyword) st.out.constStaticRanges.push([itemStart, body.end]);
-  record(body.end);
+function scanInlineMod(item, nameId, body) {
+  const ctx = item.ctx;
+  item.st.out.inlineMods.push({
+    name: nameId.name,
+    start: item.itemStart,
+    end: body.end,
+    bodyStart: body.bodyStart,
+    bodyEnd: body.bodyEnd,
+    modStack: ctx.modStack.slice(),
+    innerStack: ctx.modStack.concat([nameId.name]),
+    cfgTest: item.cfgTest,
+    cfgGated: item.cfgGated,
+    pathAttrRaw: item.pathAttrRaw,
+  });
+  recordItem(item, body.end);
+  scanScope(
+    item.st,
+    body.bodyStart,
+    body.bodyEnd,
+    { kind: 'mod', modStack: ctx.modStack.concat([nameId.name]), ownerType: null },
+    item.depth + 1,
+  );
   return body.end;
+}
+
+function scanFnItem(item) {
+  const ctx = item.ctx;
+  const nameId = itemNameAfterKeyword(item);
+  const body = findItemBody(item.m, nameId ? nameId.end : item.kw.end, item.to);
+  if (nameId) {
+    const isBlock = body.kind === 'block';
+    item.st.out.fns.push({
+      name: nameId.name,
+      start: item.itemStart,
+      nameOffset: nameId.start,
+      end: body.end,
+      bodyStart: isBlock ? body.bodyStart : -1,
+      bodyEnd: isBlock ? body.bodyEnd : -1,
+      modStack: ctx.modStack.slice(),
+      ownerType: ctx.ownerType,
+      cfgTest: item.cfgTest,
+      cfgGated: item.cfgGated,
+    });
+  }
+  return recordItem(item, body.end);
+}
+
+function scanImplItem(item) {
+  const { m, kw } = item;
+  const body = findItemBody(m, kw.end, item.to);
+  recordItem(item, body.end);
+  if (body.kind === 'block') {
+    const header = m.slice(kw.end, body.bodyStart - 1);
+    const selfType = parseImplSelfType(header);
+    scanScope(
+      item.st,
+      body.bodyStart,
+      body.bodyEnd,
+      { kind: 'impl', modStack: item.ctx.modStack.slice(), ownerType: selfType },
+      item.depth + 1,
+    );
+  }
+  return body.end;
+}
+
+function scanTraitItem(item) {
+  const ctx = item.ctx;
+  const nameId = itemNameAfterKeyword(item);
+  const body = findItemBody(item.m, nameId ? nameId.end : item.kw.end, item.to);
+  recordItem(item, body.end);
+  if (nameId) item.st.out.typeDefs.push({ name: nameId.name, modStack: ctx.modStack.slice() });
+  if (body.kind === 'block') {
+    scanScope(
+      item.st,
+      body.bodyStart,
+      body.bodyEnd,
+      { kind: 'trait', modStack: ctx.modStack.slice(), ownerType: nameId ? nameId.name : null },
+      item.depth + 1,
+    );
+  }
+  return body.end;
+}
+
+function scanTypeItem(item) {
+  const nameId = itemNameAfterKeyword(item);
+  const body = findItemBody(item.m, nameId ? nameId.end : item.kw.end, item.to);
+  if (nameId) {
+    item.st.out.typeDefs.push({ name: nameId.name, modStack: item.ctx.modStack.slice() });
+  }
+  return recordItem(item, body.end);
 }
 
 function inAnyRange(offset, ranges) {
@@ -1476,60 +1502,69 @@ function parseUseNode(masked, from, to, prefix, leadingColons, out, depth, capHi
     return;
   }
   const segments = prefix.slice();
-  let leading = leadingColons;
+  const node = { masked, to, segments, leading: leadingColons, out, depth, capHits };
   let i = skipWs(masked, from, to);
 
-  if (masked[i] === ':' && masked[i + 1] === ':') {
-    leading = true;
+  if (isPathSeparator(masked, i)) {
+    node.leading = true;
     i = skipWs(masked, i + 2, to);
   }
 
   while (i < to) {
     i = skipWs(masked, i, to);
     if (i >= to) break;
-    const c = masked[i];
-
-    if (c === '{') {
-      const e = matchDelimiter(masked, i);
-      if (e < 0 || e > to) return;
-      for (const [s, t] of splitTopLevel(masked, i + 1, e, ',')) {
-        parseUseNode(masked, s, t, segments, leading, out, depth + 1, capHits);
-      }
-      return;
-    }
-
-    if (c === '*') {
-      out.push({ segments: segments.slice(), alias: null, isGlob: true, leadingColons: leading });
-      return;
-    }
-
-    const id = readIdent(masked, i, to);
-    if (!id) {
-      i++;
-      continue;
-    }
-    i = id.end;
-
-    if (id.name === 'self' && segments.length > 0) {
-      // `use crate::a::{self, b};` yields crate::a and crate::a::b.
-      const alias = readTrailingAlias(masked, i, to);
-      out.push({ segments: segments.slice(), alias, isGlob: false, leadingColons: leading });
-      return;
-    }
-    segments.push(id.name);
-
-    const k = skipWs(masked, i, to);
-    if (masked[k] === ':' && masked[k + 1] === ':') {
-      i = k + 2;
-      continue;
-    }
-    const alias = readTrailingAlias(masked, i, to);
-    out.push({ segments: segments.slice(), alias, isGlob: false, leadingColons: leading });
-    return;
+    i = parseUseStep(node, i);
+    if (i < 0) return;
   }
 
-  if (segments.length > prefix.length) {
-    out.push({ segments: segments.slice(), alias: null, isGlob: false, leadingColons: leading });
+  if (node.segments.length > prefix.length) out.push(useLeaf(node, null, false));
+}
+
+function isPathSeparator(masked, i) {
+  return masked[i] === ':' && masked[i + 1] === ':';
+}
+
+function useLeaf(node, alias, isGlob) {
+  return { segments: node.segments.slice(), alias, isGlob, leadingColons: node.leading };
+}
+
+/** One step of a use node at `i`: the next index, or -1 once the node is complete. */
+function parseUseStep(node, i) {
+  const { masked, to, segments } = node;
+  const c = masked[i];
+
+  if (c === '{') {
+    parseUseGroup(node, i);
+    return -1;
+  }
+
+  if (c === '*') {
+    node.out.push(useLeaf(node, null, true));
+    return -1;
+  }
+
+  const id = readIdent(masked, i, to);
+  if (!id) return i + 1;
+
+  if (id.name === 'self' && segments.length > 0) {
+    // `use crate::a::{self, b};` yields crate::a and crate::a::b.
+    node.out.push(useLeaf(node, readTrailingAlias(masked, id.end, to), false));
+    return -1;
+  }
+  segments.push(id.name);
+
+  const k = skipWs(masked, id.end, to);
+  if (isPathSeparator(masked, k)) return k + 2;
+  node.out.push(useLeaf(node, readTrailingAlias(masked, id.end, to), false));
+  return -1;
+}
+
+function parseUseGroup(node, i) {
+  const { masked, to } = node;
+  const e = matchDelimiter(masked, i);
+  if (e < 0 || e > to) return;
+  for (const [s, t] of splitTopLevel(masked, i + 1, e, ',')) {
+    parseUseNode(masked, s, t, node.segments, node.leading, node.out, node.depth + 1, node.capHits);
   }
 }
 
