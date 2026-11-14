@@ -136,7 +136,10 @@ impl ContainerTransportBackend {
             container_credential_path,
         };
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if sessions.contains_key(&id) {
             return Err(AppError::PtyError(format!(
                 "container transport session {id} already exists"
@@ -189,7 +192,10 @@ impl ContainerTransportBackend {
         session_id: Uuid,
         handle: ContainerRuntimeHandle,
     ) -> Result<(), AppError> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = sessions
             .get_mut(&session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;

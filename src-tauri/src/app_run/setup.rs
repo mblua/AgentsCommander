@@ -750,12 +750,12 @@ fn prepare_startup_pty(
 ) {
     pty_mgr
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .bind_response_close(response_close_for_setup.clone());
     install_container_route_remover(pty_mgr);
     pty_mgr
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .cleanup_container_orphans_on_startup();
 }
 
@@ -783,7 +783,9 @@ fn enable_response_close_readiness(
     menu_guard: &crate::pty::menu_guard::MenuGuard,
 ) {
     let response_close_wired = {
-        let pty = pty_mgr.lock().unwrap();
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         response_close_wiring_matches(
             response_close_for_setup,
             manager,

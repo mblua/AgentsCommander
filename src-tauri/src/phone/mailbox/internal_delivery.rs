@@ -762,7 +762,9 @@ impl MailboxPoller {
         }
 
         let pty_mgr = app.pty_routes();
-        let pty = pty_mgr.lock().unwrap();
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         pty.has_session(id)
     }
 

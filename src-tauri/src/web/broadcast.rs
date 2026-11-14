@@ -35,7 +35,10 @@ impl WsBroadcaster {
     /// Register a new client's sender. Returns the receiver for the WS write loop.
     pub fn subscribe(&self) -> mpsc::Receiver<WsOutMsg> {
         let (tx, rx) = mpsc::channel(WS_CLIENT_QUEUE_CAP);
-        let mut senders = self.senders.lock().unwrap();
+        let mut senders = self
+            .senders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         senders.push(tx);
         rx
     }
@@ -47,7 +50,10 @@ impl WsBroadcaster {
         let text = msg.to_string();
         let out = WsOutMsg::Text(text);
 
-        let mut senders = self.senders.lock().unwrap();
+        let mut senders = self
+            .senders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         senders.retain(|tx| tx.try_send(out.clone()).is_ok());
     }
 
@@ -66,13 +72,19 @@ impl WsBroadcaster {
         frame.extend_from_slice(data);
 
         let out = WsOutMsg::Binary(frame);
-        let mut senders = self.senders.lock().unwrap();
+        let mut senders = self
+            .senders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         senders.retain(|tx| tx.try_send(out.clone()).is_ok());
     }
 
     /// Number of connected clients (for diagnostics).
     pub fn client_count(&self) -> usize {
-        self.senders.lock().unwrap().len()
+        self.senders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 }
 

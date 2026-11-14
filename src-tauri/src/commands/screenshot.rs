@@ -57,7 +57,11 @@ pub fn screenshot_start_capture(app: AppHandle) {
 pub fn screenshot_get_hotkey_status(
     state: State<'_, ScreenshotHotkeyState>,
 ) -> ScreenshotHotkeyStatus {
-    state.lock().unwrap().status.clone()
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .status
+        .clone()
 }
 
 /// Re-read the configured hotkey from settings and (re-)register it. Useful after
@@ -84,7 +88,7 @@ pub async fn screenshot_reload_hotkey(
     let status = app
         .state::<ScreenshotHotkeyState>()
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .status
         .clone();
     Ok(status)
