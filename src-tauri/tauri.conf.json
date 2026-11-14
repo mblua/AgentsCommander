@@ -20,7 +20,9 @@
     "publisher": "AgentsCommander Contributors",
     "category": "Development",
     "resources": {
-      "../dist": "dist/"
+      "../dist": "dist/",
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "icon": [
       "icons/32x32.png",

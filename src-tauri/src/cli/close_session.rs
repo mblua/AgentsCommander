@@ -251,7 +251,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         return 1;
     }
 
-    let outbox_path = outbox_dir.join(format!("{msg_id}.json"));
+    let outbox_path = crate::phone::types::outbox_message_file(&outbox_dir, &msg_id);
     let json = match serde_json::to_string_pretty(&message) {
         Ok(j) => j,
         Err(e) => {
@@ -332,10 +332,8 @@ fn wait_for_close_response(
     // "delivery confirmation", cuyo presupuesto fijo de 30s expiraba durante
     // cierres graceful normales de ~30s y reportaba un timeout falso (97.9%
     // de los graceful, #1440).
-    let delivered_path = outbox_dir.join("delivered").join(format!("{msg_id}.json"));
-    let rejected_reason_path = outbox_dir
-        .join("rejected")
-        .join(format!("{msg_id}.reason.txt"));
+    let delivered_path = crate::phone::types::outbox_delivered_receipt(outbox_dir, msg_id);
+    let rejected_reason_path = crate::phone::types::outbox_rejected_reason(outbox_dir, msg_id);
 
     let responses_dir = ac_dir.join("responses");
     let response_path = responses_dir.join(format!("{request_id}.json"));

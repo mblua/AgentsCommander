@@ -26,7 +26,7 @@ jobs:
       authority_sha256: ${{ steps.tag.outputs.authority_sha256 }}
       release_controls_b64: ${{ steps.controls.outputs.release_controls_b64 }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -112,7 +112,7 @@ jobs:
             echo "authority_sha256=$authority_sha256"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
@@ -797,7 +797,7 @@ jobs:
     outputs:
       release_id: ${{ steps.release.outputs.release_id }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -849,26 +849,14 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Create or recover the unique guarded draft release
         id: release
@@ -945,7 +933,7 @@ jobs:
             raw_source: target/x86_64-apple-darwin/release/agentscommander
             target_dir: target/x86_64-apple-darwin/release
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -1004,26 +992,14 @@ jobs:
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
           printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Resolve the unique guarded draft release by numeric ID
         id: release
@@ -1124,7 +1100,7 @@ jobs:
           test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
 
       - name: Restore Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri -> target
 
@@ -1146,7 +1122,7 @@ jobs:
         run: npm ci --ignore-scripts --registry "$REGISTRY_URL"
 
       - name: Build package artifacts without release-side effects
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         with:
           args: ${{ matrix.args }}
 
@@ -1380,7 +1356,7 @@ jobs:
           done
 
       - name: Upload the closed successful producer manifest for internal verification
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: producer-manifest-${{ matrix.producer }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/producer-manifest-${{ matrix.producer }}.json
@@ -1396,78 +1372,28 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
-        shell: bash
-        env:
-          EVENT_SHA: ${{ github.sha }}
-          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
-          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
-          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
-          test "$RELEASE_DIR" = "docs/releases/$TAG"
-          test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
-          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
-          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
-          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
-          test "$TAG_OBJECT" != "$PEELED_COMMIT"
-          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
-          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
-          test "${#REMOTE_TAG[@]}" -eq 2
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+        uses: ./.github/actions/rebind-guarded-tag
+        with:
+          tag-object: ${{ needs.guard.outputs.tag_object }}
+          peeled-commit: ${{ needs.guard.outputs.peeled_commit }}
+          authority-sha256: ${{ needs.guard.outputs.authority_sha256 }}
+          release-dir: ${{ needs.guard.outputs.release_dir }}
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Resolve exact-run producer manifests across workflow attempts
         shell: bash
@@ -1946,78 +1872,28 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
-        shell: bash
-        env:
-          EVENT_SHA: ${{ github.sha }}
-          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
-          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
-          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
-          test "$RELEASE_DIR" = "docs/releases/$TAG"
-          test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
-          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
-          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
-          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
-          test "$TAG_OBJECT" != "$PEELED_COMMIT"
-          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
-          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
-          test "${#REMOTE_TAG[@]}" -eq 2
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+        uses: ./.github/actions/rebind-guarded-tag
+        with:
+          tag-object: ${{ needs.guard.outputs.tag_object }}
+          peeled-commit: ${{ needs.guard.outputs.peeled_commit }}
+          authority-sha256: ${{ needs.guard.outputs.authority_sha256 }}
+          release-dir: ${{ needs.guard.outputs.release_dir }}
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Verify the dynamic immediate immutable predecessor
         shell: bash
@@ -2284,78 +2160,28 @@ jobs:
       contents: read
       attestations: read
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Rebind the guarded annotated tag
-        shell: bash
-        env:
-          EVENT_SHA: ${{ github.sha }}
-          EXPECTED_TAG_OBJECT: ${{ needs.guard.outputs.tag_object }}
-          EXPECTED_PEELED_COMMIT: ${{ needs.guard.outputs.peeled_commit }}
-          EXPECTED_AUTHORITY_SHA256: ${{ needs.guard.outputs.authority_sha256 }}
-          RELEASE_DIR: ${{ needs.guard.outputs.release_dir }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "${GITHUB_REF#refs/tags/}"
-          TAG="$GITHUB_REF_NAME"
-          test "$RELEASE_DIR" = "docs/releases/$TAG"
-          test -f "$RELEASE_DIR/release-authority-v1.txt"
-          printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          HEAD_COMMIT="$(git rev-parse 'HEAD^{commit}')"
-          PEELED_COMMIT="$(git rev-parse "$TAG^{}")"
-          TAG_OBJECT="$(git rev-parse "$TAG^{tag}")"
-          test "$GITHUB_SHA" = "$EVENT_SHA"
-          test "$GITHUB_SHA" = "$HEAD_COMMIT"
-          test "$HEAD_COMMIT" = "$PEELED_COMMIT"
-          test "$TAG_OBJECT" != "$PEELED_COMMIT"
-          test "$TAG_OBJECT" = "$EXPECTED_TAG_OBJECT"
-          test "$PEELED_COMMIT" = "$EXPECTED_PEELED_COMMIT"
-          tag_bytes="$(mktemp)"
-          tag_payload="$(mktemp)"
-          git cat-file tag "$TAG_OBJECT" > "$tag_bytes"
-          perl -0777 -e '
-            binmode STDIN;
-            binmode STDOUT;
-            local $/;
-            my $bytes = <STDIN>;
-            my $separator = index($bytes, "\n\n");
-            die "annotated tag header/message separator missing\n" if $separator < 0;
-            print substr($bytes, $separator + 2);
-          ' < "$tag_bytes" > "$tag_payload"
-          cmp -- "$tag_payload" "$RELEASE_DIR/release-authority-v1.txt"
-          mapfile -t REMOTE_TAG < <(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
-          test "${#REMOTE_TAG[@]}" -eq 2
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$TAG_OBJECT"$'\t'"refs/tags/$TAG"
-          printf '%s\n' "${REMOTE_TAG[@]}" | grep -Fx "$PEELED_COMMIT"$'\t'"refs/tags/$TAG^{}"
-          test "$(sha256sum "$RELEASE_DIR/release-authority-v1.txt" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
-          test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
+        uses: ./.github/actions/rebind-guarded-tag
+        with:
+          tag-object: ${{ needs.guard.outputs.tag_object }}
+          peeled-commit: ${{ needs.guard.outputs.peeled_commit }}
+          authority-sha256: ${{ needs.guard.outputs.authority_sha256 }}
+          release-dir: ${{ needs.guard.outputs.release_dir }}
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Install the manifest-pinned GitHub CLI for attestation verification
         shell: bash
@@ -2528,7 +2354,7 @@ jobs:
             libwebkit2gtk-4.1-0 libgtk-3-0 libgbm1 libxcb1 \
             libssl3 libwayland-client0
 
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -2581,21 +2407,9 @@ jobs:
           test "$(sha256sum "$tag_payload" | awk '{print $1}')" = "$EXPECTED_AUTHORITY_SHA256"
 
       - name: Restore numeric release API controls
-        shell: bash
-        env:
-          RELEASE_CONTROLS_B64: ${{ needs.guard.outputs.release_controls_b64 }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_CONTROLS_B64"
-          node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const [output, encoded] = process.argv.slice(2);
-          const bytes = Buffer.from(encoded, 'base64');
-          assert.ok(bytes.length > 0, 'release controls are empty');
-          fs.writeFileSync(output, bytes, { mode: 0o700 });
-          assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
-          NODE
+        uses: ./.github/actions/restore-release-controls
+        with:
+          controls-b64: ${{ needs.guard.outputs.release_controls_b64 }}
 
       - name: Reject caller npm environment before setup-node
         shell: bash
@@ -2605,7 +2419,7 @@ jobs:
           npm_reject_tokenless_auth_environment
           test ! -e "$RUNNER_TEMP/.npmrc"
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/

@@ -930,6 +930,7 @@ fn issue_1937_config_lock_concurrent_disjoint_updates_both_survive() {
     assert!(lock_sidecar_path(&path).is_file(), "sidecar must survive");
 }
 
+mod json_object_error;
 mod pair;
 mod pair_activity;
 #[cfg(windows)]

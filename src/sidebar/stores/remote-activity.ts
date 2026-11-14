@@ -50,10 +50,13 @@ export const remoteActivityStore = {
     }
 
     const next: Record<string, RemoteActivityEntry> = {};
-    for (let i = 0; i < repoPaths.length; i += 1) {
-      next[repoPaths[i]] = {
-        ci: ciStates[i],
-        staleness: stalenessStates[i],
+    for (const [i, path] of repoPaths.entries()) {
+      const ci = ciStates[i];
+      const staleness = stalenessStates[i];
+      if (ci === undefined || staleness === undefined) continue; // unreachable: lengths match above
+      next[path] = {
+        ci,
+        staleness,
         behindBy: behindBy[i] ?? null,
       };
     }

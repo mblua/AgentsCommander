@@ -343,7 +343,7 @@ async fn issue_3189_retry_unknown_error_stops() {
     assert_eq!(status, NoticeDelivery::Failed("unknown error".into()));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn issue_3189_retry_deadline_caps() {
     let window = Duration::from_millis(20);
     let started = tokio::time::Instant::now();
@@ -365,6 +365,7 @@ async fn issue_3189_retry_deadline_caps() {
     .await
     .expect("deadline must exhaust finitely");
     assert!(!starts.is_empty());
+    assert_eq!(starts, [0, 5, 10, 15].map(Duration::from_millis));
     assert!(starts.iter().all(|elapsed| *elapsed < window));
     assert_eq!(status, NoticeDelivery::Exhausted);
     let mut attempted = false;

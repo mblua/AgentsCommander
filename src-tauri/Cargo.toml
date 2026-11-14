@@ -1,7 +1,7 @@
 [package]
 name = "agentscommander"
 version = "0.47.0"
-edition = "2021"
+edition = "2024"
 authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
 
@@ -112,10 +112,13 @@ glib = "=0.18.5"
 cairo-rs = { version = "=0.18.5", features = ["png"] }
 
 [dev-dependencies]
+#4545 paused clock in tests; dev-only feature, not in the normal build (resolver 2)
+tokio = { version = "1", features = ["test-util"] }
 rust-source-scrub = { path = "../crates/rust-source-scrub" }
 syn = { version = "=2.0.117", features = ["full", "visit"] }
 tempfile = "3"
 tauri = { version = "2.12.1", features = ["image-png", "test"] }
+ts-rs = "=12.0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -12,7 +12,7 @@ pub(super) const STATUS_LIMIT: usize = 65_536;
 pub(super) const STATUS_WINDOW: u64 = 131_073;
 pub(super) const TASK_LIMIT: u64 = 256 * 1024;
 pub(super) const MAX_SEQUENCE: u64 = (1u64 << 53) - 1;
-pub(super) const STATUS_NAME: &str = "TASK-status.jsonl";
+pub(super) const STATUS_NAME: &str = crate::filesystem::tasks::TASK_STATUS_FILE_NAME;
 pub(super) const JOURNAL_NAME: &str = "TASK-clean.pending.json";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -155,7 +155,9 @@ pub(super) fn validate_record(bytes: &[u8]) -> Result<StatusRecord, TaskOpError>
                     .as_deref()
                     .ok_or_else(|| status_invalid("missing status"))?,
             )?;
-            let base = r.base_revision.as_deref().unwrap();
+            let Some(base) = r.base_revision.as_deref() else {
+                return Err(status_invalid("missing base revision"));
+            };
             let expected = if r.sequence == 1 && base == "legacy:0" {
                 "legacy:0".to_string()
             } else {

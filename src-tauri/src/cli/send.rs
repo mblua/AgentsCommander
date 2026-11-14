@@ -114,10 +114,8 @@ fn wait_for_delivery_confirmation(
     confirm_timeout: std::time::Duration,
     confirm_poll: std::time::Duration,
 ) -> Result<(), String> {
-    let delivered_path = outbox_dir.join("delivered").join(format!("{msg_id}.json"));
-    let rejected_reason_path = outbox_dir
-        .join("rejected")
-        .join(format!("{msg_id}.reason.txt"));
+    let delivered_path = crate::phone::types::outbox_delivered_receipt(outbox_dir, msg_id);
+    let rejected_reason_path = crate::phone::types::outbox_rejected_reason(outbox_dir, msg_id);
     let start = std::time::Instant::now();
 
     loop {

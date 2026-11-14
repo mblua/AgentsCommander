@@ -20,7 +20,8 @@
     "reclaim:artifacts:apply": "node scripts/reclaim-build-artifacts.mjs --apply",
     "prepare": "husky",
     "tauri": "tauri",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.app.json",
+    "lint": "eslint --max-warnings 0 src",
     "check:frontend-dependencies": "node scripts/check-frontend-dependencies.mjs",
     "test": "vitest run",
     "test:debt": "node scripts/check-test-debt.mjs",
@@ -61,7 +62,11 @@
     "sanitizing:self": "node --test scripts/sanitizing_self_tests.mjs",
     "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
     "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
-    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff"
+    "actions-pinned": "node scripts/check-actions-pinned.mjs",
+    "actions-pinned:self": "node scripts/check-actions-pinned.mjs --self-test",
+    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -80,10 +85,14 @@
     "@vitest/coverage-v8": "4.1.5",
     "cross-env": "^10.1.0",
     "dependency-cruiser": "18.0.0",
+    "eslint": "10.13.0",
+    "eslint-plugin-solid": "0.18.1",
     "husky": "^9.1.7",
     "jscpd": "5.2.1",
     "jsdom": "^25.0.1",
+    "prettier": "3.6.2",
     "typescript": "^5",
+    "typescript-eslint": "8.72.1",
     "vite": "^8.0.2",
     "vite-plugin-solid": "^2.11.11",
     "vitest": "^4.1.5"

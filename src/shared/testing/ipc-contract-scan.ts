@@ -21,8 +21,8 @@ type Call = { cmd: string; loc: string; present: string[]; optional: string[]; o
 
 const EXACT_ATTR = /^[ \t]*#\[tauri::command\][ \t]*\r?$/gm;
 const ANY_ATTR = /^[ \t]*#\[\s*tauri::command\b/;
-const FN_HEAD = /\bfn\s+([A-Za-z0-9_]+)\s*(<[^(]*>)?\s*\(/;
-const PARAM = /^(mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]+)$/;
+const FN_HEAD = /\bfn\s+(\w+)\s*(<[^(]*>)?\s*\(/;
+const PARAM = /^(mut\s+)?([A-Za-z_]\w*)\s*:\s*([\s\S]+)$/;
 const INJECTED = new RegExp(
   "^(tauri::)?(ipc::|webview::|window::)?" +
     "(AppHandle|WebviewWindow|Window|Webview|State|Request|Invoke)\\b",
@@ -55,10 +55,6 @@ function splitTop(text: string): string[] {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
-function lineOf(text: string, index: number): number {
-  return text.slice(0, index).split("\n").length;
-}
-
 function isRustTestPath(path: string): boolean {
   const base = path.slice(path.lastIndexOf("/") + 1);
   return path.includes("/tests/") || /^tests\.rs$|_tests?\.rs$/.test(base);
@@ -76,9 +72,9 @@ function parseParams(name: string, file: string, raw: string, failures: string[]
       failures.push(`unparsed parameter "${param}" in ${name} at ${file}`);
       continue;
     }
-    const type = m[3].trim();
+    const type = m[3]!.trim(); // PARAM groups 2 and 3 are not optional
     if (INJECTED.test(type.replace(/^&\s*/, ""))) continue;
-    keys.push({ key: camelKey(m[2]), required: !/^Option\s*</.test(type) });
+    keys.push({ key: camelKey(m[2]!), required: !/^Option\s*</.test(type) });
   }
   return keys;
 }
@@ -98,7 +94,7 @@ function scanCommands(file: string, text: string, scan: RustScan, failures: stri
     if (!fn) continue;
     const open = m.index + fn.index + fn[0].length - 1;
     const close = matchClose(text, open, "(", ")");
-    const name = fn[1];
+    const name = fn[1]!; // FN_HEAD group 1 is not optional
     const keys = parseParams(name, file, text.slice(open + 1, close), failures);
     const prior = scan.commands.get(name);
     if (prior) failures.push(`duplicate command fn "${name}" in ${prior.file}, ${file}`);
@@ -116,7 +112,8 @@ function scanRegistries(text: string, scan: RustScan): void {
 
 function scanWsArms(text: string, scan: RustScan): void {
   for (const re of [WS_ARM_BEFORE, WS_ARM_AFTER]) {
-    for (const m of text.matchAll(re)) scan.wsArms.add(m[1]);
+    // Both WS_ARM regexes have one non-optional group.
+    for (const m of text.matchAll(re)) scan.wsArms.add(m[1]!);
   }
 }
 

@@ -9,7 +9,7 @@ import {
   registerCompactHost,
   sidebarCompact,
 } from "../shared/sidebar-compact";
-import "../sidebar/styles/sidebar.css";
+import "../sidebar/styles/sidebar-all.css";
 import "../terminal/styles/terminal.css";
 import "./styles/browser.css";
 
@@ -177,7 +177,8 @@ const BrowserApp: Component = () => {
     const side = sidebarSide();
 
     const onTouchMove = (e: TouchEvent) => {
-      const touch = e.touches[0];
+      // touchmove always carries at least one active touch.
+      const touch = e.touches[0]!;
       const raw = side === "left" ? touch.clientX : window.innerWidth - touch.clientX;
       setSidebarWidth(clampWidth(raw));
     };

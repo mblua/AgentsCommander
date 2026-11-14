@@ -98,37 +98,7 @@ impl MailboxPoller {
         use crate::phone::types::PtyInputReasonCode as C;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
-            let expires = crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
-                .map_err(|_| C::StoreCorrupt)?;
-            if heartbeat.failed() {
-                return Err(if expires <= chrono::Utc::now() {
-                    C::Expired
-                } else {
-                    C::LeaseLost
-                });
-            }
-            if expires <= chrono::Utc::now() {
-                return Err(C::Expired);
-            }
-            if app
-                .pty_restore()
-                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
-            {
-                return Err(C::RestoreInProgress);
-            }
-            if app
-                .pty_purge()
-                .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
-            {
-                return Err(C::PurgeInProgress);
-            }
-            let menu_guard = app.pty_menu();
-            if menu_guard
-                .as_ref()
-                .is_some_and(|g| g.is_blocked(session_id))
-            {
-                return Err(C::MenuGuardBlocked);
-            }
+            Self::pty_input_preflight(app, claimed, session_id, heartbeat)?;
             let authority = if source_plane == crate::phone::types::PtyInputSourcePlane::HostCli {
                 self.validate_claimed_host_authority(app, claimed).await
             } else {
@@ -137,12 +107,7 @@ impl MailboxPoller {
                     .map_err(|_| C::StoreTransient)?
             };
             if !authority.is_some_and(|route| {
-                route.sender.authority_fingerprint == claimed.sender_identity_fingerprint
-                    && route.target.authority_fingerprint == verified_target.authority_fingerprint
-                    && crate::path_identity::same_object(
-                        &route.target.replica_identity,
-                        &verified_target.replica_identity,
-                    )
+                Self::authority_route_matches(&route, claimed, verified_target)
             }) {
                 return Err(C::AuthorityChanged);
             }
@@ -182,6 +147,60 @@ impl MailboxPoller {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
+    }
+
+    fn pty_input_preflight<S: PtyReadinessState + ?Sized>(
+        app: &S,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        session_id: Uuid,
+        heartbeat: &crate::api::message_store::PreparationHeartbeatGuard,
+    ) -> Result<(), crate::phone::types::PtyInputReasonCode> {
+        use crate::phone::types::PtyInputReasonCode as C;
+        let expires = crate::phone::types::parse_canonical_pty_timestamp(&claimed.expires_at)
+            .map_err(|_| C::StoreCorrupt)?;
+        if heartbeat.failed() {
+            return Err(if expires <= chrono::Utc::now() {
+                C::Expired
+            } else {
+                C::LeaseLost
+            });
+        }
+        if expires <= chrono::Utc::now() {
+            return Err(C::Expired);
+        }
+        if app
+            .pty_restore()
+            .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err(C::RestoreInProgress);
+        }
+        if app
+            .pty_purge()
+            .is_some_and(|guard| guard.blocks_agent(&claimed.target_fqn))
+        {
+            return Err(C::PurgeInProgress);
+        }
+        let menu_guard = app.pty_menu();
+        if menu_guard
+            .as_ref()
+            .is_some_and(|g| g.is_blocked(session_id))
+        {
+            return Err(C::MenuGuardBlocked);
+        }
+        Ok(())
+    }
+
+    fn authority_route_matches(
+        route: &crate::config::teams::VerifiedPtyInputRoute,
+        claimed: &crate::api::message_store::ClaimedPtyInputOperation,
+        verified_target: &crate::config::teams::VerifiedPtyInputIdentity,
+    ) -> bool {
+        route.sender.authority_fingerprint == claimed.sender_identity_fingerprint
+            && route.target.authority_fingerprint == verified_target.authority_fingerprint
+            && crate::path_identity::same_object(
+                &route.target.replica_identity,
+                &verified_target.replica_identity,
+            )
     }
 
     /// Process a single outbox message file.

@@ -31,6 +31,7 @@ use super::report::validate_replicates;
 use super::report::validate_report_artifacts;
 use super::report::validate_run_id;
 use super::storage::create_attempts;
+use super::storage::experiment_metadata_path;
 use super::storage::experiments_dir;
 use super::storage::load_experiment;
 use super::storage::load_variant_metadata;
@@ -38,6 +39,7 @@ use super::storage::read_json;
 use super::storage::resolve_ac_root;
 use super::storage::resolve_project;
 use super::storage::validate_required_artifact_file;
+use super::storage::variant_metadata_path;
 use super::storage::write_json;
 use super::storage::write_new_file;
 use super::storage::{attempts_name, attempts_path, attempts_path_display};
@@ -148,9 +150,7 @@ pub(super) fn init_for_project_path(
             updated_at: now.clone(),
         };
         write_json(
-            &experiment_dir
-                .join("variants")
-                .join(format!("{variant}.json")),
+            &variant_metadata_path(&experiment_dir, variant),
             &metadata,
             "variant_metadata_write_failed",
             Some(variant.as_str()),
@@ -171,7 +171,7 @@ pub(super) fn init_for_project_path(
 
     let experiment = init_experiment_metadata(&args, &source_agent, &role_sha, now, variants);
     write_json(
-        &experiment_dir.join("experiment.json"),
+        &experiment_metadata_path(&experiment_dir),
         &experiment,
         "experiment_metadata_write_failed",
         None,
@@ -278,7 +278,7 @@ pub(super) fn list(args: ProjectArgs) -> Result<CommandOutput, Vec<CliError>> {
                 if !directories::experiment_path_is_dir(&path) {
                     return std::ops::ControlFlow::Continue(());
                 }
-                match read_json::<ExperimentMetadata>(&path.join("experiment.json")) {
+                match read_json::<ExperimentMetadata>(&experiment_metadata_path(&path)) {
                     Ok(meta) => experiments.push(serde_json::json!({
                         "name": meta.name,
                         "sourceAgent": meta.source_agent,
@@ -402,10 +402,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
     variant.role_sha256 = sha256_hex(&bytes);
     variant.updated_at = now.clone();
     write_json(
-        &loaded
-            .experiment_dir
-            .join("variants")
-            .join(format!("{}.json", args.variant)),
+        &variant_metadata_path(&loaded.experiment_dir, &args.variant),
         &variant,
         "variant_metadata_write_failed",
         Some(args.variant.as_str()),
@@ -413,7 +410,7 @@ pub(super) fn variant_set(args: VariantSetArgs) -> Result<CommandOutput, Vec<Cli
     let mut experiment = loaded.experiment.clone();
     experiment.updated_at = now;
     write_json(
-        &loaded.experiment_dir.join("experiment.json"),
+        &experiment_metadata_path(&loaded.experiment_dir),
         &experiment,
         "experiment_metadata_write_failed",
         None,

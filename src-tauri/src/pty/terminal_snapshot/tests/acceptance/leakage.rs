@@ -20,7 +20,10 @@ fn real_host_and_api_daemon_paths_enforce_secondary_leakage_confinement() {
     let config = temporary.path().join("config");
     std::fs::create_dir_all(&config).expect("leakage config directory");
     let _env = ConfigEnvGuard::set(&config);
-    std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    // SAFETY: runs only in the isolated --test-threads=1 child process
+    unsafe {
+        std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    }
     crate::logging::init_logger();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

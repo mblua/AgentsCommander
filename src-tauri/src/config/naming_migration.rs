@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::filesystem::naming_journal;
@@ -47,8 +46,6 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// The five-second lock budget: the value of the private `CONFIG_LOCK_TIMEOUT`
 /// (`local_config_io.rs`), restated because this leaf may not name that module.
 pub(crate) const MIGRATION_LOCK_BUDGET: Duration = Duration::from_secs(5);
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rename {
@@ -425,7 +422,7 @@ fn commit_journal(dir: &Path, journal: &Journal) -> Result<(), Refusal> {
     let temp = dir.join(format!(
         "{NAMING_MIGRATION_STATE_NAME}.{}.{}.tmp",
         std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        crate::filesystem::next_temp_name_sequence()
     ));
     let written = (|| {
         let mut file = naming_journal::create_journal_stage(&temp)?;
@@ -516,8 +513,8 @@ fn move_no_replace(
     naming_journal::move_migration_file_no_replace(from, to)
 }
 
-/// `hard_link` is create-only; `std::fs::rename` is not used here because a
-/// POSIX rename silently replaces an existing destination.
+/// `hard_link` is create-only; `std::fs::rename` is not used for files because
+/// a POSIX rename silently replaces an existing destination.
 #[cfg(not(windows))]
 fn move_no_replace(
     from: &Path,
@@ -527,6 +524,22 @@ fn move_no_replace(
     #[cfg(test)]
     if let Some(kind) = faults.take("move_no_replace", to) {
         return Err(io::Error::new(kind, "injected move_no_replace failure"));
+    }
+    // A directory cannot be hard-linked, so it is renamed instead. The caller
+    // holds the migration lock and the absence check keeps the move
+    // create-only, matching the Windows move of a legacy directory.
+    if naming_journal::migration_metadata(from)?.is_dir() {
+        match naming_journal::migration_metadata(to) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "move_no_replace destination exists",
+                ));
+            }
+        }
+        return naming_journal::replace_journal_file(from, to);
     }
     naming_journal::link_migration_file(from, to)?;
     #[cfg(test)]

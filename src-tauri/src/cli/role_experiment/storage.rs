@@ -48,7 +48,7 @@ pub(super) fn load_experiment(
     let project_path = resolve_project(project)?;
     let ac_root = resolve_ac_root(&project_path)?;
     let experiment_dir = experiments_dir(&ac_root).join(experiment);
-    let metadata_path = experiment_dir.join("experiment.json");
+    let metadata_path = experiment_metadata_path(&experiment_dir);
     reject_link_or_reparse(&experiment_dir, "experiment_metadata_link_or_reparse", None)?;
     reject_link_or_reparse(&metadata_path, "experiment_metadata_link_or_reparse", None)?;
     let experiment = read_json::<ExperimentMetadata>(&metadata_path)
@@ -64,10 +64,7 @@ pub(super) fn load_variant_metadata(
     loaded: &LoadedExperiment,
     variant: &str,
 ) -> Result<VariantMetadata, String> {
-    let path = loaded
-        .experiment_dir
-        .join("variants")
-        .join(format!("{variant}.json"));
+    let path = variant_metadata_path(&loaded.experiment_dir, variant);
     reject_link_or_reparse(&path, "variant_metadata_link_or_reparse", Some(variant)).map_err(
         |errors| {
             errors
@@ -133,6 +130,24 @@ pub(super) fn attempts_path(run_dir: &Path) -> PathBuf {
 
 pub(super) fn attempts_path_display(run_dir: &Path) -> String {
     attempts_path(run_dir).to_string_lossy().to_string()
+}
+
+pub(super) fn experiment_metadata_path(experiment_dir: &Path) -> PathBuf {
+    experiment_dir.join("experiment.json")
+}
+
+pub(super) fn variant_metadata_path(experiment_dir: &Path, variant: &str) -> PathBuf {
+    experiment_dir
+        .join("variants")
+        .join(format!("{variant}.json"))
+}
+
+pub(super) fn attempt_running_path(state_dir: &Path, attempt_id: &str) -> PathBuf {
+    state_dir.join(format!("{attempt_id}.running.json"))
+}
+
+pub(super) fn attempt_done_path(state_dir: &Path, attempt_id: &str) -> PathBuf {
+    state_dir.join(format!("{attempt_id}.done.json"))
 }
 
 const RUN_FILE_NAME: &str = "run.json";

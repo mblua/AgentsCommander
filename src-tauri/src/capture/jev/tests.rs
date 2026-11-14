@@ -528,3 +528,13 @@ async fn a_non_default_model_classifies_and_names_itself_in_abstentions() {
         }
     }
 }
+
+#[test]
+fn jev_settings_debug_redacts_api_key() {
+    let mut settings = settings_for("http://x");
+    settings.api_key = "jev-secret-4637".to_string();
+    let out = format!("{settings:?}");
+    assert!(!out.contains("jev-secret-4637"));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("jev-1.13.0"));
+}

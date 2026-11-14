@@ -1,0 +1,24 @@
+name: Restore numeric release API controls
+description: Write the guard job's release controls script to $RUNNER_TEMP/release-controls.sh.
+inputs:
+  controls-b64:
+    description: Base64 release controls from needs.guard.outputs.release_controls_b64.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RELEASE_CONTROLS_B64: ${{ inputs.controls-b64 }}
+      run: |
+        set -euo pipefail
+        test -n "$RELEASE_CONTROLS_B64"
+        node - "$RUNNER_TEMP/release-controls.sh" "$RELEASE_CONTROLS_B64" <<'NODE'
+        const assert = require('node:assert/strict');
+        const fs = require('node:fs');
+        const [output, encoded] = process.argv.slice(2);
+        const bytes = Buffer.from(encoded, 'base64');
+        assert.ok(bytes.length > 0, 'release controls are empty');
+        fs.writeFileSync(output, bytes, { mode: 0o700 });
+        assert.equal(fs.readFileSync(output, 'utf8').startsWith('#!/usr/bin/env bash\n'), true, 'release controls header');
+        NODE

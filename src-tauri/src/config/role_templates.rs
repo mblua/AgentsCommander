@@ -606,55 +606,12 @@ pub(crate) fn collect_agency_templates_from_dir(
         }
         for stem_entry in agency_entries(&entry.path()).map_err(|_| "cacheInvalid".to_string())? {
             let stem_entry = stem_entry.map_err(|_| "cacheInvalid".to_string())?;
-            let stem_name = stem_entry.file_name().to_string_lossy().to_string();
-            let stem_meta =
-                lstat_no_links(&stem_entry.path()).map_err(|()| "cacheInvalid".to_string())?;
-            if !stem_meta.is_dir() {
-                return Err("cacheInvalid".into());
-            }
-            let stem_slug = slug_segment(&stem_name).map_err(|_| "cacheInvalid".to_string())?;
-            if stem_slug != stem_name {
-                return Err("cacheInvalid".into());
-            }
-            let mut role_seen = false;
-            for child in
-                agency_entries(&stem_entry.path()).map_err(|_| "cacheInvalid".to_string())?
-            {
-                let child = child.map_err(|_| "cacheInvalid".to_string())?;
-                let child_name = child.file_name().to_string_lossy().to_string();
-                let child_meta =
-                    lstat_no_links(&child.path()).map_err(|()| "cacheInvalid".to_string())?;
-                if child_name != roles::ROLE_FILE_NAME || !child_meta.is_file() {
-                    return Err("cacheInvalid".into());
-                }
-                role_seen = true;
-            }
-            if !role_seen {
-                return Err("cacheInvalid".into());
-            }
-            let role_path = roles::role_path(&stem_entry.path());
-            let raw = read_agency_text(&role_path).map_err(|_| "cacheInvalid".to_string())?;
-            let fm = parse_agency_template_frontmatter(&raw);
-            let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
-                .trim()
-                .to_string();
-            let id = format!("agency:{division_slug}-{stem_slug}");
-            validate_role_template_body(&id, &body).map_err(|_| "cacheInvalid".to_string())?;
-            if !ids.insert(id.clone()) {
-                return Err("cacheInvalid".into());
-            }
-            let key = format!("{division_slug}\\{stem_slug}").to_ascii_lowercase();
-            if !paths_ci.insert(key) {
-                return Err("cacheInvalid".into());
-            }
-            templates.push(AgencyTemplate {
-                id,
-                name: fm.name.unwrap_or_else(|| title_case_slug(&stem_slug)),
-                description: fm.description.unwrap_or_default(),
-                category: title_case_slug(&division_slug),
-                color: fm.color,
-                body,
-            });
+            templates.push(collect_agency_stem(
+                &stem_entry,
+                &division_slug,
+                &mut ids,
+                &mut paths_ci,
+            )?);
         }
     }
     templates.sort_by(|a, b| {
@@ -665,6 +622,64 @@ pub(crate) fn collect_agency_templates_from_dir(
             .then_with(|| a.id.cmp(&b.id))
     });
     Ok(templates)
+}
+
+fn require_agency_role_file(stem_dir: &Path) -> Result<(), String> {
+    let mut role_seen = false;
+    for child in agency_entries(stem_dir).map_err(|_| "cacheInvalid".to_string())? {
+        let child = child.map_err(|_| "cacheInvalid".to_string())?;
+        let child_name = child.file_name().to_string_lossy().to_string();
+        let child_meta = lstat_no_links(&child.path()).map_err(|()| "cacheInvalid".to_string())?;
+        if child_name != roles::ROLE_FILE_NAME || !child_meta.is_file() {
+            return Err("cacheInvalid".into());
+        }
+        role_seen = true;
+    }
+    if !role_seen {
+        return Err("cacheInvalid".into());
+    }
+    Ok(())
+}
+
+fn collect_agency_stem(
+    stem_entry: &std::fs::DirEntry,
+    division_slug: &str,
+    ids: &mut HashSet<String>,
+    paths_ci: &mut HashSet<String>,
+) -> Result<AgencyTemplate, String> {
+    let stem_name = stem_entry.file_name().to_string_lossy().to_string();
+    let stem_meta = lstat_no_links(&stem_entry.path()).map_err(|()| "cacheInvalid".to_string())?;
+    if !stem_meta.is_dir() {
+        return Err("cacheInvalid".into());
+    }
+    let stem_slug = slug_segment(&stem_name).map_err(|_| "cacheInvalid".to_string())?;
+    if stem_slug != stem_name {
+        return Err("cacheInvalid".into());
+    }
+    require_agency_role_file(&stem_entry.path())?;
+    let role_path = roles::role_path(&stem_entry.path());
+    let raw = read_agency_text(&role_path).map_err(|_| "cacheInvalid".to_string())?;
+    let fm = parse_agency_template_frontmatter(&raw);
+    let body = crate::config::session_context::strip_yaml_frontmatter(&raw)
+        .trim()
+        .to_string();
+    let id = format!("agency:{division_slug}-{stem_slug}");
+    validate_role_template_body(&id, &body).map_err(|_| "cacheInvalid".to_string())?;
+    if !ids.insert(id.clone()) {
+        return Err("cacheInvalid".into());
+    }
+    let key = format!("{division_slug}\\{stem_slug}").to_ascii_lowercase();
+    if !paths_ci.insert(key) {
+        return Err("cacheInvalid".into());
+    }
+    Ok(AgencyTemplate {
+        id,
+        name: fm.name.unwrap_or_else(|| title_case_slug(&stem_slug)),
+        description: fm.description.unwrap_or_default(),
+        category: title_case_slug(division_slug),
+        color: fm.color,
+        body,
+    })
 }
 
 pub fn agency_template_metas_from_cache(config_dir: &Path) -> Vec<RoleTemplateMeta> {

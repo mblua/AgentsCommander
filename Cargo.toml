@@ -11,7 +11,7 @@ default-members = [
     "crates/rust-source-scrub",
     "crates/terminal-snapshot-renderer",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.lints.clippy]
 fn_params_excessive_bools = "warn"
@@ -51,3 +51,5 @@ fallible_impl_from = "warn"
 path_buf_push_overwrite = "warn"
 string_lit_as_bytes = "warn"
 trait_duplication_in_bounds = "warn"
+collapsible_if = "allow"   # #4451 PC1: 2024 let-chain form; removed by follow-up #4566
+let_and_return = "allow"   # #4451 PC1: fires only on 2024; removed by follow-up #4566

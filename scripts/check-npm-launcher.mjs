@@ -494,7 +494,7 @@ function runPackageChecks() {
     // Issue #2065: nothing in the published package may touch Gatekeeper.
     for (const name of ['install.js', 'macos-alias.js', 'run.js']) {
       const source = fs.readFileSync(path.join(NPM_DIR, name), 'utf8');
-      const code = source.replace(/^\s*\/\/.*$/gm, '');
+      const code = source.replace(/^[^\S\n]*\/\/.*$/gm, '');
       assert(!/\bxattr\b/.test(code), `P5: ${name} must not call xattr`);
       assert(!/\bspctl\b/.test(code), `P5: ${name} must not call spctl`);
       assert(!/com\.apple\.quarantine/.test(code),

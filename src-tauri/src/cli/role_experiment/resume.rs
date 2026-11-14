@@ -13,6 +13,8 @@ use super::artifacts::VariantMetadata;
 use super::report::build_attempts;
 use super::report::default_run_artifact_paths;
 use super::report::validate_report_artifacts;
+use super::storage::attempt_done_path;
+use super::storage::attempt_running_path;
 use super::storage::load_attempts;
 use super::storage::read_json;
 use super::storage::replace_attempts;
@@ -449,8 +451,8 @@ pub(super) fn reconcile_mutable_artifacts(
     let state_dir = run_dir.join("attempt-state");
     reject_link_or_reparse(&state_dir, "run_artifact_link_or_reparse", None)?;
     for attempt in &mut attempts {
-        let done_path = state_dir.join(format!("{}.done.json", attempt.attempt_id));
-        let running_path = state_dir.join(format!("{}.running.json", attempt.attempt_id));
+        let done_path = attempt_done_path(&state_dir, &attempt.attempt_id);
+        let running_path = attempt_running_path(&state_dir, &attempt.attempt_id);
         let done = if directories::experiment_path_is_file(&done_path) {
             Some(
                 read_json::<AttemptOwnershipArtifact>(&done_path)

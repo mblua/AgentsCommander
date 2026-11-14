@@ -29,7 +29,7 @@ function lastAcRootIndex(parts: string[]): number {
 export function extractProjectName(workDir: string): string | null {
   const parts = pathParts(workDir);
   const idx = lastAcRootIndex(parts);
-  return idx > 0 ? parts[idx - 1] : null;
+  return idx > 0 ? parts[idx - 1] ?? null : null;
 }
 
 export function extractWorkgroupName(workDir: string): string | null {
@@ -37,6 +37,7 @@ export function extractWorkgroupName(workDir: string): string | null {
   const idx = lastAcRootIndex(parts);
   if (idx < 0 || idx + 1 >= parts.length) return null;
   const wg = parts[idx + 1];
+  if (wg === undefined) return null;
   return isNumberedEntityDirName(wg) ? wg.toUpperCase() : null;
 }
 
@@ -45,6 +46,7 @@ export function extractAgentName(workDir: string): string | null {
   const idx = lastAcRootIndex(parts);
   if (idx < 0 || idx + 2 >= parts.length) return null;
   const seg = parts[idx + 2];
+  if (seg === undefined) return null;
   if (!seg.startsWith('__agent_')) return null;
   const name = seg.slice('__agent_'.length);
   return name.length > 0 ? name : null;
@@ -83,7 +85,7 @@ function skipNonSeparators(path: string, start: number): number {
 /** `C:` followed by one or more separators; `rest` is what follows them. */
 function matchDriveRoot(path: string): PathRoot | null {
   if (path.length < 3 || path[1] !== ':' || !isSeparator(path[2])) return null;
-  if (!/^[A-Za-z]$/.test(path[0])) return null;
+  if (!/^[A-Za-z]$/.test(path.charAt(0))) return null;
   let i = 3;
   while (isSeparator(path[i])) i++;
   const rest = path.slice(i);

@@ -412,10 +412,10 @@ async fn register(host: &WaylandHost, backend: &FakeBackend, generation: u64) {
     register_enabled(host, backend, generation, false).await;
 }
 
-async fn register_enabled(host: &WaylandHost, backend: &FakeBackend, gen: u64, on: bool) {
+async fn register_enabled(host: &WaylandHost, backend: &FakeBackend, r#gen: u64, on: bool) {
     let token = "1a2b3c4d".to_string();
     let (h, b) = (host.clone(), backend.clone());
-    register_wayland(h, b, gen, token, "Ctrl+Q".into(), 'Q', on).await;
+    register_wayland(h, b, r#gen, token, "Ctrl+Q".into(), 'Q', on).await;
 }
 
 async fn binding(host: &WaylandHost) -> u64 {

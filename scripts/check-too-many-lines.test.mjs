@@ -288,6 +288,14 @@ function run(step) {
 function workflowContract(workflow, warm) {
   assert.doesNotMatch(workflow + warm, /CLIPPY_CONF_DIR/);
   const parsed = jobs(workflow);
+  assert.ok(parsed.get('rust-test-linux').includes('    needs: unix-rust-changes'));
+  const u = parsed.get('unix-rust-changes');
+  assert.ok(u.includes('      match: ${{ steps.detect.outputs.match }}'));
+  const detect = exactly(steps(u), /^        id: detect$/m);
+  assert.ok(run(detect).includes(
+    'node scripts/ci-unix-rust-changes.mjs --base HEAD^1 --head HEAD'));
+  const detectorSelf = exactly(steps(u), /^      - name: Detector self-test$/m);
+  assert.equal(run(detectorSelf), 'node scripts/ci-unix-rust-changes.mjs --self-test');
   assert.ok(parsed.has('tml-adoption'), 'missing manual adoption job');
   const adoption = "(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')";
   const regular = "github.event_name != 'push' || (github.event.deleted != true && " +
@@ -297,7 +305,7 @@ function workflowContract(workflow, warm) {
     'release-cli-smoke-windows', 'issue-1850-profile-windows']);
   const expectedJobs = ['ci-tier', 'test-debt', 'frontend-regression', 'rust-regression-windows',
     'rust-slow-test-windows', 'issue-1850-release-windows', 'clippy-linux', 'rust-fmt',
-    'tml-adoption', ...full];
+    'tml-adoption', 'unix-rust-changes', 'rust-test-linux', ...full];
   assert.deepEqual([...parsed.keys()].sort(), expectedJobs.sort(), 'unknown/missing job layout');
   for (const [name, lines] of parsed) {
     const keys = lines.flatMap(l => /^    ([a-z-]+):/.exec(l)?.[1] ?? []);
@@ -318,7 +326,9 @@ function workflowContract(workflow, warm) {
         'npm ci --ignore-scripts', 'npm run build'].join('\n'));
       continue;
     }
-    let expected = name === 'ci-tier' ? `(!${adoption})` :
+    let expected = name === 'rust-test-linux' ?
+      `(!${adoption}) && (needs.unix-rust-changes.outputs.match == 'true' && (${regular}))` :
+      name === 'ci-tier' ? `(!${adoption})` :
       `(!${adoption}) && (${full.has(name) ?
         `needs.ci-tier.outputs.full == 'true' && (${regular})` : regular})`;
     assert.equal(actual, expected, `ordinary job eligibility ${name}`);
@@ -379,6 +389,10 @@ const workflow = workflowText('.github/workflows/pr-regression-gates.yml');
 const warm = workflowText('.github/workflows/cache-warm.yml');
 test('committed workflow contract', () => workflowContract(workflow, warm));
 const mutants = [
+  ['rename detect output', s => s.replace('steps.detect.outputs.match',
+    'steps.detector.outputs.match')],
+  ['drop detector self-test', s => s.replace(
+    'node scripts/ci-unix-rust-changes.mjs --self-test', 'true')],
   ['adoption enables lifecycle', s => s.replace(
     '          npm ci --ignore-scripts\n', '          npm ci\n')],
   ['drop length flag', s => s.replace('--force-warn clippy::too_many_lines', '')],

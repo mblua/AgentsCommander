@@ -10,8 +10,8 @@ pub(crate) enum ConfirmationError {
 }
 
 pub(crate) fn confirm(outbox: &Path, id: &str) -> Result<(), ConfirmationError> {
-    let delivered = outbox.join("delivered").join(format!("{id}.json"));
-    let rejected = outbox.join("rejected").join(format!("{id}.reason.txt"));
+    let delivered = crate::phone::types::outbox_delivered_receipt(outbox, id);
+    let rejected = crate::phone::types::outbox_rejected_reason(outbox, id);
     let start = Instant::now();
     while !directories::cli_outbox_artifact_exists(&delivered) {
         if directories::cli_outbox_artifact_exists(&rejected) {

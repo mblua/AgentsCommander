@@ -1,5 +1,5 @@
 use super::{ParserAvailability, ReaderOperationGate, RegisteredPtyOutputTarget};
-use crate::pty::backend::SessionBackendKind;
+use crate::pty::backend_kind::SessionBackendKind;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use terminal_snapshot_renderer::{

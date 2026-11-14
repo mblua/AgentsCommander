@@ -4,10 +4,10 @@ use crate::pty::backend::SessionBackendKind;
 use crate::session::manager::TerminalSnapshotSessionFact;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use terminal_snapshot_renderer::{TerminalScreenModel, TerminalSnapshotReasonCode};
 
 pub(crate) struct AuditInner {
+    owners: tokio::sync::watch::Sender<usize>,
     pub(crate) finalized: AtomicBool,
     pub(crate) metadata: Mutex<crate::api::audit::TerminalSnapshotAuditMetadata>,
 }
@@ -27,15 +27,30 @@ impl Drop for AuditInner {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct TerminalSnapshotAuditGuard {
     pub(crate) inner: Arc<AuditInner>,
+}
+
+impl Clone for TerminalSnapshotAuditGuard {
+    fn clone(&self) -> Self {
+        self.inner.owners.send_modify(|n| *n += 1);
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Drop for TerminalSnapshotAuditGuard {
+    fn drop(&mut self) {
+        self.inner.owners.send_modify(|n| *n -= 1);
+    }
 }
 
 impl TerminalSnapshotAuditGuard {
     pub(crate) fn pre_admission(source_plane: TerminalSnapshotSourcePlane) -> Self {
         Self {
             inner: Arc::new(AuditInner {
+                owners: tokio::sync::watch::channel(1).0,
                 finalized: AtomicBool::new(false),
                 metadata: Mutex::new(crate::api::audit::TerminalSnapshotAuditMetadata {
                     event: "terminal_snapshot".to_string(),
@@ -114,9 +129,9 @@ impl TerminalSnapshotAuditGuard {
 
     pub(crate) async fn wait_for_retained_owners(&self, expected_owners: usize) {
         debug_assert!(expected_owners > 0);
-        while Arc::strong_count(&self.inner) > expected_owners {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let mut owners = self.inner.owners.subscribe();
+        // The sender lives in inner, which self keeps alive, so this never errors.
+        let _ = owners.wait_for(|live| *live <= expected_owners).await;
     }
 
     pub(crate) fn finalize_failure(&self, reason: TerminalSnapshotReasonCode) {
@@ -143,3 +158,6 @@ impl TerminalSnapshotAuditGuard {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

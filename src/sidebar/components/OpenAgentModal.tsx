@@ -66,7 +66,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
         setHighlightIndex((i) => Math.max(i - 1, 0));
       } else if (e.key === "Enter" && list.length > 0) {
         e.preventDefault();
-        setSelectedRepo(list[highlightIndex()]);
+        setSelectedRepo(list[highlightIndex()] ?? null);
         setHighlightIndex(0);
       }
     } else {

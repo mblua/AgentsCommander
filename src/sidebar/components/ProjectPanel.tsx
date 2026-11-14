@@ -18,7 +18,6 @@ import {
   type GithubRepoRef,
 } from "../../shared/github-url";
 import { stripFrontmatter } from "../../shared/markdown";
-import { matchPathRoot, trimTrailingSeparators } from "../../shared/path-extractors";
 import { quotaChipAttrs } from "./agent-quota";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { focusOnMount } from "../../shared/focus-on-mount";
@@ -80,6 +79,7 @@ import {
 } from "./replica-repo-badges";
 import { sessionDotClass } from "./session-status";
 import { replicaDotClass } from "./replica-dot";
+import { replicaMatrixFolder } from "./replica-matrix-folder";
 import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 import {
   configuredReplicaRepoBadgesLive,
@@ -130,7 +130,7 @@ function agentDisplayName(name: string): string {
 
 function teamMemberDisplayLabel(agentName: string): string {
   const parts = agentName.replaceAll("\\", "/").split("/");
-  const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
+  const agent = (parts[parts.length - 1] ?? "").replace(/^__?agent_/, "");
   const project = parts[0];
   return project && project !== agent ? `${agent}@${project}` : agent;
 }
@@ -287,77 +287,6 @@ function isSessionLive(session: Session | undefined): boolean {
   if (!session) return false;
   if (typeof session.status === "object" && "exited" in session.status) return false;
   return true;
-}
-
-function pathSeparatorFor(path: string): "\\" | "/" {
-  return path.includes("\\") ? "\\" : "/";
-}
-
-function trimTrailingPathSeparators(path: string): string {
-  return trimTrailingSeparators(path) || path;
-}
-
-function isAbsolutePath(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path) || /^[\\/]/.test(path);
-}
-
-function pushPathSegment(segments: string[], segment: string, hasRoot: boolean): void {
-  if (!segment || segment === ".") return;
-  if (segment === "..") {
-    if (segments.length > 0 && segments[segments.length - 1] !== "..") {
-      segments.pop();
-    } else if (!hasRoot) {
-      segments.push(segment);
-    }
-    return;
-  }
-  segments.push(segment);
-}
-
-function normalizePath(path: string, separator: "\\" | "/"): string {
-  const trimmed = path.trim();
-  const parsed = matchPathRoot(trimmed);
-  let root = "";
-  let rest = trimmed;
-
-  if (parsed && "drive" in parsed) {
-    root = `${parsed.drive}${separator}`;
-    rest = parsed.rest;
-  } else if (parsed) {
-    root = `${separator}${separator}${parsed.server}${separator}${parsed.share}${separator}`;
-    rest = parsed.rest;
-  } else if (/^[\\/]/.test(trimmed)) {
-    root = separator;
-    rest = trimmed.replace(/^[\\/]+/, "");
-  }
-
-  const segments: string[] = [];
-  for (const segment of rest.split(/[\\/]+/)) {
-    pushPathSegment(segments, segment, root !== "");
-  }
-
-  const suffix = segments.join(separator);
-  if (!root) return suffix || ".";
-  return suffix ? `${root}${suffix}` : root;
-}
-
-function matrixFolderFromIdentityPath(replicaPath: string, identityPath: string | undefined): string | null {
-  const path = identityPath?.trim();
-  if (!path) return null;
-
-  const separator = pathSeparatorFor(replicaPath || path);
-  const identityTarget = /(^|[\\/])identity\.json$/i.exec(path)
-    ? path.replace(/[\\/][^\\/]+$/, "")
-    : path;
-  const absoluteTarget = isAbsolutePath(identityTarget)
-    ? identityTarget
-    : `${trimTrailingPathSeparators(replicaPath)}${separator}${identityTarget}`;
-
-  return normalizePath(absoluteTarget, separator);
-}
-
-function replicaMatrixFolder(replica: AcAgentReplica): string | null {
-  return matrixFolderFromIdentityPath(replica.path, replica.identityPath);
 }
 
 function MatrixFolderIcon() {
@@ -1960,7 +1889,7 @@ const ProjectPanel: Component = () => {
             closeReplicaCtxMenu();
             return;
           }
-          if (bots.length === 1) {
+          if (bots.length === 1 && bots[0] !== undefined) {
             closeReplicaCtxMenu();
             await TelegramAPI.attach(sessionId, bots[0].id);
             return;

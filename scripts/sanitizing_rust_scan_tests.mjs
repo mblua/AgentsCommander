@@ -449,3 +449,12 @@ test('3447 thread local cfg matrix preserves boundaries and conservative cases',
   ]) assert.equal(rust.scanRust(rustRoot + 'probe.rs', text)
     .isTestOffset(text.indexOf('INNER')), false, text);
 });
+
+test('inline mods outside src-tauri/src keep the scanner supported', () => {
+  const factory = scan({'crates/x/src/lib.rs': 'mod a { }',
+    [prefix + 'lib.rs']: '#[cfg(test)] mod h;', [prefix + 'h.rs']: body});
+  assert.equal(factory(prefix + 'h.rs').productionTokens.length, 0);
+  const inner = scan({[prefix + 'lib.rs']: '#[cfg(test)] mod h; mod a { }',
+    [prefix + 'h.rs']: body});
+  assert.ok(inner(prefix + 'h.rs').productionTokens.length > 0);
+});

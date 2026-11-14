@@ -791,16 +791,21 @@ async fn finish_in_flight_shutdown(
 ) {
     if let Some(slot) = in_flight.take() {
         slot.cancellation.cancel();
-        if let Err(error) = slot.join.await {
-            log::warn!("[context-alert] delivery wrapper join failed during shutdown: {error}");
-        } else if let Ok(completion) = completion_rx.try_recv() {
-            if let Err(error) = completion.result {
-                log::warn!(
-                    "[context-alert] delivery generation={} ended with error \
+        match slot.join.await {
+            Err(error) => {
+                log::warn!("[context-alert] delivery wrapper join failed during shutdown: {error}");
+            }
+            _ => {
+                if let Ok(completion) = completion_rx.try_recv() {
+                    if let Err(error) = completion.result {
+                        log::warn!(
+                            "[context-alert] delivery generation={} ended with error \
                      during shutdown: {}",
-                    completion.generation,
-                    error
-                );
+                            completion.generation,
+                            error
+                        );
+                    }
+                }
             }
         }
     }

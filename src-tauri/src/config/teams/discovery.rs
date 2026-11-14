@@ -682,102 +682,168 @@ pub(crate) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec
     // ── WG replica discovery ──────────────────────────────────────────────
     // Scan project_paths for Project AC Root wg-*/__agent_* replicas
     for base_path in project_paths {
-        let base = Path::new(base_path);
-        if !crate::filesystem::projects::project_path_is_dir(base) {
-            continue;
-        }
-        // Check base and its immediate children (same pattern as ac_discovery)
-        let mut dirs_to_check = vec![base.to_path_buf()];
-        crate::filesystem::projects::visit_discovery_project_children(base, |p| {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
-                dirs_to_check.push(p);
-            }
-        });
-        for repo_dir in dirs_to_check {
-            let Some(ac_root) = existing_ac_root(&repo_dir) else {
-                continue;
-            };
-            // Project folder name (parent of Project AC Root) is the LHS of the canonical FQN.
-            let project_folder = match repo_dir.file_name().and_then(std::ffi::OsStr::to_str) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-            let _ =
-                crate::filesystem::directories::visit_cli_discovery_entries(&ac_root, |entry| {
-                    let Ok((wg_path, _)) = entry else {
-                        return ControlFlow::<()>::Continue(());
-                    };
-                    if !crate::filesystem::directories::cli_discovery_is_dir(&wg_path) {
-                        return ControlFlow::Continue(());
-                    }
-                    let wg_name = match wg_path.file_name().and_then(|n| n.to_str()) {
-                        Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => {
-                            n.to_string()
-                        }
-                        _ => return ControlFlow::Continue(()),
-                    };
-                    // Derive team name from the entity name: "room-1-ac-devs" or
-                    // the legacy "wg-1-ac-devs" → "ac-devs"
-                    let wg_team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
-                        .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
-                        .unwrap_or(&wg_name)
-                        .to_string();
-
-                    let _ = crate::filesystem::directories::visit_cli_discovery_entries(
-                        &wg_path,
-                        |entry| {
-                            let Ok((agent_path, _)) = entry else {
-                                return ControlFlow::<()>::Continue(());
-                            };
-                            if !crate::filesystem::directories::cli_discovery_is_dir(&agent_path) {
-                                return ControlFlow::Continue(());
-                            }
-                            let agent_dir = match agent_path.file_name().and_then(|n| n.to_str()) {
-                                Some(n) if n.starts_with("__agent_") => n.to_string(),
-                                _ => return ControlFlow::Continue(()),
-                            };
-                            let agent_short = agent_dir
-                                .strip_prefix("__agent_")
-                                .unwrap_or(&agent_dir)
-                                .to_string();
-                            let peer_name = format!("{project_folder}:{wg_name}/{agent_short}");
-
-                            // Skip self
-                            if peer_name == my_name {
-                                return ControlFlow::Continue(());
-                            }
-                            // Skip duplicates
-                            if peers.iter().any(|p| p.name == peer_name) {
-                                return ControlFlow::Continue(());
-                            }
-
-                            let reachable = crate::config::teams::can_communicate(
-                                &my_name,
-                                &peer_name,
-                                &discovered,
-                            );
-                            let mut peer = build_wg_peer(
-                                &project_folder,
-                                &agent_short,
-                                &wg_name,
-                                &agent_path,
-                                reachable,
-                                &session_index,
-                            );
-                            peer.teams = vec![wg_team.clone()];
-                            peers.push(peer);
-
-                            ControlFlow::Continue(())
-                        },
-                    );
-
-                    ControlFlow::Continue(())
-                });
-        }
+        append_origin_project_peers(
+            Path::new(base_path),
+            &my_name,
+            &discovered,
+            &session_index,
+            &mut peers,
+        );
     }
 
     peers
+}
+
+/// One `project_paths` entry of the WG replica scan in `discover_origin_peers`.
+fn append_origin_project_peers(
+    base: &Path,
+    my_name: &str,
+    discovered: &[DiscoveredTeam],
+    session_index: &HashMap<String, Vec<CandidateSession>>,
+    peers: &mut Vec<PeerInfo>,
+) {
+    if !crate::filesystem::projects::project_path_is_dir(base) {
+        return;
+    }
+    // Check base and its immediate children (same pattern as ac_discovery)
+    let mut dirs_to_check = vec![base.to_path_buf()];
+    crate::filesystem::projects::visit_discovery_project_children(base, |p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with('.') {
+            dirs_to_check.push(p);
+        }
+    });
+    for repo_dir in dirs_to_check {
+        let Some(ac_root) = existing_ac_root(&repo_dir) else {
+            continue;
+        };
+        // Project folder name (parent of Project AC Root) is the LHS of the canonical FQN.
+        let project_folder = match repo_dir.file_name().and_then(std::ffi::OsStr::to_str) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        append_origin_ac_root_peers(
+            &ac_root,
+            &project_folder,
+            my_name,
+            discovered,
+            session_index,
+            peers,
+        );
+    }
+}
+
+/// Scans one Project AC Root for entity (WG) directories.
+fn append_origin_ac_root_peers(
+    ac_root: &Path,
+    project_folder: &str,
+    my_name: &str,
+    discovered: &[DiscoveredTeam],
+    session_index: &HashMap<String, Vec<CandidateSession>>,
+    peers: &mut Vec<PeerInfo>,
+) {
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(ac_root, |entry| {
+        let Ok((wg_path, _)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        let Some(wg_name) = origin_entity_dir_name(&wg_path) else {
+            return ControlFlow::Continue(());
+        };
+        append_origin_wg_dir_peers(
+            &wg_path,
+            project_folder,
+            &wg_name,
+            my_name,
+            discovered,
+            session_index,
+            peers,
+        );
+
+        ControlFlow::Continue(())
+    });
+}
+
+/// Scans one entity (WG) directory for `__agent_*` replicas.
+fn append_origin_wg_dir_peers(
+    wg_path: &Path,
+    project_folder: &str,
+    wg_name: &str,
+    my_name: &str,
+    discovered: &[DiscoveredTeam],
+    session_index: &HashMap<String, Vec<CandidateSession>>,
+    peers: &mut Vec<PeerInfo>,
+) {
+    let wg_team = origin_wg_team(wg_name);
+
+    let _ = crate::filesystem::directories::visit_cli_discovery_entries(wg_path, |entry| {
+        let Ok((agent_path, _)) = entry else {
+            return ControlFlow::<()>::Continue(());
+        };
+        let Some(agent_short) = origin_replica_short(&agent_path) else {
+            return ControlFlow::Continue(());
+        };
+        let peer_name = format!("{project_folder}:{wg_name}/{agent_short}");
+
+        // Skip self
+        if peer_name == my_name {
+            return ControlFlow::Continue(());
+        }
+        // Skip duplicates
+        if peers.iter().any(|p| p.name == peer_name) {
+            return ControlFlow::Continue(());
+        }
+
+        let reachable = crate::config::teams::can_communicate(my_name, &peer_name, discovered);
+        let mut peer = build_wg_peer(
+            project_folder,
+            &agent_short,
+            wg_name,
+            &agent_path,
+            reachable,
+            session_index,
+        );
+        peer.teams = vec![wg_team.clone()];
+        peers.push(peer);
+
+        ControlFlow::Continue(())
+    });
+}
+
+/// Entity directory name (`room-*` / legacy `wg-*`), or `None` to skip.
+fn origin_entity_dir_name(wg_path: &Path) -> Option<String> {
+    if !crate::filesystem::directories::cli_discovery_is_dir(wg_path) {
+        return None;
+    }
+    match wg_path.file_name().and_then(|n| n.to_str()) {
+        Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Derive team name from the entity name: "room-1-ac-devs" or
+/// the legacy "wg-1-ac-devs" → "ac-devs"
+fn origin_wg_team(wg_name: &str) -> String {
+    crate::config::entity_prefix::strip_entity_prefix(wg_name)
+        .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
+        .unwrap_or(wg_name)
+        .to_string()
+}
+
+/// Replica short name from an `__agent_*` directory, or `None` to skip.
+fn origin_replica_short(agent_path: &Path) -> Option<String> {
+    if !crate::filesystem::directories::cli_discovery_is_dir(agent_path) {
+        return None;
+    }
+    let agent_dir = match agent_path.file_name().and_then(|n| n.to_str()) {
+        Some(n) if n.starts_with("__agent_") => n.to_string(),
+        _ => return None,
+    };
+    Some(
+        agent_dir
+            .strip_prefix("__agent_")
+            .unwrap_or(&agent_dir)
+            .to_string(),
+    )
 }
 
 pub(crate) fn discover_root_coordinator_peers(project_paths: &[String]) -> Vec<PeerInfo> {

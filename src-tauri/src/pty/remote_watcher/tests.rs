@@ -17,6 +17,7 @@ mod ci_jobs_2768_rounds;
 mod positive_control;
 mod run_ids_2473;
 mod snapshot_producer_2374;
+mod ts_bindings_4389;
 
 /// Round-driving tests share the process-global snapshot and the discovery
 /// maps, so they MUST NOT run concurrently with each other or with the

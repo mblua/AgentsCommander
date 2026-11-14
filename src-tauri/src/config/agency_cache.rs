@@ -16,6 +16,7 @@ use crate::filesystem::agency_templates::{
 
 use crate::filesystem::projects::entities::roles;
 
+use crate::config::instructions_filename::{AGENTS_MD_FILE_NAME, CLAUDE_MD_FILE_NAME};
 use crate::config::role_templates::{
     agency_template_metas_from_cache, agency_templates_dir, agency_templates_status,
     collect_agency_templates_from_dir, parse_agency_template_frontmatter,
@@ -449,7 +450,10 @@ fn normalize_agency_role_tree(
         let entry = entry.map_err(|e| format!("Failed to read Agency role entry: {e}"))?;
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if matches!(file_name.as_str(), "CLAUDE.md" | "AGENTS.md") {
+        if matches!(
+            file_name.as_str(),
+            CLAUDE_MD_FILE_NAME | AGENTS_MD_FILE_NAME
+        ) {
             return Err(format!(
                 "Agency role tree {} contains managed prompt file {}",
                 division_root.display(),

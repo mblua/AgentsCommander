@@ -11,21 +11,16 @@ export type RepoDirtyByPath = Record<string, boolean | null>;
 
 /** #2064 — whether CI is running on this repo's exact HEAD. `unknown` is the
  *  majority case (no `gh`, feature off, or not yet swept) and is SILENT in the UI. */
-export type CiState = "unknown" | "idle" | "running";
+export type { CiState } from "./generated/remote-activity";
 
 /** #2064 — whether the repo's upstream base has moved ahead of HEAD. */
-export type StalenessState = "unknown" | "current" | "stale";
+export type { StalenessState } from "./generated/remote-activity";
 
 /** #2064 — one `ac_remote_activity_updated` payload, exactly as Phase A emits it:
  *  four vectors of identical length, parallel by index. A misaligned payload is
  *  rejected by the store rather than zipped, because a misaligned zip paints the
  *  WRONG repo, which is worse than painting nothing. */
-export interface RemoteActivityUpdate {
-  repoPaths: string[];
-  ciStates: CiState[];
-  stalenessStates: StalenessState[];
-  behindBy: (number | null)[];
-}
+export type { RemoteActivityUpdate } from "./generated/remote-activity";
 
 export type SessionCommunicationKind = "raiseHand" | "blockedMenu" | "coManaged";
 

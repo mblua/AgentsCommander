@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -711,6 +712,23 @@ impl fmt::Debug for OutboxMessage {
             .field("pty_input", &self.pty_input)
             .finish()
     }
+}
+
+pub(crate) fn outbox_message_file(outbox: &Path, id: &str) -> PathBuf {
+    outbox.join(format!("{id}.json"))
+}
+
+/// Receipt paths for an outbox message `id`; one spelling for CLI and mailbox.
+pub(crate) fn outbox_delivered_receipt(outbox: &Path, id: &str) -> PathBuf {
+    outbox.join("delivered").join(format!("{id}.json"))
+}
+
+pub(crate) fn outbox_rejected_receipt(outbox: &Path, id: &str) -> PathBuf {
+    outbox.join("rejected").join(format!("{id}.json"))
+}
+
+pub(crate) fn outbox_rejected_reason(outbox: &Path, id: &str) -> PathBuf {
+    outbox.join("rejected").join(format!("{id}.reason.txt"))
 }
 
 pub fn canonical_pty_timestamp(now: DateTime<Utc>) -> String {

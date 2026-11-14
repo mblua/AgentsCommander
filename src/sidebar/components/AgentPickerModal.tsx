@@ -13,7 +13,6 @@ import type {
   PreviewSelectionLockRemovalResult,
   ReplicaSelectionDefaultResult,
   SavedPair,
-  ScopeFault,
   SelectionError,
   SelectionState,
   SettingsSnapshot,
@@ -31,6 +30,7 @@ import { reorderedIds } from "./settings/agentReorderDnd";
 import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { automationAttrs } from "../../shared/automation-hooks";
 import { QuotaRemaining } from "./AgentQuotaRemaining";
+import { scopeFaultLine, scopeFaultOverflowLine } from "./scope-fault-lines";
 import {
   agentNameFromPathOrSession,
   composeEffectiveCommand,
@@ -166,36 +166,6 @@ const LOCK_SCOPE_TEST_ID: Record<ProfileAssignmentScope, string> = {
 function removalOutcomeMessage(result: ApplySelectionLockRemovalResult): string {
   const noun = result.removedCount === 1 ? "replica" : "replicas";
   return `Lock removed from ${result.removedCount} ${noun} · Coding Agent + Profile kept · no restart`;
-}
-
-/** #2572 - one line per replica the removal count skipped: which one and why.
- *  The default names a code this build does not know, so no replica goes mute. */
-function scopeFaultLine(fault: ScopeFault): string {
-  const name = fault.replicaName;
-  switch (fault.code) {
-    case "configUnreadable":
-      return `${name} has no readable config.json. It is not counted.`;
-    case "configNotJson":
-      return `${name} has an invalid config.json (not valid JSON). It is not counted.`;
-    case "configNotObject":
-      return `${name} has a config.json that is not a JSON object. It is not counted.`;
-    case "identityMissing":
-      return `${name} has no identity in its config.json. It is not counted.`;
-    case "identityMismatch":
-      return `${name} points at another agent (identity mismatch). It is not counted.`;
-    case "locationInvalid":
-      return `${name} is not in a valid replica location. It is not counted.`;
-    case "pathUnreadable":
-      return `${name} could not be read from disk. It is not counted.`;
-    case "folderUnreadable":
-      return `The folder ${name} could not be read. Replicas inside it are not counted.`;
-    default:
-      return `${name} could not be checked. It is not counted.`;
-  }
-}
-
-function scopeFaultOverflowLine(hidden: number): string {
-  return `+${hidden} more not counted.`;
 }
 
 const AgentPickerModal: Component<{
@@ -657,8 +627,8 @@ const AgentPickerModal: Component<{
       await refreshFromSettings();
       const next = agents();
       const newIndex = next.findIndex((candidate) => candidate.id === agentId);
-      if (newIndex >= 0) {
-        const moved = next[newIndex];
+      const moved = next[newIndex];
+      if (newIndex >= 0 && moved !== undefined) {
         setMoveAnnouncement(
           `Moved ${moved.label || moved.id} to position ${newIndex + 1} of ${next.length}.`,
         );
@@ -688,7 +658,7 @@ const AgentPickerModal: Component<{
     const list = orderedAgents();
     const from = list.findIndex((agent) => agent.id === agentId);
     if (from < 0) return;
-    const name = list[from].label || list[from].id;
+    const name = list[from]?.label || list[from]?.id;
     const target = e.key === "ArrowUp" ? from - 1 : from + 1;
     if (target < 0) {
       setMoveAnnouncement(`${name} is already first.`);
@@ -880,7 +850,7 @@ const AgentPickerModal: Component<{
     const current = Math.max(0, letters.indexOf(selectedProfile()));
     const next = Math.min(Math.max(current + delta, 0), letters.length - 1);
     setProfileTouched(true);
-    setSelectedProfile(letters[next]);
+    setSelectedProfile(letters[next] ?? "A");
   };
 
   const chooseProfile = (letter: string) => {
@@ -1348,9 +1318,9 @@ const AgentPickerModal: Component<{
     agentId: string
   ) => {
     setApplyErrors(errors);
-    const firstError = errors[0];
+    const firstMessage = errors[0]?.message ?? "";
     const extra = errors.length - 1;
-    showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
+    showToast(extra > 0 ? `${firstMessage} (+${extra} more)` : firstMessage);
     setDangerArmed(false);
     setConflictDecision(null);
     if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));

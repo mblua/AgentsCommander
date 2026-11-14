@@ -1,21 +1,16 @@
 // @vitest-environment jsdom
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, CiState, Session, WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
-  click,
-  contextMenu,
-  input,
-  renderWithFakeTransport,
-  resetUiStoresForTests,
-  session,
-  waitFor,
+  __disposeSettingsSubscriptionsForTests, settingsStore,
+} from "../../shared/stores/settings";
+import {
+  click, contextMenu, input, renderWithFakeTransport, resetUiStoresForTests, session, waitFor,
 } from "../../shared/testing/ui-harness";
-import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { remoteActivityStore } from "../stores/remote-activity";
-import type { CiState } from "../../shared/types";
 import {
   defaultGroupsConfig,
   defaultNonStop,
@@ -26,7 +21,7 @@ import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
 import RoomGroupRail from "./RoomGroupRail";
 import { setLogLevel } from "../../shared/console-capture";
 import { __setTransportForTests, type RailDiagnosticRecord } from "../../shared/ipc";
-import { projectStore } from "../stores/project";
+import { projectStore, type ProjectState } from "../stores/project";
 import { railEntity } from "../rail-diagnostics";
 
 const projectPath = "C:\\Project";
@@ -336,6 +331,7 @@ async function openGroupsEditorFrom(el: Element): Promise<void> {
   await waitFor(() => expect(target("workgroupGroups.contextMenu").textContent).toContain("Edit"));
   click(target("workgroupGroups.contextMenu.edit"));
   await waitFor(() => expect(target("workgroupGroups.modal")).not.toBeNull());
+  await settingsStore.load().catch(() => {});
 }
 
 /** A session that makes the given workgroup "working" (running dot class). */
@@ -457,6 +453,7 @@ describe("RoomGroupRail", () => {
   });
 
   afterEach(() => {
+    __disposeSettingsSubscriptionsForTests();
     resetUiStoresForTests();
     document.body.replaceChildren();
     vi.useRealTimers();
@@ -878,7 +875,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(groupsConfig(), fake);
     try {
-      const { projectRail, ui, rust } = await measureReorderTargets();
+      const { ui } = await measureReorderTargets();
 
       vi.useFakeTimers();
       pointer(ui, "pointerdown", { clientY: 90 });
@@ -913,7 +910,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(config, fake);
     try {
-      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
+      const { rust } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(rust, "pointerdown", { clientY: 124 });
@@ -935,7 +932,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(config, fake);
     try {
-      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
+      const { docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(docs, "pointerdown", { clientY: 158 });
@@ -960,7 +957,7 @@ describe("RoomGroupRail", () => {
 
     const { rendered } = mountReorderRail(config, fake);
     try {
-      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
+      const { docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(docs, "pointerdown", { clientY: 158 });
@@ -992,7 +989,7 @@ describe("RoomGroupRail", () => {
     try {
       window.addEventListener("unhandledrejection", onUnhandled);
       ({ rendered } = mountReorderRail(groupsConfig(), fake));
-      const { projectRail, ui, rust } = await measureReorderTargets();
+      const { ui } = await measureReorderTargets();
 
       vi.useFakeTimers();
       pointer(ui, "pointerdown", { clientY: 90 });
@@ -1269,6 +1266,7 @@ describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
 describe("RoomGroupRail native menu boundary", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => {
+    __disposeSettingsSubscriptionsForTests();
     setLogLevel("info");
     resetUiStoresForTests();
     document.body.replaceChildren();
@@ -1387,6 +1385,7 @@ describe("RoomGroupRail native menu boundary", () => {
       expect(peerOpen()).toBe(true);
       expect(bubble).toHaveBeenCalledTimes(1);
       if (action === "edit") {
+        await settingsStore.load().catch(() => {});
         expect(document.querySelectorAll('[data-ac-testid="workgroupGroups.modal"]')).toHaveLength(1);
         expect(mounted.fake.callsFor("update_project_groups")).toHaveLength(0);
       } else {

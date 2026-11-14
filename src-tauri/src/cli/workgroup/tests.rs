@@ -841,9 +841,12 @@ fn cli_workgroup_lock_order_inversion_driver() {
         CONTROL_DIR_VAR,
         "AGENTSCOMMANDER_TEST_CONFIG_DIR",
     ]);
-    std::env::set_var(ACTION_VAR, WORKGROUP_ACTION);
-    std::env::set_var(NONCE_VAR, nonce);
-    std::env::set_var(CONTROL_DIR_VAR, control.path());
+    // SAFETY: ignored driver test, run alone (--test-threads=1) in its own process
+    unsafe {
+        std::env::set_var(ACTION_VAR, WORKGROUP_ACTION);
+        std::env::set_var(NONCE_VAR, nonce);
+        std::env::set_var(CONTROL_DIR_VAR, control.path());
+    }
 
     let reached = control.path().join(format!("reached-{nonce}"));
     let release = control.path().join(format!("release-{nonce}"));

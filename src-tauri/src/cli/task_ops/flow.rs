@@ -24,6 +24,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+pub(super) fn task_lock_path(root: &Path) -> PathBuf {
+    root.join(format!("{TASK_FILE_NAME}.lock"))
+}
+
 pub(crate) fn perform_inner<F>(
     wg_root: &Path,
     op: TaskOp,
@@ -33,7 +37,7 @@ where
     F: FnOnce() -> DateTime<Utc>,
 {
     let task_path = wg_root.join(TASK_FILE_NAME);
-    let lock_path = wg_root.join(format!("{TASK_FILE_NAME}.lock"));
+    let lock_path = task_lock_path(wg_root);
     // Per-PID tmp suffix eliminates the tmp-collision race during stale-lock
     // recovery (HIGH-2).
     let tmp_path = wg_root.join(format!("{TASK_FILE_NAME}.tmp.{}", std::process::id()));
@@ -149,6 +153,11 @@ fn description_publication(
                 };
                 if len_changed || mtime_changed {
                     let _ = remove_task_artifact(&tmp_path);
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "pre_sentinel is Some only when file_existed; \
+                                  description_backup then returns Some or Err"
+                    )]
                     let bp = backup_path
                         .clone()
                         .expect("file_existed ⇒ backup_path is Some");
@@ -161,6 +170,11 @@ fn description_publication(
                 // (normal create on both Windows MoveFileExW(MOVEFILE_REPLACE_EXISTING)
                 // and Unix), undoing the external delete. Treat as ExternalWrite.
                 let _ = remove_task_artifact(&tmp_path);
+                #[allow(
+                    clippy::expect_used,
+                    reason = "pre_sentinel is Some only when file_existed; \
+                              description_backup then returns Some or Err"
+                )]
                 let bp = backup_path
                     .clone()
                     .expect("file_existed ⇒ backup_path is Some");

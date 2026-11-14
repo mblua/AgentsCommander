@@ -328,7 +328,10 @@ fn synchronous_host_finalizer_retains_authority_through_late_completion() {
     let config = temporary.path().join("config");
     std::fs::create_dir_all(&config).expect("host finalizer config directory");
     let _env = ConfigEnvGuard::set(&config);
-    std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    // SAFETY: runs only in the isolated --test-threads=1 child process
+    unsafe {
+        std::env::set_var("RUST_LOG", "vt100=trace,agentscommander=trace");
+    }
     crate::logging::init_logger();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

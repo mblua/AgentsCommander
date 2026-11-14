@@ -86,11 +86,11 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
                 "could not inspect {side} payload receipt {path:?}: {error}"
             )),
         };
-    let delivered = outbox_dir.join("delivered").join(format!("{id}.json"));
+    let delivered = crate::phone::types::outbox_delivered_receipt(outbox_dir, id);
     if is_regular_receipt(&delivered, "delivered")? {
         return Ok(true);
     }
-    let rejected = outbox_dir.join("rejected").join(format!("{id}.json"));
+    let rejected = crate::phone::types::outbox_rejected_receipt(outbox_dir, id);
     is_regular_receipt(&rejected, "rejected")
 }
 

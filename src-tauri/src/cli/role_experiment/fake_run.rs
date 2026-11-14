@@ -28,6 +28,8 @@ use super::resume::reconcile_mutable_artifacts;
 use super::resume::replica_root_for_attempt;
 use super::storage::atomic_write_bytes;
 use super::storage::atomic_write_json;
+use super::storage::attempt_done_path;
+use super::storage::attempt_running_path;
 use super::storage::create_run_workgroup_dirs;
 use super::storage::ensure_run_artifact_dirs;
 use super::storage::load_experiment;
@@ -355,10 +357,10 @@ fn execute_attempts_with_fake_executor(
             started_at: started_at.clone(),
         };
         atomic_write_json(
-            &plan
-                .run_dir
-                .join("attempt-state")
-                .join(format!("{}.running.json", plan.attempts[idx].attempt_id)),
+            &attempt_running_path(
+                &plan.run_dir.join("attempt-state"),
+                &plan.attempts[idx].attempt_id,
+            ),
             &ownership,
         )?;
         plan.attempts[idx].status = "running".to_string();
@@ -380,10 +382,10 @@ fn execute_attempts_with_fake_executor(
             fake_output_text(&result, &started_at, &completed_at).as_bytes(),
         )?;
         atomic_write_json(
-            &plan
-                .run_dir
-                .join("attempt-state")
-                .join(format!("{}.done.json", plan.attempts[idx].attempt_id)),
+            &attempt_done_path(
+                &plan.run_dir.join("attempt-state"),
+                &plan.attempts[idx].attempt_id,
+            ),
             &ownership,
         )?;
         plan.attempts[idx].status = result.status.clone();

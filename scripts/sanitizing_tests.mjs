@@ -21,7 +21,7 @@ import { scanRust, lexRust, decodeRustString,
     compatibilitySites } from './sanitizing_rust_scan.mjs';
 
 // Fixtures are isolated repositories, never a user's worktree. No network/symlinks/profiles.
-function fixture(t) {
+export function fixture(t) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sanitizing-'));
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(cwd,
       'no-global-config'),
@@ -48,8 +48,8 @@ function fixture(t) {
   return { cwd, git, write, commit, base, runner, snapshot: (baseRef = base, run = runner) =>
       createSnapshot({ cwd, baseRef, runner: run }) };
 }
-const text = (n, width = 1) => ('a'.repeat(width) + '\n').repeat(n);
-function sequence(f, gate, name, before, mutation, expected = 1) {
+export const text = (n, width = 1) => ('a'.repeat(width) + '\n').repeat(n);
+export function sequence(f, gate, name, before, mutation, expected = 1) {
   f.write(name, before); const base = f.commit();
   assert.equal(gate(f.snapshot(base)).exit, 0);
   f.write(name, mutation); f.commit(); const result = gate(f.snapshot(base));

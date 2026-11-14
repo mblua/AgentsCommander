@@ -114,3 +114,112 @@ export function railTag(target: EventTarget | null): NonNullable<RailFields["tar
   const tag = target instanceof Element ? target.tagName.toLowerCase() : "other";
   return (tags.includes(tag) ? tag : "other") as NonNullable<RailFields["targetTag"]>;
 }
+
+export interface RailGestureHost {
+  aside: HTMLElement;
+  metadata: WeakMap<Element, () => RailFields>;
+  emit: (event: RailDiagnosticRecord["event"], fields?: RailFields) => void;
+  selection: () => RailFields;
+}
+type Gesture = { node: Element; fields: RailFields; pointerId?: number };
+
+function knownNode(host: RailGestureHost, target: EventTarget | null): Element | undefined {
+  let node = target instanceof Element ? target : null;
+  while (node && node !== host.aside) {
+    if (host.metadata.has(node)) return node;
+    node = node.parentElement;
+  }
+  return undefined;
+}
+
+function currentGesture(
+  gestures: Map<number, Gesture>, key: number, pointerId: number | undefined,
+): Gesture | undefined {
+  const gesture = gestures.get(key);
+  if (gesture || pointerId !== undefined) return gesture;
+  const values = [...gestures.values()];
+  return values[values.length - 1];
+}
+
+function startsPress(event: Event, gesture: Gesture | undefined): boolean {
+  return event.type === "pointerdown" || (event.type === "mousedown" && !gesture);
+}
+
+function forgetGestures(
+  gestures: Map<number, Gesture>, match: (id: number, candidate: Gesture) => boolean,
+): void {
+  for (const [id, candidate] of gestures) if (match(id, candidate)) gestures.delete(id);
+}
+
+function startGesture(
+  host: RailGestureHost, gestures: Map<number, Gesture>, node: Element, key: number,
+  pointerId: number | undefined,
+): Gesture {
+  const fields = { ...host.metadata.get(node)?.(), nodeId: railObjectId(node) };
+  if (gestures.size >= 8 && !gestures.has(key)) {
+    const oldest = gestures.keys().next().value!;
+    gestures.delete(oldest);
+    host.emit("pointercancel", { outcome: "overflow" });
+  }
+  const gesture = { node, fields, pointerId };
+  gestures.set(key, gesture);
+  return gesture;
+}
+
+function reportGesture(
+  host: RailGestureHost, event: Event, pointerId: number | undefined,
+  gesture: Gesture | undefined, node: Element | undefined,
+): void {
+  const pointer = event as PointerEvent;
+  let captured = false;
+  try {
+    captured = gesture?.pointerId !== undefined
+      && !!gesture.node.hasPointerCapture?.(gesture.pointerId);
+  } catch {}
+  host.emit(event.type as Parameters<typeof emitRailDiagnostic>[1], {
+    ...(gesture?.fields ?? (node ? host.metadata.get(node)?.() : {})), ...host.selection(),
+    pointerId, button: typeof pointer.button === "number" ? pointer.button : undefined,
+    primary: typeof pointer.isPrimary === "boolean" ? pointer.isPrimary : undefined,
+    trusted: event.isTrusted, targetTag: railTag(event.target),
+    activeTag: railTag(document.activeElement),
+    nodeId: railObjectId(node, false), originalNodeId: gesture?.fields.nodeId,
+    connected: node?.isConnected, originalConnected: gesture?.node.isConnected, captured,
+    documentFocused: document.hasFocus(),
+    outcome: event.type === "click" && !gesture ? "no-press" : undefined,
+  });
+}
+
+function observeGesture(host: RailGestureHost, gestures: Map<number, Gesture>, event: Event): void {
+  if (!isDebugEnabled()) { gestures.clear(); return; }
+  const pointer = event as PointerEvent;
+  const pointerId = typeof pointer.pointerId === "number" ? pointer.pointerId : undefined;
+  const key = pointerId ?? -1;
+  const inside = event.target instanceof Node && host.aside.contains(event.target);
+  let gesture = currentGesture(gestures, key, pointerId);
+  if (!inside && (event.type === "pointerdown" || event.type === "mousedown")) {
+    // A new outside press ends attribution to the prior rail gesture.
+    const prior = gesture;
+    forgetGestures(gestures, (id, candidate) => id === key || candidate === prior);
+    return;
+  }
+  if (!inside && !gesture) return;
+  const node = knownNode(host, event.target);
+  if (startsPress(event, gesture)) {
+    if (!inside) return;
+    if (node) gesture = startGesture(host, gestures, node, key, pointerId);
+  }
+  reportGesture(host, event, pointerId, gesture, node);
+  if (event.type === "click") {
+    const ended = gesture;
+    forgetGestures(gestures, (_id, candidate) => candidate === ended);
+  }
+}
+
+export function createRailGestureTracker(host: RailGestureHost) {
+  const gestures = new Map<number, Gesture>();
+  return {
+    observe: (event: Event) => observeGesture(host, gestures, event),
+    size: () => gestures.size,
+    clear: () => gestures.clear(),
+  };
+}
