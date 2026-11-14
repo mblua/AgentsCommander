@@ -184,6 +184,27 @@ function printHelp() {
   return lines.join('\n') + '\n';
 }
 
+const BOOLEAN_FLAGS = new Map([
+  ['--json', 'json'],
+  ['--include-tests', 'includeTests'],
+  ['--quiet', 'quiet'],
+  ['--self-test', 'selfTest'],
+  ['-h', 'help'],
+  ['--help', 'help'],
+  ['-V', 'version'],
+  ['--version', 'version'],
+]);
+const CHOICE_FLAGS = new Map([
+  ['--level', { key: 'level', values: LEVELS }],
+  ['--function-scope', { key: 'functionScope', values: FUNCTION_SCOPES }],
+  ['--fail-on', { key: 'failOn', values: FAIL_ON }],
+]);
+const VALUE_FLAGS = new Map([
+  ['--baseline', 'baseline'],
+  ['--write-baseline', 'writeBaseline'],
+  ['--emit-graph', 'emitGraph'],
+]);
+
 function parseArgs(argv) {
   const opts = {
     pathArg: null,
@@ -203,15 +224,6 @@ function parseArgs(argv) {
   };
   const positionals = [];
 
-  const needValue = (token, inlineValue, iter) => {
-    // `--flag=` is a missing value, not an empty one. Accepting the empty string
-    // makes `--write-baseline=` a silent no-op that reads as a recorded baseline,
-    // and lets `--baseline= --write-baseline=x` slip past the exclusivity check.
-    const value = inlineValue !== null ? inlineValue : iter.next();
-    if (value === undefined || value === '') throw new UsageError(`missing value for ${token}`);
-    return value;
-  };
-
   let i = 0;
   const iter = { next: () => (i < argv.length ? argv[i++] : undefined) };
 
@@ -219,84 +231,74 @@ function parseArgs(argv) {
     const token = iter.next();
     if (token === undefined) break;
     if (token === '--') {
-      for (;;) {
-        const rest = iter.next();
-        if (rest === undefined) break;
-        positionals.push(rest);
-      }
+      drainPositionals(iter, positionals);
       break;
     }
     if (!token.startsWith('-') || token === '-') {
       positionals.push(token);
       continue;
     }
-    const eq = token.indexOf('=');
-    const name = eq >= 0 ? token.slice(0, eq) : token;
-    const inline = eq >= 0 ? token.slice(eq + 1) : null;
-
-    switch (name) {
-      case '--json':
-        opts.json = true;
-        break;
-      case '--include-tests':
-        opts.includeTests = true;
-        break;
-      case '--quiet':
-        opts.quiet = true;
-        break;
-      case '--self-test':
-        opts.selfTest = true;
-        break;
-      case '-h':
-      case '--help':
-        opts.help = true;
-        break;
-      case '-V':
-      case '--version':
-        opts.version = true;
-        break;
-      case '--level': {
-        const v = needValue(name, inline, iter);
-        if (!LEVELS.includes(v)) throw new UsageError(
-          `invalid value for --level: ${v} (expected ${LEVELS.join(' | ')})`);
-        opts.level = v;
-        break;
-      }
-      case '--function-scope': {
-        const v = needValue(name, inline, iter);
-        if (!FUNCTION_SCOPES.includes(v)) {
-          throw new UsageError(
-            `invalid value for --function-scope: ${v} (expected ${FUNCTION_SCOPES.join(' | ')})`);
-        }
-        opts.functionScope = v;
-        break;
-      }
-      case '--fail-on': {
-        const v = needValue(name, inline, iter);
-        if (!FAIL_ON.includes(v)) throw new UsageError(
-          `invalid value for --fail-on: ${v} (expected ${FAIL_ON.join(' | ')})`);
-        opts.failOn = v;
-        break;
-      }
-      case '--baseline':
-        opts.baseline = needValue(name, inline, iter);
-        break;
-      case '--write-baseline':
-        opts.writeBaseline = needValue(name, inline, iter);
-        break;
-      case '--emit-graph':
-        opts.emitGraph = needValue(name, inline, iter);
-        break;
-      case '--exclude':
-        opts.excludes.push(needValue(name, inline, iter));
-        break;
-      default:
-        throw new UsageError(`unknown flag: ${name}`);
-    }
+    const { name, inline } = splitFlagToken(token);
+    applyFlag(opts, name, inline, iter);
   }
 
   if (opts.help || opts.version || opts.selfTest) return opts;
 
+  checkRunModeFlags(opts);
+  opts.pathArg = singlePositional(positionals);
+  return opts;
+}
+
+function drainPositionals(iter, positionals) {
+  for (;;) {
+    const rest = iter.next();
+    if (rest === undefined) break;
+    positionals.push(rest);
+  }
+}
+
+function splitFlagToken(token) {
+  const eq = token.indexOf('=');
+  if (eq < 0) return { name: token, inline: null };
+  return { name: token.slice(0, eq), inline: token.slice(eq + 1) };
+}
+
+function needFlagValue(token, inlineValue, iter) {
+  // `--flag=` is a missing value, not an empty one. Accepting the empty string
+  // makes `--write-baseline=` a silent no-op that reads as a recorded baseline,
+  // and lets `--baseline= --write-baseline=x` slip past the exclusivity check.
+  const value = inlineValue !== null ? inlineValue : iter.next();
+  if (value === undefined || value === '') throw new UsageError(`missing value for ${token}`);
+  return value;
+}
+
+function applyFlag(opts, name, inline, iter) {
+  if (BOOLEAN_FLAGS.has(name)) {
+    opts[BOOLEAN_FLAGS.get(name)] = true;
+    return;
+  }
+  const choice = CHOICE_FLAGS.get(name);
+  if (choice) {
+    const v = needFlagValue(name, inline, iter);
+    if (!choice.values.includes(v)) {
+      throw new UsageError(
+        `invalid value for ${name}: ${v} (expected ${choice.values.join(' | ')})`);
+    }
+    opts[choice.key] = v;
+    return;
+  }
+  if (VALUE_FLAGS.has(name)) {
+    opts[VALUE_FLAGS.get(name)] = needFlagValue(name, inline, iter);
+    return;
+  }
+  if (name === '--exclude') {
+    opts.excludes.push(needFlagValue(name, inline, iter));
+    return;
+  }
+  throw new UsageError(`unknown flag: ${name}`);
+}
+
+function checkRunModeFlags(opts) {
   if (opts.baseline && opts.writeBaseline) {
     throw new UsageError('--baseline and --write-baseline are mutually exclusive');
   }
@@ -307,11 +309,13 @@ function parseArgs(argv) {
   if (opts.emitGraph && opts.writeBaseline) {
     throw new UsageError('--emit-graph and --write-baseline are mutually exclusive');
   }
+}
+
+function singlePositional(positionals) {
   if (positionals.length === 0) throw new UsageError('missing <path>');
   if (positionals.length > 1) throw new UsageError(
     `unexpected extra positional: ${positionals[1]}`);
-  opts.pathArg = positionals[0];
-  return opts;
+  return positionals[0];
 }
 
 /* ------------------------------------------------------------------ *
@@ -713,53 +717,62 @@ function findRustFiles(root, compiledExcludes, ctx) {
   const rustFiles = [];
   const manifests = [];
   const stack = [root];
+  const walk = { root, compiledExcludes, ctx, stack, rustFiles, manifests };
 
   while (stack.length > 0) {
     const dir = stack.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      ctx.diagnostics.push({
-        level: 'error',
-        code: 'directory-read-error',
-        message: `cannot read directory: ${err.message}`,
-        file: relPath(root, dir),
-      });
-      continue;
-    }
-    entries.sort((a, b) => compareCodeUnits(a.name, b.name));
-
-    for (const entry of entries) {
-      const abs = path.join(dir, entry.name);
-      const rel = relPath(root, abs);
-      if (hasDefaultExcludedSegment(rel)) continue;
-      if (isExcluded(rel, compiledExcludes)) continue;
-
-      if (entry.isSymbolicLink()) {
-        // Not followed: a filesystem cycle is a different problem from the one
-        // being solved here.
-        ctx.diagnostics.push({
-          level: 'warn',
-          code: 'symlink-skipped',
-          message: 'symlink not followed',
-          file: rel,
-        });
-        continue;
-      }
-      if (entry.isDirectory()) {
-        stack.push(abs);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (entry.name.endsWith('.rs')) rustFiles.push(abs);
-      else if (entry.name === 'Cargo.toml') manifests.push(abs);
-    }
+    const entries = readSortedDir(root, dir, ctx);
+    if (!entries) continue;
+    for (const entry of entries) walkEntry(walk, dir, entry);
   }
 
   rustFiles.sort(compareCodeUnits);
   manifests.sort(compareCodeUnits);
   return { rustFiles, manifests };
+}
+
+/** Directory entries sorted by name, or null after reporting an unreadable directory. */
+function readSortedDir(root, dir, ctx) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    ctx.diagnostics.push({
+      level: 'error',
+      code: 'directory-read-error',
+      message: `cannot read directory: ${err.message}`,
+      file: relPath(root, dir),
+    });
+    return null;
+  }
+  entries.sort((a, b) => compareCodeUnits(a.name, b.name));
+  return entries;
+}
+
+function walkEntry(walk, dir, entry) {
+  const abs = path.join(dir, entry.name);
+  const rel = relPath(walk.root, abs);
+  if (hasDefaultExcludedSegment(rel)) return;
+  if (isExcluded(rel, walk.compiledExcludes)) return;
+
+  if (entry.isSymbolicLink()) {
+    // Not followed: a filesystem cycle is a different problem from the one
+    // being solved here.
+    walk.ctx.diagnostics.push({
+      level: 'warn',
+      code: 'symlink-skipped',
+      message: 'symlink not followed',
+      file: rel,
+    });
+    return;
+  }
+  if (entry.isDirectory()) {
+    walk.stack.push(abs);
+    return;
+  }
+  if (!entry.isFile()) return;
+  if (entry.name.endsWith('.rs')) walk.rustFiles.push(abs);
+  else if (entry.name === 'Cargo.toml') walk.manifests.push(abs);
 }
 
 /* ------------------------------------------------------------------ *
@@ -917,6 +930,17 @@ function makeTarget(fields) {
  * `use agentscommander_lib::...`.
  */
 function discoverTargets(rootAbs, manifests, opts, ctx) {
+  const { workspaceDeps, parsed } = readManifests(rootAbs, manifests, ctx);
+  const targets = [];
+  const env = { rootAbs, workspaceDeps, opts, ctx, targets };
+
+  for (const { manifestAbs, tables } of parsed) addPackageTargets(env, manifestAbs, tables);
+
+  targets.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
+  return targets;
+}
+
+function readManifests(rootAbs, manifests, ctx) {
   const workspaceDeps = new Set();
   const parsed = [];
 
@@ -937,100 +961,105 @@ function discoverTargets(rootAbs, manifests, opts, ctx) {
     for (const dep of collectDependencyNames(tables)) workspaceDeps.add(identify(dep));
     parsed.push({ manifestAbs, tables });
   }
+  return { workspaceDeps, parsed };
+}
 
-  const targets = [];
+function addPackageTargets(env, manifestAbs, tables) {
+  const { rootAbs, ctx, targets } = env;
+  const pkg = tables.get('package');
+  if (!pkg) return;
+  const packageName = pkg.get('name');
+  if (!packageName) {
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'manifest-missing-package-name',
+      message: '[package] has no name; no target derived from this manifest',
+      file: relPath(rootAbs, manifestAbs),
+    });
+    return;
+  }
+  // Cargo's own default when `edition` is absent is 2015, and bare-path
+  // `use` resolution differs between 2015 and 2018+.
+  const edition = pkg.get('edition') || '2015';
+  const dir = path.dirname(manifestAbs);
+  const manifestRel = relPath(rootAbs, manifestAbs);
+  const pkgIdent = identify(packageName);
 
-  for (const { manifestAbs, tables } of parsed) {
-    const pkg = tables.get('package');
-    if (!pkg) continue;
-    const packageName = pkg.get('name');
-    if (!packageName) {
-      ctx.diagnostics.push({
-        level: 'warn',
-        code: 'manifest-missing-package-name',
-        message: '[package] has no name; no target derived from this manifest',
-        file: relPath(rootAbs, manifestAbs),
-      });
-      continue;
-    }
-    // Cargo's own default when `edition` is absent is 2015, and bare-path
-    // `use` resolution differs between 2015 and 2018+.
-    const edition = pkg.get('edition') || '2015';
-    const dir = path.dirname(manifestAbs);
-    const manifestRel = relPath(rootAbs, manifestAbs);
-    const pkgIdent = identify(packageName);
+  const externCrates = new Set(env.workspaceDeps);
+  for (const dep of collectDependencyNames(tables)) externCrates.add(identify(dep));
 
-    const externCrates = new Set(workspaceDeps);
-    for (const dep of collectDependencyNames(tables)) externCrates.add(identify(dep));
+  const lib = tables.get('lib');
+  const libName = lib?.get('name') ? lib.get('name') : pkgIdent;
+  const libPath = lib?.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
+    'src', 'lib.rs');
 
-    const lib = tables.get('lib');
-    const libName = lib?.get('name') ? lib.get('name') : pkgIdent;
-    const libPath = lib?.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
-      'src', 'lib.rs');
+  const common = {
+    packageName,
+    pkgIdent,
+    libName,
+    manifestPath: manifestRel,
+    edition,
+    externCrates,
+  };
 
-    const common = {
-      packageName,
-      pkgIdent,
-      libName,
-      manifestPath: manifestRel,
-      edition,
-      externCrates,
-    };
-
-    if (isFile(libPath)) {
-      targets.push(makeTarget({
-        ...common,
-        targetId: libName,
-        kind: 'lib',
-        rootFile: libPath,
-        sourceRoot: sourceRootFor(dir, libPath),
-        enabled: true,
-      }));
-    }
-
-    const mainRs = path.join(dir, 'src', 'main.rs');
-    if (isFile(mainRs)) {
-      targets.push(makeTarget({
-        ...common,
-        targetId: `${pkgIdent}[bin:main]`,
-        kind: 'bin',
-        rootFile: mainRs,
-        sourceRoot: sourceRootFor(dir, mainRs),
-        enabled: true,
-      }));
-    }
-
-    for (const { stem, file } of listRootFilesIn(path.join(dir, 'src', 'bin'))) {
-      targets.push(makeTarget({
-        ...common,
-        targetId: `${pkgIdent}[bin:${stem}]`,
-        kind: 'bin',
-        rootFile: file,
-        sourceRoot: sourceRootFor(dir, file),
-        enabled: true,
-      }));
-    }
-
-    // Integration test, bench and example targets are separate leaf crates.
-    // They cannot participate in a cycle with the lib, and a test referencing
-    // production code is not a coupling constraint on splitting the crate.
-    for (const [subdir, kind] of [['tests', 'test'], ['benches', 'bench'], ['examples',
-      'example']]) {
-      for (const { stem, file } of listRootFilesIn(path.join(dir, subdir))) {
-        targets.push(makeTarget({
-          ...common,
-          targetId: `${pkgIdent}[${kind}:${stem}]`,
-          kind,
-          rootFile: file,
-          sourceRoot: sourceRootFor(dir, file),
-          enabled: opts.includeTests,
-        }));
-      }
-    }
+  if (isFile(libPath)) {
+    targets.push(makeTarget({
+      ...common,
+      targetId: libName,
+      kind: 'lib',
+      rootFile: libPath,
+      sourceRoot: sourceRootFor(dir, libPath),
+      enabled: true,
+    }));
   }
 
-  targets.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
-  return targets;
+  addBinTargets(targets, common, dir);
+  addLeafTargets(env, common, dir);
+}
+
+function addBinTargets(targets, common, dir) {
+  const pkgIdent = common.pkgIdent;
+  const mainRs = path.join(dir, 'src', 'main.rs');
+  if (isFile(mainRs)) {
+    targets.push(makeTarget({
+      ...common,
+      targetId: `${pkgIdent}[bin:main]`,
+      kind: 'bin',
+      rootFile: mainRs,
+      sourceRoot: sourceRootFor(dir, mainRs),
+      enabled: true,
+    }));
+  }
+
+  for (const { stem, file } of listRootFilesIn(path.join(dir, 'src', 'bin'))) {
+    targets.push(makeTarget({
+      ...common,
+      targetId: `${pkgIdent}[bin:${stem}]`,
+      kind: 'bin',
+      rootFile: file,
+      sourceRoot: sourceRootFor(dir, file),
+      enabled: true,
+    }));
+  }
+}
+
+// Integration test, bench and example targets are separate leaf crates.
+// They cannot participate in a cycle with the lib, and a test referencing
+// production code is not a coupling constraint on splitting the crate.
+function addLeafTargets(env, common, dir) {
+  for (const [subdir, kind] of [['tests', 'test'], ['benches', 'bench'], ['examples',
+    'example']]) {
+    for (const { stem, file } of listRootFilesIn(path.join(dir, subdir))) {
+      env.targets.push(makeTarget({
+        ...common,
+        targetId: `${common.pkgIdent}[${kind}:${stem}]`,
+        kind,
+        rootFile: file,
+        sourceRoot: sourceRootFor(dir, file),
+        enabled: env.opts.includeTests,
+      }));
+    }
+  }
 }
 
 /**
@@ -2774,47 +2803,60 @@ function applyBaseline(result, baseline, baselinePath, opts, ctx) {
     return { used: false };
   }
 
-  const from = baseline.generatedFrom || {};
-  if (from.functionScope !== opts.functionScope || from.includeTests !== opts.includeTests) {
-    ctx.diagnostics.push({
-      level: 'warn',
-      code: 'baseline-settings-mismatch',
-      message:
-        `baseline was generated with functionScope=${from.functionScope} includeTests=${from.includeTests}; ` +
-        `this run uses functionScope=${opts.functionScope} includeTests=${opts.includeTests}`,
-      file: toPosix(baselinePath),
-    });
-  }
+  warnOnBaselineSettings(baseline, baselinePath, opts, ctx);
 
   const moduleIds = new Set((baseline.moduleCycles || []).map((c) => c.id));
   const functionIds = new Set((baseline.functionCycles || []).map((c) => c.id));
   const currentModule = new Set(result.moduleCycles.map((c) => c.id));
   const currentFunction = new Set(result.functionCycles.map((c) => c.id));
 
-  let knownModule = 0;
-  let newModule = 0;
-  let knownFunction = 0;
-  let newFunction = 0;
+  const moduleCounts = markCycleStatus(result.moduleCycles, moduleIds);
+  const functionCounts = markCycleStatus(result.functionCycles, functionIds);
+  const resolvedCycles = resolvedBaselineCycles(baseline, currentModule, currentFunction);
 
-  for (const cycle of result.moduleCycles) {
-    if (moduleIds.has(cycle.id)) {
+  return {
+    used: true,
+    path: toPosix(baselinePath),
+    knownModuleCycles: moduleCounts.known,
+    newModuleCycles: moduleCounts.fresh,
+    knownFunctionCycles: functionCounts.known,
+    newFunctionCycles: functionCounts.fresh,
+    resolvedCycles,
+  };
+}
+
+function warnOnBaselineSettings(baseline, baselinePath, opts, ctx) {
+  const from = baseline.generatedFrom || {};
+  if (from.functionScope !== opts.functionScope || from.includeTests !== opts.includeTests) {
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'baseline-settings-mismatch',
+      message:
+        `baseline was generated with functionScope=${from.functionScope} ` +
+        `includeTests=${from.includeTests}; ` +
+        `this run uses functionScope=${opts.functionScope} includeTests=${opts.includeTests}`,
+      file: toPosix(baselinePath),
+    });
+  }
+}
+
+/** Marks each cycle known or new against the baseline ids; returns both counts. */
+function markCycleStatus(cycles, baselineIds) {
+  let known = 0;
+  let fresh = 0;
+  for (const cycle of cycles) {
+    if (baselineIds.has(cycle.id)) {
       cycle.status = 'known';
-      knownModule++;
+      known++;
     } else {
       cycle.status = 'new';
-      newModule++;
+      fresh++;
     }
   }
-  for (const cycle of result.functionCycles) {
-    if (functionIds.has(cycle.id)) {
-      cycle.status = 'known';
-      knownFunction++;
-    } else {
-      cycle.status = 'new';
-      newFunction++;
-    }
-  }
+  return { known, fresh };
+}
 
+function resolvedBaselineCycles(baseline, currentModule, currentFunction) {
   const resolvedCycles = [];
   for (const cycle of baseline.moduleCycles || []) {
     if (!currentModule.has(cycle.id)) {
@@ -2830,16 +2872,7 @@ function applyBaseline(result, baseline, baselinePath, opts, ctx) {
     if (a.graph !== b.graph) return a.graph < b.graph ? -1 : 1;
     return a.id < b.id ? -1 : 1;
   });
-
-  return {
-    used: true,
-    path: toPosix(baselinePath),
-    knownModuleCycles: knownModule,
-    newModuleCycles: newModule,
-    knownFunctionCycles: knownFunction,
-    newFunctionCycles: newFunction,
-    resolvedCycles,
-  };
+  return resolvedCycles;
 }
 
 /* ------------------------------------------------------------------ *
@@ -3348,11 +3381,7 @@ function renderHuman(result, baselineInfo, exitCode) {
   } else {
     out.push(`MODULE CYCLES: ${result.moduleCycles.length}${newSuffix(result.moduleCycles)}`);
     for (const cycle of result.moduleCycles) {
-      out.push(`  [${cycle.id.slice(0, 8)}] size ${cycle.size}`);
-      for (const member of cycle.members) out.push(`    ${member}`);
-      for (const edge of cycle.edges) {
-        out.push(`    edge ${edge.file}:${edge.line}:${edge.column}  ${edge.text}`);
-      }
+      pushCycleLines(out, `  [${cycle.id.slice(0, 8)}] size ${cycle.size}`, cycle);
     }
   }
   out.push('');
@@ -3365,11 +3394,7 @@ function renderHuman(result, baselineInfo, exitCode) {
         newSuffix(result.functionCycles),
     );
     for (const cycle of result.functionCycles) {
-      out.push(`  [${cycle.id.slice(0, 8)}] size ${cycle.size} ${cycle.scope}`);
-      for (const member of cycle.members) out.push(`    ${member}`);
-      for (const edge of cycle.edges) {
-        out.push(`    edge ${edge.file}:${edge.line}:${edge.column}  ${edge.text}`);
-      }
+      pushCycleLines(out, `  [${cycle.id.slice(0, 8)}] size ${cycle.size} ${cycle.scope}`, cycle);
     }
   }
   out.push(
@@ -3456,6 +3481,14 @@ function runAnalysis(opts) {
   return { result, baselineInfo, exitCode };
 }
 
+function pushCycleLines(out, header, cycle) {
+  out.push(header);
+  for (const member of cycle.members) out.push(`    ${member}`);
+  for (const edge of cycle.edges) {
+    out.push(`    edge ${edge.file}:${edge.line}:${edge.column}  ${edge.text}`);
+  }
+}
+
 function main(argv) {
   let opts;
   try {
@@ -3478,51 +3511,12 @@ function main(argv) {
   }
 
   try {
-    if (opts.writeBaseline) {
-      const result = analyze(opts);
-      applyBaseline(result, null, '', opts, result.ctx);
-      process.stderr.write(renderDiagnostics(result.ctx));
-      if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
-        process.stderr.write('analysis produced error-level diagnostics; baseline not written\n');
-        return 3;
-      }
-      writeBaseline(opts.writeBaseline, result, opts);
-      // Recording is not a verdict, so this exits 0 even when cycles exist.
-      process.stderr.write(
-        `wrote baseline ${toPosix(opts.writeBaseline)}: ` +
-          `${result.moduleCycles.length} module cycles, ${result.functionCycles.length} function cycles\n`,
-      );
-      return 0;
-    }
+    if (opts.writeBaseline) return runWriteBaseline(opts);
 
     const { result, baselineInfo, exitCode } = runAnalysis(opts);
     process.stderr.write(renderDiagnostics(result.ctx));
 
-    if (opts.emitGraph) {
-      if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
-        // Refusing for the same reason --write-baseline refuses: a graph taken
-        // from an incomplete analysis has holes, and a consumer would rank
-        // modules over it and report a clean gate. The report is still printed,
-        // deliberately: this run exits 3 with or without the flag, and
-        // --emit-graph must not change the stdout of a failure it did not cause.
-        // The two cases below are failures the flag itself introduced, and only
-        // those suppress output.
-        process.stderr.write('analysis produced error-level diagnostics; graph not written\n');
-      } else {
-        const payload = buildGraphPayload(result);
-        const problems = checkGraphIntegrity(payload);
-        if (problems.length > 0) {
-          process.stderr.write(
-            `graph integrity check failed: ${problems.length} closure violation(s) ` +
-              `(check ${problems[0].check}, first: ${problems[0].from} -> ${problems[0].to}); ` +
-              'graph not written\n',
-          );
-          return 3;
-        }
-        writeGraph(opts.emitGraph, payload); // throws AnalysisError -> caught below -> exit 3
-        process.stderr.write(`wrote graph ${toPosix(opts.emitGraph)}: ${graphCounts(payload)}\n`);
-      }
-    }
+    if (opts.emitGraph && !emitGraphFile(opts, result)) return 3;
 
     if (opts.json) {
       process.stdout.write(renderJson(result, baselineInfo, exitCode));
@@ -3531,18 +3525,68 @@ function main(argv) {
     if (!opts.quiet) process.stdout.write(renderHuman(result, baselineInfo, exitCode));
     return exitCode;
   } catch (err) {
-    if (err instanceof UsageError) {
-      process.stderr.write(`usage error: ${err.message}\n`);
-      return 2;
-    }
-    if (err instanceof AnalysisError) {
-      process.stderr.write(`analysis error: ${err.message}\n`);
-      return 3;
-    }
-    process.stderr.write(`internal error: ${err && err.message}\n`);
-    if (err?.stack) process.stderr.write(`${err.stack}\n`);
+    return reportRunError(err);
+  }
+}
+
+function runWriteBaseline(opts) {
+  const result = analyze(opts);
+  applyBaseline(result, null, '', opts, result.ctx);
+  process.stderr.write(renderDiagnostics(result.ctx));
+  if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
+    process.stderr.write('analysis produced error-level diagnostics; baseline not written\n');
     return 3;
   }
+  writeBaseline(opts.writeBaseline, result, opts);
+  // Recording is not a verdict, so this exits 0 even when cycles exist.
+  process.stderr.write(
+    `wrote baseline ${toPosix(opts.writeBaseline)}: ` +
+      `${result.moduleCycles.length} module cycles, ` +
+      `${result.functionCycles.length} function cycles\n`,
+  );
+  return 0;
+}
+
+/** Writes --emit-graph output; false when the graph failed its integrity check (exit 3). */
+function emitGraphFile(opts, result) {
+  if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
+    // Refusing for the same reason --write-baseline refuses: a graph taken
+    // from an incomplete analysis has holes, and a consumer would rank
+    // modules over it and report a clean gate. The report is still printed,
+    // deliberately: this run exits 3 with or without the flag, and
+    // --emit-graph must not change the stdout of a failure it did not cause.
+    // The two cases below are failures the flag itself introduced, and only
+    // those suppress output.
+    process.stderr.write('analysis produced error-level diagnostics; graph not written\n');
+    return true;
+  }
+  const payload = buildGraphPayload(result);
+  const problems = checkGraphIntegrity(payload);
+  if (problems.length > 0) {
+    process.stderr.write(
+      `graph integrity check failed: ${problems.length} closure violation(s) ` +
+        `(check ${problems[0].check}, first: ${problems[0].from} -> ${problems[0].to}); ` +
+        'graph not written\n',
+    );
+    return false;
+  }
+  writeGraph(opts.emitGraph, payload); // throws AnalysisError -> caught in main -> exit 3
+  process.stderr.write(`wrote graph ${toPosix(opts.emitGraph)}: ${graphCounts(payload)}\n`);
+  return true;
+}
+
+function reportRunError(err) {
+  if (err instanceof UsageError) {
+    process.stderr.write(`usage error: ${err.message}\n`);
+    return 2;
+  }
+  if (err instanceof AnalysisError) {
+    process.stderr.write(`analysis error: ${err.message}\n`);
+    return 3;
+  }
+  process.stderr.write(`internal error: ${err && err.message}\n`);
+  if (err?.stack) process.stderr.write(`${err.stack}\n`);
+  return 3;
 }
 
 /* ------------------------------------------------------------------ *
