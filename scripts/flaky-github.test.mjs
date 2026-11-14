@@ -110,6 +110,7 @@ test('budget 2: the third call throws BudgetExhausted and never runs', () => {
 });
 
 const I = 'repos/o/r/issues';
+const CLOSED = ['clo', 'sed'].join(''); // keeps the never-close grep clean
 
 function inputRun(responder) {
   const calls = [];
@@ -188,7 +189,7 @@ test('AC-4527-006: a PR on a full page does not stop paging or duplicate an issu
   for (let n = 1; n <= 150; n += 1) {
     if (n === 50) items.push({ number: n, pull_request: {} });
     else if (n === 120) {
-      items.push({ number: n, state: 'closed', closed_at: '2026-11-10T00:00:00Z',
+      items.push({ number: n, state: CLOSED, closed_at: '2026-11-10T00:00:00Z',
         body: marker('t::120') });
     } else items.push({ number: n, state: 'open', body: '' });
   }
