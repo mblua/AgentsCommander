@@ -1,6 +1,7 @@
 use super::*;
 use crate::pty::manager::response_close::StaleOrInvalidSettlement;
 use std::time::{Duration, Instant};
+mod finish;
 mod ordinary_ack;
 
 #[test]

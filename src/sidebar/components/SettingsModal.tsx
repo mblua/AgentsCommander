@@ -3510,7 +3510,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                     data-ac-role="textbox"
                     data-ac-state={readOnly() ? "disabled" : "editable"}
                   />
-                  <label class="settings-env-toggle" title="Enable row">
+                  <label class="settings-env-toggle" title="Enable row" aria-label="Enable row">
                     <input
                       type="checkbox"
                       class="settings-checkbox"
