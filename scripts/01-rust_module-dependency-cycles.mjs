@@ -4892,13 +4892,11 @@ function runSelfTest() {
   // inside a method that is itself called main. See the plan, 4.4.1.
   const cliMain = main;
 
-  const root = path.join(os.tmpdir(), `rust-cycles-selftest-${process.pid}`);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rust-cycles-selftest-'));
   let passed = 0;
   let failed = 0;
 
   try {
-    fs.mkdirSync(root, { recursive: true });
-
     for (let index = 0; index < FIXTURES.length; index++) {
       const fixture = FIXTURES[index];
       const dir = path.join(root, `f${index + 1}`);
