@@ -108,3 +108,76 @@ test('budget 2: the third call throws BudgetExhausted and never runs', () => {
   assert.equal(calls.length, 2);
   assert.equal(gh.calls, 2);
 });
+
+const I = 'repos/o/r/issues';
+
+function inputRun(responder) {
+  const calls = [];
+  const run = (cmd, args, input) => {
+    calls.push({ args: [cmd, ...args], input });
+    return responder(args);
+  };
+  return { run, calls };
+}
+
+test('issue methods: exact args, bodies only on stdin', () => {
+  const { run, calls } = inputRun((args) =>
+    ok(args[1].includes('?labels=') ? [{ number: 1 }, { number: 2, pull_request: {} }] : []),
+  );
+  const gh = createGitHub({ repo: 'o/r', run });
+  assert.deepEqual(gh.listLabeledIssues('flaky-test', 2), [{ number: 1 }]);
+  gh.listComments(7, 1);
+  gh.listComments(7, 3);
+  gh.createIssue('T @x', 'B `x`', ['flaky-test']);
+  gh.reopenIssue(7);
+  gh.comment(7, 'C');
+  const write = (method, endpoint) => ['gh', 'api', '--method', method, endpoint, '--input', '-'];
+  assert.deepEqual(
+    calls.map((c) => c.args),
+    [
+      ['gh', 'api', `${I}?labels=flaky-test&state=all&per_page=100&page=2`],
+      ['gh', 'api', `${I}/7/comments?per_page=100&page=1`],
+      ['gh', 'api', `${I}/7/comments?per_page=100&page=3`],
+      write('POST', I),
+      write('PATCH', `${I}/7`),
+      write('POST', `${I}/7/comments`),
+    ],
+  );
+  assert.deepEqual(JSON.parse(calls[3].input), {
+    title: 'T @x',
+    body: 'B `x`',
+    labels: ['flaky-test'],
+  });
+  assert.deepEqual(JSON.parse(calls[4].input), { state: 'open' });
+  assert.deepEqual(JSON.parse(calls[5].input), { body: 'C' });
+  for (const call of calls) assert.ok(!call.args.some((a) => a.includes('B `x`') || a === 'C'));
+});
+
+function labelRun(getStatus, postStatus) {
+  return inputRun((args) => {
+    const status = args.includes('POST') ? postStatus : getStatus;
+    if (status === 0) return ok({});
+    return { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from(`HTTP ${status}`) };
+  });
+}
+
+test('ensureLabel: present = one GET; 404 -> POST; POST 422 ok; other errors throw', () => {
+  let fake = labelRun(0, 0);
+  createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('flaky-test');
+  assert.deepEqual(fake.calls.map((c) => c.args), [['gh', 'api', 'repos/o/r/labels/flaky-test']]);
+  fake = labelRun(404, 0);
+  createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('flaky-test');
+  assert.deepEqual(fake.calls[1].args,
+    ['gh', 'api', '--method', 'POST', 'repos/o/r/labels', '--input', '-']);
+  assert.deepEqual(JSON.parse(fake.calls[1].input), {
+    name: 'flaky-test',
+    color: 'd93f0b',
+    description: 'Flaky test (advisory, #4527)',
+  });
+  fake = labelRun(404, 422);
+  createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('flaky-test');
+  fake = labelRun(404, 500);
+  assert.throws(() => createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('x'), ApiError);
+  fake = labelRun(403, 0);
+  assert.throws(() => createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('x'), ApiError);
+});

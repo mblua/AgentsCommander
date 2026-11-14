@@ -43,16 +43,20 @@ function httpStatus(stderr) {
 export function createGitHub({ repo, run = defaultRun, budget = Infinity }) {
   const gh = { calls: 0 };
 
-  function raw(endpoint) {
+  function raw(endpoint, method, body) {
     if (gh.calls >= budget) throw new BudgetExhausted(budget);
     gh.calls += 1;
-    const result = run('gh', ['api', endpoint]);
+    const result = method
+      ? run('gh', ['api', '--method', method, endpoint, '--input', '-'], JSON.stringify(body))
+      : run('gh', ['api', endpoint]);
     if (result.status !== 0) throw new ApiError(endpoint, result.status, httpStatus(result.stderr));
     return result.stdout;
   }
 
   const json = (endpoint) => JSON.parse(String(raw(endpoint)));
+  const send = (method, endpoint, body) => JSON.parse(String(raw(endpoint, method, body)));
   const actions = `repos/${repo}/actions`;
+  const issues = `repos/${repo}/issues`;
 
   gh.listRuns = (workflowFile, day, page) =>
     json(
@@ -87,6 +91,34 @@ export function createGitHub({ repo, run = defaultRun, budget = Infinity }) {
     }
     return null;
   };
+
+  // #4527 P07: advisory quarantine issues. Bodies go as JSON on stdin, never in argv.
+  gh.listLabeledIssues = (label, page) =>
+    json(`${issues}?labels=${label}&state=all&per_page=100&page=${page}`).filter(
+      (item) => !item.pull_request,
+    );
+
+  gh.listComments = (number, page) =>
+    json(`${issues}/${number}/comments?per_page=100&page=${page}`);
+
+  gh.ensureLabel = (label) => {
+    try {
+      json(`repos/${repo}/labels/${label}`);
+      return;
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.http !== 404) throw error;
+    }
+    const body = { name: label, color: 'd93f0b', description: 'Flaky test (advisory, #4527)' };
+    try {
+      send('POST', `repos/${repo}/labels`, body);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.http !== 422) throw error;
+    }
+  };
+
+  gh.createIssue = (title, body, labels) => send('POST', issues, { title, body, labels });
+  gh.reopenIssue = (number) => send('PATCH', `${issues}/${number}`, { state: 'open' });
+  gh.comment = (number, body) => send('POST', `${issues}/${number}/comments`, { body });
 
   return gh;
 }

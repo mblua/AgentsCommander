@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   actions: read
+  issues: write
 
 concurrency:
   group: flaky-rate
@@ -28,6 +29,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/flaky-rate.mjs --repo "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/flaky-rate"
+      - name: Open or update advisory quarantine issues
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/flaky-quarantine.mjs --repo "$GITHUB_REPOSITORY"
+          --report "$RUNNER_TEMP/flaky-rate/report.json" --out "$RUNNER_TEMP/flaky-rate"
       - name: Upload history
         if: always()
         uses: actions/upload-artifact@v7
@@ -44,5 +52,6 @@ jobs:
           path: |
             ${{ runner.temp }}/flaky-rate/report.json
             ${{ runner.temp }}/flaky-rate/report.md
+            ${{ runner.temp }}/flaky-rate/quarantine.json
           retention-days: 90
           if-no-files-found: ignore
