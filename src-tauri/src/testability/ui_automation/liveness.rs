@@ -49,9 +49,8 @@ pub fn pid_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    // SAFETY: OpenProcess takes numeric rights/PID; its null result is checked before
-    // querying. `code` is writable u32 storage for GetExitCodeProcess. The non-null
-    // handle remains open through the query and is closed once by CloseHandle.
+    // SAFETY: OpenProcess takes numeric rights/PID; null is checked before querying. `code` is
+    // writable u32 for GetExitCodeProcess; the non-null handle stays open, then closed once.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if handle.is_null() {
