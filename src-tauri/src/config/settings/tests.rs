@@ -607,3 +607,43 @@ mod e2432_profile_storage_tests;
 mod e2432_p02_physical_file_tests;
 
 mod e2432_p02_closed_owner_tests;
+
+#[test]
+fn app_settings_debug_redacts_secrets_4638() {
+    let settings = AppSettings {
+        gemini_api_key: "gemini-secret-4638".to_string(),
+        jev_api_key: "jev-secret-4638".to_string(),
+        root_token: Some("root-secret-4638".to_string()),
+        ..AppSettings::default()
+    };
+    let text = format!("{settings:?}");
+    assert!(!text.contains("gemini-secret-4638"));
+    assert!(!text.contains("jev-secret-4638"));
+    assert!(!text.contains("root-secret-4638"));
+    assert!(text.contains("gemini_api_key: \"[REDACTED]\""));
+    assert!(text.contains("jev_api_key: \"[REDACTED]\""));
+    assert!(text.contains("root_token: \"[REDACTED]\""));
+    assert!(text.contains("default_shell: "));
+    assert!(text.contains("agents_layer: "));
+}
+
+#[test]
+fn app_settings_debug_redacts_overlay_base_values_4638() {
+    let mut base = serde_json::json!({ "geminiApiKey": "base-secret-4638" });
+    let serde_json::Value::Object(overlay) =
+        serde_json::json!({ "geminiApiKey": "local-secret-4638" })
+    else {
+        unreachable!()
+    };
+    let state =
+        LocalSettingsOverlay::from_overlay_object_paired(&mut base, overlay, &[], &[], &[], &[]);
+    assert!(!state.is_empty());
+    let settings = AppSettings {
+        local_overlay_state: std::sync::Arc::new(state),
+        ..AppSettings::default()
+    };
+    let text = format!("{settings:?}");
+    assert!(!text.contains("base-secret-4638"));
+    assert!(text.contains("base_values: \"[REDACTED]\""));
+    assert!(text.contains("geminiApiKey"));
+}
