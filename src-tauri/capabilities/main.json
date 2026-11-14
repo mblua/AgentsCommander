@@ -1,0 +1,21 @@
+{
+  "identifier": "main",
+  "description": "#4330 main window: hosts the sidebar, embedded terminal and central views",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-set-focus",
+    "core:window:allow-request-user-attention",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:webview:allow-set-webview-zoom",
+    "dialog:allow-open"
+  ]
+}

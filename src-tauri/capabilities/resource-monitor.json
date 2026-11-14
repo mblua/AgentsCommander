@@ -1,0 +1,13 @@
+{
+  "identifier": "resource-monitor",
+  "description": "#4330 detached resource monitor window",
+  "windows": ["resource-monitor"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-start-dragging"
+  ]
+}

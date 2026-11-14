@@ -1,0 +1,6 @@
+{
+  "identifier": "screenshot-overlay",
+  "description": "#4330 screenshot overlays: event IPC only; created and destroyed in Rust",
+  "windows": ["screenshot-overlay-*"],
+  "permissions": ["core:event:default"]
+}

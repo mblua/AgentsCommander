@@ -1,0 +1,11 @@
+{
+  "identifier": "watchers",
+  "description": "#4330 watcher activity window",
+  "windows": ["watchers"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-start-dragging"
+  ]
+}

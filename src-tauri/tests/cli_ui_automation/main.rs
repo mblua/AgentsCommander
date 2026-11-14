@@ -61,7 +61,7 @@ fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
 
 #[test]
 fn default_capability_allows_resource_monitor_window() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities/default.json");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities/resource-monitor.json");
     let raw = std::fs::read_to_string(&path).unwrap();
     let capability: Value = serde_json::from_str(&raw).unwrap();
     let windows = capability["windows"]
@@ -70,7 +70,7 @@ fn default_capability_allows_resource_monitor_window() {
 
     assert!(
         windows.iter().any(|window| window == "resource-monitor"),
-        "resource-monitor must be in default capability windows \
+        "resource-monitor must be in its capability windows \
         so its frontend can mark UI automation ready"
     );
 }
