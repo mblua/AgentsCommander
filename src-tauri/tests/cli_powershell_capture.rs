@@ -330,6 +330,63 @@ fn issue_1867_powershell_builders_bind_distinct_owned_roots() {
     assert!(second.path().is_dir());
 }
 
+fn block_comment_end(bytes: &[u8], mut i: usize) -> usize {
+    i += 2;
+    let mut depth = 1;
+    while depth > 0 {
+        assert!(i < bytes.len(), "unterminated block comment");
+        if bytes[i..].starts_with(b"/*") {
+            depth += 1;
+            i += 2;
+        } else if bytes[i..].starts_with(b"*/") {
+            depth -= 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+fn raw_string_end(source: &str, bytes: &[u8], i: usize) -> Option<usize> {
+    let mut quote = i + 1;
+    while quote < bytes.len() && bytes[quote] == b'#' {
+        quote += 1;
+    }
+    if quote < bytes.len() && bytes[quote] == b'"' {
+        let end = format!("\"{}", "#".repeat(quote - i - 1));
+        return Some(
+            quote + 1 + source[quote + 1..].find(&end).expect("raw string end") + end.len(),
+        );
+    }
+    None
+}
+
+fn quoted_end(bytes: &[u8], mut i: usize) -> usize {
+    let quote = bytes[i];
+    i += 1;
+    loop {
+        assert!(i < bytes.len(), "unterminated literal");
+        if bytes[i] == b'\\' {
+            i += 2;
+        } else if bytes[i] == quote {
+            i += 1;
+            break;
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+fn word_end(bytes: &[u8], mut i: usize) -> usize {
+    i += 1;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    i
+}
+
 // Small lexical scanner: literals and comments cannot contribute braces or calls.
 // Keep literal tokens intact so environment keys and command arguments are checked.
 fn isolation_tokens(source: &str) -> Vec<String> {
@@ -348,31 +405,13 @@ fn isolation_tokens(source: &str) -> Vec<String> {
             continue;
         }
         if bytes[i..].starts_with(b"/*") {
-            i += 2;
-            let mut depth = 1;
-            while depth > 0 {
-                assert!(i < bytes.len(), "unterminated block comment");
-                if bytes[i..].starts_with(b"/*") {
-                    depth += 1;
-                    i += 2;
-                } else if bytes[i..].starts_with(b"*/") {
-                    depth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
+            i = block_comment_end(bytes, i);
             continue;
         }
         let start = i;
         if bytes[i] == b'r' {
-            let mut quote = i + 1;
-            while quote < bytes.len() && bytes[quote] == b'#' {
-                quote += 1;
-            }
-            if quote < bytes.len() && bytes[quote] == b'"' {
-                let end = format!("\"{}", "#".repeat(quote - i - 1));
-                i = quote + 1 + source[quote + 1..].find(&end).expect("raw string end") + end.len();
+            if let Some(end) = raw_string_end(source, bytes, i) {
+                i = end;
                 tokens.push(source[start..i].to_owned());
                 continue;
             }
@@ -381,24 +420,9 @@ fn isolation_tokens(source: &str) -> Vec<String> {
             || (bytes[i] == b'\''
                 && (bytes.get(i + 1) == Some(&b'\\') || bytes.get(i + 2) == Some(&b'\'')))
         {
-            let quote = bytes[i];
-            i += 1;
-            loop {
-                assert!(i < bytes.len(), "unterminated literal");
-                if bytes[i] == b'\\' {
-                    i += 2;
-                } else if bytes[i] == quote {
-                    i += 1;
-                    break;
-                } else {
-                    i += 1;
-                }
-            }
+            i = quoted_end(bytes, i);
         } else if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
-            i += 1;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
+            i = word_end(bytes, i);
         } else {
             i += source[i..].chars().next().unwrap().len_utf8();
         }
