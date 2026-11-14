@@ -92,10 +92,7 @@ pub(super) async fn dispatch_session_command(
             let cols = terminal_dimension(args, "cols", 120)?;
             let rows = terminal_dimension(args, "rows", 30)?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-            state
-                .pty_mgr
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            lock_pty_mgr(state)
                 .resize(uuid, cols, rows)
                 .map_err(|e| e.to_string())?;
             Ok(json!(null))
@@ -107,11 +104,7 @@ pub(super) async fn dispatch_session_command(
             let session_id = require_str(args, "sessionId")?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-            let size = state
-                .pty_mgr
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_pty_size(uuid);
+            let size = lock_pty_mgr(state).get_pty_size(uuid);
             match size {
                 Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
                 None => Err(format!("Session not found: {session_id}")),
@@ -121,14 +114,19 @@ pub(super) async fn dispatch_session_command(
     }
 }
 
+/// Lock the PTY manager, recovering a poisoned lock (#98 Rule A).
+fn lock_pty_mgr(state: &WsState) -> std::sync::MutexGuard<'_, crate::pty::manager::PtyManager> {
+    state
+        .pty_mgr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn subscribe_session_command(state: &WsState, args: &Value) -> Result<Value, String> {
     let session_id = require_str(args, "sessionId")?;
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    let pty_mgr = state
-        .pty_mgr
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pty_mgr = lock_pty_mgr(state);
     let snapshot = pty_mgr.get_screen_snapshot(uuid);
     let size = snapshot
         .as_ref()

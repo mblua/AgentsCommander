@@ -11,6 +11,13 @@ use rusqlite::{params, OptionalExtension};
 use std::time::Duration;
 
 impl MessageStore {
+    /// Lock the connection, recovering a poisoned lock (#98 Rule A).
+    fn lock_conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn enqueue(&self, req: EnqueueRequest) -> Result<EnqueueResult, MessageStoreError> {
         if req.body.len() > INLINE_BODY_MAX_BYTES {
             return Err(MessageStoreError::BodyTooLarge);
@@ -23,10 +30,7 @@ impl MessageStore {
         let body_sha256 = sha256_hex(req.body.as_bytes());
         let body_bytes = req.body.len() as i64;
 
-        let mut conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let inserted = tx.execute(
             r"
@@ -103,10 +107,7 @@ impl MessageStore {
         let now_s = now.to_rfc3339();
         let lease_until =
             (now + chrono::Duration::from_std(lease_for).unwrap_or_default()).to_rfc3339();
-        let mut conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let ids = {
             let mut stmt = tx.prepare(
@@ -199,10 +200,7 @@ impl MessageStore {
             completed: false,
         };
         let now_s = now.to_rfc3339();
-        let mut conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let response_row: Option<(String, String, String)> = tx
             .query_row(
@@ -248,10 +246,7 @@ impl MessageStore {
             completed: false,
         };
         let now_s = now.to_rfc3339();
-        let mut conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         let response_row: Option<(String, String, String)> = tx
             .query_row(
@@ -311,10 +306,7 @@ impl MessageStore {
         now: DateTime<Utc>,
     ) -> Result<(), MessageStoreError> {
         let now_s = now.to_rfc3339();
-        let mut conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         tx.execute(
             r"
@@ -338,10 +330,7 @@ impl MessageStore {
 
     pub fn reap_terminal_before(&self, cutoff: DateTime<Utc>) -> Result<usize, MessageStoreError> {
         let cutoff_s = cutoff.to_rfc3339();
-        let conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let conn = self.lock_conn();
         let deleted = conn.execute(
             r"
             DELETE FROM messages
