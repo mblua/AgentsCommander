@@ -652,106 +652,119 @@ pub(crate) fn evaluate_gate(peers: &[PurgeGatePeer], quiet: std::time::Duration)
     let mut results = Vec::with_capacity(peers.len());
 
     for peer in peers {
-        if peer.live.is_empty() {
-            results.push(PurgePeerResult {
-                fqn: peer.fqn.clone(),
-                purgeable: true,
-                outcome: "skipped",
-                idle_ms: None,
-                silence_ms: None,
-                watcher_idle: false,
-                mirror_idle: true,
-                resize_settled: true,
-                session_ids: peer.all_session_ids.clone(),
-            });
-            continue;
-        }
-
-        let mut peer_purgeable = true;
-        let mut saw_untracked_failure = false;
-        let mut saw_busy_failure = false;
-        let mut saw_resize_only_failure = false;
-        let mut idle_ms: Option<u128> = None;
-        let mut silence_ms: Option<u128> = None;
-        let mut watcher_idle = true;
-        let mut mirror_idle = true;
-        let mut resize_settled = true;
-
-        for session in &peer.live {
-            let r = &session.readiness;
-            let effective_quiet = quiet.max(r.idle_threshold);
-            let m_idle = session.mirror_idle;
-            let r_settled = match r.last_resize_age {
-                None => true,
-                Some(a) => a >= r.resize_grace + effective_quiet,
-            };
-            let activity_ok = matches!(r.activity_age, Some(a) if a >= effective_quiet);
-            let purgeable = activity_ok && r.watcher_idle && m_idle && r_settled;
-
-            if !purgeable {
-                peer_purgeable = false;
-                if r.activity_age.is_none() {
-                    saw_untracked_failure = true;
-                } else if !r_settled && activity_ok && r.watcher_idle && m_idle {
-                    saw_resize_only_failure = true;
-                } else {
-                    saw_busy_failure = true;
-                }
-            }
-
-            if let Some(a) = r.activity_age {
-                idle_ms = Some(idle_ms.map_or(a.as_millis(), |m: u128| m.min(a.as_millis())));
-            }
-            if let Some(s) = r.silence_age {
-                silence_ms = Some(silence_ms.map_or(s.as_millis(), |m: u128| m.min(s.as_millis())));
-            }
-            if !r.watcher_idle {
-                watcher_idle = false;
-            }
-            if !m_idle {
-                mirror_idle = false;
-            }
-            if !r_settled {
-                resize_settled = false;
-            }
-        }
-
-        if !peer_purgeable {
+        let result = evaluate_peer(peer, quiet);
+        if !result.purgeable {
             passed = false;
         }
-
-        // (#885 E-5) Distinguish resize-unsettled from busy, but aggregate
-        // across all live sessions for the peer. `resize_unsettled` is only
-        // honest when resize is the sole failing leg for every failing live
-        // session. Unknown liveness is more important than either diagnostic.
-        let peer_outcome = if peer_purgeable {
-            "skipped"
-        } else if saw_untracked_failure {
-            "untracked"
-        } else if saw_busy_failure {
-            "busy"
-        } else if saw_resize_only_failure {
-            "resize_unsettled"
-        } else {
-            "busy"
-        };
-
-        results.push(PurgePeerResult {
-            fqn: peer.fqn.clone(),
-            purgeable: peer_purgeable,
-            outcome: peer_outcome,
-            idle_ms,
-            silence_ms,
-            watcher_idle,
-            mirror_idle,
-            resize_settled,
-            session_ids: peer.all_session_ids.clone(),
-        });
+        results.push(result);
     }
 
     PurgeDecision {
         passed,
         peers: results,
+    }
+}
+
+fn evaluate_peer(peer: &PurgeGatePeer, quiet: std::time::Duration) -> PurgePeerResult {
+    if peer.live.is_empty() {
+        return PurgePeerResult {
+            fqn: peer.fqn.clone(),
+            purgeable: true,
+            outcome: "skipped",
+            idle_ms: None,
+            silence_ms: None,
+            watcher_idle: false,
+            mirror_idle: true,
+            resize_settled: true,
+            session_ids: peer.all_session_ids.clone(),
+        };
+    }
+
+    let mut peer_purgeable = true;
+    let mut saw_untracked_failure = false;
+    let mut saw_busy_failure = false;
+    let mut saw_resize_only_failure = false;
+    let mut idle_ms: Option<u128> = None;
+    let mut silence_ms: Option<u128> = None;
+    let mut watcher_idle = true;
+    let mut mirror_idle = true;
+    let mut resize_settled = true;
+
+    for session in &peer.live {
+        let r = &session.readiness;
+        let effective_quiet = quiet.max(r.idle_threshold);
+        let m_idle = session.mirror_idle;
+        let r_settled = match r.last_resize_age {
+            None => true,
+            Some(a) => a >= r.resize_grace + effective_quiet,
+        };
+        let activity_ok = matches!(r.activity_age, Some(a) if a >= effective_quiet);
+        let purgeable = activity_ok && r.watcher_idle && m_idle && r_settled;
+
+        if !purgeable {
+            peer_purgeable = false;
+            if r.activity_age.is_none() {
+                saw_untracked_failure = true;
+            } else if !r_settled && activity_ok && r.watcher_idle && m_idle {
+                saw_resize_only_failure = true;
+            } else {
+                saw_busy_failure = true;
+            }
+        }
+
+        if let Some(a) = r.activity_age {
+            idle_ms = Some(idle_ms.map_or(a.as_millis(), |m: u128| m.min(a.as_millis())));
+        }
+        if let Some(s) = r.silence_age {
+            silence_ms = Some(silence_ms.map_or(s.as_millis(), |m: u128| m.min(s.as_millis())));
+        }
+        if !r.watcher_idle {
+            watcher_idle = false;
+        }
+        if !m_idle {
+            mirror_idle = false;
+        }
+        if !r_settled {
+            resize_settled = false;
+        }
+    }
+
+    let failures = (
+        saw_untracked_failure,
+        saw_busy_failure,
+        saw_resize_only_failure,
+    );
+    let outcome = peer_outcome(peer_purgeable, failures);
+
+    PurgePeerResult {
+        fqn: peer.fqn.clone(),
+        purgeable: peer_purgeable,
+        outcome,
+        idle_ms,
+        silence_ms,
+        watcher_idle,
+        mirror_idle,
+        resize_settled,
+        session_ids: peer.all_session_ids.clone(),
+    }
+}
+
+// (#885 E-5) Distinguish resize-unsettled from busy, but aggregate
+// across all live sessions for the peer. `resize_unsettled` is only
+// honest when resize is the sole failing leg for every failing live
+// session. Unknown liveness is more important than either diagnostic.
+fn peer_outcome(peer_purgeable: bool, failures: (bool, bool, bool)) -> &'static str {
+    let (saw_untracked_failure, saw_busy_failure, saw_resize_only_failure) = failures;
+    if peer_purgeable {
+        "skipped"
+    } else if saw_untracked_failure {
+        "untracked"
+    } else if saw_busy_failure {
+        "busy"
+    } else if saw_resize_only_failure {
+        "resize_unsettled"
+    } else {
+        "busy"
     }
 }
 
