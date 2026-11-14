@@ -3,38 +3,81 @@
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 
+/// Files commonly held by long-running processes inside an AC workgroup:
+/// any `*.lock` (git index.lock, `ORIG_HEAD.lock`, packfile locks), plus the
+/// lock-prone metadata files inside any `.git/` subtree.
+#[cfg(windows)]
+fn is_hot_lock_candidate(p: &Path) -> bool {
+    let name = match p.file_name().and_then(|n| n.to_str()) {
+        Some(s) => s,
+        None => return false,
+    };
+    if name.ends_with(".lock") {
+        return true;
+    }
+    let in_git = p
+        .ancestors()
+        .any(|a| a.file_name().and_then(|n| n.to_str()) == Some(".git"));
+    in_git
+        && matches!(
+            name,
+            "index" | "HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "MERGE_HEAD" | "packed-refs"
+        )
+}
+
+/// Top-level WG-child dirs whose handles commonly indicate a blocker:
+/// `repo-*` (clones — git operations, IDE workspaces),
+/// `__agent_*` (replicas — agent-spawned shells holding cwd),
+/// `messaging/` (mailbox — file watchers).
+#[cfg(windows)]
+fn is_relevant_top_level_dir(name: &str) -> bool {
+    name.starts_with("repo-") || name.starts_with("__agent_") || name == "messaging"
+}
+
+#[cfg(windows)]
+fn scan_room_dir(
+    dir: &Path,
+    is_wg_root: bool,
+    dirs: &mut Vec<PathBuf>,
+    hot: &mut Vec<PathBuf>,
+    cold: &mut Vec<PathBuf>,
+    queue: &mut std::collections::VecDeque<PathBuf>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            if is_wg_root {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if is_relevant_top_level_dir(name) {
+                        dirs.push(path.clone());
+                    }
+                }
+            }
+            queue.push_back(path);
+        } else if ft.is_file() {
+            if is_hot_lock_candidate(&path) {
+                hot.push(path);
+            } else {
+                cold.push(path);
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn collect_room_lock_resources(wg_dir: &Path, max_files: usize) -> Vec<PathBuf> {
     use std::collections::VecDeque;
-
-    /// Files commonly held by long-running processes inside an AC workgroup:
-    /// any `*.lock` (git index.lock, `ORIG_HEAD.lock`, packfile locks), plus the
-    /// lock-prone metadata files inside any `.git/` subtree.
-    fn is_hot_lock_candidate(p: &Path) -> bool {
-        let name = match p.file_name().and_then(|n| n.to_str()) {
-            Some(s) => s,
-            None => return false,
-        };
-        if name.ends_with(".lock") {
-            return true;
-        }
-        let in_git = p
-            .ancestors()
-            .any(|a| a.file_name().and_then(|n| n.to_str()) == Some(".git"));
-        in_git
-            && matches!(
-                name,
-                "index" | "HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "MERGE_HEAD" | "packed-refs"
-            )
-    }
-
-    /// Top-level WG-child dirs whose handles commonly indicate a blocker:
-    /// `repo-*` (clones — git operations, IDE workspaces),
-    /// `__agent_*` (replicas — agent-spawned shells holding cwd),
-    /// `messaging/` (mailbox — file watchers).
-    fn is_relevant_top_level_dir(name: &str) -> bool {
-        name.starts_with("repo-") || name.starts_with("__agent_") || name == "messaging"
-    }
 
     // Soft ceiling on total walk size — once we've inventoried 4× the probe
     // budget, we have plenty to choose from. Avoids walking gigabytes of
@@ -54,36 +97,7 @@ pub(crate) fn collect_room_lock_resources(wg_dir: &Path, max_files: usize) -> Ve
             break;
         }
         let is_wg_root = dir == wg_dir;
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let ft = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if ft.is_symlink() {
-                continue;
-            }
-            if ft.is_dir() {
-                if is_wg_root {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if is_relevant_top_level_dir(name) {
-                            dirs.push(path.clone());
-                        }
-                    }
-                }
-                queue.push_back(path);
-            } else if ft.is_file() {
-                if is_hot_lock_candidate(&path) {
-                    hot.push(path);
-                } else {
-                    cold.push(path);
-                }
-            }
-        }
+        scan_room_dir(&dir, is_wg_root, &mut dirs, &mut hot, &mut cold, &mut queue);
     }
 
     // Dirs first (the new signal — small set, ~5–10 entries; prefer over cold
