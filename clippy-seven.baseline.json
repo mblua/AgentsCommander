@@ -35,7 +35,7 @@
       "clippy::implicit_clone": 20,
       "clippy::map_unwrap_or": 244,
       "clippy::match_same_arms": 40,
-      "clippy::semicolon_if_nothing_returned": 110,
+      "clippy::semicolon_if_nothing_returned": 0,
       "clippy::unnested_or_patterns": 22,
       "clippy::map_err_ignore": 853
     }
