@@ -39,7 +39,9 @@ pub fn register_configured_hotkey<H: ScreenshotHotkeyOwner>(
     // Surface a genuine syntax error; otherwise record the unsupported status.
     super::parse_screenshot_hotkey(configured)?;
     let state = app.hotkey_state();
-    let mut runtime = state.lock().unwrap();
+    let mut runtime = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     runtime.status.configured = configured.to_string();
     runtime.status.registered = false;
     runtime.status.error = Some(UNSUPPORTED.to_string());

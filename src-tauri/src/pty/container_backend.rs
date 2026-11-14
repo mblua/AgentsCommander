@@ -524,7 +524,10 @@ impl PtyBackend for ContainerTransportBackend {
         )?;
 
         {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(ContainerSessionState::Active(active)) = sessions.get_mut(&id) {
                 active.cols = cols;
                 active.rows = rows;
@@ -551,7 +554,10 @@ impl PtyBackend for ContainerTransportBackend {
 
     fn has_session(&self, id: Uuid) -> bool {
         matches!(
-            self.sessions.lock().unwrap().get(&id),
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&id),
             Some(ContainerSessionState::Active(_))
         )
     }

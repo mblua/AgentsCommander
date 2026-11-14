@@ -1,4 +1,5 @@
 import './sanitizing_global_state_tests.mjs';
+import './sanitizing_lock_poison_tests.mjs';
 import './sanitizing_rust_scan_tests.mjs';
 import './sanitizing_containers_tests.mjs';
 import './sanitizing_disk_access_tests.mjs';

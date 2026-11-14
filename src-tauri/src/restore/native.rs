@@ -515,7 +515,7 @@ impl RestoreObservers {
         );
         pty_mgr
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .start_container_pending_reaper(shutdown.clone());
 
         app.state::<Arc<crate::pty::terminal_snapshot::TerminalSnapshotState>>()

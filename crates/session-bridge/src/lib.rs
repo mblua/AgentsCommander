@@ -187,7 +187,9 @@ pub async fn run_bridge(config: BridgeConfig) -> BridgeResult<()> {
         let child = Arc::clone(&child);
         std::thread::spawn(move || loop {
             let status = {
-                let mut child = child.lock().unwrap();
+                let mut child = child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 child.try_wait()
             };
             match status {
@@ -303,7 +305,10 @@ async fn handle_host_message(
 ) -> BridgeResult<bool> {
     match message {
         Message::Binary(data) => {
-            writer.lock().unwrap().write_all(&data)?;
+            writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .write_all(&data)?;
             Ok(true)
         }
         Message::Text(text) => {

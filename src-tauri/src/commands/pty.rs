@@ -68,7 +68,9 @@ pub async fn pty_write(
     // Flag if user typed while voice recording is active for this session.
     // Lock scope closes before pty_mgr lock to avoid holding both.
     {
-        let mut tracker = voice_tracker.lock().unwrap();
+        let mut tracker = voice_tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if tracker.is_recording(uuid) {
             tracker.mark_typed(uuid);
         }
@@ -524,7 +526,7 @@ pub fn pty_resize<R: tauri::Runtime>(
     );
     pty_mgr
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .resize(uuid, cols, rows)
         .map_err(|e| e.to_string())
 }

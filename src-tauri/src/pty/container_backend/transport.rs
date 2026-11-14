@@ -24,7 +24,10 @@ impl ContainerTransportBackend {
         let ticket_hash = crate::api::auth::hash_token(ticket);
         let now = Instant::now();
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(state) = sessions.remove(&session_id) else {
             return Err(TransportTicketError::Invalid);
         };
@@ -70,7 +73,10 @@ impl ContainerTransportBackend {
     ) -> Result<(), TransportAttachError> {
         let bridge_key = root_key(bridge_root);
         let attach = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(state) = sessions.remove(&session_id) else {
                 return Err(TransportAttachError::Invalid);
             };
@@ -145,7 +151,10 @@ impl ContainerTransportBackend {
         }
 
         let active = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match sessions.get(&session_id) {
                 Some(ContainerSessionState::Active(_)) => true,
                 _ => return Err(AppError::SessionNotFound(session_id.to_string())),
@@ -201,7 +210,10 @@ impl ContainerTransportBackend {
         frame: HostToBridgeFrame,
     ) -> Result<(), AppError> {
         let sender = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match sessions.get(&session_id) {
                 Some(ContainerSessionState::Active(active)) => active.sender.clone(),
                 _ => return Err(AppError::SessionNotFound(session_id.to_string())),
@@ -296,7 +308,12 @@ impl ContainerTransportBackend {
         id: Uuid,
         plan: &crate::pty::container_credentials::ContainerCredentialPlan,
     ) {
-        if !self.sessions.lock().unwrap().contains_key(&id) {
+        if !self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&id)
+        {
             crate::pty::container_credentials::remove_copied(&plan.dest);
         }
     }
