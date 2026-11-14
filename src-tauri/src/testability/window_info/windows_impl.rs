@@ -20,6 +20,8 @@ pub fn collect_window_info() -> Result<WindowInfoOutput, String> {
         windows: Vec::new(),
     };
 
+    // SAFETY: EnumWindows invokes enum_windows_proc synchronously with this lparam;
+    // state is an initialized EnumState that stays live and is accessed only by the callback.
     let ok = unsafe {
         EnumWindows(
             Some(enum_windows_proc),
@@ -147,6 +149,9 @@ unsafe fn window_title(hwnd: HWND) -> Option<String> {
 }
 
 fn process_path(pid: u32) -> Option<PathBuf> {
+    // SAFETY: OpenProcess takes a numeric PID; its null result is rejected below.
+    // QueryFullProcessImageNameW receives that live handle, a 32768-u16 buffer and its
+    // capacity in len; success bounds len to that capacity. CloseHandle runs once after use.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
