@@ -275,7 +275,7 @@ async fn scan_ac_root_entry(
         return;
     }
 
-    let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+    let dir_name = match path.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(n) => n.to_string(),
         None => return,
     };
