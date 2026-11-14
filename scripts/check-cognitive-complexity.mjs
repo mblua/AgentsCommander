@@ -1573,8 +1573,8 @@ function normaliseCapturePath(fileName, workspaceRoot) {
   return normalised;
 }
 
-/** Validates section 4's schema, then the threshold and toolchain agreement. */
-function validateBaseline(document, rustcVersion) {
+/** Section 4's top-level fields: object, version, threshold and toolchain. */
+function validateBaselineHeader(document, rustcVersion) {
   if (document === null || typeof document !== 'object' || Array.isArray(document)) {
     throw new ConfigError('baseline must be a JSON object');
   }
@@ -1590,60 +1590,78 @@ function validateBaseline(document, rustcVersion) {
     // comparison still needs a version string.
     if (typeof document.toolchain !== 'string' || document.toolchain === '') {
       throw new ConfigError(
-        `baseline toolchain must be a non-empty string, got ${JSON.stringify(document.toolchain)}`,
+        'baseline toolchain must be a non-empty string, got '
+          + JSON.stringify(document.toolchain),
       );
     }
   } else if (document.toolchain !== rustcVersion) {
     throw new ConfigError(
-      `baseline toolchain must be ${JSON.stringify(rustcVersion)}, got ${JSON.stringify(document.toolchain)}`,
+      `baseline toolchain must be ${JSON.stringify(rustcVersion)}, `
+        + `got ${JSON.stringify(document.toolchain)}`,
     );
   }
+}
+
+/** One platform's anchors: non-empty, 12 lowercase hex characters each, sorted. */
+function validateBaselineAnchors(entry, platform, anchors) {
+  if (!Array.isArray(anchors) || anchors.length === 0) {
+    throw new ConfigError(
+      `baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
+  }
+  for (let index = 0; index < anchors.length; index += 1) {
+    if (typeof anchors[index] !== 'string' || !ANCHOR_RE.test(anchors[index])) {
+      throw new ConfigError(
+        `baseline anchor ${JSON.stringify(anchors[index])} in ${entry.id}.sites.${platform} `
+          + 'must be 12 lowercase hex characters',
+      );
+    }
+    if (index > 0 && anchors[index] < anchors[index - 1]) {
+      throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be sorted`);
+    }
+  }
+}
+
+/** One entry after `previousId`: its id order, then its per-platform sites. */
+function validateBaselineEntry(entry, previousId) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ConfigError('baseline entries must be objects');
+  }
+  if (typeof entry.id !== 'string' || entry.id === '') {
+    throw new ConfigError('baseline entry id must be a non-empty string');
+  }
+  if (previousId !== null && entry.id <= previousId) {
+    throw new ConfigError(
+      `baseline entries must be sorted by id and unique; ${JSON.stringify(entry.id)} `
+        + `follows ${JSON.stringify(previousId)}`,
+    );
+  }
+  const sites = entry.sites;
+  if (sites === null || typeof sites !== 'object' || Array.isArray(sites)) {
+    throw new ConfigError(`baseline entry ${entry.id} sites must be an object`);
+  }
+  const platforms = Object.keys(sites);
+  if (platforms.length === 0) {
+    throw new ConfigError(`baseline entry ${entry.id} sites must not be empty`);
+  }
+  for (const platform of platforms) {
+    if (!PLATFORMS.has(platform)) {
+      throw new ConfigError(
+        `baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
+    }
+    validateBaselineAnchors(entry, platform, sites[platform]);
+  }
+}
+
+/** Validates section 4's schema, then the threshold and toolchain agreement. */
+function validateBaseline(document, rustcVersion) {
+  validateBaselineHeader(document, rustcVersion);
   if (!Array.isArray(document.entries)) {
     throw new ConfigError('baseline entries must be an array');
   }
   let previousId = null;
   for (const entry of document.entries) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw new ConfigError('baseline entries must be objects');
-    }
-    if (typeof entry.id !== 'string' || entry.id === '') {
-      throw new ConfigError('baseline entry id must be a non-empty string');
-    }
-    if (previousId !== null && entry.id <= previousId) {
-      throw new ConfigError(
-        `baseline entries must be sorted by id and unique; ${JSON.stringify(entry.id)} follows ${JSON.stringify(previousId)}`,
-      );
-    }
+    validateBaselineEntry(entry, previousId);
     previousId = entry.id;
-    const sites = entry.sites;
-    if (sites === null || typeof sites !== 'object' || Array.isArray(sites)) {
-      throw new ConfigError(`baseline entry ${entry.id} sites must be an object`);
-    }
-    const platforms = Object.keys(sites);
-    if (platforms.length === 0) {
-      throw new ConfigError(`baseline entry ${entry.id} sites must not be empty`);
-    }
-    for (const platform of platforms) {
-      if (!PLATFORMS.has(platform)) {
-        throw new ConfigError(
-          `baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
-      }
-      const anchors = sites[platform];
-      if (!Array.isArray(anchors) || anchors.length === 0) {
-        throw new ConfigError(
-          `baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
-      }
-      for (let index = 0; index < anchors.length; index += 1) {
-        if (typeof anchors[index] !== 'string' || !ANCHOR_RE.test(anchors[index])) {
-          throw new ConfigError(
-            `baseline anchor ${JSON.stringify(anchors[index])} in ${entry.id}.sites.${platform} must be 12 lowercase hex characters`,
-          );
-        }
-        if (index > 0 && anchors[index] < anchors[index - 1]) {
-          throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be sorted`);
-        }
-      }
-    }
   }
 }
 
@@ -2462,6 +2480,126 @@ function sourceFilesOfId(id, readWorkspace, existsWorkspace) {
   return files;
 }
 
+/**
+ * Step 1 of `--baseline-diff`: the base ref may predate the baseline. That is adoption,
+ * but only when git itself says the path is missing: any other read failure is CONFIG.
+ */
+function readBaseBaselineText(runGit, baseRef) {
+  try {
+    return runGit(['show', `${baseRef}:${BASELINE_FILE}`]);
+  } catch (error) {
+    if (!(error instanceof GitError) || error.notFound !== true) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new ConfigError(`cannot read ${BASELINE_FILE} from ${baseRef}: ${reason}`);
+    }
+  }
+  return null;
+}
+
+/** Step 2: the head document (null when absent), validated before the base is trusted. */
+function readHeadBaselineDocument(readWorkspace) {
+  let headText = null;
+  try {
+    headText = readWorkspace(BASELINE_FILE);
+  } catch {
+    headText = null;
+  }
+  return headText === null ? null : parseBaselineDocument(headText, BASELINE_FILE);
+}
+
+/** The sorted union of the platforms either side's entry carries. */
+function entryPlatforms(baseEntry, headEntry) {
+  return [
+    ...new Set([
+      ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
+      ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
+    ]),
+  ].sort(compareLexically);
+}
+
+/** One (id, platform): head anchors beyond the base are additions, the rest removals. */
+function diffPlatformAnchors(key, baseAnchors, headAnchors, additions, removals) {
+  const { id, platform } = key;
+  const remaining = anchorCounts(baseAnchors);
+  for (const anchor of headAnchors ?? []) {
+    const count = remaining.get(anchor) ?? 0;
+    if (count === 0) additions.push({ id, platform, anchor });
+    else remaining.set(anchor, count - 1);
+  }
+  for (const [anchor, count] of remaining) {
+    if (count > 0) removals.push({ id, platform, anchor });
+  }
+}
+
+/** Step 3: anchor multisets per (id, platform); the array length is never the test. */
+function diffBaselineAnchors(baseDocument, headDocument) {
+  const additions = [];
+  const removals = [];
+  const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
+  const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
+  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort(compareLexically);
+  for (const id of ids) {
+    const baseEntry = baseById.get(id);
+    const headEntry = headById.get(id);
+    for (const platform of entryPlatforms(baseEntry, headEntry)) {
+      diffPlatformAnchors({ id, platform }, baseEntry?.sites[platform],
+        headEntry?.sites[platform], additions, removals);
+    }
+  }
+  return { additions, removals };
+}
+
+/** The names `git diff --name-only <base>...HEAD` reports. */
+function readDiffNames(runGit, baseRef) {
+  try {
+    return runGit(['diff', '--name-only', `${baseRef}...HEAD`])
+      .split('\n')
+      .map((name) => name.trim())
+      .filter((name) => name !== '');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read git diff against ${baseRef}: ${reason}`);
+  }
+}
+
+/** Step 5: any addition fails; the ratchet may only shrink. */
+function reportBaselineGrowth(additions, stderr) {
+  for (const addition of additions) {
+    stderr(
+      `Baseline grew without a toolchain refresh: ${addition.id}#${addition.anchor} `
+        + `(${addition.platform})`,
+    );
+  }
+  stderr(GROW_REMEDIAL);
+  return 1;
+}
+
+/** Step 6's filter: a removal is blocked unless pinned, its file gone, or a source touched. */
+function isRemovalBlocked(removal, proof) {
+  const { historical, historical3527, historical3527Keys, diffSet } = proof;
+  if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) return false;
+  if (historical && removal.id === HISTORICAL_3319_ID) return false;
+  const file = filePathOfId(removal.id);
+  if (!proof.existsWorkspace(file)) return false;
+  const sources = sourceFilesOfId(removal.id, proof.readWorkspace, proof.existsWorkspace);
+  return ![...sources].some((source) => diffSet.has(source));
+}
+
+/** Step 7: every accepted shrink is printed for the record. */
+function printAcceptedRemovals(removals, proof, stdout) {
+  const { historical, historical3527, historical3527Keys } = proof;
+  for (const removal of removals) {
+    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) {
+      stdout('historical-cleanup#3527: '
+        + `${removal.id}#${removal.anchor} (${removal.platform})`);
+    }
+    if (historical && removal.id === HISTORICAL_3319_ID) {
+      stdout(`historical-cleanup#3319: ${removal.id}#${removal.anchor} (${removal.platform})`);
+    }
+    stdout(`baseline removal accepted: ${removal.id}#${removal.anchor} (${removal.platform})`);
+  }
+}
+
 export function runBaselineDiff(options, io = {}) {
   const baseRef = options.baseRef;
   const stdout = io.stdout ?? ((text) => console.log(text));
@@ -2472,27 +2610,9 @@ export function runBaselineDiff(options, io = {}) {
   const existsWorkspace =
     io.existsWorkspace ?? ((file) => fs.existsSync(path.join(ROOT, file)));
 
-  // 1. The base ref may predate the baseline. That is adoption, but only when
-  // git itself says the path is missing: any other read failure is CONFIG.
-  let baseText = null;
-  try {
-    baseText = runGit(['show', `${baseRef}:${BASELINE_FILE}`]);
-  } catch (error) {
-    if (!(error instanceof GitError) || error.notFound !== true) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new ConfigError(`cannot read ${BASELINE_FILE} from ${baseRef}: ${reason}`);
-    }
-  }
-
-  // 2. The head document, validated before the base document is trusted.
-  let headText = null;
-  try {
-    headText = readWorkspace(BASELINE_FILE);
-  } catch {
-    headText = null;
-  }
-  const headDocument =
-    headText === null ? null : parseBaselineDocument(headText, BASELINE_FILE);
+  // 1 and 2. Base text (null: adoption), then the head document.
+  const baseText = readBaseBaselineText(runGit, baseRef);
+  const headDocument = readHeadBaselineDocument(readWorkspace);
   if (baseText === null) {
     stdout(`ADOPTION: no baseline in ${baseRef}; this pull request introduces it`);
     return 0;
@@ -2502,49 +2622,12 @@ export function runBaselineDiff(options, io = {}) {
     throw new ConfigError(`${BASELINE_FILE} is missing from the head while ${baseRef} carries one`);
   }
 
-  // 3. Anchor multisets per (id, platform); the array length is never the test.
-  const additions = [];
-  const removals = [];
-  const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
-  const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort(compareLexically);
-  for (const id of ids) {
-    const baseEntry = baseById.get(id);
-    const headEntry = headById.get(id);
-    const platforms = [
-      ...new Set([
-        ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
-        ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
-      ]),
-    ].sort(compareLexically);
-    for (const platform of platforms) {
-      const remaining = new Map();
-      for (const anchor of baseEntry?.sites[platform] ?? []) {
-        remaining.set(anchor, (remaining.get(anchor) ?? 0) + 1);
-      }
-      for (const anchor of headEntry?.sites[platform] ?? []) {
-        const count = remaining.get(anchor) ?? 0;
-        if (count === 0) additions.push({ id, platform, anchor });
-        else remaining.set(anchor, count - 1);
-      }
-      for (const [anchor, count] of remaining) {
-        if (count > 0) removals.push({ id, platform, anchor });
-      }
-    }
-  }
+  // 3. Anchor multisets per (id, platform).
+  const { additions, removals } = diffBaselineAnchors(baseDocument, headDocument);
 
   // 4. A toolchain refresh exempts growth, but only with no `.rs` change and a
   // strictly higher version.
-  let diffNames;
-  try {
-    diffNames = runGit(['diff', '--name-only', `${baseRef}...HEAD`])
-      .split('\n')
-      .map((name) => name.trim())
-      .filter((name) => name !== '');
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new ConfigError(`cannot read git diff against ${baseRef}: ${reason}`);
-  }
+  const diffNames = readDiffNames(runGit, baseRef);
   const diffSet = new Set(diffNames);
   const rustTouched = diffNames.some((name) => name.endsWith('.rs'));
   if (!rustTouched && compareToolchainVersions(baseDocument.toolchain,
@@ -2556,16 +2639,8 @@ export function runBaselineDiff(options, io = {}) {
     return 0;
   }
 
-  // 5. Any addition fails; the ratchet may only shrink.
-  if (additions.length > 0) {
-    for (const addition of additions) {
-      stderr(
-        `Baseline grew without a toolchain refresh: ${addition.id}#${addition.anchor} (${addition.platform})`,
-      );
-    }
-    stderr(GROW_REMEDIAL);
-    return 1;
-  }
+  // 5. Any addition fails.
+  if (additions.length > 0) return reportBaselineGrowth(additions, stderr);
 
   // 6. Ordinary removals need touched/gone proof; #3319 has exact historical pins.
   const historical = historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
@@ -2573,14 +2648,9 @@ export function runBaselineDiff(options, io = {}) {
   const historical3527 = historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
     additions, removals, runGit, readWorkspace, existsWorkspace });
   const historical3527Keys = new Set(historical3527Tuples().map(historical3527TupleKey));
-  const blocked = removals.filter((removal) => {
-    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) return false;
-    if (historical && removal.id === HISTORICAL_3319_ID) return false;
-    const file = filePathOfId(removal.id);
-    if (!existsWorkspace(file)) return false;
-    const sources = sourceFilesOfId(removal.id, readWorkspace, existsWorkspace);
-    return ![...sources].some((source) => diffSet.has(source));
-  });
+  const proof = { historical, historical3527, historical3527Keys, diffSet, readWorkspace,
+    existsWorkspace };
+  const blocked = removals.filter((removal) => isRemovalBlocked(removal, proof));
   if (blocked.length > 0) {
     for (const removal of blocked) {
       stderr(`Baseline entry removed without touching its file: ${removal.id}`
@@ -2591,16 +2661,7 @@ export function runBaselineDiff(options, io = {}) {
   }
 
   // 7. Every accepted shrink is printed for the record.
-  for (const removal of removals) {
-    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) {
-      stdout('historical-cleanup#3527: '
-        + `${removal.id}#${removal.anchor} (${removal.platform})`);
-    }
-    if (historical && removal.id === HISTORICAL_3319_ID) {
-      stdout(`historical-cleanup#3319: ${removal.id}#${removal.anchor} (${removal.platform})`);
-    }
-    stdout(`baseline removal accepted: ${removal.id}#${removal.anchor} (${removal.platform})`);
-  }
+  printAcceptedRemovals(removals, proof, stdout);
   return 0;
 }
 
@@ -2637,6 +2698,106 @@ function readThresholdFromClippyToml(readWorkspaceBytes) {
   return Number(match[1]);
 }
 
+/** One `--merge` input: read, parsed, an object with a known platform. */
+function readMergeInput(file, readInputText) {
+  let text;
+  try {
+    text = readInputText(file);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read ${file}: ${reason}`);
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw new ConfigError(`${file} is not valid JSON`);
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    throw new ConfigError(`${file} must be a JSON object`);
+  }
+  if (!PLATFORMS.has(document.platform)) {
+    throw new ConfigError(
+      `${file} platform must be windows, linux or macos, got ${JSON.stringify(document.platform)}`,
+    );
+  }
+  return document;
+}
+
+/** The three inputs by platform; one of each, in input order. */
+function readMergeInputs(files, readInputText) {
+  if (files.length !== 3) {
+    throw new ConfigError(`--merge requires exactly three inputs, got ${files.length}`);
+  }
+  const byPlatform = new Map();
+  for (const file of files) {
+    const document = readMergeInput(file, readInputText);
+    const platform = document.platform;
+    if (byPlatform.has(platform)) throw new ConfigError(`--merge has two ${platform} inputs`);
+    byPlatform.set(platform, document);
+  }
+  return byPlatform;
+}
+
+/** Every input agrees with the first on `commit` and `rustcVersion`; returns the first. */
+function checkMergeAgreement(byPlatform) {
+  const first = byPlatform.values().next().value;
+  for (const [platform, document] of byPlatform) {
+    if (document.commit !== first.commit) {
+      throw new ConfigError(
+        `--merge inputs must agree on commit: ${JSON.stringify(first.commit)} `
+          + `versus ${JSON.stringify(document.commit)} (${platform})`,
+      );
+    }
+    if (document.rustcVersion !== first.rustcVersion) {
+      throw new ConfigError(
+        `--merge inputs must agree on rustcVersion: ${JSON.stringify(first.rustcVersion)} `
+          + `versus ${JSON.stringify(document.rustcVersion)} (${platform})`,
+      );
+    }
+  }
+  return first;
+}
+
+/** One emission entry: an object with a non-empty id and an array of hex anchors. */
+function validateEmissionEntry(platform, entry) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ConfigError(`${platform} emission entries must be objects`);
+  }
+  if (typeof entry.id !== 'string' || entry.id === '') {
+    throw new ConfigError(`${platform} emission entry id must be a non-empty string`);
+  }
+  if (!Array.isArray(entry.anchors)) {
+    throw new ConfigError(`${platform} emission entry ${entry.id} anchors must be an array`);
+  }
+  for (const anchor of entry.anchors) {
+    if (typeof anchor !== 'string' || !ANCHOR_RE.test(anchor)) {
+      throw new ConfigError(
+        `${platform} emission entry ${entry.id} anchor ${JSON.stringify(anchor)} `
+          + 'must be 12 lowercase hex characters',
+      );
+    }
+  }
+}
+
+/** The per-platform anchor arrays unioned by id, entries sorted by id. */
+function mergeEmissions(byPlatform) {
+  const merged = new Map();
+  for (const platform of PLATFORMS) {
+    const document = byPlatform.get(platform);
+    if (!Array.isArray(document.entries)) {
+      throw new ConfigError(`${platform} emission entries must be an array`);
+    }
+    for (const entry of document.entries) {
+      validateEmissionEntry(platform, entry);
+      if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
+      merged.get(entry.id).sites[platform] = [...entry.anchors].sort(compareLexically);
+    }
+  }
+  return [...merged.values()].sort((left, right) =>
+    compareLexically(left.id, right.id));
+}
+
 /** The `--merge` mode, in the order of phase 4 section 4. */
 export function runMerge(options, io = {}) {
   const readInputText = io.readInputText ?? ((file) => fs.readFileSync(file, 'utf8'));
@@ -2645,80 +2806,10 @@ export function runMerge(options, io = {}) {
   const writeText = io.writeText ?? ((file, text) => fs.writeFileSync(file, text));
   const now = io.now ?? (() => new Date());
 
-  const files = options.mergeFiles;
-  if (files.length !== 3) {
-    throw new ConfigError(`--merge requires exactly three inputs, got ${files.length}`);
-  }
-  const byPlatform = new Map();
-  for (const file of files) {
-    let text;
-    try {
-      text = readInputText(file);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new ConfigError(`cannot read ${file}: ${reason}`);
-    }
-    let document;
-    try {
-      document = JSON.parse(text);
-    } catch {
-      throw new ConfigError(`${file} is not valid JSON`);
-    }
-    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
-      throw new ConfigError(`${file} must be a JSON object`);
-    }
-    const platform = document.platform;
-    if (!PLATFORMS.has(platform)) {
-      throw new ConfigError(
-        `${file} platform must be windows, linux or macos, got ${JSON.stringify(platform)}`,
-      );
-    }
-    if (byPlatform.has(platform)) throw new ConfigError(`--merge has two ${platform} inputs`);
-    byPlatform.set(platform, document);
-  }
-  const first = byPlatform.values().next().value;
-  for (const [platform, document] of byPlatform) {
-    if (document.commit !== first.commit) {
-      throw new ConfigError(
-        `--merge inputs must agree on commit: ${JSON.stringify(first.commit)} versus ${JSON.stringify(document.commit)} (${platform})`,
-      );
-    }
-    if (document.rustcVersion !== first.rustcVersion) {
-      throw new ConfigError(
-        `--merge inputs must agree on rustcVersion: ${JSON.stringify(first.rustcVersion)} versus ${JSON.stringify(document.rustcVersion)} (${platform})`,
-      );
-    }
-  }
+  const byPlatform = readMergeInputs(options.mergeFiles, readInputText);
+  const first = checkMergeAgreement(byPlatform);
   const threshold = readThresholdFromClippyToml(readWorkspaceBytes);
-  const merged = new Map();
-  for (const platform of PLATFORMS) {
-    const document = byPlatform.get(platform);
-    if (!Array.isArray(document.entries)) {
-      throw new ConfigError(`${platform} emission entries must be an array`);
-    }
-    for (const entry of document.entries) {
-      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-        throw new ConfigError(`${platform} emission entries must be objects`);
-      }
-      if (typeof entry.id !== 'string' || entry.id === '') {
-        throw new ConfigError(`${platform} emission entry id must be a non-empty string`);
-      }
-      if (!Array.isArray(entry.anchors)) {
-        throw new ConfigError(`${platform} emission entry ${entry.id} anchors must be an array`);
-      }
-      for (const anchor of entry.anchors) {
-        if (typeof anchor !== 'string' || !ANCHOR_RE.test(anchor)) {
-          throw new ConfigError(
-            `${platform} emission entry ${entry.id} anchor ${JSON.stringify(anchor)} must be 12 lowercase hex characters`,
-          );
-        }
-      }
-      if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
-      merged.get(entry.id).sites[platform] = [...entry.anchors].sort(compareLexically);
-    }
-  }
-  const entries = [...merged.values()].sort((left, right) =>
-    compareLexically(left.id, right.id));
+  const entries = mergeEmissions(byPlatform);
   const document = {
     version: 1,
     issue: 2234,
