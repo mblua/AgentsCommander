@@ -238,7 +238,10 @@ test('8: an ApiError keeps earlier data and main returns 1', () => {
   assert.match(result.markdown.split('\n')[0], /^Report NOT complete: API error/);
   const out = tempDir();
   const code = withQuietStdout(() =>
-    main(['--repo', 'o/r', '--out', out], {}, { gh: setup(), now: new Date(`${TODAY}T05:17:00Z`) }));
+    main(['--repo', 'o/r', '--out', out], {}, {
+      gh: setup(),
+      now: new Date(`${TODAY}T05:17:00Z`),
+    }));
   assert.equal(code, 1);
   for (const file of ['history.json', 'report.json', 'report.md']) {
     assert.ok(fs.existsSync(path.join(out, file)));
