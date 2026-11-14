@@ -407,6 +407,36 @@ fn isolation_tokens(source: &str) -> Vec<String> {
     tokens
 }
 
+#[test]
+fn isolation_tokens_preserve_literals_and_skip_nested_comments() {
+    let source = r##"/* outer /* inner */ end */ r#"a"# "x\"y" '\n' 'a' 'a ident_2 é"##;
+    assert_eq!(
+        isolation_tokens(source),
+        [
+            r##"r#"a"#"##,
+            r#""x\"y""#,
+            r"'\n'",
+            "'a'",
+            "'",
+            "a",
+            "ident_2",
+            "é"
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "unterminated block comment")]
+fn isolation_tokens_reject_unterminated_block_comment() {
+    isolation_tokens("/* outer /* inner */");
+}
+
+#[test]
+#[should_panic(expected = "unterminated literal")]
+fn isolation_tokens_reject_unterminated_literal() {
+    isolation_tokens("\"unfinished");
+}
+
 fn isolation_function<'a>(tokens: &'a [String], name: &str) -> &'a [String] {
     let starts: Vec<_> = tokens
         .windows(3)
