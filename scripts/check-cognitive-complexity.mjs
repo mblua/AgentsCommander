@@ -825,6 +825,19 @@ export function parseArgs(argv) {
   return buildModeOptions(selectMode(flags), flags);
 }
 
+/** Runs a mode; an error of one of `types` prints `<CODE>: <message>` and exits 1. */
+function runReportingTyped(run, stderr, types) {
+  try {
+    return run();
+  } catch (error) {
+    if (types.some((type) => error instanceof type)) {
+      stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
 export function main(argv, io = {}) {
   const stdout = io.stdout ?? ((text) => console.log(text));
   const stderr = io.stderr ?? ((text) => console.error(text));
@@ -846,61 +859,33 @@ export function main(argv, io = {}) {
   }
   if (options.mode === 'self-test') return selfTest({ stdout, stderr });
   if (options.mode === 'capture') {
-    try {
-      return runCapture(options, {
-        stdout,
-        stderr,
-        getEnv,
-        readCaptureText: io.readCaptureText,
-        readWorkspace: io.readWorkspace,
-        readWorkspaceBytes: io.readWorkspaceBytes,
-        existsWorkspace: io.existsWorkspace,
-        writeText: io.writeText,
-      });
-    } catch (error) {
-      if (
-        error instanceof CaptureError
-        || error instanceof ConfigError
-        || error instanceof ThresholdError
-      ) {
-        stderr(`${error.code}: ${error.message}`);
-        return 1;
-      }
-      throw error;
-    }
+    return runReportingTyped(() => runCapture(options, {
+      stdout,
+      stderr,
+      getEnv,
+      readCaptureText: io.readCaptureText,
+      readWorkspace: io.readWorkspace,
+      readWorkspaceBytes: io.readWorkspaceBytes,
+      existsWorkspace: io.existsWorkspace,
+      writeText: io.writeText,
+    }), stderr, [CaptureError, ConfigError, ThresholdError]);
   }
   if (options.mode === 'baseline-diff') {
-    try {
-      return runBaselineDiff(options, {
-        stdout,
-        stderr,
-        runGit: io.runGit,
-        readWorkspace: io.readWorkspace,
-        existsWorkspace: io.existsWorkspace,
-      });
-    } catch (error) {
-      if (error instanceof ConfigError) {
-        stderr(`${error.code}: ${error.message}`);
-        return 1;
-      }
-      throw error;
-    }
+    return runReportingTyped(() => runBaselineDiff(options, {
+      stdout,
+      stderr,
+      runGit: io.runGit,
+      readWorkspace: io.readWorkspace,
+      existsWorkspace: io.existsWorkspace,
+    }), stderr, [ConfigError]);
   }
   if (options.mode === 'merge') {
-    try {
-      return runMerge(options, {
-        readInputText: io.readInputText,
-        readWorkspaceBytes: io.readWorkspaceBytes,
-        writeText: io.writeText,
-        now: io.now,
-      });
-    } catch (error) {
-      if (error instanceof ConfigError) {
-        stderr(`${error.code}: ${error.message}`);
-        return 1;
-      }
-      throw error;
-    }
+    return runReportingTyped(() => runMerge(options, {
+      readInputText: io.readInputText,
+      readWorkspaceBytes: io.readWorkspaceBytes,
+      writeText: io.writeText,
+      now: io.now,
+    }), stderr, [ConfigError]);
   }
   if (options.mode === 'classify-probe') {
     return runClassifyProbe(options, { stdout, readCaptureText: io.readCaptureText });
@@ -2839,42 +2824,23 @@ export function runMerge(options, io = {}) {
 const RUSTC_HISTOGRAM_KEY = '<rustc>';
 const RUSTC_CODE_RE = /^E\d{4}$/;
 
-/** The `--classify-probe` mode, in the order of phase 4 section 5. */
-export function runClassifyProbe(options, io = {}) {
-  const stdout = io.stdout ?? ((text) => console.log(text));
-  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
-
-  let captureText = null;
-  try {
-    captureText = readCaptureText(options.probeFile);
-  } catch {
-    captureText = null;
+/** Integrity first: why the probe capture is STOP (null when complete); fills `records`. */
+function probeStopReason(probeFile, captureText, records) {
+  if (captureText === null) return `cannot read ${probeFile}`;
+  if (captureText.length === 0) return `${probeFile} is empty`;
+  const parseError = parseCaptureLines(captureText, records);
+  if (parseError !== null) {
+    return `${probeFile} has a line starting with '{' that does not parse: `
+      + JSON.stringify(parseError.slice(0, 120));
   }
-  let stopReason = null;
-  const records = [];
-  if (captureText === null) {
-    stopReason = `cannot read ${options.probeFile}`;
-  } else if (captureText.length === 0) {
-    stopReason = `${options.probeFile} is empty`;
-  } else {
-    let parseError = null;
-    for (const line of captureText.split('\n')) {
-      if (!line.startsWith('{')) continue;
-      try {
-        records.push(JSON.parse(line));
-      } catch {
-        parseError = line;
-        break;
-      }
-    }
-    if (parseError !== null) {
-      stopReason =
-        `${options.probeFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`;
-    } else if (records.at(-1)?.reason !== 'build-finished') {
-      stopReason = `${options.probeFile} has no terminal build-finished record`;
-    }
+  if (records.at(-1)?.reason !== 'build-finished') {
+    return `${probeFile} has no terminal build-finished record`;
   }
+  return null;
+}
 
+/** The count of `error` messages per lint code, rustc's own codes under `<rustc>`. */
+function probeHistogram(records) {
   const histogram = new Map();
   for (const record of records) {
     if (record?.message?.level !== 'error') continue;
@@ -2886,6 +2852,23 @@ export function runClassifyProbe(options, io = {}) {
         : code.code;
     histogram.set(key, (histogram.get(key) ?? 0) + 1);
   }
+  return histogram;
+}
+
+/** The `--classify-probe` mode, in the order of phase 4 section 5. */
+export function runClassifyProbe(options, io = {}) {
+  const stdout = io.stdout ?? ((text) => console.log(text));
+  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
+
+  let captureText = null;
+  try {
+    captureText = readCaptureText(options.probeFile);
+  } catch {
+    captureText = null;
+  }
+  const records = [];
+  const stopReason = probeStopReason(options.probeFile, captureText, records);
+  const histogram = probeHistogram(records);
   const keys = [...histogram.keys()].sort(compareLexically);
   for (const key of keys) stdout(`${key} ${histogram.get(key)}`);
 
@@ -2893,9 +2876,11 @@ export function runClassifyProbe(options, io = {}) {
     stdout(`STOP: ${stopReason}`);
     return 1;
   }
-  const finished = records.at(-1);
-  const success = finished.success;
-  const exit = options.probeExit;
+  return probeVerdict(records.at(-1).success, options.probeExit, histogram, keys, stdout);
+}
+
+/** The shape (or STOP) of a complete probe capture, from its exit and histogram. */
+function probeVerdict(success, exit, histogram, keys, stdout) {
   if (exit === 0 && success === false) {
     stdout('STOP: --probe-exit 0 disagrees with build-finished success false');
     return 1;
@@ -3224,6 +3209,113 @@ function stdoutText(fixture) {
   return fixture.state.stdout.join('\n');
 }
 
+/** The fixture's #3527 answer to `git rev-parse` / `git hash-object`. */
+function fixture3527Blob(args, historical3527) {
+  let position = 'workspace';
+  if (args[0] !== 'hash-object') {
+    position = args[1].startsWith('HEAD:') ? 'head' : 'base';
+  }
+  const file = args[0] === 'hash-object' ? args[2] : args[1].slice(args[1].indexOf(':') + 1);
+  if (historical3527.gitFailure === file + ':' + position) throw new GitError('failure', false);
+  const override = historical3527.blobs?.[file + ':' + position];
+  if (override !== undefined) return override;
+  if (file === BASELINE_FILE) return HISTORICAL_3527_BASELINE;
+  return HISTORICAL_3527_PINS.find(([name]) => name === file)?.[1] ?? '';
+}
+
+/** The fixture's #3319 answer to `git rev-parse` / `git hash-object`. */
+function fixture3319Blob(args, historical, baseRef) {
+  if (historical === null) throw new Error('unexpected historical Git invocation');
+  if (historical.gitError) throw new GitError('historical Git failure', false);
+  let key = 'workspaceBlob';
+  if (args[0] !== 'hash-object') {
+    if (args[1] === baseRef + ':' + BASELINE_FILE) key = 'baselineBlob';
+    else key = args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
+  }
+  return historical[key] ?? (key === 'baselineBlob'
+    ? HISTORICAL_3319_BASELINE : HISTORICAL_3319_SOURCE);
+}
+
+/** Case 3527's per-entry guards: identity, per-platform sites and retained entries. */
+function run3527EntryGuards(run, fixture, index) {
+  const { base, head, entries, paths } = fixture;
+  const clone = (value) => structuredClone(value);
+  const id = entries[index].id;
+  const change = (mutate) => { const value = clone(base);
+    mutate(value.entries.find((e) => e.id === id)); return value; };
+  const file = filePathOfId(id);
+  run('3527 id ' + index, { before: change((e) => { e.id += '_other'; }),
+    working: [...paths, file] });
+  for (const platform of ['windows', 'linux', 'macos']) {
+    run('3527 anchor ' + index + platform, { before: change((e) => {
+      e.sites[platform] = [otherAnchor(e.sites[platform][0])];
+    }) });
+    run('3527 duplicate ' + index + platform, { before: change((e) => {
+      e.sites[platform].push(e.sites[platform][0]);
+    }) });
+    run('3527 missing site ' + index + platform, { before: change((e) => {
+      delete e.sites[platform];
+    }) });
+    run('3527 partial ' + index + platform, { after: { ...clone(head),
+      entries: [...clone(head.entries), { id,
+        sites: { [platform]: entries[index].sites[platform] } }]
+        .sort((a, b) => a.id < b.id ? -1 : 1) } });
+  }
+  run('3527 platform substitution ' + index, { before: change((e) => {
+    delete e.sites.macos;
+  }) });
+  run('3527 bad platform ' + index, { kind: 'config', before: change((e) => {
+    e.sites.other = [A12];
+  }) });
+  const missing = clone(base);
+  missing.entries = missing.entries.filter((e) => e.id !== id);
+  run('3527 missing identity ' + index, { before: missing });
+  const retained = clone(head);
+  retained.entries.push(clone(entries[index]));
+  retained.entries.sort((a, b) => a.id < b.id ? -1 : 1);
+  run('3527 retained identity ' + index, { after: retained });
+}
+
+/** Case 3527's equality guard: one optional-field operation at one level. */
+function run3527Equality(run, fixture, level, operation) {
+  const { base, head, extra } = fixture;
+  const before = structuredClone(base);
+  const after = structuredClone(head);
+  const left = level === 'metadata' ? before
+    : before.entries.find((e) => e.id === extra.id);
+  const right = level === 'metadata' ? after : after.entries[0];
+  left.optional = { nested: [1, 2] };
+  right.optional = { nested: [1, 2] };
+  if (operation === 'changed') right.optional.nested.reverse();
+  if (operation === 'deleted') delete right.optional;
+  if (operation === 'added') delete left.optional;
+  run('3527 equality ' + level + ' ' + operation, { before, after });
+}
+
+/** Case 3527's evidence for a denied run: the kind's attribution or message. */
+function expect3527Denial(fixture, name, denial) {
+  const { kind, removals, tupleText, sameLines, working, diff } = denial;
+  if (kind === 'ordinary') {
+    const prefix = 'baseline removal accepted: ';
+    sameLines(fixture.state.stdout.filter((line) => line.startsWith(prefix))
+      .map((line) => line.slice(prefix.length)), removals.map(tupleText),
+    name + ' ordinary attribution');
+  }
+  if (kind === 'config') {
+    if (!stderrText(fixture).includes('CONFIG')) throw new Error(name + ' missing CONFIG');
+  } else if (kind === 'growth') {
+    if (!stderrText(fixture).includes('Baseline grew')) throw new Error(name + ' growth');
+  } else if (kind === 'blocked') {
+    const prefix = 'Baseline entry removed without touching its file: ';
+    const blocked = fixture.state.stderr.filter((line) => line.startsWith(prefix))
+      .map((line) => line.slice(prefix.length));
+    sameLines(blocked, removals.filter(({ id }) => {
+      const file = filePathOfId(id);
+      return working.includes(file) && !diff.includes(file);
+    }).map(tupleText), name + ' blocked tuples');
+  }
+}
+
 function baselineDiffFixture({
   base = null,
   head = null,
@@ -3239,29 +3331,9 @@ function baselineDiffFixture({
   const stderrLines = [];
   const working = new Set(workingFiles);
   const runGit = (args) => {
-    if (historical3527 !== null && (args[0] === 'rev-parse' || args[0] === 'hash-object')) {
-      let position = 'workspace';
-      if (args[0] !== 'hash-object') {
-        position = args[1].startsWith('HEAD:') ? 'head' : 'base';
-      }
-      const file = args[0] === 'hash-object' ? args[2] : args[1].slice(args[1].indexOf(':') + 1);
-      if (historical3527.gitFailure === file + ':' + position) throw new GitError('failure', false);
-      const override = historical3527.blobs?.[file + ':' + position];
-      if (override !== undefined) return override;
-      if (file === BASELINE_FILE) return HISTORICAL_3527_BASELINE;
-      return HISTORICAL_3527_PINS.find(([name]) => name === file)?.[1] ?? '';
-    }
-    if (args[0] === 'rev-parse' || args[0] === 'hash-object') {
-      if (historical === null) throw new Error('unexpected historical Git invocation');
-      if (historical.gitError) throw new GitError('historical Git failure', false);
-      let key = 'workspaceBlob';
-      if (args[0] !== 'hash-object') {
-        if (args[1] === baseRef + ':' + BASELINE_FILE) key = 'baselineBlob';
-        else key = args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
-      }
-      return historical[key] ?? (key === 'baselineBlob'
-        ? HISTORICAL_3319_BASELINE : HISTORICAL_3319_SOURCE);
-    }
+    const blobQuery = args[0] === 'rev-parse' || args[0] === 'hash-object';
+    if (historical3527 !== null && blobQuery) return fixture3527Blob(args, historical3527);
+    if (blobQuery) return fixture3319Blob(args, historical, baseRef);
     if (args[0] === 'show') {
       if (showFailure !== null) throw showFailure;
       if (base === null) {
@@ -4688,62 +4760,11 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         }
         expectEqual(result, exit, name);
         expectEqual(historical.length, 0, name + ' historical denial');
-        if (kind === 'ordinary') {
-          const prefix = 'baseline removal accepted: ';
-          sameLines(fixture.state.stdout.filter((line) => line.startsWith(prefix))
-            .map((line) => line.slice(prefix.length)), removals.map(tupleText),
-          name + ' ordinary attribution');
-        }
-        if (kind === 'config') {
-          if (!stderrText(fixture).includes('CONFIG')) throw new Error(name + ' missing CONFIG');
-        } else if (kind === 'growth') {
-          if (!stderrText(fixture).includes('Baseline grew')) throw new Error(name + ' growth');
-        } else if (kind === 'blocked') {
-          const prefix = 'Baseline entry removed without touching its file: ';
-          const blocked = fixture.state.stderr.filter((line) => line.startsWith(prefix))
-            .map((line) => line.slice(prefix.length));
-          sameLines(blocked, removals.filter(({ id }) => {
-            const file = filePathOfId(id);
-            return working.includes(file) && !diff.includes(file);
-          }).map(tupleText), name + ' blocked tuples');
-        }
+        expect3527Denial(fixture, name, { kind, removals, tupleText, sameLines, working, diff });
       };
       run('3527 exact S', { kind: 'positive' });
       for (let index = 0; index < entries.length; index += 1) {
-        const id = entries[index].id;
-        const change = (mutate) => { const value = clone(base);
-          mutate(value.entries.find((e) => e.id === id)); return value; };
-        const file = filePathOfId(id);
-        run('3527 id ' + index, { before: change((e) => { e.id += '_other'; }),
-          working: [...paths, file] });
-        for (const platform of ['windows', 'linux', 'macos']) {
-          run('3527 anchor ' + index + platform, { before: change((e) => {
-            e.sites[platform] = [otherAnchor(e.sites[platform][0])];
-          }) });
-          run('3527 duplicate ' + index + platform, { before: change((e) => {
-            e.sites[platform].push(e.sites[platform][0]);
-          }) });
-          run('3527 missing site ' + index + platform, { before: change((e) => {
-            delete e.sites[platform];
-          }) });
-          run('3527 partial ' + index + platform, { after: { ...clone(head),
-            entries: [...clone(head.entries), { id,
-              sites: { [platform]: entries[index].sites[platform] } }]
-              .sort((a, b) => a.id < b.id ? -1 : 1) } });
-        }
-        run('3527 platform substitution ' + index, { before: change((e) => {
-          delete e.sites.macos;
-        }) });
-        run('3527 bad platform ' + index, { kind: 'config', before: change((e) => {
-          e.sites.other = [A12];
-        }) });
-        const missing = clone(base);
-        missing.entries = missing.entries.filter((e) => e.id !== id);
-        run('3527 missing identity ' + index, { before: missing });
-        const retained = clone(head);
-        retained.entries.push(clone(entries[index]));
-        retained.entries.sort((a, b) => a.id < b.id ? -1 : 1);
-        run('3527 retained identity ' + index, { after: retained });
+        run3527EntryGuards(run, { base, head, entries, paths }, index);
       }
       const c2Base = clone(base);
       const first = c2Base.entries.find((e) => e.id === entries[0].id);
@@ -4761,17 +4782,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       run('3527 C3-extra-ordinary', { after: deletedExtra, diff: ['src/3527-other.rs'] });
       for (const level of ['metadata', 'nonselected']) {
         for (const operation of ['changed', 'deleted', 'added']) {
-          const before = clone(base);
-          const after = clone(head);
-          const left = level === 'metadata' ? before
-            : before.entries.find((e) => e.id === extra.id);
-          const right = level === 'metadata' ? after : after.entries[0];
-          left.optional = { nested: [1, 2] };
-          right.optional = { nested: [1, 2] };
-          if (operation === 'changed') right.optional.nested.reverse();
-          if (operation === 'deleted') delete right.optional;
-          if (operation === 'added') delete left.optional;
-          run('3527 equality ' + level + ' ' + operation, { before, after });
+          run3527Equality(run, { base, head, extra }, level, operation);
         }
       }
       const reorder = (value) => {
