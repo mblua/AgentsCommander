@@ -1,3 +1,6 @@
+//! Inter-agent messaging: mailbox, message consumption, events, terminal
+//! snapshots and wake lanes.
+
 pub(crate) mod consumption;
 pub(crate) mod events;
 pub(crate) mod mailbox;

@@ -2302,7 +2302,7 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
 // holds the function. `mod x;` items are resolved to their out-of-line files
 // so a removal is credited when the pull request touched the real file.
 const OUT_OF_LINE_MOD_RE =
-  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;/g;
 const PATH_ATTRIBUTE_RE = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
 
 function stripRustComments(source) {

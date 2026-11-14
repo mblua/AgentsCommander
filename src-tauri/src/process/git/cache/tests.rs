@@ -13,7 +13,7 @@ fn success_joins_both_readers_and_keeps_complete_output() {
     #[cfg(windows)]
     let script = "[Console]::Out.Write('o' * 131072); [Console]::Error.Write('e' * 131072)";
     #[cfg(not(windows))]
-    let script = "head -c 131072 /dev/zero | tr '\0' o; head -c 131072 /dev/zero | tr '\0' e >&2";
+    let script = "head -c 131072 /dev/zero | tr '\\0' o; head -c 131072 /dev/zero | tr '\\0' e >&2";
     let output = shell(script, Duration::from_secs(30)).unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, vec![b'o'; 131_072]);

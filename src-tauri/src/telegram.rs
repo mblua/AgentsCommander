@@ -1,3 +1,6 @@
+//! Telegram bridge: Bot API calls, attachments, the agent output watchers
+//! (Claude and Codex), redaction and the bridge manager.
+
 pub(crate) mod api;
 pub(crate) mod attachments;
 pub(crate) mod bridge;

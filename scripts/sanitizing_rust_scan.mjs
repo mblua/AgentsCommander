@@ -7,6 +7,41 @@ function error(path, line, reason) { throw new GateError(
   `${path}:${line}: ${reason}; review Rust syntax`); }
 
 // Rust escapes, rather than JSON/JavaScript string escapes.
+const RUST_SIMPLE_ESCAPES = { n: '\n', r: '\r', t: '\t', '0': '\0',
+  [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
+function decodeHexEscape(source, i, byte) {
+  const hex = source.slice(i + 1, i + 3);
+  if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
+  const code = Number.parseInt(hex, 16);
+  if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
+  // A byte above 127 makes the value opaque; still validate all remaining escapes.
+  return { text: String.fromCodePoint(code), i: i + 2, opaque: byte && code > 127 };
+}
+function decodeUnicodeEscape(source, i) {
+  const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
+  if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
+    'invalid Rust Unicode escape');
+  const code = Number.parseInt(hex, 16);
+  if (code > 0x10ffff || code >= 0xd800 &&
+    code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
+  return { text: String.fromCodePoint(code), i: end };
+}
+function skipLineContinuation(source, i, e) {
+  if (e === '\r') i++;
+  while (/[\t\n\r ]/.test(source[i + 1] ?? '') && i + 1 < source.length) i++;
+  return i;
+}
+// Decodes the escape after the backslash at source[i - 1]; returns its text and last index.
+function decodeEscape(source, i, byte) {
+  const e = source[i];
+  if (Object.hasOwn(RUST_SIMPLE_ESCAPES, e)) return { text: RUST_SIMPLE_ESCAPES[e], i };
+  if (e === 'x') return decodeHexEscape(source, i, byte);
+  if (e === 'u' && source[i + 1] === '{' && !byte) return decodeUnicodeEscape(source, i);
+  if (e === '\n' || e === '\r' && source[i + 1] === '\n') {
+    return { text: '', i: skipLineContinuation(source, i, e) };
+  }
+  throw new GateError('invalid Rust escape');
+}
 export function decodeRustString(raw, byte = false) {
   const prefix = /^(?:b)?r(#+|)"/.exec(raw);
   if (prefix) return raw.slice(prefix[0].length, -prefix[1].length - 1);
@@ -15,125 +50,146 @@ export function decodeRustString(raw, byte = false) {
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     if (c.codePointAt(0) !== 92) { value += c; continue; }
-    const e = source[++i], simple = { n: '\n', r: '\r', t: '\t', '0': '\0',
-      [String.fromCodePoint(92)]: String.fromCodePoint(92), '"': '"', "'": "'" };
-    if (Object.hasOwn(simple, e)) value += simple[e];
-    else if (e === 'x') {
-      const hex = source.slice(i + 1, i + 3);
-      if (!/^[a-f\d]{2}$/i.test(hex)) throw new GateError('invalid Rust hex escape');
-      const code = Number.parseInt(hex, 16);
-      if (!byte && code > 127) throw new GateError('non-ASCII Rust string hex escape');
-      if (byte && code > 127) opaque = true; // Still validate all remaining escapes.
-      value += String.fromCodePoint(code); i += 2;
-    } else if (e === 'u' && source[i + 1] === '{' && !byte) {
-      const end = source.indexOf('}', i + 2), hex = source.slice(i + 2, end).replaceAll('_', '');
-      if (end < 0 || !/^[a-f\d]{1,6}$/i.test(hex)) throw new GateError(
-        'invalid Rust Unicode escape');
-      const code = Number.parseInt(hex, 16);
-      if (code > 0x10ffff || code >= 0xd800 &&
-        code <= 0xdfff) throw new GateError('invalid Rust Unicode scalar');
-      value += String.fromCodePoint(code); i = end;
-    } else if (e === '\n' || e === '\r' && source[i + 1] === '\n') {
-      if (e === '\r') i++;
-      while (/[\t\n\r ]/.test(source[i + 1] ?? '') && i + 1 < source.length) i++;
-    } else throw new GateError('invalid Rust escape');
+    const escape = decodeEscape(source, i + 1, byte);
+    value += escape.text; i = escape.i;
+    if (escape.opaque) opaque = true;
   }
   return opaque || byte && /[^\x00-\x7f]/.test(value) ? null : value;
 }
+// Lexer state s: { path, text, tokens, groups, stack, i, line }.
+function lexAdd(s, kind, start, tokenLine, extra = {}) {
+  const token = { kind, text: s.text.slice(start, s.i), start, end: s.i, line: tokenLine,
+    index: s.tokens.length, ...extra };
+  s.tokens.push(token); return token;
+}
+function lexAdvance(s, end) { for (; s.i < end; s.i++) if (s.text[s.i] === '\n') s.line++; }
+function lexBlockComment(s, tokenLine) {
+  s.i += 2; let depth = 1;
+  while (s.i < s.text.length && depth) {
+    if (s.text.startsWith('/*', s.i)) { depth++; lexAdvance(s, s.i + 2); }
+    else if (s.text.startsWith('*/', s.i)) { depth--; lexAdvance(s, s.i + 2); }
+    else lexAdvance(s, s.i + 1);
+  }
+  if (depth) error(s.path, tokenLine, 'unclosed block comment');
+}
+function lexTrivia(s, c, tokenLine) {
+  if (/\s/.test(c)) { lexAdvance(s, s.i + 1); return true; }
+  if (s.text.startsWith('//', s.i)) {
+    let end = s.text.indexOf('\n', s.i); if (end < 0) end = s.text.length;
+    lexAdvance(s, end); return true;
+  }
+  if (s.text.startsWith('/*', s.i)) { lexBlockComment(s, tokenLine); return true; }
+  return false;
+}
+function lexRawString(s, start, tokenLine) {
+  const text = s.text, raw = /^(?:br|r)(#*)"/.exec(text.slice(s.i));
+  if (!raw) return false;
+  const suffix = '"' + raw[1], end = text.indexOf(suffix, s.i + raw[0].length);
+  if (end < 0) error(s.path, s.line, 'unclosed raw string');
+  lexAdvance(s, end + suffix.length);
+  const byte = raw[0].startsWith('b');
+  const value = decodeRustString(text.slice(start, s.i), byte);
+  const opaque = byte && /[^\x00-\x7f]/.test(value);
+  lexAdd(s, byte ? 'byteString' : 'string', start, tokenLine,
+    { value: opaque ? null : value, opaque });
+  return true;
+}
+function lexStringBody(s) {
+  while (s.i < s.text.length) {
+    if (s.text.codePointAt(s.i) === 92) {
+      lexAdvance(s, Math.min(s.i + 2, s.text.length)); continue;
+    }
+    if (s.text[s.i] === '"') { lexAdvance(s, s.i + 1); return true; }
+    lexAdvance(s, s.i + 1);
+  }
+  return false;
+}
+function lexString(s, c, start, tokenLine) {
+  if (c !== '"' && (c !== 'b' || s.text[s.i + 1] !== '"')) return false;
+  const byte = c === 'b'; lexAdvance(s, s.i + (byte ? 2 : 1));
+  if (!lexStringBody(s)) error(s.path, tokenLine, 'unclosed string');
+  let value; try { value = decodeRustString(s.text.slice(start, s.i), byte);
+    } catch (e) { error(s.path, tokenLine, e.message); }
+  lexAdd(s, byte ? 'byteString' : 'string', start, tokenLine, { value, opaque: value === null });
+  return true;
+}
+// Index just past a char literal body that starts at `end`.
+function charLiteralEnd(text, end) {
+  if (text.codePointAt(end) === 92) {
+    end++;
+    if (text[end] === 'u' && text[end + 1] === '{') {
+      const close = text.indexOf('}', end + 2);
+      return close < 0 ? text.length : close + 1;
+    }
+    return end + (text[end] === 'x' ? 3 : 1);
+  }
+  return end + ((text.codePointAt(end) ?? 0) > 0xffff ? 2 : 1);
+}
+function lexChar(s, c, start, tokenLine) {
+  const text = s.text;
+  if (c !== "'" && (c !== 'b' || text[s.i + 1] !== "'")) return false;
+  const byte = c === 'b', quote = s.i + (byte ? 1 : 0), end = charLiteralEnd(text, quote + 1);
+  if (text[end] === "'") {
+    const content = text.slice(quote + 1, end);
+    try { decodeRustString((byte ? 'b"' : '"') + content + '"', byte); }
+    catch (e) { error(s.path, tokenLine, e.message); }
+    lexAdvance(s, end + 1); lexAdd(s, byte ? 'byteChar' : 'char', start, tokenLine); return true;
+  }
+  const life = /^'[\p{ID_Start}_][\p{ID_Continue}_]*/u.exec(text.slice(s.i));
+  if (!byte && life) {
+    lexAdvance(s, s.i + life[0].length); lexAdd(s, 'lifetime', start, tokenLine); return true;
+  }
+  error(s.path, tokenLine, 'invalid or unclosed character');
+}
+function lexIdent(s, c, start, tokenLine) {
+  const text = s.text, rawIdent = /^r#([\p{ID_Start}_][\p{ID_Continue}_]*)/u.exec(
+    text.slice(s.i));
+  if (!rawIdent && !identStart.test(c)) return false;
+  if (rawIdent) lexAdvance(s, s.i + rawIdent[0].length);
+  else {
+    lexAdvance(s, s.i + c.length);
+    while (s.i < text.length && identPart.test(String.fromCodePoint(text.codePointAt(s.i)))) {
+      lexAdvance(s, s.i + (text.codePointAt(s.i) > 0xffff ? 2 : 1));
+    }
+  }
+  lexAdd(s, 'ident', start, tokenLine, { name: text.slice(start, s.i).replace(/^r#/, '') });
+  return true;
+}
+function lexNumber(s, c, start, tokenLine) {
+  if (!/\d/.test(c)) return false;
+  // A tuple index cannot absorb the following projection, call or range.
+  const rest = s.text.slice(s.i);
+  lexAdvance(s, s.i + (s.tokens.at(-1)?.text === '.' ? /^\d[\d_]*/.exec(rest)[0].length
+    : rustNumberLength(rest)));
+  lexAdd(s, 'number', start, tokenLine); return true;
+}
+const RUST_PUNCTUATION = ['::', '=>', '->', '==', '!=', '+=', '-=', '*=', '/=', '..=', '..',
+  '&&', '||'];
+function lexCloseGroup(s, c, token, tokenLine) {
+  const tokens = s.tokens, open = s.stack.pop();
+  if (open === undefined || opens[tokens[open].text] !== c) error(s.path, tokenLine,
+    'mismatched delimiter');
+  tokens[open].mate = token.index; token.mate = open; s.groups.push({ start: open,
+    end: token.index, kind: tokens[open].text });
+}
+function lexPunct(s, c, start, tokenLine) {
+  const punctuation = RUST_PUNCTUATION.find(p => s.text.startsWith(p, s.i)) ?? c;
+  lexAdvance(s, s.i + punctuation.length); const token = lexAdd(s, 'punct', start, tokenLine);
+  if (opens[c]) s.stack.push(token.index);
+  else if (closes.has(c)) lexCloseGroup(s, c, token, tokenLine);
+}
+function lexToken(s) {
+  const start = s.i, tokenLine = s.line, c = String.fromCodePoint(s.text.codePointAt(s.i));
+  if (lexTrivia(s, c, tokenLine) || lexRawString(s, start, tokenLine)
+    || lexString(s, c, start, tokenLine) || lexChar(s, c, start, tokenLine)
+    || lexIdent(s, c, start, tokenLine) || lexNumber(s, c, start, tokenLine)) return;
+  lexPunct(s, c, start, tokenLine);
+}
 export function lexRust(path, text) {
-  const tokens = [], groups = [], stack = []; let i = 0, line = 1;
-  function add(kind, start, end, tokenLine, extra = {}) {
-    const token = { kind, text: text.slice(start, end), start, end, line: tokenLine,
-      index: tokens.length, ...extra };
-    tokens.push(token); return token;
-  }
-  function advance(end) { for (; i < end; i++) if (text[i] === '\n') line++; }
-  while (i < text.length) {
-    const start = i, tokenLine = line, c = String.fromCodePoint(text.codePointAt(i));
-    if (/\s/.test(c)) { advance(i + 1); continue; }
-    if (text.startsWith('//', i)) { let end = text.indexOf('\n', i); if (end < 0) end = text.length;
-      advance(end); continue; }
-    if (text.startsWith('/*', i)) {
-      i += 2; let depth = 1;
-      while (i < text.length && depth) {
-        if (text.startsWith('/*', i)) { depth++; advance(i + 2); }
-        else if (text.startsWith('*/', i)) { depth--; advance(i + 2); }
-        else advance(i + 1);
-      }
-      if (depth) error(path, tokenLine, 'unclosed block comment');
-      continue;
-    }
-    const raw = /^(?:br|r)(#*)"/.exec(text.slice(i));
-    if (raw) {
-      const suffix = '"' + raw[1], end = text.indexOf(suffix, i + raw[0].length);
-      if (end < 0) error(path, line, 'unclosed raw string');
-      advance(end + suffix.length);
-      const byte = raw[0].startsWith('b');
-      const value = decodeRustString(text.slice(start, i), byte);
-      add(byte ? 'byteString' : 'string', start, i, tokenLine, { value: byte && /[^\x00-\x7f]/.test(
-        value) ? null : value, opaque: byte && /[^\x00-\x7f]/.test(value) }); continue;
-    }
-    if (c === '"' || c === 'b' && text[i + 1] === '"') {
-      const byte = c === 'b'; advance(i + (byte ? 2 : 1)); let closed = false;
-      while (i < text.length) {
-        if (text.codePointAt(i) === 92) { advance(Math.min(i + 2, text.length)); continue; }
-        if (text[i] === '"') { advance(i + 1); closed = true; break; }
-        advance(i + 1);
-      }
-      if (!closed) error(path, tokenLine, 'unclosed string');
-      let value; try { value = decodeRustString(text.slice(start, i), byte);
-        } catch (e) { error(path, tokenLine, e.message); }
-      add(byte ? 'byteString' : 'string', start, i, tokenLine, { value, opaque: value === null });
-        continue;
-    }
-    if (c === "'" || c === 'b' && text[i + 1] === "'") {
-      const byte = c === 'b', quote = i + (byte ? 1 : 0); let end = quote + 1;
-      if (text.codePointAt(end) === 92) {
-        end++;
-        if (text[end] === 'u' && text[end + 1] === '{') { const close = text.indexOf('}', end + 2);
-          end = close < 0 ? text.length : close + 1; }
-        else end += text[end] === 'x' ? 3 : 1;
-      } else end += (text.codePointAt(end) ?? 0) > 0xffff ? 2 : 1;
-      if (text[end] === "'") {
-        const content = text.slice(quote + 1, end);
-        try { decodeRustString((byte ? 'b"' : '"') + content + '"', byte); }
-        catch (e) { error(path, tokenLine, e.message); }
-        advance(end + 1); add(byte ? 'byteChar' : 'char', start, i, tokenLine); continue;
-      }
-      const life = /^'[\p{ID_Start}_][\p{ID_Continue}_]*/u.exec(text.slice(i));
-      if (!byte && life) { advance(i + life[0].length); add('lifetime', start, i, tokenLine);
-        continue; }
-      error(path, tokenLine, 'invalid or unclosed character');
-    }
-    const rawIdent = /^r#([\p{ID_Start}_][\p{ID_Continue}_]*)/u.exec(text.slice(i));
-    if (rawIdent || identStart.test(c)) {
-      if (rawIdent) advance(i + rawIdent[0].length);
-      else { advance(i + c.length); while (i < text.length && identPart.test(String.fromCodePoint(
-        text.codePointAt(i)))) advance(i + (text.codePointAt(i) > 0xffff ? 2 : 1)); }
-      add('ident', start, i, tokenLine, { name: text.slice(start, i).replace(/^r#/, '') });
-        continue;
-    }
-    if (/\d/.test(c)) {
-      // A tuple index cannot absorb the following projection, call or range.
-      const rest = text.slice(i);
-      advance(i + (tokens.at(-1)?.text === '.' ? /^\d[\d_]*/.exec(rest)[0].length
-        : rustNumberLength(rest)));
-      add('number', start, i, tokenLine); continue;
-    }
-    const punctuation = ['::', '=>', '->', '==', '!=', '+=', '-=', '*=', '/=', '..=', '..', '&&',
-      '||'].find(p => text.startsWith(p, i)) ?? c;
-    advance(i + punctuation.length); const token = add('punct', start, i, tokenLine);
-    if (opens[c]) stack.push(token.index);
-    else if (closes.has(c)) {
-      const open = stack.pop();
-      if (open === undefined || opens[tokens[open].text] !== c) error(path, tokenLine,
-        'mismatched delimiter');
-      tokens[open].mate = token.index; token.mate = open; groups.push({ start: open,
-        end: token.index, kind: tokens[open].text });
-    }
-  }
-  if (stack.length) error(path, tokens[stack.at(-1)].line, 'unclosed delimiter');
-  return { tokens, groups };
+  const s = { path, text, tokens: [], groups: [], stack: [], i: 0, line: 1 };
+  while (s.i < text.length) lexToken(s);
+  if (s.stack.length) error(path, s.tokens[s.stack.at(-1)].line, 'unclosed delimiter');
+  return { tokens: s.tokens, groups: s.groups };
 }
 // Rust numeric literal: radix or decimal head, then an optional type suffix.
 const RUST_RADIX_INT = /^0(?:x[\da-fA-F_]+|o[0-7_]+|b[01_]+)/;

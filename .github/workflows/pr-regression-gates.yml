@@ -42,7 +42,7 @@ jobs:
       TML_SOURCE: ${{ inputs.tml_adoption_source }}
       TML_PLATFORM: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -59,7 +59,7 @@ jobs:
           test -z "$(git -C "$source_root" status --porcelain --untracked-files=no)"
           mkdir -p "${RUNNER_TEMP}/tml-adoption"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
@@ -167,7 +167,7 @@ jobs:
 
       - name: Upload adoption evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tml-adoption-${{ matrix.platform }}-${{ inputs.tml_adoption_source }}
           path: ${{ runner.temp }}/tml-adoption
@@ -208,14 +208,14 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # `--baseline-from-ref` scans the base ref's tree; a shallow checkout
           # makes that ref unreachable and the gate fails loudly.
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -281,7 +281,7 @@ jobs:
           NODE
       - name: Upload tested-tree module arcs
         if: steps.generate_module_arcs.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: module-arcs-${{ github.sha }}-${{ github.run_attempt }}
           retention-days: 14
@@ -396,10 +396,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -420,7 +420,7 @@ jobs:
           toolchain: '1.98.1'
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-debug'
@@ -479,7 +479,7 @@ jobs:
 
       - name: Upload gate-debug inventory
         if: ${{ always() && steps.gate_debug_inventory.conclusion != 'skipped' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         continue-on-error: true
         timeout-minutes: 5
         with:
@@ -563,7 +563,7 @@ jobs:
 
       - name: Upload seven-lint evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: seven-lint-windows
           path: |
@@ -616,7 +616,7 @@ jobs:
 
       - name: Upload observed cognitive set
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cog-observed-windows
           path: ${{ runner.temp }}/cog-observed-windows.json
@@ -723,7 +723,7 @@ jobs:
 
       - name: Upload length observations
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tml-observed-windows
           path: |
@@ -763,10 +763,10 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -787,7 +787,7 @@ jobs:
           toolchain: '1.98.1'
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-debug'
@@ -848,10 +848,10 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -877,7 +877,7 @@ jobs:
           test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'
@@ -1346,7 +1346,7 @@ jobs:
           fi
 
       - name: "Upload IS #1850 release diagnostics"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
@@ -1370,7 +1370,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: apt cache key
         id: apt_key
@@ -1380,7 +1380,7 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-debs
           key: ${{ steps.apt_key.outputs.prefix }}none
@@ -1390,7 +1390,7 @@ jobs:
         run: bash scripts/ci-install-linux-deps.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -1411,7 +1411,7 @@ jobs:
           toolchain: '1.98.1'
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: . -> target
           key: clippy-linux
@@ -1484,7 +1484,7 @@ jobs:
 
       - name: Upload seven-lint evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: seven-lint-linux
           path: |
@@ -1537,7 +1537,7 @@ jobs:
 
       - name: Upload observed cognitive set
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cog-observed-linux
           path: ${{ runner.temp }}/cog-observed-linux.json
@@ -1567,7 +1567,7 @@ jobs:
 
       - name: Upload length observations
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tml-observed-linux
           path: |
@@ -1584,12 +1584,12 @@ jobs:
     outputs:
       match: ${{ steps.detect.outputs.match }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # The pull_request checkout is the merge commit; parent 1 is the base tip.
           fetch-depth: 2
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
       - name: Detector self-test
@@ -1612,7 +1612,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: apt cache key
         id: apt_key
@@ -1622,7 +1622,7 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-debs
           key: ${{ steps.apt_key.outputs.prefix }}none
@@ -1632,7 +1632,7 @@ jobs:
         run: bash scripts/ci-install-linux-deps.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -1653,16 +1653,39 @@ jobs:
           toolchain: '1.98.1'
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: . -> target
           key: rust-test-linux
 
-      # Same command as rust-regression-windows (#4510); failures here are real Linux
-      # failures and get their own issues.
+      # #4599: Xvfb gives GTK a display; nextest gives each test its own process.
+      - name: Install xvfb and cargo-nextest
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb
+          cargo install cargo-nextest --locked --version 0.9.151
+
+      # Same targets as rust-regression-windows (#4510), without its one --skip;
+      # failures here are real Linux failures and get their own issues. GTK starts on
+      # one thread per process and libtest uses one thread per test, so Linux runs
+      # each test in its own process under Xvfb (#4599). The list check below proves
+      # nextest runs the same tests that libtest lists.
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --locked --lib --bins --tests --no-fail-fast
+        shell: bash
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent/ac-4599-no-session-bus
+          NO_AT_BRIDGE: "1"
+        run: |
+          libtest=$(cargo test --locked --lib --bins --tests -- --list --format terse \
+            | grep -c ': test$')
+          nextest=$(cargo nextest list --locked --lib --bins --tests \
+            --run-ignored all --message-format oneline | grep -c .)
+          echo "libtest=$libtest nextest=$nextest"
+          test "$nextest" -gt 0
+          test "$libtest" -eq "$nextest"
+          xvfb-run -a cargo nextest run --locked --lib --bins --tests --no-fail-fast \
+            --status-level pass --color never
 
   rust-regression-linux:
     name: rust-regression-linux
@@ -1671,7 +1694,7 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: apt cache key
         id: apt_key
@@ -1681,7 +1704,7 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-debs
           key: ${{ steps.apt_key.outputs.prefix }}none
@@ -1691,7 +1714,7 @@ jobs:
         run: bash scripts/ci-install-linux-deps.sh
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -1712,7 +1735,7 @@ jobs:
           toolchain: '1.98.1'
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: . -> target
           key: rust-regression-linux
@@ -2543,7 +2566,7 @@ jobs:
           }
 
       - name: "Upload IS #1850 release diagnostics"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
@@ -2717,7 +2740,7 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: apt cache key
         id: apt_key
@@ -2727,7 +2750,7 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-debs
           key: ${{ steps.apt_key.outputs.prefix }}none
@@ -2805,7 +2828,7 @@ jobs:
           }
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -2835,7 +2858,7 @@ jobs:
       # That is a pre-existing defect, it is NOT part of #1842, and this phase
       # must not touch those two lines — just do not propagate the mistake here.
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           key: rust-release-parity-linux
@@ -2946,10 +2969,10 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -2970,7 +2993,7 @@ jobs:
           toolchain: '1.98.1'
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: . -> target
           key: rust-regression-macos
@@ -3040,7 +3063,7 @@ jobs:
 
       - name: Upload observed cognitive set
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cog-observed-macos
           path: ${{ runner.temp }}/cog-observed-macos.json
@@ -3272,7 +3295,7 @@ jobs:
 
       - name: Upload length observations
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tml-observed-macos
           path: |
@@ -3313,10 +3336,10 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -3341,7 +3364,7 @@ jobs:
           test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release-macos'
@@ -3807,7 +3830,7 @@ jobs:
           }
 
       - name: "Upload IS #1850 release diagnostics"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
@@ -3826,7 +3849,7 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install Rust stable with rustfmt
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -3852,13 +3875,13 @@ jobs:
           - macos-15-intel
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: . -> target
 
@@ -3902,10 +3925,10 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (needs.ci-tier.outputs.full == 'true' && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')))
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -3928,7 +3951,7 @@ jobs:
           test "$(rustc -vV | sed -n 's/^release: //p')" = 1.98.1
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-release'
@@ -3943,7 +3966,7 @@ jobs:
 
       - name: Upload CLI smoke logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-cli-smoke-windows-logs
           path: artifacts/cli-release-smoke
@@ -3974,10 +3997,10 @@ jobs:
           - debug
           - release
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -4005,7 +4028,7 @@ jobs:
       # Restores only the Cargo registry and the workspace target; nothing is
       # ever restored into the account profile's `.agentscommander*` entries.
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: '. -> target'
           shared-key: 'gate-${{ matrix.mode }}'
@@ -4065,7 +4088,7 @@ jobs:
 
       - name: Upload gate-debug inventory
         if: ${{ always() && matrix.mode == 'debug' && steps.gate_debug_inventory.conclusion != 'skipped' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         continue-on-error: true
         timeout-minutes: 5
         with:
@@ -4142,7 +4165,7 @@ jobs:
 
       - name: "Upload IS #1850 profile-proof logs"
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: issue-1850-profile-windows-${{ matrix.mode }}-logs
           path: issue-1850-profile-windows-${{ matrix.mode }}.log
@@ -4154,10 +4177,10 @@ jobs:
     if: (!(github.event_name == 'workflow_dispatch' && inputs.tml_adoption_source != '')) && (github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: 'npm'
@@ -4242,7 +4265,7 @@ jobs:
 
       - name: "Upload npm test diagnostics"
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-npm-test-diagnostics
           path: |

@@ -1,0 +1,64 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+# PR runs: one group per PR, newer push cancels older. Push/schedule runs: one group per commit,
+# so no main analysis is ever cancelled or replaced by a later merge.
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, rust]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # The CodeQL 2.27.4 Rust extractor always uses toolchain 1.99.0
+      # (FIXED_RUST_TOOLCHAIN). Bump this together with the codeql-action SHA.
+      - name: Install extractor Rust toolchain with std sources
+        if: matrix.language == 'rust'
+        run: rustup toolchain install 1.99.0 --profile minimal --component rust-src
+
+      - name: Install Linux build-script dependencies
+        if: matrix.language == 'rust'
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze
+        id: analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}
+
+      - name: Keep SARIF for coverage review
+        if: ${{ !cancelled() && steps.analyze.outputs.sarif-output != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: ${{ steps.analyze.outputs.sarif-output }}
+          retention-days: 14

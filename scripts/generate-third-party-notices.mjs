@@ -10,8 +10,11 @@ const TARGETS = [
   'aarch64-apple-darwin', 'x86_64-apple-darwin',
 ];
 // Vite's preload helper ships in dist/ even though Vite is a development dependency.
-const FORCE_NPM = ['node_modules/vite'];
-const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const FORCE_NPM = new Set(['node_modules/vite']);
+const cmp = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 const packageOrder = (a, b) => cmp(a.name, b.name) || cmp(a.version, b.version);
 
 // Resolve cargo without PATH: rustup homes first, then fixed system paths (S4036).
@@ -40,35 +43,41 @@ export function resolveCargo(candidates = cargoCandidates(),
 
 export function selectCrates(metadataByTarget) {
   const selected = new Map();
-  for (const metadata of metadataByTarget) {
-    const packages = new Map(metadata.packages.map(pkg => [pkg.id, pkg]));
-    const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
-    const root = metadata.packages.find(pkg => pkg.name === 'agentscommander');
-    if (!root) throw new Error('cargo metadata is missing root agentscommander');
-    const seen = new Set();
-    const pending = [root.id];
-    while (pending.length) {
-      const id = pending.pop();
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const pkg = packages.get(id);
-      if (!pkg) throw new Error(`cargo metadata is missing package ${id}`);
-      if (pkg.targets.some(target => target.kind.includes('proc-macro'))) continue;
-      if (pkg.source != null) {
-        selected.set(`${pkg.name}@${pkg.version}`, {
-          name: pkg.name, version: pkg.version, license: pkg.license,
-          authors: pkg.authors ?? [], dir: path.dirname(pkg.manifest_path),
-        });
-      }
-      const node = nodes.get(id);
-      if (!node) throw new Error(`cargo metadata is missing resolve node ${id}`);
-      for (const dep of node.deps) {
-        if (dep.dep_kinds.some(kind => kind.kind === null)) pending.push(dep.pkg);
-      }
-    }
-  }
+  for (const metadata of metadataByTarget) collectMetadataCrates(metadata, selected);
   if (!selected.size) throw new Error('No Rust crates selected');
   return [...selected.values()].sort(packageOrder);
+}
+
+function collectMetadataCrates(metadata, selected) {
+  const packages = new Map(metadata.packages.map(pkg => [pkg.id, pkg]));
+  const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
+  const root = metadata.packages.find(pkg => pkg.name === 'agentscommander');
+  if (!root) throw new Error('cargo metadata is missing root agentscommander');
+  const seen = new Set();
+  const pending = [root.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const pkg = packages.get(id);
+    if (!pkg) throw new Error(`cargo metadata is missing package ${id}`);
+    if (pkg.targets.some(target => target.kind.includes('proc-macro'))) continue;
+    if (pkg.source != null) {
+      selected.set(`${pkg.name}@${pkg.version}`, {
+        name: pkg.name, version: pkg.version, license: pkg.license,
+        authors: pkg.authors ?? [], dir: path.dirname(pkg.manifest_path),
+      });
+    }
+    pushNormalDeps(nodes, id, pending);
+  }
+}
+
+function pushNormalDeps(nodes, id, pending) {
+  const node = nodes.get(id);
+  if (!node) throw new Error(`cargo metadata is missing resolve node ${id}`);
+  for (const dep of node.deps) {
+    if (dep.dep_kinds.some(kind => kind.kind === null)) pending.push(dep.pkg);
+  }
 }
 
 export function selectNpm(lock) {
@@ -77,7 +86,7 @@ export function selectNpm(lock) {
     if (!entries[key]) throw new Error(`Missing required npm package ${key}`);
   }
   const selected = Object.entries(entries).filter(([key, pkg]) => {
-    if (FORCE_NPM.includes(key)) return true;
+    if (FORCE_NPM.has(key)) return true;
     return key.startsWith('node_modules/') && pkg.dev !== true
       && !key.includes('node_modules/@types/');
   }).map(([key, pkg]) => ({
@@ -95,9 +104,21 @@ export function licenseFiles(dirEntries) {
 }
 
 export function normalize(text) {
-  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
-    .split('\n').map(line => line.replace(/[ \t]+$/g, '')).join('\n')
-    .replace(/\n*$/, '\n');
+  const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+  const body = lines.map(trimSpaceTab).join('\n');
+  return `${trimNewlines(body)}\n`;
+}
+
+function trimSpaceTab(line) {
+  let end = line.length;
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end--;
+  return line.slice(0, end);
+}
+
+function trimNewlines(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '\n') end--;
+  return text.slice(0, end);
 }
 
 function packageTexts(pkg, texts) {
