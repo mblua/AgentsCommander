@@ -204,7 +204,9 @@ const NewEntityAgentModal: Component<{
         <div class="new-agent-form new-agent-form-scroll">
           {/* #271 — optional role-template picker */}
           <div class="new-agent-field tpl-picker">
-            <label class="new-agent-label">Template (optional)</label>
+            <label class="new-agent-label" for="new-agent-template-search">
+              Template (optional)
+            </label>
             <div class="tpl-picker-search">
               <svg
                 class="tpl-picker-search-icon"
@@ -221,7 +223,7 @@ const NewEntityAgentModal: Component<{
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
-              <input
+              <input id="new-agent-template-search"
                 class="tpl-picker-search-input"
                 value={templateQuery()}
                 onInput={(e) => setTemplateQuery(e.currentTarget.value)}
