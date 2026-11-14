@@ -320,8 +320,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
       return false;
     };
-    const pasteClipboardKey = (event: KeyboardEvent): boolean => {
-      if (event.type !== "keydown") return false;
+    const pasteClipboardKey = (event: KeyboardEvent): void => {
+      if (event.type !== "keydown") return;
       event.preventDefault();
       event.stopPropagation();
       navigator.clipboard
@@ -334,7 +334,6 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           terminal.paste(sanitized);
         })
         .catch((err) => console.warn("[paste] read failed:", err?.name ?? "Error"));
-      return false;
     };
     const handleTerminalKeyEvent = (event: KeyboardEvent): boolean => {
       if (event.isComposing) return true;
@@ -346,7 +345,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
       if (isCtrlShift && key === "c") return copySelectionKey(event);
 
-      if (isCtrlShift && key === "v") return pasteClipboardKey(event);
+      if (isCtrlShift && key === "v") { pasteClipboardKey(event); return false; }
 
       if (event.key === "Enter" && event.shiftKey) {
         if (event.type === "keydown" && visibleSessionId === sessionId) {
