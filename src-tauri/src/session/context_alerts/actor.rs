@@ -464,18 +464,7 @@ pub(super) fn reconcile_policy(
             } else if !batch.thresholds.is_empty() {
                 state.batches.insert(generation, batch);
             }
-            if let Some(session) = state.sessions.get_mut(&session_id) {
-                for threshold in old_thresholds {
-                    if session.outstanding.get(&threshold) == Some(&generation) {
-                        session.outstanding.remove(&threshold);
-                    }
-                }
-                if let Some(current) = state.batches.get(&generation) {
-                    for threshold in &current.thresholds {
-                        session.outstanding.insert(*threshold, generation);
-                    }
-                }
-            }
+            refresh_outstanding(state, session_id, generation, old_thresholds);
         }
         for (observed, thresholds, failure_count) in replacements {
             create_batch(
@@ -506,6 +495,26 @@ pub(super) fn reconcile_policy(
             .latches
             .entry(*threshold)
             .or_insert(LatchState::Armed);
+    }
+}
+
+fn refresh_outstanding(
+    state: &mut ActorState,
+    session_id: Uuid,
+    generation: u64,
+    old_thresholds: Vec<u8>,
+) {
+    if let Some(session) = state.sessions.get_mut(&session_id) {
+        for threshold in old_thresholds {
+            if session.outstanding.get(&threshold) == Some(&generation) {
+                session.outstanding.remove(&threshold);
+            }
+        }
+        if let Some(current) = state.batches.get(&generation) {
+            for threshold in &current.thresholds {
+                session.outstanding.insert(*threshold, generation);
+            }
+        }
     }
 }
 
