@@ -93,10 +93,11 @@ export function createGitHub({ repo, run = defaultRun, budget = Infinity }) {
   };
 
   // #4527 P07: advisory quarantine issues. Bodies go as JSON on stdin, never in argv.
-  gh.listLabeledIssues = (label, page) =>
-    json(`${issues}?labels=${label}&state=all&per_page=100&page=${page}`).filter(
-      (item) => !item.pull_request,
-    );
+  // AC-4527-006: `more` comes from the raw page length, before pull requests are dropped.
+  gh.listLabeledIssues = (label, page) => {
+    const items = json(`${issues}?labels=${label}&state=all&per_page=100&page=${page}`);
+    return { issues: items.filter((item) => !item.pull_request), more: items.length >= 100 };
+  };
 
   gh.listComments = (number, page) =>
     json(`${issues}/${number}/comments?per_page=100&page=${page}`);

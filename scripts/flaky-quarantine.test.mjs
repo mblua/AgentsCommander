@@ -48,7 +48,8 @@ function fakeGh(issues = [], { failOn } = {}) {
   };
   const gh = {
     state,
-    listLabeledIssues: (label, page) => (page === 1 ? state.issues.map((i) => ({ ...i })) : []),
+    listLabeledIssues: (label, page) =>
+      ({ issues: page === 1 ? state.issues.map((i) => ({ ...i })) : [], more: false }),
     listComments: (n, page) => (page === 1 ? (state.comments[n] ?? []) : []),
     ensureLabel: () => {},
     createIssue: (t, body, labels) => {

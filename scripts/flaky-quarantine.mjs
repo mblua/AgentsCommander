@@ -272,9 +272,9 @@ export function applyActions(gh, actions) {
 function listIssues(gh) {
   const issues = [];
   for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
-    const items = gh.listLabeledIssues(LABEL, page);
-    issues.push(...items);
-    if (items.length < PAGE_SIZE) break;
+    const result = gh.listLabeledIssues(LABEL, page);
+    issues.push(...result.issues);
+    if (!result.more) break;
   }
   return issues;
 }

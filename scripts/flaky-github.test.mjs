@@ -125,7 +125,7 @@ test('issue methods: exact args, bodies only on stdin', () => {
     ok(args[1].includes('?labels=') ? [{ number: 1 }, { number: 2, pull_request: {} }] : []),
   );
   const gh = createGitHub({ repo: 'o/r', run });
-  assert.deepEqual(gh.listLabeledIssues('flaky-test', 2), [{ number: 1 }]);
+  assert.deepEqual(gh.listLabeledIssues('flaky-test', 2), { issues: [{ number: 1 }], more: false });
   gh.listComments(7, 1);
   gh.listComments(7, 3);
   gh.createIssue('T @x', 'B `x`', ['flaky-test']);
@@ -180,4 +180,42 @@ test('ensureLabel: present = one GET; 404 -> POST; POST 422 ok; other errors thr
   assert.throws(() => createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('x'), ApiError);
   fake = labelRun(403, 0);
   assert.throws(() => createGitHub({ repo: 'o/r', run: fake.run }).ensureLabel('x'), ApiError);
+});
+
+test('AC-4527-006: a PR on a full page does not stop paging or duplicate an issue', async () => {
+  const { marker, runQuarantine } = await import('./flaky-quarantine.mjs');
+  const items = [];
+  for (let n = 1; n <= 150; n += 1) {
+    if (n === 50) items.push({ number: n, pull_request: {} });
+    else if (n === 120) {
+      items.push({ number: n, state: 'closed', closed_at: '2026-11-10T00:00:00Z',
+        body: marker('t::120') });
+    } else items.push({ number: n, state: 'open', body: '' });
+  }
+  const pages = [];
+  const { run, calls } = inputRun((args) => {
+    const endpoint = args.find((a) => a.startsWith(I));
+    const page = Number(/[?&]page=(\d+)/.exec(endpoint)?.[1] ?? 1);
+    if (endpoint.includes('?labels=')) {
+      pages.push(page);
+      return ok(items.slice((page - 1) * 100, page * 100));
+    }
+    return ok([]);
+  });
+  const gh = createGitHub({ repo: 'o/r', run });
+  const report = {
+    tests: [],
+    quarantine_candidates: ['t::120'],
+    candidates: {
+      't::120': { evidence: [{ platform: 'linux', sha: 's', last_day: '2026-11-01' }] },
+    },
+    release_ready: [],
+  };
+  const result = runQuarantine({ gh, report, nowIso: 'x', runUrl: 'U' });
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(result.applied, []);
+  // Issue #120 is found (old evidence, so not read: known F1), never created again.
+  assert.deepEqual(result.overflow.notices,
+    [{ test_id: 't::120', kind: 'reopen', reason: 'not_read' }]);
+  assert.ok(!calls.some((c) => c.args.includes('POST')));
 });
