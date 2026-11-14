@@ -47,6 +47,10 @@ struct EnumState {
     windows: Vec<WindowSnapshot>,
 }
 
+/// # Safety
+/// Must be called by EnumWindows with its enumerated HWND and the lparam supplied by
+/// collect_window_info: an initialized, exclusively accessible EnumState that stays live
+/// until EnumWindows returns. The callback must not be invoked after that state is dropped.
 unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
     // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
     let state = unsafe { &mut *(lparam as *mut EnumState) };
@@ -106,6 +110,9 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
     1
 }
 
+/// # Safety
+/// The caller must pass a window handle supplied by EnumWindows, as enum_windows_proc does.
+/// DwmGetWindowAttribute and GetWindowRect report failure if that window becomes unavailable.
 unsafe fn physical_window_rect(hwnd: HWND) -> Option<RECT> {
     let mut raw_rect = RECT {
         left: 0,
@@ -133,6 +140,9 @@ unsafe fn physical_window_rect(hwnd: HWND) -> Option<RECT> {
     Some(raw_rect)
 }
 
+/// # Safety
+/// The caller must pass a window handle supplied by EnumWindows, as enum_windows_proc does.
+/// GetWindowTextW bounds writes to the supplied buffer capacity even if the title changes.
 unsafe fn window_title(hwnd: HWND) -> Option<String> {
     // SAFETY: the caller passes a live window handle (this unsafe fn's contract).
     let len = unsafe { GetWindowTextLengthW(hwnd) };
