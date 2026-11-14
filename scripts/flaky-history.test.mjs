@@ -235,3 +235,35 @@ test('parseRecord keeps valid lines and counts dropped ones', () => {
   assert.equal(record.dropped, 3);
   assert.equal(parseRecord('{"schema":1}'), null);
 });
+
+test('AC-4527-003: __proto__ and constructor ids and shas stay own keys', () => {
+  const h = emptyHistory();
+  const ids = ['__proto__', 'constructor'];
+  for (const sha of ids) {
+    ingest(h, { sha, run: sha === ids[0] ? 7 : 8, attempt: 1,
+      outcomes: { ['__proto__']: 'fail', constructor: 'fail' } });
+    ingest(h, { sha, run: sha === ids[0] ? 7 : 8, attempt: 2,
+      outcomes: { ['__proto__']: 'pass', constructor: 'pass' } });
+  }
+  assert.equal(Object.prototype.streak, undefined);
+  assert.equal(Object.prototype.pass, undefined);
+  assert.equal(Object.getPrototypeOf(h.ids), Object.prototype);
+  assert.deepEqual(Object.keys(h.ids).sort(), ids);
+  for (const id of ids) {
+    assert.ok(Object.hasOwn(h.tests, key(id)));
+    assert.deepEqual(Object.keys(h.tests[key(id)].shas).sort(), ids);
+    for (const sha of ids) {
+      const entry = Object.getOwnPropertyDescriptor(h.tests[key(id)].shas, sha).value;
+      assert.equal(entry.pass, 1);
+      assert.equal(entry.fail, 1);
+    }
+  }
+  assert.deepEqual(Object.keys(h.records).length, 4);
+  padPasses(h, '__proto__', 16);
+  const report = buildReport(h, TODAY, {});
+  assert.deepEqual(report.quarantine_candidates, ['__proto__']);
+  assert.ok(Object.hasOwn(report.candidates, '__proto__'));
+  assert.equal(Object.getPrototypeOf(report.candidates), Object.prototype);
+  const again = parseHistory(JSON.stringify(h));
+  assert.deepEqual(Object.keys(again.ids).sort(), ids);
+});

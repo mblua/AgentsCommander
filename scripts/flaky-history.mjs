@@ -16,6 +16,14 @@ const MARKDOWN_ROWS = 200;
 const TEXT_LIMIT = 200;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
+// AC-4527-003: maps are keyed by test ids and SHAs from artifacts, so read and write only
+// own keys; `__proto__` or `constructor` must never reach Object.prototype.
+const own = (map, key) => (Object.hasOwn(map, key) ? map[key] : undefined);
+function put(map, key, value) {
+  Object.defineProperty(map, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+}
+
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 export function emptyHistory() {
@@ -76,20 +84,14 @@ const testKey = (suite, platform, id) => `${suite}|${platform}|${id}`;
 const maxDay = (a, b) => (a && a > b ? a : b);
 
 function testEntry(history, key) {
-  let entry = history.tests[key];
-  if (!entry) {
-    entry = { days: {}, shas: {}, streak: 0 };
-    history.tests[key] = entry;
-  }
+  let entry = own(history.tests, key);
+  if (!entry) entry = put(history.tests, key, { days: {}, shas: {}, streak: 0 });
   return entry;
 }
 
 function idEntry(history, id) {
-  let entry = history.ids[id];
-  if (!entry) {
-    entry = { streak: 0, streak_since: null };
-    history.ids[id] = entry;
-  }
+  let entry = own(history.ids, id);
+  if (!entry) entry = put(history.ids, id, { streak: 0, streak_since: null });
   return entry;
 }
 
@@ -107,11 +109,11 @@ function earlierRecordKeys(history, header, recordKey) {
 function addFail(history, ctx, id, entry) {
   entry.streak = 0;
   idEntry(history, id).streak = 0;
-  let shaEntry = entry.shas[ctx.sha];
+  let shaEntry = own(entry.shas, ctx.sha);
   if (!shaEntry) {
     const open = earlierRecordKeys(history, ctx.header, ctx.recordKey);
     shaEntry = { day: ctx.day, last_day: ctx.day, pass: 0, fail: 0, open_backfill: open };
-    entry.shas[ctx.sha] = shaEntry;
+    put(entry.shas, ctx.sha, shaEntry);
     ctx.needsBackfill.push({ key: ctx.key, sha: ctx.sha, recordKeys: [...open] });
   }
   shaEntry.fail += 1;
@@ -123,7 +125,7 @@ function addPass(history, ctx, id, entry) {
   const ids = idEntry(history, id);
   ids.streak += 1;
   if (ids.streak === 1) ids.streak_since = ctx.day;
-  const shaEntry = entry.shas[ctx.sha];
+  const shaEntry = own(entry.shas, ctx.sha);
   if (shaEntry) {
     shaEntry.pass += 1;
     shaEntry.last_day = maxDay(shaEntry.last_day, ctx.day);
@@ -133,27 +135,26 @@ function addPass(history, ctx, id, entry) {
 export function ingestRecord(history, record, meta) {
   const { header } = record;
   const recordKey = `${meta.run_id}/${meta.attempt}/${header.job}`;
-  if (history.records[recordKey]) return { duplicate: true, needsBackfill: [] };
+  if (own(history.records, recordKey)) return { duplicate: true, needsBackfill: [] };
   if (header.run_id !== String(meta.run_id) || header.run_attempt !== String(meta.attempt)) {
     return { invalid: true, needsBackfill: [] };
   }
   const { day } = meta;
-  history.records[recordKey] = {
+  put(history.records, recordKey, {
     day,
     sha: header.sha,
     suite: header.suite,
     platform: header.platform,
     artifact_id: meta.artifact_id,
-  };
-  const run = history.runs[header.run_id];
+  });
+  const run = own(history.runs, header.run_id);
   const attempt = Number(meta.attempt);
-  if (!run || attempt > run.attempt) history.runs[header.run_id] = { attempt, day };
+  if (!run || attempt > run.attempt) put(history.runs, header.run_id, { attempt, day });
   const needsBackfill = [];
   for (const { test_id: id, outcome } of record.tests) {
     const key = testKey(header.suite, header.platform, id);
     const entry = testEntry(history, key);
-    const counts = entry.days[day] ?? [0, 0, 0];
-    entry.days[day] = counts;
+    const counts = own(entry.days, day) ?? put(entry.days, day, [0, 0, 0]);
     const ctx = { header, recordKey, day, sha: header.sha, key, needsBackfill };
     if (outcome === 'fail') {
       counts[1] += 1;
@@ -169,14 +170,15 @@ export function ingestRecord(history, record, meta) {
 }
 
 export function applyBackfill(history, key, sha, recordKey, outcome) {
-  const shaEntry = history.tests[key]?.shas[sha];
+  const test = own(history.tests, key);
+  const shaEntry = test && own(test.shas, sha);
   if (!shaEntry) return;
   const at = shaEntry.open_backfill.indexOf(recordKey);
   if (at < 0) return;
   shaEntry.open_backfill.splice(at, 1);
   if (outcome !== 'pass') return;
   shaEntry.pass += 1;
-  const recordDay = history.records[recordKey]?.day;
+  const recordDay = own(history.records, recordKey)?.day;
   if (recordDay) shaEntry.last_day = maxDay(shaEntry.last_day, recordDay);
 }
 
@@ -213,7 +215,10 @@ export function prune(history, today) {
     if (Object.keys(entry.days).length === 0) delete history.tests[key];
     else liveIds.add(key.split('|').slice(2).join('|'));
   }
-  history.pending = history.pending.filter((item) => history.tests[item.key]?.shas[item.sha]);
+  history.pending = history.pending.filter((item) => {
+    const test = own(history.tests, item.key);
+    return test && own(test.shas, item.sha);
+  });
   for (const id of Object.keys(history.ids)) {
     if (!liveIds.has(id)) delete history.ids[id];
   }
@@ -296,7 +301,7 @@ export function buildReport(history, today, coverage) {
   const rows = classify(history, today);
   const quarantine = quarantineOrder(rows);
   const candidates = {};
-  for (const id of quarantine) candidates[id] = evidenceFor(history, id, start);
+  for (const id of quarantine) put(candidates, id, evidenceFor(history, id, start));
   const releaseReady = Object.keys(history.ids)
     .sort()
     .filter((id) => history.ids[id].streak >= RELEASE_PASSES)
