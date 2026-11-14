@@ -358,10 +358,10 @@ pub(crate) async fn teardown_old_for_restart<R: tauri::Runtime>(
                 });
             }
             Ok(Err(CleanupFailure::Ordinary(error))) => {
-                log::warn!("[restart] resource cleanup failed session={session_id}: {error}")
+                log::warn!("[restart] resource cleanup failed session={session_id}: {error}");
             }
             Err(error) => {
-                log::warn!("[restart] resource cleanup task failed session={session_id}: {error}")
+                log::warn!("[restart] resource cleanup task failed session={session_id}: {error}");
             }
         }
     }
