@@ -326,8 +326,8 @@ const NewEntityAgentModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label" for="new-agent-name">Name</label>
-            <input id="new-agent-name"
+            <label class="new-agent-label">Name</label>
+            <input
               ref={nameRef!}
               class="agent-search-input"
               value={name()}
@@ -342,8 +342,8 @@ const NewEntityAgentModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label" for="new-agent-description">Description</label>
-            <textarea id="new-agent-description"
+            <label class="new-agent-label">Description</label>
+            <textarea
               class="entity-textarea"
               value={description()}
               onInput={(e) => {
