@@ -170,13 +170,13 @@ pub(crate) fn merge_agents_instance_groups(
             .entry(AGENTS_INSTANCE_KEYS[0])
             .or_insert_with(|| Value::Array(Vec::new()));
     }
-    if let Some(capture) = capture {
-        if matches!(state, AgentsLayerState::Readable) {
-            *capture = base
-                .get("agents")
-                .cloned()
-                .and_then(|raw| StartupAgentRows::capture(raw, sidecar_owner, sidecar_absent));
-        }
+    if let Some(capture) = capture
+        && matches!(state, AgentsLayerState::Readable)
+    {
+        *capture = base
+            .get("agents")
+            .cloned()
+            .and_then(|raw| StartupAgentRows::capture(raw, sidecar_owner, sidecar_absent));
     }
     state
 }
@@ -422,10 +422,8 @@ fn finalize_agents_target(
     rejected: &impl Fn(String) -> SettingsSaveError,
 ) -> Result<Map<String, Value>, SettingsSaveError> {
     let mut retained = Value::Object(target);
-    if editable_agents {
-        if let Some(prepared) = prepared_duplicate_agents {
-            retained["agents"] = prepared.clone();
-        }
+    if editable_agents && let Some(prepared) = prepared_duplicate_agents {
+        retained["agents"] = prepared.clone();
     }
     retain_configuration_commands(
         &mut retained,
@@ -537,11 +535,9 @@ fn refresh_target_pair_id_hashes(
         .get("agents")
         .or_else(|| before.get("agents"))
         .cloned();
-    if !editable_agents {
-        if let Some(rows) = &agents {
-            let _: Vec<AgentConfig> =
-                serde_json::from_value(rows.clone()).map_err(|error| error.to_string())?;
-        }
+    if !editable_agents && let Some(rows) = &agents {
+        let _: Vec<AgentConfig> =
+            serde_json::from_value(rows.clone()).map_err(|error| error.to_string())?;
     }
     if let Some(profiles) = target.get_mut("codingAgentProfiles") {
         refresh_physical_pair_id_hashes(agents.as_ref(), profiles);
@@ -567,10 +563,11 @@ fn apply_prepared_agents_groups(
             }
         }
     }
-    if editable_agents && target.contains_key("agents") {
-        if let Some(rows) = prepared.get("agents") {
-            target.insert("agents".into(), rows.clone());
-        }
+    if editable_agents
+        && target.contains_key("agents")
+        && let Some(rows) = prepared.get("agents")
+    {
+        target.insert("agents".into(), rows.clone());
     }
 }
 

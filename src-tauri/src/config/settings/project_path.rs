@@ -315,10 +315,10 @@ pub(crate) fn extract_group(
         Some(_) => return corrupt("plural companion is not an array"),
     };
 
-    if let Some(ref comp) = companion_list {
-        if comp.len() != primary_list.len() {
-            return corrupt("companion array length differs from primary array");
-        }
+    if let Some(ref comp) = companion_list
+        && comp.len() != primary_list.len()
+    {
+        return corrupt("companion array length differs from primary array");
     }
 
     let pairs = primary_list

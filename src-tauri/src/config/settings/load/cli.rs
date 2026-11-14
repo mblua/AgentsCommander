@@ -47,10 +47,9 @@ pub(crate) fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
         .local_overlay_state
         .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
         && settings.main_geometry.is_none()
+        && let Some(ref g) = settings.terminal_geometry
     {
-        if let Some(ref g) = settings.terminal_geometry {
-            settings.main_geometry = Some(g.clone());
-        }
+        settings.main_geometry = Some(g.clone());
     }
     if !settings
         .local_overlay_state
@@ -129,10 +128,9 @@ pub(crate) fn load_settings_for_cli_strict_from_path(
         .local_overlay_state
         .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
         && settings.main_geometry.is_none()
+        && let Some(ref g) = settings.terminal_geometry
     {
-        if let Some(ref g) = settings.terminal_geometry {
-            settings.main_geometry = Some(g.clone());
-        }
+        settings.main_geometry = Some(g.clone());
     }
     if !settings
         .local_overlay_state
