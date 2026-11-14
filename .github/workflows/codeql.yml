@@ -30,7 +30,7 @@ jobs:
       matrix:
         language: [javascript-typescript, rust]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # The CodeQL 2.27.4 Rust extractor always uses toolchain 1.99.0
       # (FIXED_RUST_TOOLCHAIN). Bump this together with the codeql-action SHA.
