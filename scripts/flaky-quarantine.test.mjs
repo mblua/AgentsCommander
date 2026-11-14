@@ -248,3 +248,53 @@ test('13: reopen comments only the SHA not yet marked; no marker twice', () => {
   const markers = allMarkers(gh, 5);
   assert.equal(markers.length, new Set(markers).size);
 });
+
+// AC-4527-007 (amendment v2): an issue index cut by MAX_ISSUE_PAGES never creates.
+function pagedGh(count, placed = {}) {
+  const issues = Array.from({ length: count }, (_, i) => placed[i + 1] ?? issueFor(`f${i}`, i + 1));
+  const gh = fakeGh(issues);
+  gh.listCalls = 0;
+  gh.listLabeledIssues = (label, page) => {
+    gh.listCalls += 1;
+    const items = gh.state.issues.slice((page - 1) * 100, page * 100).map((i) => ({ ...i }));
+    return { issues: items, more: items.length >= 100 };
+  };
+  return gh;
+}
+const writes = (gh, kind) => gh.state.writes.filter((w) => w.kind === kind);
+
+test('14: a candidate issue past page 10 is deferred, never duplicated', () => {
+  const h = sha256hex('t');
+  const issue = issueFor('t', 1150, { body: `${marker('t')}\n${ev(h, sha(1))}\n` });
+  const gh = pagedGh(1200, { 1150: issue });
+  const result = run(gh, report({ candidates: { t: [[sha(1), '2026-11-01']] } }));
+  assert.equal(gh.listCalls, 10);
+  assert.equal(writes(gh, 'create').length, 0);
+  assert.deepEqual(result.overflow.notices,
+    [{ test_id: 't', kind: 'create', reason: 'index_incomplete' }]);
+  assert.equal(result.error, null);
+});
+
+test('15: an incomplete index still serves the issues it found', () => {
+  const h = sha256hex('A');
+  const issue = issueFor('A', 250, { body: `${marker('A')}\n${ev(h, sha(1))}\n` });
+  const gh = pagedGh(1200, { 250: issue });
+  const rep = report({ candidates: { A: [[sha(1), '2026-11-01'], [sha(2), '2026-11-02']],
+    B: [[sha(3), '2026-11-01']] } });
+  const result = run(gh, rep);
+  assert.equal(writes(gh, 'create').length, 0);
+  assert.deepEqual(writes(gh, 'comment').map((w) => w.n), [250]);
+  assert.ok(writes(gh, 'comment')[0].body.includes(ev(h, sha(2))));
+  assert.deepEqual(result.overflow.notices,
+    [{ test_id: 'B', kind: 'create', reason: 'index_incomplete' }]);
+  assert.equal(result.error, null);
+});
+
+test('16: a complete index of 999 items still creates a new issue', () => {
+  const gh = pagedGh(999);
+  const result = run(gh, report({ candidates: { n: [[sha(1), '2026-11-01']] } }));
+  assert.equal(gh.listCalls, 10);
+  assert.equal(writes(gh, 'create').length, 1);
+  assert.deepEqual(result.overflow.notices, []);
+  assert.equal(result.error, null);
+});

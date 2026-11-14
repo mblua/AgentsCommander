@@ -599,3 +599,62 @@ test('cargo 20: positive control from real libtest logs', () => {
   assert.equal(all.length, 26);
   assert.ok(all.every((outcome) => outcome === 'pass'));
 });
+
+// AC-4527-002 (amendment v2): glue signs, missing `running N`, Doc-tests, unreadable log.
+const HDR = '     Running unittests src/lib.rs (target/debug/deps/x-0123)';
+const R2 = 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out';
+
+function allNotRun(record, ids) {
+  const expected = ids.map((id) => [`x-0123::${id}`, 'not_run']);
+  assert.deepEqual(outcomes(record), Object.fromEntries(expected));
+  assert.equal(record.header.sources[0].complete, false);
+}
+
+test('cargo 21: a lost parent line balanced by a child name gives not_run', () => {
+  const record = cargo([log(HDR, 'running 2 tests', 'test a ... ok',
+    'running 1 test', 'test ch ... ok', 'footest b ... ok', R2)]);
+  allNotRun(record, ['a', 'ch']);
+});
+
+test('cargo 22: glue inside a test-line rest voids the section', () => {
+  const record = cargo([log(HDR, 'running 2 tests', 'test a ... ok',
+    'running 1 test', 'test ch ... ok', 'test x ... footest b ... ok', R2)]);
+  allNotRun(record, ['a', 'ch', 'x']);
+});
+
+test('cargo 23: positive control, a repeated name without glue', () => {
+  const record = cargo([log(HDR, 'running 2 tests', 'test a ... ok',
+    'running 1 test', 'test b ... ok', 'test b ... ok', R2)]);
+  assert.deepEqual(outcomes(record), { 'x-0123::a': 'pass', 'x-0123::b': 'not_run' });
+  assert.equal(record.header.sources[0].complete, true);
+});
+
+test('cargo 24: a section with no running line is incomplete', () => {
+  const record = cargo([log(HDR, 'test a ... ok', 'test b ... ok', R2)]);
+  allNotRun(record, ['a', 'b']);
+});
+
+test('cargo 25: Doc-tests end the section and are ignored', () => {
+  const record = cargo([log(HDR, 'running 1 test', 'test a ... ok', result(1, 0, 0),
+    '   Doc-tests lib', 'running 1 test', 'test src/lib.rs - f (line 3) ... ok',
+    'footest z ... ok', result(1, 0, 0))]);
+  assert.deepEqual(outcomes(record), { 'x-0123::a': 'pass' });
+  assert.equal(record.header.sources[0].complete, true);
+});
+
+test('cargo 26: an unreadable --log still writes the record', () => {
+  const dir = tempDir();
+  const out = path.join(dir, 'c.jsonl');
+  assert.equal(main(['cargo', '--out', out, '--job', 'rust', '--log', dir], ENV), 0);
+  assert.ok(fs.existsSync(out));
+  const [header] = lines(fs.readFileSync(out, 'utf8'));
+  assert.equal(header.sources.length, 1);
+  assert.equal(header.sources[0].present, false);
+  assert.equal(header.sources[0].complete, false);
+});
+
+test('cargo 27: glue found recursively after a cut line', () => {
+  const record = cargo([log(HDR, 'running 2 tests',
+    'test x ... test b ... okfootest c ... ok', R2)]);
+  allNotRun(record, ['b', 'x']);
+});

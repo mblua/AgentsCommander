@@ -159,7 +159,7 @@ export function markersOf(text) {
   return String(text ?? '').match(NOTICE_RE) ?? [];
 }
 
-export function planActions(report, issues, comments, nowIso, runUrl = '') {
+export function planActions(report, issues, comments, nowIso, runUrl = '', indexComplete = true) {
   const { byHash, duplicates } = indexIssues(issues);
   const actions = [];
   const notices = [];
@@ -177,6 +177,11 @@ export function planActions(report, issues, comments, nowIso, runUrl = '') {
     const shas = evidenceShas(report, id);
     const issue = byHash.get(h);
     if (!issue) {
+      // An index that may miss this test's issue never creates (no duplicate issue).
+      if (!indexComplete) {
+        defer(id, 'create', 'index_incomplete');
+        continue;
+      }
       if (opened >= MAX_NEW_OR_REOPENED) {
         defer(id, 'create', 'cap');
         continue;
@@ -274,9 +279,9 @@ function listIssues(gh) {
   for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
     const result = gh.listLabeledIssues(LABEL, page);
     issues.push(...result.issues);
-    if (!result.more) break;
+    if (!result.more) return { issues, complete: true };
   }
-  return issues;
+  return { issues, complete: false };
 }
 
 function readMarkers(gh, issue) {
@@ -292,9 +297,10 @@ function readMarkers(gh, issue) {
 // One full pass: read issues and markers, plan, apply. Pure apart from `gh`.
 export function runQuarantine({ gh, report, nowIso, runUrl }) {
   let issues;
+  let complete;
   const comments = new Map();
   try {
-    issues = listIssues(gh);
+    ({ issues, complete } = listIssues(gh));
     for (const issue of issuesToRead(report, indexIssues(issues).byHash)) {
       comments.set(issue.number, readMarkers(gh, issue));
     }
@@ -302,7 +308,7 @@ export function runQuarantine({ gh, report, nowIso, runUrl }) {
     const empty = { notices: [], duplicates: [] };
     return { applied: [], overflow: empty, held_closed: [], error: errorOf(error) };
   }
-  const plan = planActions(report, issues, comments, nowIso, runUrl);
+  const plan = planActions(report, issues, comments, nowIso, runUrl, complete);
   const { applied, error } = applyActions(gh, plan.actions);
   return { applied, overflow: plan.overflow, held_closed: plan.held_closed, error };
 }

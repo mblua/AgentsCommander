@@ -327,3 +327,67 @@ test('14: a corrupt artifact is excluded and the next one is ingested', () => {
   assert.equal(result.report.coverage.records_ingested, 1);
   assert.equal(result.report.coverage.api_error, null);
 });
+
+// AC-4527-005 (amendment v2): the whole window is listed before any run is processed.
+const WINDOW = Array.from({ length: 30 }, (_, i) => `2026-11-${String(i + 1).padStart(2, '0')}`);
+const busyRuns = () => WINDOW.flatMap((day, d) => Array.from({ length: 70 }, (_, i) =>
+  run(10000 + d * 100 + i, { created_at: `${day}T10:${String(i).padStart(2, '0')}:00Z` })));
+
+test('15: the full window is listed before processing under the call budget', () => {
+  const gh = fakeGh({ runs: busyRuns(), budget: 600 });
+  const { coverage } = go(gh).report;
+  assert.equal(coverage.runs_listed, 2100);
+  assert.equal(coverage.runs_pending, 1531);
+  assert.deepEqual(coverage.list_truncated_days, []);
+  assert.equal(coverage.calls, 600);
+  assert.equal(coverage.budget_exhausted, true);
+  assert.equal(coverage.complete, false);
+});
+
+test('16: a budget stop while listing marks the unlisted days', () => {
+  const gh = fakeGh({ runs: busyRuns(), budget: 20 });
+  const { coverage } = go(gh).report;
+  assert.equal(coverage.calls, 20);
+  assert.deepEqual(coverage.list_truncated_days, WINDOW.slice(19));
+  assert.equal(coverage.list_truncated_days.length, 11);
+  assert.equal(coverage.runs_listed, 1330);
+  assert.equal(coverage.runs_pending, 1330);
+  assert.equal(coverage.budget_exhausted, true);
+  assert.equal(coverage.api_error, null);
+  assert.equal(coverage.complete, false);
+});
+
+test('17: an ApiError while listing stops collection and main returns 1', () => {
+  const setup = () => {
+    const gh = fakeGh({ runs: busyRuns() });
+    const list = gh.listRuns;
+    gh.listRuns = (file, day, page) => {
+      if (day === WINDOW[2]) {
+        gh.calls += 1;
+        throw new ApiError('list-3', 1, 500);
+      }
+      return list(file, day, page);
+    };
+    return gh;
+  };
+  const gh = setup();
+  const { coverage } = go(gh).report;
+  assert.equal(coverage.calls, 1 + 3);
+  assert.deepEqual(coverage.list_truncated_days, WINDOW.slice(2));
+  assert.equal(coverage.list_truncated_days.length, 28);
+  assert.match(coverage.api_error, /list-3/);
+  assert.equal(coverage.runs_listed, 140);
+  assert.equal(coverage.runs_pending, 140);
+  assert.equal(coverage.budget_exhausted, false);
+  assert.equal(coverage.complete, false);
+  assert.deepEqual(gh.attemptCalls, []);
+  assert.deepEqual(gh.artifactPages, []);
+  assert.deepEqual(gh.downloads, []);
+  const out = tempDir();
+  const code = withQuietStdout(() =>
+    main(['--repo', 'o/r', '--out', out], {}, {
+      gh: setup(),
+      now: new Date(`${TODAY}T05:17:00Z`),
+    }));
+  assert.equal(code, 1);
+});

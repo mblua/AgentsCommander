@@ -150,6 +150,10 @@ const TEST_LINE = /^test (\S+?)(?: - should panic)? \.\.\.(?: (.*))?$/;
 const RESULT =
   /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;(?: (\d+) measured;)?/;
 const LIST_NAME = /^ {4}(\S+)$/;
+// Glue sign: a `test <name> ... ` or `test result: ` text after the first
+// character of a line means a line was joined to other text (a lost line).
+const GLUE = /.test (?:\S+ \.\.\.(?: |$)|result: )/;
+const DOC_TESTS = /^\s*Doc-tests \S+\s*$/;
 
 function targetName(binary) {
   const base = binary.split(/[\\/]/).pop() ?? '';
@@ -166,6 +170,7 @@ function newSection(target) {
     childResults: 0,
     children: 0,
     afterResult: false,
+    glue: 0,
   };
 }
 
@@ -197,6 +202,7 @@ function testOrResult(section, line) {
       section.children += 1;
       testOrResult(section, rest);
     } else {
+      if (GLUE.test(rest)) section.glue += 1;
       addEntry(section, test[1], lineOutcome(rest));
     }
     return true;
@@ -222,6 +228,7 @@ export function parseCargoLog(text) {
   const sections = [];
   let section = null;
   let inList = false;
+  let inDocTests = false;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const header = HEADER.exec(line);
@@ -229,9 +236,14 @@ export function parseCargoLog(text) {
       section = newSection(targetName(header[1]));
       sections.push(section);
       inList = false;
+      inDocTests = false;
       continue;
     }
-    if (section === null) continue;
+    if (section === null || inDocTests) continue;
+    if (DOC_TESTS.test(line)) {
+      inDocTests = true;
+      continue;
+    }
     if (inList) {
       const name = LIST_NAME.exec(line);
       if (name) {
@@ -252,7 +264,7 @@ export function parseCargoLog(text) {
       else section.children += 1;
       continue;
     }
-    testOrResult(section, line);
+    if (!testOrResult(section, line) && GLUE.test(line)) section.glue += 1;
   }
   return sections;
 }
@@ -294,9 +306,9 @@ export function reconcileSection(section) {
     tainted,
     children,
   });
-  if (result === null || section.afterResult) return allNotRun(0);
+  if (result === null || section.afterResult || section.glue > 0) return allNotRun(0);
   const total = result.P + result.F + result.I + result.M;
-  if (expected !== null && total !== expected) return allNotRun(0);
+  if (expected === null || total !== expected) return allNotRun(0);
   const { outcomes, tainted, pending } = resolveNames(section, childSign);
   for (const name of tainted) outcomes.set(name, 'not_run');
   if (pending.length > 0) {
@@ -375,8 +387,11 @@ function parseArgs(argv) {
 }
 
 function readLog(file) {
-  if (!fs.existsSync(file)) return { file: path.basename(file), text: null };
-  return { file: path.basename(file), text: fs.readFileSync(file, 'utf8') };
+  try {
+    return { file: path.basename(file), text: fs.readFileSync(file, 'utf8') };
+  } catch {
+    return { file: path.basename(file), text: null };
+  }
 }
 
 function runCargo(options, env) {

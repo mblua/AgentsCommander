@@ -91,18 +91,25 @@ function listDay(state, day) {
   return seen;
 }
 
-// Days are listed oldest first and each day's runs are processed before the next day is
-// listed, so the run order is the global created_at order and a small call budget still
-// makes progress every day.
+// The whole window is listed first (oldest day first), then the runs are processed in
+// (created_at, id) order. A listing stop marks the unlisted days and processes nothing.
 function collectRuns(state) {
-  for (const day of daysOfWindow(state.today)) {
-    const runs = listDay(state, day).sort((a, b) =>
-      a.created_at === b.created_at ? a.id - b.id : a.created_at < b.created_at ? -1 : 1,
-    );
-    state.listed.push(...runs);
-    state.coverage.runs_listed = state.listed.length;
-    for (const run of runs) collectRun(state, run);
+  const days = daysOfWindow(state.today);
+  for (const [index, day] of days.entries()) {
+    try {
+      state.listed.push(...listDay(state, day));
+    } catch (error) {
+      state.coverage.runs_listed = state.listed.length;
+      stopFor(state, error);
+      state.coverage.list_truncated_days.push(...days.slice(index));
+      return;
+    }
   }
+  state.coverage.runs_listed = state.listed.length;
+  state.listed.sort((a, b) =>
+    a.created_at === b.created_at ? a.id - b.id : a.created_at < b.created_at ? -1 : 1,
+  );
+  for (const run of state.listed) collectRun(state, run);
 }
 
 function runArtifacts(state, runId) {
