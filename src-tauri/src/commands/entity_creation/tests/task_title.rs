@@ -156,6 +156,43 @@ fn initial_room_entries(root: &std::path::Path) -> Vec<String> {
     names
 }
 
+fn initial_names(with_task: bool, disk: bool) -> Vec<&'static str> {
+    let mut names = if with_task {
+        vec!["TASK.md", "messaging"]
+    } else {
+        vec!["messaging"]
+    };
+    if disk {
+        names.push("room-shared");
+    }
+    names
+}
+
+fn assert_room_result(
+    result: Result<(std::path::PathBuf, u32), String>,
+    root: &std::path::Path,
+    fail: bool,
+    disk: bool,
+    expected: &str,
+) {
+    if fail {
+        assert_eq!(
+            result.unwrap_err(),
+            "Failed to write TASK.md: task write denied"
+        );
+        assert_eq!(initial_room_entries(root), initial_names(false, disk));
+    } else {
+        let (created, number) = result.unwrap();
+        assert_eq!(created, root);
+        assert_eq!(number, 1);
+        assert_eq!(
+            std::fs::read(root.join("TASK.md")).unwrap(),
+            expected.as_bytes()
+        );
+        assert_eq!(initial_room_entries(root), initial_names(true, disk));
+    }
+}
+
 #[test]
 fn issue_3294_initial_task_positive_control() {
     use super::super::room_task::initialize_new_room;
@@ -189,11 +226,7 @@ fn issue_3294_initial_task_positive_control() {
                     assert!(root.is_dir());
                     assert!(root.join("messaging").is_dir());
                     assert_eq!(root.join("room-shared").is_dir(), disk);
-                    let mut names = vec!["messaging"];
-                    if disk {
-                        names.push("room-shared");
-                    }
-                    assert_eq!(initial_room_entries(root), names);
+                    assert_eq!(initial_room_entries(root), initial_names(false, disk));
                     if fail {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
@@ -212,30 +245,7 @@ fn issue_3294_initial_task_positive_control() {
                 assert_eq!(calls, 1);
                 let root = allocated.unwrap();
                 assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
-                if fail {
-                    assert_eq!(
-                        result.unwrap_err(),
-                        "Failed to write TASK.md: task write denied"
-                    );
-                    let mut names = vec!["messaging"];
-                    if disk {
-                        names.push("room-shared");
-                    }
-                    assert_eq!(initial_room_entries(&root), names);
-                } else {
-                    let (created, number) = result.unwrap();
-                    assert_eq!(created, root);
-                    assert_eq!(number, 1);
-                    assert_eq!(
-                        std::fs::read(root.join("TASK.md")).unwrap(),
-                        expected.as_bytes()
-                    );
-                    let mut names = vec!["TASK.md", "messaging"];
-                    if disk {
-                        names.push("room-shared");
-                    }
-                    assert_eq!(initial_room_entries(&root), names);
-                }
+                assert_room_result(result, &root, fail, disk, expected);
             }
         }
     }

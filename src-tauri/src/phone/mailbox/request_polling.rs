@@ -169,7 +169,8 @@ impl MailboxPoller {
     where
         S: MailboxDeliveryEvents + ResponseCompletionState + Clone + Send + Sync + 'static,
     {
-        let delivered_dir = path.parent().ok_or("No parent dir")?.join("delivered");
+        let outbox = path.parent().ok_or("No parent dir")?;
+        let delivered_dir = outbox.join("delivered");
         mailbox_disk::ensure_mailbox_archive_directory(&delivered_dir)
             .map_err(|e| format!("Failed to create delivered dir: {e}"))?;
 
@@ -177,18 +178,18 @@ impl MailboxPoller {
         let mut stripped = msg.clone();
         stripped.token = None;
 
-        let filename = if archive_id_is_plain(&msg.id) {
-            std::ffi::OsString::from(format!("{}.json", msg.id))
+        let dest = if archive_id_is_plain(&msg.id) {
+            crate::phone::types::outbox_delivered_receipt(outbox, &msg.id)
         } else {
             let origin = super::handoff::wake_claim_origin(path);
-            origin
+            let name = origin
                 .as_deref()
                 .unwrap_or(path)
                 .file_name()
                 .ok_or("No source basename for delivered archive")?
-                .to_os_string()
+                .to_os_string();
+            delivered_dir.join(name)
         };
-        let dest = delivered_dir.join(filename);
         let json = serde_json::to_string_pretty(&stripped)
             .map_err(|e| format!("Failed to serialize: {e}"))?;
         mailbox_disk::write_mailbox_document(&dest, json)
@@ -216,12 +217,13 @@ impl MailboxPoller {
             return Ok(());
         }
 
-        let rejected_dir = path.parent().ok_or("No parent dir")?.join("rejected");
+        let outbox = path.parent().ok_or("No parent dir")?;
+        let rejected_dir = outbox.join("rejected");
         mailbox_disk::ensure_mailbox_archive_directory(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {e}"))?;
 
         // Write reason file FIRST — the CLI polls for this file to detect rejection
-        let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
+        let reason_path = crate::phone::types::outbox_rejected_reason(outbox, &msg.id);
         mailbox_disk::write_mailbox_document(&reason_path, reason)
             .map_err(|_| "Failed to write reason file".to_string())?;
 
@@ -229,7 +231,7 @@ impl MailboxPoller {
         let mut stripped = msg.clone();
         stripped.token = None;
 
-        let dest = rejected_dir.join(format!("{}.json", msg.id));
+        let dest = crate::phone::types::outbox_rejected_receipt(outbox, &msg.id);
         let json = serde_json::to_string_pretty(&stripped)
             .map_err(|e| format!("Failed to serialize: {e}"))?;
         mailbox_disk::write_mailbox_document(&dest, json)

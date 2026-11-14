@@ -242,6 +242,9 @@ const ActionBar: Component = () => {
     centralViewStore.toggleResourceMonitor();
   };
 
+  const homeLabel = () => (homeStore.visible ? "Hide Home" : "Show Home");
+  const browserLabel = () => (centralViewStore.isBrowser ? "Hide web browser" : "Show web browser");
+  const soundsLabel = () => (isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds");
   return (
     <>
       <div
@@ -313,8 +316,8 @@ const ActionBar: Component = () => {
           <button
             class={`toolbar-gear-btn ${activeClass(homeStore.visible)}`}
             onClick={() => homeStore.toggle()}
-            title={homeStore.visible ? "Hide Home" : "Show Home"}
-            aria-label={homeStore.visible ? "Hide Home" : "Show Home"}
+            title={homeLabel()}
+            aria-label={homeLabel()}
             aria-pressed={homeStore.visible}
             data-ac-testid="actionBar.home"
             data-ac-role="button"
@@ -327,8 +330,8 @@ const ActionBar: Component = () => {
             <button
               class={`toolbar-gear-btn web-browser-toggle-btn ${activeClass(centralViewStore.isBrowser)}`}
               onClick={() => centralViewStore.toggleBrowser()}
-              title={centralViewStore.isBrowser ? "Hide web browser" : "Show web browser"}
-              aria-label={centralViewStore.isBrowser ? "Hide web browser" : "Show web browser"}
+              title={browserLabel()}
+              aria-label={browserLabel()}
               aria-pressed={centralViewStore.isBrowser}
               data-ac-testid="actionBar.webBrowser"
               data-ac-role="button"
@@ -373,8 +376,8 @@ const ActionBar: Component = () => {
             class={`toolbar-gear-btn ${activeClass(!isSoundsEnabled())}`}
             disabled={!settingsStore.current}
             onClick={handleToggleMute}
-            title={isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds"}
-            aria-label={isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds"}
+            title={soundsLabel()}
+            aria-label={soundsLabel()}
             aria-pressed={!isSoundsEnabled()}
             data-ac-testid="actionBar.sounds"
             data-ac-role="button"

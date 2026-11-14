@@ -84,6 +84,8 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         match query_identity(pid) {
             Ok(Some((handle, _))) => {
                 let mut code = 0;
+                // SAFETY: `query_identity` returned an OwnedHandle opened with query rights;
+                // `code` is writable u32 storage and GetExitCodeProcess success is checked.
                 if unsafe { GetExitCodeProcess(handle.raw(), &mut code) } == 0 {
                     return unreadable(&last_error("GetExitCodeProcess failed"));
                 }
@@ -114,8 +116,13 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
     }
 
     fn current_process_memory(&self) -> Result<ProcessMemory, ResourceError> {
+        // SAFETY: PROCESS_MEMORY_COUNTERS_EX contains only integer fields, so zero is a
+        // valid initial value; `counters.cb` is set before K32GetProcessMemoryInfo.
         let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
         counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        // SAFETY: GetCurrentProcess supplies a borrowed pseudo-handle. `counters` is writable
+        // PROCESS_MEMORY_COUNTERS_EX storage with cb set to its full size; the cast to its
+        // PROCESS_MEMORY_COUNTERS prefix is the layout K32GetProcessMemoryInfo accepts.
         let ok = unsafe {
             K32GetProcessMemoryInfo(
                 GetCurrentProcess(),
@@ -251,6 +258,8 @@ impl OwnedHandle {
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
+        // SAFETY: OwnedHandle is constructed only from checked successful OpenProcess or
+        // CreateToolhelp32Snapshot results; Drop closes the owned handle exactly once.
         unsafe {
             let _ = CloseHandle(self.0);
         }
@@ -258,11 +267,15 @@ impl Drop for OwnedHandle {
 }
 
 fn process_entries() -> Result<HashMap<u32, ProcessEntry>, ResourceError> {
+    // SAFETY: TH32CS_SNAPPROCESS makes CreateToolhelp32Snapshot ignore the PID argument;
+    // the INVALID_HANDLE_VALUE failure sentinel is checked before OwnedHandle construction.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(last_error("CreateToolhelp32Snapshot failed"));
     }
     let snapshot = OwnedHandle(snapshot);
+    // SAFETY: PROCESSENTRY32W has only integers and a UTF-16 array, all zero-valid;
+    // dwSize is set immediately below before Process32FirstW writes the structure.
     let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     // #559 (G1) - a valid snapshot always contains at least System Idle / System /
@@ -270,6 +283,8 @@ fn process_entries() -> Result<HashMap<u32, ProcessEntry>, ResourceError> {
     // legitimately empty list. Returning Err keeps a failed/partial walk off the
     // reap path: the H1 nomination treats a missing root as "gone", so a spuriously
     // empty or truncated map must never be mistaken for dead roots.
+    // SAFETY: `snapshot` owns the successful process snapshot, and entry.dwSize names
+    // its full size; Process32FirstW receives exclusively writable `entry` storage.
     if unsafe { Process32FirstW(snapshot.raw(), &mut entry) } == 0 {
         return Err(last_error("Process32FirstW failed"));
     }
@@ -284,7 +299,11 @@ fn process_entries() -> Result<HashMap<u32, ProcessEntry>, ResourceError> {
                 exe_name: exe_name(&entry.szExeFile),
             },
         );
+        // SAFETY: `snapshot` is still owned and open; `entry` retains its dwSize and provides
+        // writable PROCESSENTRY32W storage for each Process32NextW iteration.
         if unsafe { Process32NextW(snapshot.raw(), &mut entry) } == 0 {
+            // SAFETY: GetLastError takes no arguments and reads the current thread's error
+            // immediately after Process32NextW returned failure.
             let code = unsafe { GetLastError() };
             if code == ERROR_NO_MORE_FILES {
                 break;
@@ -323,10 +342,15 @@ fn query_identity(pid: u32) -> Result<Option<(OwnedHandle, ProcessIdentity)>, Re
 }
 
 fn handle_identity(handle: &OwnedHandle, pid: u32) -> Result<ProcessIdentity, ResourceError> {
+    // SAFETY: FILETIME is two u32 fields, so zero initialization is valid for `creation`
+    // and the three copied output structures passed to GetProcessTimes below.
     let mut creation: FILETIME = unsafe { std::mem::zeroed() };
     let mut exit = creation;
     let mut kernel = creation;
     let mut user = creation;
+    // SAFETY: `handle` borrows an OwnedHandle opened with query rights in query_identity
+    // or NativeTerminationCalls::open; the four distinct FILETIME locals are writable
+    // for GetProcessTimes, and failure returns before their values are used.
     if unsafe {
         GetProcessTimes(
             handle.raw(),
@@ -364,7 +388,12 @@ fn current_handle(handle: &OwnedHandle, pid: u32) -> schema::CurrentIdentity {
     };
     let mut name = vec![0_u16; 32_768];
     let mut size = name.len() as u32;
+    // SAFETY: `handle` stays owned and has query rights from query_identity or
+    // NativeTerminationCalls::open; `name` has 32768 writable UTF-16 units and `size`
+    // supplies that capacity to QueryFullProcessImageNameW.
     let ok = unsafe { QueryFullProcessImageNameW(handle.raw(), 0, name.as_mut_ptr(), &mut size) };
+    // SAFETY: GetLastError takes no arguments; the `ok == 0` closure runs immediately
+    // after QueryFullProcessImageNameW fails on this thread.
     let os_error = (ok == 0).then(|| unsafe { GetLastError() });
     schema::CurrentIdentity {
         status: schema::IdentityStatus::Same,
@@ -390,6 +419,8 @@ fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> 
         return Ok(None);
     };
     let mut exit_code: u32 = 0;
+    // SAFETY: `query_identity` retains its query-capable OwnedHandle in `handle`;
+    // `exit_code` is a writable u32, read only after GetExitCodeProcess succeeds.
     let ok = unsafe { GetExitCodeProcess(handle.raw(), &mut exit_code) };
     if ok == 0 {
         let err = last_error("GetExitCodeProcess failed");
@@ -415,8 +446,13 @@ fn observe_identity_queryable(pid: u32) -> Result<Option<ProcessIdentity>, Resou
 
 fn process_memory(pid: u32) -> Result<ProcessMemory, ResourceError> {
     let handle = open_process(pid, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)?;
+    // SAFETY: PROCESS_MEMORY_COUNTERS_EX contains only integers, all zero-valid;
+    // `counters.cb` is set to its full size before K32GetProcessMemoryInfo below.
     let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
     counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    // SAFETY: `open_process` supplied an owned handle with query and VM_READ rights.
+    // `counters` is writable EX storage with cb set; its PROCESS_MEMORY_COUNTERS prefix
+    // cast and full size are the buffer form accepted by K32GetProcessMemoryInfo.
     let ok = unsafe {
         K32GetProcessMemoryInfo(
             handle.raw(),
@@ -434,6 +470,8 @@ fn process_memory(pid: u32) -> Result<ProcessMemory, ResourceError> {
 }
 
 fn open_process(pid: u32, access: u32) -> Result<OwnedHandle, ResourceError> {
+    // SAFETY: OpenProcess takes numeric access/PID and disables inheritance here;
+    // its null failure is checked before the successful handle becomes an OwnedHandle.
     let handle = unsafe { OpenProcess(access, 0, pid) };
     if handle.is_null() {
         return Err(last_error(&format!("OpenProcess({pid}) failed")));
@@ -476,7 +514,11 @@ impl TerminationCalls for NativeTerminationCalls {
     }
 
     fn terminate(&self, handle: &OwnedHandle) -> schema::RawApiResult {
+        // SAFETY: NativeTerminationCalls::open obtains PROCESS_TERMINATE on this OwnedHandle;
+        // the borrow keeps it open for TerminateProcess, which takes no pointer arguments.
         let ok = unsafe { TerminateProcess(handle.raw(), 1) };
+        // SAFETY: GetLastError has no caller preconditions and this closure runs immediately
+        // after TerminateProcess returns failure on the same thread.
         let os_error = (ok == 0).then(|| unsafe { GetLastError() });
         schema::RawApiResult {
             returned: Some(ok != 0),
@@ -489,6 +531,8 @@ impl TerminationCalls for NativeTerminationCalls {
     }
 
     fn wait(&self, handle: &OwnedHandle, pid: u32) -> (schema::ExitObservation, Option<String>) {
+        // SAFETY: NativeTerminationCalls::open obtains PROCESS_SYNCHRONIZE on this
+        // OwnedHandle; the borrow keeps it open while WaitForSingleObject waits for 2000 ms.
         match unsafe { WaitForSingleObject(handle.raw(), 2_000) } {
             WAIT_OBJECT_0 => (schema::ExitObservation::Exited { code: None }, None),
             WAIT_TIMEOUT => (
@@ -496,6 +540,8 @@ impl TerminationCalls for NativeTerminationCalls {
                 Some(format!("timed out waiting for pid {pid} to exit")),
             ),
             WAIT_FAILED => {
+                // SAFETY: GetLastError takes no arguments; WAIT_FAILED from WaitForSingleObject
+                // selects this thread's error before any intervening Win32 call.
                 let error = unsafe { GetLastError() };
                 (
                     schema::ExitObservation::Error {
@@ -588,6 +634,8 @@ fn exe_name(raw: &[u16]) -> String {
 }
 
 fn last_error(context: &str) -> ResourceError {
+    // SAFETY: GetLastError takes no arguments and reads the calling thread's error;
+    // `last_error` is called directly on the failed Win32 paths above.
     let code = unsafe { GetLastError() };
     ResourceError::Message(format!("{context}: win32 error {code}"))
 }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -281,12 +281,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
         }
         builder.build().map_err(|error| error.to_string())?
     };
-    transaction
-        .app()
-        .state::<DetachedSessionsState>()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(session_id);
+    lock(&transaction.app().state::<DetachedSessionsState>()).insert(session_id);
     let window_still_present = transaction.app().get_webview_window(&label).is_some();
     let session_still_present = transaction
         .manager()
@@ -307,12 +302,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
                 audit.record(&label);
             }
         }
-        transaction
-            .app()
-            .state::<DetachedSessionsState>()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
+        lock(&transaction.app().state::<DetachedSessionsState>()).remove(&session_id);
         if session_still_present && !runtime_still_live {
             transaction
                 .reconcile_route_loss_inline(session_id, 1)
@@ -448,12 +438,7 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let manager = transaction.manager().await;
     let Some(record) = manager.get_session(session_id).await else {
-        transaction
-            .app()
-            .state::<DetachedSessionsState>()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
+        lock(&transaction.app().state::<DetachedSessionsState>()).remove(&session_id);
         let label = format!("terminal-{}", session_id.to_string().replace('-', ""));
         if let Some(window) = transaction.app().get_webview_window(&label) {
             if let Err(error) = window.destroy() {
@@ -475,12 +460,7 @@ pub(crate) async fn execute_attach_transaction<R: tauri::Runtime>(
             audit.record(&label);
         }
     }
-    transaction
-        .app()
-        .state::<DetachedSessionsState>()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&session_id);
+    lock(&transaction.app().state::<DetachedSessionsState>()).remove(&session_id);
 
     let runtime = transaction.runtime_snapshot(session_id);
     let liveness_lost = !runtime.has_pty && !matches!(record.status, SessionStatus::Exited(_));
@@ -550,7 +530,7 @@ fn publish_terminal_attached<R: tauri::Runtime>(
 /// the sidebar frontend to hydrate its `detachedIds` store on mount (plan §A2.3.G8).
 #[tauri::command]
 pub fn list_detached_sessions(detached: State<'_, DetachedSessionsState>) -> Vec<String> {
-    let set = detached.lock().unwrap();
+    let set = lock(&detached);
     set.iter().map(std::string::ToString::to_string).collect()
 }
 
@@ -994,6 +974,10 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
     builder.build().map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]

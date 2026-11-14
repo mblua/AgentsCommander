@@ -473,35 +473,7 @@ impl ResponseCloseState {
                     all_effects_completed: true,
                     retained_exited_confirmed: true,
                     selection_settled: true,
-                } => {
-                    if route.manager_working != Some(false) || route.eligible {
-                        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
-                            log::debug!(
-                                target: DIAG_TARGET,
-                                "response_close_diag id=unknown site={} stage=finish \
-                                 outcome=dormant_row_group_rejected member={}",
-                                line!(),
-                                ticket.session_id
-                            );
-                        }
-                        return Err(StaleOrInvalidSettlement);
-                    }
-                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
-                        if let Some(route) = inner.routes.get(&ticket.session_id) {
-                            route.diagnostic_policy_loss("close_finished_route_removed", line!());
-                        }
-                    }
-                    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
-                        log::debug!(
-                            target: DIAG_TARGET,
-                            "response_close_diag id=unknown site={} stage=finish outcome=dormant \
-                             member={}",
-                            line!(),
-                            ticket.session_id
-                        );
-                    }
-                    inner.routes.remove(&ticket.session_id);
-                }
+                } => finish_dormant_settlement(inner, ticket)?,
                 ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
                     terminal_kill_failure: true,
                     all_effects_terminal: true,
@@ -548,6 +520,41 @@ fn finish_settlement_group_rejected(
         || current.confirmed_carrier_version != current.current_carrier_version
         || current.checkpoint_nonce != current.current_checkpoint_nonce
         || current.publication_epoch != current.current_publication_epoch
+}
+
+fn finish_dormant_settlement(
+    inner: &mut ResponseCloseInner,
+    ticket: &ResponseCloseTicket,
+) -> Result<(), StaleOrInvalidSettlement> {
+    let route = inner.routes.get(&ticket.session_id).unwrap();
+    if route.manager_working != Some(false) || route.eligible {
+        if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+            log::debug!(
+                target: DIAG_TARGET,
+                "response_close_diag id=unknown site={} stage=finish \
+                 outcome=dormant_row_group_rejected member={}",
+                line!(),
+                ticket.session_id
+            );
+        }
+        return Err(StaleOrInvalidSettlement);
+    }
+    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+        if let Some(route) = inner.routes.get(&ticket.session_id) {
+            route.diagnostic_policy_loss("close_finished_route_removed", line!());
+        }
+    }
+    if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+        log::debug!(
+            target: DIAG_TARGET,
+            "response_close_diag id=unknown site={} stage=finish outcome=dormant \
+             member={}",
+            line!(),
+            ticket.session_id
+        );
+    }
+    inner.routes.remove(&ticket.session_id);
+    Ok(())
 }
 
 fn reopen_after_kill_failure(route: &mut ResponseCloseRoute, session_id: Uuid) {

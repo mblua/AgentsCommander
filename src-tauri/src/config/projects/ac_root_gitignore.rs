@@ -270,7 +270,9 @@ fn custom_instructions_patterns(configured: &[String]) -> Vec<String> {
             );
             continue;
         }
-        if name == "CLAUDE.md" || name == "AGENTS.md" {
+        if name == crate::config::instructions_filename::CLAUDE_MD_FILE_NAME
+            || name == crate::config::instructions_filename::AGENTS_MD_FILE_NAME
+        {
             continue;
         }
         let pattern = format!("**/__agent_*/{}", escape_gitignore_name(name));

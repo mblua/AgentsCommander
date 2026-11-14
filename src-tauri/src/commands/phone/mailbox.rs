@@ -184,7 +184,7 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         bot_id: Option<&'a str>,
     ) {
         crate::commands::session::attach_persisted_telegram_if_configured(self, session_id, bot_id)
-            .await
+            .await;
     }
 
     async fn stamp_fresh_boundary_to_session(&self, session_id: Uuid) -> BoundaryMetadataOutcome {

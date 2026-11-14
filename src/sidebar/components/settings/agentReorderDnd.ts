@@ -31,6 +31,7 @@ export function autoScrollDelta(pointerY: number, listTop: number, listBottom: n
 export function reorderedIds(ids: readonly string[], fromIndex: number, targetIndex: number): string[] {
   const next = [...ids];
   const [moved] = next.splice(fromIndex, 1);
+  if (moved === undefined) return next;
   next.splice(targetIndex, 0, moved);
   return next;
 }

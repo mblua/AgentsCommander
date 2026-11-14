@@ -155,7 +155,9 @@ pub(super) fn validate_record(bytes: &[u8]) -> Result<StatusRecord, TaskOpError>
                     .as_deref()
                     .ok_or_else(|| status_invalid("missing status"))?,
             )?;
-            let base = r.base_revision.as_deref().unwrap();
+            let Some(base) = r.base_revision.as_deref() else {
+                return Err(status_invalid("missing base revision"));
+            };
             let expected = if r.sequence == 1 && base == "legacy:0" {
                 "legacy:0".to_string()
             } else {

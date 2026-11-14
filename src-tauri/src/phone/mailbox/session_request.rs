@@ -807,7 +807,9 @@ async fn purge_mirror_snapshot(
         mgr.list_sessions().await
     };
     let pty_live: std::collections::HashSet<Uuid> = {
-        let mgr = pty.lock().unwrap();
+        let mgr = pty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         sessions
             .iter()
             .filter_map(|s| Uuid::parse_str(&s.id).ok())

@@ -310,6 +310,31 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       webglAddon = null;
     }
 
+    const copySelectionKey = (event: KeyboardEvent): boolean => {
+      if (event.type !== "keydown") return !terminal.hasSelection();
+      if (!terminal.hasSelection()) return true;
+      event.preventDefault();
+      event.stopPropagation();
+      navigator.clipboard
+        .writeText(terminal.getSelection())
+        .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
+      return false;
+    };
+    const pasteClipboardKey = (event: KeyboardEvent): void => {
+      if (event.type !== "keydown") return;
+      event.preventDefault();
+      event.stopPropagation();
+      navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (!text) return;
+          if (visibleSessionId !== sessionId) return; // session switched during await
+          if (terminal.element?.isConnected !== true) return; // terminal not in DOM (pre-open or post-dispose detached)
+          const sanitized = text.replace(/\x9b20[01]~|\x1b\[20[01]~/g, "");
+          terminal.paste(sanitized);
+        })
+        .catch((err) => console.warn("[paste] read failed:", err?.name ?? "Error"));
+    };
     const handleTerminalKeyEvent = (event: KeyboardEvent): boolean => {
       if (event.isComposing) return true;
       // #2236 D9: veto only; no stopPropagation, so shortcuts.ts still toggles.
@@ -318,37 +343,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       const isCtrlShift = event.ctrlKey && event.shiftKey;
       const key = event.key.toLowerCase();
 
-      if (isCtrlShift && key === "c") {
-        if (event.type === "keydown") {
-          if (!terminal.hasSelection()) return true;
-          event.preventDefault();
-          event.stopPropagation();
-          navigator.clipboard
-            .writeText(terminal.getSelection())
-            .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
-          return false;
-        }
-        return !terminal.hasSelection();
-      }
+      if (isCtrlShift && key === "c") return copySelectionKey(event);
 
-      if (isCtrlShift && key === "v") {
-        if (event.type === "keydown") {
-          event.preventDefault();
-          event.stopPropagation();
-          navigator.clipboard
-            .readText()
-            .then((text) => {
-              if (!text) return;
-              if (visibleSessionId !== sessionId) return; // session switched during await
-              if (terminal.element?.isConnected !== true) return; // terminal not in DOM (pre-open or post-dispose detached)
-              const sanitized = text.replace(/\x9b20[01]~|\x1b\[20[01]~/g, "");
-              terminal.paste(sanitized);
-            })
-            .catch((err) => console.warn("[paste] read failed:", err?.name ?? "Error"));
-          return false;
-        }
-        return false;
-      }
+      if (isCtrlShift && key === "v") { pasteClipboardKey(event); return false; }
 
       if (event.key === "Enter" && event.shiftKey) {
         if (event.type === "keydown" && visibleSessionId === sessionId) {

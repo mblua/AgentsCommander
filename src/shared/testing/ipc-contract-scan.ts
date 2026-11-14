@@ -21,8 +21,8 @@ type Call = { cmd: string; loc: string; present: string[]; optional: string[]; o
 
 const EXACT_ATTR = /^[ \t]*#\[tauri::command\][ \t]*\r?$/gm;
 const ANY_ATTR = /^[ \t]*#\[\s*tauri::command\b/;
-const FN_HEAD = /\bfn\s+([A-Za-z0-9_]+)\s*(<[^(]*>)?\s*\(/;
-const PARAM = /^(mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]+)$/;
+const FN_HEAD = /\bfn\s+(\w+)\s*(<[^(]*>)?\s*\(/;
+const PARAM = /^(mut\s+)?([A-Za-z_]\w*)\s*:\s*([\s\S]+)$/;
 const INJECTED = new RegExp(
   "^(tauri::)?(ipc::|webview::|window::)?" +
     "(AppHandle|WebviewWindow|Window|Webview|State|Request|Invoke)\\b",

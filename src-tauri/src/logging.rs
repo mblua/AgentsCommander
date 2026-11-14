@@ -812,15 +812,25 @@ pub(crate) trait ErrorLogEvents {
 }
 
 /// Wait for captures and deliver pings outside the logger's format closure.
-/// The setup hook spawns this future on the existing application runtime.
-pub(crate) async fn spawn_error_emit_task<E: ErrorLogEvents>(events: E) {
-    error_emit_loop(error_sink(), &events).await;
+/// The setup hook spawns this future; `shutdown` (app exit) ends it.
+pub(crate) async fn spawn_error_emit_task<E: ErrorLogEvents>(
+    events: E,
+    shutdown: tokio_util::sync::CancellationToken,
+) {
+    error_emit_loop(error_sink(), &events, &shutdown).await;
 }
 
-async fn error_emit_loop<E: ErrorLogEvents + ?Sized>(sink: &ErrorEventSink, events: &E) {
+async fn error_emit_loop<E: ErrorLogEvents + ?Sized>(
+    sink: &ErrorEventSink,
+    events: &E,
+    shutdown: &tokio_util::sync::CancellationToken,
+) {
     loop {
-        sink.wait_for_capture().await;
-        events.error_log_event();
+        tokio::select! {
+            biased;
+            () = shutdown.cancelled() => return,
+            () = sink.wait_for_capture() => events.error_log_event(),
+        }
     }
 }
 

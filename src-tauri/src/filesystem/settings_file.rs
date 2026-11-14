@@ -121,6 +121,8 @@ pub(crate) fn open_settings_backup_slot(path: &Path) -> io::Result<File> {
 #[cfg(unix)]
 pub(crate) fn try_lock_settings_handle(file: &std::fs::File) -> std::io::Result<bool> {
     use std::os::fd::AsRawFd;
+    // SAFETY: borrowed file keeps as_raw_fd() open throughout flock; LOCK_EX |
+    // LOCK_NB are flock flags and the call takes no borrowed memory pointers.
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     let source = std::io::Error::last_os_error();
     if result == 0 {
@@ -140,6 +142,8 @@ pub(crate) fn try_lock_settings_handle(file: &std::fs::File) -> std::io::Result<
 #[cfg(unix)]
 pub(crate) fn unlock_settings_handle(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
+    // SAFETY: borrowed file keeps as_raw_fd() open throughout flock; LOCK_UN
+    // releases the descriptor lock without taking any memory pointers.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
         Ok(())
     } else {
@@ -153,7 +157,12 @@ pub(crate) fn try_lock_settings_handle(file: &std::fs::File) -> std::io::Result<
     use windows_sys::Win32::Storage::FileSystem::{
         LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
     };
+    // SAFETY: OVERLAPPED is a C structure of integers, pointers and a union; all-zero
+    // fields represent zero offsets and no event, as required for LockFileEx here.
     let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    // SAFETY: file retains the open handle; overlapped is initialized writable storage
+    // for the zero-offset lock. config/settings/save/lock.rs:425 uses open_settings_lock
+    // with synchronous OpenOptions, so LockFileEx completes before this storage expires.
     let result = unsafe {
         LockFileEx(
             file.as_raw_handle(),
@@ -180,7 +189,11 @@ pub(crate) fn try_lock_settings_handle(file: &std::fs::File) -> std::io::Result<
 pub(crate) fn unlock_settings_handle(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+    // SAFETY: OVERLAPPED permits zero integer/pointer/union fields; zero offsets
+    // select the same range passed to LockFileEx in try_lock_settings_handle.
     let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+    // SAFETY: file keeps its handle open and overlapped is initialized, writable
+    // zero-offset storage for UnlockFileEx, which does not retain the pointer.
     if unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) } != 0 {
         Ok(())
     } else {
@@ -199,6 +212,8 @@ pub(crate) unsafe fn replace_settings_file_windows_once(
     destination: &[u16],
 ) -> io::Result<()> {
     #[link(name = "kernel32")]
+    // SAFETY: MoveFileExW matches the Windows winbase.h signature: two LPCWSTR
+    // inputs, DWORD flags and BOOL result, using the Windows system calling convention.
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }

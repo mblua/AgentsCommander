@@ -127,7 +127,9 @@ fn on_window_destroyed<H, S, F, FF>(
             );
             if let Ok(uuid) = uuid::Uuid::parse_str(&formatted) {
                 {
-                    let mut set = detached_set.lock().unwrap();
+                    let mut set = detached_set
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     set.remove(&uuid);
                 }
                 host.terminal_attached(formatted);

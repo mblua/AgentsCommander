@@ -310,6 +310,34 @@ fn inventory_into(root: &Path, dir: &Path, out: &mut Vec<InventoryEntry>) -> Res
     Ok(())
 }
 
+fn check_file(path: &Path, relative: &str, case: &str) -> Result<(), String> {
+    let leaf = relative.rsplit('/').next().unwrap_or(relative);
+    if leaf == "payload.bin" {
+        return Err(format!(
+            "{case}: legacy payload entry appeared at {relative}"
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("{case}: read {} failed: {error}", path.display()))?;
+    if bytes == LEGACY_PAYLOAD {
+        return Err(format!(
+            "{case}: legacy payload bytes appeared at {relative}"
+        ));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    for token in LEGACY_TOKENS {
+        if text.contains(token) {
+            return Err(format!(
+                "{case}: legacy token {token} leaked into {relative}"
+            ));
+        }
+    }
+    if text.contains("legacyMarker") {
+        return Err(format!("{case}: legacyMarker leaked into {relative}"));
+    }
+    Ok(())
+}
+
 pub(crate) fn scan_canonical_for_legacy(root: &Path, case: &str) -> Result<(), String> {
     fn walk(root: &Path, dir: &Path, case: &str) -> Result<(), String> {
         let entries = fs::read_dir(dir)
@@ -341,30 +369,7 @@ pub(crate) fn scan_canonical_for_legacy(root: &Path, case: &str) -> Result<(), S
                 }
                 walk(root, &path, case)?;
             } else if file_type.is_file() {
-                let leaf = relative.rsplit('/').next().unwrap_or(relative.as_str());
-                if leaf == "payload.bin" {
-                    return Err(format!(
-                        "{case}: legacy payload entry appeared at {relative}"
-                    ));
-                }
-                let bytes = fs::read(&path)
-                    .map_err(|error| format!("{case}: read {} failed: {error}", path.display()))?;
-                if bytes == LEGACY_PAYLOAD {
-                    return Err(format!(
-                        "{case}: legacy payload bytes appeared at {relative}"
-                    ));
-                }
-                let text = String::from_utf8_lossy(&bytes);
-                for token in LEGACY_TOKENS {
-                    if text.contains(token) {
-                        return Err(format!(
-                            "{case}: legacy token {token} leaked into {relative}"
-                        ));
-                    }
-                }
-                if text.contains("legacyMarker") {
-                    return Err(format!("{case}: legacyMarker leaked into {relative}"));
-                }
+                check_file(&path, &relative, case)?;
             }
         }
         Ok(())

@@ -222,25 +222,13 @@ pub(crate) fn merge_ci_observations(
     for run in observations {
         let mut observation = run.clone();
         if let Some(old) = state.known.get(&run.id) {
-            let rejected = if old.workflow_id != run.workflow_id
-                || old.head_sha != run.head_sha
-                || old.head_branch != run.head_branch
-            {
-                Some(FailureKind::Other)
-            } else if run.run_attempt < old.run_attempt {
-                Some(FailureKind::Incomplete)
-            } else {
-                None
-            };
+            let rejected = identity_rejection(old, run);
             if let Some(kind) = rejected {
                 state.proofs.remove(&run.id);
                 state.closing_ready = false;
                 // Identity contradictions dominate stale attempts regardless of
                 // row order. Absorb compatible rows even when this round fails.
-                error = Some(match (error, kind) {
-                    (Some(FailureKind::Other), _) | (_, FailureKind::Other) => FailureKind::Other,
-                    _ => FailureKind::Incomplete,
-                });
+                error = Some(merged_failure(error, kind));
                 continue;
             }
             // Detail endpoints corroborate completion; the last list supplies
@@ -277,6 +265,26 @@ pub(crate) fn merge_ci_observations(
         }
     }
     error.map_or(Ok(()), Err)
+}
+
+fn identity_rejection(old: &CiRunObservation, run: &CiRunObservation) -> Option<FailureKind> {
+    if old.workflow_id != run.workflow_id
+        || old.head_sha != run.head_sha
+        || old.head_branch != run.head_branch
+    {
+        Some(FailureKind::Other)
+    } else if run.run_attempt < old.run_attempt {
+        Some(FailureKind::Incomplete)
+    } else {
+        None
+    }
+}
+
+fn merged_failure(error: Option<FailureKind>, kind: FailureKind) -> FailureKind {
+    match (error, kind) {
+        (Some(FailureKind::Other), _) | (_, FailureKind::Other) => FailureKind::Other,
+        _ => FailureKind::Incomplete,
+    }
 }
 
 pub(crate) fn parse_ci_jobs_response(

@@ -177,7 +177,10 @@ impl LoopScheduler {
 
     pub(crate) fn loop_generation(&self, dir: &Path) -> u64 {
         let key = generation_key(dir);
-        let generations = self.loop_generations.lock().expect("loop generations");
+        let generations = self
+            .loop_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         generations.get(&key).copied().unwrap_or(0)
     }
 
@@ -186,7 +189,7 @@ impl LoopScheduler {
         *self
             .loop_generations
             .lock()
-            .expect("loop generations")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(key)
             .or_insert(0) += 1;
     }

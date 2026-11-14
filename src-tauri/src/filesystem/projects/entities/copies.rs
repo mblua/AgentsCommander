@@ -105,11 +105,15 @@ impl OwnedCopyArtifacts {
                 GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
             };
             let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+            // SAFETY: borrowed file keeps its handle open; information is aligned writable
+            // BY_HANDLE_FILE_INFORMATION storage for the synchronous API call.
             if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
                 == 0
             {
                 return Err(std::io::Error::last_os_error().to_string());
             }
+            // SAFETY: the zero-result branch returned; GetFileInformationByHandle
+            // initializes the complete output structure on success.
             let information = unsafe { information.assume_init() };
             Ok(MatrixCopyIdentity(
                 u64::from(information.dwVolumeSerialNumber),

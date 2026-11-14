@@ -219,7 +219,9 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
 
     app.with_shortcuts(|gs| {
         let state = app.hotkey_state();
-        let mut runtime = state.lock().unwrap();
+        let mut runtime = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // No-op save of the same key: it is already ours, so just record success and
         // avoid a spurious "already registered" error from re-registering.
@@ -612,7 +614,12 @@ fn bind_ids(ids: &ShortcutIds) -> hyprland_bind::BindIds<'_> {
 
 #[cfg(target_os = "linux")]
 fn system_wayland<H: ScreenshotHost>(app: &H) -> SystemWayland {
-    let host = std::sync::Arc::clone(&app.hotkey_state().lock().unwrap().portal_host);
+    let host = std::sync::Arc::clone(
+        &app.hotkey_state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .portal_host,
+    );
     SystemWayland { host }
 }
 
@@ -622,7 +629,9 @@ fn system_wayland<H: ScreenshotHost>(app: &H) -> SystemWayland {
 #[cfg(target_os = "linux")]
 fn begin_wayland_registration<H: ScreenshotHost>(app: &H) -> u64 {
     let state = app.hotkey_state();
-    let mut runtime = state.lock().unwrap();
+    let mut runtime = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     runtime.registered_shortcut = None;
     runtime.wayland_generation += 1;
     runtime.wayland_generation
@@ -630,7 +639,11 @@ fn begin_wayland_registration<H: ScreenshotHost>(app: &H) -> u64 {
 
 #[cfg(target_os = "linux")]
 fn is_latest<H: ScreenshotHost>(app: &H, generation: u64) -> bool {
-    app.hotkey_state().lock().unwrap().wayland_generation == generation
+    app.hotkey_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .wayland_generation
+        == generation
 }
 
 /// Write the final status of request `generation` and emit it, unless superseded.
@@ -643,7 +656,9 @@ fn store_wayland_status<H: ScreenshotHost>(
 ) -> bool {
     let status = {
         let state = app.hotkey_state();
-        let mut runtime = state.lock().unwrap();
+        let mut runtime = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if runtime.wayland_generation != generation {
             return false;
         }
@@ -670,7 +685,12 @@ async fn register_wayland<H: ScreenshotHost, B: WaylandBackend>(
     key: char,
     enabled: bool,
 ) {
-    let portal = app.hotkey_state().lock().unwrap().wayland.clone();
+    let portal = app
+        .hotkey_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .wayland
+        .clone();
     // Taken BEFORE the portal bind and held to the end.
     let mut st = portal.lock().await;
     if !is_latest(&app, generation) {
@@ -725,7 +745,9 @@ async fn forward_presses<H: ScreenshotHost, F: Fn(H) + Send + 'static>(
         st.binding = 0;
         let status = {
             let state = app.hotkey_state();
-            let mut runtime = state.lock().unwrap();
+            let mut runtime = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let configured = runtime.status.configured.clone();
             runtime.status = hotkey_status_after_attempt(&configured, Err(PORTAL_SHORTCUT_ENDED));
             runtime.status.clone()

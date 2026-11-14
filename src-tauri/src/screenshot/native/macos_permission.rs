@@ -9,6 +9,8 @@ pub const MACOS_SCREEN_RECORDING_REQUIRED: &str = "Screenshot capture needs the 
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
+// SAFETY: these declarations match the no-argument Boolean functions declared in
+// CoreGraphics CGWindow.h, with the C ABI supplied by the linked framework.
 unsafe extern "C" {
     pub(super) fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
@@ -21,11 +23,14 @@ unsafe extern "C" {
 /// which the refusal message tells the user to do.
 #[cfg(target_os = "macos")]
 pub(super) fn ensure_macos_screen_capture_access() -> Result<(), String> {
-    // SAFETY: argument-less CoreGraphics queries (macOS 10.15+), thread-safe.
+    // SAFETY: CGPreflightScreenCaptureAccess takes no pointers or handles; the linked
+    // CoreGraphics function only queries this process's screen-recording permission.
     if unsafe { CGPreflightScreenCaptureAccess() } {
         return Ok(());
     }
     // Registers the app in the Screen Recording list; prompts only the first time.
+    // SAFETY: CGRequestScreenCaptureAccess takes no pointers or handles; it requests
+    // permission for this process after the preflight query above returned false.
     let _ = unsafe { CGRequestScreenCaptureAccess() };
     Err(MACOS_SCREEN_RECORDING_REQUIRED.to_string())
 }

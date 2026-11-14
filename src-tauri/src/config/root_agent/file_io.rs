@@ -8,9 +8,8 @@ use crate::filesystem::agent_files;
 use crate::filesystem::projects::entities::roles;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static ROOT_ROLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 pub(crate) fn write_role_file(
     file: &mut agent_files::RootAgentStage,
@@ -41,7 +40,7 @@ pub(crate) fn unique_role_temp_path(role_path: &Path) -> std::path::PathBuf {
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(roles::ROLE_FILE_NAME);
-    let counter = ROOT_ROLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let counter = crate::filesystem::next_temp_name_sequence();
     parent.join(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
@@ -92,7 +91,7 @@ pub(crate) fn unique_default_skill_temp_path(path: &Path) -> PathBuf {
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(SKILL_MD_FILENAME);
-    let counter = ROOT_ROLE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let counter = crate::filesystem::next_temp_name_sequence();
     parent.join(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),

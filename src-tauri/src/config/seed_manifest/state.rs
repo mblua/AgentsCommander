@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// #1318 - relative path of the coding-agent catalog publication row.
+pub(crate) const CODING_AGENTS_CATALOG_REL_PATH: &str = ".ac/coding-agents/agents.json";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PublishedManifestRow {
     pub(crate) path: ManifestPathIdentity,
@@ -396,7 +399,7 @@ pub(crate) fn validate_row(row: &PublishedManifestRow) -> Result<(), SeedManifes
                         .to_string(),
                 ));
             }
-            if row.path.serialized != ".ac/coding-agents/agents.json" {
+            if row.path.serialized != CODING_AGENTS_CATALOG_REL_PATH {
                 return Err(SeedManifestError::Validation(format!(
                     "unsupported coding-agent catalog path {}",
                     row.path.serialized
@@ -764,7 +767,7 @@ pub(crate) fn has_catalog_publication(project_root: &Path) -> Result<bool, SeedM
     }
     let state = parse_manifest_bytes(&raw)?;
     let identity =
-        ManifestPathIdentity::from_relative_path(Path::new(".ac/coding-agents/agents.json"))?;
+        ManifestPathIdentity::from_relative_path(Path::new(CODING_AGENTS_CATALOG_REL_PATH))?;
     Ok(state.rows.values().any(|row| {
         row.path == identity
             && row.kind == ManifestFileKind::CodingAgentCatalog

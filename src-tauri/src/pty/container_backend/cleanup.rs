@@ -142,6 +142,7 @@ impl ContainerTransportBackend {
                     reopening sealed shutdown work session={session_id} reason={reason} \
                     state=retained"
             );
+                    return;
                 }
             }
         }
@@ -161,7 +162,10 @@ impl ContainerTransportBackend {
 
     pub async fn reap_expired_pending_sessions(&self) -> usize {
         let expired = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let now = Instant::now();
             sessions
                 .iter()

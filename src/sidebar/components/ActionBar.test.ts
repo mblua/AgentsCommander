@@ -512,3 +512,51 @@ describe("ActionBar theme toggle document class (#4499)", () => {
     dispose();
   });
 });
+
+describe("ActionBar toggle button labels (#4693)", () => {
+  afterEach(async () => {
+    const { homeStore } = await import("../../main/stores/home");
+    (homeStore as { visible: boolean }).visible = false;
+    document.body.innerHTML = "";
+    mockState.settings = { soundsEnabled: true, themeLight: true, specBoardEnabled: false };
+    __resetCentralViewStoreForTests();
+    vi.clearAllMocks();
+  });
+
+  function labels(testId: string): [string, string | null] {
+    const el = document.body.querySelector<HTMLButtonElement>(`[data-ac-testid="${testId}"]`);
+    if (!el) throw new Error(`missing ${testId}`);
+    return [el.title, el.getAttribute("aria-label")];
+  }
+
+  it.each([
+    [false, "Show Home"],
+    [true, "Hide Home"],
+  ])("home button with visible=%s -> %s", async (visible, expected) => {
+    const { homeStore } = await import("../../main/stores/home");
+    (homeStore as { visible: boolean }).visible = visible;
+    const { dispose } = renderActionBar();
+    expect(labels("actionBar.home")).toEqual([expected, expected]);
+    dispose();
+  });
+
+  it.each([
+    ["terminal", "Show web browser"],
+    ["browser", "Hide web browser"],
+  ] as const)("web browser button in %s view -> %s", (view, expected) => {
+    centralViewStore.setInitialView(view);
+    const { dispose } = renderActionBar();
+    expect(labels("actionBar.webBrowser")).toEqual([expected, expected]);
+    dispose();
+  });
+
+  it.each([
+    [true, "Mute all app sounds"],
+    [false, "Unmute app sounds"],
+  ])("sounds button with soundsEnabled=%s -> %s", (soundsEnabled, expected) => {
+    mockState.settings = { soundsEnabled, themeLight: true, specBoardEnabled: false };
+    const { dispose } = renderActionBar();
+    expect(labels("actionBar.sounds")).toEqual([expected, expected]);
+    dispose();
+  });
+});

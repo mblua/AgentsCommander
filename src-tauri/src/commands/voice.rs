@@ -180,7 +180,9 @@ pub fn voice_mark_recording(
     recording: bool,
 ) -> Result<(), String> {
     let uuid = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let mut t = tracker.lock().unwrap();
+    let mut t = tracker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     t.set_recording(uuid, recording);
     Ok(())
 }
@@ -191,7 +193,9 @@ pub fn voice_had_typing(
     session_id: String,
 ) -> Result<bool, String> {
     let uuid = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let mut t = tracker.lock().unwrap();
+    let mut t = tracker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(t.drain_typed(uuid))
 }
 

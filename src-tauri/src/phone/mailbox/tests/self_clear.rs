@@ -773,6 +773,29 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
     assert!(pending.is_empty());
 }
 
+fn self_clear_root(role: &str, replica: &Path) -> PathBuf {
+    if role == "root" {
+        PathBuf::from(crate::config::root_agent::root_agent_dir().unwrap())
+    } else if role == "coordinator" {
+        let path = replica.parent().unwrap().join("__agent_team-coordinator");
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    } else {
+        replica.to_path_buf()
+    }
+}
+
+fn assert_handoff_files(root: &Path, seeded: bool) {
+    for name in ["SELF-HANDOFF.md", "SELF-FORGET.md"] {
+        if seeded {
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), name.as_bytes());
+        } else {
+            assert!(!root.join(name).exists());
+        }
+    }
+    assert!(!root.join("self-clear").exists());
+}
+
 #[tokio::test]
 async fn plain_self_clear_process_message_auth_binding_and_untouched_files() {
     for role in ["specialist", "coordinator", "root"] {
@@ -782,19 +805,7 @@ async fn plain_self_clear_process_message_auth_binding_and_untouched_files() {
             }
             let fixture = make_self_switch_fixture();
             let app = app_handle(&fixture.app);
-            let root = if role == "root" {
-                PathBuf::from(crate::config::root_agent::root_agent_dir().unwrap())
-            } else if role == "coordinator" {
-                let path = fixture
-                    .replica
-                    .parent()
-                    .unwrap()
-                    .join("__agent_team-coordinator");
-                std::fs::create_dir_all(&path).unwrap();
-                path
-            } else {
-                fixture.replica.clone()
-            };
+            let root = self_clear_root(role, &fixture.replica);
             let (sid, token) = if role == "coordinator" {
                 seed_raise_hand_session(&app, &root, true, SessionStatus::Running).await
             } else {
@@ -844,14 +855,7 @@ async fn plain_self_clear_process_message_auth_binding_and_untouched_files() {
                 .join(format!("{mid}.json"))
                 .is_file());
             if role != "root" {
-                for name in ["SELF-HANDOFF.md", "SELF-FORGET.md"] {
-                    if seeded {
-                        assert_eq!(std::fs::read(root.join(name)).unwrap(), name.as_bytes());
-                    } else {
-                        assert!(!root.join(name).exists());
-                    }
-                }
-                assert!(!root.join("self-clear").exists());
+                assert_handoff_files(&root, seeded);
             }
             // Root cleanup owns only UUID leaves; shared handoff names are never inspected.
             std::fs::remove_file(ack).unwrap();

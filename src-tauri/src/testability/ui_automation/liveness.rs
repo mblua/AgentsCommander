@@ -49,6 +49,8 @@ pub fn pid_is_alive(pid: u32) -> bool {
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    // SAFETY: OpenProcess takes numeric rights/PID; null is checked before querying. `code` is
+    // writable u32 for GetExitCodeProcess; the non-null handle stays open, then closed once.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if handle.is_null() {
@@ -119,6 +121,9 @@ pub(super) fn process_path(pid: u32) -> Option<PathBuf> {
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    // SAFETY: OpenProcess failure returns before use; the successful handle stays open
+    // through QueryFullProcessImageNameW. `buf` has 32768 writable UTF-16 units and
+    // `len` supplies that capacity; CloseHandle closes this owned handle once.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {

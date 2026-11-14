@@ -333,7 +333,7 @@ impl ContextSampleSink for ScraperSamples {
         match self.sender.try_send(sample) {
             Ok(()) => {
                 let recovery_capacity =
-                    crate::session::context_alerts::CONTEXT_SAMPLE_QUEUE_CAPACITY / 4;
+                    crate::session::context_sample_queue::CONTEXT_SAMPLE_QUEUE_CAPACITY / 4;
                 if self.saturated.load(Ordering::Relaxed)
                     && self.sender.capacity() >= recovery_capacity
                     && self

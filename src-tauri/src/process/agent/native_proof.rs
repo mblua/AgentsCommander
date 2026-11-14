@@ -55,7 +55,8 @@ pub(crate) async fn settle_process_group(
     }
     settle(
         move || {
-            // SAFETY: signal zero is read-only and queries the retained positive group identity.
+            // SAFETY: the pgid <= 0 guard above leaves a positive i32, so negation cannot
+            // overflow. kill accepts the negative group selector and signal 0 without pointers.
             let result = unsafe { libc::kill(-pgid, 0) };
             if result == -1 {
                 let error = std::io::Error::last_os_error();
@@ -69,7 +70,8 @@ pub(crate) async fn settle_process_group(
             }
         },
         move || {
-            // SAFETY: this remains the retained positive process group identity.
+            // SAFETY: the pgid <= 0 guard above leaves a positive i32, so -pgid is a
+            // representable group selector. kill accepts SIGKILL and takes no memory pointers.
             unsafe {
                 libc::kill(-pgid, libc::SIGKILL);
             }

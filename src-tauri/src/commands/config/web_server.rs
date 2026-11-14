@@ -30,7 +30,7 @@ pub(crate) const MINT_API_CLIENT_NOTE: &str =
         requested pty-input scope does not grant actuation without an automatically bound live \
         container session.";
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MintApiClientResponse {
     pub client_id: String,
@@ -40,6 +40,29 @@ pub struct MintApiClientResponse {
     pub scopes: Vec<String>,
     pub expires_at: Option<String>,
     pub note: String,
+}
+
+impl std::fmt::Debug for MintApiClientResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            client_id,
+            token: _,
+            bound_fqn,
+            bound_root,
+            scopes,
+            expires_at,
+            note,
+        } = self;
+        f.debug_struct("MintApiClientResponse")
+            .field("client_id", client_id)
+            .field("token", &"[REDACTED]")
+            .field("bound_fqn", bound_fqn)
+            .field("bound_root", bound_root)
+            .field("scopes", scopes)
+            .field("expires_at", expires_at)
+            .field("note", note)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

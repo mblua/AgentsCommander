@@ -75,7 +75,7 @@ use state::{
 };
 pub(crate) use state::{
     config_batch_base_serialized_len, exact_config_row_serialized_len, has_catalog_publication,
-    PublishedManifestRow,
+    PublishedManifestRow, CODING_AGENTS_CATALOG_REL_PATH,
 };
 #[cfg(test)]
 use state::{exact_serialized_len, exact_serialized_len_with_limit};

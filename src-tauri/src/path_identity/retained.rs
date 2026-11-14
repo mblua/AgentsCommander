@@ -305,6 +305,9 @@ impl RetainedDirectory {
         };
         use std::os::fd::AsRawFd;
         let removed =
+            // SAFETY: `self.handle` retains the directory descriptor; `claim_name` is the
+            // live CString returned by unix_child_cstring, which validates a single child name.
+            // unlinkat receives its terminated pointer and flags 0 for a non-directory entry.
             unsafe { libc::unlinkat(self.handle.as_raw_fd(), claim_name.as_ptr(), 0) } == 0;
         match witness.state(expected) {
             UnixFileWitnessState::Unlinked if removed => UnixTrackedCleanupOutcome::Removed,
@@ -364,6 +367,9 @@ impl RetainedDirectory {
             let destination = self.unix_child_cstring(destination)?;
             use std::os::fd::AsRawFd;
             let directory = self.handle.as_raw_fd();
+            // SAFETY: `directory` borrows self.handle; both paths are live CStrings from
+            // unix_child_cstring. SYS_renameat2 receives the documented directory/name pairs
+            // and RENAME_NOREPLACE flag; all descriptors and buffers outlive the syscall.
             let result = unsafe {
                 libc::syscall(
                     libc::SYS_renameat2,
@@ -385,6 +391,8 @@ impl RetainedDirectory {
             const RENAME_EXCL: libc::c_uint = libc::RENAME_EXCL;
             let source = self.unix_child_cstring(source)?;
             let destination = self.unix_child_cstring(destination)?;
+            // SAFETY: renameatx_np matches macOS stdio.h: int directory descriptors, const
+            // char path pointers, unsigned int flags and int return, using the C ABI.
             unsafe extern "C" {
                 fn renameatx_np(
                     old_dir_fd: i32,
@@ -396,6 +404,9 @@ impl RetainedDirectory {
             }
             use std::os::fd::AsRawFd;
             let directory = self.handle.as_raw_fd();
+            // SAFETY: `directory` borrows self.handle; `source` and `destination` are live
+            // CStrings from unix_child_cstring. renameatx_np receives terminated child names
+            // and the documented RENAME_EXCL flag with both directory/name pairs.
             let result = unsafe {
                 renameatx_np(
                     directory,
@@ -516,6 +527,9 @@ impl RetainedDirectory {
         #[cfg(target_os = "linux")]
         {
             const RENAME_NOREPLACE: libc::c_uint = libc::RENAME_NOREPLACE;
+            // SAFETY: `directory` borrows self.handle and both live CStrings come from
+            // unix_child_cstring. SYS_renameat2 receives directory/name pairs and the documented
+            // RENAME_NOREPLACE flag; neither the descriptor nor buffers are released here.
             unsafe {
                 libc::syscall(
                     libc::SYS_renameat2,
@@ -530,6 +544,8 @@ impl RetainedDirectory {
         #[cfg(target_os = "macos")]
         {
             const RENAME_EXCL: libc::c_uint = libc::RENAME_EXCL;
+            // SAFETY: renameatx_np matches macOS stdio.h: int directory descriptors, const
+            // char path pointers, unsigned int flags and int return, using the C ABI.
             unsafe extern "C" {
                 fn renameatx_np(
                     old_dir_fd: i32,
@@ -539,6 +555,9 @@ impl RetainedDirectory {
                     flags: u32,
                 ) -> i32;
             }
+            // SAFETY: `directory` borrows self.handle and both live CStrings come from
+            // unix_child_cstring. renameatx_np receives terminated child names and the documented
+            // RENAME_EXCL flag; the borrowed descriptor and buffers outlive the call.
             unsafe {
                 renameatx_np(
                     directory,
@@ -603,6 +622,9 @@ impl RetainedDirectory {
         let name = self
             .unix_child_cstring(path)
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        // SAFETY: `name` is the live CString from unix_child_cstring and self.handle
+        // retains the directory descriptor. openat receives that terminated child name,
+        // the caller flags, and `mode` promoted to c_uint for its variadic argument.
         let descriptor = unsafe {
             // Same variadic promotion rule as the helper's `open_snapshot_leaf_at`: `mode_t` is
             // `u16` on macOS, and an unpromoted `u16` to a variadic function is E0617. This site
@@ -619,6 +641,8 @@ impl RetainedDirectory {
         if descriptor < 0 {
             Err(std::io::Error::last_os_error())
         } else {
+            // SAFETY: openat above returned a nonnegative, newly owned descriptor; no
+            // other File owns it. File::from_raw_fd transfers its sole closing responsibility.
             Ok(unsafe { File::from_raw_fd(descriptor) })
         }
     }

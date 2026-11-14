@@ -96,13 +96,7 @@ fn agent_path_2589_sentinel_parse_rejects_missing_end_marker_and_empty_value() {
 }
 
 #[cfg(unix)]
-fn fake_shell(dir: &Path, name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
+use crate::process::host::login::fake_shell::fake_shell;
 
 #[cfg(unix)]
 #[test]

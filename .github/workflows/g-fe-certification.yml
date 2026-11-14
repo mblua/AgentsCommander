@@ -18,7 +18,7 @@ jobs:
     env:
       EV_SUBDIR: g-fe-evidence
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Identity and pre-state, asserted
         run: |
           EV="$RUNNER_TEMP/$EV_SUBDIR"; mkdir -p "$EV"
@@ -33,7 +33,7 @@ jobs:
           git status --porcelain | tee "$EV/0-porcelain-before.log"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test ! -s "$EV/0-porcelain-before.log"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24.13.0
       - name: Pin npm and record the toolchain, asserted
@@ -229,7 +229,7 @@ jobs:
           cd "$RUNNER_TEMP/$EV_SUBDIR" && sha256sum ./*.log | tee ./digests.txt
       - name: Upload the owned evidence set
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: g-fe-evidence-${{ github.sha }}
           path: ${{ runner.temp }}/g-fe-evidence/

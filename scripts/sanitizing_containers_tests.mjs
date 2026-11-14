@@ -75,7 +75,7 @@ test('04 rejects unsafe basenames and nonstrings', () => {
   ]) {
     const registry = attemptsRegistry();
     registry.containers[0].name = name;
-    assert.throws(() => parseRegistry(JSON.stringify(registry)), String(name));
+    assert.throws(() => parseRegistry(JSON.stringify(registry)), JSON.stringify(name));
     assert.equal(containersGate(containerTree({}, registry)).status, 'ERROR');
   }
 });
@@ -875,7 +875,11 @@ function injectionPlan(s, before, registries) {
     while (occupied.has(literal)) literal = '_' + literal;
   }
   const headTree = new Map(s.headTree), additions = new Map(), sites = [];
-  for (let i = 0; i < (existing ? 1 : 2); i++) {
+  const old = existing && before.unregistered.base.entries
+    .find(e => e.literal === existing.literal);
+  const count = existing
+    ? Math.max(1, (old?.files.length ?? 0) - existing.files.length + 1) : 2;
+  for (let i = 0; i < count; i++) {
     let p = root + 'proof_4024_' + i + '.rs';
     while (headTree.has(p)) p = p.replace('.rs', '_fresh.rs');
     const entry = { path: p }; headTree.set(p, entry);
