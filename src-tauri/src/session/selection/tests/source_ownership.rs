@@ -46,66 +46,75 @@ fn ownership_violations(files: &[(String, String)]) -> Vec<String> {
             if trimmed.starts_with("//") {
                 continue;
             }
-            // #1149 - all four variants, not only `Active`. The birth-edge
-            // writer, `record.status = SessionStatus::Running` in
-            // `commit_selection_transition`, was unguarded, so a future
-            // assignment of exactly that shape would have passed CI and
-            // silently reintroduced the unrecorded-birth defect. The guard's
-            // reach ends where `production_prefix` cuts, so it protects the
-            // writer table only above the `#[cfg(test)] impl SessionManager`
-            // marker, which is exactly what A12 complements.
-            for variant in ["Active", "Running", "Idle", "Exited"] {
-                if line.contains(&format!("= SessionStatus::{variant}"))
-                    && !(path.ends_with("session/manager.rs")
-                        && STATUS_WRITER_OWNERS.contains(&function.as_str())
-                        || path.ends_with("session/manager/commit.rs")
-                            && function == "apply_lifecycle_mutations")
-                {
-                    violations.push(format!(
-                        "{path}:{} {variant} assignment in {function}",
-                        index + 1
-                    ));
-                }
-            }
-
-            for event in [
-                "session_switched",
-                "session_created",
-                "session_destroyed",
-                "session_communication_changed",
-            ] {
-                if !line.contains(&format!("\"{event}\"")) {
-                    continue;
-                }
-                let allowed = path.ends_with("session/selection.rs")
-                    && matches!(
-                        function.as_str(),
-                        "publish_selection"
-                            | "publish_created"
-                            | "publish_destroyed"
-                            | "publish_communication_cleared"
-                            | "publish_session_communication"
-                    );
-                if !allowed {
-                    violations.push(format!("{path}:{} {event} owner is {function}", index + 1));
-                }
-            }
-
-            if line.contains("pub async fn mark_exited(&self")
-                || line.contains("pub async fn get_active(&self")
-                || line.contains("pub async fn switch_session(&self")
-                || line.contains("pub async fn set_active_only(&self")
-                || line.contains("pub async fn clear_active(&self")
-                || line.contains("pub async fn clear_active_if(&self")
-            {
-                violations.push(format!(
-                    "{path}:{} removed production manager mutator {function}",
-                    index + 1
-                ));
-            }
+            line_violations(path, &function, index, line, &mut violations);
         }
     }
     violations
+}
+
+fn line_violations(
+    path: &str,
+    function: &str,
+    index: usize,
+    line: &str,
+    violations: &mut Vec<String>,
+) {
+    // #1149 - all four variants, not only `Active`. The birth-edge
+    // writer, `record.status = SessionStatus::Running` in
+    // `commit_selection_transition`, was unguarded, so a future
+    // assignment of exactly that shape would have passed CI and
+    // silently reintroduced the unrecorded-birth defect. The guard's
+    // reach ends where `production_prefix` cuts, so it protects the
+    // writer table only above the `#[cfg(test)] impl SessionManager`
+    // marker, which is exactly what A12 complements.
+    for variant in ["Active", "Running", "Idle", "Exited"] {
+        if line.contains(&format!("= SessionStatus::{variant}"))
+            && !(path.ends_with("session/manager.rs") && STATUS_WRITER_OWNERS.contains(&function)
+                || path.ends_with("session/manager/commit.rs")
+                    && function == "apply_lifecycle_mutations")
+        {
+            violations.push(format!(
+                "{path}:{} {variant} assignment in {function}",
+                index + 1
+            ));
+        }
+    }
+
+    for event in [
+        "session_switched",
+        "session_created",
+        "session_destroyed",
+        "session_communication_changed",
+    ] {
+        if !line.contains(&format!("\"{event}\"")) {
+            continue;
+        }
+        let allowed = path.ends_with("session/selection.rs")
+            && matches!(
+                function,
+                "publish_selection"
+                    | "publish_created"
+                    | "publish_destroyed"
+                    | "publish_communication_cleared"
+                    | "publish_session_communication"
+            );
+        if !allowed {
+            violations.push(format!("{path}:{} {event} owner is {function}", index + 1));
+        }
+    }
+
+    if line.contains("pub async fn mark_exited(&self")
+        || line.contains("pub async fn get_active(&self")
+        || line.contains("pub async fn switch_session(&self")
+        || line.contains("pub async fn set_active_only(&self")
+        || line.contains("pub async fn clear_active(&self")
+        || line.contains("pub async fn clear_active_if(&self")
+    {
+        violations.push(format!(
+            "{path}:{} removed production manager mutator {function}",
+            index + 1
+        ));
+    }
 }
 
 #[test]
