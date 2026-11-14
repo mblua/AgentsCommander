@@ -587,7 +587,7 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - @xterm/addon-fit 0.11.0 — MIT — texts: T415
 - @xterm/addon-webgl 0.19.0 — MIT — texts: T416
 - @xterm/xterm 6.0.0 — MIT — texts: T417
-- argparse 2.0.1 — Python-2.0 — texts: T418
+- argparse 3.0.4 — PSF-2.0 — texts: T418
 - commander 7.2.0 — MIT — texts: T419
 - commander 8.3.0 — MIT — texts: T419
 - cose-base 1.0.3 — MIT — texts: T420
@@ -635,7 +635,7 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - dayjs 1.11.21 — MIT — texts: T443
 - delaunator 5.1.0 — ISC — texts: T444
 - dompurify 3.4.2 — (MPL-2.0 OR Apache-2.0) — texts: T445
-- entities 4.5.0 — BSD-2-Clause — texts: T446
+- entities 8.1.0 — BSD-2-Clause — texts: T446
 - es-toolkit 1.47.0 — MIT — texts: T447
 - hachure-fill 0.5.2 — MIT — texts: T448
 - iconv-lite 0.6.3 — MIT — texts: T449
@@ -646,11 +646,11 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - khroma 2.1.0 — see text — texts: T453
 - layout-base 1.0.2 — MIT — texts: T454
 - layout-base 2.0.1 — MIT — texts: T454
-- linkify-it 5.0.0 — MIT — texts: T455
+- linkify-it 6.1.0 — MIT — texts: T455
 - lodash-es 4.18.1 — MIT — texts: T456
-- markdown-it 14.1.1 — MIT — texts: T457
+- markdown-it 15.0.3 — MIT — texts: T457
 - marked 16.4.2 — MIT — texts: T458
-- mdurl 2.0.0 — MIT — texts: T459
+- mdurl 2.1.0 — MIT — texts: T459
 - mermaid 11.15.0 — MIT — texts: T460
 - package-manager-detector 1.6.0 — MIT — texts: T461
 - path-data-parser 0.1.0 — MIT — texts: T462
@@ -667,7 +667,7 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - stylis 4.4.0 — MIT — texts: T471
 - tinyexec 1.1.2 — MIT — texts: T472
 - ts-dedent 2.2.0 — MIT — texts: T473
-- uc.micro 2.1.0 — MIT — texts: T464
+- uc.micro 3.0.0 — MIT — texts: T464
 - uuid 14.0.0 — MIT — texts: T474
 - vite 8.0.2 — MIT — texts: T475
 
