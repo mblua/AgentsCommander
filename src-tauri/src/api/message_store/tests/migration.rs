@@ -525,7 +525,7 @@ fn snapshot_table(conn: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite:
         })
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
+        .unwrap()
 }
 
 fn assert_menu_guard_blocked_round_trip(store: &MessageStore) {
