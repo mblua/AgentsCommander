@@ -2089,10 +2089,10 @@ function functionNodeId(moduleId, ownerType, name) {
   return ownerType ? `${moduleId}::${ownerType}::${name}` : `${moduleId}::${name}`;
 }
 
+const TYPE_CALL_PATH_ROOTS = new Set(['crate', 'super', 'self']);
+
 function buildCallGraph(targets, trees, opts, ctx) {
-  const nodes = new Map();
-  const edges = [];
-  const adjacency = new Map();
+  const graph = { nodes: new Map(), edges: [], adjacency: new Map() };
   const perTarget = new Map();
 
   // Pass one: every function node, so a call can only ever resolve to a node
@@ -2101,75 +2101,7 @@ function buildCallGraph(targets, trees, opts, ctx) {
     if (!target.enabled) continue;
     const tree = trees.get(target.targetId);
     if (!tree) continue;
-    const index = {
-      target,
-      tree,
-      freeFns: new Map(),
-      typeMethods: new Map(),
-      typesByModule: new Map(),
-      // Definitions that lost a node-id collision, per module. Their bodies must
-      // not be attributed to the surviving node.
-      discardedFns: new Map(),
-    };
-    perTarget.set(target.targetId, index);
-
-    for (const mod of sortedModules(tree)) {
-      if (mod.testOnly && !opts.includeTests) continue;
-      const fc = getFile(mod.file, ctx);
-      if (!fc) continue;
-      const items = fc.items;
-      if (items.fileCfgTest && !opts.includeTests) continue;
-      const skip = skipRangesFor(items, opts.includeTests);
-
-      const types = new Set();
-      for (const def of items.typeDefs) types.add(def.name);
-      index.typesByModule.set(mod.id, types);
-
-      for (const fn of items.fns) {
-        if (inAnyRange(fn.start, skip)) continue;
-        if (fn.bodyStart < 0) continue;
-        const id = functionNodeId(mod.id, fn.ownerType, fn.name);
-        if (nodes.has(id)) {
-          // Two definitions collapse to one node id: `#[cfg]` twins, or trait
-          // impl overloads such as `From<A>` and `From<B>` for the same type.
-          // The second definition is not analysed, and §4.9's attribution rule
-          // does not authorise charging its body to the surviving node, so its
-          // body range is excluded from call attribution below. Silence here
-          // would let the tool report full visibility while blind, and would
-          // fabricate edges from the discarded body.
-          const kept = nodes.get(id);
-          const dup = lineColOf(fc.lineIndex, fn.nameOffset);
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'duplicate-function-node',
-            message:
-              `${id} is already bound to ${kept.file}:${kept.line}; the definition at line ${dup.line} ` +
-              'is not analysed and its body is excluded from call attribution',
-            file: mod.relFile,
-          });
-          if (!index.discardedFns.has(mod.id)) index.discardedFns.set(mod.id, []);
-          index.discardedFns.get(mod.id).push(fn);
-          continue;
-        }
-        const pos = lineColOf(fc.lineIndex, fn.nameOffset);
-        nodes.set(id, {
-          id,
-          name: fn.name,
-          ownerType: fn.ownerType,
-          moduleId: mod.id,
-          file: mod.relFile,
-          line: pos.line,
-        });
-        if (fn.ownerType) {
-          const key = `${mod.id}::${fn.ownerType}`;
-          if (!index.typeMethods.has(key)) index.typeMethods.set(key, new Map());
-          index.typeMethods.get(key).set(fn.name, id);
-          types.add(fn.ownerType);
-        } else {
-          index.freeFns.set(`${mod.id}::${fn.name}`, id);
-        }
-      }
-    }
+    perTarget.set(target.targetId, indexTargetFunctions(target, tree, graph.nodes, opts, ctx));
   }
 
   // Pass two: call sites.
@@ -2177,166 +2109,291 @@ function buildCallGraph(targets, trees, opts, ctx) {
     if (!target.enabled) continue;
     const index = perTarget.get(target.targetId);
     if (!index) continue;
-    const tree = index.tree;
-
-    for (const mod of sortedModules(tree)) {
-      if (mod.testOnly && !opts.includeTests) continue;
-      const fc = getFile(mod.file, ctx);
-      if (!fc) continue;
-      const items = fc.items;
-      if (items.fileCfgTest && !opts.includeTests) continue;
-
-      const skip = skipRangesFor(items, opts.includeTests);
-      const macroRanges = macroInvocationRanges(fc.masked, skip, ctx);
-      // A discarded definition's body belongs to no node, so nothing inside it
-      // may be attributed: keeping it out of `bodies` is what stops the collision
-      // from manufacturing edges out of the surviving node. It is deliberately
-      // NOT part of `dead`, because unanalysable is not the same as invisible.
-      // A call the tool stopped looking at still belongs in the blind-spot
-      // tally, otherwise the surface shrinks exactly as visibility shrinks.
-      const discarded = index.discardedFns.get(mod.id) || [];
-      const discardedStarts = new Set(discarded.map((fn) => fn.start));
-      const discardedBodies = discarded.map((fn) => [fn.bodyStart, fn.bodyEnd]);
-      const dead = skip.concat(macroRanges);
-      const importMap = buildImportMap(fc, mod, target, tree, ctx, skip);
-      const bodies = items.fns
-        .filter((fn) => fn.bodyStart >= 0 && !inAnyRange(fn.start, skip) && !discardedStarts.has(
-          fn.start))
-        .map((fn) => ({ fn, id: functionNodeId(mod.id, fn.ownerType, fn.name) }));
-
-      const enclosing = (offset) => {
-        let best = null;
-        for (const entry of bodies) {
-          if (offset >= entry.fn.bodyStart && offset < entry.fn.bodyEnd) {
-            if (best === null || entry.fn.bodyStart > best.fn.bodyStart) best = entry;
-          }
-        }
-        return best;
-      };
-
-      const emit = (fromEntry, toId, offset, kind) => {
-        if (!toId || !nodes.has(toId)) return false;
-        const pos = lineColOf(fc.lineIndex, offset);
-        if (!adjacency.has(fromEntry.id)) adjacency.set(fromEntry.id, new Set());
-        adjacency.get(fromEntry.id).add(toId);
-        edges.push({
-          from: fromEntry.id,
-          to: toId,
-          file: mod.relFile,
-          line: pos.line,
-          column: pos.column,
-          kind,
-          cfgGated: inAnyRange(offset, items.cfgGatedRanges),
-          text: callText(fc.src, fc.masked, offset),
-        });
-        return true;
-      };
-
-      // Method-call syntax: the receiver type is unknown without type
-      // information, so this is structurally out of reach.
-      METHOD_CALL_RE.lastIndex = 0;
-      let m;
-      while ((m = METHOD_CALL_RE.exec(fc.masked)) !== null) {
-        const offset = m.index;
-        if (inAnyRange(offset, dead)) continue;
-        if (!enclosing(offset) && !inAnyRange(offset, discardedBodies)) continue;
-        ctx.blindSpots.unresolvedMethodCalls++;
-      }
-
-      // Call syntax that belongs to no function body: counted, never attributed.
-      for (const re of [METHOD_CALL_RE, TYPE_CALL_RE, BARE_CALL_RE]) {
-        re.lastIndex = 0;
-        let outside;
-        while ((outside = re.exec(fc.masked)) !== null) {
-          const offset = outside.index;
-          if (!inAnyRange(offset, items.constStaticRanges)) continue;
-          if (inAnyRange(offset, dead)) continue;
-          if (re === BARE_CALL_RE && NON_CALL_WORDS.has(outside[1])) continue;
-          ctx.blindSpots.callsOutsideFunctionBodies++;
-        }
-      }
-
-      const consumed = [];
-      const qualified = extractQualifiedPaths(fc.masked, dead, target);
-      for (const found of qualified) {
-        const after = skipWs(fc.masked, found.end, fc.masked.length);
-        const isCall = fc.masked[after] === '(' || (fc.masked[after] === ':' && fc.masked[after +
-          1] === ':');
-        if (!isCall) continue;
-        const openIdx = fc.masked[after] === '(' ? after : findTurbofishParen(fc.masked, after);
-        if (openIdx < 0) continue;
-        consumed.push([found.start, openIdx + 1]);
-        const from = enclosing(found.start);
-        if (!from) {
-          if (inAnyRange(found.start, discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
-          continue;
-        }
-        const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
-        const detailed = resolvePathDetailed(found.segments, context, target, tree, ctx);
-        if (!detailed) continue;
-        let toId = null;
-        if (detailed.rest.length === 1) toId = `${detailed.moduleId}::${detailed.rest[0]}`;
-        else if (detailed.rest.length === 2) toId =
-          `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
-        if (!emit(from, toId, found.start, 'path-call')) ctx.blindSpots.unresolvedBareCalls++;
-      }
-
-      TYPE_CALL_RE.lastIndex = 0;
-      while ((m = TYPE_CALL_RE.exec(fc.masked)) !== null) {
-        const offset = m.index;
-        if (inAnyRange(offset, dead) || inAnyRange(offset, consumed)) continue;
-        const typeName = m[1];
-        const method = m[2];
-        if (typeName === 'crate' || typeName === 'super' || typeName === 'self') continue;
-        const from = enclosing(offset);
-        const inDiscarded = !from && inAnyRange(offset, discardedBodies);
-        if (!from && !inDiscarded) continue;
-        // Claim the range either way, so the bare-call pass below cannot count
-        // the same site a second time.
-        consumed.push([offset, offset + m[0].length]);
-        if (inDiscarded) {
-          ctx.blindSpots.unresolvedBareCalls++;
-          continue;
-        }
-        let toId = null;
-        if (typeName === 'Self') {
-          const owner = from.fn.ownerType;
-          if (owner) toId = `${mod.id}::${owner}::${method}`;
-        } else {
-          const imported = importMap.get(typeName);
-          if (imported?.moduleId) {
-            toId = `${imported.moduleId}::${typeName}::${method}`;
-          }
-          const localTypes = index.typesByModule.get(mod.id);
-          if ((!toId || !nodes.has(toId)) && localTypes?.has(typeName)) {
-            toId = `${mod.id}::${typeName}::${method}`;
-          }
-        }
-        if (!emit(from, toId, offset, 'type-call')) ctx.blindSpots.unresolvedBareCalls++;
-      }
-
-      BARE_CALL_RE.lastIndex = 0;
-      while ((m = BARE_CALL_RE.exec(fc.masked)) !== null) {
-        const offset = m.index;
-        if (inAnyRange(offset, dead) || inAnyRange(offset, consumed)) continue;
-        const name = m[1];
-        if (NON_CALL_WORDS.has(name)) continue;
-        const from = enclosing(offset);
-        if (!from) {
-          if (inAnyRange(offset, discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
-          continue;
-        }
-        let toId = index.freeFns.get(`${mod.id}::${name}`) || null;
-        if (!toId) {
-          const imported = importMap.get(name);
-          if (imported?.moduleId) toId = `${imported.moduleId}::${imported.name}`;
-        }
-        if (!emit(from, toId, offset, 'call')) ctx.blindSpots.unresolvedBareCalls++;
-      }
-    }
+    for (const mod of sortedModules(index.tree)) scanModuleCalls(mod, index, graph, opts, ctx);
   }
 
-  return { nodes, edges, adjacency };
+  return graph;
+}
+
+/** The parsed file of a module the call graph covers, or null when it is out of scope. */
+function callGraphFile(mod, opts, ctx) {
+  if (mod.testOnly && !opts.includeTests) return null;
+  const fc = getFile(mod.file, ctx);
+  if (!fc) return null;
+  if (fc.items.fileCfgTest && !opts.includeTests) return null;
+  return fc;
+}
+
+function indexTargetFunctions(target, tree, nodes, opts, ctx) {
+  const index = {
+    target,
+    tree,
+    freeFns: new Map(),
+    typeMethods: new Map(),
+    typesByModule: new Map(),
+    // Definitions that lost a node-id collision, per module. Their bodies must
+    // not be attributed to the surviving node.
+    discardedFns: new Map(),
+  };
+
+  for (const mod of sortedModules(tree)) {
+    const fc = callGraphFile(mod, opts, ctx);
+    if (!fc) continue;
+    const items = fc.items;
+    const skip = skipRangesFor(items, opts.includeTests);
+
+    const types = new Set();
+    for (const def of items.typeDefs) types.add(def.name);
+    index.typesByModule.set(mod.id, types);
+
+    for (const fn of items.fns) {
+      if (inAnyRange(fn.start, skip)) continue;
+      if (fn.bodyStart < 0) continue;
+      addFunctionNode(fn, mod, fc, index, nodes, ctx);
+    }
+  }
+  return index;
+}
+
+function addFunctionNode(fn, mod, fc, index, nodes, ctx) {
+  const id = functionNodeId(mod.id, fn.ownerType, fn.name);
+  if (nodes.has(id)) {
+    // Two definitions collapse to one node id: `#[cfg]` twins, or trait
+    // impl overloads such as `From<A>` and `From<B>` for the same type.
+    // The second definition is not analysed, and §4.9's attribution rule
+    // does not authorise charging its body to the surviving node, so its
+    // body range is excluded from call attribution below. Silence here
+    // would let the tool report full visibility while blind, and would
+    // fabricate edges from the discarded body.
+    const kept = nodes.get(id);
+    const dup = lineColOf(fc.lineIndex, fn.nameOffset);
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'duplicate-function-node',
+      message:
+        `${id} is already bound to ${kept.file}:${kept.line}; the definition at line ${dup.line} ` +
+        'is not analysed and its body is excluded from call attribution',
+      file: mod.relFile,
+    });
+    if (!index.discardedFns.has(mod.id)) index.discardedFns.set(mod.id, []);
+    index.discardedFns.get(mod.id).push(fn);
+    return;
+  }
+  const pos = lineColOf(fc.lineIndex, fn.nameOffset);
+  nodes.set(id, {
+    id,
+    name: fn.name,
+    ownerType: fn.ownerType,
+    moduleId: mod.id,
+    file: mod.relFile,
+    line: pos.line,
+  });
+  if (fn.ownerType) {
+    const key = `${mod.id}::${fn.ownerType}`;
+    if (!index.typeMethods.has(key)) index.typeMethods.set(key, new Map());
+    index.typeMethods.get(key).set(fn.name, id);
+    index.typesByModule.get(mod.id).add(fn.ownerType);
+  } else {
+    index.freeFns.set(`${mod.id}::${fn.name}`, id);
+  }
+}
+
+function scanModuleCalls(mod, index, graph, opts, ctx) {
+  const fc = callGraphFile(mod, opts, ctx);
+  if (!fc) return;
+  const items = fc.items;
+
+  const skip = skipRangesFor(items, opts.includeTests);
+  const macroRanges = macroInvocationRanges(fc.masked, skip, ctx);
+  // A discarded definition's body belongs to no node, so nothing inside it
+  // may be attributed: keeping it out of `bodies` is what stops the collision
+  // from manufacturing edges out of the surviving node. It is deliberately
+  // NOT part of `dead`, because unanalysable is not the same as invisible.
+  // A call the tool stopped looking at still belongs in the blind-spot
+  // tally, otherwise the surface shrinks exactly as visibility shrinks.
+  const discarded = index.discardedFns.get(mod.id) || [];
+  const discardedStarts = new Set(discarded.map((fn) => fn.start));
+  const discardedBodies = discarded.map((fn) => [fn.bodyStart, fn.bodyEnd]);
+  const dead = skip.concat(macroRanges);
+  const importMap = buildImportMap(fc, mod, index.target, index.tree, ctx, skip);
+  const bodies = items.fns
+    .filter((fn) => fn.bodyStart >= 0 && !inAnyRange(fn.start, skip) && !discardedStarts.has(
+      fn.start))
+    .map((fn) => ({ fn, id: functionNodeId(mod.id, fn.ownerType, fn.name) }));
+  const scan = {
+    mod, fc, items, index, graph, ctx, discardedBodies, dead, importMap, bodies, consumed: [],
+  };
+
+  countMethodCalls(scan);
+  countCallsOutsideBodies(scan);
+  resolvePathCalls(scan);
+  resolveTypeCalls(scan);
+  resolveBareCalls(scan);
+}
+
+function enclosingBody(bodies, offset) {
+  let best = null;
+  for (const entry of bodies) {
+    if (offset >= entry.fn.bodyStart && offset < entry.fn.bodyEnd) {
+      if (best === null || entry.fn.bodyStart > best.fn.bodyStart) best = entry;
+    }
+  }
+  return best;
+}
+
+function emitCallEdge(scan, fromEntry, toId, offset, kind) {
+  const { nodes, adjacency, edges } = scan.graph;
+  const fc = scan.fc;
+  if (!toId || !nodes.has(toId)) return false;
+  const pos = lineColOf(fc.lineIndex, offset);
+  if (!adjacency.has(fromEntry.id)) adjacency.set(fromEntry.id, new Set());
+  adjacency.get(fromEntry.id).add(toId);
+  edges.push({
+    from: fromEntry.id,
+    to: toId,
+    file: scan.mod.relFile,
+    line: pos.line,
+    column: pos.column,
+    kind,
+    cfgGated: inAnyRange(offset, scan.items.cfgGatedRanges),
+    text: callText(fc.src, fc.masked, offset),
+  });
+  return true;
+}
+
+// Method-call syntax: the receiver type is unknown without type
+// information, so this is structurally out of reach.
+function countMethodCalls(scan) {
+  METHOD_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = METHOD_CALL_RE.exec(scan.fc.masked)) !== null) {
+    const offset = m.index;
+    if (inAnyRange(offset, scan.dead)) continue;
+    if (!enclosingBody(scan.bodies, offset) && !inAnyRange(offset, scan.discardedBodies)) continue;
+    scan.ctx.blindSpots.unresolvedMethodCalls++;
+  }
+}
+
+// Call syntax that belongs to no function body: counted, never attributed.
+function countCallsOutsideBodies(scan) {
+  for (const re of [METHOD_CALL_RE, TYPE_CALL_RE, BARE_CALL_RE]) {
+    re.lastIndex = 0;
+    let outside;
+    while ((outside = re.exec(scan.fc.masked)) !== null) {
+      const offset = outside.index;
+      if (!inAnyRange(offset, scan.items.constStaticRanges)) continue;
+      if (inAnyRange(offset, scan.dead)) continue;
+      if (re === BARE_CALL_RE && NON_CALL_WORDS.has(outside[1])) continue;
+      scan.ctx.blindSpots.callsOutsideFunctionBodies++;
+    }
+  }
+}
+
+/** Offset of the call paren after a qualified path, or -1 when the path is not called. */
+function pathCallParen(masked, after) {
+  if (masked[after] === '(') return after;
+  if (masked[after] === ':' && masked[after + 1] === ':') return findTurbofishParen(masked, after);
+  return -1;
+}
+
+function pathCallTargetId(detailed) {
+  if (detailed.rest.length === 1) return `${detailed.moduleId}::${detailed.rest[0]}`;
+  if (detailed.rest.length === 2) {
+    return `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
+  }
+  return null;
+}
+
+function resolvePathCalls(scan) {
+  const { fc, mod, items, index, ctx } = scan;
+  const qualified = extractQualifiedPaths(fc.masked, scan.dead, index.target);
+  for (const found of qualified) {
+    const after = skipWs(fc.masked, found.end, fc.masked.length);
+    const openIdx = pathCallParen(fc.masked, after);
+    if (openIdx < 0) continue;
+    scan.consumed.push([found.start, openIdx + 1]);
+    const from = enclosingBody(scan.bodies, found.start);
+    if (!from) {
+      if (inAnyRange(found.start, scan.discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
+      continue;
+    }
+    const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
+    const detailed = resolvePathDetailed(found.segments, context, index.target, index.tree, ctx);
+    if (!detailed) continue;
+    const toId = pathCallTargetId(detailed);
+    if (!emitCallEdge(scan, from, toId, found.start, 'path-call')) {
+      ctx.blindSpots.unresolvedBareCalls++;
+    }
+  }
+}
+
+function typeCallTargetId(scan, from, typeName, method) {
+  const modId = scan.mod.id;
+  if (typeName === 'Self') {
+    const owner = from.fn.ownerType;
+    return owner ? `${modId}::${owner}::${method}` : null;
+  }
+  let toId = null;
+  const imported = scan.importMap.get(typeName);
+  if (imported?.moduleId) {
+    toId = `${imported.moduleId}::${typeName}::${method}`;
+  }
+  const localTypes = scan.index.typesByModule.get(modId);
+  if ((!toId || !scan.graph.nodes.has(toId)) && localTypes?.has(typeName)) {
+    toId = `${modId}::${typeName}::${method}`;
+  }
+  return toId;
+}
+
+function resolveTypeCalls(scan) {
+  const ctx = scan.ctx;
+  TYPE_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = TYPE_CALL_RE.exec(scan.fc.masked)) !== null) {
+    const offset = m.index;
+    if (inAnyRange(offset, scan.dead) || inAnyRange(offset, scan.consumed)) continue;
+    const typeName = m[1];
+    const method = m[2];
+    if (TYPE_CALL_PATH_ROOTS.has(typeName)) continue;
+    const from = enclosingBody(scan.bodies, offset);
+    const inDiscarded = !from && inAnyRange(offset, scan.discardedBodies);
+    if (!from && !inDiscarded) continue;
+    // Claim the range either way, so the bare-call pass below cannot count
+    // the same site a second time.
+    scan.consumed.push([offset, offset + m[0].length]);
+    if (inDiscarded) {
+      ctx.blindSpots.unresolvedBareCalls++;
+      continue;
+    }
+    const toId = typeCallTargetId(scan, from, typeName, method);
+    if (!emitCallEdge(scan, from, toId, offset, 'type-call')) ctx.blindSpots.unresolvedBareCalls++;
+  }
+}
+
+function bareCallTargetId(scan, name) {
+  const toId = scan.index.freeFns.get(`${scan.mod.id}::${name}`) || null;
+  if (toId) return toId;
+  const imported = scan.importMap.get(name);
+  return imported?.moduleId ? `${imported.moduleId}::${imported.name}` : null;
+}
+
+function resolveBareCalls(scan) {
+  const ctx = scan.ctx;
+  BARE_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = BARE_CALL_RE.exec(scan.fc.masked)) !== null) {
+    const offset = m.index;
+    if (inAnyRange(offset, scan.dead) || inAnyRange(offset, scan.consumed)) continue;
+    const name = m[1];
+    if (NON_CALL_WORDS.has(name)) continue;
+    const from = enclosingBody(scan.bodies, offset);
+    if (!from) {
+      if (inAnyRange(offset, scan.discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
+      continue;
+    }
+    const toId = bareCallTargetId(scan, name);
+    if (!emitCallEdge(scan, from, toId, offset, 'call')) ctx.blindSpots.unresolvedBareCalls++;
+  }
 }
 
 function findTurbofishParen(masked, from) {
