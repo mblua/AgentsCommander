@@ -82,6 +82,8 @@ export function parseRecord(text) {
 
 const testKey = (suite, platform, id) => `${suite}|${platform}|${id}`;
 const maxDay = (a, b) => (a && a > b ? a : b);
+// Code-unit order, the same order as a default sort() of strings (deterministic output).
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 function testEntry(history, key) {
   let entry = own(history.tests, key);
@@ -103,7 +105,7 @@ function earlierRecordKeys(history, header, recordKey) {
       return rec.sha === header.sha && rec.suite === header.suite &&
         rec.platform === header.platform;
     })
-    .sort();
+    .sort(byCodeUnit);
 }
 
 function addFail(history, ctx, id, entry) {
@@ -266,13 +268,13 @@ function rowFor(key, entry, start, today) {
 export function classify(history, today) {
   const start = windowStart(today);
   return Object.keys(history.tests)
-    .sort()
+    .sort(byCodeUnit)
     .map((key) => rowFor(key, history.tests[key], start, today));
 }
 
 function evidenceFor(history, id, start) {
   const evidence = [];
-  for (const key of Object.keys(history.tests).sort()) {
+  for (const key of Object.keys(history.tests).sort(byCodeUnit)) {
     const [, platform, ...rest] = key.split('|');
     if (rest.join('|') !== id) continue;
     for (const [sha, shaEntry] of Object.entries(history.tests[key].shas)) {
@@ -303,7 +305,7 @@ export function buildReport(history, today, coverage) {
   const candidates = {};
   for (const id of quarantine) put(candidates, id, evidenceFor(history, id, start));
   const releaseReady = Object.keys(history.ids)
-    .sort()
+    .sort(byCodeUnit)
     .filter((id) => history.ids[id].streak >= RELEASE_PASSES)
     .map((id) => ({
       test_id: id,

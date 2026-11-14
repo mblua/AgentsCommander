@@ -64,6 +64,9 @@ function table(report, testId) {
   return out.join('\n');
 }
 
+// Code-unit order, the same order as a default sort() of strings.
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 // Evidence SHAs of one candidate, one entry per SHA with its latest day on any platform.
 function evidenceShas(report, testId) {
   const days = new Map();
@@ -71,7 +74,9 @@ function evidenceShas(report, testId) {
     const day = days.get(item.sha);
     if (!day || item.last_day > day) days.set(item.sha, item.last_day);
   }
-  return [...days.entries()].sort().map(([sha, lastDay]) => ({ sha, last_day: lastDay }));
+  return [...days.entries()]
+    .sort((a, b) => byCodeUnit(a[0], b[0]))
+    .map(([sha, lastDay]) => ({ sha, last_day: lastDay }));
 }
 
 function shaLines(h, shas) {
