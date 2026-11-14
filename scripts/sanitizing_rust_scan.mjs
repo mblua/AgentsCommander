@@ -291,31 +291,29 @@ function imports(tokens, prefix = []) {
   return [{ name: as < 0 ? full.at(-1) : tokens[as + 1]?.name, target: full.join('::'),
     glob: full.at(-1) === '*' }];
 }
-export function resolvePath(input, scope) {
-  const at = typeof input === 'string' ? Infinity : input[0]?.start ?? Infinity;
-  const text = typeof input === 'string' ? input : simplePath(input);
-  if (!text) return { path: null, ambiguous: true, reason: 'non-simple path' };
-  if (text.startsWith('::')) return { path: text.slice(2), ambiguous: false };
-  const parts = text.replace(/^::/, '').split('::'); let binding;
+// Innermost binding of `name` visible at offset `at`, or the glob-ambiguity result.
+function scopeBinding(scope, name, at, text) {
   for (let s = scope; s; s = s.parent) {
-    if (s.bindings.has(parts[0])) {
-      binding = s.bindings.get(parts[0]);
+    if (s.bindings.has(name)) {
+      let binding = s.bindings.get(name);
       while (binding && binding.start > at) binding = binding.previous;
-      if (binding) break;
+      if (binding) return { binding };
     }
-    if (s.globs.length) return { path: text, ambiguous: true, reason: 'glob import may bind path' };
+    if (s.globs.length) {
+      return { result: { path: text, ambiguous: true, reason: 'glob import may bind path' } };
+    }
   }
-  if (!binding) return { path: parts.join('::'), ambiguous: false };
-  if (binding.ambiguous) return { path: binding.target ?? text, ambiguous: true,
-    reason: binding.reason ?? 'ambiguous binding', binding };
-  if (!binding.target) return { path: null, value: binding.value, ambiguous: false,
-    shadowed: binding.value === undefined, binding };
-  // Exactly one local path/constant alias hop; import qualification is preserved.
+  return {};
+}
+function firstBinding(scope, name) {
+  for (let s = scope; s; s = s.parent) if (s.bindings.has(name)) return s.bindings.get(name);
+  return undefined;
+}
+// Exactly one local path/constant alias hop; import qualification is preserved.
+function resolveAliasHop(binding, text, parts) {
   let target = binding.target;
   if (binding.kind !== 'import') {
-    const first = target.split('::')[0]; let other;
-    for (let s = binding.scope; s;
-      s = s.parent) { if (s.bindings.has(first)) { other = s.bindings.get(first); break; } }
+    const first = target.split('::')[0], other = firstBinding(binding.scope, first);
     if (other === binding || other?.kind !== 'import' && other?.target)
       return { path: text, ambiguous: true, reason: 'cyclic or multi-hop constant/path alias',
         binding };
@@ -329,6 +327,22 @@ export function resolvePath(input, scope) {
   }
   return { path: [target, ...parts.slice(1)].join('::').replace(/^::/, ''), ambiguous: false,
     binding };
+}
+export function resolvePath(input, scope) {
+  const at = typeof input === 'string' ? Infinity : input[0]?.start ?? Infinity;
+  const text = typeof input === 'string' ? input : simplePath(input);
+  if (!text) return { path: null, ambiguous: true, reason: 'non-simple path' };
+  if (text.startsWith('::')) return { path: text.slice(2), ambiguous: false };
+  const parts = text.replace(/^::/, '').split('::');
+  const found = scopeBinding(scope, parts[0], at, text);
+  if (found.result) return found.result;
+  const binding = found.binding;
+  if (!binding) return { path: parts.join('::'), ambiguous: false };
+  if (binding.ambiguous) return { path: binding.target ?? text, ambiguous: true,
+    reason: binding.reason ?? 'ambiguous binding', binding };
+  if (!binding.target) return { path: null, value: binding.value, ambiguous: false,
+    shadowed: binding.value === undefined, binding };
+  return resolveAliasHop(binding, text, parts);
 }
 
 // scanRust phases share one context: { path, tokens, scopes, items, attributes, diagnostics,
@@ -651,27 +665,121 @@ export function scanRust(path, text) {
 // round3-dev-extract.cjs SHA256 7A6CCF4529F9420887A3BF8EEC8F7A811929FFB3C5598B8C773BD4720DD511A6
 // round3-dev-build.cjs SHA256 54AAA090354596DD1971833047FA84249546D046955759001071CC19583B8951
 // Deliberately preserves historical function matching; not the production lexer.
-function mask(s){let a=s.split(''),i=0;const blank=(b,e)=>{for(let j=b;j<e;j++)if(a[j]!='\n')a[j]=
-  ' ';};while(i<s.length){let b=i;if(s.startsWith('//',i)){i=s.indexOf('\n',i);if(i<0)i=s.length;
-  blank(b,i);}else if(s.startsWith('/*',i)){i+=2;let n=1;while(i<s.length&&n){if(s.startsWith('/*',
-  i)){n++;i+=2;}else if(s.startsWith('*/',i)){n--;i+=2;}else i++;}blank(b,i);}else{const raw=
-  /^(?:br|r)(#*)"/.exec(s.slice(i));if(raw){const end='"'+raw[1];let e=s.indexOf(end,i+raw[
-  0].length);i=e<0?s.length:e+end.length;blank(b,i);}else if(s[i]=='"'){i++;while(i<s.length){if(
-  s.codePointAt(i)==92){i+=2;continue;}
-  if(s[i++]=='"')break;}blank(b,i);}else if(s[i]=="'"){let k=i+
-  1;if(s.codePointAt(k)==92){k++;if(s[k]=='u'&&s[k+1]=='{'){const close=s.indexOf('}',k+2);
-  k=close<0?
-  k:close+1;}else if(s[k]=='x')k+=3;else k++;}else k+=s.codePointAt(k)>65535?2:1;
-  if(s[k]=="'"){i=k+
-  1;blank(b,i);}else i++;}else i++;}}return a.join('');}
-export function compatibilitySites(p,text,tokens=[]) {
-const code=mask(text),lines=text.split('\n'),starts=[0];for(let i=0;i<text.length;i++)if(text[i]=='\n')starts.push(i+1);const functions=[];for(const m of code.matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()/g)){let b=code.indexOf('{',m.index),semi=code.indexOf(';',m.index);if(b<0||semi>=0&&semi<b)continue;let d=1,e=b+1;while(e<code.length&&d){if(code[e]=='{')d++;if(code[e]=='}')d--;e++;}functions.push({name:m[1],start:m.index,end:e});}const sinks=[];const re=/\.(?:join|push|with_file_name|with_extension|open|create_new_private_file|write_all|write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|write_to)\s*\(|\b(?:Path|PathBuf)::(?:new|from)\s*\(|\b(?:fs|filesystem)::[A-Za-z_]+\s*\(|\b(?:File|OpenOptions|Connection)::[A-Za-z_]+\s*\(|\b(?:write_file_atomic|atomic_write\w*|write_json\w*|rename_with_retry|CreateFileW|MoveFileExW|ReplaceFileW|writeln|write)\s*!?\s*\(/g;for(const m of code.matchAll(re)){const f=functions.filter(f=>m.index>=f.start&&m.index<f.end).sort((a,b)=>(a.end-a.start)-(b.end-b.start))[0];const item=f?f.name:'<module>';const ordinal=sinks.filter(x=>x.item===item).length+1;let line=starts.findIndex(x=>x>m.index);if(line<0)line=starts.length;sinks.push({path:p,item,ordinal,line,offset:m.index,operation:m[0],evidence:lines[line-1].trim()});}
-return sinks.map(site=>({...site,
-  tokens:tokens.filter(t=>t.start>=site.offset&&t.start<site.offset+site.operation.length)}));
+// Blanks a[b..e) except newlines; an end past the text grows `a`, as the frozen mask did.
+function maskBlank(a, b, e) {
+  for (let j = b; j < e; j++) if (a[j] !== '\n') a[j] = ' ';
+}
+function maskLineCommentEnd(s, i) {
+  const end = s.indexOf('\n', i);
+  return end < 0 ? s.length : end;
+}
+function maskBlockCommentEnd(s, i) {
+  i += 2; let n = 1;
+  while (i < s.length && n) {
+    if (s.startsWith('/*', i)) { n++; i += 2; }
+    else if (s.startsWith('*/', i)) { n--; i += 2; }
+    else i++;
+  }
+  return i;
+}
+function maskRawStringEnd(s, i, raw) {
+  const end = '"' + raw[1], e = s.indexOf(end, i + raw[0].length);
+  return e < 0 ? s.length : e + end.length;
+}
+function maskStringEnd(s, i) {
+  i++;
+  while (i < s.length) {
+    if (s.codePointAt(i) === 92) { i += 2; continue; }
+    if (s[i++] === '"') break;
+  }
+  return i;
+}
+// Index of the closing quote candidate of a char literal whose body starts at k.
+function maskCharClose(s, k) {
+  if (s.codePointAt(k) !== 92) return k + (s.codePointAt(k) > 65535 ? 2 : 1);
+  k++;
+  if (s[k] === 'u' && s[k + 1] === '{') {
+    const close = s.indexOf('}', k + 2);
+    return close < 0 ? k : close + 1;
+  }
+  return k + (s[k] === 'x' ? 3 : 1);
+}
+// End of the comment or literal starting at s[i], or -1 when none starts there.
+function maskSpanEnd(s, i) {
+  if (s.startsWith('//', i)) return maskLineCommentEnd(s, i);
+  if (s.startsWith('/*', i)) return maskBlockCommentEnd(s, i);
+  const raw = /^(?:br|r)(#*)"/.exec(s.slice(i));
+  if (raw) return maskRawStringEnd(s, i, raw);
+  if (s[i] === '"') return maskStringEnd(s, i);
+  if (s[i] !== "'") return -1;
+  const k = maskCharClose(s, i + 1);
+  return s[k] === "'" ? k + 1 : -1;
+}
+function mask(s) {
+  const a = s.split('');
+  let i = 0;
+  while (i < s.length) {
+    const end = maskSpanEnd(s, i);
+    if (end < 0) { i++; continue; }
+    maskBlank(a, i, end); i = end;
+  }
+  return a.join('');
+}
+function lineStarts(text) {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+  return starts;
+}
+function braceBodyEnd(code, b) {
+  let d = 1, e = b + 1;
+  while (e < code.length && d) {
+    if (code[e] === '{') d++;
+    if (code[e] === '}') d--;
+    e++;
+  }
+  return e;
+}
+function maskedFunctions(code) {
+  const functions = [];
+  for (const m of code.matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()/g)) {
+    const b = code.indexOf('{', m.index), semi = code.indexOf(';', m.index);
+    if (b < 0 || semi >= 0 && semi < b) continue;
+    functions.push({ name: m[1], start: m.index, end: braceBodyEnd(code, b) });
+  }
+  return functions;
+}
+function innermostFunction(functions, index) {
+  const f = functions.filter(f => index >= f.start && index < f.end)
+    .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+  return f ? f.name : '<module>';
+}
+const COMPAT_SINK_SOURCE = [
+  String.raw`\.(?:join|push|with_file_name|with_extension|open|create_new_private_file|write_all|`,
+  'write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|',
+  String.raw`write_to)\s*\(|\b(?:Path|PathBuf)::(?:new|from)\s*\(|`,
+  String.raw`\b(?:fs|filesystem)::[A-Za-z_]+\s*\(|`,
+  String.raw`\b(?:File|OpenOptions|Connection)::[A-Za-z_]+\s*\(|`,
+  String.raw`\b(?:write_file_atomic|atomic_write\w*|write_json\w*|rename_with_retry|CreateFileW|`,
+  String.raw`MoveFileExW|ReplaceFileW|writeln|write)\s*!?\s*\(`,
+].join('');
+export function compatibilitySites(p, text, tokens = []) {
+  const code = mask(text), lines = text.split('\n'), starts = lineStarts(text);
+  const functions = maskedFunctions(code), sinks = [];
+  for (const m of code.matchAll(new RegExp(COMPAT_SINK_SOURCE, 'g'))) {
+    const item = innermostFunction(functions, m.index);
+    const ordinal = sinks.filter(x => x.item === item).length + 1;
+    let line = starts.findIndex(x => x > m.index);
+    if (line < 0) line = starts.length;
+    sinks.push({ path: p, item, ordinal, line, offset: m.index, operation: m[0],
+      evidence: lines[line - 1].trim() });
+  }
+  return sinks.map(site => ({ ...site,
+    tokens: tokens.filter(t => t.start >= site.offset && t.start < site.offset +
+      site.operation.length) }));
 }
 
 // Positive, deliberately small TOML subset; no unconsumed statement can enable inheritance.
-function ordinaryManifest(cargo, external, path, tree) {
+function manifestGrammar() {
   const gap = String.raw`(?:[ \t\r\n]|#[^\r\n]*(?![^\r\n]))*`;
   const string = String.raw`(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')`;
   const scalar = `(?:${string}|true|false|[+-]?[0-9][0-9_.]*)`;
@@ -681,52 +789,67 @@ function ordinaryManifest(cargo, external, path, tree) {
   const ending = String.raw`[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)`;
   const assignment = new RegExp(
     String.raw`^([A-Za-z0-9_-]+)[ \t]*=[ \t]*(${scalar}|${array}|${inline})${ending}`);
-  let section;
-  let targetTable = false;
+  return { gap, string, ending, assignment };
+}
+function manifestSectionAllowed(section, external) {
+  const simple = /^(?:package|lib|dependencies|dev-dependencies|build-dependencies|features)$/;
+  const lint = /^(?:lints|workspace\.lints\.clippy)$/;
+  const target = /^target\.'cfg\([^'\\\r\n]*\)'\.(?:dev-|build-)?dependencies$/;
+  return simple.test(section) || lint.test(section) || target.test(section) ||
+    external && section === 'workspace';
+}
+// Consumes a table header: its length, -1 when unsupported, 0 when cargo starts with none.
+function manifestHeader(cargo, state) {
+  const arrayHeader = new RegExp(
+    String.raw`^\[\[[ \t]*(bin|test|bench|example)[ \t]*\]\]` + state.grammar.ending).exec(cargo);
+  if (arrayHeader) {
+    if (!state.external) return -1;
+    state.section = arrayHeader[1];
+    state.targetTable = true;
+    return arrayHeader[0].length;
+  }
+  const header = /^\[([^[\]\r\n]+)\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(cargo);
+  if (!header) return 0;
+  state.section = header[1].trim();
+  state.targetTable = false;
+  if (!manifestSectionAllowed(state.section, state.external)) return -1;
+  return header[0].length;
+}
+function workspaceEntryAllowed(state, key, value) {
+  if (!['members', 'default-members', 'exclude', 'resolver'].includes(key)) return false;
+  if (key === 'resolver') return true;
+  const { path, tree } = state;
+  for (const m of value.matchAll(new RegExp(state.grammar.string, 'g'))) {
+    const member = m[0].slice(1, -1);
+    const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+    if (key !== 'exclude' && !tree.has(base + member + '/Cargo.toml')) return false;
+  }
+  return true;
+}
+function manifestEntryAllowed(state, key, value) {
+  const { section, external } = state;
+  if (!section) return false;
+  if (section === 'workspace' && !workspaceEntryAllowed(state, key, value)) return false;
+  if (section === 'lib' && !['name', 'crate-type'].includes(key) &&
+      !(external && key === 'doctest' && value === 'false')) return false;
+  if (state.targetTable && (key === 'path'
+    ? !/^(?:"[A-Za-z0-9_-]+\.rs"|'[A-Za-z0-9_-]+\.rs')$/.test(value)
+    : key !== 'name')) return false;
+  return !(section === 'package' && key === 'build' && value !== 'false');
+}
+function ordinaryManifest(cargo, external, path, tree) {
+  const grammar = manifestGrammar();
+  const state = { grammar, external, path, tree, section: undefined, targetTable: false };
   while (cargo.length) {
-    cargo = cargo.replace(new RegExp('^' + gap), '');
+    cargo = cargo.replace(new RegExp('^' + grammar.gap), '');
     if (!cargo.length) break;
-    const arrayHeader = new RegExp(
-      String.raw`^\[\[[ \t]*(bin|test|bench|example)[ \t]*\]\]` + ending).exec(cargo);
-    if (arrayHeader) {
-      if (!external) return false;
-      section = arrayHeader[1];
-      targetTable = true;
-      cargo = cargo.slice(arrayHeader[0].length);
-      continue;
-    }
-    const header = /^\[([^[\]\r\n]+)\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(cargo);
-    if (header) {
-      section = header[1].trim();
-      targetTable = false;
-      const simple = /^(?:package|lib|dependencies|dev-dependencies|build-dependencies|features)$/;
-      const lint = /^(?:lints|workspace\.lints\.clippy)$/;
-      const target = /^target\.'cfg\([^'\\\r\n]*\)'\.(?:dev-|build-)?dependencies$/;
-      if (!simple.test(section) && !lint.test(section) && !target.test(section) &&
-          !(external && section === 'workspace')) return false;
-      cargo = cargo.slice(header[0].length);
-      continue;
-    }
-    const entry = assignment.exec(cargo);
+    const header = manifestHeader(cargo, state);
+    if (header < 0) return false;
+    if (header) { cargo = cargo.slice(header); continue; }
+    const entry = grammar.assignment.exec(cargo);
     if (!entry) return false;
     const [, key, value] = entry;
-    if (!section) return false;
-    if (section === 'workspace') {
-      if (!['members', 'default-members', 'exclude', 'resolver'].includes(key)) return false;
-      if (key !== 'resolver') {
-        for (const m of value.matchAll(new RegExp(string, 'g'))) {
-          const member = m[0].slice(1, -1);
-          const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
-          if (key !== 'exclude' && !tree.has(base + member + '/Cargo.toml')) return false;
-        }
-      }
-    }
-    if (section === 'lib' && !['name', 'crate-type'].includes(key) &&
-        !(external && key === 'doctest' && value === 'false')) return false;
-    if (targetTable && (key === 'path'
-      ? !/^(?:"[A-Za-z0-9_-]+\.rs"|'[A-Za-z0-9_-]+\.rs')$/.test(value)
-      : key !== 'name')) return false;
-    if (section === 'package' && key === 'build' && value !== 'false') return false;
+    if (!manifestEntryAllowed(state, key, value)) return false;
     cargo = cargo.slice(entry[0].length);
   }
   return true;
