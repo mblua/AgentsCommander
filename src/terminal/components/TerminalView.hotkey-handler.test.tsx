@@ -18,9 +18,12 @@ import {
 import { liveSelection, SESSION_A } from "../../shared/testing/session-selection";
 import { registerShortcuts, unregisterShortcuts } from "../../shared/shortcuts";
 import * as compact from "../../shared/sidebar-compact";
+import { PtyAPI } from "../../shared/ipc";
 
 type KeyHandler = (event: KeyboardEvent) => boolean;
-const xterm = vi.hoisted(() => ({ handlers: [] as KeyHandler[], selection: false }));
+const xterm = vi.hoisted(() => ({
+  handlers: [] as KeyHandler[], selection: false, pasted: [] as string[],
+}));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -34,7 +37,7 @@ vi.mock("@xterm/xterm", () => ({
     write(): void {}
     reset(): void {}
     scrollToBottom(): void {}
-    paste(): void {}
+    paste(text: string): void { xterm.pasted.push(text); }
     resize(): void {}
     hasSelection(): boolean { return xterm.selection; }
     getSelection(): string { return "copied"; }
@@ -77,6 +80,7 @@ describe("TerminalView hotkey handler (#2236 D9a)", () => {
     resetUiStoresForTests();
     xterm.handlers.length = 0;
     xterm.selection = false;
+    xterm.pasted.length = 0;
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings());
     fake.resolve("get_active_session", liveSelection(SESSION_A));
@@ -153,5 +157,76 @@ describe("TerminalView hotkey handler (#2236 D9a)", () => {
     const stop = vi.spyOn(event, "stopPropagation");
     expect(handler()(event)).toBe(false);
     expect(stop).toHaveBeenCalled();
+  });
+
+  // #4694 — pin copy, paste and Shift+Enter results before the handler split.
+  type ClipMock = { writeText: ReturnType<typeof vi.fn>; readText: ReturnType<typeof vi.fn> };
+  function clipboardMock(text = ""): ClipMock {
+    const value = {
+      writeText: vi.fn(() => Promise.resolve()),
+      readText: vi.fn(() => Promise.resolve(text)),
+    };
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value });
+    return value;
+  }
+  const ctrlShift = (k: string, type = "keydown") =>
+    new KeyboardEvent(type, {
+      key: k, code: `Key${k.toUpperCase()}`, ctrlKey: true, shiftKey: true,
+      bubbles: true, cancelable: true,
+    });
+
+  it("6. Ctrl+Shift+C keydown without a selection passes through", () => {
+    const clip = clipboardMock();
+    const event = ctrlShift("C");
+    expect(handler()(event)).toBe(true);
+    expect(clip.writeText).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("7. Ctrl+Shift+C keydown with a selection copies it", () => {
+    xterm.selection = true;
+    const clip = clipboardMock();
+    const event = ctrlShift("C");
+    expect(handler()(event)).toBe(false);
+    expect(clip.writeText).toHaveBeenCalledTimes(1);
+    expect(clip.writeText).toHaveBeenCalledWith("copied");
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("8. Ctrl+Shift+C keyup follows the selection", () => {
+    const clip = clipboardMock();
+    xterm.selection = true;
+    expect(handler()(ctrlShift("C", "keyup"))).toBe(false);
+    xterm.selection = false;
+    expect(handler()(ctrlShift("C", "keyup"))).toBe(true);
+    expect(clip.writeText).not.toHaveBeenCalled();
+  });
+
+  it("9. Ctrl+Shift+V keydown pastes the clipboard without bracketed-paste markers", async () => {
+    const esc = String.fromCharCode(27);
+    const clip = clipboardMock(`a${esc}[200~b${esc}[201~c`);
+    const event = ctrlShift("V");
+    expect(handler()(event)).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+    expect(clip.readText).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(xterm.pasted).toEqual(["abc"]));
+  });
+
+  it("10. Ctrl+Shift+V keyup is swallowed without reading the clipboard", () => {
+    const clip = clipboardMock("x");
+    expect(handler()(ctrlShift("V", "keyup"))).toBe(false);
+    expect(clip.readText).not.toHaveBeenCalled();
+  });
+
+  it("11. Shift+Enter writes one newline on keydown and nothing on keyup", () => {
+    const write = vi.spyOn(PtyAPI, "write").mockResolvedValue(undefined);
+    const enter = (type: string) =>
+      new KeyboardEvent(type, { key: "Enter", code: "Enter", shiftKey: true, cancelable: true });
+    expect(handler()(enter("keydown"))).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).toBe(SESSION_A);
+    expect(new TextDecoder().decode(write.mock.calls[0][1])).toBe("\n");
+    expect(handler()(enter("keyup"))).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
   });
 });
