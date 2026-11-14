@@ -417,13 +417,13 @@ function bindName(scope, name, data) {
     data.kind !== 'local') data = { ...data, ambiguous: true, reason: 'duplicate binding' };
   scope.bindings.set(name, { ...data, name, scope, previous: prior });
 }
-const NAMED_ITEM_KINDS = ['fn', 'mod', 'struct', 'enum', 'union', 'trait', 'type'];
+const NAMED_ITEM_KINDS = new Set(['fn', 'mod', 'struct', 'enum', 'union', 'trait', 'type']);
 // True when the item keyword at tokens[i] does not start a standalone item.
 function itemKeywordSkipped(ctx, i) {
   const tokens = ctx.tokens, kind = tokens[i].name;
   if (!itemKinds.has(kind) || scanInsideAttribute(ctx, i) || scanInMacro(ctx, i) ||
     tokens[i - 1]?.text === '::' || tokens[i - 1]?.text === '.') return true;
-  if (NAMED_ITEM_KINDS.includes(kind) && tokens[i + 1]?.kind !== 'ident') return true;
+  if (NAMED_ITEM_KINDS.has(kind) && tokens[i + 1]?.kind !== 'ident') return true;
   if (kind === 'const' && (tokens[i + 1]?.kind !== 'ident' ||
     tokens[i - 1]?.text === '*')) return true;
   if (kind === 'const' && ctx.genericConsts.has(i)) return true;
@@ -439,7 +439,7 @@ function itemQualifierSkipped(ctx, i, kind) {
     tokens[i + 1]?.text !== '{') return true;
   return kind === 'use' && tokens[i - 1]?.text === '<';
 }
-const GENERIC_HEADER_KINDS = ['fn', 'struct', 'enum', 'union', 'trait', 'impl', 'type'];
+const GENERIC_HEADER_KINDS = new Set(['fn', 'struct', 'enum', 'union', 'trait', 'impl', 'type']);
 const BRACE_VALUE_KINDS = new Set(['use', 'const', 'static', 'type']);
 const SKIPPED_GROUPS = new Set(['(', '[']);
 function trackGenericAngle(ctx, t, j, angleDepth) {
@@ -450,7 +450,7 @@ function trackGenericAngle(ctx, t, j, angleDepth) {
 }
 // Body '{' index (or null) and last token index (null when not delimitable) of the item.
 function itemExtent(ctx, i, kind) {
-  const tokens = ctx.tokens, genericHeader = GENERIC_HEADER_KINDS.includes(kind);
+  const tokens = ctx.tokens, genericHeader = GENERIC_HEADER_KINDS.has(kind);
   let body = null, end = null, angleDepth = 0;
   for (let j = i + 1; j < tokens.length; j++) {
     const t = tokens[j];
@@ -473,12 +473,12 @@ function attachedAttributes(attrEnds, first) {
   }
   return { first, attached };
 }
-const ITEM_QUALIFIERS = ['pub', 'async', 'unsafe', 'default', 'const'];
+const ITEM_QUALIFIERS = new Set(['pub', 'async', 'unsafe', 'default', 'const']);
 // Widens the item back over qualifiers, pub(...) and attached outer attributes.
 function itemStart(ctx, i) {
   const tokens = ctx.tokens;
   let first = i;
-  while (first > 0 && ITEM_QUALIFIERS.includes(tokens[first - 1].name)) first--;
+  while (first > 0 && ITEM_QUALIFIERS.has(tokens[first - 1].name)) first--;
   if (tokens[first - 1]?.text === ')' &&
     tokens[tokens[first - 1].mate - 1]?.name === 'pub') first = tokens[first - 1].mate - 1;
   return attachedAttributes(ctx.attrEnds, first);
@@ -571,14 +571,14 @@ function markReassigned(t) {
     }
   }
 }
-const ASSIGN_OPS = ['=', '+=', '-=', '*=', '/='];
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=']);
 // Locals use a conservative scope map: uncertain reassignments/destructuring never erase signals.
 function scanLocals(ctx) {
   const tokens = ctx.tokens;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i]; if (scanInsideAttribute(ctx, i)) continue;
     if (t.name === 'let') scanLet(tokens, i, t);
-    else if (t.kind === 'ident' && !t.declaration && ASSIGN_OPS.includes(tokens[i + 1]?.text) &&
+    else if (t.kind === 'ident' && !t.declaration && ASSIGN_OPS.has(tokens[i + 1]?.text) &&
       tokens[i - 1]?.name !== 'let') markReassigned(t);
   }
 }
