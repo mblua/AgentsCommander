@@ -331,11 +331,12 @@ export function resolvePath(input, scope) {
     binding };
 }
 
-export function scanRust(path, text) {
-  const { tokens, groups } = lexRust(path, text);
+// scanRust phases share one context: { path, tokens, scopes, items, attributes, diagnostics,
+// macroGroups, attrEnds, genericConsts }.
+function buildScopes(tokens, text) {
   const root = { id: 0, start: 0, end: text.length, parent: null, bindings: new Map(), imports: [],
     globs: [], attributes: [] };
-  const scopes = [root], items = [], attributes = [], diagnostics = [];
+  const scopes = [root];
   let current = root;
   for (const token of tokens) {
     token.scope = current;
@@ -346,197 +347,300 @@ export function scanRust(path, text) {
       scopes.push(scope); current = scope;
     } else if (token.text === '}') current = current.parent;
   }
-  const macroGroups = groups.filter(g => tokens[g.start - 1]?.text === '!' ||
-    tokens[g.start - 2]?.text === '!');
-  const inMacro = index => macroGroups.some(g => index > g.start && index < g.end);
-  // Mask comments by rebuilding only code tokens; retain whitespace/line offsets.
+  return { root, scopes };
+}
+function scanInMacro(ctx, index) {
+  return ctx.macroGroups.some(g => index > g.start && index < g.end);
+}
+// Mask comments by rebuilding only code tokens; retain whitespace/line offsets.
+function maskComments(text, tokens) {
   const code = text.split('').map(c => c === '\n' || c === '\r' ? c : ' ');
   for (const token of tokens.filter(t => !['string', 'byteString', 'char',
     'byteChar'].includes(t.kind)))
     for (let i = token.start; i < token.end; i++) code[i] = text[i];
-  const attrEnds = new Map();
+  return code;
+}
+// Rust attributes may contain token expressions (derive/path/doc); strictly parse cfg/test
+// meta.
+function attributeMeta(body) {
+  if (['cfg', 'cfg_attr'].includes(body[0]?.name)) return parseMeta(body);
+  const call = body.findIndex(t => !['ident'].includes(t.kind) && t.text !== '::');
+  return { name: simplePath(call < 0 ? body : body.slice(0, call)) ?? body[0]?.name, args: null };
+}
+function checkAttributeMeta(path, line, meta) {
+  if (!meta.name) error(path, line, 'invalid attribute path');
+  if (meta.name === 'cfg' && meta.args?.length !== 1) error(path, line,
+    'cfg requires one predicate');
+  if (meta.name === 'cfg_attr' && (meta.args?.length ?? 0) < 2) error(path, line,
+    'cfg_attr requires predicate and attribute');
+}
+// Records the attribute whose '#' is tokens[i]; returns the index of its closing ']'.
+function scanAttribute(ctx, i) {
+  const { path, tokens } = ctx;
+  const inner = tokens[i + 1]?.text === '!', open = i + (inner ? 2 : 1);
+  if (tokens[open]?.text !== '[') error(path, tokens[i].line, 'attribute without brackets');
+  const end = tokens[open].mate, meta = attributeMeta(tokens.slice(open + 1, end));
+  checkAttributeMeta(path, tokens[i].line, meta);
+  const attr = { start: tokens[i].start, end: tokens[end].end, line: tokens[i].line, inner, meta,
+    signals: attributeSignals(meta), scope: tokens[i].scope, first: i, last: end };
+  ctx.attributes.push(attr); ctx.attrEnds.set(end, attr);
+  if (inner) attr.scope.attributes.push(attr);
+  return end;
+}
+function scanAttributes(ctx) {
+  for (let i = 0; i < ctx.tokens.length; i++) {
+    if (ctx.tokens[i].text !== '#' || scanInMacro(ctx, i)) continue;
+    i = scanAttribute(ctx, i);
+  }
+}
+function scanInsideAttribute(ctx, index) {
+  return ctx.attributes.some(a => index >= a.first && index <= a.last);
+}
+function bindName(scope, name, data) {
+  if (!name) return;
+  const prior = scope.bindings.get(name);
+  if (prior && prior.kind !== 'shadow' && data.kind !== 'shadow' &&
+    data.kind !== 'local') data = { ...data, ambiguous: true, reason: 'duplicate binding' };
+  scope.bindings.set(name, { ...data, name, scope, previous: prior });
+}
+const NAMED_ITEM_KINDS = ['fn', 'mod', 'struct', 'enum', 'union', 'trait', 'type'];
+// True when the item keyword at tokens[i] does not start a standalone item.
+function itemKeywordSkipped(ctx, i) {
+  const tokens = ctx.tokens, kind = tokens[i].name;
+  if (!itemKinds.has(kind) || scanInsideAttribute(ctx, i) || scanInMacro(ctx, i) ||
+    tokens[i - 1]?.text === '::' || tokens[i - 1]?.text === '.') return true;
+  if (NAMED_ITEM_KINDS.includes(kind) && tokens[i + 1]?.kind !== 'ident') return true;
+  if (kind === 'const' && (tokens[i + 1]?.kind !== 'ident' ||
+    tokens[i - 1]?.text === '*')) return true;
+  if (kind === 'const' && ctx.genericConsts.has(i)) return true;
+  return itemQualifierSkipped(ctx, i, kind);
+}
+function itemQualifierSkipped(ctx, i, kind) {
+  const tokens = ctx.tokens, token = tokens[i];
+  if (ctx.items.some(item => item.kind === 'fn' && i > item.first &&
+    token.start < item.bodyStart)) return true;
+  // const qualifiers and generic parameters are not standalone items.
+  if (kind === 'const' && ['fn', 'unsafe', 'extern'].includes(tokens[i + 1]?.name)) return true;
+  if (kind === 'extern' && tokens[i + 1]?.name !== 'crate' &&
+    tokens[i + 1]?.text !== '{') return true;
+  return kind === 'use' && tokens[i - 1]?.text === '<';
+}
+const GENERIC_HEADER_KINDS = ['fn', 'struct', 'enum', 'union', 'trait', 'impl', 'type'];
+const BRACE_VALUE_KINDS = new Set(['use', 'const', 'static', 'type']);
+const SKIPPED_GROUPS = new Set(['(', '[']);
+function trackGenericAngle(ctx, t, j, angleDepth) {
+  if (t.text === '<') return angleDepth + 1;
+  if (t.text === '>') return Math.max(0, angleDepth - 1);
+  if (angleDepth && t.name === 'const') ctx.genericConsts.add(j);
+  return angleDepth;
+}
+// Body '{' index (or null) and last token index (null when not delimitable) of the item.
+function itemExtent(ctx, i, kind) {
+  const tokens = ctx.tokens, genericHeader = GENERIC_HEADER_KINDS.includes(kind);
+  let body = null, end = null, angleDepth = 0;
+  for (let j = i + 1; j < tokens.length; j++) {
+    const t = tokens[j];
+    if (genericHeader) angleDepth = trackGenericAngle(ctx, t, j, angleDepth);
+    if (t.text === ';') { end = j; break; }
+    if (t.text === '{') {
+      if (angleDepth || BRACE_VALUE_KINDS.has(kind)) { j = t.mate; continue; }
+      body = j; end = t.mate; break;
+    }
+    if (SKIPPED_GROUPS.has(t.text)) j = t.mate;
+    else if (t.text === '}') break;
+  }
+  return { body, end };
+}
+function attachedAttributes(attrEnds, first) {
+  const attached = [];
+  while (attrEnds.has(first - 1) && !attrEnds.get(first - 1).inner) {
+    const attr = attrEnds.get(first - 1);
+    attached.unshift(attr); first = attr.first;
+  }
+  return { first, attached };
+}
+const ITEM_QUALIFIERS = ['pub', 'async', 'unsafe', 'default', 'const'];
+// Widens the item back over qualifiers, pub(...) and attached outer attributes.
+function itemStart(ctx, i) {
+  const tokens = ctx.tokens;
+  let first = i;
+  while (first > 0 && ITEM_QUALIFIERS.includes(tokens[first - 1].name)) first--;
+  if (tokens[first - 1]?.text === ')' &&
+    tokens[tokens[first - 1].mate - 1]?.name === 'pub') first = tokens[first - 1].mate - 1;
+  return attachedAttributes(ctx.attrEnds, first);
+}
+function itemName(tokens, i, kind) {
+  if (['impl', 'use', 'extern'].includes(kind)) return null;
+  return tokens[i + (tokens[i + 1]?.name === 'mut' || tokens[i + 1]?.text === '!' ? 2 : 1)]?.name;
+}
+function bindUse(scope, entries) {
+  for (const entry of entries) {
+    scope.imports.push(entry);
+    if (entry.glob) scope.globs.push(entry); else bindName(scope, entry.name,
+      { ...entry, kind: 'import' });
+  }
+}
+function bindConst(tokens, i, end, scope, name) {
+  const eq = tokens.slice(i, end).findIndex(t => t.text === '=');
+  const valueTokens = eq < 0 ? [] : tokens.slice(i + eq + 1, end);
+  const literal = valueTokens.length === 1 && ['string', 'byteString',
+    'number'].includes(valueTokens[0].kind) ? valueTokens[0] : null;
+  bindName(scope, name, { kind: 'const', target: simplePath(valueTokens),
+    value: literal?.value ?? literal?.text,
+    tokens: valueTokens, ambiguous: !literal && !simplePath(valueTokens),
+      reason: 'non-simple constant expression' });
+}
+function bindItem(tokens, i, end, kind, name) {
+  const scope = tokens[i].scope;
+  if (kind === 'use') bindUse(scope, imports(tokens.slice(i + 1, end)));
+  else if (['const', 'static'].includes(kind)) bindConst(tokens, i, end, scope, name);
+  else if (name) bindName(scope, name, { kind: 'shadow', target: null });
+}
+function bindFnParams(tokens, i, limit, bodyScope) {
+  const params = tokens.findIndex((t, k) => k > i && k < limit && t.text === '(');
+  if (params < 0) return;
+  for (const part of splitTop(tokens.slice(params + 1, tokens[params].mate))) {
+    const colon = part.findIndex(t => t.text === ':');
+    const names = part.slice(0, colon < 0 ? part.length : colon).filter(t => t.kind ===
+      'ident' && !['mut', 'ref'].includes(t.name));
+    for (const n of names) bindName(bodyScope, n.name, { kind: 'shadow', target: null });
+  }
+}
+function scanItem(ctx, i) {
+  const tokens = ctx.tokens, token = tokens[i], kind = token.name;
+  const { body, end } = itemExtent(ctx, i, kind);
+  if (end === null) error(ctx.path, token.line, `${kind} item not delimitable`);
+  const { first, attached } = itemStart(ctx, i), name = itemName(tokens, i, kind);
+  const bodyScope = body === null ? null : ctx.scopes.find(s => s.open === body);
+  const item = { kind, name, start: tokens[first].start, end: tokens[end].end, line: token.line,
+    attributes: attached, scope: token.scope, bodyScope, bodyStart: body === null ?
+      null : tokens[body].start, testOnly: false, first: i, last: end };
+  ctx.items.push(item);
+  bindItem(tokens, i, end, kind, name);
+  if (kind === 'fn' && bodyScope) bindFnParams(tokens, i, body ?? end, bodyScope);
+}
+function scanItems(ctx) {
+  for (let i = 0; i < ctx.tokens.length; i++) if (!itemKeywordSkipped(ctx, i)) scanItem(ctx, i);
+}
+function letEnd(tokens, i) {
+  let end = i + 1;
+  for (; end < tokens.length && tokens[end].text !== ';'; end++) {
+    if (opens[tokens[end].text]) end = tokens[end].mate;
+    else if (tokens[end].text === '}') break;
+  }
+  return end;
+}
+function scanLet(tokens, i, t) {
+  const end = letEnd(tokens, i);
+  const segment = tokens.slice(i + 1, end), eq = segment.findIndex(x => x.text === '=');
+  const lhs = segment.slice(0, eq < 0 ? segment.length : eq),
+    colon = lhs.findIndex(x => x.text === ':');
+  const pattern = (colon < 0 ? lhs : lhs.slice(0, colon)).filter(x => !['mut',
+    'ref'].includes(x.name));
+  const rhs = eq < 0 ? [] : segment.slice(eq + 1);
+  const names = pattern.filter(x => x.kind === 'ident'),
+    simple = pattern.length === 1 && names.length === 1;
+  const literal = rhs.length === 1 && ['string', 'byteString',
+    'number'].includes(rhs[0].kind) ? rhs[0] : null;
+  for (const n of names) { n.declaration = true; bindName(t.scope, n.name, { kind: 'local',
+    target: simple ? simplePath(rhs) : null,
+    value: literal?.value ?? literal?.text, tokens: rhs, ambiguous: !simple,
+    reason: !simple ? 'destructuring may shadow relevant alias' : undefined, start: t.start });
+      }
+}
+function markReassigned(t) {
+  for (let s = t.scope; s; s = s.parent) {
+    const binding = s.bindings.get(t.name);
+    if (binding && binding.kind !== 'const' && binding.start !== undefined &&
+      t.start > binding.start) {
+      binding.ambiguous = true; binding.reason = 'reassigned binding'; return;
+    }
+  }
+}
+const ASSIGN_OPS = ['=', '+=', '-=', '*=', '/='];
+// Locals use a conservative scope map: uncertain reassignments/destructuring never erase signals.
+function scanLocals(ctx) {
+  const tokens = ctx.tokens;
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].text !== '#' || inMacro(i)) continue;
-    const inner = tokens[i + 1]?.text === '!', open = i + (inner ? 2 : 1);
-    if (tokens[open]?.text !== '[') error(path, tokens[i].line, 'attribute without brackets');
-    const end = tokens[open].mate, body = tokens.slice(open + 1, end);
-    // Rust attributes may contain token expressions (derive/path/doc); strictly parse cfg/test
-    // meta.
-    const relevant = ['cfg', 'cfg_attr'].includes(body[0]?.name);
-    let meta;
-    if (relevant) meta = parseMeta(body);
-    else { const call = body.findIndex(t => !['ident'].includes(t.kind) && t.text !== '::'); meta =
-      { name: simplePath(call < 0 ? body : body.slice(0, call)) ?? body[0]?.name, args: null }; }
-    if (!meta.name) error(path, tokens[i].line, 'invalid attribute path');
-    if (meta.name === 'cfg' && meta.args?.length !== 1) error(path, tokens[i].line,
-      'cfg requires one predicate');
-    if (meta.name === 'cfg_attr' && (meta.args?.length ?? 0) < 2) error(path, tokens[i].line,
-      'cfg_attr requires predicate and attribute');
-    const attr = { start: tokens[i].start, end: tokens[end].end, line: tokens[i].line, inner, meta,
-      signals: attributeSignals(meta), scope: tokens[i].scope, first: i, last: end };
-    attributes.push(attr); attrEnds.set(end, attr); if (inner) attr.scope.attributes.push(attr);
-    i = end;
+    const t = tokens[i]; if (scanInsideAttribute(ctx, i)) continue;
+    if (t.name === 'let') scanLet(tokens, i, t);
+    else if (t.kind === 'ident' && !t.declaration && ASSIGN_OPS.includes(tokens[i + 1]?.text) &&
+      tokens[i - 1]?.name !== 'let') markReassigned(t);
   }
-  const insideAttribute = index => attributes.some(a => index >= a.first && index <= a.last);
-  const bind = (scope, name, data) => {
-    if (!name) return;
-    const prior = scope.bindings.get(name);
-    if (prior && prior.kind !== 'shadow' && data.kind !== 'shadow' &&
-      data.kind !== 'local') data = { ...data, ambiguous: true, reason: 'duplicate binding' };
-    scope.bindings.set(name, { ...data, name, scope, previous: prior });
-  };
-  const genericConsts = new Set();
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i], kind = token.name;
-    if (!itemKinds.has(kind) || insideAttribute(i) || inMacro(i) || tokens[i - 1]?.text === '::' ||
-      tokens[i - 1]?.text === '.') continue;
-    if (['fn', 'mod', 'struct', 'enum', 'union', 'trait',
-      'type'].includes(kind) && tokens[i + 1]?.kind !== 'ident') continue;
-    if (kind === 'const' && (tokens[i + 1]?.kind !== 'ident' ||
-      tokens[i - 1]?.text === '*')) continue;
-    if (kind === 'const' && genericConsts.has(i)) continue;
-    if (items.some(item => item.kind === 'fn' && i > item.first &&
-      token.start < item.bodyStart)) continue;
-    // const qualifiers and generic parameters are not standalone items.
-    if (kind === 'const' && ['fn', 'unsafe', 'extern'].includes(tokens[i + 1]?.name)) continue;
-    if (kind === 'extern' && tokens[i + 1]?.name !== 'crate' &&
-      tokens[i + 1]?.text !== '{') continue;
-    if (kind === 'use' && tokens[i - 1]?.text === '<') continue;
-    let body = null, end = null, j = i + 1, angleDepth = 0;
-    const genericHeader = ['fn', 'struct', 'enum', 'union', 'trait', 'impl', 'type'].includes(kind);
-    for (; j < tokens.length; j++) {
-      const t = tokens[j];
-      if (genericHeader) {
-        if (t.text === '<') angleDepth++;
-        else if (t.text === '>') angleDepth = Math.max(0, angleDepth - 1);
-        else if (angleDepth && t.name === 'const') genericConsts.add(j);
-      }
-      if (t.text === ';') { end = j; break; }
-      if (t.text === '{') {
-        if (angleDepth) { j = t.mate; continue; }
-        if (kind === 'use' || ['const', 'static', 'type'].includes(kind)) { j = t.mate; continue; }
-        body = j; end = t.mate; break;
-      }
-      if (t.text === '(' || t.text === '[') j = t.mate;
-      else if (t.text === '}') break;
-    }
-    if (end === null) error(path, token.line, `${kind} item not delimitable`);
-    let first = i;
-    while (first > 0 && ['pub', 'async', 'unsafe', 'default',
-      'const'].includes(tokens[first - 1].name)) first--;
-    if (tokens[first - 1]?.text === ')' &&
-      tokens[tokens[first - 1].mate - 1]?.name === 'pub') first = tokens[first - 1].mate - 1;
-    const attached = [];
-    while (attrEnds.has(first - 1) && !attrEnds.get(first - 1).inner) { const a =
-      attrEnds.get(first - 1); attached.unshift(a); first = a.first; }
-    let name = null;
-    if (!['impl', 'use', 'extern'].includes(kind)) name = tokens[i + (tokens[i +
-      1]?.name === 'mut' || tokens[i + 1]?.text === '!' ? 2 : 1)]?.name;
-    const bodyScope = body === null ? null : scopes.find(s => s.open === body);
-    const item = { kind, name, start: tokens[first].start, end: tokens[end].end, line: token.line,
-      attributes: attached, scope: token.scope, bodyScope, bodyStart: body === null ?
-        null : tokens[body].start, testOnly: false, first: i, last: end };
-    items.push(item);
-    if (kind === 'use') {
-      for (const entry of imports(tokens.slice(i + 1, end))) {
-        token.scope.imports.push(entry);
-        if (entry.glob) token.scope.globs.push(entry); else bind(token.scope, entry.name,
-          { ...entry, kind: 'import' });
-      }
-    } else if (['const', 'static'].includes(kind)) {
-      const eq = tokens.slice(i, end).findIndex(t => t.text === '=');
-      const valueTokens = eq < 0 ? [] : tokens.slice(i + eq + 1, end);
-      const literal = valueTokens.length === 1 && ['string', 'byteString',
-        'number'].includes(valueTokens[0].kind) ? valueTokens[0] : null;
-      bind(token.scope, name, { kind: 'const', target: simplePath(valueTokens),
-        value: literal?.value ?? literal?.text,
-        tokens: valueTokens, ambiguous: !literal && !simplePath(valueTokens),
-          reason: 'non-simple constant expression' });
-    } else if (name) bind(token.scope, name, { kind: 'shadow', target: null });
-    if (kind === 'fn' && bodyScope) {
-      const params = tokens.findIndex((t, k) => k > i && k < (body ?? end) && t.text === '(');
-      if (params >= 0) for (const part of splitTop(tokens.slice(params + 1, tokens[params].mate))) {
-        const colon = part.findIndex(t => t.text === ':');
-        const names = part.slice(0, colon < 0 ? part.length : colon).filter(t => t.kind ===
-          'ident' && !['mut', 'ref'].includes(t.name));
-        for (const n of names) bind(bodyScope, n.name, { kind: 'shadow', target: null });
-      }
-    }
+}
+function cfgTest(attrs) {
+  return attrs.some(a => a.meta.name === 'cfg' && impliesTest(a.meta.args[0]));
+}
+function threadLocalTestRange(ctx, group) {
+  const tokens = ctx.tokens;
+  if (tokens[group.start - 1]?.text !== '!' ||
+      tokens[group.start - 2]?.name !== 'thread_local') return null;
+  let first = group.start - 2;
+  if (scanInMacro(ctx, first)) return null;
+  while (tokens[first - 1]?.text === '::' && tokens[first - 2]?.kind === 'ident')
+    first -= 2;
+  if (tokens[first - 1]?.text === '::') first--;
+  const attrs = attachedAttributes(ctx.attrEnds, first);
+  if (!cfgTest(attrs.attached)) return null;
+  return { start: tokens[attrs.first].start, end: tokens[group.end].end };
+}
+function threadLocalTestRanges(ctx) {
+  const ranges = [];
+  for (const group of ctx.macroGroups) {
+    const range = threadLocalTestRange(ctx, group);
+    if (range) ranges.push(range);
   }
-  // Locals use a conservative scope map: uncertain reassignments/destructuring never erase signals.
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]; if (insideAttribute(i)) continue;
-    if (t.name === 'let') {
-      let end = i + 1;
-      for (; end < tokens.length && tokens[end].text !== ';'; end++) {
-        if (opens[tokens[end].text]) end = tokens[end].mate;
-        else if (tokens[end].text === '}') break;
-      }
-      const segment = tokens.slice(i + 1, end), eq = segment.findIndex(x => x.text === '=');
-      const lhs = segment.slice(0, eq < 0 ? segment.length : eq),
-        colon = lhs.findIndex(x => x.text === ':');
-      const pattern = (colon < 0 ? lhs : lhs.slice(0, colon)).filter(x => !['mut',
-        'ref'].includes(x.name));
-      const rhs = eq < 0 ? [] : segment.slice(eq + 1);
-      const names = pattern.filter(x => x.kind === 'ident'),
-        simple = pattern.length === 1 && names.length === 1;
-      const literal = rhs.length === 1 && ['string', 'byteString',
-        'number'].includes(rhs[0].kind) ? rhs[0] : null;
-      for (const n of names) { n.declaration = true; bind(t.scope, n.name, { kind: 'local',
-        target: simple ? simplePath(rhs) : null,
-        value: literal?.value ?? literal?.text, tokens: rhs, ambiguous: !simple,
-        reason: !simple ? 'destructuring may shadow relevant alias' : undefined, start: t.start });
-          }
-    } else if (t.kind === 'ident' && !t.declaration && ['=', '+=', '-=', '*=',
-      '/='].includes(tokens[i + 1]?.text) && tokens[i - 1]?.name !== 'let') {
-      for (let s = t.scope; s; s = s.parent) {
-        const binding = s.bindings.get(t.name);
-        if (binding && binding.kind !== 'const' && binding.start !== undefined &&
-          t.start > binding.start) {
-          binding.ambiguous = true; binding.reason = 'reassigned binding'; break;
-        }
-      }
-    }
-  }
-  const cfgTest = attrs => attrs.some(a => a.meta.name === 'cfg' && impliesTest(a.meta.args[0]));
-  const threadLocalTestRanges = [];
-  for (const group of macroGroups) {
-    if (tokens[group.start - 1]?.text !== '!' ||
-        tokens[group.start - 2]?.name !== 'thread_local') continue;
-    let first = group.start - 2;
-    if (inMacro(first)) continue;
-    while (tokens[first - 1]?.text === '::' && tokens[first - 2]?.kind === 'ident')
-      first -= 2;
-    if (tokens[first - 1]?.text === '::') first--;
-    const attached = [];
-    while (attrEnds.has(first - 1) && !attrEnds.get(first - 1).inner) {
-      const attr = attrEnds.get(first - 1);
-      attached.unshift(attr); first = attr.first;
-    }
-    if (cfgTest(attached))
-      threadLocalTestRanges.push({ start: tokens[first].start, end: tokens[group.end].end });
-  }
-  const fileTest = /(?:(?:^|\/)(?:tests\/|tests\.rs$)|_tests\.rs$)/.test(path);
-  for (const item of items) {
-    let cfg = cfgTest(item.attributes);
-    for (let s = item.scope; s; s = s.parent) cfg ||= cfgTest(s.attributes);
-    for (const container of items) if (container !== item && container.start <= item.start &&
-      container.end >= item.end) cfg ||= cfgTest(container.attributes);
+  return ranges;
+}
+function itemCfgTest(ctx, item) {
+  let cfg = cfgTest(item.attributes);
+  for (let s = item.scope; s; s = s.parent) cfg ||= cfgTest(s.attributes);
+  for (const container of ctx.items) if (container !== item && container.start <= item.start &&
+    container.end >= item.end) cfg ||= cfgTest(container.attributes);
+  return cfg;
+}
+function classifyItems(ctx, fileTest) {
+  for (const item of ctx.items) {
+    const cfg = itemCfgTest(ctx, item);
     const directTest = item.kind === 'fn' && item.attributes.some(a => a.meta.name !== 'cfg_attr' &&
       testPaths.has(resolvePath(a.meta.name, item.scope).path));
     item.cfgTest = cfg; item.directTest = directTest; item.testOnly = fileTest || cfg || directTest;
     if (item.bodyScope) item.bodyScope.item = item;
   }
-  const isTestOffset = offset => fileTest || scopes.some(s => offset >= s.start && offset < s.end &&
+}
+function isTestOffsetIn(ctx, fileTest, ranges, offset) {
+  return fileTest || ctx.scopes.some(s => offset >= s.start && offset < s.end &&
     cfgTest(s.attributes)) ||
-    threadLocalTestRanges.some(range => offset >= range.start && offset < range.end) ||
-    items.some(item => offset >= item.start && offset < item.end && item.cfgTest ||
+    ranges.some(range => offset >= range.start && offset < range.end) ||
+    ctx.items.some(item => offset >= item.start && offset < item.end && item.cfgTest ||
       item.directTest && offset >= item.bodyStart && offset < item.end);
-  for (const scope of scopes) for (const binding of scope.bindings.values()) if (binding.ambiguous)
-    diagnostics.push({ path,
+}
+function pushAmbiguousBindings(ctx) {
+  const { path, tokens } = ctx;
+  for (const scope of ctx.scopes) for (const binding of scope.bindings.values()) {
+    if (binding.ambiguous) ctx.diagnostics.push({ path,
       line: tokens.find(t => t.scope === scope && t.name === binding.name)?.line ?? 1,
       reason: binding.reason, name: binding.name });
+  }
+}
+export function scanRust(path, text) {
+  const { tokens, groups } = lexRust(path, text);
+  const { root, scopes } = buildScopes(tokens, text);
+  const macroGroups = groups.filter(g => tokens[g.start - 1]?.text === '!' ||
+    tokens[g.start - 2]?.text === '!');
+  const code = maskComments(text, tokens);
+  const ctx = { path, tokens, scopes, items: [], attributes: [], diagnostics: [], macroGroups,
+    attrEnds: new Map(), genericConsts: new Set() };
+  scanAttributes(ctx);
+  scanItems(ctx);
+  scanLocals(ctx);
+  const ranges = threadLocalTestRanges(ctx);
+  const fileTest = /(?:(?:^|\/)(?:tests\/|tests\.rs$)|_tests\.rs$)/.test(path);
+  classifyItems(ctx, fileTest);
+  const isTestOffset = offset => isTestOffsetIn(ctx, fileTest, ranges, offset);
+  pushAmbiguousBindings(ctx);
   const sites = compatibilitySites(path, text, tokens);
+  const { items, attributes, diagnostics } = ctx;
   return { path, text, tokens, groups, items, scopes, root, attributes, diagnostics, sites,
     code: code.join(''), isTestOffset,
     productionTokens: tokens.filter(t => !isTestOffset(t.start)),
