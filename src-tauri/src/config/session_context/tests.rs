@@ -220,6 +220,56 @@ fn assert_no_broad_read_grant(out: &str) {
     }
 }
 
+#[test]
+#[should_panic(expected = "semantic broad read grant")]
+fn broad_read_detector_flags_read_quantifier_universe() {
+    assert_no_broad_read_grant("agents may inspect any directory");
+}
+
+#[test]
+#[should_panic(expected = "semantic broad read grant")]
+fn broad_read_detector_flags_quantifier_universe_readable() {
+    assert_no_broad_read_grant("all paths can be read");
+}
+
+#[test]
+#[should_panic(expected = "semantic broad read grant")]
+fn broad_read_detector_flags_unbounded_read() {
+    assert_no_broad_read_grant("read without restriction");
+}
+
+#[test]
+fn broad_read_detector_flags_each_explicit_grant() {
+    let grants = [
+        "Read any path",
+        "Read-only operations on ANY path",
+        "Read operations on any path",
+        "Read any file",
+        "Read all paths",
+        "Read anywhere",
+        "Any path is readable",
+        "All paths are readable",
+        "Unrestricted read access",
+        "Read access is unrestricted",
+        "No restrictions on reading",
+        "May read without restriction",
+        "Read the entire filesystem",
+    ];
+    for grant in grants {
+        let err = std::panic::catch_unwind(|| assert_no_broad_read_grant(grant)).expect_err(grant);
+        let message = err.downcast_ref::<String>().expect(grant);
+        assert!(message.contains("broad read grant `"), "{grant}: {message}");
+    }
+}
+
+#[test]
+fn broad_read_detector_accepts_prohibition_and_task_read() {
+    assert_no_broad_read_grant(
+        "Do NOT list or explore the other workspace or room, read a second external file or any \
+            other file or content there. Agents read the task file.",
+    );
+}
+
 fn broad_read_tokens(clause: &str) -> Vec<&str> {
     clause
         .split_whitespace()

@@ -108,6 +108,49 @@ fn ownership_violations(files: &[(String, String)]) -> Vec<String> {
     violations
 }
 
+#[test]
+fn ownership_violations_reports_each_kind_once() {
+    let files = vec![(
+        "src/x/other.rs".to_string(),
+        "fn rogue() {\n    s.status = SessionStatus::Idle;\n    emit(\"session_created\");\n}\n\
+         pub async fn mark_exited(&self) {}\n"
+            .to_string(),
+    )];
+    assert_eq!(
+        ownership_violations(&files),
+        vec![
+            "src/x/other.rs:2 Idle assignment in rogue".to_string(),
+            "src/x/other.rs:3 session_created owner is rogue".to_string(),
+            "src/x/other.rs:5 removed production manager mutator mark_exited".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn ownership_violations_accepts_allowed_owners() {
+    let files = vec![
+        (
+            "src/session/manager.rs".to_string(),
+            "fn mark_idle_with_carrier_permit() {\n    s.status = SessionStatus::Idle;\n}\n"
+                .to_string(),
+        ),
+        (
+            "src/session/manager/commit.rs".to_string(),
+            "fn apply_lifecycle_mutations() {\n    s.status = SessionStatus::Exited;\n}\n"
+                .to_string(),
+        ),
+        (
+            "src/session/selection.rs".to_string(),
+            "fn publish_created() {\n    emit(\"session_created\");\n}\n".to_string(),
+        ),
+        (
+            "src/x/other.rs".to_string(),
+            "fn ok() {\n    // pub async fn mark_exited(&self) {}\n}\n".to_string(),
+        ),
+    ];
+    assert_eq!(ownership_violations(&files), Vec::<String>::new());
+}
+
 fn collect_rust_sources(dir: &Path, files: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(dir).expect("read Rust source directory") {
         let entry = entry.expect("read Rust source entry");
