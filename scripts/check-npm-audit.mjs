@@ -17,7 +17,9 @@
 //   2 → npm audit unavailable or malformed, bad baseline, or bad usage
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deepStrictEqual } from 'node:assert';
 
@@ -52,11 +54,16 @@ export class BaselineError extends Error {
 const isPlainObject = (v) =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const rank = (s) => SEVERITIES.indexOf(s);
-const sameKeys = (obj, keys) => {
-  const got = Object.keys(obj).sort();
-  const want = [...keys].sort();
-  return got.length === want.length && got.every((k, i) => k === want[i]);
-};
+// Own keys are unique, so equal length + every wanted key present = same key set.
+const sameKeys = (obj, keys) =>
+  Object.keys(obj).length === keys.length && keys.every((k) => Object.hasOwn(obj, k));
+
+// The only comparator: plain JS code-unit order (§3), never locale order.
+export function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 // Rules 1-2 of the fail-closed list.
 export function checkSpawn({ error, status }) {
@@ -66,8 +73,8 @@ export function checkSpawn({ error, status }) {
   return undefined;
 }
 
-// Rules 3-7: raw stdout + exit status → Map<key, severity>.
-export function liveKeys(stdoutText, status) {
+// Rules 3-5: raw stdout → the `vulnerabilities` object.
+function auditVulnerabilities(stdoutText) {
   let data;
   try {
     data = JSON.parse(stdoutText);
@@ -80,22 +87,36 @@ export function liveKeys(stdoutText, status) {
   if (!isPlainObject(data.vulnerabilities)) {
     throw new AuditError('vulnerabilities is not an object');
   }
+  return data.vulnerabilities;
+}
+
+function viaItems(vuln) {
+  return isPlainObject(vuln) && Array.isArray(vuln.via) ? vuln.via : [];
+}
+
+// Rule 7 for one `via` object → [key, severity].
+function advisoryKey(item) {
+  const m = isPlainObject(item) && typeof item.url === 'string' && URL_RE.exec(item.url);
+  if (!m) throw new AuditError(`bad advisory url: ${JSON.stringify(item?.url)}`);
+  if (typeof item.name !== 'string' || item.name === '') {
+    throw new AuditError(`empty package name for ${m[1]}`);
+  }
+  if (rank(item.severity) < 0) {
+    throw new AuditError(`unknown severity ${JSON.stringify(item.severity)}`);
+  }
+  return [`${m[1]}@${item.name}`, item.severity];
+}
+
+// Rules 3-7: raw stdout + exit status → Map<key, severity>.
+export function liveKeys(stdoutText, status) {
+  const vulns = auditVulnerabilities(stdoutText);
   const keys = new Map();
-  for (const vuln of Object.values(data.vulnerabilities)) {
-    const via = isPlainObject(vuln) && Array.isArray(vuln.via) ? vuln.via : [];
-    for (const item of via) {
+  for (const vuln of Object.values(vulns)) {
+    for (const item of viaItems(vuln)) {
       if (typeof item === 'string') continue;
-      const m = isPlainObject(item) && typeof item.url === 'string' && URL_RE.exec(item.url);
-      if (!m) throw new AuditError(`bad advisory url: ${JSON.stringify(item?.url)}`);
-      if (typeof item.name !== 'string' || item.name === '') {
-        throw new AuditError(`empty package name for ${m[1]}`);
-      }
-      if (rank(item.severity) < 0) {
-        throw new AuditError(`unknown severity ${JSON.stringify(item.severity)}`);
-      }
-      const key = `${m[1]}@${item.name}`;
+      const [key, sev] = advisoryKey(item);
       const prev = keys.get(key);
-      if (prev === undefined || rank(item.severity) > rank(prev)) keys.set(key, item.severity);
+      if (prev === undefined || rank(sev) > rank(prev)) keys.set(key, sev);
     }
   }
   if (status === 0 && keys.size > 0) throw new AuditError('exit 0 with advisories');
@@ -136,7 +157,7 @@ export function parseBaseline(text) {
       throw new BaselineError(`${at}: reason must be trimmed, non-empty, <= ${MAX_REASON} chars`);
     }
     const key = `${e.id}@${e.package}`;
-    if (last !== null && !(last < key)) {
+    if (last !== null && last >= key) {
       throw new BaselineError(`${at}: ${key} not strictly after ${last} (sort, no duplicates)`);
     }
     last = key;
@@ -159,7 +180,7 @@ export function compare(live, base) {
   }
   for (const key of base.keys()) if (!live.has(key)) stale.push(key);
   const diff = { added, stale, escalated, lowered };
-  for (const list of Object.values(diff)) list.sort();
+  for (const list of Object.values(diff)) list.sort(byCodeUnit);
   // Severities for report(); not enumerable so the result keeps its four fields.
   Object.defineProperty(diff, 'live', { value: live });
   Object.defineProperty(diff, 'base', { value: base });
@@ -184,13 +205,26 @@ export function report(diff, baseSize) {
   return { code: 0, lines };
 }
 
+// npm's own CLI next to the running node; never looked up on PATH (javascript:S4036).
+export function npmCli(execPath = process.execPath) {
+  const d = path.dirname(execPath);
+  const tried = [
+    path.join(d, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(d, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(d, '..', 'share', 'nodejs', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  const found = tried.find((p) => existsSync(p));
+  if (found === undefined) {
+    throw new AuditError(`npm CLI not found next to ${execPath}; tried: ${tried.join(', ')}`);
+  }
+  return found;
+}
+
 export function runAudit() {
   const opts = { cwd: ROOT, encoding: 'utf8', timeout: 300000, maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'] };
-  // win32 is local only (CI is Linux); one string avoids DEP0190, tokens are constants.
-  const result = process.platform === 'win32'
-    ? spawnSync(`npm ${AUDIT_ARGS.join(' ')}`, { ...opts, shell: true })
-    : spawnSync('npm', AUDIT_ARGS, opts);
+  // Direct child without a shell; same npm code the npm shim runs, killable on timeout.
+  const result = spawnSync(process.execPath, [npmCli(), ...AUDIT_ARGS], opts);
   try {
     checkSpawn(result);
   } catch (err) {
@@ -221,7 +255,7 @@ function expectThrow(fn, Kind) {
     thrown = err;
   }
   if (!(thrown instanceof Kind)) {
-    throw new Error(`expected ${Kind.name}, got ${thrown ? thrown.name : 'no error'}`);
+    throw new TypeError(`expected ${Kind.name}, got ${thrown ? thrown.name : 'no error'}`);
   }
 }
 
@@ -268,7 +302,7 @@ const CASES = [
   ['6 same GHSA, two packages → two keys', () => {
     const live = liveKeys(auditJson([advisory(B, 'vitest', 'moderate'),
       advisory(B, '@vitest/mocker', 'moderate')]), 1);
-    deepStrictEqual([...live.keys()].sort(), [`${B}@@vitest/mocker`, `${B}@vitest`]);
+    deepStrictEqual([...live.keys()].sort(byCodeUnit), [`${B}@@vitest/mocker`, `${B}@vitest`]);
   }],
   ['7 stdout not JSON', () => expectThrow(() => liveKeys('not json', 1), AuditError)],
   ['8 outage shape', () =>
@@ -283,9 +317,10 @@ const CASES = [
     { url: 'https://example.com/x', name: 'linkify-it', severity: 'high' }]), 1), AuditError)],
   ['13 checkSpawn status 2', () =>
     expectThrow(() => checkSpawn({ error: undefined, status: 2 }), AuditError)],
-  ['14 checkSpawn timeout and spawn error', () => {
+  ['14 checkSpawn timeout and spawn error; npm CLI not found', () => {
     expectThrow(() => checkSpawn({ error: undefined, status: null }), AuditError);
     expectThrow(() => checkSpawn({ error: new Error('x'), status: 1 }), AuditError);
+    expectThrow(() => npmCli(path.join(tmpdir(), 'no-node-4490', 'bin', 'node')), AuditError);
   }],
   ['15 invalid baselines', () => {
     const good = entry(A, 'linkify-it', 'high');
