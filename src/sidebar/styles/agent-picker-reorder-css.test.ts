@@ -8,8 +8,8 @@ import { declarations, declProps, declValue, scanRules, type ScannedRule } from 
 // Comments are stripped first: the scanner would fold a leading comment into
 // the first selector. Every lookup throws on a miss.
 
-// sidebar.css + the Agent Picker sheet split out of it (#4577), in load order.
-const css = ["./sidebar.css", "./agent-picker-modal.css"]
+// sidebar.css + the Settings and Agent Picker sheets split out of it (#4577), in load order.
+const css = ["./sidebar.css", "./settings-modal.css", "./agent-picker-modal.css"]
   .map((p) => readFileSync(new URL(p, import.meta.url), "utf8"))
   .join("")
   .replace(/\/\*[\s\S]*?\*\//g, "");
