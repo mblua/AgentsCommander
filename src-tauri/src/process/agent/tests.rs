@@ -28,6 +28,10 @@ fn blocked_script() -> &'static str {
     }
 }
 
+/// #4642 - wall-clock budget for probes that must finish; only a hang reaches it, so
+/// machine load in a parallel `cargo test` cannot turn a pass into a timeout.
+const LOAD_TOLERANT_BUDGET: Duration = Duration::from_secs(120);
+
 #[tokio::test]
 async fn callback_panic_retains_installed_owner_until_cleanup() {
     let (_cancel_tx, mut cancel) = tokio::sync::watch::channel(false);
@@ -106,13 +110,7 @@ async fn output_after_reader_cap_is_drained_but_not_parsed() {
     };
     let search_path = std::env::var_os("PATH").unwrap_or_default();
     assert_eq!(
-        probe_version_in(
-            shell(),
-            &args(control),
-            Duration::from_secs(10),
-            &search_path
-        )
-        .await,
+        probe_version_in(shell(), &args(control), LOAD_TOLERANT_BUDGET, &search_path).await,
         ProbeOutcome::Version("1.2.3".into())
     );
     let script = if cfg!(windows) {
@@ -123,7 +121,7 @@ async fn output_after_reader_cap_is_drained_but_not_parsed() {
     let result = probe_version_in(
         shell(),
         &args(script),
-        Duration::from_secs(10),
+        LOAD_TOLERANT_BUDGET,
         &std::env::var_os("PATH").unwrap_or_default(),
     )
     .await;
