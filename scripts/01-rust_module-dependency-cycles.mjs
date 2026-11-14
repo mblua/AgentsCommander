@@ -2582,69 +2582,78 @@ function silentStats() {
 /** Iterative, so a large graph cannot blow the JS stack. */
 function tarjan(nodeIds, adjacency) {
   const ids = nodeIds.slice().sort(compareCodeUnits);
+  const st = {
+    neighbours: tarjanNeighbours(ids, adjacency),
+    index: new Map(),
+    lowlink: new Map(),
+    onStack: new Set(),
+    stack: [],
+    sccs: [],
+    counter: 0,
+  };
+
+  for (const root of ids) {
+    if (st.index.has(root)) continue;
+    const work = [{ node: root, edge: 0 }];
+    tarjanVisit(st, root);
+    while (work.length > 0) tarjanStep(st, work);
+  }
+
+  st.sccs.sort((a, b) => compareCodeUnits(a[0], b[0]));
+  return st.sccs;
+}
+
+function tarjanNeighbours(ids, adjacency) {
   const neighbours = new Map();
   for (const id of ids) {
     const set = adjacency.get(id);
     neighbours.set(id, set ? Array.from(set).filter((n) => adjacency.has(n) || ids.includes(
       n)).sort(compareCodeUnits) : []);
   }
+  return neighbours;
+}
 
-  const index = new Map();
-  const lowlink = new Map();
-  const onStack = new Set();
-  const stack = [];
-  const sccs = [];
-  let counter = 0;
+function tarjanVisit(st, node) {
+  st.index.set(node, st.counter);
+  st.lowlink.set(node, st.counter);
+  st.counter++;
+  st.stack.push(node);
+  st.onStack.add(node);
+}
 
-  for (const root of ids) {
-    if (index.has(root)) continue;
-    const work = [{ node: root, edge: 0 }];
-    index.set(root, counter);
-    lowlink.set(root, counter);
-    counter++;
-    stack.push(root);
-    onStack.add(root);
-
-    while (work.length > 0) {
-      const frame = work.at(-1);
-      const list = neighbours.get(frame.node) || [];
-      if (frame.edge < list.length) {
-        const next = list[frame.edge];
-        frame.edge++;
-        if (!index.has(next)) {
-          index.set(next, counter);
-          lowlink.set(next, counter);
-          counter++;
-          stack.push(next);
-          onStack.add(next);
-          work.push({ node: next, edge: 0 });
-        } else if (onStack.has(next)) {
-          lowlink.set(frame.node, Math.min(lowlink.get(frame.node), index.get(next)));
-        }
-        continue;
-      }
-
-      work.pop();
-      if (work.length > 0) {
-        const parent = work.at(-1).node;
-        lowlink.set(parent, Math.min(lowlink.get(parent), lowlink.get(frame.node)));
-      }
-      if (lowlink.get(frame.node) === index.get(frame.node)) {
-        const component = [];
-        for (;;) {
-          const popped = stack.pop();
-          onStack.delete(popped);
-          component.push(popped);
-          if (popped === frame.node) break;
-        }
-        component.sort(compareCodeUnits);
-        sccs.push(component);
-      }
+function tarjanStep(st, work) {
+  const frame = work.at(-1);
+  const list = st.neighbours.get(frame.node) || [];
+  if (frame.edge < list.length) {
+    const next = list[frame.edge];
+    frame.edge++;
+    if (!st.index.has(next)) {
+      tarjanVisit(st, next);
+      work.push({ node: next, edge: 0 });
+    } else if (st.onStack.has(next)) {
+      st.lowlink.set(frame.node, Math.min(st.lowlink.get(frame.node), st.index.get(next)));
     }
+    return;
   }
 
-  sccs.sort((a, b) => compareCodeUnits(a[0], b[0]));
-  return sccs;
+  work.pop();
+  if (work.length > 0) {
+    const parent = work.at(-1).node;
+    st.lowlink.set(parent, Math.min(st.lowlink.get(parent), st.lowlink.get(frame.node)));
+  }
+  if (st.lowlink.get(frame.node) === st.index.get(frame.node)) tarjanPopComponent(st, frame.node);
+}
+
+function tarjanPopComponent(st, node) {
+  const component = [];
+  for (;;) {
+    const popped = st.stack.pop();
+    st.onStack.delete(popped);
+    component.push(popped);
+    if (popped === node) break;
+  }
+  component.sort(compareCodeUnits);
+  st.sccs.push(component);
 }
 
 function hasSelfEdge(adjacency, id) {
@@ -2722,11 +2731,7 @@ function classifyFunctionCycles(graph, ctx) {
 
   for (const members of sccs) {
     if (members.length === 1) {
-      if (hasSelfEdge(graph.adjacency, members[0])) {
-        const node = graph.nodes.get(members[0]);
-        recursion.push({ function: members[0], file: node ? node.file : '', line: node ? node.line :
-          0 });
-      }
+      pushRecursion(graph, members[0], recursion);
       continue;
     }
     const memberSet = new Set(members);
@@ -2745,6 +2750,12 @@ function classifyFunctionCycles(graph, ctx) {
   cycles.sort(compareCycles);
   recursion.sort((a, b) => compareCodeUnits(a.function, b.function));
   return { cycles, recursion };
+}
+
+function pushRecursion(graph, id, recursion) {
+  if (!hasSelfEdge(graph.adjacency, id)) return;
+  const node = graph.nodes.get(id);
+  recursion.push({ function: id, file: node ? node.file : '', line: node ? node.line : 0 });
 }
 
 /* ------------------------------------------------------------------ *
@@ -2917,68 +2928,11 @@ function analyze(opts) {
   const ctx = newContext(rootAbs);
   const compiled = compileExcludes(opts.excludes);
 
-  let rustFiles;
-  let manifests;
-  let targets;
-  let crateDiscovery;
+  const { rustFiles, targets, crateDiscovery } = stat.isFile()
+    ? singleFileInput(rootAbs, ctx)
+    : directoryInput(rootAbs, compiled, opts, ctx);
 
-  if (stat.isFile()) {
-    if (!rootAbs.endsWith('.rs')) throw new AnalysisError(`not a .rs file: ${toPosix(rootAbs)}`);
-    rustFiles = [rootAbs];
-    ctx.root = path.dirname(rootAbs);
-    targets = [
-      makeTarget({
-        targetId: 'crate',
-        kind: path.basename(rootAbs) === 'lib.rs' ? 'lib' : 'bin',
-        packageName: null,
-        pkgIdent: 'crate',
-        libName: 'crate',
-        manifestPath: null,
-        rootFile: rootAbs,
-        sourceRoot: path.dirname(rootAbs),
-        edition: '2021',
-        externCrates: new Set(),
-        enabled: true,
-      }),
-    ];
-    crateDiscovery = 'fallback';
-  } else {
-    const walk = findRustFiles(rootAbs, compiled, ctx);
-    rustFiles = walk.rustFiles;
-    manifests = walk.manifests;
-    if (rustFiles.length === 0) throw new AnalysisError(
-      `no .rs files found under ${toPosix(rootAbs)}`);
-    targets = discoverTargets(rootAbs, manifests, opts, ctx);
-    crateDiscovery = 'manifest';
-    if (targets.length === 0) {
-      const fallback = fallbackTarget(rootAbs);
-      if (!fallback) {
-        throw new AnalysisError(
-          manifests.length === 0
-            ? `no Cargo.toml and no crate root (lib.rs / main.rs) found under ${toPosix(rootAbs)}`
-            : `no crate target found under ${toPosix(rootAbs)}: manifests exist but none yields a lib.rs or main.rs`,
-        );
-      }
-      targets = [fallback];
-      crateDiscovery = 'fallback';
-    }
-  }
-
-  // Disabled targets are still traversed, for file accounting only. Without
-  // that, every file under tests/ would be reported as unreachable, which it
-  // is not: it is excluded test code, a different category.
-  const trees = new Map();
-  const reached = new Set();
-  for (const target of targets) {
-    const tree = buildModuleTree(target, opts, ctx);
-    trees.set(target.targetId, tree);
-    for (const file of tree.visitedFiles) reached.add(file);
-  }
-
-  for (const file of rustFiles) {
-    if (!reached.has(file)) ctx.blindSpots.unreachableFiles.push(relPath(rootAbs, file));
-  }
-  ctx.blindSpots.unreachableFiles.sort(compareCodeUnits);
+  const trees = buildTargetTrees(targets, rustFiles, rootAbs, opts, ctx);
 
   const wantModule = opts.level === 'module' || opts.level === 'all';
   const wantFunction = opts.level === 'function' || opts.level === 'all';
@@ -3007,24 +2961,7 @@ function analyze(opts) {
   const reportedFunctionCycles =
     opts.functionScope === 'all' ? classified.cycles.slice() : crossModule.slice();
 
-  const enabledTargets = targets.filter((t) => t.enabled);
-  const crates = enabledTargets.map((target) => {
-    const tree = trees.get(target.targetId);
-    const count = tree
-      ? Array.from(tree.modules.values()).filter((m) => opts.includeTests || !m.testOnly).length
-      : 0;
-    return {
-      targetId: target.targetId,
-      kind: target.kind,
-      packageName: target.packageName,
-      manifestPath: target.manifestPath,
-      rootFile: relPath(rootAbs, target.rootFile),
-      edition: target.edition,
-      modules: count,
-      files: count,
-    };
-  });
-  crates.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
+  const crates = crateSummaries(targets, trees, rootAbs, opts);
 
   return {
     ctx,
@@ -3053,6 +2990,89 @@ function analyze(opts) {
       recursiveFunctions: classified.recursion.length,
     },
   };
+}
+
+function singleFileInput(rootAbs, ctx) {
+  if (!rootAbs.endsWith('.rs')) throw new AnalysisError(`not a .rs file: ${toPosix(rootAbs)}`);
+  const rustFiles = [rootAbs];
+  ctx.root = path.dirname(rootAbs);
+  const targets = [
+    makeTarget({
+      targetId: 'crate',
+      kind: path.basename(rootAbs) === 'lib.rs' ? 'lib' : 'bin',
+      packageName: null,
+      pkgIdent: 'crate',
+      libName: 'crate',
+      manifestPath: null,
+      rootFile: rootAbs,
+      sourceRoot: path.dirname(rootAbs),
+      edition: '2021',
+      externCrates: new Set(),
+      enabled: true,
+    }),
+  ];
+  return { rustFiles, targets, crateDiscovery: 'fallback' };
+}
+
+function directoryInput(rootAbs, compiled, opts, ctx) {
+  const walk = findRustFiles(rootAbs, compiled, ctx);
+  const rustFiles = walk.rustFiles;
+  const manifests = walk.manifests;
+  if (rustFiles.length === 0) throw new AnalysisError(
+    `no .rs files found under ${toPosix(rootAbs)}`);
+  const targets = discoverTargets(rootAbs, manifests, opts, ctx);
+  if (targets.length > 0) return { rustFiles, targets, crateDiscovery: 'manifest' };
+  const fallback = fallbackTarget(rootAbs);
+  if (!fallback) {
+    throw new AnalysisError(
+      manifests.length === 0
+        ? `no Cargo.toml and no crate root (lib.rs / main.rs) found under ${toPosix(rootAbs)}`
+        : `no crate target found under ${toPosix(rootAbs)}: manifests exist but none `
+          + 'yields a lib.rs or main.rs',
+    );
+  }
+  return { rustFiles, targets: [fallback], crateDiscovery: 'fallback' };
+}
+
+// Disabled targets are still traversed, for file accounting only. Without
+// that, every file under tests/ would be reported as unreachable, which it
+// is not: it is excluded test code, a different category.
+function buildTargetTrees(targets, rustFiles, rootAbs, opts, ctx) {
+  const trees = new Map();
+  const reached = new Set();
+  for (const target of targets) {
+    const tree = buildModuleTree(target, opts, ctx);
+    trees.set(target.targetId, tree);
+    for (const file of tree.visitedFiles) reached.add(file);
+  }
+
+  for (const file of rustFiles) {
+    if (!reached.has(file)) ctx.blindSpots.unreachableFiles.push(relPath(rootAbs, file));
+  }
+  ctx.blindSpots.unreachableFiles.sort(compareCodeUnits);
+  return trees;
+}
+
+function crateSummaries(targets, trees, rootAbs, opts) {
+  const enabledTargets = targets.filter((t) => t.enabled);
+  const crates = enabledTargets.map((target) => {
+    const tree = trees.get(target.targetId);
+    const count = tree
+      ? Array.from(tree.modules.values()).filter((m) => opts.includeTests || !m.testOnly).length
+      : 0;
+    return {
+      targetId: target.targetId,
+      kind: target.kind,
+      packageName: target.packageName,
+      manifestPath: target.manifestPath,
+      rootFile: relPath(rootAbs, target.rootFile),
+      edition: target.edition,
+      modules: count,
+      files: count,
+    };
+  });
+  crates.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
+  return crates;
 }
 
 /* ------------------------------------------------------------------ *
@@ -3147,18 +3167,25 @@ function moduleEdgePayload(edge) {
  * byte-identical and their relative order cannot change the output.
  */
 function compareGraphEdges(a, b) {
-  if (a.from !== b.from) return a.from < b.from ? -1 : 1;
-  if (a.to !== b.to) return a.to < b.to ? -1 : 1;
-  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-  if (a.line !== b.line) return a.line - b.line;
-  if (a.column !== b.column) return a.column - b.column;
-  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  const head = compareGraphEdgeSite(a, b);
+  if (head !== null) return head;
   // Function edges have no item, and a module reference sorts before any item
   // reference at the same site.
   const ai = a.item ?? '';
   const bi = b.item ?? '';
   if (ai !== bi) return ai < bi ? -1 : 1;
   return 0;
+}
+
+/** The first six keys of compareGraphEdges; null when all six tie. */
+function compareGraphEdgeSite(a, b) {
+  if (a.from !== b.from) return a.from < b.from ? -1 : 1;
+  if (a.to !== b.to) return a.to < b.to ? -1 : 1;
+  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+  if (a.line !== b.line) return a.line - b.line;
+  if (a.column !== b.column) return a.column - b.column;
+  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  return null;
 }
 
 /**
@@ -3249,30 +3276,34 @@ function checkGraphIntegrity(payload) {
   const moduleIdSet = hasModules ? new Set(payload.modules.map((m) => m.id)) : null;
   const functionIdSet = hasFunctions ? new Set(payload.functions.map((f) => f.id)) : null;
 
-  if (hasModules) {
-    for (const edge of payload.edges) {
-      if (!moduleIdSet.has(edge.to)) problems.push({ check: 1, from: edge.from, to: edge.to });
-    }
-    for (const mod of payload.modules) {
-      if (mod.parent !== null && !moduleIdSet.has(mod.parent)) {
-        problems.push({ check: 2, from: mod.id, to: mod.parent });
-      }
-    }
-  }
-  if (hasFunctions) {
-    for (const edge of payload.functionEdges) {
-      if (!functionIdSet.has(edge.from) || !functionIdSet.has(edge.to)) {
-        problems.push({ check: 3, from: edge.from, to: edge.to });
-      }
-    }
-    if (hasModules) {
-      for (const fn of payload.functions) {
-        if (!moduleIdSet.has(fn.moduleId)) problems.push({ check: 4, from: fn.id, to:
-          fn.moduleId });
-      }
-    }
-  }
+  if (hasModules) moduleIntegrityProblems(payload, moduleIdSet, problems);
+  if (hasFunctions) functionIntegrityProblems(payload, functionIdSet, moduleIdSet, problems);
   return problems;
+}
+
+/** Checks 1 and 2 of checkGraphIntegrity, in that order. */
+function moduleIntegrityProblems(payload, moduleIdSet, problems) {
+  for (const edge of payload.edges) {
+    if (!moduleIdSet.has(edge.to)) problems.push({ check: 1, from: edge.from, to: edge.to });
+  }
+  for (const mod of payload.modules) {
+    if (mod.parent !== null && !moduleIdSet.has(mod.parent)) {
+      problems.push({ check: 2, from: mod.id, to: mod.parent });
+    }
+  }
+}
+
+/** Checks 3 and 4 of checkGraphIntegrity; check 4 only when modules are present. */
+function functionIntegrityProblems(payload, functionIdSet, moduleIdSet, problems) {
+  for (const edge of payload.functionEdges) {
+    if (!functionIdSet.has(edge.from) || !functionIdSet.has(edge.to)) {
+      problems.push({ check: 3, from: edge.from, to: edge.to });
+    }
+  }
+  if (moduleIdSet === null) return;
+  for (const fn of payload.functions) {
+    if (!moduleIdSet.has(fn.moduleId)) problems.push({ check: 4, from: fn.id, to: fn.moduleId });
+  }
 }
 
 /** Only the sections actually present, for the confirmation line. */
