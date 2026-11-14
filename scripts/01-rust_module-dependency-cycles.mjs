@@ -565,28 +565,40 @@ function readCfgPredicate(m, raw, i, to) {
   const id = readIdent(m, i, to);
   if (!id) return null;
   const k = skipWs(m, id.end, to);
-  if (m[k] === '=') {
-    // The string is masked to spaces; the raw text proves it is a string.
-    let q = k + 1;
-    while (q < to && m[q] === ' ' && raw[q] !== '"' && raw[q] !== 'r') q++;
-    if (raw[q] !== '"' && !(raw[q] === 'r' && (raw[q + 1] === '"' || raw[q + 1] ===
-      '#'))) return null;
-    let e = q;
-    while (e < to && m[e] === ' ') e++;
-    return { requiresTest: false, end: e };
+  if (m[k] === '=') return readCfgStringValue(m, raw, k, to);
+  if (m[k] !== '(') {
+    return { requiresTest: id.name === 'test' && id.end - id.start === 4, end: id.end };
   }
-  if (m[k] !== '(') return { requiresTest: id.name === 'test' && id.end - id.start === 4, end:
-    id.end };
   const close = matchDelimiter(m, k);
   if (close < 0 || close >= to) return null;
   const kids = readCfgPredicateList(m, raw, k + 1, close);
   if (kids === null) return null;
-  let requiresTest;
-  if (id.name === 'all') requiresTest = kids.some(Boolean);
-  else if (id.name === 'any') requiresTest = kids.length > 0 && kids.every(Boolean);
-  else if (id.name === 'not' && kids.length === 1) requiresTest = false;
-  else return null;
+  const requiresTest = cfgCombinatorRequiresTest(id.name, kids);
+  if (requiresTest === null) return null;
   return { requiresTest, end: close + 1 };
+}
+
+/** `ident = "string"` after the `=` at `k`. */
+function readCfgStringValue(m, raw, k, to) {
+  // The string is masked to spaces; the raw text proves it is a string.
+  let q = k + 1;
+  while (q < to && m[q] === ' ' && raw[q] !== '"' && raw[q] !== 'r') q++;
+  if (!startsCfgString(raw, q)) return null;
+  let e = q;
+  while (e < to && m[e] === ' ') e++;
+  return { requiresTest: false, end: e };
+}
+
+function startsCfgString(raw, q) {
+  return raw[q] === '"' || (raw[q] === 'r' && (raw[q + 1] === '"' || raw[q + 1] === '#'));
+}
+
+/** requires-test of all/any/not(list), or null for an unsupported combinator. */
+function cfgCombinatorRequiresTest(name, kids) {
+  if (name === 'all') return kids.some(Boolean);
+  if (name === 'any') return kids.length > 0 && kids.every(Boolean);
+  if (name === 'not' && kids.length === 1) return false;
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1093,36 +1105,12 @@ function findItemBody(m, from, to) {
 function parseImplSelfType(header) {
   let h = header.trim();
 
-  if (h.startsWith('<')) {
-    let depth = 0;
-    let k = 0;
-    for (; k < h.length; k++) {
-      if (h[k] === '<') depth++;
-      else if (h[k] === '>') {
-        depth--;
-        if (depth <= 0) {
-          k++;
-          break;
-        }
-      }
-    }
-    h = h.slice(k);
-  }
+  if (h.startsWith('<')) h = h.slice(genericParamsEnd(h));
 
   const whereIdx = h.search(/\bwhere\b/);
   if (whereIdx >= 0) h = h.slice(0, whereIdx);
 
-  let depth = 0;
-  let forIdx = -1;
-  for (let k = 0; k < h.length; k++) {
-    const ch = h[k];
-    if (ch === '<' || ch === '(' || ch === '[') depth++;
-    else if (ch === '>' || ch === ')' || ch === ']') depth = depth > 0 ? depth - 1 : 0;
-    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1) && /[\s<]/.test(h[k + 4] ||
-      ' ')) {
-      forIdx = k + 4;
-    }
-  }
+  const forIdx = implForTypeStart(h);
   if (forIdx >= 0) h = h.slice(forIdx);
 
   h = h.trim();
@@ -1135,6 +1123,35 @@ function parseImplSelfType(header) {
   const segments = h.split('::').map((s) => s.trim()).filter(Boolean);
   const last = segments.length > 0 ? segments[segments.length - 1] : '';
   return /^[A-Za-z_]\w*$/.test(last) ? last : null;
+}
+
+/** Index just past the leading `<...>` generic parameters of `h`. */
+function genericParamsEnd(h) {
+  let depth = 0;
+  for (let k = 0; k < h.length; k++) {
+    if (h[k] === '<') depth++;
+    else if (h[k] === '>') {
+      depth--;
+      if (depth <= 0) return k + 1;
+    }
+  }
+  return h.length;
+}
+
+/** Start of the self type after a top-level ` for `, or -1 for an inherent impl. */
+function implForTypeStart(h) {
+  let depth = 0;
+  let forIdx = -1;
+  for (let k = 0; k < h.length; k++) {
+    const ch = h[k];
+    if (ch === '<' || ch === '(' || ch === '[') depth++;
+    else if (ch === '>' || ch === ')' || ch === ']') depth = depth > 0 ? depth - 1 : 0;
+    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1)
+      && /[\s<]/.test(h[k + 4] || ' ')) {
+      forIdx = k + 4;
+    }
+  }
+  return forIdx;
 }
 
 function newItems() {
@@ -1641,137 +1658,147 @@ function withinRoot(rootAbs, candidate) {
  * instead of being reported as unreachable.
  */
 function buildModuleTree(target, opts, ctx) {
-  const modules = new Map();
-  const fileToModule = new Map();
-  const visitedFiles = new Set();
+  const tree = { modules: new Map(), fileToModule: new Map(), visitedFiles: new Set() };
   const queue = [{ file: target.rootFile, segments: [], testOnly: false }];
 
-  while (queue.length > 0) {
-    const cur = queue.shift();
-    const fileAbs = cur.file;
-    if (visitedFiles.has(fileAbs)) {
-      ctx.diagnostics.push({
-        level: 'warn',
-        code: 'duplicate-module-file',
-        message:
-          `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
-        file: relPath(ctx.root, fileAbs),
-      });
-      continue;
-    }
-    visitedFiles.add(fileAbs);
+  while (queue.length > 0) visitModuleFile(target, tree, queue.shift(), queue, ctx);
 
-    const id = moduleIdFor(target, cur.segments);
-    const rel = relPath(ctx.root, fileAbs);
-    modules.set(id, {
-      id,
-      segments: cur.segments.slice(),
-      file: fileAbs,
-      relFile: rel,
-      children: new Map(),
-      testOnly: cur.testOnly,
+  return tree;
+}
+
+function visitModuleFile(target, tree, cur, queue, ctx) {
+  const { modules, fileToModule, visitedFiles } = tree;
+  const fileAbs = cur.file;
+  if (visitedFiles.has(fileAbs)) {
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'duplicate-module-file',
+      message:
+        `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
+      file: relPath(ctx.root, fileAbs),
     });
-    fileToModule.set(fileAbs, id);
+    return;
+  }
+  visitedFiles.add(fileAbs);
 
-    if (cur.segments.length > 0) {
-      const parentId = moduleIdFor(target, cur.segments.slice(0, -1));
-      const parent = modules.get(parentId);
-      if (parent) parent.children.set(cur.segments.at(-1), id);
-    }
+  const id = moduleIdFor(target, cur.segments);
+  const rel = relPath(ctx.root, fileAbs);
+  modules.set(id, {
+    id,
+    segments: cur.segments.slice(),
+    file: fileAbs,
+    relFile: rel,
+    children: new Map(),
+    testOnly: cur.testOnly,
+  });
+  fileToModule.set(fileAbs, id);
 
-    const fc = getFile(fileAbs, ctx);
-    if (!fc) continue;
+  if (cur.segments.length > 0) {
+    const parentId = moduleIdFor(target, cur.segments.slice(0, -1));
+    const parent = modules.get(parentId);
+    if (parent) parent.children.set(cur.segments.at(-1), id);
+  }
 
-    for (const inline of fc.items.inlineMods) {
-      if (inline.pathAttrRaw) {
-        ctx.blindSpots.unsupportedPathAttributes.push({
-          file: rel,
-          line: lineColOf(fc.lineIndex, inline.start).line,
-          raw: collapseText(inline.pathAttrRaw),
-        });
-      }
-    }
+  const fc = getFile(fileAbs, ctx);
+  if (!fc) return;
 
-    for (const decl of fc.items.modDecls) {
-      const line = lineColOf(fc.lineIndex, decl.start).line;
-      if (decl.modStack.length > 0) {
-        // Rust resolves this against a directory named after the inline module
-        // chain. Guessing produces wrong module identities, so declare the gap.
-        ctx.blindSpots.inlineModuleFileDeclarations.push({
-          file: rel,
-          line,
-          raw: collapseText(fc.src.slice(decl.keywordStart, decl.end)),
-        });
-        continue;
-      }
+  reportInlinePathAttributes(fc, rel, ctx);
 
-      const searchDir = moduleSearchDir(fileAbs, cur.segments);
-      let resolved = null;
+  for (const decl of fc.items.modDecls) {
+    const resolved = resolveModDeclFile(target, cur, decl, { fc, rel, ctx });
+    if (resolved === null) continue;
+    queue.push({
+      file: resolved,
+      segments: cur.segments.concat([decl.name]),
+      testOnly: cur.testOnly || decl.cfgTest,
+    });
+  }
+}
 
-      if (decl.pathAttrRaw) {
-        const pm = /#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]/.exec(decl.pathAttrRaw);
-        const raw = pm ? pm[1] : null;
-        const candidate = raw ? path.resolve(searchDir, raw) : null;
-        const bounded =
-          candidate !== null && withinRoot(target.sourceRoot, candidate) && withinRoot(ctx.root,
-            candidate);
-        if (bounded && isFile(candidate)) {
-          resolved = candidate;
-        } else if (bounded && isDirectory(candidate) && isFile(path.join(candidate, 'mod.rs'))) {
-          resolved = path.join(candidate, 'mod.rs');
-        } else {
-          ctx.blindSpots.unsupportedPathAttributes.push({
-            file: rel,
-            line,
-            raw: collapseText(`${decl.pathAttrRaw} ${fc.src.slice(decl.keywordStart, decl.end)}`),
-          });
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'unsupported-path-attribute',
-            message: bounded === false ? '#[path] escapes the crate source root' :
-              '#[path] target does not exist',
-            file: rel,
-          });
-          continue;
-        }
-      } else {
-        const flat = path.join(searchDir, `${decl.name}.rs`);
-        const nested = path.join(searchDir, decl.name, 'mod.rs');
-        const flatExists = isFile(flat);
-        const nestedExists = isFile(nested);
-        if (flatExists && nestedExists) {
-          // Real rustc rejects this. Picking one silently would be a lie.
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'ambiguous-module-file',
-            message: `both ${decl.name}.rs and ${decl.name}/mod.rs exist; using ${decl.name}.rs`,
-            file: rel,
-          });
-          resolved = flat;
-        } else if (flatExists) {
-          resolved = flat;
-        } else if (nestedExists) {
-          resolved = nested;
-        } else {
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'unresolved-mod-declaration',
-            message: `mod ${decl.name}; resolves to no file`,
-            file: rel,
-          });
-          continue;
-        }
-      }
-
-      queue.push({
-        file: resolved,
-        segments: cur.segments.concat([decl.name]),
-        testOnly: cur.testOnly || decl.cfgTest,
+function reportInlinePathAttributes(fc, rel, ctx) {
+  for (const inline of fc.items.inlineMods) {
+    if (inline.pathAttrRaw) {
+      ctx.blindSpots.unsupportedPathAttributes.push({
+        file: rel,
+        line: lineColOf(fc.lineIndex, inline.start).line,
+        raw: collapseText(inline.pathAttrRaw),
       });
     }
   }
+}
 
-  return { modules, fileToModule, visitedFiles };
+/** File a `mod name;` declaration loads, or null when it is reported and skipped. */
+function resolveModDeclFile(target, cur, decl, site) {
+  const { fc, rel, ctx } = site;
+  const line = lineColOf(fc.lineIndex, decl.start).line;
+  if (decl.modStack.length > 0) {
+    // Rust resolves this against a directory named after the inline module
+    // chain. Guessing produces wrong module identities, so declare the gap.
+    ctx.blindSpots.inlineModuleFileDeclarations.push({
+      file: rel,
+      line,
+      raw: collapseText(fc.src.slice(decl.keywordStart, decl.end)),
+    });
+    return null;
+  }
+
+  const searchDir = moduleSearchDir(cur.file, cur.segments);
+  if (decl.pathAttrRaw) return resolvePathAttributeFile(target, searchDir, decl, line, site);
+  return resolveModFileByName(searchDir, decl, site);
+}
+
+function resolvePathAttributeFile(target, searchDir, decl, line, site) {
+  const { fc, rel, ctx } = site;
+  const pm = /#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]/.exec(decl.pathAttrRaw);
+  const raw = pm ? pm[1] : null;
+  const candidate = raw ? path.resolve(searchDir, raw) : null;
+  const bounded =
+    candidate !== null && withinRoot(target.sourceRoot, candidate) && withinRoot(ctx.root,
+      candidate);
+  if (bounded && isFile(candidate)) return candidate;
+  if (bounded && isDirectory(candidate) && isFile(path.join(candidate, 'mod.rs'))) {
+    return path.join(candidate, 'mod.rs');
+  }
+  ctx.blindSpots.unsupportedPathAttributes.push({
+    file: rel,
+    line,
+    raw: collapseText(`${decl.pathAttrRaw} ${fc.src.slice(decl.keywordStart, decl.end)}`),
+  });
+  ctx.diagnostics.push({
+    level: 'warn',
+    code: 'unsupported-path-attribute',
+    message: bounded === false ? '#[path] escapes the crate source root' :
+      '#[path] target does not exist',
+    file: rel,
+  });
+  return null;
+}
+
+function resolveModFileByName(searchDir, decl, site) {
+  const { rel, ctx } = site;
+  const flat = path.join(searchDir, `${decl.name}.rs`);
+  const nested = path.join(searchDir, decl.name, 'mod.rs');
+  const flatExists = isFile(flat);
+  const nestedExists = isFile(nested);
+  if (flatExists && nestedExists) {
+    // Real rustc rejects this. Picking one silently would be a lie.
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'ambiguous-module-file',
+      message: `both ${decl.name}.rs and ${decl.name}/mod.rs exist; using ${decl.name}.rs`,
+      file: rel,
+    });
+    return flat;
+  }
+  if (flatExists) return flat;
+  if (nestedExists) return nested;
+  ctx.diagnostics.push({
+    level: 'warn',
+    code: 'unresolved-mod-declaration',
+    message: `mod ${decl.name}; resolves to no file`,
+    file: rel,
+  });
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1861,62 +1888,9 @@ function foldToFileModule(tree, target, segments) {
  */
 function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   if (segments.length === 0) return null;
-  const first = segments[0];
-  let base = null;
-  let rest = null;
-
-  if (first === 'crate' || (target.kind !== 'lib'
-    && (first === target.libName || first === target.pkgIdent))) {
-    base = [];
-    rest = segments.slice(1);
-  } else if (first === 'self') {
-    base = contextSegments.slice();
-    rest = segments.slice(1);
-  } else if (first === 'super') {
-    let k = 0;
-    let up = contextSegments.slice();
-    while (k < segments.length && segments[k] === 'super') {
-      if (up.length === 0) {
-        ctx.stats.unresolvedInternalPaths++;
-        return null;
-      }
-      up.pop();
-      k++;
-    }
-    base = up;
-    rest = segments.slice(k);
-  } else if (contextSegments.length > 0
-    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
-    // Rust 2018 resolves a relative first segment in the current module before
-    // the crate root: `use process::X` inside `a::b` with `mod process;` names
-    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
-    // against the current module, so the child arc is recorded and a same-name
-    // crate-root module can never receive a false arc (#3998).
-    base = contextSegments.slice();
-    rest = segments.slice();
-    ctx.stats.barePathResolutions++;
-  } else {
-    const isExternal = target.externCrates.has(first);
-    const rootModule = tree.modules.get(target.targetId);
-    const isTopLevelModule = rootModule ? rootModule.children.has(first) : false;
-    if (isExternal && isTopLevelModule) {
-      // Rust 2018 uniform paths make this genuinely ambiguous. Never guess.
-      ctx.blindSpots.ambiguousBarePaths++;
-      return null;
-    }
-    if (isExternal) {
-      ctx.stats.externalReferences++;
-      return null;
-    }
-    if (isTopLevelModule) {
-      ctx.stats.barePathResolutions++;
-      base = [];
-      rest = segments.slice();
-    } else {
-      ctx.stats.externalReferences++;
-      return null;
-    }
-  }
+  const start = resolvePathBase(segments, contextSegments, target, tree, ctx);
+  if (!start) return null;
+  const { base, rest } = start;
 
   const baseId = moduleIdFor(target, base);
   if (!tree.modules.has(baseId)) {
@@ -1935,6 +1909,65 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
     idx++;
   }
   return { moduleId: currentId, rest: rest.slice(idx), folded: [] };
+}
+
+/** Base module segments of a path plus the segments still to walk, or null. */
+function resolvePathBase(segments, contextSegments, target, tree, ctx) {
+  const first = segments[0];
+
+  if (first === 'crate' || (target.kind !== 'lib'
+    && (first === target.libName || first === target.pkgIdent))) {
+    return { base: [], rest: segments.slice(1) };
+  }
+  if (first === 'self') return { base: contextSegments.slice(), rest: segments.slice(1) };
+  if (first === 'super') return resolveSuperPathBase(segments, contextSegments, ctx);
+  if (contextSegments.length > 0
+    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
+    // Rust 2018 resolves a relative first segment in the current module before
+    // the crate root: `use process::X` inside `a::b` with `mod process;` names
+    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
+    // against the current module, so the child arc is recorded and a same-name
+    // crate-root module can never receive a false arc (#3998).
+    ctx.stats.barePathResolutions++;
+    return { base: contextSegments.slice(), rest: segments.slice() };
+  }
+  return resolveBarePathBase(segments, target, tree, ctx);
+}
+
+function resolveSuperPathBase(segments, contextSegments, ctx) {
+  let k = 0;
+  const up = contextSegments.slice();
+  while (k < segments.length && segments[k] === 'super') {
+    if (up.length === 0) {
+      ctx.stats.unresolvedInternalPaths++;
+      return null;
+    }
+    up.pop();
+    k++;
+  }
+  return { base: up, rest: segments.slice(k) };
+}
+
+function resolveBarePathBase(segments, target, tree, ctx) {
+  const first = segments[0];
+  const isExternal = target.externCrates.has(first);
+  const rootModule = tree.modules.get(target.targetId);
+  const isTopLevelModule = rootModule ? rootModule.children.has(first) : false;
+  if (isExternal && isTopLevelModule) {
+    // Rust 2018 uniform paths make this genuinely ambiguous. Never guess.
+    ctx.blindSpots.ambiguousBarePaths++;
+    return null;
+  }
+  if (isExternal) {
+    ctx.stats.externalReferences++;
+    return null;
+  }
+  if (isTopLevelModule) {
+    ctx.stats.barePathResolutions++;
+    return { base: [], rest: segments.slice() };
+  }
+  ctx.stats.externalReferences++;
+  return null;
 }
 
 /** Innermost inline module containing `offset`, as full context segments. */
@@ -1961,10 +1994,7 @@ function skipRangesFor(items, includeTests) {
 }
 
 function buildModuleGraph(targets, trees, opts, ctx) {
-  const nodes = [];
-  const edges = [];
-  const adjacency = new Map();
-  const nodeMeta = new Map();
+  const graph = { nodes: [], edges: [], adjacency: new Map(), nodeMeta: new Map() };
 
   for (const target of targets) {
     if (!target.enabled) continue;
@@ -1973,86 +2003,109 @@ function buildModuleGraph(targets, trees, opts, ctx) {
 
     for (const mod of sortedModules(tree)) {
       if (mod.testOnly && !opts.includeTests) continue;
-      nodes.push(mod.id);
-      if (!adjacency.has(mod.id)) adjacency.set(mod.id, new Set());
-      nodeMeta.set(mod.id, {
-        parent: mod.segments.length === 0 ? null : moduleIdFor(target, mod.segments.slice(0, -1)),
-        file: mod.relFile,
-        crateTarget: target.targetId,
-        loc: null,
-      });
-
-      const fc = getFile(mod.file, ctx);
-      if (!fc) continue;
-      // Only reachable with a file that was read. The one path where getFile
-      // returns null pushes an error diagnostic, and an error means no graph is
-      // written at all, so a null `loc` can never reach a file. Defaulting it to
-      // 0 would turn an unreadable file into a zero-line module, which is the
-      // failure mode this tool exists to refuse.
-      nodeMeta.get(mod.id).loc = lineCountOf(fc);
-      const items = fc.items;
-      if (items.fileCfgTest && !opts.includeTests) continue;
-
-      const skip = skipRangesFor(items, opts.includeTests);
-      const useRanges = [];
-
-      for (const decl of items.useDecls) {
-        useRanges.push([decl.start, decl.end]);
-        if (inAnyRange(decl.start, skip)) continue;
-        const context = mod.segments.concat(decl.modStack);
-        const leaves = expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile);
-        const pos = lineColOf(fc.lineIndex, decl.keywordStart);
-        const text = collapseText(fc.src.slice(decl.start, decl.end));
-        const cfgGated = decl.cfgGated || inAnyRange(decl.start, items.cfgGatedRanges);
-
-        for (const leaf of leaves) {
-          if (leaf.isGlob) ctx.blindSpots.globImports++;
-          if (leaf.leadingColons) {
-            ctx.stats.externalReferences++;
-            continue;
-          }
-          const detailed = resolvePathDetailed(leaf.segments, context, target, tree, ctx);
-          if (!detailed) continue;
-          addModuleEdge(edges, adjacency, {
-            from: mod.id,
-            to: detailed.moduleId,
-            item: itemOf(detailed),
-            file: mod.relFile,
-            line: pos.line,
-            column: pos.column,
-            kind: leaf.isGlob ? 'use-glob' : 'use',
-            cfgGated,
-            text,
-          }, opts, ctx);
-        }
-      }
-
-      // A path written inside println!("{}", crate::a::b::VALUE) is a genuine
-      // reference at that exact site, so macro invocations are not skipped at
-      // module level. Function level treats them differently.
-      const paths = extractQualifiedPaths(fc.masked, skip.concat(useRanges), target);
-      for (const found of paths) {
-        const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
-        const detailed = resolvePathDetailed(found.segments, context, target, tree, ctx);
-        if (!detailed) continue;
-        const pos = lineColOf(fc.lineIndex, found.start);
-        addModuleEdge(edges, adjacency, {
-          from: mod.id,
-          to: detailed.moduleId,
-          item: itemOf(detailed),
-          file: mod.relFile,
-          line: pos.line,
-          column: pos.column,
-          kind: 'path',
-          cfgGated: inAnyRange(found.start, items.cfgGatedRanges),
-          text: collapseText(fc.src.slice(found.start, found.end)),
-        }, opts, ctx);
-      }
+      addModuleGraphNode(graph, { target, tree, mod, opts, ctx });
     }
   }
 
-  nodes.sort(compareCodeUnits);
-  return { nodes, edges, adjacency, nodeMeta };
+  graph.nodes.sort(compareCodeUnits);
+  return graph;
+}
+
+function addModuleGraphNode(graph, scan) {
+  const { target, mod, opts, ctx } = scan;
+  const { adjacency, nodeMeta } = graph;
+  graph.nodes.push(mod.id);
+  if (!adjacency.has(mod.id)) adjacency.set(mod.id, new Set());
+  nodeMeta.set(mod.id, {
+    parent: mod.segments.length === 0 ? null : moduleIdFor(target, mod.segments.slice(0, -1)),
+    file: mod.relFile,
+    crateTarget: target.targetId,
+    loc: null,
+  });
+
+  const fc = getFile(mod.file, ctx);
+  if (!fc) return;
+  // Only reachable with a file that was read. The one path where getFile
+  // returns null pushes an error diagnostic, and an error means no graph is
+  // written at all, so a null `loc` can never reach a file. Defaulting it to
+  // 0 would turn an unreadable file into a zero-line module, which is the
+  // failure mode this tool exists to refuse.
+  nodeMeta.get(mod.id).loc = lineCountOf(fc);
+  const items = fc.items;
+  if (items.fileCfgTest && !opts.includeTests) return;
+
+  const skip = skipRangesFor(items, opts.includeTests);
+  const fileScan = { ...scan, graph, fc, items };
+  const useRanges = addUseEdges(fileScan, skip);
+
+  // A path written inside println!("{}", crate::a::b::VALUE) is a genuine
+  // reference at that exact site, so macro invocations are not skipped at
+  // module level. Function level treats them differently.
+  addPathEdges(fileScan, skip.concat(useRanges));
+}
+
+/** Edges of every `use` in the file; returns the use-declaration ranges. */
+function addUseEdges(scan, skip) {
+  const { mod, fc, items, ctx } = scan;
+  const useRanges = [];
+
+  for (const decl of items.useDecls) {
+    useRanges.push([decl.start, decl.end]);
+    if (inAnyRange(decl.start, skip)) continue;
+    const site = {
+      context: mod.segments.concat(decl.modStack),
+      leaves: expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile),
+      pos: lineColOf(fc.lineIndex, decl.keywordStart),
+      text: collapseText(fc.src.slice(decl.start, decl.end)),
+      cfgGated: decl.cfgGated || inAnyRange(decl.start, items.cfgGatedRanges),
+    };
+    for (const leaf of site.leaves) addUseLeafEdge(scan, leaf, site);
+  }
+  return useRanges;
+}
+
+function addUseLeafEdge(scan, leaf, site) {
+  const { target, tree, mod, opts, ctx, graph } = scan;
+  if (leaf.isGlob) ctx.blindSpots.globImports++;
+  if (leaf.leadingColons) {
+    ctx.stats.externalReferences++;
+    return;
+  }
+  const detailed = resolvePathDetailed(leaf.segments, site.context, target, tree, ctx);
+  if (!detailed) return;
+  addModuleEdge(graph.edges, graph.adjacency, {
+    from: mod.id,
+    to: detailed.moduleId,
+    item: itemOf(detailed),
+    file: mod.relFile,
+    line: site.pos.line,
+    column: site.pos.column,
+    kind: leaf.isGlob ? 'use-glob' : 'use',
+    cfgGated: site.cfgGated,
+    text: site.text,
+  }, opts, ctx);
+}
+
+function addPathEdges(scan, skipped) {
+  const { target, tree, mod, fc, items, opts, ctx, graph } = scan;
+  const paths = extractQualifiedPaths(fc.masked, skipped, target);
+  for (const found of paths) {
+    const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
+    const detailed = resolvePathDetailed(found.segments, context, target, tree, ctx);
+    if (!detailed) continue;
+    const pos = lineColOf(fc.lineIndex, found.start);
+    addModuleEdge(graph.edges, graph.adjacency, {
+      from: mod.id,
+      to: detailed.moduleId,
+      item: itemOf(detailed),
+      file: mod.relFile,
+      line: pos.line,
+      column: pos.column,
+      kind: 'path',
+      cfgGated: inAnyRange(found.start, items.cfgGatedRanges),
+      text: collapseText(fc.src.slice(found.start, found.end)),
+    }, opts, ctx);
+  }
 }
 
 /**
@@ -2463,20 +2516,23 @@ function buildImportMap(fc, mod, target, tree, ctx, skip) {
   for (const decl of fc.items.useDecls) {
     if (inAnyRange(decl.start, skip)) continue;
     if (decl.modStack.length > 0) continue;
-    for (const leaf of expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile)) {
-      if (leaf.isGlob || leaf.leadingColons) continue;
-      if (leaf.segments.length === 0) continue;
-      const local = leaf.alias || leaf.segments[leaf.segments.length - 1];
-      const silent = { stats: silentStats(), blindSpots: silentStats() };
-      const detailed = resolvePathDetailed(leaf.segments, mod.segments, target, tree, silent);
-      if (!detailed) continue;
-      map.set(local, {
-        moduleId: detailed.moduleId,
-        name: leaf.segments[leaf.segments.length - 1],
-      });
-    }
+    const leaves = expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile);
+    for (const leaf of leaves) addImportLeaf(map, leaf, mod, target, tree);
   }
   return map;
+}
+
+function addImportLeaf(map, leaf, mod, target, tree) {
+  if (leaf.isGlob || leaf.leadingColons) return;
+  if (leaf.segments.length === 0) return;
+  const local = leaf.alias || leaf.segments[leaf.segments.length - 1];
+  const silent = { stats: silentStats(), blindSpots: silentStats() };
+  const detailed = resolvePathDetailed(leaf.segments, mod.segments, target, tree, silent);
+  if (!detailed) return;
+  map.set(local, {
+    moduleId: detailed.moduleId,
+    name: leaf.segments[leaf.segments.length - 1],
+  });
 }
 
 /** Counter sink: import-map resolution must not double-count blind spots. */
