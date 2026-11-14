@@ -12,6 +12,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 fn process_owns_console() -> bool {
     use windows_sys::Win32::System::Console::GetConsoleCP;
+    // SAFETY: GetConsoleCP takes no arguments or caller-owned memory; its documented
+    // zero return reports no console and is tested directly here.
     unsafe { GetConsoleCP() != 0 }
 }
 

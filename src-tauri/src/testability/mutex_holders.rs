@@ -257,7 +257,9 @@ pub fn find_holders(probe: &super::ProfileMutexGuard) -> HolderLookup {
         }
         scanned_mutant_handles += 1;
         let process = *processes.entry(e.unique_process_id).or_insert_with(|| {
-            // SAFETY: plain Win32 call; a null result is handled below.
+            // SAFETY: OpenProcess takes the numeric PID from `e` with duplication/query rights;
+            // the null result is counted and skipped below, and non-null handles are closed
+            // once by the final `processes.into_values()` loop.
             unsafe {
                 OpenProcess(
                     PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION,

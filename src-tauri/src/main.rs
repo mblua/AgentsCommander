@@ -202,6 +202,9 @@ fn try_acquire_single_instance() -> bool {
     let mutex_name = agentscommander_lib::config::profile::mutex_name();
     let name: Vec<u16> = mutex_name.encode_utf16().collect();
 
+    // SAFETY: config::profile::mutex_name returns a NUL-terminated string on every
+    // branch; `name` retains its UTF-16 encoding through CreateMutexW. Null security
+    // attributes request defaults; GetLastError has no pointer preconditions.
     unsafe {
         let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
         if handle.is_null() {

@@ -406,6 +406,8 @@ fn open_snapshot_leaf_at(
 
     let name = std::ffi::CString::new(name.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: `parent.file` owns the directory fd; `name` is a live NUL-terminated CString.
+    // `openat` receives the promoted mode below and returns a new owned fd on success.
     let descriptor = unsafe {
         // `openat` is variadic, so the mode must arrive default-promoted to at least
         // `c_int`/`c_uint`. `libc::mode_t` is `u32` on Linux but `u16` on macOS, where passing
@@ -421,6 +423,8 @@ fn open_snapshot_leaf_at(
     if descriptor < 0 {
         Err(std::io::Error::last_os_error())
     } else {
+        // SAFETY: `descriptor >= 0` is the new fd returned by `openat` above; no other owner
+        // has been created, so `from_raw_fd` transfers its sole ownership to File.
         Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
     }
 }
@@ -464,12 +468,16 @@ fn snapshot_handle_identity(
         return Err(std::io::Error::other("unexpected filesystem object"));
     }
     let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: `file` keeps its handle open; `information` has space and alignment for
+    // `BY_HANDLE_FILE_INFORMATION`, which GetFileInformationByHandle writes on success.
     let ok = unsafe {
         GetFileInformationByHandle(file.as_raw_handle().cast(), information.as_mut_ptr())
     };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: The `ok == 0` return above excludes failure; GetFileInformationByHandle
+    // has initialized every field of `information` on this success path.
     let information = unsafe { information.assume_init() };
     Ok(SnapshotFileIdentity {
         object_id: SnapshotFileObjectId {

@@ -160,10 +160,14 @@ pub(crate) fn handle_identity(file: &File) -> Result<(FileObjectId, u64), String
 
     let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
     let succeeded =
+        // SAFETY: `file` borrows a live File handle; `information` supplies writable storage
+        // for BY_HANDLE_FILE_INFORMATION, which GetFileInformationByHandle fills on success.
         unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
     if succeeded == 0 {
         return Err("unsafe_path".to_string());
     }
+    // SAFETY: the nonzero `succeeded` check above proves GetFileInformationByHandle
+    // initialized the entire BY_HANDLE_FILE_INFORMATION output.
     let information = unsafe { information.assume_init() };
     Ok((
         FileObjectId {

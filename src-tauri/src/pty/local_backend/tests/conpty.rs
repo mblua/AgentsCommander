@@ -548,6 +548,8 @@ impl CursorSessionCleanup {
             .unwrap()
             .process_id()
             .unwrap();
+        // SAFETY: OpenProcess takes scalar rights/PID values; pid comes from this backend child.
+        // The null result is rejected below before Self takes sole handle ownership.
         let process = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
@@ -575,6 +577,8 @@ impl CursorSessionCleanup {
             .registration_token_for_session(self.id)
             .is_none());
         assert_eq!(
+            // SAFETY: self.process is the non-null OpenProcess handle retained by new. stop does
+            // not close it; Drop closes it only after both WaitForSingleObject calls return.
             unsafe {
                 windows_sys::Win32::System::Threading::WaitForSingleObject(self.process, 5000)
             },
@@ -587,9 +591,13 @@ impl Drop for CursorSessionCleanup {
     fn drop(&mut self) {
         // Cleanup is always driven by the caller, including when an assertion unwinds.
         let result = self.backend.kill(self.id);
+        // SAFETY: new retained this non-null handle; backend.kill does not own or close it. Drop
+        // still owns it here and waits before the sole CloseHandle below.
         let exited = unsafe {
             windows_sys::Win32::System::Threading::WaitForSingleObject(self.process, 5000)
         };
+        // SAFETY: new stored the non-null OpenProcess handle in this non-Clone guard. The Drop wait
+        // returned; this Drop is its sole CloseHandle, also during unwinding.
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(self.process);
         }

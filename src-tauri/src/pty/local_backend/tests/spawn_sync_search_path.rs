@@ -92,6 +92,8 @@ fn await_launch(backend: &LocalProcessBackend, spec: BackendSpawnSpec, marker: &
     assert!(!backend.ptys.lock().unwrap().contains_key(&id));
     assert!(backend.fanout.registration_token_for_session(id).is_none());
     assert_eq!(
+        // SAFETY: pid came from this test child. POSIX kill with signal 0 probes
+        // existence/permissions, takes no pointers and delivers no signal.
         unsafe { libc::kill(pid as libc::pid_t, 0) },
         -1,
         "own child leaked"
@@ -169,6 +171,9 @@ fn issue_3029_unix_launch_contracts() {
 struct SignalMaskGuard(libc::sigset_t);
 impl SignalMaskGuard {
     fn block_usr1() -> Self {
+        // SAFETY: sigset_t admits all-zero initialization. sigemptyset initializes block before
+        // sigaddset adds SIGUSR1; both success checks precede pthread_sigmask. Its live output
+        // original is saved only on success.
         unsafe {
             let mut block = std::mem::zeroed();
             let mut original = std::mem::zeroed();
@@ -185,6 +190,9 @@ impl SignalMaskGuard {
 impl Drop for SignalMaskGuard {
     fn drop(&mut self) {
         assert_eq!(
+            // SAFETY: self.0 is the original mask successfully returned by pthread_sigmask in
+            // block_usr1. Its borrow stays live for this synchronous restore; the null output is
+            // permitted.
             unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) },
             0
         );
@@ -196,6 +204,9 @@ fn pty_3029_child_fixture() {
     if std::env::var("AC3029_CHILD_FIXTURE").as_deref() != Ok("1") {
         return;
     }
+    // SAFETY: sigset_t admits all-zero initialization; current is live writable storage.
+    // pthread_sigmask with null input queries the mask; its success assertion precedes sigismember
+    // reading that initialized set with SIGUSR1.
     let blocked = unsafe {
         let mut current = std::mem::zeroed();
         assert_eq!(
@@ -266,6 +277,8 @@ fn issue_3029_unix_child_inherits_shell_and_unblocked_signals() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     backend.kill(id).unwrap();
+    // SAFETY: pid came from the direct test child. POSIX kill with signal 0 probes
+    // existence/permissions, takes no pointers and delivers no signal.
     assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
     assert_eq!(
         std::io::Error::last_os_error().raw_os_error(),

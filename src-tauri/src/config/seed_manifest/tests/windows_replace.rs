@@ -42,6 +42,8 @@ fn open_read_write_temp_handle_conflicts_with_replace_even_with_delete_access() 
         opened.refresh_facts().unwrap();
         let temp_wide = absolute_verbatim_utf16(&temp_path).unwrap();
         let canonical_wide = absolute_verbatim_utf16(&canonical).unwrap();
+        // SAFETY: `canonical_wide` and `temp_wide` come from absolute_verbatim_utf16 and
+        // remain live NUL-terminated paths. ReplaceFileW allows no backup and null reserved args.
         let success = unsafe {
             ReplaceFileW(
                 canonical_wide.as_ptr(),
@@ -53,6 +55,8 @@ fn open_read_write_temp_handle_conflicts_with_replace_even_with_delete_access() 
             )
         };
         assert_eq!(success, 0);
+        // SAFETY: GetLastError has no pointer preconditions; it reads this thread's error
+        // immediately after the failed ReplaceFileW and the local success assertion.
         let raw_error = unsafe { GetLastError() };
         assert_eq!(raw_error, ERROR_SHARING_VIOLATION);
         assert_eq!(std::fs::read(&canonical).unwrap(), b"old canonical");

@@ -111,11 +111,17 @@ pub(super) fn probe_child_liveness(
         return ChildLiveness::Unqueryable("child exposes no process handle".to_string());
     };
 
+    // SAFETY: `child.as_raw_handle()` supplied a borrowed process handle; the mutable
+    // `child` borrow keeps its owner alive. WaitForSingleObject uses a zero timeout.
     match unsafe { WaitForSingleObject(handle.cast(), 0) } {
         WAIT_TIMEOUT => ChildLiveness::Alive,
         WAIT_OBJECT_0 => {
             let mut code: u32 = 0;
+            // SAFETY: `handle` remains borrowed from the live `child`; `code` is writable u32
+            // storage for GetExitCodeProcess, and its value is used only on success.
             if unsafe { GetExitCodeProcess(handle.cast(), &mut code) } == 0 {
+                // SAFETY: GetLastError has no caller preconditions and reads this thread's error
+                // immediately after GetExitCodeProcess failed.
                 let os_error = unsafe { GetLastError() };
                 return ChildLiveness::Unqueryable(format!(
                     "GetExitCodeProcess failed (os error {os_error})"
@@ -127,6 +133,8 @@ pub(super) fn probe_child_liveness(
             }
         }
         WAIT_FAILED => {
+            // SAFETY: GetLastError has no caller preconditions; WAIT_FAILED from the immediately
+            // preceding WaitForSingleObject selects this thread's recorded error.
             let os_error = unsafe { GetLastError() };
             ChildLiveness::Unqueryable(format!("WaitForSingleObject failed (os error {os_error})"))
         }

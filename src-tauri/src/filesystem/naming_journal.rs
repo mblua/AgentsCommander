@@ -44,6 +44,8 @@ pub(crate) fn replace_journal_file(src: &Path, dst: &Path) -> io::Result<()> {
 
     let src_wide: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
     let dst_wide: Vec<u16> = dst.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: src_wide and dst_wide append NUL with chain(Some(0)); both owned
+    // buffers remain live and unchanged while MoveFileExW reads the paths.
     let ok = unsafe {
         MoveFileExW(
             src_wide.as_ptr(),
@@ -72,6 +74,8 @@ pub(crate) fn move_migration_file_no_replace(from: &Path, to: &Path) -> io::Resu
     let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
     // Deliberately WITHOUT `MOVEFILE_REPLACE_EXISTING`: an existing `to` fails
     // with ERROR_ALREADY_EXISTS (183) and its bytes are never replaced.
+    // SAFETY: from_wide and to_wide append NUL with chain(Some(0)); both owned
+    // buffers remain live and unchanged while MoveFileExW reads the paths.
     let ok = unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
     if ok == 0 {
         Err(io::Error::last_os_error())

@@ -383,7 +383,8 @@ impl ProbeProcessOwner {
                         }
                         #[cfg(unix)]
                         if self.pgid > 0 {
-                            // SAFETY: this remains the retained group identity.
+                            // SAFETY: self.pgid > 0 makes its negation a representable group
+                            // selector. kill accepts SIGKILL and has no caller-memory arguments.
                             unsafe {
                                 libc::kill(-self.pgid, libc::SIGKILL);
                             }
@@ -407,8 +408,9 @@ impl ProbeProcessOwner {
         }
         #[cfg(unix)]
         if self.pgid > 0 {
-            // SAFETY: this is the positive process-group id created by
-            // `Command::process_group(0)` for this probe owner.
+            // SAFETY: spawn records pgid using i32::try_from(child.id()); the > 0 guard
+            // makes its negation representable. kill accepts this group selector and SIGKILL
+            // without accessing caller memory.
             let killed = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
             if killed != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
                 defects.push(format!(
@@ -453,7 +455,8 @@ impl ProbeProcessOwner {
         }
         #[cfg(unix)]
         if !cleanup_required && self.pgid > 0 {
-            // SAFETY: same owned positive group identity as above.
+            // SAFETY: self.pgid > 0 above makes its negation a representable group
+            // selector. kill accepts SIGKILL and takes no pointers into Rust memory.
             unsafe {
                 libc::kill(-self.pgid, libc::SIGKILL);
             }

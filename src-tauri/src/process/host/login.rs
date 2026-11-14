@@ -68,8 +68,9 @@ pub(crate) async fn probe_login_shell_path(shell: &Path, timeout: Duration) -> O
         }
         Err(_) => {
             if let Some(pid) = pid {
-                // SAFETY: plain syscall; after setsid the child's pgid equals
-                // its pid, so this kills the probe's whole tree and nothing else.
+                // SAFETY: `pid` comes from the successfully spawned child.id() above; Unix
+                // child PIDs fit pid_t and are positive, so negation is representable. kill
+                // takes no memory pointers; pre_exec setsid makes the child's pid its pgid.
                 unsafe {
                     libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
                 }

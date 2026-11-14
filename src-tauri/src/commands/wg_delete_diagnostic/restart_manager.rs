@@ -39,6 +39,8 @@ fn to_wide_nul(s: &str) -> Vec<u16> {
 struct RmSession(u32);
 impl Drop for RmSession {
     fn drop(&mut self) {
+        // SAFETY: `RmSession` is constructed only after RmStartSession succeeds in rm_start;
+        // Drop is the sole RmEndSession path and consumes this session once.
         unsafe {
             let _ = RmEndSession(self.0);
         }
@@ -49,6 +51,8 @@ fn rm_start() -> Result<RmSession, DiagnosticError> {
     let mut handle: u32 = 0;
     // `strSessionKey` is PWSTR (mutable). Must hold CCH_RM_SESSION_KEY+1 wide chars.
     let mut key: Vec<u16> = vec![0u16; (CCH_RM_SESSION_KEY as usize) + 1];
+    // SAFETY: `handle` is a writable u32 and `key` has CCH_RM_SESSION_KEY + 1 writable
+    // UTF-16 units as RmStartSession requires; flags are the required zero.
     let rc = unsafe { RmStartSession(&mut handle, 0, key.as_mut_ptr()) };
     if rc != ERROR_SUCCESS {
         return Err(win32_error("RmStartSession failed", rc));
@@ -62,6 +66,9 @@ fn rm_register(handle: u32, wide_files: &[Vec<u16>]) -> Result<(), DiagnosticErr
     }
     // The collected Vec must outlive the FFI call so the pointers stay valid.
     let ptrs: Vec<*const u16> = wide_files.iter().map(Vec::as_ptr).collect();
+    // SAFETY: The callers retain their successful RmSession while registering. `ptrs`
+    // borrows live wide_files built by to_wide_nul, and its length matches the file count;
+    // the null application/service arrays have zero counts in RmRegisterResources.
     let rc = unsafe {
         RmRegisterResources(
             handle,
@@ -86,6 +93,8 @@ fn rm_get_list(handle: u32) -> Result<Vec<RM_PROCESS_INFO>, DiagnosticError> {
 
     // Probe: zero buffer, learn `needed`. RM returns SUCCESS with needed=0 when
     // there are no blockers — distinct from MORE_DATA.
+    // SAFETY: The callers retain their successful RmSession. RmGetList permits a null
+    // process array when `have == 0`; needed, have and reasons are writable u32 locals.
     let rc = unsafe {
         RmGetList(
             handle,
@@ -105,6 +114,9 @@ fn rm_get_list(handle: u32) -> Result<Vec<RM_PROCESS_INFO>, DiagnosticError> {
     for _ in 0..MAX_GETLIST_RETRIES {
         let mut buf: Vec<RM_PROCESS_INFO> = Vec::with_capacity(needed as usize);
         have = needed;
+        // SAFETY: `buf` reserves `needed` RM_PROCESS_INFO slots and `have = needed` tells
+        // RmGetList its capacity. The callers retain RmSession; all count/reason pointers
+        // refer to writable locals, and success is checked before setting the vector length.
         let rc = unsafe {
             RmGetList(
                 handle,
@@ -124,8 +136,9 @@ fn rm_get_list(handle: u32) -> Result<Vec<RM_PROCESS_INFO>, DiagnosticError> {
                 "RmGetList wrote {have} entries into a buffer sized for {needed}"
             );
             let actual = (have as usize).min(needed as usize);
-            // SAFETY: actual ≤ needed = capacity. RM wrote `actual` valid
-            // `RM_PROCESS_INFO`s into the buffer.
+            // SAFETY: RmGetList returned ERROR_SUCCESS, so `have` entries were initialized
+            // within the capacity supplied before the call. `actual` is at most `have`,
+            // so set_len exposes only initialized RM_PROCESS_INFO entries in `buf`.
             unsafe {
                 buf.set_len(actual);
             }
@@ -150,6 +163,9 @@ fn process_info_app_name(info: &RM_PROCESS_INFO) -> String {
 
 /// Fallback PID → exe basename via `QueryFullProcessImageNameW`. Empty on failure.
 fn pid_to_exe_basename(pid: u32) -> String {
+    // SAFETY: OpenProcess failure returns before queries; `h` is kept open through
+    // QueryFullProcessImageNameW, whose buf and size describe 1024 writable UTF-16 units.
+    // The successful handle is closed once, and output is read only after query success.
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h.is_null() {

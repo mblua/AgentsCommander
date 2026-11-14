@@ -246,6 +246,8 @@ fn restore_child_mode(child: &Path) {
 
 #[cfg(unix)]
 fn running_as_root() -> bool {
+    // SAFETY: geteuid takes no arguments and reads the effective user ID without
+    // accessing any caller-provided memory or transferring ownership.
     unsafe { libc::geteuid() == 0 }
 }
 

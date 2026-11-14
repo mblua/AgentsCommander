@@ -360,6 +360,8 @@ fn publish_test_response(source: &Path, destination: &Path) {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "kernel32")]
+    // SAFETY: MoveFileExW matches Windows winbase.h: two LPCWSTR pointers, DWORD flags and BOOL
+    // result, with the Windows system calling convention.
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
@@ -379,6 +381,8 @@ fn publish_test_response(source: &Path, destination: &Path) {
         .chain(Some(0))
         .collect();
     assert_ne!(
+        // SAFETY: source and destination are live UTF-16 vectors with appended NUL terminators.
+        // MoveFileExW reads them synchronously; 0x00000008 is MOVEFILE_WRITE_THROUGH.
         unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0x0000_0008) },
         0
     );
