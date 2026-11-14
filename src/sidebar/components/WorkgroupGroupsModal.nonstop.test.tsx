@@ -234,7 +234,7 @@ describe("#4580 WorkgroupGroupsModal reads Telegram bots from settingsStore", ()
 
     const first = mountModal();
     try {
-      await waitFor(() => expect(fake.callsFor("get_settings").length).toBe(before + 1));
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(before + 1));
       await waitFor(() => expect(botLabels()).toEqual(["Alpha"]));
     } finally {
       first();
@@ -243,7 +243,7 @@ describe("#4580 WorkgroupGroupsModal reads Telegram bots from settingsStore", ()
     setBots([bot("bot-1", "Alpha"), bot("bot-3", "Gamma")]);
     const second = mountModal();
     try {
-      await waitFor(() => expect(fake.callsFor("get_settings").length).toBe(before + 2));
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(before + 2));
       await waitFor(() => expect(botLabels()).toEqual(["Alpha", "Gamma"]));
     } finally {
       second();

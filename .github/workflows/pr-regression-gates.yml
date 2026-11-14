@@ -1607,11 +1607,34 @@ jobs:
           workspaces: . -> target
           key: rust-test-linux
 
-      # Same command as rust-regression-windows (#4510); failures here are real Linux
-      # failures and get their own issues.
+      # #4599: Xvfb gives GTK a display; nextest gives each test its own process.
+      - name: Install xvfb and cargo-nextest
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb
+          cargo install cargo-nextest --locked --version 0.9.151
+
+      # Same targets as rust-regression-windows (#4510), without its one --skip;
+      # failures here are real Linux failures and get their own issues. GTK starts on
+      # one thread per process and libtest uses one thread per test, so Linux runs
+      # each test in its own process under Xvfb (#4599). The list check below proves
+      # nextest runs the same tests that libtest lists.
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --locked --lib --bins --tests --no-fail-fast
+        shell: bash
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent/ac-4599-no-session-bus
+          NO_AT_BRIDGE: "1"
+        run: |
+          libtest=$(cargo test --locked --lib --bins --tests -- --list --format terse \
+            | grep -c ': test$')
+          nextest=$(cargo nextest list --locked --lib --bins --tests \
+            --run-ignored all --message-format oneline | grep -c .)
+          echo "libtest=$libtest nextest=$nextest"
+          test "$nextest" -gt 0
+          test "$libtest" -eq "$nextest"
+          xvfb-run -a cargo nextest run --locked --lib --bins --tests --no-fail-fast \
+            --status-level pass --color never
 
   rust-regression-linux:
     name: rust-regression-linux
