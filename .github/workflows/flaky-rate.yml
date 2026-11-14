@@ -1,0 +1,48 @@
+name: Flaky test rate
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: flaky-rate
+  cancel-in-progress: false
+
+jobs:
+  flaky-rate:
+    name: flaky-rate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Collect observations and build the report
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/flaky-rate.mjs --repo "$GITHUB_REPOSITORY" --out "$RUNNER_TEMP/flaky-rate"
+      - name: Upload history
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flaky-rate-history
+          path: ${{ runner.temp }}/flaky-rate/history.json
+          retention-days: 90
+          if-no-files-found: ignore
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flaky-rate-report
+          path: |
+            ${{ runner.temp }}/flaky-rate/report.json
+            ${{ runner.temp }}/flaky-rate/report.md
+          retention-days: 90
+          if-no-files-found: ignore

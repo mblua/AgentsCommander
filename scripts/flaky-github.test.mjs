@@ -1,0 +1,110 @@
+import { after, test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ApiError, BudgetExhausted, createGitHub } from './flaky-github.mjs';
+
+const tempDirs = [];
+function tempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flaky-gh-'));
+  tempDirs.push(dir);
+  return dir;
+}
+after(() => {
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const ok = (value) => ({ status: 0, stdout: Buffer.from(JSON.stringify(value)), stderr: '' });
+
+function fakeRun(responder) {
+  const calls = [];
+  const run = (cmd, args) => {
+    calls.push([cmd, ...args]);
+    return responder(cmd, args);
+  };
+  return { run, calls };
+}
+
+const A = 'repos/o/r/actions';
+
+test('each method passes an exact argument array', () => {
+  const { run, calls } = fakeRun(() => ok({ total_count: 0, workflow_runs: [], artifacts: [] }));
+  const gh = createGitHub({ repo: 'o/r', run });
+  gh.listRuns('pr.yml', '2026-11-01', 2);
+  gh.attempt(5, 1);
+  gh.runArtifacts(5, 3);
+  assert.deepEqual(calls, [
+    ['gh', 'api',
+      `${A}/workflows/pr.yml/runs?status=completed&created=2026-11-01&per_page=100&page=2`],
+    ['gh', 'api', `${A}/runs/5/attempts/1`],
+    ['gh', 'api', `${A}/runs/5/artifacts?per_page=100&page=3`],
+  ]);
+  assert.equal(gh.calls, 3);
+});
+
+test('a non-zero status throws ApiError without token text', () => {
+  const stderr = Buffer.from('HTTP 403: secret ghp_TOKEN123 rejected');
+  const { run } = fakeRun(() => ({ status: 1, stdout: Buffer.alloc(0), stderr }));
+  const gh = createGitHub({ repo: 'o/r', run });
+  assert.throws(
+    () => gh.attempt(5, 1),
+    (error) =>
+      error instanceof ApiError &&
+      error.http === 403 &&
+      error.message.includes(`${A}/runs/5/attempts/1`) &&
+      !error.message.includes('ghp_TOKEN123'),
+  );
+});
+
+test('downloadText unzips the member and deletes the zip', () => {
+  const dir = tempDir();
+  const { run, calls } = fakeRun((cmd, args) => {
+    if (cmd === 'gh') return { status: 0, stdout: Buffer.from('ZIP'), stderr: '' };
+    assert.ok(fs.existsSync(args[1]));
+    return args[2] === 'm.jsonl'
+      ? { status: 0, stdout: Buffer.from('text'), stderr: '' }
+      : { status: 11, stdout: Buffer.alloc(0), stderr: '' };
+  });
+  const gh = createGitHub({ repo: 'o/r', run });
+  assert.equal(gh.downloadText(9, 'm.jsonl', dir), 'text');
+  assert.equal(gh.downloadText(9, 'other', dir), null);
+  assert.deepEqual(calls[0], ['gh', 'api', `${A}/artifacts/9/zip`]);
+  assert.deepEqual(calls[1], ['unzip', '-p', path.join(dir, '9.zip'), 'm.jsonl']);
+  assert.equal(gh.calls, 2);
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('latestHistory skips expired artifacts and returns null when none', () => {
+  const dir = tempDir();
+  const artifacts = {
+    1: [{ id: 11, name: 'flaky-rate-history', expired: true }],
+    2: [{ id: 21, name: 'other' }, { id: 22, name: 'flaky-rate-history', expired: false }],
+  };
+  const responder = (cmd, args) => {
+    if (cmd === 'unzip') return { status: 0, stdout: Buffer.from('{"h":1}'), stderr: '' };
+    const endpoint = args[1];
+    if (endpoint.includes('branch=main')) return ok({ workflow_runs: [{ id: 1 }, { id: 2 }] });
+    if (endpoint.endsWith('/zip')) return { status: 0, stdout: Buffer.from('Z'), stderr: '' };
+    const runId = /runs\/(\d+)\/artifacts/.exec(endpoint)[1];
+    return ok({ total_count: artifacts[runId].length, artifacts: artifacts[runId] });
+  };
+  const { run, calls } = fakeRun(responder);
+  const gh = createGitHub({ repo: 'o/r', run });
+  assert.equal(gh.latestHistory('flaky-rate.yml', dir), '{"h":1}');
+  assert.ok(calls.some((c) => c[2] === `${A}/artifacts/22/zip`));
+  assert.ok(!calls.some((c) => c[2] === `${A}/artifacts/11/zip`));
+  assert.ok(calls[0][2].includes('workflows/flaky-rate.yml/runs?branch=main&status=completed'));
+  artifacts[2] = [];
+  assert.equal(createGitHub({ repo: 'o/r', run }).latestHistory('flaky-rate.yml', dir), null);
+});
+
+test('budget 2: the third call throws BudgetExhausted and never runs', () => {
+  const { run, calls } = fakeRun(() => ok({}));
+  const gh = createGitHub({ repo: 'o/r', run, budget: 2 });
+  gh.attempt(1, 1);
+  gh.attempt(1, 2);
+  assert.throws(() => gh.attempt(1, 3), BudgetExhausted);
+  assert.equal(calls.length, 2);
+  assert.equal(gh.calls, 2);
+});
