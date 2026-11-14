@@ -447,3 +447,41 @@ async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_
         expected_ci(PersistedCiState::Idle, &[], &[], None)
     );
 }
+
+fn merge_pin_run(id: u64, run_attempt: u64, sha: char) -> CiRunObservation {
+    CiRunObservation {
+        id,
+        workflow_id: 9,
+        run_attempt,
+        head_sha: sha_of(sha),
+        head_branch: "feature".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+        pull_requests: vec![id],
+    }
+}
+
+#[test]
+fn merge_ci_observations_ranks_identity_contradiction_over_stale_attempt() {
+    let mut state = CiCompletionState::default();
+    let base = [merge_pin_run(1, 2, 'a'), merge_pin_run(2, 1, 'a')];
+    assert_eq!(merge_ci_observations(&mut state, &base, true), Ok(()));
+    let stale = merge_pin_run(1, 1, 'a');
+    let moved = merge_pin_run(2, 1, 'b');
+    let rounds = [
+        (vec![stale.clone()], FailureKind::Incomplete),
+        (vec![moved.clone()], FailureKind::Other),
+        (vec![stale.clone(), moved.clone()], FailureKind::Other),
+        (vec![moved, stale], FailureKind::Other),
+    ];
+    for (round, expected) in rounds {
+        assert_eq!(
+            merge_ci_observations(&mut state, &round, true),
+            Err(expected)
+        );
+        assert_eq!(state.known.get(&1), Some(&base[0]));
+        assert_eq!(state.known.get(&2), Some(&base[1]));
+        assert!(!state.closing_ready);
+    }
+}

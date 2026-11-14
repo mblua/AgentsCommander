@@ -682,3 +682,27 @@ async fn ready_attempt_thresholds_propagates_the_option() {
     // The re-export must forward the `Option` rather than flatten it.
     assert_eq!(remote_attempt.thresholds(), None);
 }
+
+#[test]
+fn queued_policy_pruning_keeps_survivors_and_drops_empty_batches() {
+    let id = Uuid::new_v4();
+    let now = Instant::now();
+    let mut state = ActorState::new();
+    apply_numeric_resolution(&mut state, None, id, 90, eligible(id, &[50, 75]), now);
+    let queued = *state.batches.keys().next().unwrap();
+
+    reconcile_policy(&mut state, None, id, &fingerprint(id), &[75], now);
+
+    assert_eq!(
+        state.batches.keys().copied().collect::<Vec<_>>(),
+        vec![queued]
+    );
+    assert_eq!(state.batches[&queued].thresholds, vec![75]);
+    let outstanding: Vec<_> = state.sessions[&id].outstanding.iter().collect();
+    assert_eq!(outstanding, vec![(&75, &queued)]);
+
+    reconcile_policy(&mut state, None, id, &fingerprint(id), &[90], now);
+
+    assert!(state.batches.is_empty());
+    assert!(state.sessions[&id].outstanding.is_empty());
+}

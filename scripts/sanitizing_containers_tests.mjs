@@ -75,7 +75,7 @@ test('04 rejects unsafe basenames and nonstrings', () => {
   ]) {
     const registry = attemptsRegistry();
     registry.containers[0].name = name;
-    assert.throws(() => parseRegistry(JSON.stringify(registry)), String(name));
+    assert.throws(() => parseRegistry(JSON.stringify(registry)), JSON.stringify(name));
     assert.equal(containersGate(containerTree({}, registry)).status, 'ERROR');
   }
 });

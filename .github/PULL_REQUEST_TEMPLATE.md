@@ -28,3 +28,9 @@ Delete sections that don't apply.
 ## Anything reviewers should know
 
 <!-- Tricky bits, follow-up issues you'll open, dependencies on other PRs. -->
+
+## Net line growth justification
+
+<!-- Required only when the "PR net lines" check reports more than 1000 counted net lines
+(source + tests + other; docs, generated files and lockfiles are not counted).
+Say why this growth is needed and why it cannot be smaller. -->

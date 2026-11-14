@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::filesystem::naming_journal;
@@ -47,8 +46,6 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// The five-second lock budget: the value of the private `CONFIG_LOCK_TIMEOUT`
 /// (`local_config_io.rs`), restated because this leaf may not name that module.
 pub(crate) const MIGRATION_LOCK_BUDGET: Duration = Duration::from_secs(5);
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rename {
@@ -425,7 +422,7 @@ fn commit_journal(dir: &Path, journal: &Journal) -> Result<(), Refusal> {
     let temp = dir.join(format!(
         "{NAMING_MIGRATION_STATE_NAME}.{}.{}.tmp",
         std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        crate::filesystem::next_temp_name_sequence()
     ));
     let written = (|| {
         let mut file = naming_journal::create_journal_stage(&temp)?;

@@ -814,7 +814,7 @@ fn origin_entity_dir_name(wg_path: &Path) -> Option<String> {
     if !crate::filesystem::directories::cli_discovery_is_dir(wg_path) {
         return None;
     }
-    match wg_path.file_name().and_then(|n| n.to_str()) {
+    match wg_path.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(n) if crate::config::entity_prefix::has_entity_prefix(n) => Some(n.to_string()),
         _ => None,
     }
@@ -834,7 +834,7 @@ fn origin_replica_short(agent_path: &Path) -> Option<String> {
     if !crate::filesystem::directories::cli_discovery_is_dir(agent_path) {
         return None;
     }
-    let agent_dir = match agent_path.file_name().and_then(|n| n.to_str()) {
+    let agent_dir = match agent_path.file_name().and_then(std::ffi::OsStr::to_str) {
         Some(n) if n.starts_with("__agent_") => n.to_string(),
         _ => return None,
     };

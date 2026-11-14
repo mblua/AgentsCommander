@@ -28,8 +28,9 @@
   overflow: hidden;
 }
 
+/* Override the standalone 100vh height: in browser layout it fills the pane. */
 .browser-sidebar .sidebar-layout {
-  height: 100%;
+  height: 100% !important;
   width: 100%;
 }
 
@@ -126,10 +127,6 @@
 }
 
 /* Override standalone heights — in browser layout they must fill their pane, not 100vh */
-.browser-sidebar .sidebar-layout {
-  height: 100% !important;
-}
-
 .browser-terminal .terminal-layout {
   display: flex;
   flex-direction: column;
