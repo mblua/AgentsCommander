@@ -85,6 +85,8 @@ const MermaidPreview: Component = () => {
     >
       <div 
         class="spec-board-preview-inner"
+        data-ac-testid="specBoard.preview"
+        data-ac-role="text"
         ref={containerRef}
         style={{
           transform: `translate(${specBoardStore.previewOffset.x}px, ${specBoardStore.previewOffset.y}px) scale(${specBoardStore.previewZoom})`
